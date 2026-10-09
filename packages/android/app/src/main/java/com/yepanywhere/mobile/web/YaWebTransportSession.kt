@@ -3,6 +3,10 @@ package com.yepanywhere.mobile.web
 import com.yepanywhere.mobile.connection.YaApiException
 import com.yepanywhere.mobile.connection.YaConnectionLease
 import com.yepanywhere.mobile.connection.YaSubscription
+import com.yepanywhere.mobile.connection.YaSubscriptionOverflowException
+import com.yepanywhere.mobile.connection.YaConnectionUnavailableException
+import com.yepanywhere.mobile.connection.YaNativeOperationException
+import com.yepanywhere.mobile.connection.YaNativeOperationFailure
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.util.UUID
@@ -72,7 +76,9 @@ class YaWebTransportSession(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
+                val code = nativeErrorCode(error)
                 emit(JSONObject().put("type", "reply").put("id", id)
+                    .put("errorCode", code)
                     .put("error", error.message ?: "Native source operation failed"))
             }
         }
@@ -111,6 +117,13 @@ class YaWebTransportSession(
         }
     }
 
+    private fun nativeErrorCode(error: Throwable): String? = when (error) {
+        is YaNativeOperationException -> error.failure.name
+        is YaConnectionUnavailableException -> YaNativeOperationFailure.CONNECTION_UNAVAILABLE.name
+        is YaSubscriptionOverflowException -> YaNativeOperationFailure.OVERFLOW.name
+        else -> null
+    }
+
     private suspend fun request(params: JSONObject): JSONObject {
         val supplied = params.optJSONObject("headers") ?: JSONObject()
         val headers = supplied.keys().asSequence().associateWith(supplied::getString)
@@ -145,7 +158,8 @@ class YaWebTransportSession(
             } catch (error: CancellationException) { throw error
             } catch (error: Throwable) {
                 emit(JSONObject().put("type", "subscriptionError").put("subscriptionId", localId)
-                    .put("status", (error as? YaApiException)?.response?.status ?: 0)
+                    .put("status", (error as? YaApiException)?.response?.status)
+                    .put("errorCode", nativeErrorCode(error))
                     .put("error", error.message ?: "Native subscription failed"))
             } finally {
                 val completingJob = currentCoroutineContext()[Job]

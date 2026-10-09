@@ -170,6 +170,22 @@ const SUBSET_EXPORTS = [
   },
   { name: "ErrorNotification", file: "v2/ErrorNotification.ts" },
   { name: "ThreadItem", file: "v2/ThreadItem.ts" },
+  { name: "McpResourceReadParams", file: "v2/McpResourceReadParams.ts" },
+  { name: "McpResourceReadResponse", file: "v2/McpResourceReadResponse.ts" },
+  { name: "McpServerToolCallParams", file: "v2/McpServerToolCallParams.ts" },
+  {
+    name: "McpServerToolCallResponse",
+    file: "v2/McpServerToolCallResponse.ts",
+  },
+  {
+    name: "ListMcpServerStatusParams",
+    file: "v2/ListMcpServerStatusParams.ts",
+  },
+  {
+    name: "ListMcpServerStatusResponse",
+    file: "v2/ListMcpServerStatusResponse.ts",
+  },
+  { name: "InitializeCapabilities", file: "InitializeCapabilities.ts" },
 ];
 
 function toPosixPath(filePath) {

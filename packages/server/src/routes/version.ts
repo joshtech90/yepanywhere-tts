@@ -491,6 +491,10 @@ export const REMOTE_COMPATIBILITY_LEVEL = 10;
 
 const BASE_CAPABILITIES: string[] = [
   SERVER_CAPABILITIES.contextUsageBreakdown.name,
+  SERVER_CAPABILITIES.processServiceTierChange.name,
+  SERVER_CAPABILITIES.mcpAppViews.name,
+  SERVER_CAPABILITIES.projectCreationGitChoice.name,
+  SERVER_CAPABILITIES.unicodeProseMath.name,
   SERVER_CAPABILITIES.projectFileViewCommand.name,
   SERVER_CAPABILITIES.fileOwnerProject.name,
   SERVER_CAPABILITIES.vhostFileSites.name,
@@ -651,6 +655,8 @@ export interface VersionRouteOptions {
   providerHostControlAvailable?: boolean;
   /** Installed MC readiness route is mounted on this supported host. */
   installedMachineControlAvailable?: boolean;
+  /** Agent self inspection is enabled, so tabs' session views are collected. */
+  agentSessionViewAvailable?: boolean;
   agentAuthRouterAvailable?: boolean;
   /** Whether the operator enabled experimental live worktree monitoring. */
   isLiveWorktreeMonitoringEnabled?: () => boolean;
@@ -716,6 +722,8 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   }
   if (options?.installedMachineControlAvailable)
     capabilities.push(SERVER_CAPABILITIES.installedMachineControl.name);
+  if (options?.agentSessionViewAvailable)
+    capabilities.push(SERVER_CAPABILITIES.agentSessionView.name);
   capabilities.push(SERVER_CAPABILITIES.claudeGatewayServices.name);
   if (options?.getExperimentalConversationAvailable?.())
     capabilities.push(SERVER_CAPABILITIES.experimentalConversation.name);

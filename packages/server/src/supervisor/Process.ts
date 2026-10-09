@@ -12,6 +12,7 @@ import type {
   ProviderName,
   ProviderRuntimeStatus,
   RecapMode,
+  McpAppProviderRequest,
   SessionLivenessSnapshot,
   SessionQueuedMessageSummary,
   SessionQueuedYaCommand,
@@ -918,9 +919,15 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   setMaxThinkingTokensFn?: (tokens: number | null) => Promise<void>;
   /** Function to change effort without restarting the provider process. */
   setEffortFn?: (effort?: EffortLevel) => Promise<void>;
+  /** Function to change the service tier without restarting the provider. */
+  setServiceTierFn?: (serviceTier?: string) => Promise<void>;
   /** Publish selected/pending settings to the optional owning-session projection. */
   publishAgentSelfSelectionFn?: (
     selection: import("../agent-tools/protocol.js").AgentSelfSelection,
+  ) => void | Promise<void>;
+  /** Replace the per-client views the optional owning-session projection serves. */
+  publishAgentSessionViewsFn?: (
+    views: readonly import("@yep-anywhere/shared").SessionClientView[],
   ) => void | Promise<void>;
   /** Whether effort changes can be published into an active provider turn. */
   effortUpdatesActiveTurn?: boolean;
@@ -935,6 +942,8 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   appendConversationContextFn?: (
     turns: ConversationContextTurn[],
   ) => Promise<boolean>;
+  /** Serves MCP App views through the provider's MCP connections. */
+  mcpAppRequestFn?: (request: McpAppProviderRequest) => Promise<unknown>;
   /** Function to get supported models (SDK 0.2.7+) */
   supportedModelsFn?: () => Promise<ModelInfo[]>;
   /** Function to get supported slash commands (SDK 0.2.7+) */
@@ -994,7 +1003,7 @@ export class Process {
   readonly startedAt: Date;
   readonly provider: ProviderName;
   readonly model: string | undefined;
-  readonly serviceTier: string | undefined;
+  private _serviceTier: string | undefined;
   /** SSH host for remote execution (undefined = local) */
   readonly executor: string | undefined;
   /** Internal placement coordinate, kept out of browser-facing ProcessInfo. */
@@ -1040,6 +1049,16 @@ export class Process {
   private previousBucket: SDKMessage[] = [];
   private bucketSwapTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly BUCKET_SWAP_INTERVAL_MS = 15_000;
+
+  /**
+   * Replay position of each buffered message, assigned once when first
+   * buffered, so a resubscribing client can skip what it already received.
+   * Every buffered message is emitted synchronously after being buffered, so
+   * a subscriber that has received a live message has received every message
+   * buffered at or before `lastReplaySeq` at that moment.
+   */
+  private readonly replaySeqs = new WeakMap<SDKMessage, number>();
+  private lastReplaySeq = 0;
 
   /**
    * User echoes accepted for in-turn steering remain replayable through the
@@ -1124,8 +1143,10 @@ export class Process {
     | null;
   /** Function to change effort without restarting the provider process. */
   private setEffortFn: ((effort?: EffortLevel) => Promise<void>) | null;
+  private setServiceTierFn: ((serviceTier?: string) => Promise<void>) | null;
   /** Publish selected/pending settings to the optional owning-session projection. */
   private publishAgentSelfSelectionFn: ProcessConstructorOptions["publishAgentSelfSelectionFn"];
+  private publishAgentSessionViewsFn: ProcessConstructorOptions["publishAgentSessionViewsFn"];
   private effortUpdatesActiveTurn: boolean;
 
   /** Function to interrupt current turn gracefully (SDK 0.2.7+) */
@@ -1134,6 +1155,7 @@ export class Process {
   private steerFn: ((message: UserMessage) => Promise<boolean>) | null;
   private readonly steerUsesMessageQueue: boolean;
   private appendConversationContextFn: ProcessConstructorOptions["appendConversationContextFn"];
+  private readonly mcpAppRequestFn: ProcessConstructorOptions["mcpAppRequestFn"];
 
   /** Function to get supported models (SDK 0.2.7+) */
   private supportedModelsFn: (() => Promise<ModelInfo[]>) | null;
@@ -1295,7 +1317,7 @@ export class Process {
     this.compactAtContextTokenLimit = options.compactAtContextTokenLimit;
     this.launchCompactPercentOverride = options.launchCompactPercentOverride;
     this.gatewayServiceId = options.gatewayServiceId;
-    this.serviceTier = options.serviceTier;
+    this._serviceTier = options.serviceTier;
     this.executor = options.executor;
     this.execution =
       options.execution ??
@@ -1309,12 +1331,15 @@ export class Process {
     this._effort = options.effort;
     this.setMaxThinkingTokensFn = options.setMaxThinkingTokensFn ?? null;
     this.setEffortFn = options.setEffortFn ?? null;
+    this.setServiceTierFn = options.setServiceTierFn ?? null;
     this.publishAgentSelfSelectionFn = options.publishAgentSelfSelectionFn;
+    this.publishAgentSessionViewsFn = options.publishAgentSessionViewsFn;
     this.effortUpdatesActiveTurn = options.effortUpdatesActiveTurn === true;
     this.interruptFn = options.interruptFn ?? null;
     this.steerFn = options.steerFn ?? null;
     this.steerUsesMessageQueue = options.steerUsesMessageQueue ?? false;
     this.appendConversationContextFn = options.appendConversationContextFn;
+    this.mcpAppRequestFn = options.mcpAppRequestFn;
     this.supportedModelsFn = options.supportedModelsFn ?? null;
     this.getContextBreakdownFn = options.getContextBreakdownFn ?? null;
     this.supportedCommandsFn = options.supportedCommandsFn ?? null;
@@ -2123,6 +2148,37 @@ export class Process {
     return this.setEffortFn !== null;
   }
 
+  /** Provider service tier (for example Codex "priority"); undefined is Standard. */
+  get serviceTier(): string | undefined {
+    return this._serviceTier;
+  }
+
+  /** Whether this process can change service tier without being restarted. */
+  get supportsServiceTierChange(): boolean {
+    return this.setServiceTierFn !== null;
+  }
+
+  /** Select the service tier for subsequent provider turns. */
+  async setServiceTier(serviceTier?: string): Promise<boolean> {
+    if (!this.setServiceTierFn) {
+      return false;
+    }
+    getLogger().info(
+      {
+        event: "service_tier_change",
+        sessionId: this._sessionId,
+        processId: this.id,
+        oldServiceTier: this._serviceTier,
+        newServiceTier: serviceTier,
+      },
+      `Changing service tier: ${this._serviceTier ?? "default"} → ${serviceTier ?? "default"}`,
+    );
+    await this.setServiceTierFn(serviceTier);
+    this._serviceTier = serviceTier;
+    this.emit({ type: "configuration-applied", setting: "serviceTier" });
+    return true;
+  }
+
   /**
    * Whether this process supports graceful interrupt.
    * Only Claude SDK 0.2.7+ supports this.
@@ -2504,7 +2560,7 @@ export class Process {
         isSynthetic: true,
       };
       await persist?.(message);
-      this.currentBucket.push(message as SDKMessage);
+      this.bufferForReplay(message as SDKMessage);
       this.emit({ type: "message", message: message as SDKMessage });
       return message;
     } finally {
@@ -2538,6 +2594,17 @@ export class Process {
     if (!this.appendConversationContextFn) return false;
     await this.waitForProviderSessionId();
     return this.appendConversationContextFn(turns);
+  }
+
+  get supportsMcpApps(): boolean {
+    return this.mcpAppRequestFn !== undefined;
+  }
+
+  async mcpAppRequest(request: McpAppProviderRequest): Promise<unknown> {
+    if (!this.mcpAppRequestFn) {
+      throw new Error("MCP App hosting is unavailable for this session");
+    }
+    return this.mcpAppRequestFn(request);
   }
 
   /**
@@ -3003,6 +3070,25 @@ export class Process {
     return [...expiredSteerEchoes, ...buffered];
   }
 
+  /** Buffer a message for replay, keeping any replay position it already has. */
+  private bufferForReplay(message: SDKMessage): void {
+    if (!this.replaySeqs.has(message)) {
+      this.lastReplaySeq += 1;
+      this.replaySeqs.set(message, this.lastReplaySeq);
+    }
+    this.currentBucket.push(message);
+  }
+
+  /** Replay position of a `getMessageHistory()` entry, if it was buffered. */
+  getReplaySeq(message: SDKMessage): number | undefined {
+    return this.replaySeqs.get(message);
+  }
+
+  /** Replay position of the most recently buffered message (0 before any). */
+  getReplayCursor(): number {
+    return this.lastReplaySeq;
+  }
+
   /**
    * Get accumulated streaming text for catch-up when clients connect mid-stream.
    * Returns the message ID and accumulated text, or null if not streaming.
@@ -3253,7 +3339,7 @@ export class Process {
       isMeta: false,
       isSynthetic: true,
     } as unknown as SDKMessage);
-    this.currentBucket.push(synthetic);
+    this.bufferForReplay(synthetic);
     this.emit({ type: "message", message: synthetic });
     const durable = toDurableRecapMessage(synthetic, "ya-synthetic");
     if (!durable) {
@@ -3529,7 +3615,7 @@ export class Process {
       message: { role: "user", content: this.buildUserMessageContent(message) },
     } as SDKMessage);
 
-    this.currentBucket.push(sdkMessage);
+    this.bufferForReplay(sdkMessage);
     this.emit({ type: "message", message: sdkMessage });
     if (
       !isHiddenInjectedMessage(message) &&
@@ -3805,7 +3891,7 @@ export class Process {
         this.currentBucket.some((m) => m.uuid && m.uuid === sdkMessage.uuid) ||
         this.previousBucket.some((m) => m.uuid && m.uuid === sdkMessage.uuid);
       if (!isDuplicate) {
-        this.currentBucket.push(sdkMessage);
+        this.bufferForReplay(sdkMessage);
       }
     }
 
@@ -4336,7 +4422,7 @@ export class Process {
     );
     for (const [uuid, message] of this.activeSteerEchoes) {
       if (!bufferedUuids.has(uuid)) {
-        this.currentBucket.push(message);
+        this.bufferForReplay(message);
       }
     }
     this.activeSteerEchoes.clear();
@@ -5099,7 +5185,7 @@ export class Process {
             this.previousBucket.some((m) => m.uuid === message.uuid));
         if (shouldEmitMessage(message) && message.type !== "stream_event") {
           if (!isDuplicateUserEcho) {
-            this.currentBucket.push(message);
+            this.bufferForReplay(message);
           }
         }
 
@@ -5834,6 +5920,30 @@ export class Process {
       // In real implementation with MessageQueue, this happens automatically
       // For mock SDK, we just transition back to running
       this.transitionToInTurnForWake("user-message");
+    }
+  }
+
+  /**
+   * Hand the session's current client views to the provider owner. A failed
+   * hand-off leaves the agent the previous views until the next publication.
+   */
+  publishAgentSessionViews(
+    views: readonly import("@yep-anywhere/shared").SessionClientView[],
+  ): void {
+    if (!this.publishAgentSessionViewsFn) return;
+    const fail = (error: unknown) =>
+      getLogger().debug(
+        {
+          event: "agent_session_views_publish_failed",
+          sessionId: this._sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Agent session view publication failed",
+      );
+    try {
+      void Promise.resolve(this.publishAgentSessionViewsFn(views)).catch(fail);
+    } catch (error) {
+      fail(error);
     }
   }
 

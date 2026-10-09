@@ -5,6 +5,7 @@ import type {
   ContextBreakdown,
   ConversationContextTurn,
   EffectiveSessionLaunchSettings,
+  ModelCatalogStatus,
   ModelInfo,
   PermissionMode,
   PromptCacheKeepaliveProviderInfo,
@@ -93,6 +94,18 @@ export interface AuthStatus {
   user?: { email?: string; name?: string };
   /** Provider-specific command a user can run to authenticate. */
   loginCommand?: string;
+}
+
+/** The provider CLI invocation that signs it in on this host. */
+export interface ProviderLoginLaunch {
+  executable: string;
+  env: NodeJS.ProcessEnv;
+  /** Arguments for a sign-in run without a terminal, its link relayed by YA. */
+  relayedArgs: readonly string[];
+  /** Arguments for a sign-in run in a visible terminal on the host. */
+  terminalArgs: readonly string[];
+  /** Whether the relayed sign-in reads an authorization code from stdin. */
+  acceptsCode: boolean;
 }
 
 /**
@@ -340,6 +353,10 @@ export interface AgentSession {
   publishAgentSelfSelection?: (
     selection: import("../../agent-tools/protocol.js").AgentSelfSelection,
   ) => void | Promise<void>;
+  /** Replace the per-client views served to the agent by `ya-agent view`. */
+  publishAgentSessionViews?: (
+    views: readonly import("@yep-anywhere/shared").SessionClientView[],
+  ) => void | Promise<void>;
   /** Async iterator yielding SDK messages */
   iterator: AsyncIterableIterator<SDKMessage>;
   /** Message queue for sending messages to the agent */
@@ -406,6 +423,14 @@ export interface AgentSession {
     turns: ConversationContextTurn[],
   ) => Promise<boolean>;
   /**
+   * Serve an MCP App view through the provider's own MCP connections: read
+   * its resource, call its server's tools, or hold its model context.
+   * Present only while MCP App hosting is enabled for this session.
+   */
+  mcpAppRequest?: (
+    request: import("@yep-anywhere/shared").McpAppProviderRequest,
+  ) => Promise<unknown>;
+  /**
    * Change max thinking tokens without restarting the session.
    * Pass null to disable thinking mode.
    * Only supported by Claude SDK 0.2.7+.
@@ -420,6 +445,11 @@ export interface AgentSession {
   ) => Promise<void>;
   /** This provider can publish effort changes into the active turn. */
   effortUpdatesActiveTurn?: boolean;
+  /**
+   * Change the provider service tier (for example Codex "priority") used by
+   * subsequent turns without restarting. undefined selects the standard tier.
+   */
+  setServiceTier?: (serviceTier?: string) => Promise<void>;
   /**
    * Request provider-owned generation changes for this live session. Results
    * are explicit because some controls are launch-only or provider-unknown.
@@ -544,19 +574,30 @@ export interface AgentProvider {
   getAuthStatus(): Promise<AuthStatus>;
 
   /**
+   * Resolve the CLI invocation that signs this provider in, or null when no
+   * runnable CLI is installed. Absent for providers YA cannot sign in.
+   */
+  getLoginLaunch?(): Promise<ProviderLoginLaunch | null>;
+
+  /**
    * Start a new agent session.
    * Returns the session iterator, message queue, and abort function.
    */
   startSession(options: StartSessionOptions): Promise<AgentSession>;
 
   /**
-   * Get available models for this provider.
-   * For local providers (Codex with Ollama), this queries the local model list.
-   * For cloud providers (Claude, Gemini), this returns a static list.
+   * Get available models for this provider. Implementations may cache;
+   * `forceRefresh` discards that cache and reads the provider again.
    */
   getAvailableModels(options?: {
     forceRefresh?: boolean;
   }): Promise<ModelInfo[]>;
+
+  /**
+   * Provenance of the list the latest `getAvailableModels` call returned.
+   * Absence means the provider does not report one.
+   */
+  getModelCatalogStatus?(): ModelCatalogStatus | undefined;
 
   /**
    * Read account/subscription quota windows without creating a provider turn.

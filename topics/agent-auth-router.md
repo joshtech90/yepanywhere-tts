@@ -99,8 +99,16 @@ Settings → Providers offers **Pools and usage** when the YA server advertises
 and a Manual, Round robin or Most remaining default. Manage pools and grants in AAR. YA lists
 only pools granted to its integration. Older AAR versions retain their scoped
 editor; this fallback grants no global administration authority. In New Session, choose a pool, catalog model
-and policy; Manual also requires an explicit account. The session header displays
-the chosen account and policy. Pool selection is only for new owner sessions;
+and policy; Manual also requires an explicit account. The session header shows a
+compact chip with the pin's saved pool and account names, never the raw account
+id; it falls back to the policy for pins saved without names and is hidden on
+narrow screens. Its tooltip lists pool, account, policy and reason, and it opens
+Session Info, whose Router section lists the names with the pool, account,
+binding and router ids. The pin keeps AAR's names as display labels captured at
+launch, so an AAR outage or removed account still shows which account to restore;
+a resume refreshes a renamed account and backfills a missing pool name, and the
+unavailable-account error names the saved account. Identity remains the ids.
+Pool selection is only for new owner sessions;
 continuation, remote executors, limited users and sandboxes cannot change a pin.
 
 The overview shows each account's windows, usage bars, remaining percentages,
@@ -204,6 +212,15 @@ in a dedicated environment variable. Neither adapter rewrites native auth or
 configuration files. Routed Claude spawn diagnostics omit arguments and stderr
 because SDK flag settings can contain the inference token. Control responses,
 REST payloads and public runtime metadata do not include tokens.
+
+Routed Claude sets `ENABLE_TOOL_SEARCH=true`. Claude Code otherwise disables
+tool search for any non-Anthropic `ANTHROPIC_BASE_URL` and sends every tool
+definition in full. AAR forwards the request body and `anthropic-*` headers, and
+a live pool session on 2026-10-06 deferred and loaded MCP tools through it.
+claude.ai connectors never load in routed sessions: the flag settings set
+`disableClaudeAiConnectors`, and Claude Code also skips them whenever the routed
+auth token takes precedence over the claude.ai login. User-scope MCP servers in
+the native `~/.claude.json` do load.
 
 The private Unix socket is the owner bootstrap boundary. Its directory/socket
 must be private, owned by the YA user and not symlinks. AAR control is separate
@@ -389,15 +406,55 @@ additional feature bit or legacy launch UI is introduced. The plan is
 [AAR unified selection](https://github.com/kzahel/agent-auth-router/blob/main/docs/unified-session-selection.md).
 
 The ordinary provider/model/thinking controls remain visible. One Pool selector
-uses compatible granted members and the router's configured policy. Model family
-aliases resolve to a concrete catalog model before allocation. An unavailable
+uses compatible granted members and the router's configured policy. It is laid
+out like the other New Session options: a Pool dropdown listing Direct first and
+then every granted pool for the provider, each with its policy and how many of
+its accounts offer the selected model; a pool no account can serve is listed
+with the reason (no enabled accounts, no model chosen, no account offers the
+model, or no account supports the effort) but cannot be chosen. Manual pools
+with more than one account add a separate Router account dropdown listing
+every account: those that cannot run the selection are disabled with the
+reason (disabled in AAR, no model chosen, model not offered, effort
+unsupported), and otherwise compatible accounts note cached auth rejection,
+cooldown or exhausted quota without being disabled, because AAR decides at
+launch. Each account row also shows every cached quota window as a short
+line (window, remaining percent, reset time or date), when it was observed
+once that is ten minutes or more ago, a note when AAR's last refresh of the
+account failed, or "no quota observed"; AAR's two-minute `freshness` flag is
+not shown, since it gates automatic admission rather than informing a person.
+An AAR advertising `quota-inference-headers-v1` records quota from the
+rate-limit headers of every successful proxied response and marks the
+snapshot `quota.source: "inference"`; YA words that age as "from a request"
+rather than "checked". Routers without the capability omit `source`, which
+YA reads as a probe. Nothing in YA polls or refreshes quota on discovery.
+The row's dot is green when
+selectable, amber when selectable with a note, grey when not selectable. A
+pool row adds the best remaining percent among its compatible accounts,
+measured in the tightest window that bounds the selected model. These are
+the last observation, not a promise; AAR confirms quota at launch. All of it
+derives from the overview YA already holds; no extra router call is made.
+Discovery progress, discovery failure with Retry, and an unavailable
+selection appear as a status line under the Pool control. A selection
+resolves to a concrete catalog model before allocation. When AAR advertises
+`catalog-cli-models-v1`, each Claude account carries its own CLI's model rows
+(`initialize.models`); YA's server bounds them and maps them through the same
+pipeline as the direct Claude list, so a pool shows the direct picker's names
+and descriptions. Each row launches the `resolvedModel` the members' CLIs
+report (a `[1m]` suffix is dropped for admission). A row with no reported
+target, conflicting targets, or a target absent from every member's catalog
+stays listed but disabled with the reason; catalog models no row launches
+follow under Previous models. Older routers keep the family guess (newest
+`claude-<family>-*`). The model status line shows the oldest member catalog
+age, and Refresh re-reads each member. An unavailable
 selection remains selected and cannot silently fall back to direct login.
 Explicit thinking travels through allocation, persistence, native launch and
 resume. Native adapters use the pinned account's model metadata, including
 Codex Max-to-ultra mapping, instead of querying the direct login's catalog.
 
-`POST /api/agent-auth-router/selection` performs catalog-only discovery through
-the private control socket. Requests coalesce by connection/provider. The client
+`POST /api/agent-auth-router/selection` performs catalog discovery through
+the private control socket; with `catalog-cli-models-v1` AAR also re-reads
+Claude CLI rows older than an hour, which starts the account's CLI but makes no
+inference request. Requests coalesce by connection/provider. The client
 revalidates on mount, provider/source changes, focus/visibility and connection
 changes, discarding obsolete results. There is no idle polling; quota admission
 still happens when starting a session. Recovery and usage diagnostics remain in

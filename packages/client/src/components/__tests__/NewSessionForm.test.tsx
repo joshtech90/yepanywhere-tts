@@ -31,7 +31,12 @@ import {
   YA_GROK_BATCH_SPEECH_METHOD,
   XAI_DIRECT_STREAMING_SPEECH_METHOD,
 } from "../../lib/speechProviders/methods";
+import { api } from "../../api/client";
 import { UI_KEYS } from "../../lib/storageKeys";
+import {
+  ConnectionReconnectingError,
+  WebSocketCloseError,
+} from "../../lib/connection/types";
 import { NewSessionForm } from "../NewSessionForm";
 
 const {
@@ -148,6 +153,11 @@ const {
       supportsRecaps?: boolean;
       supportsNativeRecaps?: boolean;
       supportsNativePromptSuggestions?: boolean;
+      modelCatalog?: {
+        source: "live" | "fallback" | "static";
+        fetchedAt?: string;
+        error?: string;
+      };
       models?: Array<{
         id: string;
         name: string;
@@ -344,6 +354,7 @@ vi.mock("../../api/client", () => ({
       ],
     })),
     routerStatus: vi.fn(async () => ({ state: "connected" })),
+    routerRefreshOverview: vi.fn(async () => ({})),
     routerAccounts: vi.fn(async () => ({
       accounts: [{ id: "routed-account", provider: "claude", enabled: true }],
     })),
@@ -970,6 +981,41 @@ describe("NewSessionForm", () => {
     vi.unstubAllGlobals();
   });
 
+  it("shows where the model list came from and refreshes it", () => {
+    const claude = providersState.providers[0];
+    if (!claude) throw new Error("expected Claude provider fixture");
+    claude.modelCatalog = {
+      source: "fallback",
+      fetchedAt: new Date().toISOString(),
+      error: "Claude is not signed in",
+    };
+    const { rerender } = render(<NewSessionForm projectId="project-1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+
+    const fallback = screen.getByText("newSessionModelCatalogFallback");
+    expect(fallback.parentElement?.getAttribute("title")).toBe(
+      "Claude is not signed in",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionModelCatalogRefresh" }),
+    );
+    expect(mockRefreshProviderRow).toHaveBeenCalledTimes(1);
+
+    claude.modelCatalog = {
+      source: "live",
+      fetchedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+    };
+    rerender(<NewSessionForm projectId="project-1" />);
+    expect(screen.getByText("newSessionModelCatalogUpdated")).toBeDefined();
+    expect(screen.queryByText("newSessionModelCatalogFallback")).toBeNull();
+
+    claude.modelCatalog = { source: "static" };
+    rerender(<NewSessionForm projectId="project-1" />);
+    expect(
+      screen.queryByRole("button", { name: "newSessionModelCatalogRefresh" }),
+    ).toBeNull();
+  });
+
   it("keeps an explicit Claude selection when saved Codex defaults load later", async () => {
     const { rerender } = render(<NewSessionForm projectId="project-1" />);
 
@@ -1536,11 +1582,11 @@ describe("NewSessionForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Claude" }));
     openAdvancedOptions();
     fireEvent.click(screen.getAllByRole("button", { name: "Opus 4.8" })[0]!);
-    fireEvent.change(await screen.findByLabelText("routerPool"), {
-      target: { value: "work" },
-    });
+    await screen.findByTestId("filter-routerPool");
+    fireEvent.click(dropdownOption("routerPool", "Work"));
+    expect(selectedDropdownValue("routerPool")).toBe("work");
     expect(screen.queryByLabelText("routerModel")).toBeNull();
-    expect(screen.queryByLabelText("routerAccount")).toBeNull();
+    expect(screen.queryByTestId("filter-routerAccount")).toBeNull();
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
       target: { value: "hello" },
     });
@@ -1554,6 +1600,97 @@ describe("NewSessionForm", () => {
       model: "claude-opus-4-8",
       thinking: "on:high",
     });
+  });
+
+  it("lists the pool accounts' CLI rows and launches the model they select", async () => {
+    const opus = {
+      id: "claude-opus-4-8",
+      name: "Claude Opus 4.8",
+      supportsEffort: true,
+      supportsAdaptiveThinking: true,
+      supportedReasoningEfforts: [
+        { reasoningEffort: "high", description: "High" },
+      ],
+    };
+    const account = {
+      id: "routed-account",
+      provider: "claude",
+      enabled: true,
+      catalogAt: "2026-10-06T10:00:00Z",
+      cliModelsAt: "2026-10-06T10:00:00Z",
+      models: [opus],
+      cliModels: [
+        {
+          id: "opus",
+          name: "Opus",
+          description: "Opus 4.8 from the account's CLI",
+          resolvedModel: "claude-opus-4-8[1m]",
+        },
+        { id: "best", name: "Best", description: "Most capable" },
+      ],
+    };
+    const selection = {
+      accounts: [account],
+      pools: [
+        {
+          id: "work",
+          name: "Work",
+          provider: "claude",
+          accountIds: ["routed-account"],
+          policy: "round-robin",
+        },
+      ],
+    };
+    vi.mocked(api.routerSelection).mockResolvedValue(selection as never);
+    versionState.version = { capabilities: ["agent-auth-router"] };
+    modelSettingsState.thinkingMode = "on";
+    serverSettingsState.isLoading = false;
+    try {
+      render(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+      openAdvancedOptions();
+      fireEvent.click(screen.getAllByRole("button", { name: "Opus 4.8" })[0]!);
+      await screen.findByTestId("filter-routerPool");
+      fireEvent.click(dropdownOption("routerPool", "Work"));
+
+      const opusRow = dropdownOption("newSessionModelTitle", "Opus");
+      expect(opusRow.textContent).toContain("Opus 4.8 from the account's CLI");
+      expect(opusRow.className).toBe("selected");
+      const best = dropdownOption("newSessionModelTitle", "Best");
+      expect(best.disabled).toBe(true);
+      expect(best.textContent).toContain("routerModelUnresolved");
+      expect(screen.getByText("newSessionModelCatalogUpdated")).toBeDefined();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "newSessionModelCatalogRefresh" }),
+      );
+      await waitFor(() =>
+        expect(api.routerRefreshOverview).toHaveBeenCalledWith({
+          accountId: "routed-account",
+        }),
+      );
+
+      fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+        target: { value: "hello" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "newSessionStartAction" }),
+      );
+      await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+      expect(mockStartSession.mock.calls[0]?.[2]).toMatchObject({
+        routerPoolId: "work",
+        model: "claude-opus-4-8",
+        thinking: "on:high",
+      });
+    } finally {
+      vi.mocked(api.routerSelection).mockReset();
+    }
   });
 
   it("submits the selected Claude provider and model to startSession", async () => {
@@ -2518,6 +2655,94 @@ describe("NewSessionForm", () => {
     });
   });
 
+  it.each([
+    [false, new ConnectionReconnectingError(), null],
+    [true, new ConnectionReconnectingError(), null],
+    [false, new WebSocketCloseError(1006, ""), null],
+    [true, new WebSocketCloseError(1006, ""), null],
+    [
+      false,
+      new Error("API error: 404: Not found"),
+      "sessionDraftAttachmentsValidationFailed",
+    ],
+    [
+      true,
+      new Error("API error: 404: Not found"),
+      "sessionDraftAttachmentsValidationFailed",
+    ],
+    [
+      false,
+      new WebSocketCloseError(4001, "Sign-in required"),
+      "sessionDraftAttachmentsValidationFailed",
+    ],
+    [
+      true,
+      new WebSocketCloseError(4001, "Sign-in required"),
+      "sessionDraftAttachmentsValidationFailed",
+    ],
+  ] as const)(
+    "retains draft attachments after failed validation (sync=%s, %s)",
+    async (syncEnabled, error, notice) => {
+      versionState.version = {
+        capabilities: [
+          PROJECT_QUEUE_CAPABILITY,
+          ...(syncEnabled ? [SERVER_CAPABILITIES.draftSync.name] : []),
+        ],
+      };
+      draftAttachmentState.value = {
+        batchId: stagedRef.batchId,
+        refs: [stagedRef],
+        updatedAt: stagedRef.updatedAt,
+      };
+      mockConnectionFetch.mockRejectedValue(error);
+      render(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+        />,
+      );
+      await waitFor(() =>
+        expect(mockConnectionFetch).toHaveBeenCalledWith(
+          `/attachments/staging/drafts/${stagedRef.batchId}/validate`,
+          expect.anything(),
+        ),
+      );
+      expect(draftAttachmentState.value?.refs).toEqual([stagedRef]);
+      if (notice) expect(mockShowToast).toHaveBeenCalledWith(notice, "info");
+      else expect(mockShowToast).not.toHaveBeenCalled();
+      expect(screen.getByText("notes.txt")).toBeTruthy();
+    },
+  );
+
+  it("still reports attachments the server confirms missing", async () => {
+    versionState.version = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        SERVER_CAPABILITIES.draftSync.name,
+      ],
+    };
+    draftAttachmentState.value = {
+      batchId: stagedRef.batchId,
+      refs: [stagedRef],
+      updatedAt: stagedRef.updatedAt,
+    };
+    mockConnectionFetch.mockResolvedValue({ refs: [] });
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    await waitFor(() =>
+      expect(mockShowToast).toHaveBeenCalledWith(
+        "sessionDraftAttachmentsUnavailable",
+        "info",
+      ),
+    );
+  });
+
   it("stages selected new-session files into the draft envelope", async () => {
     serverSettingsState.isLoading = false;
     mockUploadStagedAttachment.mockResolvedValue(stagedRef);
@@ -3263,8 +3488,113 @@ describe("NewSessionForm", () => {
     expect(
       container.querySelector("#new-session-project-panel"),
     ).not.toBeNull();
-    expect(screen.getByText("newSessionProjectUseTypedPath")).toBeDefined();
-    expect(screen.getByText("/Users/kgraehl/code/yepanywhere")).toBeDefined();
+    // The unmatched path is offered as a new project, the search box serving
+    // as its path field.
+    const newProject = screen.getByRole("region", {
+      name: "templateNewProject",
+    });
+    expect(within(newProject).getByText("newProjectFromSearch")).toBeDefined();
+    expect(
+      within(newProject).queryByLabelText("newProjectEntryLabel"),
+    ).toBeNull();
+    expect(
+      (
+        within(newProject).getByRole("radio", {
+          name: /newProjectEmptyFolder/,
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+  });
+
+  it("opens New project from its button and starts an empty folder", async () => {
+    versionState.version = { capabilities: ["project-creation-git-choice"] };
+    mockAddProject.mockResolvedValue({
+      project: {
+        id: "project-math",
+        name: "math",
+        path: "/home/u/math",
+        sessionCount: 0,
+        activeOwnedCount: 0,
+        activeExternalCount: 0,
+      },
+      created: true,
+    });
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "templateNewProject" }));
+    const newProject = screen.getByRole("region", {
+      name: "templateNewProject",
+    });
+    const entry = within(newProject).getByLabelText(
+      "newProjectEntryLabel",
+    ) as HTMLInputElement;
+    await waitFor(() => expect(document.activeElement).toBe(entry));
+    fireEvent.change(entry, { target: { value: "~/math" } });
+    expect(
+      container.querySelector(".new-session-project-summary-title")
+        ?.textContent,
+    ).toBe("math");
+    fireEvent.click(
+      within(newProject).getByRole("checkbox", { name: "newProjectGitInit" }),
+    );
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionCreateAndStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockAddProject).toHaveBeenCalledWith("~/math", {
+        create: true,
+        gitInit: false,
+      });
+      expect(mockStartSession).toHaveBeenCalledWith(
+        "project-math",
+        "hello",
+        expect.any(Object),
+        undefined,
+        expect.any(Number),
+        undefined,
+      );
+    });
+    expect(localStorage.getItem("yep-anywhere-new-project-git-init")).toBe(
+      "false",
+    );
+  });
+
+  it("keeps Git on for servers that always initialize it", () => {
+    render(<NewSessionForm projects={[...chooserProjects]} />);
+    fireEvent.click(screen.getByRole("button", { name: "templateNewProject" }));
+    const git = screen.getByRole("checkbox", {
+      name: "newProjectGitInit",
+    }) as HTMLInputElement;
+    expect(git.checked).toBe(true);
+    expect(git.disabled).toBe(true);
+  });
+
+  it("names the project a typed path will start, not the replaced selection", () => {
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    const title = () =>
+      container.querySelector(".new-session-project-summary-title")
+        ?.textContent;
+    expect(title()).toBe("Alpha");
+    fireEvent.change(
+      screen.getByPlaceholderText("newSessionProjectPathPlaceholder"),
+      { target: { value: "~/math" } },
+    );
+    expect(title()).toBe("math");
   });
 
   it("uses visit recency and shows more than four project shortcuts", () => {
@@ -3593,11 +3923,14 @@ describe("NewSessionForm", () => {
       target: { value: "hello" },
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "newSessionStartAction" }),
+      screen.getByRole("button", { name: "newSessionCreateAndStartAction" }),
     );
 
     await waitFor(() => {
-      expect(mockAddProject).toHaveBeenCalledWith("/tmp/added-project");
+      // An unmatched path is a new project: one folder, made if missing.
+      expect(mockAddProject).toHaveBeenCalledWith("/tmp/added-project", {
+        create: true,
+      });
       expect(mockStartSession).toHaveBeenCalledWith(
         "project-added",
         "hello",
@@ -3631,7 +3964,7 @@ describe("NewSessionForm", () => {
       target: { value: "hello" },
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "newSessionStartAction" }),
+      screen.getByRole("button", { name: "newSessionCreateAndStartAction" }),
     );
 
     await waitFor(() => {

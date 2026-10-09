@@ -52,8 +52,7 @@
   opacity: 0.5;
   cursor: default;
 }
-.control:hover:not(:disabled),
-.session:hover {
+.control:hover:not(:disabled) {
   background: var(--bg-hover);
 }
 .workspace {
@@ -189,6 +188,9 @@
   color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
+.session:hover {
+  background: var(--bg-hover);
+}
 .session[aria-current="true"] {
   background: color-mix(
     in srgb,
@@ -317,7 +319,7 @@
 .mobileToggle {
   display: none;
 }
-@media (max-width: 640px) {
+@media (width <= 640px) {
   .topbar {
     padding: 12px 16px;
     gap: 8px;

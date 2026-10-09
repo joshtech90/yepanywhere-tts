@@ -33,6 +33,7 @@ import {
   createSessionAppRoutes,
   sessionAppBrokerSocket,
 } from "./routes/sessionApps.js";
+import { createMcpAppRoutes } from "./routes/mcpApps.js";
 import { createSessionPathScopeResolver } from "./routes/session-path-scope.js";
 import { createSessionLocalFileRoutes } from "./routes/session-local-files.js";
 import {
@@ -118,6 +119,7 @@ import type {
   SessionDiscoveryIndexRegistry,
   SessionIndexService,
 } from "./indexes/index.js";
+import { createLruMap, refreshLruMap } from "./lib/lruCollections.js";
 import type {
   ProjectMetadataService,
   SessionMetadataService,
@@ -264,6 +266,8 @@ import { createSessionDoneRoutes } from "./routes/session-done.js";
 import { createSessionIndexRoutes } from "./routes/session-index.js";
 import { createSessionTerminateRoutes } from "./routes/session-terminate.js";
 import { createContextBreakdownRoutes } from "./routes/context-breakdown.js";
+import { createSessionViewRoutes } from "./routes/session-view.js";
+import { agentSelfEnabled } from "./sdk/providers/agent-self.js";
 import { createSessionsRoutes } from "./routes/sessions.js";
 import { createSessionWakeRoutes } from "./routes/session-wake.js";
 import { createSettingsRoutes } from "./routes/settings.js";
@@ -721,6 +725,7 @@ export function createApp(options: AppOptions): AppResult {
       codexReasoningSummary: options.serverSettingsService?.getSetting(
         "codexReasoningSummary",
       ),
+      mcpAppViews: options.serverSettingsService?.getSetting("mcpAppViews"),
       claudeAdditionalModels: options.serverSettingsService?.getSetting(
         "claudeAdditionalModels",
       ),
@@ -1392,6 +1397,15 @@ export function createApp(options: AppOptions): AppResult {
         supervisor.getProcessForSession(sessionId),
     }),
   );
+  app.route(
+    "/api",
+    createMcpAppRoutes({
+      getProcessForSession: (sessionId) =>
+        supervisor.getProcessForSession(sessionId),
+      isEnabled: () =>
+        options.serverSettingsService?.getSetting("mcpAppViews") === true,
+    }),
+  );
   const toolResultMediaStore = new ToolResultMediaStore({
     dataDir: options.dataDir,
     storagePolicy: projectStoragePolicy,
@@ -1417,7 +1431,8 @@ export function createApp(options: AppOptions): AppResult {
           eventBus: options.eventBus,
         })
       : null;
-  const readerCache = new Map<string, ISessionReader>();
+  /** Least recently used first; bounded by `maxReaderCacheSize`. */
+  const readerCache = createLruMap<string, ISessionReader>();
   const projectFileCompletion = new ProjectFileCompletion(effectiveDataDir, {
     eventBus: options.eventBus,
   });
@@ -1489,7 +1504,10 @@ export function createApp(options: AppOptions): AppResult {
     factory: () => T,
   ): T => {
     const cached = readerCache.get(key);
-    if (cached) return cached as T;
+    if (cached) {
+      refreshLruMap(readerCache, key, cached);
+      return cached as T;
+    }
 
     const reader = factory();
     readerCache.set(key, reader);
@@ -2479,6 +2497,7 @@ export function createApp(options: AppOptions): AppResult {
     createVersionRoutes({
       getLatestVersion: options.getLatestVersion,
       installedMachineControlAvailable: supportsInstalledMachineControl(),
+      agentSessionViewAvailable: agentSelfEnabled(),
       agentAuthRouterAvailable:
         process.platform !== "win32" && Boolean(options.sessionMetadataService),
       getExperimentalConversationAvailable: () =>
@@ -2815,6 +2834,11 @@ export function createApp(options: AppOptions): AppResult {
     }),
   );
   app.route("/api/sessions", createContextBreakdownRoutes({ supervisor }));
+  if (agentSelfEnabled())
+    app.route(
+      "/api/sessions",
+      createSessionViewRoutes({ sessionViews: supervisor.sessionViews }),
+    );
   app.route(
     "/api",
     createToolResultMediaRoutes({

@@ -338,7 +338,9 @@ describe("Files API", () => {
       const diagramPath = await realpath(
         join(projectPath, "docs", "assets", "diagram.svg"),
       );
-      expect(json.renderedMarkdownHtml).toContain("<h1>Guide</h1>");
+      expect(json.renderedMarkdownHtml).toContain(
+        '<h1 id="user-content-guide">Guide</h1>',
+      );
       expect(json.renderedMarkdownHtml).toContain(
         `href="/projects/${projectId}/file?path=docs%2Fpeer.md"`,
       );

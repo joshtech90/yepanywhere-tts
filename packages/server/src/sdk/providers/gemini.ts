@@ -20,6 +20,7 @@ import type {
   GeminiStats,
   GeminiToolResultEvent,
   GeminiToolUseEvent,
+  ModelCatalogStatus,
   ModelInfo,
 } from "@yep-anywhere/shared";
 import { selectCommandLookupTarget } from "../cli-detection.js";
@@ -120,6 +121,10 @@ export class GeminiProvider implements AgentProvider {
       authenticated: installed,
       enabled: installed,
     };
+  }
+
+  getModelCatalogStatus(): ModelCatalogStatus {
+    return { source: "static" };
   }
 
   /**

@@ -76,7 +76,7 @@
   opacity: 0.35;
   cursor: default;
 }
-@media (max-width: 480px) {
+@media (width <= 480px) {
   .row {
     grid-template-columns: minmax(0, 1fr) 40px;
   }

@@ -653,11 +653,18 @@ idle. The default also requests echo cancellation for YA-controlled microphone
 streams, which lets Android Chromium select its communication/AEC capture path.
 Noise suppression and automatic gain control remain off, and the speech wire
 format remains mono 16 kHz PCM16. Browser-native Web Speech cannot receive YA's
-media constraints, but the exact YA-media mute still applies. Android may
-lower or reroute other-app playback as a consequence of its communication
-path, but hosted JavaScript cannot request audio focus or promise system-wide
-ducking. Turning the setting off is the explicit raw-capture opt-out: YA does
-not mute its media and requests echo cancellation off.
+media constraints, but the exact YA-media mute still applies. Opening the
+microphone alone ducks other Android apps only momentarily, so on Android the
+same span also plays a detached, unmuted, looping one-second silent clip:
+Chrome holds `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` for playing media of known
+duration up to five seconds, which keeps other apps (for example a YouTube
+mini player) ducked until the last capture owner is idle. A retained idle
+microphone is not such an owner: it keeps YA media muted but does not keep
+other apps ducked between dictations. The clip is never
+in the document, so the YA-media mute cannot reach it. Apps that handle focus
+loss themselves may pause instead of ducking. Turning the setting off is the
+explicit raw-capture opt-out: YA does not mute its media, holds no audio
+focus, and requests echo cancellation off.
 
 Each stopped batch recording also owns a terminal settlement event keyed by
 its captured speech target. A later mic activation does not cancel or replace

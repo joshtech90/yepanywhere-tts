@@ -1,7 +1,77 @@
+import {
+  isSessionClientView,
+  type SessionClientView,
+} from "@yep-anywhere/shared";
+
 /** Own-session protocol; independent of the browser API and provider protocol. */
 export const AGENT_SELF_VERSION = 1;
 export const AGENT_SELF_PATH = "/v1/self";
+export const AGENT_VIEW_PATH = "/v1/view";
 export const AGENT_SELF_MAX_BYTES = 64 * 1024;
+
+/**
+ * Every client's own view of the owning session, never merged into one.
+ * `selectedClientId` names the one a question about "the app" most likely
+ * means: the most recently focused, else the most recently published.
+ */
+export interface AgentViewReport {
+  schemaVersion: 1;
+  observedAt: string;
+  scope: "owning-session";
+  sessionId: string;
+  selectedClientId: string | null;
+  selection: "most-recently-focused" | "most-recently-published" | "none";
+  /** Most recently focused first. */
+  clients: SessionClientView[];
+}
+
+/** Order clients and choose the default one; the clients stay distinct. */
+export function agentViewReport(
+  sessionId: string,
+  clients: readonly SessionClientView[],
+): AgentViewReport {
+  const ordered = [...clients].sort(
+    (a, b) =>
+      (b.focusedAt ?? "").localeCompare(a.focusedAt ?? "") ||
+      b.publishedAt.localeCompare(a.publishedAt),
+  );
+  const first = ordered[0];
+  return {
+    schemaVersion: 1,
+    observedAt: new Date().toISOString(),
+    scope: "owning-session",
+    sessionId,
+    selectedClientId: first?.clientId ?? null,
+    selection: !first
+      ? "none"
+      : first.focusedAt
+        ? "most-recently-focused"
+        : "most-recently-published",
+    clients: ordered,
+  };
+}
+
+export function isAgentViewReport(input: unknown): input is AgentViewReport {
+  if (!input || typeof input !== "object") return false;
+  const report = input as Record<string, unknown>;
+  if (
+    report.schemaVersion !== 1 ||
+    report.scope !== "owning-session" ||
+    typeof report.sessionId !== "string" ||
+    report.sessionId.length === 0 ||
+    typeof report.observedAt !== "string" ||
+    !Array.isArray(report.clients) ||
+    !report.clients.every(isSessionClientView) ||
+    !["most-recently-focused", "most-recently-published", "none"].includes(
+      String(report.selection),
+    )
+  )
+    return false;
+  const clients = report.clients as SessionClientView[];
+  return report.selectedClientId === null
+    ? report.selection === "none"
+    : clients.some((client) => client.clientId === report.selectedClientId);
+}
 
 export interface AgentSelfValue {
   value: string | null;

@@ -189,6 +189,14 @@ interface FileViewerProps {
   diffMode?: GitFileDiffMode;
   /** Page-level controls hosted in the header's leading slot. */
   headerLeading?: ReactNode;
+  /** Carries the body scroll offset across a reload of the page. */
+  scrollMemory?: FileViewerScrollMemory;
+}
+
+export interface FileViewerScrollMemory {
+  /** Offset to restore once content renders, in place of the line target. */
+  initialTop?: number;
+  save(top: number): void;
 }
 
 export type FileViewerMode = "full" | "range";
@@ -592,6 +600,47 @@ function getFileViewerTargetScrollTop(
 }
 
 /**
+ * Follow a preview's in-page `#fragment` link by scrolling the viewer body.
+ * Letting the browser navigate would rewrite the app's own URL and scroll
+ * whatever ancestor it chose; the viewer owns its scroll offset. Returns
+ * whether the click was a fragment link, followed or not.
+ */
+function scrollToMarkdownFragment(
+  event: ReactMouseEvent<HTMLElement>,
+  preview: HTMLElement | null,
+  viewerBody: HTMLElement | null,
+): boolean {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey ||
+    !(event.target instanceof Element)
+  ) {
+    return false;
+  }
+  const href = event.target.closest("a[href]")?.getAttribute("href");
+  if (!preview || !href?.startsWith("#")) return false;
+  event.preventDefault();
+  let id = href.slice(1);
+  try {
+    id = decodeURIComponent(id);
+  } catch {
+    // A malformed escape names the id as written.
+  }
+  // Within this preview: another open viewer may hold the same document ids.
+  const target = Array.from(preview.querySelectorAll("[id]")).find(
+    (element) => element.id === id,
+  );
+  if (target instanceof HTMLElement && viewerBody) {
+    viewerBody.scrollTop = getFileViewerTargetScrollTop(viewerBody, target);
+  }
+  return true;
+}
+
+/**
  * FileViewer component - displays file content with appropriate formatting.
  */
 export const FileViewer = memo(function FileViewer({
@@ -609,6 +658,7 @@ export const FileViewer = memo(function FileViewer({
   initialPresentation,
   diffMode,
   headerLeading,
+  scrollMemory,
 }: FileViewerProps) {
   const { t } = useI18n();
   const quoteTextBlock = useQuoteReply();
@@ -834,8 +884,18 @@ export const FileViewer = memo(function FileViewer({
   localResourceClickRef.current = handleLocalResourceClick;
   localResourceContextMenuRef.current = handleLocalResourceContextMenu;
   const handleMarkdownLocalResourceClick = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) =>
-      localResourceClickRef.current(event),
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (
+        scrollToMarkdownFragment(
+          event,
+          markdownPreviewRef.current,
+          fileViewerBodyRef.current,
+        )
+      ) {
+        return;
+      }
+      localResourceClickRef.current(event);
+    },
     [],
   );
   const openLocalResourceRef = useRef(openLocalResource);
@@ -1338,9 +1398,28 @@ export const FileViewer = memo(function FileViewer({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [fullscreen]);
 
+  // A reload returns to the reader's offset once, after the content it was
+  // measured against has rendered; until then the line target stays unused.
+  const pendingScrollTop = useRef(scrollMemory?.initialTop);
+  const scrollContentKey = highlightRenderKey ?? fileData;
+  useEffect(() => {
+    const top = pendingScrollTop.current;
+    const viewerBody = fileViewerBodyRef.current;
+    if (top === undefined || !scrollContentKey || !viewerBody) return;
+    const frame = requestAnimationFrame(() => {
+      pendingScrollTop.current = undefined;
+      viewerBody.scrollTop = top;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [scrollContentKey]);
+
   // Scroll to highlighted line when it's rendered
   useEffect(() => {
-    if (effectiveLineNumber === undefined || !highlightRenderKey) {
+    if (
+      effectiveLineNumber === undefined ||
+      !highlightRenderKey ||
+      pendingScrollTop.current !== undefined
+    ) {
       return;
     }
     const highlightedLine =
@@ -1577,6 +1656,22 @@ export const FileViewer = memo(function FileViewer({
       [showsHtmlPreview, htmlFindSource, showsText, findBody],
     ),
   );
+  useEffect(() => {
+    if (!scrollMemory || !findBody) return;
+    let frame = 0;
+    const onScroll = () => {
+      if (frame || pendingScrollTop.current !== undefined) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        scrollMemory.save(findBody.scrollTop);
+      });
+    };
+    findBody.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      findBody.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(frame);
+    };
+  }, [scrollMemory, findBody]);
 
   // Render loading state
   if (

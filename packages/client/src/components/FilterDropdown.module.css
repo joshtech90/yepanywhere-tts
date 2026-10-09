@@ -294,7 +294,7 @@
  * selectors inside the sessions filter-bar media block, so they applied to
  * every FilterDropdown at this width.
  */
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .container {
     width: 100%;
     min-width: 0;
@@ -307,7 +307,7 @@
   }
 }
 
-@media (min-width: 769px) {
+@media (width > 768px) {
   .dropdown {
     display: block;
     position: absolute;

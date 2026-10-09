@@ -491,7 +491,7 @@
   padding-inline: 0.65rem;
 }
 
-@media (max-width: 640px) {
+@media (width <= 640px) {
   .header {
     flex-direction: column;
     gap: var(--space-2);

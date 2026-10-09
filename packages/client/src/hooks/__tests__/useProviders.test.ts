@@ -321,12 +321,18 @@ describe("useProviders", () => {
       models: [
         {
           id: "opus",
+          resolvedModel: "claude-opus-5-5",
           name: "Opus",
           contextWindow: 200_000,
           supportsEffort: true,
           supportedEffortLevels: ["high" as const],
         },
       ],
+      modelCatalog: {
+        source: "live" as const,
+        fetchedAt: "2026-10-06T10:00:00.000Z",
+        untrusted: "dropped",
+      },
       supportsThinkingToggle: true,
     };
     mockGetProviders.mockResolvedValueOnce({ providers: [provider] });
@@ -351,10 +357,15 @@ describe("useProviders", () => {
         models: [
           expect.objectContaining({
             id: "opus",
+            resolvedModel: "claude-opus-5-5",
             contextWindow: 200_000,
             supportsEffort: true,
           }),
         ],
+        modelCatalog: {
+          source: "live",
+          fetchedAt: "2026-10-06T10:00:00.000Z",
+        },
         supportsThinkingToggle: true,
       }),
     );

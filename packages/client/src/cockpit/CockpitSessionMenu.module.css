@@ -3,7 +3,7 @@
   z-index: 1000;
   width: max-content;
   min-width: 13rem;
-  max-width: min(21rem, calc(100vw - 16px));
+  max-width: min(21rem, calc(100dvw - 16px));
   padding: 0.3rem;
   background: var(--cockpit-surface-raised, var(--cockpit-surface));
   border: 1px solid var(--cockpit-border);
@@ -65,7 +65,7 @@
 }
 
 /* Fingers get the larger rows and type of the phone layout. */
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .item {
     min-height: 2.75rem;
     font-size: var(--cockpit-text-md);
@@ -100,7 +100,7 @@
   font-size: var(--cockpit-text-md);
   line-height: 1.35;
   color: var(--cockpit-muted, var(--cockpit-text));
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .input {

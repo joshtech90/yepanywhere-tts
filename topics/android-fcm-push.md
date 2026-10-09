@@ -257,6 +257,18 @@ and at most 128 characters each; `test` accepts only `true`. All other fields
 are rejected, including URLs, project ids and user-generated title/body text.
 The YA server resolves a session tap through its authenticated destination route.
 
+Android retains a tapped notification while the paired host is temporarily
+offline. It shows the host's ordinary reconnecting UI and resolves the tap when
+the existing native connection becomes ready. It rechecks the enabled binding
+before opening the authenticated destination; push data never supplies a project
+path. Authentication rejection, revocation and definitive lookup failures end
+the action. A newer tap or opening host management supersedes it.
+
+The pending opaque subscription/session identifiers survive activity recreation.
+Lookup work and its lease stop while the activity is backgrounded; foregrounding
+resumes the pending action. Notification routing adds no background retry timer
+or independent connection policy.
+
 Android receives high-priority data messages. Its native service validates the
 saved subscription binding and OS permission, deduplicates bounded event ids,
 and posts fixed copy without starting a WebView or connecting to YA. Disabled,

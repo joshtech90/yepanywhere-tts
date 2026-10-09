@@ -37,7 +37,7 @@
   margin: 0;
   padding: var(--source-block-inset) var(--space-2);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   font-family: var(--font-mono);
   font-size: var(--fixed-font-size-sm);
   line-height: var(--source-block-line-height);

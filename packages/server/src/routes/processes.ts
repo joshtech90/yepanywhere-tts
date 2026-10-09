@@ -24,6 +24,7 @@ import {
   type Supervisor,
 } from "../supervisor/Supervisor.js";
 import type { ProcessInfo, Project } from "../supervisor/types.js";
+import { normalizeOptionalServiceTier } from "./session-request-helpers.js";
 import type { ClearloopBadgeResolver } from "../services/ClearloopService.js";
 
 export interface ProcessesDeps {
@@ -460,7 +461,8 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
   });
 
   // POST /api/processes/:processId/config - Reconfigure an active process
-  // Body: { model?: string, thinking?: ThinkingOption }
+  // Body: { model?: string, thinking?: ThinkingOption, serviceTier?: string | null }
+  // A null, empty, or "default" serviceTier selects the standard tier.
   routes.post("/:processId/config", async (c) => {
     const processId = c.req.param("processId");
 
@@ -473,10 +475,12 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
       model?: string;
       thinking?: ThinkingOption;
       showThinking?: ShowThinking;
+      serviceTier?: string | null;
     }>();
     const updates: {
       model?: string;
       requestedModel?: string;
+      serviceTier?: string;
       thinking?: ReturnType<typeof thinkingOptionToConfig>["thinking"];
       effort?: ReturnType<typeof thinkingOptionToConfig>["effort"];
     } = {};
@@ -497,6 +501,23 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
         );
         updates.thinking = thinking;
         updates.effort = effort;
+      }
+    }
+    if ("serviceTier" in body) {
+      const raw = body.serviceTier;
+      if (
+        raw === null ||
+        raw === undefined ||
+        raw === "" ||
+        raw === "default"
+      ) {
+        updates.serviceTier = undefined;
+      } else {
+        const serviceTier = normalizeOptionalServiceTier(raw);
+        if (!serviceTier) {
+          return c.json({ error: "Invalid serviceTier" }, 400);
+        }
+        updates.serviceTier = serviceTier;
       }
     }
 
@@ -523,6 +544,7 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
       model: updatedProcess.resolvedModel ?? body.model,
       thinking: updatedProcess.thinking,
       effort: updatedProcess.effort,
+      serviceTier: updatedProcess.serviceTier ?? null,
     });
   });
 

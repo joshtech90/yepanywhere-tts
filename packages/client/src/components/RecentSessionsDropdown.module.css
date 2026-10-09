@@ -4,7 +4,7 @@
   border-radius: var(--radius-md);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   min-width: 280px;
-  max-width: min(830px, calc(100vw - 32px));
+  max-width: min(830px, calc(100dvw - 32px));
   z-index: 10001;
   overflow: hidden;
 }

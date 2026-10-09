@@ -228,7 +228,7 @@
   font-size: var(--cockpit-text-xs);
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   /* Compact like the existing app: the input sits at the bottom of the
      screen, not halfway up (Joscha 26.09.2026). */
   .root {

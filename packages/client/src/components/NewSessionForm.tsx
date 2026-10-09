@@ -1,17 +1,23 @@
 import { useRouterDiscovery } from "../hooks/useRouterDiscovery";
 import {
   RouterPoolSelector,
+  routedAccounts,
   routedModels,
   routerPoolMembers,
 } from "./RouterPoolSelector";
-import { resolveRouterModel } from "@yep-anywhere/shared";
+import { resolveRouterModel, routerAliasTargets } from "@yep-anywhere/shared";
 import type { RouterSelection } from "./RouterPoolSelector";
 import { DraftSyncNotice } from "./DraftSyncNotice";
 import { DRAFT_STORAGE_EVENT } from "../lib/draftSyncStorage";
 import { MachineControlSessionSelection } from "./MachineControlSessionSelection";
 import { useComposerVoiceRef } from "../hooks/useComposerVoiceRef";
 import type { ProjectAppTarget } from "../api/projectApp";
-import { TemplateProjectForm } from "./TemplateProjectForm";
+import {
+  ProjectStartPalette,
+  TemplateProjectForm,
+  templateChoiceKey,
+} from "./TemplateProjectForm";
+import type { TemplateCreationRequest } from "../api/projectTemplatesClient";
 import { ComposerRecents } from "./ComposerRecents";
 import { AudioMemoPanel } from "./AudioMemoPanel";
 import { PromptHistoryRail } from "./PromptHistoryRail";
@@ -31,7 +37,6 @@ import {
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
   type EffortLevel,
-  type ModelInfo,
   type PromptSuggestionMode,
   type ProviderInfo,
   type ProviderName,
@@ -88,8 +93,10 @@ import { useRemoteExecutors } from "../hooks/useRemoteExecutors";
 import { useSpeechSourceRuntime } from "../hooks/useSpeechSourceRuntime";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
-import { useI18n } from "../i18n";
+import { type MessageKey, useI18n } from "../i18n";
 import { formatFileSize } from "../lib/formatFileSize";
+import { formatContextWindowLabel } from "../lib/contextWindowLabel";
+import { formatBriefAge } from "../lib/sessionAge";
 import { getUiCreationProvenance } from "../lib/sessionCreationProvenance";
 import { parseComposerSlashCommand } from "../lib/slashCommands";
 import { takePrebootComposer } from "../lib/prebootComposer";
@@ -101,6 +108,7 @@ import {
   resolveSupportedEffortLevel,
   resolveSupportedThinkingMode,
 } from "../lib/effortLevels";
+import { selectableServiceTiers, serviceTierLabel } from "../lib/serviceTiers";
 import {
   knownLockedEffort,
   knownLockedProvider,
@@ -115,6 +123,8 @@ import {
   withProviderSessionDefaults,
 } from "../lib/newSessionDefaults";
 import {
+  type RouterModelUnavailable,
+  buildRouterModelList,
   startsAdditionalModelGroup,
   withProviderVisibleModelSelection,
 } from "../lib/modelCatalog";
@@ -161,6 +171,7 @@ import {
 import {
   isAnchoredPath,
   newProjectBaseFor,
+  projectNameForEntry,
   settlePathEntry,
 } from "../lib/newProjectPath";
 import { getRecapModeDescription } from "../lib/recapModes";
@@ -170,6 +181,7 @@ import { storeUploadedAttachmentPreview } from "../lib/attachmentPreviewCache";
 import type { DraftAttachmentState } from "../lib/draftEnvelope";
 import {
   deleteDraftAttachmentRef,
+  isInterruptedDraftAttachmentValidation,
   materializeDraftAttachmentsForSession,
   validateDraftAttachmentRefs,
 } from "../lib/draftAttachmentStaging";
@@ -269,6 +281,12 @@ import {
   type SpeechPendingKind,
   type VoiceInputButtonRef,
 } from "./VoiceInputButton";
+
+const ROUTER_MODEL_UNAVAILABLE = {
+  unresolved: "routerModelUnresolved",
+  conflict: "routerModelConflict",
+  missing: "routerModelMissing",
+} as const satisfies Record<RouterModelUnavailable, MessageKey>;
 
 interface WorkstreamsLoadState {
   status: "idle" | "loading" | "ready" | "error";
@@ -403,6 +421,9 @@ function NewSessionOptionSection({
   );
 }
 
+/** The New project palette choice that starts from a plain folder. */
+const EMPTY_FOLDER_CHOICE = "empty-folder";
+
 export function NewSessionForm({
   projectApp,
   onVoiceControl,
@@ -426,17 +447,34 @@ export function NewSessionForm({
 }: NewSessionFormProps) {
   const { t } = useI18n();
   const sessionDefaultCopy = getSessionDefaultControlCopy(t);
-  const [creatingTemplateProject, setCreatingTemplateProject] = useState(false);
+  // New project starts a folder YA has not seen, from the explicit panel or
+  // from an unmatched path typed into the project search
+  // (topics/project-names.md § New project).
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectEntry, setNewProjectEntry] = useState("");
+  const [newProjectChoice, setNewProjectChoice] =
+    useState<string>(EMPTY_FOLDER_CHOICE);
+  const [newProjectGitInit, setNewProjectGitInit] = useState(
+    () => localStorage.getItem(UI_KEYS.newProjectGitInit) !== "false",
+  );
   const {
     choices: templateChoices,
     error: templateError,
     emptyMessageKey,
-  } = useProjectTemplateChoices(creatingTemplateProject);
+  } = useProjectTemplateChoices(newProjectOpen);
   const [templateProjectBusy, setTemplateProjectBusy] = useState(false);
   const handleTemplateBusyChange = useCallback((busy: boolean) => {
     setTemplateProjectBusy(busy);
-    if (busy) setCreatingTemplateProject(true);
+    if (busy) setNewProjectOpen(true);
   }, []);
+  const handleTemplateRecovered = useCallback(
+    (request: TemplateCreationRequest) => {
+      setNewProjectOpen(true);
+      setNewProjectEntry(request.path);
+      setNewProjectChoice(`${request.sourceId}/${request.templateId}`);
+    },
+    [],
+  );
   const navigate = useNavigate();
   const basePath = useRemoteBasePath();
   const { relayTransport, relayedServerSpeechAvailable } =
@@ -463,6 +501,10 @@ export function NewSessionForm({
     );
   }, [clientSummarySourceKey]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  // Paid speed tiers are never remembered: each new session starts Standard.
+  const [selectedServiceTier, setSelectedServiceTier] = useState<string | null>(
+    null,
+  );
   const [selectedThinkingMode, setSelectedThinkingMode] =
     useState<ThinkingMode>("off");
   const [selectedEffortLevel, setSelectedEffortLevel] =
@@ -866,26 +908,18 @@ export function NewSessionForm({
       ) {
         return;
       }
-      if (syncEnabled) {
-        showToast(t("sessionDraftAttachmentsUnavailable"), "info");
-        return;
-      }
-      console.warn(
-        "[NewSessionForm] Failed to validate draft attachments:",
-        err,
-      );
-      draftControls.setAttachmentState(null);
+      // Reconnection is not evidence that the staged file disappeared.
       setPendingFiles(
-        (prev) =>
-          prev.some(isPendingStagedFile)
-            ? prev.filter((file) => !isPendingStagedFile(file))
-            : prev,
-        {
-          persistDraft: false,
-          revokeRemovedPreviewUrls: true,
-        },
+        (prev) => [
+          ...prev.filter((file) => !isPendingStagedFile(file)),
+          ...state.refs.map(
+            (ref): PendingStagedFile => ({ ...ref, kind: "staged" }),
+          ),
+        ],
+        { persistDraft: false, revokeRemovedPreviewUrls: true },
       );
-      showToast(t("sessionDraftAttachmentsUnavailable"), "info");
+      if (!isInterruptedDraftAttachmentValidation(err))
+        showToast(t("sessionDraftAttachmentsValidationFailed"), "info");
     }
   }, [
     sourceTransport,
@@ -1202,6 +1236,15 @@ export function NewSessionForm({
     effectiveSandboxLevel === "none" &&
     (selectedProvider === "claude" || selectedProvider === "codex");
   const routerDiscovery = useRouterDiscovery(selectedProvider, routerEnabled);
+  const routerAccounts = useMemo(
+    () =>
+      routedAccounts(
+        routerDiscovery.data,
+        selectedProvider,
+        routerSelection?.poolId,
+      ),
+    [routerDiscovery.data, selectedProvider, routerSelection?.poolId],
+  );
   const accountModels = useMemo(
     () =>
       routedModels(
@@ -1211,31 +1254,46 @@ export function NewSessionForm({
       ),
     [routerDiscovery.data, selectedProvider, routerSelection?.poolId],
   );
-  const availableModels: ModelInfo[] = useMemo(() => {
-    const direct = selectedProviderInfo?.models ?? [];
-    const merged = new Map(direct.map((m) => [m.id, m]));
-    for (const m of accountModels) {
-      const representedByAlias = direct.some(
-        (d) =>
-          d.id !== m.id && resolveRouterModel(d.id, accountModels) === m.id,
-      );
-      if (representedByAlias && selectedModel !== m.id) continue;
-      if (!merged.has(m.id) || routerSelection) merged.set(m.id, m);
-    }
-    if (routerSelection)
-      for (const m of direct) {
-        const routed = accountModels.find(
-          (a) => a.id === resolveRouterModel(m.id, accountModels),
-        );
-        if (routed) merged.set(m.id, { ...routed, id: m.id, name: m.name });
-      }
-    return [...merged.values()];
-  }, [
-    selectedProviderInfo?.models,
-    accountModels,
-    routerSelection,
-    selectedModel,
-  ]);
+  const routerAliases = useMemo(
+    () => routerAliasTargets(routerAccounts),
+    [routerAccounts],
+  );
+  const routerModelList = useMemo(
+    () =>
+      buildRouterModelList({
+        direct: selectedProviderInfo?.models ?? [],
+        accounts: routerAccounts,
+        accountModels,
+        routed: !!routerSelection,
+        selectedModel,
+      }),
+    [
+      selectedProviderInfo?.models,
+      routerAccounts,
+      accountModels,
+      routerSelection,
+      selectedModel,
+    ],
+  );
+  const availableModels = routerModelList.models;
+  // The pool's rows are as old as its least recently read member.
+  const routerCatalogAt = routerAccounts
+    .flatMap((a) => [a.catalogAt, a.cliModelsAt])
+    .filter((at): at is string => !!at)
+    .sort()[0];
+  const [routerCatalogRefresh, setRouterCatalogRefresh] = useState<
+    "idle" | "refreshing" | "failed"
+  >("idle");
+  const refreshRouterCatalog = useCallback(async () => {
+    setRouterCatalogRefresh("refreshing");
+    const results = await Promise.allSettled(
+      routerAccounts.map((a) => api.routerRefreshOverview({ accountId: a.id })),
+    );
+    await routerDiscovery.reload();
+    setRouterCatalogRefresh(
+      results.some((r) => r.status === "rejected") ? "failed" : "idle",
+    );
+  }, [routerAccounts, routerDiscovery.reload]);
   const visibleModels = useMemo(
     () =>
       withProviderVisibleModelSelection(
@@ -1275,7 +1333,11 @@ export function NewSessionForm({
         ? compatibleMembers[0]?.id
         : routerSelection?.accountId
       : undefined;
-  const routedModel = resolveRouterModel(selectedModel, accountModels);
+  const routedModel = resolveRouterModel(
+    selectedModel,
+    accountModels,
+    routerAliases,
+  );
   const hasSelectedProviderModel = routerSelection
     ? !!(
         routerEnabled &&
@@ -1322,6 +1384,14 @@ export function NewSessionForm({
   const selectedModelInfo = visibleModels.find(
     (model) => model.id === selectedModel,
   );
+  const serviceTierOptions = routerSelection
+    ? []
+    : selectableServiceTiers(selectedModelInfo?.serviceTiers);
+  const effectiveServiceTier =
+    selectedServiceTier &&
+    serviceTierOptions.some((tier) => tier.id === selectedServiceTier)
+      ? selectedServiceTier
+      : null;
   const effortOptions = useMemo(
     () =>
       getEffortLevelOptions({
@@ -1440,18 +1510,45 @@ export function NewSessionForm({
   // A typed name or relative path names a folder under the base, created on
   // start if missing (topics/project-names.md § Paths from names).
   const newProjectBase = newProjectBaseFor(principal);
-  const customProjectTarget = useMemo(
+  // The New project panel replaces the selection with a project to start: it
+  // is open from its button, or shown for a typed path that matches nothing,
+  // in which case the search box is its path field.
+  const newProjectPanelShown =
+    !launch && !fixedProject && (newProjectOpen || hasCustomProjectPath);
+  const newProjectTypedEntry = newProjectOpen
+    ? newProjectEntry
+    : activeProjectSearchQuery;
+  const newProjectTarget = useMemo(
     () =>
-      hasCustomProjectPath
-        ? settlePathEntry(activeProjectSearchQuery, newProjectBase, projects)
+      newProjectPanelShown && newProjectTypedEntry.trim()
+        ? settlePathEntry(newProjectTypedEntry, newProjectBase, projects)
         : null,
-    [activeProjectSearchQuery, hasCustomProjectPath, newProjectBase, projects],
+    [newProjectPanelShown, newProjectTypedEntry, newProjectBase, projects],
   );
-  const customProjectIsNewFolder =
-    hasCustomProjectPath && !isAnchoredPath(activeProjectSearchQuery);
+  const newProjectTemplates = templateChoices?.enabled
+    ? templateChoices.templates
+    : [];
+  const newProjectTemplate = newProjectPanelShown
+    ? newProjectTemplates.find(
+        (template) => templateChoiceKey(template) === newProjectChoice,
+      )
+    : undefined;
+  // A template project is made by its own Create & prepare action, so the
+  // ordinary start waits while one is chosen.
+  const creatingTemplateProject = newProjectTemplate !== undefined;
+  const newProjectSubmission =
+    newProjectPanelShown && !newProjectTemplate && newProjectTarget?.path
+      ? newProjectTarget
+      : null;
+  const projectCreationGitChoice = serverHasCapability(
+    versionInfo,
+    SERVER_CAPABILITIES.projectCreationGitChoice.name,
+  );
+  const newProjectInitializesGit =
+    !projectCreationGitChoice || newProjectGitInit;
   const currentProjectSelection = exactProjectMatch ?? selectedProject ?? null;
   const projectQueueTargetProjectId =
-    !hasCustomProjectPath && normalizedProjectInput && currentProjectSelection
+    !newProjectPanelShown && normalizedProjectInput && currentProjectSelection
       ? currentProjectSelection.id
       : null;
   const fileCompletion = useProjectFileCompletion({
@@ -1488,10 +1585,10 @@ export function NewSessionForm({
   // and starting waits for the project.
   const projectPending =
     Boolean(projectId) &&
-    !hasCustomProjectPath &&
+    !newProjectPanelShown &&
     currentProjectSelection === null;
   const isDetachedProject =
-    !hasCustomProjectPath &&
+    !newProjectPanelShown &&
     currentProjectSelection === null &&
     !projectPending;
   const canCreateDetached =
@@ -1502,19 +1599,25 @@ export function NewSessionForm({
           versionInfo,
           SERVER_CAPABILITIES.limitedUserNoProjectSessions.name,
         )));
-  const projectSummaryTitle =
-    currentProjectSelection?.name ??
-    (projectPending ? t("newSessionLoading") : t("newSessionProjectDetached"));
-  const projectSummaryMeta = hasCustomProjectPath
-    ? normalizedProjectInput
+  // A project about to be started is what the summary names, not the
+  // selection the New project panel or a typed path replaced.
+  const projectSummaryTitle = newProjectPanelShown
+    ? (newProjectTarget && projectNameForEntry(newProjectTarget)) ||
+      t("templateNewProject")
+    : currentProjectSelection?.name ||
+      (projectPending
+        ? t("newSessionLoading")
+        : t("newSessionProjectDetached"));
+  const projectSummaryMeta = newProjectPanelShown
+    ? (newProjectTarget?.path ?? "")
     : (currentProjectSelection?.path ??
       (projectPending ? "" : t("newSessionProjectDetachedHint")));
   const displayedProjectSummaryMeta =
-    hasCustomProjectPath || currentProjectSelection
+    newProjectPanelShown || currentProjectSelection
       ? shortenPath(projectSummaryMeta)
       : projectSummaryMeta;
   const workstreamSelectionProjectId =
-    !hasCustomProjectPath && normalizedProjectInput && currentProjectSelection
+    !newProjectPanelShown && normalizedProjectInput && currentProjectSelection
       ? currentProjectSelection.id
       : null;
   const workstreamSelectionEnabled = settings?.workstreamsEnabled === true;
@@ -1595,6 +1698,7 @@ export function NewSessionForm({
       setProjectInput(project.path);
       lastSyncedProjectIdRef.current = project.id;
       onProjectChange?.(project.id);
+      setNewProjectOpen(false);
       setIsProjectChooserExpanded(false);
     },
     [onProjectChange],
@@ -1604,8 +1708,40 @@ export function NewSessionForm({
     setProjectInput("");
     lastSyncedProjectIdRef.current = null;
     onProjectChange?.(null);
+    setNewProjectOpen(false);
     setIsProjectChooserExpanded(false);
   }, [onProjectChange]);
+
+  const newProjectEntryRef = useRef<HTMLInputElement>(null);
+  // The button opens the panel to be typed into; a creation restored after a
+  // reload opens it without taking focus from the composer.
+  const focusNewProjectEntryRef = useRef(false);
+  useEffect(() => {
+    if (!newProjectOpen || !focusNewProjectEntryRef.current) return;
+    focusNewProjectEntryRef.current = false;
+    newProjectEntryRef.current?.focus();
+  }, [newProjectOpen]);
+  // Opening carries an unmatched typed path into the panel's own field and
+  // returns the search box to the selection it was replacing. Closing keeps
+  // the entry and choice for reopening.
+  const toggleNewProject = useCallback(() => {
+    if (newProjectOpen) {
+      setNewProjectOpen(false);
+      return;
+    }
+    if (hasCustomProjectPath) {
+      setNewProjectEntry(activeProjectSearchQuery);
+      setProjectInput(selectedProject?.path ?? "");
+    }
+    setIsProjectChooserExpanded(false);
+    focusNewProjectEntryRef.current = true;
+    setNewProjectOpen(true);
+  }, [
+    activeProjectSearchQuery,
+    hasCustomProjectPath,
+    newProjectOpen,
+    selectedProject?.path,
+  ]);
 
   const projectPanelRows = useMemo(() => {
     if (!isProjectChooserExpanded) return null;
@@ -1628,26 +1764,6 @@ export function NewSessionForm({
         ]
       : [];
 
-    if (hasCustomProjectPath) {
-      rows.push(
-        <button
-          key="custom"
-          type="button"
-          className="new-session-project-option new-session-project-option-custom"
-          onClick={() => setIsProjectChooserExpanded(false)}
-        >
-          <span className="new-session-project-option-name">
-            {customProjectIsNewFolder
-              ? t("newSessionProjectNewFolder")
-              : t("newSessionProjectUseTypedPath")}
-          </span>
-          <span className="new-session-project-option-path">
-            {customProjectTarget?.path ?? activeProjectSearchQuery}
-          </span>
-        </button>,
-      );
-    }
-
     if (projectsLoading) {
       rows.push(
         <div key="loading" className="new-session-project-empty">
@@ -1657,12 +1773,14 @@ export function NewSessionForm({
       return rows;
     }
 
+    // An unmatched typed path is offered as a new project below the list.
     if (projectSuggestions.length === 0) {
-      rows.push(
-        <div key="no-matches" className="new-session-project-empty">
-          {t("newSessionProjectNoMatches")}
-        </div>,
-      );
+      if (!hasCustomProjectPath)
+        rows.push(
+          <div key="no-matches" className="new-session-project-empty">
+            {t("newSessionProjectNoMatches")}
+          </div>,
+        );
       return rows;
     }
 
@@ -1692,11 +1810,8 @@ export function NewSessionForm({
     handleDetachedProject,
     handleProjectOptionSelect,
     hasCustomProjectPath,
-    customProjectIsNewFolder,
-    customProjectTarget,
     isDetachedProject,
     isProjectChooserExpanded,
-    activeProjectSearchQuery,
     projectSuggestions,
     projectsLoading,
     t,
@@ -2044,12 +2159,15 @@ export function NewSessionForm({
         ? `${model.name} (${(model.size / (1024 * 1024 * 1024)).toFixed(1)} GB)`
         : model.name;
 
-      let description = model.description;
+      const unavailable = routerModelList.unavailable.get(model.id);
+      let description = unavailable
+        ? t(ROUTER_MODEL_UNAVAILABLE[unavailable])
+        : model.description;
       if (!description) {
         const parts: string[] = [];
         if (model.parameterSize) parts.push(model.parameterSize);
         if (model.contextWindow) {
-          parts.push(`${Math.round(model.contextWindow / 1024)}K ctx`);
+          parts.push(formatContextWindowLabel(model.contextWindow));
         }
         if (model.parentModel) parts.push(model.parentModel);
         if (model.quantizationLevel) parts.push(model.quantizationLevel);
@@ -2060,6 +2178,7 @@ export function NewSessionForm({
         value: model.id,
         label,
         description,
+        disabled: !!unavailable,
         groupLabelBefore: startsAdditionalModelGroup(visibleModels, index)
           ? t("previousModelsGroup")
           : undefined,
@@ -2077,7 +2196,13 @@ export function NewSessionForm({
         ),
       };
     });
-  }, [selectedProvider, subscriptionUsage, t, visibleModels]);
+  }, [
+    routerModelList.unavailable,
+    selectedProvider,
+    subscriptionUsage,
+    t,
+    visibleModels,
+  ]);
 
   // Handle model selection from FilterDropdown
   const handleModelSelect = useCallback((selected: string[]) => {
@@ -2379,6 +2504,31 @@ export function NewSessionForm({
 
   const resolveProjectIdForSubmission = useCallback(
     async (trimmedProjectInput: string): Promise<string | null> => {
+      // New project creates exactly one folder (the server refuses a
+      // missing parent), with Git unless declined, and adds an existing
+      // folder as it is.
+      if (newProjectSubmission) {
+        const added = await api.addProject(newProjectSubmission.path, {
+          create: true,
+          name: newProjectSubmission.name,
+          ...(projectCreationGitChoice ? { gitInit: newProjectGitInit } : {}),
+        });
+        const createdId = added.project.id ?? null;
+        if (!createdId) return null;
+        const path = added.project.path ?? newProjectSubmission.path;
+        showToast(
+          added.created
+            ? t("newSessionProjectFolderCreated", { path })
+            : t("newSessionProjectFolderExisting", { path }),
+          "info",
+        );
+        setNewProjectOpen(false);
+        setNewProjectEntry("");
+        setProjectInput(path);
+        lastSyncedProjectIdRef.current = createdId;
+        onProjectChange?.(createdId);
+        return createdId;
+      }
       let resolvedProjectId =
         trimmedProjectInput &&
         currentProjectSelection?.path === trimmedProjectInput
@@ -2420,7 +2570,10 @@ export function NewSessionForm({
     [
       currentProjectSelection,
       newProjectBase,
+      newProjectGitInit,
+      newProjectSubmission,
       onProjectChange,
+      projectCreationGitChoice,
       projects,
       showToast,
       t,
@@ -2706,6 +2859,9 @@ export function NewSessionForm({
             : {}),
           thinking: routerSelection ? routerThinking : thinking,
           showThinking,
+          ...(effectiveServiceTier
+            ? { serviceTier: effectiveServiceTier }
+            : {}),
           provider: selectedProvider ?? undefined,
           executor: effectiveExecutor ?? undefined,
           ...(supportsSessionSandboxing
@@ -2990,6 +3146,7 @@ export function NewSessionForm({
       effectiveEffortLevel,
       effectiveExecutor,
       effectivePermissionMode,
+      effectiveServiceTier,
       effectiveThinkingMode,
       helperSideModel,
       hasSelectedProviderModel,
@@ -3099,6 +3256,9 @@ export function NewSessionForm({
           type: "new-session",
           mode: sessionMode,
           model: selectedModel ?? undefined,
+          ...(effectiveServiceTier
+            ? { serviceTier: effectiveServiceTier }
+            : {}),
           thinking,
           showThinking,
           provider: selectedProvider ?? undefined,
@@ -4024,10 +4184,20 @@ export function NewSessionForm({
               }
               className="send-button new-session-submit-button"
               aria-label={describePrefixedDelivery(
-                launch?.startLabel ?? t("newSessionStartAction"),
+                launch?.startLabel ??
+                  t(
+                    newProjectSubmission
+                      ? "newSessionCreateAndStartAction"
+                      : "newSessionStartAction",
+                  ),
               )}
               title={describePrefixedTooltip(
-                launch?.startLabel ?? t("newSessionStartAction"),
+                launch?.startLabel ??
+                  t(
+                    newProjectSubmission
+                      ? "newSessionCreateAndStartAction"
+                      : "newSessionStartAction",
+                  ),
               )}
             >
               {isStarting ? (
@@ -4093,96 +4263,100 @@ export function NewSessionForm({
       ref={projectChooserRef}
       className={`new-session-project-chooser ${isProjectChooserExpanded ? "expanded" : ""}`}
     >
-      <div className="new-session-project-controls">
-        <button
-          type="button"
-          className="new-session-project-summary"
-          onClick={() => setIsProjectChooserExpanded((prev) => !prev)}
-          aria-expanded={isProjectChooserExpanded}
-          aria-controls="new-session-project-panel"
-        >
-          <span className="new-session-project-summary-body">
-            <span className="new-session-project-summary-title">
-              {projectSummaryTitle}
-            </span>
-            <span
-              className="new-session-project-summary-path"
-              title={projectSummaryMeta}
-            >
-              {isDetachedProject ? (
-                <>
-                  <span className="new-session-project-summary-path-long">
-                    {t("newSessionProjectDetachedHint")}
-                  </span>
-                  <span className="new-session-project-summary-path-short">
-                    {t("newSessionProjectDetachedHintShort")}
-                  </span>
-                </>
-              ) : (
-                displayedProjectSummaryMeta
-              )}
-            </span>
-          </span>
-          <svg
-            className="new-session-project-summary-chevron"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </button>
-
-        <label className="new-session-project-inline-field">
-          <span className="new-session-project-inline-label">
-            {t("newSessionProjectPathLabel")}
-          </span>
-          <input
-            ref={projectInputRef}
-            type="text"
-            value={projectInput}
-            onChange={(e) => {
-              setProjectInput(e.target.value);
-              if (!isProjectChooserExpanded) {
-                setIsProjectChooserExpanded(true);
-              }
-            }}
-            onFocus={() => setIsProjectChooserExpanded(true)}
-            onKeyDown={handleProjectInputKeyDown}
-            placeholder={t("newSessionProjectPathPlaceholder")}
-            disabled={isStarting}
-            className="new-session-project-input"
-            spellCheck={false}
-            list="new-session-project-options"
-          />
-        </label>
-        <datalist id="new-session-project-options">
-          {projectSuggestionOptions}
-        </datalist>
-      </div>
-
-      {templateChoices?.enabled && !launch && (
-        <div className={templateStyles.expansion}>
+      {/* The suggestion list drops below the search, not below New project. */}
+      <div className={styles.projectSearchAnchor}>
+        <div className="new-session-project-controls">
           <button
             type="button"
-            aria-expanded={creatingTemplateProject}
-            className={templateStyles.secondary}
-            disabled={templateProjectBusy}
-            onClick={() => setCreatingTemplateProject((value) => !value)}
+            className="new-session-project-summary"
+            onClick={() => setIsProjectChooserExpanded((prev) => !prev)}
+            aria-expanded={isProjectChooserExpanded}
+            aria-controls="new-session-project-panel"
           >
-            {t("templateNewProject")}
+            <span className="new-session-project-summary-body">
+              <span className="new-session-project-summary-title">
+                {projectSummaryTitle}
+              </span>
+              <span
+                className="new-session-project-summary-path"
+                title={projectSummaryMeta}
+              >
+                {isDetachedProject ? (
+                  <>
+                    <span className="new-session-project-summary-path-long">
+                      {t("newSessionProjectDetachedHint")}
+                    </span>
+                    <span className="new-session-project-summary-path-short">
+                      {t("newSessionProjectDetachedHintShort")}
+                    </span>
+                  </>
+                ) : (
+                  displayedProjectSummaryMeta
+                )}
+              </span>
+            </span>
+            <svg
+              className="new-session-project-summary-chevron"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
           </button>
+
+          <label className="new-session-project-inline-field">
+            <span className="new-session-project-inline-label">
+              {t("newSessionProjectPathLabel")}
+            </span>
+            <input
+              ref={projectInputRef}
+              type="text"
+              // The open New project panel replaces the selection, so the
+              // search starts empty; typing here returns to searching.
+              value={newProjectOpen ? "" : projectInput}
+              onChange={(e) => {
+                setNewProjectOpen(false);
+                setProjectInput(e.target.value);
+                if (!isProjectChooserExpanded) {
+                  setIsProjectChooserExpanded(true);
+                }
+              }}
+              onFocus={() => setIsProjectChooserExpanded(true)}
+              onKeyDown={handleProjectInputKeyDown}
+              placeholder={t("newSessionProjectPathPlaceholder")}
+              disabled={isStarting}
+              className="new-session-project-input"
+              spellCheck={false}
+              list="new-session-project-options"
+            />
+          </label>
+          <datalist id="new-session-project-options">
+            {projectSuggestionOptions}
+          </datalist>
         </div>
-      )}
-      {isProjectChooserExpanded &&
-        projectPanelRows &&
-        !creatingTemplateProject && (
+
+        {!launch && !fixedProject && (
+          <div className={templateStyles.expansion}>
+            <button
+              type="button"
+              aria-expanded={newProjectOpen}
+              aria-controls="new-session-new-project"
+              className={templateStyles.secondary}
+              disabled={templateProjectBusy || isStarting}
+              onClick={toggleNewProject}
+            >
+              {t("templateNewProject")}
+            </button>
+          </div>
+        )}
+        {isProjectChooserExpanded && projectPanelRows && !newProjectOpen && (
           <div
             id="new-session-project-panel"
             className="new-session-project-panel"
@@ -4196,6 +4370,91 @@ export function NewSessionForm({
             </div>
           </div>
         )}
+      </div>
+      {newProjectPanelShown && (
+        <section
+          id="new-session-new-project"
+          className={styles.newProject}
+          aria-label={t("templateNewProject")}
+        >
+          {newProjectOpen ? (
+            <label className={styles.newProjectField}>
+              <span>{t("newProjectEntryLabel")}</span>
+              <input
+                type="text"
+                value={newProjectEntry}
+                onChange={(event) => setNewProjectEntry(event.target.value)}
+                placeholder={t("newProjectEntryPlaceholder")}
+                disabled={isStarting || templateProjectBusy}
+                spellCheck={false}
+                ref={newProjectEntryRef}
+              />
+            </label>
+          ) : null}
+          <p className={styles.newProjectTarget}>
+            {newProjectTarget?.path
+              ? t(
+                  newProjectOpen ? "newProjectCreates" : "newProjectFromSearch",
+                  {
+                    path: shortenPath(newProjectTarget.path),
+                  },
+                )
+              : t("newProjectNeedsName")}
+          </p>
+          <ProjectStartPalette
+            name="new-session-project-start"
+            legend={t("newProjectStartFrom")}
+            disabled={isStarting || templateProjectBusy}
+            choices={[
+              {
+                key: EMPTY_FOLDER_CHOICE,
+                title: t("newProjectEmptyFolder"),
+                description: t("newProjectEmptyFolderHint"),
+              },
+              ...newProjectTemplates.map((template) => ({
+                key: templateChoiceKey(template),
+                title: template.title,
+                description: template.description,
+                icon: template.icon,
+              })),
+            ]}
+            selected={
+              newProjectTemplate
+                ? templateChoiceKey(newProjectTemplate)
+                : EMPTY_FOLDER_CHOICE
+            }
+            onSelect={setNewProjectChoice}
+          />
+          {!newProjectTemplate && (
+            <>
+              <label className={styles.newProjectGit}>
+                <input
+                  type="checkbox"
+                  checked={newProjectInitializesGit}
+                  disabled={!projectCreationGitChoice || isStarting}
+                  onChange={(event) => {
+                    setNewProjectGitInit(event.target.checked);
+                    localStorage.setItem(
+                      UI_KEYS.newProjectGitInit,
+                      String(event.target.checked),
+                    );
+                  }}
+                />
+                {t("newProjectGitInit")}
+              </label>
+              {newProjectTarget?.path && (
+                <p className={styles.newProjectPlan}>
+                  {t(
+                    newProjectInitializesGit
+                      ? "newProjectPlanGit"
+                      : "newProjectPlan",
+                  )}
+                </p>
+              )}
+            </>
+          )}
+        </section>
+      )}
     </div>
   );
   const workstreamChooser =
@@ -4330,37 +4589,113 @@ export function NewSessionForm({
         />
       </NewSessionOptionSection>
     ) : null;
-  const gatewayCatalogStatus =
+  const gatewayCatalogUnavailable =
     selectedProvider === "claude-gateway" &&
-    (!selectedProviderQuery.fresh || availableModels.length === 0) ? (
+    (!selectedProviderQuery.fresh || availableModels.length === 0);
+  const modelCatalog = selectedProviderInfo?.modelCatalog;
+  const modelCatalogAge = formatBriefAge(modelCatalog?.fetchedAt);
+  const routerCatalogAge = formatBriefAge(routerCatalogAt);
+  // Pool launches read their rows from the router, not this provider list.
+  const routerCatalogNotice =
+    !routerSelection || modelOptions.length === 0
+      ? null
+      : routerCatalogRefresh === "refreshing"
+        ? {
+            warning: false,
+            message: t("newSessionModelCatalogRefreshing"),
+            action: t("newSessionModelCatalogRefresh"),
+          }
+        : routerCatalogAge
+          ? {
+              warning: routerCatalogRefresh === "failed",
+              message:
+                routerCatalogRefresh === "failed"
+                  ? t("newSessionModelCatalogRefreshFailed", {
+                      age: routerCatalogAge,
+                    })
+                  : t("newSessionModelCatalogUpdated", {
+                      age: routerCatalogAge,
+                    }),
+              action: t("newSessionModelCatalogRefresh"),
+            }
+          : null;
+  const modelCatalogNotice = gatewayCatalogUnavailable
+    ? {
+        warning: true,
+        message: selectedProviderQuery.refreshing
+          ? t("newSessionGatewayCatalogLoading")
+          : t("newSessionGatewayCatalogUnavailable"),
+        action: t("newSessionGatewayCatalogRetry"),
+      }
+    : routerSelection ||
+        !modelCatalog ||
+        modelCatalog.source === "static" ||
+        modelOptions.length === 0
+      ? null
+      : selectedProviderQuery.refreshing
+        ? {
+            warning: false,
+            message: t("newSessionModelCatalogRefreshing"),
+            action: t("newSessionModelCatalogRefresh"),
+          }
+        : modelCatalog.source === "fallback"
+          ? {
+              warning: true,
+              message: t("newSessionModelCatalogFallback"),
+              action: t("newSessionModelCatalogRefresh"),
+            }
+          : {
+              warning: modelCatalog.error !== undefined,
+              message: modelCatalog.error
+                ? t("newSessionModelCatalogRefreshFailed", {
+                    age: modelCatalogAge ?? "?",
+                  })
+                : t("newSessionModelCatalogUpdated", {
+                    age: modelCatalogAge ?? "0m",
+                  }),
+              action: t("newSessionModelCatalogRefresh"),
+            };
+  const catalogNotice = routerCatalogNotice ?? modelCatalogNotice;
+  const modelCatalogStatus = catalogNotice ? (
+    <div
+      className={
+        catalogNotice.warning ? styles.catalogStatus : styles.catalogStatusMuted
+      }
+      role="status"
+      aria-live="polite"
+      title={routerCatalogNotice ? undefined : modelCatalog?.error}
+    >
+      <span>{catalogNotice.message}</span>
+      <button
+        type="button"
+        className={styles.catalogAction}
+        disabled={
+          routerCatalogNotice
+            ? routerCatalogRefresh === "refreshing"
+            : selectedProviderQuery.refreshing
+        }
+        onClick={() =>
+          void (routerCatalogNotice
+            ? refreshRouterCatalog()
+            : selectedProviderQuery.refresh())
+        }
+      >
+        {catalogNotice.action}
+      </button>
+    </div>
+  ) : null;
+  const gatewayCatalogStatus =
+    gatewayCatalogUnavailable && !modelField ? (
       <div className="new-session-model-field">
         <h3>{sessionDefaultCopy.model.title}</h3>
-        <div
-          className="new-session-provider-catalog-status"
-          role="status"
-          aria-live="polite"
-        >
-          <span>
-            {selectedProviderQuery.refreshing
-              ? t("newSessionGatewayCatalogLoading")
-              : t("newSessionGatewayCatalogUnavailable")}
-          </span>
-          <button
-            type="button"
-            className="new-session-provider-catalog-retry"
-            disabled={selectedProviderQuery.refreshing}
-            onClick={() => void selectedProviderQuery.refresh()}
-          >
-            {t("newSessionGatewayCatalogRetry")}
-          </button>
-        </div>
+        {modelCatalogStatus}
       </div>
     ) : null;
   const modelSection =
     modelField || gatewayCatalogStatus ? (
       <div className="new-session-model-section">
         {modelField}
-        {gatewayCatalogStatus}
+        {gatewayCatalogStatus ?? modelCatalogStatus}
       </div>
     ) : null;
   const showThinkingSection = (
@@ -4385,6 +4720,36 @@ export function NewSessionForm({
       />
     </NewSessionOptionSection>
   );
+  const serviceTierSection =
+    serviceTierOptions.length > 0 ? (
+      <NewSessionOptionSection
+        className="new-session-helper-section"
+        title={t("newSessionServiceTierTitle")}
+        caption={t("newSessionServiceTierDescription")}
+        showCaption={showOptionCaptions}
+      >
+        <FilterDropdown<string>
+          label={t("newSessionServiceTierTitle")}
+          options={[
+            {
+              value: "",
+              label: t("serviceTierStandardLabel"),
+              description: t("serviceTierStandardDescription"),
+            },
+            ...serviceTierOptions.map((tier) => ({
+              value: tier.id,
+              label: tier.name,
+              description: tier.description,
+            })),
+          ]}
+          selected={[effectiveServiceTier ?? ""]}
+          onChange={([value]) => setSelectedServiceTier(value || null)}
+          multiSelect={false}
+          fullWidth
+          triggerClassName={styles.leftAlignedTrigger}
+        />
+      </NewSessionOptionSection>
+    ) : null;
   const effortSection = showThinkingControls ? (
     <NewSessionOptionSection
       className={`new-session-helper-section ${styles.effortSection}`}
@@ -4755,6 +5120,9 @@ export function NewSessionForm({
     effectivePermissionMode !== "default"
       ? `${sessionDefaultCopy.permission.title}: ${modeLabels[effectivePermissionMode]}`
       : null,
+    effectiveServiceTier
+      ? `${t("newSessionServiceTierTitle")}: ${serviceTierLabel(effectiveServiceTier, serviceTierOptions, t)}`
+      : null,
     showThinking !== "default"
       ? `${sessionDefaultCopy.showThinking.title}: ${showThinking === "on" ? t("showThinkingOn") : t("showThinkingOff")}`
       : null,
@@ -4849,7 +5217,7 @@ export function NewSessionForm({
         {templateChoices?.enabled && !launch && !fixedProject && (
           <div
             className={styles.templateProjectSlot}
-            hidden={!creatingTemplateProject}
+            hidden={!creatingTemplateProject && !templateProjectBusy}
           >
             <TemplateProjectForm
               key={clientSummarySourceKey}
@@ -4857,11 +5225,16 @@ export function NewSessionForm({
               emptyMessage={templateError ?? t(emptyMessageKey)}
               projects={projects}
               pathBase={newProjectBase}
-              initialName={
-                projects.some((project) => project.path === projectInput)
-                  ? ""
-                  : projectInput
+              chosen={
+                newProjectTemplate && {
+                  template: newProjectTemplate,
+                  name: newProjectTarget
+                    ? projectNameForEntry(newProjectTarget)
+                    : "",
+                  path: newProjectTarget?.path ?? "",
+                }
               }
+              onRecovered={handleTemplateRecovered}
               intent={message}
               onBusyChange={handleTemplateBusyChange}
               stagedAttachments={
@@ -5014,9 +5387,11 @@ export function NewSessionForm({
                 }
                 onChange={setRouterSelection}
                 disabled={isStarting}
+                showCaption={showOptionCaptions}
               />
             )}
           {permissionSection}
+          {serviceTierSection}
           {showThinkingSection}
           {recapSection}
           {helperSideModelSection}

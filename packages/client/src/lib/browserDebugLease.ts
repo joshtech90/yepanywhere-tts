@@ -10,8 +10,8 @@ import {
   buildFrontendReloadUrl,
   FRONTEND_RELOAD_QUERY_PARAM,
 } from "./frontendReload";
+import { browserTabId } from "./browserTab";
 import { getSourceRuntimeRegistry } from "./sourceRuntime";
-import { generateUUID } from "./uuid";
 
 export const BROWSER_DEBUG_LEASE_TTL_MS = 30 * 60 * 1000;
 export const BROWSER_DEBUG_PROMPT_LEAD =
@@ -50,7 +50,6 @@ export interface BrowserDebugLeaseSnapshot {
 
 type ConsoleMethod = "debug" | "error" | "info" | "log" | "warn";
 
-const TAB_ID_STORAGE_KEY = "ya:browser-debug-tab-id";
 const LEASE_STORAGE_KEY = "ya:browser-debug-active-lease-v1";
 const RELOAD_INTENT_STORAGE_KEY = "ya:browser-debug-reload-intent-v1";
 const LEASE_PAGE_LOCK_PREFIX = "ya:browser-debug-active-lease:";
@@ -202,18 +201,6 @@ function takeDiagnosticString(
   const taken = value.slice(0, limit);
   budget.remainingStringChars -= taken.length;
   return taken.length === value.length ? taken : `${taken}…[truncated]`;
-}
-
-function tabId(): string {
-  try {
-    const existing = sessionStorage.getItem(TAB_ID_STORAGE_KEY);
-    if (existing) return existing;
-    const created = generateUUID();
-    sessionStorage.setItem(TAB_ID_STORAGE_KEY, created);
-    return created;
-  } catch {
-    return generateUUID();
-  }
 }
 
 function serializeForDiagnostics(
@@ -531,7 +518,7 @@ export class BrowserDebugLeaseController {
         lease: BrowserDebugLeaseDescriptor;
       }>("/browser-debug/leases", {
         method: "POST",
-        body: JSON.stringify({ sessionId, tabId: tabId() }),
+        body: JSON.stringify({ sessionId, tabId: browserTabId() }),
       });
       if (this.enableAttempt !== enableAttempt) {
         await sourceFetch(`/browser-debug/leases/${response.lease.leaseId}`, {

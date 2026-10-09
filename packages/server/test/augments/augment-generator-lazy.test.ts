@@ -1,14 +1,9 @@
-import { createHighlighter } from "shiki";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { createAugmentGenerator } from "../../src/augments/augment-generator.js";
+import { highlightWorker } from "../../src/highlighting/highlight-worker-host.js";
 
-vi.mock("shiki", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("shiki")>();
-  return { ...actual, createHighlighter: vi.fn(actual.createHighlighter) };
-});
-
-it("renders prose and pending code without Shiki, then shares finalized-code initialization", async () => {
-  const generator = await createAugmentGenerator({ languages: ["typescript"] });
+it("renders prose and pending code without the highlight worker, then shares it for finalized code", async () => {
+  const generator = await createAugmentGenerator();
   const prose = await generator.processBlock(
     {
       type: "paragraph",
@@ -28,7 +23,7 @@ it("renders prose and pending code without Shiki, then shares finalized-code ini
     1,
   );
   expect(pending.html).toContain("const value = 1;");
-  expect(createHighlighter).not.toHaveBeenCalled();
+  expect(highlightWorker.getStats().workersStarted).toBe(0);
 
   const block = {
     type: "code" as const,
@@ -37,11 +32,12 @@ it("renders prose and pending code without Shiki, then shares finalized-code ini
     startOffset: 0,
     endOffset: 34,
   };
+  const other = await createAugmentGenerator();
   const finalized = await Promise.all([
     generator.processBlock(block, 1),
-    generator.processBlock(block, 2),
+    other.processBlock(block, 2),
   ]);
-  expect(createHighlighter).toHaveBeenCalledTimes(1);
+  expect(highlightWorker.getStats().workersStarted).toBe(1);
   for (const augment of finalized) {
     expect(augment.html).toContain("<span");
     expect(augment.html).toContain('class="language-typescript"');

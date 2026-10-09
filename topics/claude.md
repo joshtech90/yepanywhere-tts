@@ -116,10 +116,11 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   than appearing as a duplicate or losing adaptive-thinking, fast-mode, auto,
   or effort support. A live catalog may instead report plain `opus`; merge it
   over the stable fallback without discarding fallback-only defaults. Canonical
-  Claude 5 Opus and Sonnet ids, including minor-version ids such as
-  `claude-opus-5-5`, are 1M models. The auth/probe-failure fallback must describe
-  the current Opus generation and retain the provider-native capability
-  controls that are known without a handshake.
+  Claude 5 Opus, Sonnet and Haiku ids, including minor-version ids such as
+  `claude-opus-5-5` and `claude-haiku-5-5`, are 1M models; Haiku 4.5 stays
+  200K. The auth/probe-failure fallback must describe the current Opus
+  generation and retain the provider-native capability controls that are known
+  without a handshake. <!-- verified: SDK 0.3.293 paid probes 2026-10-08 -->
 - When the live catalog spells the current Fable model as a concrete extended
   id such as `claude-fable-5-1[1m]`, YA transfers its live capabilities to the
   stable `fable` selection rather than showing a duplicate concrete row.
@@ -141,7 +142,9 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   experience. Previous concrete versions and custom exact ids appear only
   after a server-persisted, individual opt-in in Providers settings; projected
   entries carry additional-catalog metadata so model choosers can group them
-  separately.
+  separately. This holds for the concrete previous versions the live catalog
+  itself lists: they are hidden until opted in, not passed through as primary
+  rows ([older-claude-models](older-claude-models.md)).
 - Removing a previous-model entry from YA's maintained registry must not erase
   an existing saved selection. Preserve its exact provider id and saved label
   as an unlisted/custom entry until the user removes it. Never silently replace

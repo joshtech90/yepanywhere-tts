@@ -67,6 +67,11 @@ management. A duplicate native dashboard or Conversation renderer is not a
 release prerequisite. Hosted-latest retains independent web authentication and
 never receives the privileged bundled native transport.
 
+Android host management exposes the publisher privacy policy at
+`https://graehlarts.com/privacy.html#yepanywhere` before pairing or login,
+using the platform's external URI handler. This link carries no saved
+host credentials and does not change the bundled client origin.
+
 Bundled app-assets JavaScript is trusted application code: it is shipped under
 the APK signature, is isolated in the app WebView, and does not load ordinary
 browser extensions. It may legitimately read and modify YA application data.

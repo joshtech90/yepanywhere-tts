@@ -261,6 +261,33 @@ describe("projectConversationView", () => {
     expect(summary(projected).activityCount).toBe(1);
   });
 
+  it("keeps a call with an MCP App view visible only while hosting is on", () => {
+    const items: RenderItem[] = [
+      tool("read-before-view", 1_000),
+      tool("forecast", 2_000, {
+        toolName: "weather:forecast",
+        mcpApp: {
+          server: "weather",
+          tool: "forecast",
+          resourceUri: "ui://weather/forecast",
+          displayMode: "inline",
+        },
+      }),
+    ];
+
+    expect(
+      projectConversationView(items, {
+        active: false,
+        nowMs: 3_000,
+        mcpAppViews: true,
+      }).map((item) => item.id),
+    ).toEqual(["forecast", "conversation-activity-read-before-view"]);
+    expect(
+      summary(projectConversationView(items, { active: false, nowMs: 3_000 }))
+        .activityCount,
+    ).toBe(2);
+  });
+
   it("restores hidden rows in their original positions when expanded", () => {
     const items: RenderItem[] = [
       tool("read-before", 1_000),

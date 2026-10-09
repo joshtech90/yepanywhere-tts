@@ -224,13 +224,11 @@ describe("remote recovery ownership", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("explains an explicit rejection and does not automatically retry it", async () => {
+  it("sends an explicit rejection to login and does not automatically retry it", async () => {
     mode = "rejected";
     render(<App />);
     await flush();
-    expect(
-      screen.getByText("Server rejected session resume: expired"),
-    ).toBeTruthy();
+    expect(screen.getByText("Login route")).toBeTruthy();
     expect(getHostByRelayUsername("test-host")?.session).toBeUndefined();
     expect(
       JSON.parse(localStorage.getItem(credentialsKey) ?? "{}").session,

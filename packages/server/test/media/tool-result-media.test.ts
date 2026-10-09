@@ -17,6 +17,7 @@ import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthService } from "../../src/auth/AuthService.js";
 import { SESSION_COOKIE_NAME } from "../../src/auth/routes.js";
+import { runIdleSweeps } from "../../src/lib/processIdleSweep.js";
 import { ToolResultMediaStore } from "../../src/media/ToolResultMediaStore.js";
 import { grokSessionMediaRoots } from "../../src/projects/paths.js";
 import { createAuthMiddleware } from "../../src/middleware/auth.js";
@@ -613,6 +614,38 @@ describe("tool-result media storage", () => {
         ),
       ),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("expires transient media from the process idle sweep", async () => {
+    const store = new ToolResultMediaStore({
+      dataDir,
+      storagePolicy: new ProjectStoragePolicy({
+        dataDir,
+        getMode: () => "app-data",
+      }),
+      transientMediaTtlMs: 1000,
+    });
+    await store
+      .createMaterializer({
+        provider: "claude",
+        projectId: encodeProjectId(projectDir),
+        projectPath: projectDir,
+        getSessionId: () => "transient-session",
+      })
+      .materializeMessages(toolImageMessages("transient-call"));
+    const transient = (
+      store as unknown as { transientMedia: Map<string, unknown> }
+    ).transientMedia;
+    expect(transient.size).toBe(1);
+
+    const later = Date.now() + 2000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+    try {
+      runIdleSweeps(later);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(transient.size).toBe(0);
   });
 
   it("preserves only a new result crossing the live materializer boundary", async () => {

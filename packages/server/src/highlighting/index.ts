@@ -2,17 +2,13 @@
  * Shiki-based syntax highlighting service.
  *
  * Uses CSS variables for theming so client can switch light/dark without
- * re-rendering. Pre-loads common languages for fast highlighting.
+ * re-rendering. Tokenizing runs in the recyclable highlight worker; this
+ * module resolves languages and keeps the byte-bounded result cache.
  */
 
 import { createHash } from "node:crypto";
-import {
-  type BundledLanguage,
-  type Highlighter,
-  bundledLanguages,
-  createHighlighter,
-} from "shiki";
-import { createCssVariablesTheme } from "shiki/core";
+import { type BundledLanguage, bundledLanguages } from "shiki";
+import { highlightWorker } from "./highlight-worker-host.js";
 
 /** Maximum lines to highlight (avoid blocking on huge files) */
 const MAX_LINES = 10000;
@@ -27,36 +23,6 @@ const MAX_LINES = 10000;
  * cacheable without any staleness window.
  */
 const HIGHLIGHT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
-
-/** Languages to pre-load on startup */
-const PRELOADED_LANGUAGES: BundledLanguage[] = [
-  "javascript",
-  "typescript",
-  "tsx",
-  "jsx",
-  "python",
-  "bash",
-  "shell",
-  "json",
-  "css",
-  "html",
-  "yaml",
-  "sql",
-  "go",
-  "rust",
-  "java",
-  "c",
-  "cpp",
-  "markdown",
-  "diff",
-];
-
-/** CSS variables theme - outputs `style="color: var(--shiki-...)"` */
-const cssVarsTheme = createCssVariablesTheme({
-  name: "css-variables",
-  variablePrefix: "--shiki-",
-  fontStyle: true,
-});
 
 /** Extension to Shiki language mapping */
 const EXTENSION_TO_LANG: Record<string, BundledLanguage> = {
@@ -140,9 +106,6 @@ const EXTENSION_TO_LANG: Record<string, BundledLanguage> = {
   patch: "diff",
 };
 
-let highlighterPromise: Promise<Highlighter> | null = null;
-let loadedLanguages: Set<string> = new Set();
-
 /** Insertion-ordered, so the oldest key is the first `keys()` entry. */
 const highlightCache = new Map<string, HighlightResult>();
 let highlightCacheBytes = 0;
@@ -185,8 +148,8 @@ function writeHighlightCache(key: string, result: HighlightResult): void {
  * Whole-file tokenizations waiting to run, held oldest-first and taken from
  * the newest end.
  *
- * Each one blocks the loop while it runs, so a fast walk through a changeset
- * must not queue an unbounded stall behind itself. Both ends of the queue
+ * Each one occupies the single highlight worker while it runs, so a fast walk
+ * through a changeset must not queue an unbounded backlog behind itself. Both ends of the queue
  * favour the newest entry, because that is the file being looked at now: it
  * runs first, and when the queue is full it is the *oldest* that gets dropped.
  * Dropping is always safe — the request that asked still has its excerpt, and
@@ -250,22 +213,6 @@ export function warmHighlight(code: string, language: string): void {
 }
 
 /**
- * Get or create the singleton highlighter instance.
- */
-async function getHighlighter(): Promise<Highlighter> {
-  if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({
-      themes: [cssVarsTheme],
-      langs: PRELOADED_LANGUAGES,
-    }).then((h) => {
-      loadedLanguages = new Set(PRELOADED_LANGUAGES);
-      return h;
-    });
-  }
-  return highlighterPromise;
-}
-
-/**
  * Get the Shiki language for a file path based on extension.
  * Returns null if the extension is unknown.
  */
@@ -298,21 +245,9 @@ export async function highlightCode(
   code: string,
   language: string,
 ): Promise<HighlightResult | null> {
-  const highlighter = await getHighlighter();
-
   const lang = resolveLanguage(language);
   if (!lang) {
     return null;
-  }
-
-  // Load language if not already loaded
-  if (!loadedLanguages.has(lang)) {
-    try {
-      await highlighter.loadLanguage(lang);
-      loadedLanguages.add(lang);
-    } catch {
-      return null;
-    }
   }
 
   const cacheKey = highlightCacheKey(code, lang);
@@ -329,10 +264,7 @@ export async function highlightCode(
     : code;
 
   try {
-    const html = highlighter.codeToHtml(codeToHighlight, {
-      lang,
-      theme: "css-variables",
-    });
+    const html = await highlightWorker.highlight(codeToHighlight, lang);
 
     const result: HighlightResult = {
       html,

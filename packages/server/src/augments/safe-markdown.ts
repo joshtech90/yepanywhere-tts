@@ -1,7 +1,9 @@
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, normalize, posix, win32 } from "node:path";
 import { katex as markdownItKatex } from "@mdit/plugin-katex";
+import katex from "katex";
 import {
+  type LocalResourceMediaType,
   linkifyToHtml,
   normalizeTexForKatex,
   paperKatexMacros,
@@ -17,6 +19,13 @@ import MarkdownIt, {
 } from "markdown-it";
 import sanitizeHtml from "sanitize-html";
 import type { ProjectPathIndex } from "../projects/projectPathIndex.js";
+import { renderUnicodeScripts } from "./unicode-math.js";
+import {
+  findUnicodeMath,
+  loadUnicodeMathParams,
+  type UnicodeMathParams,
+  unicodeMathToKatexSource,
+} from "./unicode-math-recognizer.js";
 
 const ALLOWED_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 const ALLOWED_IMAGE_PROTOCOLS = new Set(["http:", "https:"]);
@@ -47,7 +56,28 @@ const EXTENSIONLESS_IMAGE_CANDIDATES = [
 
 const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "avi", "mkv", "ogv"]);
 
-const MEDIA_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS]);
+const AUDIO_EXTENSIONS = new Set([
+  "wav",
+  "mp3",
+  "ogg",
+  "oga",
+  "opus",
+  "m4a",
+  "aac",
+  "flac",
+]);
+
+const MEDIA_EXTENSIONS = new Set([
+  ...IMAGE_EXTENSIONS,
+  ...VIDEO_EXTENSIONS,
+  ...AUDIO_EXTENSIONS,
+]);
+
+function localMediaType(ext: string): LocalResourceMediaType {
+  if (VIDEO_EXTENSIONS.has(ext)) return "video";
+  if (AUDIO_EXTENSIONS.has(ext)) return "audio";
+  return "image";
+}
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "qmd"]);
 
 export interface SafeMarkdownRenderOptions {
@@ -75,11 +105,34 @@ export interface SafeMarkdownRenderOptions {
    */
   siteRelativeReferences?: boolean;
   /**
+   * Render as a whole document whose in-page links work: headings get slug
+   * ids, author `id`/`name` targets survive, and `#fragment` links point at
+   * them, all under `DOCUMENT_ANCHOR_ID_PREFIX`. Off for message fragments,
+   * which share one page and would collide.
+   */
+  documentAnchors?: DocumentAnchorOptions;
+  /**
    * Project context for turning assistant inline-code filename references into
    * project-file viewer links. Public shares supply it too, with `publicShare`
    * set and no absolute-path resolver.
    */
   projectFileLinks?: ProjectFileLinkOptions;
+}
+
+/**
+ * Prefix on every id a rendered document defines, as GitHub uses, so a
+ * document's `root` or `app` cannot collide with or clobber the page's own
+ * elements.
+ */
+export const DOCUMENT_ANCHOR_ID_PREFIX = "user-content-";
+
+export interface DocumentAnchorOptions {
+  /**
+   * Base heading slugs of the same document's earlier text, in order, when
+   * the document is rendered in parts; duplicate headings then keep the ids
+   * a whole-document render gives them.
+   */
+  precedingHeadingSlugs?: readonly string[];
 }
 
 let activeRenderOptions: SafeMarkdownRenderOptions = {};
@@ -131,7 +184,7 @@ interface LocalPathReference {
 }
 
 interface LocalResourceAttributeOptions {
-  mediaType?: "image" | "video";
+  mediaType?: LocalResourceMediaType;
   renderMarkdown?: boolean;
 }
 
@@ -815,8 +868,8 @@ function renderLocalMediaLinkParts(
   const parsed = toLocalPathReference(reference);
   const apiUrl = escapeHtml(localMediaApiUrl(parsed.filePath));
   const escapedPath = escapeHtml(parsed.filePath);
-  const mediaType = VIDEO_EXTENSIONS.has(ext) ? "video" : "image";
-  const typeLabel = VIDEO_EXTENSIONS.has(ext) ? "video" : "image";
+  const mediaType = localMediaType(ext);
+  const typeLabel = mediaType;
   const defaultExpanded = false;
   const toggleVerb = defaultExpanded ? "Collapse" : "Expand";
   const toggleTitle = defaultExpanded
@@ -835,8 +888,7 @@ function renderLocalMediaLinkParts(
 function renderDirectLocalImage(path: string, altText: string, title?: string) {
   const src = escapeHtml(localMediaApiUrl(path));
   const parsed = parseLocalPathReference(path);
-  const ext = getExtension(path);
-  const mediaType = VIDEO_EXTENSIONS.has(ext) ? "video" : "image";
+  const mediaType = localMediaType(getExtension(path));
   const altAttr = altText ? ` alt="${escapeHtml(altText)}"` : ' alt=""';
   const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
   const resourceAttrs = localResourceDataAttributes("local-media", parsed, {
@@ -1051,7 +1103,13 @@ const MARKDOWN_SANITIZE_OPTIONS = {
     ],
     input: ["type", "checked", "disabled"],
     ol: ["start"],
-    span: ["class", "data-media-path", "data-media-type", "data-expanded"],
+    span: [
+      "class",
+      "data-media-path",
+      "data-media-type",
+      "data-expanded",
+      "data-ya-script",
+    ],
     td: ["align", "colspan", "rowspan"],
     th: ["align", "colspan", "rowspan"],
     ...Object.fromEntries(
@@ -1072,10 +1130,142 @@ const MARKDOWN_SANITIZE_OPTIONS = {
   disallowedTagsMode: "escape" as const,
 };
 
+const DOCUMENT_ANCHOR_TAGS = ["a", "h1", "h2", "h3", "h4", "h5", "h6"];
+
+/** An id or fragment usable as written: non-empty, no whitespace or controls. */
+function isDocumentAnchorName(name: string): boolean {
+  return name !== "" && !/[\p{C}\s]/u.test(name);
+}
+
+function documentAnchorId(name: string): string {
+  return name.startsWith(DOCUMENT_ANCHOR_ID_PREFIX)
+    ? name
+    : `${DOCUMENT_ANCHOR_ID_PREFIX}${name}`;
+}
+
+/**
+ * Keep a target's `id`, or a legacy `<a name>`, as one prefixed `id`, and aim
+ * a `#fragment` href at it. Every id and fragment in a document render passes
+ * here, generated heading slugs and Markdown links included, so the prefix
+ * has one owner.
+ */
+function prefixDocumentAnchorId(
+  tagName: string,
+  attribs: sanitizeHtml.Attributes,
+): sanitizeHtml.Tag {
+  const { id, name, ...rest } = attribs;
+  const anchor = id ?? (tagName === "a" ? name : undefined);
+  if (anchor !== undefined && isDocumentAnchorName(anchor)) {
+    rest.id = documentAnchorId(anchor);
+  }
+  const fragment = rest.href?.startsWith("#") ? rest.href.slice(1) : null;
+  if (fragment !== null && isDocumentAnchorName(fragment)) {
+    rest.href = `#${documentAnchorId(fragment)}`;
+  }
+  return { tagName, attribs: rest };
+}
+
+const markdownAllowedAttributes: Record<string, string[]> =
+  MARKDOWN_SANITIZE_OPTIONS.allowedAttributes;
+
+const DOCUMENT_SANITIZE_OPTIONS = {
+  ...MARKDOWN_SANITIZE_OPTIONS,
+  allowedAttributes: {
+    ...markdownAllowedAttributes,
+    ...Object.fromEntries(
+      DOCUMENT_ANCHOR_TAGS.map((tag) => [
+        tag,
+        [...(markdownAllowedAttributes[tag] ?? []), "id"],
+      ]),
+    ),
+  },
+  transformTags: Object.fromEntries(
+    DOCUMENT_ANCHOR_TAGS.map((tag) => [tag, prefixDocumentAnchorId]),
+  ),
+};
+
 const LINK_SUFFIXES: unique symbol = Symbol("safeMarkdownLinkSuffixes");
+const HEADING_SLUGGER: unique symbol = Symbol("safeMarkdownHeadingSlugger");
 
 interface SafeMarkdownEnvironment extends Env {
   [LINK_SUFFIXES]?: string[];
+  [HEADING_SLUGGER]?: HeadingSlugger;
+}
+
+/** GitHub's heading slug: lowercase, punctuation dropped, spaces to `-`. */
+function headingSlugBase(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, "")
+    .replace(/ /g, "-");
+}
+
+/** Repeated slugs become `x-1`, `x-2`, skipping any already taken. */
+class HeadingSlugger {
+  private readonly occurrences = new Map<string, number>();
+
+  slug(base: string): string {
+    let slug = base;
+    while (this.occurrences.has(slug)) {
+      const count = (this.occurrences.get(base) ?? 0) + 1;
+      this.occurrences.set(base, count);
+      slug = `${base}-${count}`;
+    }
+    this.occurrences.set(slug, 0);
+    return slug;
+  }
+}
+
+/** Heading text as a reader sees it, including inline code. */
+function inlinePlainText(tokens: readonly Token[]): string {
+  return tokens
+    .map((token) => {
+      if (token.type === "text" || token.type === "code_inline") {
+        return token.content;
+      }
+      if (token.type === "softbreak" || token.type === "hardbreak") {
+        return " ";
+      }
+      return token.children ? inlinePlainText(token.children) : "";
+    })
+    .join("");
+}
+
+function headingSlugBaseAt(tokens: readonly Token[], index: number): string {
+  const inline = tokens[index + 1];
+  return inline?.type === "inline"
+    ? headingSlugBase(inlinePlainText(inline.children ?? []))
+    : "";
+}
+
+function renderHeadingOpen(
+  tokens: Token[],
+  index: number,
+  options: Parameters<RendererRule>[2],
+  environment: Env | undefined,
+  renderer: Renderer,
+): string {
+  const token = tokens[index];
+  if (!token) return "";
+  const slugger = (environment as SafeMarkdownEnvironment | undefined)?.[
+    HEADING_SLUGGER
+  ];
+  const base = slugger ? headingSlugBaseAt(tokens, index) : "";
+  // Unprefixed: the document sanitizer prefixes every id it keeps.
+  if (slugger && base) token.attrSet("id", slugger.slug(base));
+  return renderer.renderToken(tokens, index, options);
+}
+
+/**
+ * A `#fragment` link kept as written when rendering a whole document; the
+ * document sanitizer then aims it at the prefixed id.
+ */
+function documentFragmentHref(href: string): string | null {
+  if (!activeRenderOptions.documentAnchors) return null;
+  const trimmed = href.trim();
+  return trimmed.startsWith("#") && isDocumentAnchorName(trimmed.slice(1))
+    ? trimmed
+    : null;
 }
 
 // KaTeX output is generated inside the markdown renderer and stashed in
@@ -1096,6 +1286,66 @@ function storeKatexPlaceholder(html: string, _displayMode: boolean): string {
   return `<span class="yepkatex-placeholder yepkatex-id-${id}"></span>`;
 }
 
+// Trained recognizer parameters (binary "UMB1", about 5 KB), copied into
+// dist by scripts/copy-server-assets.mjs. Read on first use, like the
+// other server assets, so importing this module does no file I/O.
+let unicodeMathParams: UnicodeMathParams | undefined;
+function unicodeMathParamsOnce(): UnicodeMathParams {
+  unicodeMathParams ??= loadUnicodeMathParams(
+    readFileSync(new URL("./unicode-math-params.bin", import.meta.url)),
+  );
+  return unicodeMathParams;
+}
+
+/**
+ * KaTeX HTML for a recognised region, or null when KaTeX rejects it or has
+ * no metrics for one of its glyphs (it reports those only through
+ * console.warn, so the warning is captured for this synchronous call).
+ */
+function typesetUnicodeMath(region: string): string | null {
+  const warn = console.warn;
+  let missingGlyph = false;
+  console.warn = () => {
+    missingGlyph = true;
+  };
+  try {
+    const html = katex.renderToString(unicodeMathToKatexSource(region), {
+      output: "html",
+      throwOnError: true,
+      strict: false,
+      trust: false,
+      maxExpand: 1000,
+    });
+    return missingGlyph ? null : html;
+  } catch {
+    return null;
+  } finally {
+    console.warn = warn;
+  }
+}
+
+/**
+ * One prose text run as HTML. Undelimited math the recognizer finds is
+ * emitted twice: the authored text (with the Unicode script redraw) shown
+ * by default, and a KaTeX rendering hidden until the client's Unicode math
+ * setting reveals it. A region KaTeX rejects stays plain text.
+ */
+function renderProseText(text: string): string {
+  const regions = findUnicodeMath(unicodeMathParamsOnce(), text);
+  if (!regions.length) return renderUnicodeScripts(text);
+  let html = "";
+  let last = 0;
+  for (const [start, end] of regions) {
+    const typeset = typesetUnicodeMath(text.slice(start, end));
+    if (typeset === null) continue;
+    const region = text.slice(start, end);
+    html += renderUnicodeScripts(text.slice(last, start));
+    html += `<span class="ya-umath"><span class="ya-umath__text">${renderUnicodeScripts(region)}</span><span class="ya-umath__tex">${storeKatexPlaceholder(typeset, false)}</span></span>`;
+    last = end;
+  }
+  return html + renderUnicodeScripts(text.slice(last));
+}
+
 function renderLinkOpen(
   tokens: Token[],
   index: number,
@@ -1107,7 +1357,7 @@ function renderLinkOpen(
   const href = String(token.attrGet("href") ?? "");
   const titleValue = token.attrGet("title");
   const title = titleValue === null ? undefined : String(titleValue);
-  const siteHref = siteRelativeReference(href);
+  const siteHref = documentFragmentHref(href) ?? siteRelativeReference(href);
   const localPath =
     siteHref === null
       ? resolveLocalMarkdownHref(href, { parentSegments: true })
@@ -1480,6 +1730,8 @@ markdownRenderer.core.ruler.after(
   "ya_task_list_items",
   renderTaskListItems,
 );
+markdownRenderer.renderer.rules.text = (tokens, index) =>
+  renderProseText(tokens[index]?.content ?? "");
 markdownRenderer.renderer.rules.link_open = renderLinkOpen;
 markdownRenderer.renderer.rules.link_close = renderLinkClose;
 markdownRenderer.renderer.rules.code_inline = renderCodeInline;
@@ -1487,6 +1739,7 @@ markdownRenderer.renderer.rules.fence = renderCodeBlock;
 markdownRenderer.renderer.rules.code_block = renderCodeBlock;
 markdownRenderer.renderer.rules.image = renderImage;
 markdownRenderer.renderer.rules.quarto_include = renderQuartoInclude;
+markdownRenderer.renderer.rules.heading_open = renderHeadingOpen;
 markdownRenderer.renderer.rules.th_open = renderTableCellOpen;
 markdownRenderer.renderer.rules.td_open = renderTableCellOpen;
 
@@ -1551,6 +1804,21 @@ export function parseMarkdownSourceSpans(
 }
 
 /**
+ * Base heading slugs in document order, for rendering the text that follows
+ * with `documentAnchors.precedingHeadingSlugs`.
+ */
+export function collectMarkdownHeadingSlugs(markdown: string): string[] {
+  const tokens = markdownRenderer.parse(markdown, {});
+  const slugs: string[] = [];
+  tokens.forEach((token, index) => {
+    if (token.type !== "heading_open") return;
+    const base = headingSlugBaseAt(tokens, index);
+    if (base) slugs.push(base);
+  });
+  return slugs;
+}
+
+/**
  * Render Markdown, including embedded HTML, through the shared sanitizer.
  */
 export function renderSafeMarkdown(
@@ -1562,8 +1830,19 @@ export function renderSafeMarkdown(
   katexBuffer = [];
   try {
     const environment: SafeMarkdownEnvironment = {};
+    const documentAnchors = options.documentAnchors;
+    if (documentAnchors) {
+      const slugger = new HeadingSlugger();
+      for (const base of documentAnchors.precedingHeadingSlugs ?? []) {
+        slugger.slug(base);
+      }
+      environment[HEADING_SLUGGER] = slugger;
+    }
     const html = markdownRenderer.render(markdown, environment);
-    const sanitized = sanitizeHtml(html, MARKDOWN_SANITIZE_OPTIONS);
+    const sanitized = sanitizeHtml(
+      html,
+      documentAnchors ? DOCUMENT_SANITIZE_OPTIONS : MARKDOWN_SANITIZE_OPTIONS,
+    );
     const substituted = sanitized.replace(
       /<span class="yepkatex-placeholder yepkatex-id-(\d+)"><\/span>/g,
       (_match, idxStr) => katexBuffer[Number(idxStr)] ?? "",

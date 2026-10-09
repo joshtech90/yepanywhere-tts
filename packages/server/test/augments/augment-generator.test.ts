@@ -18,10 +18,7 @@ describe("AugmentGenerator", () => {
   let generator: AugmentGenerator;
 
   beforeAll(async () => {
-    generator = await createAugmentGenerator({
-      languages: ["javascript", "typescript", "python"],
-      theme: "github-dark",
-    });
+    generator = await createAugmentGenerator();
   });
 
   describe("code block highlighting", () => {
@@ -571,32 +568,9 @@ describe("AugmentGenerator", () => {
     });
   });
 
-  describe("configuration", () => {
-    it("uses default theme when not specified", async () => {
-      const gen = await createAugmentGenerator({
-        languages: ["javascript"],
-        theme: "",
-      });
-
-      const block: CompletedBlock = {
-        type: "code",
-        content: "```javascript\nconst x = 1;\n```",
-        lang: "javascript",
-        startOffset: 0,
-        endOffset: 30,
-      };
-
-      const augment = await gen.processBlock(block, 0);
-
-      // Should still render with some theme
-      expect(augment.html).toContain("<pre");
-    });
-
-    it("loads languages dynamically if not pre-loaded", async () => {
-      const gen = await createAugmentGenerator({
-        languages: [], // No pre-loaded languages
-        theme: "github-dark",
-      });
+  describe("languages", () => {
+    it("loads languages on demand", async () => {
+      const gen = await createAugmentGenerator();
 
       const block: CompletedBlock = {
         type: "code",

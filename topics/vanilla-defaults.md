@@ -78,6 +78,15 @@ Maintainer has authorized the exact exception.
 
 ## Known Exceptions
 
+The New Session **model-list provenance line**
+([session-defaults](session-defaults.md#provider-catalog-readiness)) shows by
+default under the model picker, authorized by graehl on 2026-10-06 after
+choosing the muted "updated Xm ago · Refresh" form. A built-in fallback list
+can omit or misname current models, so the user must be able to tell it from a
+live list without opening settings. The live state is one muted line; only a
+fallback or failed refresh uses warning styling. It sends nothing to the
+provider until Refresh is clicked.
+
 The **context breakdown** ([context-breakdown](context-breakdown.md)) shows by
 default in the existing context-usage popover, authorized by graehl on
 2026-10-01 after accepting its mockup. It mirrors Claude Code's `/context`,

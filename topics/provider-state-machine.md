@@ -71,7 +71,7 @@ This text lives in `slashModelIndicatorTitle` and is passed to both:
 | State | Safe actions | Disabled/blocked actions |
 |---|---|---|
 | `idle` | Send, queue, /model, queue mode, `/compact` if exposed | stop (no active turn), tool approval controls |
-| `in-turn` (`status.owner="self"`) | Stop (interrupt/abort), queue/steer depending provider and queue mode, select effort for the next turn when supported, `/compact` if available | /model editing text; model/thinking/service-tier changes that require a restart |
+| `in-turn` (`status.owner="self"`) | Stop (interrupt/abort), queue/steer depending provider and queue mode, select effort or service tier for the next turn when supported, `/compact` if available | /model editing text; model/thinking/service-tier changes that require a restart |
 | `waiting-input` (`status.owner="self"`) | Answer prompt with approval path (`ToolApprovalPanel` or `QuestionAnswerPanel`); select effort for the next turn when supported | regular composer send action; stop is currently off |
 | `compacting` (overlay) | same as underlying `processState` | model/config substitution text is busy copy only |
 | `needs-attention` | show warning copy and retain manual controls as supported | no automatic idle assumptions |

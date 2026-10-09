@@ -9,6 +9,9 @@ import {
 describe("Claude additional model catalog", () => {
   it("offers the maintained registry without enabling it", () => {
     expect(getClaudeAdditionalModelOptions()).toEqual([
+      expect.objectContaining({ id: "claude-fable-5", name: "Fable 5" }),
+      expect.objectContaining({ id: "claude-opus-5", name: "Opus 5" }),
+      expect.objectContaining({ id: "claude-sonnet-5", name: "Sonnet 5" }),
       expect.objectContaining({
         id: "claude-opus-4-8",
         name: "Opus 4.8",
@@ -97,6 +100,51 @@ describe("Claude additional model catalog", () => {
         },
       ]),
     ).toEqual(primary);
+  });
+
+  it("hides a live previous-version row until it is selected", () => {
+    const catalog = [
+      { id: "opus", name: "Opus" },
+      {
+        id: "claude-opus-4-8",
+        name: "Opus 4.8",
+        description: "Live description",
+        contextWindow: 200_000,
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "high"],
+        catalogGroup: "additional" as const,
+      },
+      {
+        id: "claude-opus-4-7",
+        name: "Opus 4.7",
+        catalogGroup: "additional" as const,
+      },
+    ];
+
+    expect(projectClaudeAdditionalModels(catalog, [])).toEqual([
+      { id: "opus", name: "Opus" },
+    ]);
+    // A selected live row keeps its capabilities and takes the registry's
+    // label and window; an unregistered one opted in by exact id is the live
+    // row as reported.
+    expect(
+      projectClaudeAdditionalModels(catalog, [
+        { id: "claude-opus-4-7", label: "Opus 4.7", origin: "custom" },
+        { id: "claude-opus-4-8", label: "Opus 4.8", origin: "registry" },
+      ]),
+    ).toEqual([
+      { id: "opus", name: "Opus" },
+      { id: "claude-opus-4-7", name: "Opus 4.7", catalogGroup: "additional" },
+      {
+        id: "claude-opus-4-8",
+        name: "Opus 4.8",
+        description: "Previous Opus generation · full 1M context",
+        contextWindow: 1_000_000,
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "high"],
+        catalogGroup: "additional",
+      },
+    ]);
   });
 
   it("changes the route cache key when settings change", () => {

@@ -34,6 +34,8 @@ it last printed. A manual switch should become session-visible state the agent
 can read, distinguished from a session-initiated one. Placement and cost
 belong to [agent context injection](../../topics/agent-context-injection.md);
 an unconditional per-switch injected turn is not assumed to be the answer.
+[Agent-visible session view](agent-visible-session-view.md) sketches the
+read and its transports.
 
 See [session right pane](../../topics/session-right-pane.md#vhost-tool-urls)
 for discovery, rewriting, and listener-check rules any chooser must reuse.

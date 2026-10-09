@@ -332,6 +332,16 @@
   gap: 0.45rem;
 }
 
+.primaryAction {
+  min-height: 2.7rem;
+  padding: 0 1rem;
+  border: 1px solid color-mix(in srgb, var(--cockpit-accent) 78%, transparent);
+  color: var(--cockpit-on-accent);
+  background: var(--cockpit-accent);
+  box-shadow: var(--cockpit-elevation-low);
+  font-size: var(--cockpit-text-sm);
+}
+
 .sidebarTop .primaryAction {
   min-width: 0;
   min-height: 2.35rem;
@@ -443,16 +453,6 @@
   animation: status-pulse 1.4s ease-in-out infinite;
 }
 
-.primaryAction {
-  min-height: 2.7rem;
-  padding: 0 1rem;
-  border: 1px solid color-mix(in srgb, var(--cockpit-accent) 78%, transparent);
-  color: var(--cockpit-on-accent);
-  background: var(--cockpit-accent);
-  box-shadow: var(--cockpit-elevation-low);
-  font-size: var(--cockpit-text-sm);
-}
-
 /* Buttons answer a pointer with colour, not movement. */
 .primaryAction:hover {
   background: color-mix(
@@ -460,6 +460,15 @@
     var(--cockpit-accent) 88%,
     var(--cockpit-text)
   );
+}
+
+.secondaryAction {
+  min-height: 2.7rem;
+  padding: 0 1rem;
+  border: 1px solid var(--cockpit-border-strong);
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font-size: var(--cockpit-text-sm);
 }
 
 .secondaryAction:hover {
@@ -508,7 +517,7 @@
   position: absolute;
   top: calc(100% + 0.65rem);
   right: 0;
-  width: min(18rem, calc(100vw - 2rem));
+  width: min(18rem, calc(100dvw - 2rem));
   padding: 0.9rem;
   border: 1px solid var(--cockpit-border);
   border-radius: var(--cockpit-radius-lg);
@@ -610,15 +619,6 @@
   color: var(--cockpit-muted);
   font-size: var(--cockpit-text-md);
   line-height: 1.65;
-}
-
-.secondaryAction {
-  min-height: 2.7rem;
-  padding: 0 1rem;
-  border: 1px solid var(--cockpit-border-strong);
-  color: var(--cockpit-text);
-  background: var(--cockpit-surface);
-  font-size: var(--cockpit-text-sm);
 }
 
 .navigationItem:focus-visible,
@@ -741,7 +741,7 @@
   }
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .root {
     position: fixed;
     top: var(--cockpit-viewport-offset-top);
@@ -757,10 +757,7 @@
 
   .sidebar {
     position: absolute;
-    top: auto;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: auto 0 0;
     z-index: 5;
     display: block;
     width: auto;

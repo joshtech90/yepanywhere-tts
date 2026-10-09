@@ -51,7 +51,7 @@
   align-items: center;
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   /* One slim line on a phone: the headline and both actions; the details
      wait behind "Update ansehen". */
   .root {

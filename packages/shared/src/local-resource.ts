@@ -6,7 +6,7 @@ export type LocalResourceKind =
   | "project-file"
   | "project-raw-file";
 
-export type LocalResourceMediaType = "image" | "video";
+export type LocalResourceMediaType = "image" | "video" | "audio";
 
 export interface LocalResourceRef {
   kind: LocalResourceKind;
@@ -43,6 +43,16 @@ const IMAGE_EXTENSIONS = new Set([
   "svg",
 ]);
 const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "avi", "mkv", "ogv"]);
+const AUDIO_EXTENSIONS = new Set([
+  "wav",
+  "mp3",
+  "ogg",
+  "oga",
+  "opus",
+  "m4a",
+  "aac",
+  "flac",
+]);
 
 function parsePositiveInteger(
   value: string | null | undefined,
@@ -120,6 +130,9 @@ function inferLocalMediaType(path: string): LocalResourceMediaType | undefined {
   if (VIDEO_EXTENSIONS.has(extension)) {
     return "video";
   }
+  if (AUDIO_EXTENSIONS.has(extension)) {
+    return "audio";
+  }
   return undefined;
 }
 
@@ -143,6 +156,7 @@ function normalizeMediaType(
   switch (value) {
     case "image":
     case "video":
+    case "audio":
       return value;
     default:
       return undefined;

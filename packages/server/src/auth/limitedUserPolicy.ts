@@ -344,6 +344,12 @@ export function decideLimitedRoute(
   )
     return { kind: "allow" };
   if (hasPrefix(path, DENIED_PREFIXES)) return { kind: "deny" };
+  // Provider sign-in signs the host's CLI into an account. Even its status
+  // read carries a live device code that would sign the host into whichever
+  // account enters it.
+  if (/^\/api\/providers\/[^/]+\/login(?:\/|$)/.test(path)) {
+    return { kind: "deny" };
+  }
 
   if (SELF_WRITE_PATHS.includes(path)) return { kind: "allow" };
   // The staging service isolates drafts by the authenticated acting account.

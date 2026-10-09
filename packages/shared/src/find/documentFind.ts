@@ -167,50 +167,51 @@ function locate(index: TextIndex, at: number, end: boolean): [Text, number] {
   return [node, offset];
 }
 
-function scrollParent(element: Element, doc: Document): Element {
-  const view = doc.defaultView;
-  for (
-    let current = element.parentElement;
-    current && view;
-    current = current.parentElement
-  ) {
-    const style = view.getComputedStyle(current);
-    if (
-      /(auto|scroll)/.test(style.overflowY + style.overflowX) &&
-      (current.scrollHeight > current.clientHeight ||
-        current.scrollWidth > current.clientWidth)
-    )
-      return current;
-  }
-  return doc.scrollingElement ?? doc.documentElement;
-}
-
-/** Scroll the match into view only when it is not already fully visible. */
+/**
+ * Scroll the match into view only when it is not already fully visible.
+ *
+ * Each axis is handled by every scrolling ancestor, innermost first, because
+ * the nearest one often scrolls only one way: a Markdown preview scrolls a
+ * wide table sideways inside a body that owns the vertical scroll.
+ */
 function reveal(range: Range, doc: Document): void {
   const anchor =
     range.startContainer.parentElement ?? (range.startContainer as Element);
-  const rect = range.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) {
+  const first = range.getBoundingClientRect();
+  if (first.width === 0 && first.height === 0) {
     anchor.scrollIntoView?.({ block: "center", inline: "nearest" });
     return;
   }
-  const container = scrollParent(anchor, doc);
-  const isPage =
-    container === doc.scrollingElement || container === doc.documentElement;
-  const view = isPage
-    ? {
-        top: 0,
-        left: 0,
-        bottom: doc.defaultView?.innerHeight ?? 0,
-        right: doc.defaultView?.innerWidth ?? 0,
-      }
-    : container.getBoundingClientRect();
-  if (rect.top < view.top || rect.bottom > view.bottom)
-    container.scrollTop +=
-      (rect.top + rect.bottom) / 2 - (view.top + view.bottom) / 2;
-  if (rect.left < view.left || rect.right > view.right)
-    container.scrollLeft +=
-      (rect.left + rect.right) / 2 - (view.left + view.right) / 2;
+  const view = doc.defaultView;
+  if (!view) return;
+  const page = doc.scrollingElement ?? doc.documentElement;
+  for (
+    let container = anchor.parentElement;
+    container;
+    container = container.parentElement
+  ) {
+    const isPage = container === page;
+    const style = view.getComputedStyle(container);
+    const scrollsY =
+      (isPage || /(auto|scroll)/.test(style.overflowY)) &&
+      container.scrollHeight > container.clientHeight;
+    const scrollsX =
+      (isPage || /(auto|scroll)/.test(style.overflowX)) &&
+      container.scrollWidth > container.clientWidth;
+    if (scrollsY || scrollsX) {
+      const rect = range.getBoundingClientRect();
+      const box = isPage
+        ? { top: 0, left: 0, bottom: view.innerHeight, right: view.innerWidth }
+        : container.getBoundingClientRect();
+      if (scrollsY && (rect.top < box.top || rect.bottom > box.bottom))
+        container.scrollTop +=
+          (rect.top + rect.bottom) / 2 - (box.top + box.bottom) / 2;
+      if (scrollsX && (rect.left < box.left || rect.right > box.right))
+        container.scrollLeft +=
+          (rect.left + rect.right) / 2 - (box.left + box.right) / 2;
+    }
+    if (isPage) return;
+  }
 }
 
 export function createDocumentFinder(

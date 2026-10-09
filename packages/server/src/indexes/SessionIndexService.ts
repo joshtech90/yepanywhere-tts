@@ -19,6 +19,7 @@ import {
   type ProviderName,
   type UrlProjectId,
 } from "@yep-anywhere/shared";
+import { createLruMap, refreshLruMap } from "../lib/lruCollections.js";
 import { getLogger } from "../logging/logger.js";
 import { getProjectIdentityKey } from "../projects/paths.js";
 import {
@@ -272,7 +273,8 @@ export interface SessionIndexServiceOptions {
 export class SessionIndexService implements ISessionIndexService {
   private dataDir: string;
   private projectsDir: string;
-  private indexCache: Map<string, SessionIndexState> = new Map();
+  /** Least recently used first; bounded by `maxCacheSize` scopes. */
+  private indexCache = createLruMap<string, SessionIndexState>();
   private indexLoadPromises: Map<string, Promise<SessionIndexState>> =
     new Map();
   private savePromises: Map<string, Promise<void>> = new Map();
@@ -286,7 +288,12 @@ export class SessionIndexService implements ISessionIndexService {
   private lastFullValidationAt: Map<string, number> = new Map();
   private dirtyDirs: Set<string> = new Set();
   private dirtySessionsByDir: Map<string, Set<string>> = new Map();
+  /**
+   * Per-scope dirty revisions, drawn from one process-wide counter so a
+   * revision never repeats after a scope's entry is deleted on eviction.
+   */
   private dirtyRevisions: Map<string, number> = new Map();
+  private lastDirtyRevision = 0;
   /** Scopes with a persisted index file (loaded or written this run). */
   private persistedIndexScopes: Set<string> = new Set();
   /** In-flight background full validations, keyed by validation key. */
@@ -361,15 +368,34 @@ export class SessionIndexService implements ISessionIndexService {
     return reader?.getIndexScopeKey?.(sessionDir) ?? sessionDir;
   }
 
+  /** Return a cached index and mark it most recently used. */
+  private getCachedIndex(scopeKey: string): SessionIndexState | undefined {
+    const cached = this.indexCache.get(scopeKey);
+    if (cached) refreshLruMap(this.indexCache, scopeKey, cached);
+    return cached;
+  }
+
   /**
-   * Evict oldest entries if cache exceeds max size.
-   * Simple FIFO eviction since Map maintains insertion order.
+   * Evict least recently used entries if cache exceeds max size, with the
+   * scope's per-scope bookkeeping. Dirty state is kept: it is semantic and
+   * is cleared by the next validation.
    */
   private evictIfNeeded(): void {
     while (this.indexCache.size > this.maxCacheSize) {
       const firstKey = this.indexCache.keys().next().value;
       if (firstKey) {
         this.indexCache.delete(firstKey);
+        this.persistedIndexScopes.delete(firstKey);
+        for (const key of this.lastFullValidationAt.keys()) {
+          if (this.getScopeKeyFromKnownKey(key) === firstKey)
+            this.lastFullValidationAt.delete(key);
+        }
+        if (
+          !this.dirtyDirs.has(firstKey) &&
+          !this.dirtySessionsByDir.has(firstKey)
+        ) {
+          this.dirtyRevisions.delete(firstKey);
+        }
         getLogger().debug(
           `[SessionIndexService] Evicted cache entry for ${firstKey} (cache size: ${this.indexCache.size})`,
         );
@@ -423,7 +449,7 @@ export class SessionIndexService implements ISessionIndexService {
     reader?: ISessionReader,
   ): Promise<SessionIndexState> {
     const scopeKey = this.getScopeKey(sessionDir, reader);
-    const cached = this.indexCache.get(scopeKey);
+    const cached = this.getCachedIndex(scopeKey);
     if (cached) return cached;
 
     const existing = this.indexLoadPromises.get(scopeKey);
@@ -708,7 +734,7 @@ export class SessionIndexService implements ISessionIndexService {
   }
 
   private advanceDirtyRevision(scopeKey: string): void {
-    this.dirtyRevisions.set(scopeKey, this.getDirtyRevision(scopeKey) + 1);
+    this.dirtyRevisions.set(scopeKey, ++this.lastDirtyRevision);
   }
 
   private clearSessionDirty(

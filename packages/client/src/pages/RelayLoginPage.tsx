@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
 import { useRemoteConnection } from "../contexts/RemoteConnectionContext";
+import { useSignInRequiredNotice } from "../hooks/useSignInRequiredNotice";
 import { useI18n } from "../i18n";
 import {
   getDefaultRelayUrl,
@@ -82,7 +83,8 @@ export function RelayLoginPage() {
 
   // Connection state
   const [status, setStatus] = useState<ConnectionStatus>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const signInNotice = useSignInRequiredNotice();
+  const [error, setError] = useState<string | null>(signInNotice);
 
   // Host of the relay a submit would use right now, so the choice is visible
   // without expanding the advanced options.

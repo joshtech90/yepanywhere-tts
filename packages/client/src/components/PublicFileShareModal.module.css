@@ -1,5 +1,5 @@
 :global(.modal):has(.modal) {
-  width: min(560px, calc(100vw - 32px));
+  width: min(560px, calc(100dvw - 32px));
 }
 
 .modal {
@@ -130,9 +130,9 @@
   font-size: 0.83rem;
 }
 
-@media (max-width: 599px) {
+@media (width < 600px) {
   :global(.modal):has(.modal) {
-    width: calc(100vw - 20px);
+    width: calc(100dvw - 20px);
   }
 
   .modal {

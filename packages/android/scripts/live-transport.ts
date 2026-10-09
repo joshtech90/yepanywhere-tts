@@ -18,7 +18,11 @@ if (publicRelay && push)
   );
 let serial: string | undefined;
 const children = new Set<ReturnType<typeof spawn>>();
-async function run(command: string, args: string[], capture = false) {
+async function run(
+  command: string,
+  args: string[],
+  capture: boolean | "tee" = false,
+) {
   return await new Promise<string>((done, fail) => {
     const child = spawn(command, args, {
       cwd: android,
@@ -29,9 +33,11 @@ async function run(command: string, args: string[], capture = false) {
     let text = "";
     child.stdout?.on("data", (data) => {
       text += data;
+      if (capture === "tee") process.stdout.write(data);
     });
     child.stderr?.on("data", (data) => {
       text += data;
+      if (capture === "tee") process.stderr.write(data);
     });
     child.once("error", fail);
     child.once("close", (code) => {
@@ -42,7 +48,7 @@ async function run(command: string, args: string[], capture = false) {
     });
   });
 }
-async function device(args: string[], capture = false) {
+async function device(args: string[], capture: boolean | "tee" = false) {
   return run(adb, ["-s", checkSerial(), ...args], capture);
 }
 function checkSerial() {
@@ -99,7 +105,18 @@ try {
       "com.yepanywhere.mobile",
       permission,
     ]);
-  for (const mux of publicRelay ? [true] : push ? [false] : [false, true]) {
+  // Iteration aids: YA_NATIVE_LIVE_MODES=direct|mux limits the route modes and
+  // YA_NATIVE_LIVE_CLASSES (comma-separated) replaces the class list.
+  const onlyModes = process.env.YA_NATIVE_LIVE_MODES?.split(",");
+  const onlyClasses = process.env.YA_NATIVE_LIVE_CLASSES?.split(",");
+  for (const mux of (publicRelay
+    ? [true]
+    : push
+      ? [false]
+      : [false, true]
+  ).filter(
+    (mode) => !onlyModes || onlyModes.includes(mode ? "mux" : "direct"),
+  )) {
     const relay =
       mux && !publicRelay
         ? await createRelayServer({
@@ -140,22 +157,27 @@ try {
         await device(["reverse", `tcp:${port}`, `tcp:${port}`]);
         reversed.push(port);
       }
-      const classes = publicRelay
-        ? ["com.yepanywhere.mobile.web.YaNativeWebAppInstrumentedTest"]
-        : push
-          ? [
-              "com.yepanywhere.mobile.notifications.NativePushBindingsInstrumentedTest",
-              "com.yepanywhere.mobile.notifications.NativePushLiveInstrumentedTest",
-            ]
-          : [
-              "com.yepanywhere.mobile.web.YaNativeWebAppInstrumentedTest",
-              ...(relay
-                ? []
-                : ["com.yepanywhere.mobile.ui.YaHostSwitchInstrumentedTest"]),
-              relay
-                ? "com.yepanywhere.mobile.connection.YaRustRuntimeInstrumentedTest"
-                : "com.yepanywhere.mobile.security.YaSecurityClientE2eInstrumentedTest",
-            ];
+      const classes =
+        onlyClasses ??
+        (publicRelay
+          ? ["com.yepanywhere.mobile.web.YaNativeWebAppInstrumentedTest"]
+          : push
+            ? [
+                "com.yepanywhere.mobile.notifications.NativePushBindingsInstrumentedTest",
+                "com.yepanywhere.mobile.notifications.NativePushLiveInstrumentedTest",
+              ]
+            : [
+                "com.yepanywhere.mobile.web.YaNativeWebAppInstrumentedTest",
+                ...(relay
+                  ? []
+                  : ["com.yepanywhere.mobile.ui.YaHostSwitchInstrumentedTest"]),
+                relay
+                  ? "com.yepanywhere.mobile.connection.YaRustRuntimeInstrumentedTest"
+                  : "com.yepanywhere.mobile.security.YaSecurityClientE2eInstrumentedTest",
+                // Last: its reloads spend the relay's per-user circuit-open
+                // budget, which the runtime probe's exact counts depend on.
+                "com.yepanywhere.mobile.web.YaNativeReconnectInstrumentedTest",
+              ]);
       const options = {
         class: classes.join(","),
         yaProbeWsUrl: fixture.endpoint,
@@ -197,9 +219,8 @@ try {
           ...args,
           "com.yepanywhere.mobile.test/androidx.test.runner.AndroidJUnitRunner",
         ],
-        true,
+        "tee",
       );
-      console.log(output);
       // Keep launcher-recovery evidence even when the YA checks then pass.
       const hasEvidence = await device(["shell", "test", "-d", evidence], true)
         .then(() => true)
@@ -213,10 +234,10 @@ try {
         await mkdir(reports, { recursive: true });
         await device(["pull", evidence, reports]);
       }
+      // Every class contributes at least one test; some contribute several.
+      const passed = Number(/^OK \((\d+) tests?\)/m.exec(output)?.[1] ?? 0);
       if (
-        !output.includes(
-          `OK (${classes.length} test${classes.length === 1 ? "" : "s"})`,
-        ) ||
+        passed < classes.length ||
         /FAILURES!!!|INSTRUMENTATION_FAILED/.test(output)
       ) {
         throw new Error(

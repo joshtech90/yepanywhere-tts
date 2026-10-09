@@ -26,6 +26,7 @@ import { ServerSettingsService } from "../src/services/ServerSettingsService.js"
 import { ProjectQueueService } from "../src/services/ProjectQueueService.js";
 import { RecentsService } from "../src/recents/RecentsService.js";
 import { ProjectGlossarySubscriptionManager } from "../src/projects/projectGlossarySubscriptionManager.js";
+import { SessionMetadataService } from "../src/metadata/SessionMetadataService.js";
 
 const username = process.env.YA_NATIVE_PROBE_USERNAME;
 const password = process.env.YA_NATIVE_PROBE_PASSWORD;
@@ -154,13 +155,19 @@ const projectQueueService = new ProjectQueueService({
   attachmentStagingService,
 });
 const recentsService = new RecentsService({ dataDir });
+const sessionMetadataService = new SessionMetadataService({ dataDir });
 await Promise.all([
   attachmentStagingService.initialize(),
   serverSettingsService.initialize(),
   projectQueueService.initialize(),
   recentsService.initialize(),
+  sessionMetadataService.initialize(),
 ]);
 
+// Use the same upgrade function for the full HTTP app and the native socket.
+// createApp mounts staging validation/materialization with its upload routes.
+const app = new Hono<{ Bindings: HttpBindings }>();
+const { upgradeWebSocket, wss } = createNodeWebSocket({ app });
 const {
   app: yaApp,
   supervisor,
@@ -191,12 +198,34 @@ const {
   serverSettingsService,
   projectQueueService,
   recentsService,
+  sessionMetadataService,
+  upgradeWebSocket,
+  maxUploadSizeBytes: 100 * 1024 * 1024,
 });
 const projectGlossarySubscriptionManager =
   new ProjectGlossarySubscriptionManager({ scanner, glossaryIndexService });
 // Pad a real API response without burdening transcript rendering or adding a
 // production endpoint. This crosses the encrypted circuit and the WebView.
-const app = new Hono<{ Bindings: HttpBindings }>();
+// A test-controlled response delay keeps API requests in flight while a probe
+// drops the socket, so reconnect handling of pending requests is deterministic.
+let apiDelayMs = 0;
+let delayedRequests = 0;
+let delayedValidationRequests = 0;
+app.use("/api/*", async (c, next) => {
+  if (apiDelayMs > 0 && c.req.path !== "/api/ws") {
+    delayedRequests++;
+    const validation =
+      /^\/api\/attachments\/staging\/drafts\/[^/]+\/validate$/.test(c.req.path);
+    if (validation) delayedValidationRequests++;
+    try {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, apiDelayMs));
+    } finally {
+      delayedRequests--;
+      if (validation) delayedValidationRequests--;
+    }
+  }
+  await next();
+});
 app.get("/api/version", async (c) => {
   const response = await yaApp.fetch(c.req.raw, c.env);
   if (!conversationProbe || !response.ok) return response;
@@ -209,7 +238,6 @@ app.get("/api/version", async (c) => {
   );
 });
 app.route("/", yaApp);
-const { upgradeWebSocket, wss } = createNodeWebSocket({ app });
 const uploadManager = new UploadManager({ uploadsDir: join(root, "uploads") });
 // A bounded test-controlled pause makes switching during a real resume
 // deterministic. Only the disposable probe exposes this handshake gate.
@@ -221,13 +249,24 @@ function releaseResumes() {
   for (const release of resumeWaiters) release();
   resumeWaiters.clear();
 }
+// A test-controlled outage refuses every new socket, as when a phone's network
+// is still down after waking, so reconnect attempts fail instead of waiting.
+let outage = false;
 const wsHandler = createWsRelayRoutes({
   upgradeWebSocket: (createEvents) =>
     upgradeWebSocket((context) => {
       const events = createEvents(context);
       return {
         ...events,
+        onOpen: (event, ws) => {
+          if (outage) {
+            ws.close(1013, "Probe outage");
+            return;
+          }
+          return events.onOpen?.(event, ws);
+        },
         onMessage: async (event, ws) => {
+          if (outage) return;
           if (
             holdResume &&
             typeof event.data === "string" &&
@@ -294,6 +333,25 @@ if (conversationProbe) {
     return c.json({ heldResumes });
   });
   app.get("/__probe/resume-hold", (c) => c.json({ heldResumes }));
+  app.post("/__probe/api-delay", (c) => {
+    apiDelayMs = Math.min(Math.max(Number(c.req.query("ms")) || 0, 0), 15_000);
+    return c.json({ apiDelayMs });
+  });
+  app.get("/__probe/status", (c) =>
+    c.json({
+      apiDelayMs,
+      delayedRequests,
+      delayedValidationRequests,
+      heldResumes,
+      outage,
+    }),
+  );
+  app.post("/__probe/outage", (c) => {
+    outage = c.req.query("enabled") === "true";
+    if (outage)
+      for (const socket of wss.clients) socket.close(1013, "Probe outage");
+    return c.json({ outage });
+  });
   app.post("/__probe/disconnect", (c) => {
     for (const socket of wss.clients) socket.close(1012, "Probe reconnect");
     return c.json({ ok: true });

@@ -125,7 +125,7 @@ interface ProcessModelConfiguration {
   serviceTierChanged: boolean;
   thinkingChanged: boolean;
   effortChanged: boolean;
-  dynamicChange: "model" | "thinking" | "effort" | null;
+  dynamicChange: "model" | "thinking" | "effort" | "serviceTier" | null;
 }
 
 interface PendingProcessLaunchSettings {
@@ -832,6 +832,14 @@ export class SessionActivationCoordinator {
       process.supportsEffortChange
     ) {
       dynamicChange = "effort";
+    } else if (
+      !modelChanged &&
+      serviceTierChanged &&
+      !thinkingChanged &&
+      !effortChanged &&
+      process.supportsServiceTierChange
+    ) {
+      dynamicChange = "serviceTier";
     }
 
     return {
@@ -883,6 +891,8 @@ export class SessionActivationCoordinator {
       }
       case "effort":
         return process.setEffort(configuration.nextEffort);
+      case "serviceTier":
+        return process.setServiceTier(configuration.nextServiceTier);
       case null:
         return false;
     }

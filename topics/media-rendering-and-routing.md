@@ -242,9 +242,14 @@ and the route it pulls from.
   route and only open attachments named in that share. The project supplies
   viewer/glossary context; the shared file-access allow-set remains the
   authorization boundary.
-- **Local media modal (rendered-text media links)** — click an image/video link
-  *inside* rendered Markdown/HTML and a modal shows it. `useLocalResourceClick`
-  → `LocalMediaModal` → `/api/local-image`. Relay-safe.
+- **Local media modal (rendered-text media links)** — click an image, video, or
+  audio link *inside* rendered Markdown/HTML and a modal shows it.
+  `useLocalResourceClick` → `LocalMediaModal` → `/api/local-image`. Relay-safe.
+  Audio (WAV, MP3, OGG/OGA/Opus, M4A, AAC, FLAC) is a third local media type
+  alongside image and video: the link is labelled `(audio)`, its `+` expands
+  an inline `<audio>` player, and the modal plays it. Like video, a direct
+  transport hands the player the range-seekable server URL rather than a
+  `Blob`. Audio is never an image-gallery candidate.
 - **Local file modal (rendered-text file links without project context)** —
   click a non-media local file link on a surface with no active project; a modal
   renders text/JSON/log inline, PDFs from a blob URL, and an explicitly selected

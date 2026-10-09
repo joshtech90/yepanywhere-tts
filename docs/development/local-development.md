@@ -31,7 +31,7 @@ pnpm dev
 ```bash
 pnpm setup:core       # Install root + client + server + shared, skipping relay
 pnpm dev              # Start dev server
-pnpm lint             # Biome linter
+pnpm lint             # Biome lint, CSS lint (ESLint), CSS containment checks
 pnpm format:check     # Biome formatter verification (does not write)
 pnpm format           # Intentionally format all tracked supported files
 pnpm typecheck        # TypeScript type checking

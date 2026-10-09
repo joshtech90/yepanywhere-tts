@@ -42,6 +42,15 @@ const state: AgentAuthRouterOverview = {
       revision: 1,
       bindings: [{ accountId: "account-1", count: 3 }],
     },
+    {
+      id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      name: "Hand-picked Codex",
+      provider: "codex",
+      accountIds: ["account-1", "account-2", "account-3", "account-4"],
+      policy: "manual",
+      revision: 1,
+      bindings: [],
+    },
   ],
   accounts: Array.from({ length: 48 }, (_, i) => ({
     id: `account-${i + 1}`,
@@ -62,7 +71,13 @@ const state: AgentAuthRouterOverview = {
     ],
     catalogAt: "2026-10-03T08:00:00Z",
     attemptedAt: "2026-10-03T08:00:00Z",
-    quota: i === 3 ? null : { observedAt: "2026-10-03T08:00:00Z" },
+    // account-2 was last observed from a proxied response, not a probe.
+    quota:
+      i === 3
+        ? null
+        : i === 1
+          ? { observedAt: "2026-10-03T08:00:00Z", source: "inference" }
+          : { observedAt: "2026-10-03T08:00:00Z" },
     windows:
       i === 3
         ? []

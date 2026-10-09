@@ -27,6 +27,33 @@ import type { BusEvent, EventBus } from "./watcher/index.js";
 
 export type Emit = (eventType: string, data: unknown) => void;
 
+/**
+ * Session frames also carry their event id: `<processId>.<cursor>.<frame>`,
+ * where every message Process buffered at or before `cursor` has reached
+ * this subscriber once the frame has.
+ */
+export type SessionEmit = (
+  eventType: string,
+  data: unknown,
+  eventId: string,
+) => void;
+
+/**
+ * Replay position a client already holds, from the last session event id it
+ * received; null when it came from another Process or an older server.
+ */
+function parseResumeCursor(
+  lastEventId: unknown,
+  processId: string,
+): number | null {
+  const prefix = `${processId}.`;
+  if (typeof lastEventId !== "string" || !lastEventId.startsWith(prefix)) {
+    return null;
+  }
+  const cursor = Number(lastEventId.slice(prefix.length).split(".")[0]);
+  return Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : null;
+}
+
 export interface SubscriptionOptions extends SessionQueueSummaryDeps {
   /** Called when an internal error occurs (e.g. augmentation failure). */
   onError?: (err: unknown) => void;
@@ -36,6 +63,11 @@ export interface SubscriptionOptions extends SessionQueueSummaryDeps {
   wantsLiveDeltas?: boolean;
   /** Whether this subscriber wants running tool calls' live output. */
   wantsLiveToolOutput?: boolean;
+  /**
+   * Last session event id the client received; replay then skips buffered
+   * messages it already has. Unrecognized ids replay the whole buffer.
+   */
+  lastEventId?: string;
   /** Injectable augmenter factory for deterministic transport tests. */
   createAugmenter?: typeof createStreamAugmenter;
   /** Authenticated exact probes for bare absolute-path viewer links. */
@@ -107,9 +139,21 @@ function getStableMessageIdentity(
  */
 export function createSessionSubscription(
   process: Process,
-  emit: Emit,
+  emitFrame: SessionEmit,
   options?: SubscriptionOptions,
 ): { cleanup: () => void } {
+  const resumeCursor = parseResumeCursor(options?.lastEventId, process.id);
+  // Advanced only past messages this subscriber has been sent, so any frame's
+  // id is a safe resume point once that frame has arrived.
+  let deliveredCursor = resumeCursor ?? 0;
+  let frameCount = 0;
+  const emit: Emit = (eventType, data) => {
+    emitFrame(
+      eventType,
+      data,
+      `${process.id}.${deliveredCursor}.${frameCount++}`,
+    );
+  };
   let completed = false;
   const wantsLiveDeltas = options?.wantsLiveDeltas !== false;
   const wantsLiveToolOutput = options?.wantsLiveToolOutput !== false;
@@ -399,6 +443,9 @@ export function createSessionSubscription(
           // Raw provider messages are the ordered, user-visible activity path.
           // Optional markdown/tool enrichment may follow as a same-id update,
           // but must never delay or reorder the underlying transcript event.
+          // Process buffers a message just before emitting it, so the replay
+          // cursor now covers it and everything buffered earlier.
+          deliveredCursor = process.getReplayCursor();
           emit("message", markSubagent(message));
 
           void processCoordinatorInOrder(message).catch((error) => {
@@ -514,17 +561,40 @@ export function createSessionSubscription(
 
   // Replay buffered messages for late-joining clients. Prepare clones so task
   // correlation and optional presentation fields never mutate Process history.
-  for (const historyMessage of process.getMessageHistory()) {
+  // A resuming client already has messages at or before its cursor; they
+  // still feed task correlation, which depends on the whole ordered buffer.
+  const history = process.getMessageHistory();
+  const replaySeqs = history.map((message) => process.getReplaySeq(message));
+  const sendsMessage = replaySeqs.map(
+    (seq) => resumeCursor === null || seq === undefined || seq > resumeCursor,
+  );
+  // History is not ordered by position (in-turn steer echoes come first), so
+  // a replay frame may only claim positions below every one still to come.
+  const minSeqAfter: number[] = [];
+  let minSeq = Number.POSITIVE_INFINITY;
+  for (let i = history.length - 1; i >= 0; i--) {
+    minSeqAfter[i] = minSeq;
+    if (sendsMessage[i]) minSeq = Math.min(minSeq, replaySeqs[i] ?? minSeq);
+  }
+  const replayCursorAtSubscribe = process.getReplayCursor();
+  for (const [i, historyMessage] of history.entries()) {
     const message = normalizeStreamMessage({
       ...structuredClone(historyMessage),
       isReplay: true,
     });
     taskListAugmenter.processMessage(message);
+    if (!sendsMessage[i]) continue;
+    deliveredCursor = Math.max(
+      deliveredCursor,
+      Math.min(replayCursorAtSubscribe, (minSeqAfter[i] ?? minSeq) - 1),
+    );
     emit("message", markSubagent(message));
     if (!isLiveDeltaMessage(message) && !isPlainUserEcho(message)) {
       void scheduleFinalization(message);
     }
   }
+  // Everything buffered so far was sent, already held, or has expired.
+  deliveredCursor = Math.max(deliveredCursor, replayCursorAtSubscribe);
 
   // Catch-up: send accumulated streaming text as pending HTML
   const streamingContent = wantsLiveDeltas

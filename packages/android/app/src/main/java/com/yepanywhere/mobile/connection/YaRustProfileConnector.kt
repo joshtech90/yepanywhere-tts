@@ -54,7 +54,10 @@ internal object YaRustTls {
     }
 }
 
-class YaRustTerminalException(val phase: YaConnectionPhase) : IllegalStateException("Native Rust connection ended")
+class YaRustTerminalException(val phase: YaConnectionPhase, val recoverable: Boolean = false) : IllegalStateException("Native Rust connection ended")
+
+/** Historical regression tag; request failures now use typed operation errors. */
+const val SYNTHETIC_RESPONSE_TAG = "YaSyntheticResponse"
 
 class YaRustProfileConnector(private val repository: YaPairedServerRepository) : YaProfileConnector, Closeable {
     private val active = ConcurrentHashMap.newKeySet<YaRustMessageTransport>()
@@ -88,7 +91,7 @@ class YaRustProfileConnector(private val repository: YaPairedServerRepository) :
         } catch (_: CoreException.ReauthenticationRequired) { throw YaAllRoutesRejectedException() }
         finally { bytes.fill(0) }
         val transport = transport(session, true)
-        YaRoutedTransport(profile.routes.first { it.id == session.routeId() }, transport)
+        YaRoutedTransport(profile.routes.first { it.id == transport.routeId }, transport)
     }
     private suspend fun <T : Any> connectOnIo(transport: (T) -> YaMessageTransport, operation: suspend () -> T): T {
         var opened: T? = null
@@ -147,6 +150,14 @@ internal class YaRustCredentialPersistence(
         }.isSuccess
     }
 
+private fun CoreException.nativeFailure(): YaNativeOperationFailure = when (this) {
+    is CoreException.Unavailable, is CoreException.Closed -> YaNativeOperationFailure.CONNECTION_UNAVAILABLE
+    is CoreException.Timeout -> YaNativeOperationFailure.TIMEOUT
+    is CoreException.Overflow -> YaNativeOperationFailure.OVERFLOW
+    is CoreException.InvalidMessage -> YaNativeOperationFailure.INVALID_MESSAGE
+    is CoreException.ReauthenticationRequired -> YaNativeOperationFailure.REAUTHENTICATION_REQUIRED
+}
+
 /** Kotlin keeps platform demand; all protocol operations run in the Rust actor. */
 internal class YaRustMessageTransport(
     private val session: NativeSourceLeaseInterface,
@@ -154,43 +165,71 @@ internal class YaRustMessageTransport(
     autoStart: Boolean = true,
     private val retired: (YaRustMessageTransport) -> Unit,
 ) : YaMessageTransport {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scopeJob = SupervisorJob()
+    private val scope = CoroutineScope(scopeJob + Dispatchers.IO)
     private val incoming = Channel<JSONObject>(32)
     private val closed = CompletableDeferred<Unit>()
     private val ended = AtomicBoolean(false)
+    private val sessionLock = Any()
+    private var activeCalls = 0
+    private var released = false
+    private var scopeStopped = false
+    private var destroyed = false
     private data class Work(val message: JSONObject?, val chunk: ByteArray?, val reply: CompletableDeferred<Unit>?)
     private val work = Channel<Work>(32)
     private class RequestSlot { val cancelled = AtomicBoolean(false); @Volatile var job: Job? = null }
     private val requests = ConcurrentHashMap<String, RequestSlot>()
-    override val credential: YaResumeCredential get() = YaRustCredential.decode(session.credentialData())
-    override val routeId: String? get() = session.routeId().takeIf { it.isNotEmpty() }
-    override val securityBinding: YaSrpTransportBinding get() = session.securityBinding().let {
+    override val credential: YaResumeCredential get() = YaRustCredential.decode(withSession { session.credentialData() })
+    override val routeId: String? get() = withSession { session.routeId() }.takeIf { it.isNotEmpty() }
+    override val securityBinding: YaSrpTransportBinding get() = withSession { session.securityBinding() }.let {
         YaSrpTransportBinding(it.sessionId, it.transportNonce, if (resumed) YaSrpAuthenticationMethod.RESUME else YaSrpAuthenticationMethod.FULL)
     }
-    init { if (autoStart) start() }
+    init {
+        scopeJob.invokeOnCompletion {
+            synchronized(sessionLock) { scopeStopped = true; destroyWhenIdle() }
+        }
+        if (autoStart) start()
+    }
+    // Cancellation is cooperative. Keep the wrapper alive across every native
+    // call, including direct callers outside scope, and reject late admission.
+    private inline fun <T> withSession(operation: () -> T): T {
+        synchronized(sessionLock) {
+            if (ended.get()) throw CancellationException("Native source released")
+            activeCalls++
+        }
+        try { return operation() }
+        finally { synchronized(sessionLock) { activeCalls--; destroyWhenIdle() } }
+    }
+    // Called only under sessionLock, after release and all native work drain.
+    private fun destroyWhenIdle() {
+        if (released && scopeStopped && activeCalls == 0 && !destroyed) {
+            destroyed = true
+            (session as? Disposable)?.destroy(); retired(this); closed.complete(Unit)
+        }
+    }
     internal fun start() {
         scope.launch {
             try {
                 while (isActive) {
-                    val event = JSONObject(session.nextEvent())
+                    val event = JSONObject(withSession { session.nextEvent() })
                     if (event.optString("type") == "state" && event.optString("phase") == "CONNECTED") resumed = true
-                    if (event.optString("type") == "subscriptionError") {
+                    if (event.optString("type") == "subscriptionError" && !event.has("errorCode") && event.optInt("status") > 0) {
                         event.put("type", "response").put("id", event.getString("subscriptionId"))
                             .put("body", JSONObject().put("error", event.opt("error")))
                     }
                     incoming.send(event)
                     if (event.optString("type") == "state" && event.optString("phase") in setOf("FAILED", "REAUTHENTICATION_REQUIRED")) {
-                        throw YaRustTerminalException(YaConnectionPhase.valueOf(event.getString("phase")))
+                        throw YaRustTerminalException(YaConnectionPhase.valueOf(event.getString("phase")), event.optBoolean("recoverable"))
                     }
                 }
-            } catch (error: CoreException) { finish(YaRustTerminalException(YaConnectionPhase.FAILED)) }
+            } catch (error: CoreException) { finish(YaRustTerminalException(YaConnectionPhase.FAILED, error is CoreException.Unavailable || error is CoreException.Closed || error is CoreException.Timeout)) }
             catch (error: Throwable) { finish(error) }
         }
         scope.launch {
             try {
                 for (item in work) {
                     try {
-                        if (item.chunk != null) session.uploadChunk(item.chunk)
+                        if (item.chunk != null) withSession { session.uploadChunk(item.chunk) }
                         else execute(checkNotNull(item.message))
                         item.reply?.complete(Unit)
                     } catch (error: Throwable) {
@@ -199,7 +238,10 @@ internal class YaRustMessageTransport(
                         if (item.reply == null && item.message != null) {
                             val message = item.message
                             when (message.optString("type")) {
-                                "subscribe" -> incoming.send(JSONObject().put("type", "response").put("id", message.getString("subscriptionId")).put("status", 400).put("body", JSONObject().put("error", "Native subscription rejected")))
+                                "subscribe" -> incoming.send(JSONObject().put("type", "subscriptionError")
+                                    .put("subscriptionId", message.getString("subscriptionId"))
+                                    .put("errorCode", (error as? CoreException)?.nativeFailure()?.name)
+                                    .put("error", error.message ?: "Native subscription failed"))
                                 "upload_start", "staged_upload_start", "upload_end" -> incoming.send(JSONObject().put("type", "upload_error").put("uploadId", message.getString("uploadId")).put("error", "Native upload rejected"))
                                 "unsubscribe" -> Unit
                                 else -> throw error
@@ -226,22 +268,23 @@ internal class YaRustMessageTransport(
                 val slot = requests[id] ?: return
                 val job = scope.launch(start = CoroutineStart.LAZY) {
                     try {
-                        val response = JSONObject(session.dispatch("request", message.toString()))
+                        val response = JSONObject(withSession { session.dispatch("request", message.toString()) })
                         response.put("type", "response").put("id", id)
                         incoming.send(response)
                     } catch (error: CancellationException) { throw error }
-                    catch (_: CoreException) {
-                        incoming.send(JSONObject().put("type", "response").put("id", id).put("status", 503)
-                            .put("headers", JSONObject()).put("body", JSONObject().put("error", "Native connection unavailable")))
+                    catch (error: CoreException) {
+                        val failure = error.nativeFailure()
+                        // No server answered. Preserve an operation failure, never an HTTP status.
+                        incoming.send(JSONObject().put("type", "requestError").put("id", id).put("code", failure.name))
                     } finally { requests.remove(id, slot) }
                 }
                 slot.job = job
                 if (slot.cancelled.get()) job.cancel() else job.start()
             }
-            "subscribe", "unsubscribe" -> session.dispatch(message.getString("type"), message.toString())
-            "upload_start", "staged_upload_start" -> session.dispatch("uploadStart", message.toString())
-            "upload_end" -> session.dispatch("uploadEnd", message.toString())
-            "upload_cancel" -> session.dispatch("uploadCancel", message.toString())
+            "subscribe", "unsubscribe" -> withSession { session.dispatch(message.getString("type"), message.toString()) }
+            "upload_start", "staged_upload_start" -> withSession { session.dispatch("uploadStart", message.toString()) }
+            "upload_end" -> withSession { session.dispatch("uploadEnd", message.toString()) }
+            "upload_cancel" -> withSession { session.dispatch("uploadCancel", message.toString()) }
             else -> error("Unsupported native operation")
         }
     }
@@ -249,7 +292,7 @@ internal class YaRustMessageTransport(
     override suspend fun directRequest(method: String, path: String, body: JSONObject?): YaApiResponse {
         val request = JSONObject().put("method", method).put("path", path).put("headers", JSONObject().put("Content-Type", "application/json").put("X-Yep-Anywhere", "true"))
         if (body != null) request.put("body", body)
-        val response = JSONObject(session.dispatch("request", request.toString()))
+        val response = JSONObject(withSession { session.dispatch("request", request.toString()) })
         val headers = response.optJSONObject("headers")
         return YaApiResponse(response.getInt("status"), headers?.keys()?.asSequence()?.associateWith { headers.getString(it) }.orEmpty(), response.opt("body").takeUnless { it == JSONObject.NULL })
     }
@@ -269,10 +312,11 @@ internal class YaRustMessageTransport(
     override fun cancel() { finish(CancellationException("Native source released")) }
     private fun finish(error: Throwable) {
         if (ended.compareAndSet(false, true)) {
-            session.release(); scope.cancel(); work.close(error); incoming.close(error)
+            work.close(error); incoming.close(error)
             while (true) { val item = work.tryReceive().getOrNull() ?: break; item.reply?.completeExceptionally(error) }
             requests.clear()
-            (session as? Disposable)?.destroy(); retired(this); closed.complete(Unit)
+            synchronized(sessionLock) { session.release(); released = true }
+            scope.cancel()
         }
     }
 }

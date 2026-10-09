@@ -27,7 +27,10 @@ The graphic is branding, not a simulated app screenshot. Capture actual native
 apps against owned sample hosts for store screenshots; do not resize unrelated
 browser screenshots or expose real projects, credentials or notification tokens.
 Use the console's current accepted device sizes, including iPad for the
-universal iOS app. Real screenshot capture remains a later listing task.
+universal iOS app. The October 5 Android captures in
+[`android-screenshots/`](android-screenshots/) show the actual native app on an
+owned phone connected to the isolated synthetic reviewer server. iOS screenshots
+remain open.
 See [Google's preview asset requirements](https://support.google.com/googleplay/android-developer/answer/9866151)
 and [Apple's screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/screenshot-specifications/).
 
@@ -57,8 +60,64 @@ Acceptance on the tester's updated Play installation remains open.
 iOS 0.1.0 / build 1 uploaded through Xcode's TestFlight Internal Only flow and
 now shows **Ready to Test** after saving the encryption questionnaire with
 France excluded. iOS tester enrollment remains open.
-Google Play category and contact settings remain open; Developer Tools is saved
-on Apple. Console links and account-specific inventory live in private dotfiles.
+Google Play's Tools category and public support contact are saved; Developer
+Tools is saved on Apple. Console links and account-specific inventory live in
+private dotfiles.
+
+### Android public setup, October 5–6
+
+Google Play's 11 app-setup tasks are complete as saved changes: privacy URL,
+no-ads/government/financial/health declarations, target audience, reviewer
+access instructions, content ratings, Data safety, category/contact and listing.
+The dedicated reviewer Linux VM uses the normal encrypted SRP relay login,
+fictional projects and a canned provider. The English listing is saved with
+both actual Android screenshots; the
+feature graphic is labeled as AI-assisted. Native Android authentication, sample
+history and persisted mock replies pass. Its container has no personal mounts
+or provider credentials; guest firewall, resource bounds, restart and cold boot
+acceptance pass. The reusable image and isolation contract are in
+[`docker/reviewer/`](../../../docker/reviewer/). Exact inventory, credentials,
+recovery and deployment journals remain private.
+
+The maintainer reviewed and saved an all-ages content rating on October 6.
+Preserve those answers; the earlier adult-content interpretation incorrectly
+treated arbitrary user content as supplied graphic content. Data safety includes
+startup notification identifiers and
+optional content/activity on the developer-owned evaluation server, with a
+deletion-request link. Server user creation is disclosed as username/password
+account support; the updated policy explains server-owner and broker/demo
+deletion requests. The publisher's [Yep Anywhere privacy policy](https://graehlarts.com/privacy.html#yepanywhere)
+and [account/data deletion instructions](https://graehlarts.com/privacy.html#yepanywhere-data-deletion)
+are live as of October 6. Play's privacy URL and both deletion URLs are saved
+with those public links. The public contact is `graehlarts@gmail.com`.
+
+The beta source is committed and integrated with current main at `7ea72be0c`.
+Open testing has unlimited enrollment, 177 selected countries/regions with
+France excluded, and `graehlarts@gmail.com` for feedback. Advertising ID use is
+declared absent, matching the native app and merged manifest. Open beta 1 was
+submitted for review on October 6 with signed code `57901` / `0.1.2-ci.479.1`,
+English notes, and the native pre-login privacy link. The exact source passed
+build/lint/inspection and WebView instrumentation in
+[Android CI 37416431327](https://github.com/kzahel/yepanywhere/actions/runs/37416431327).
+
+The maintainer selected **13 and older**: ages 13–15, 16–17, and 18 and over.
+That declaration is saved and included in the 13 submitted changes. The
+maintainer's saved all-ages content rating remains unchanged, verified as
+Everyone / PEGI 3 / USK all ages and corresponding regional ratings.
+Play approved and published the submitted release on October 6. A later
+installation-link check found the open-testing track paused. Resume was saved,
+and its separate activation change is now **in review**, verified after
+reloading Publishing overview on October 6. Quick checks completed; the earlier
+confirmation error did not prevent the change from eventually reaching review.
+The public enrollment page still reports **App not available**. Wait for track
+activation to publish before claiming public testers can install.
+
+The public [beta enrollment link](https://play.google.com/apps/testing/com.yepanywhere.mobile)
+is shareable, but installation still depends on publishing track activation.
+
+An under-13 audience would require separate child-data and sharing readiness
+under [Play Families requirements](https://support.google.com/googleplay/android-developer/answer/9893335?hl=en).
+That expansion is not part of the selected 13+ beta.
 
 A full public listing is not the first internal-testing prerequisite.
 [Google permits internal testing before completing app setup](https://support.google.com/googleplay/android-developer/answer/9845334).
@@ -167,9 +226,20 @@ as `0.1.2-ci.473.1` / code `57301`, from `72fbb38fc`. Both Android verification
 gates and publication passed. Play confirms **Available to internal testers**;
 the `published` internal-track receipt names that source commit and its SHA-256
 matches the signed upload. CI repairs covered an emulator Pixel Launcher ANR
-and WebView link names exposed as content descriptions. The separate general
-browser suite retains the
-[mockup caption-icon assertion defect](../../../gaps/mockup-export-caption-icon-count.md).
+and WebView link names exposed as content descriptions. The separate browser caption-icon assertion was subsequently corrected in
+[`3f54af6cd`](https://github.com/kzahel/yepanywhere/commit/3f54af6cd).
+
+The October 8 Android lifecycle hardening build is available to internal
+testers as `0.1.2-ci.513.1` / code `61301`, from `a079aa3f9`.
+[Run 37712235822](https://github.com/kzahel/yepanywhere/actions/runs/37712235822)
+passed build/lint/package inspection and complete hosted direct/relay
+instrumentation before publishing. Its receipt reports `published` on
+`internal`, names that source commit, and confirms Play's returned SHA-256
+matches the signed candidate. Play confirms **Available to internal testers**.
+The [experiment report](../../testing/android-lifecycle-hardening-2026-10-07.md)
+records local Release/reboot acceptance, matched browser comparisons, failed CI
+attempts and the remaining physical update/network/overnight/keyboard checks.
+Public tracks and tester membership were unchanged.
 
 The main-only GitHub `android-internal` environment holds the existing upload
 key as `ANDROID_UPLOAD_KEYSTORE_BASE64`, `ANDROID_UPLOAD_STORE_PASSWORD` and

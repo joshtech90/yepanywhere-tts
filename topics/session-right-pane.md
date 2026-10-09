@@ -28,6 +28,9 @@ See also:
   dispatch and isolated origins for loopback HTTP apps.
 - [`settings-ui-placement.md`](settings-ui-placement.md) — Appearance
   category; browser-local persistence.
+- [`agent-self.md`](agent-self.md#view-inspection) — with agent self
+  inspection enabled, each tab reports the pane's viewer so the session's
+  agent can read it with `ya-agent view`.
 
 ## Product
 
@@ -39,8 +42,8 @@ primary conversation surface.
 Consumers include loopback HTTP apps discovered from tool output (Plannotator
 is the worked case), artifact links, session file viewers, and the detail
 panels tool rows publish — the long-edit diff, full bash output, write and
-grep details. All of them reuse the pane instead of covering the transcript
-when the setting is on.
+grep details, and a fullscreen [MCP App view](mcp-apps.md). All of them reuse
+the pane instead of covering the transcript when the setting is on.
 
 ## Enablement
 

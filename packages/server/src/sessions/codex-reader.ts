@@ -97,6 +97,10 @@ import {
   CodexRolloutWindowReader,
 } from "./codex-rollout-window.js";
 import { SummaryParserClient } from "./summary-parser-worker-client.js";
+import {
+  type CodexEntryCacheBudget,
+  codexEntryCacheBudget,
+} from "./codex-entry-cache-budget.js";
 import { readCodexAsyncQuestions } from "./codex-async-questions.js";
 import type {
   SummaryParserWorkerMode,
@@ -130,6 +134,8 @@ export interface CodexSessionReaderOptions {
   slowLogThresholdMs?: number;
   summaryParserWorkerMode?: SummaryParserWorkerMode;
   summaryParserClient?: SummaryParserClient;
+  /** Retention budget for parsed transcripts; process-wide by default. */
+  entryCacheBudget?: CodexEntryCacheBudget;
 }
 
 interface CodexSessionFile {
@@ -186,6 +192,11 @@ interface CodexSharedScanCacheEntry {
   inFlight?: Promise<CodexSessionFile[]>;
 }
 
+/**
+ * Keyed by sessions directory and active-after cutoff. Bounded per sessions
+ * directory to the unfiltered scan plus the latest settled cutoff and any
+ * in-flight scans; see `retainLatestCutoff`.
+ */
 const codexSharedScanCache = new Map<string, CodexSharedScanCacheEntry>();
 
 interface CodexFullSummaryCacheEntry {
@@ -265,6 +276,11 @@ interface CodexEntryCache {
   partialLine: Buffer;
   nextLeafOrdinal?: number;
   normalizationSource: object;
+  /**
+   * True once the retention budget declined or evicted this entry. Its
+   * contents remain a valid snapshot for the read that produced it.
+   */
+  uncached?: boolean;
 }
 
 interface CodexReadEntrySnapshot extends CodexParsedEntrySnapshot {
@@ -590,6 +606,7 @@ export class CodexSessionReader implements ISessionReader {
   private entryCache: Map<string, CodexEntryCache> = new Map();
   private entryReadOwners: Map<string, CodexEntryReadOwner> = new Map();
   private entryCacheRevision = 0;
+  private readonly entryCacheBudget: CodexEntryCacheBudget;
   private agentMappingCache: Map<string, CodexAgentMappingCache> = new Map();
   private rolloutPathById: Map<string, string> = new Map();
   private readonly rolloutWindowReader: CodexRolloutWindowReader;
@@ -612,6 +629,7 @@ export class CodexSessionReader implements ISessionReader {
     );
     this.summaryParserWorkerMode = options.summaryParserWorkerMode ?? "off";
     this.summaryParserClient = options.summaryParserClient;
+    this.entryCacheBudget = options.entryCacheBudget ?? codexEntryCacheBudget;
     this.rolloutWindowReader = new CodexRolloutWindowReader(
       (filePath, start, length) => this.readFileRange(filePath, start, length),
     );
@@ -626,6 +644,9 @@ export class CodexSessionReader implements ISessionReader {
   invalidateCache(): void {
     this.entryCacheRevision += 1;
     this.sessionFileCache.clear();
+    for (const cached of this.entryCache.values()) {
+      this.entryCacheBudget.release(cached);
+    }
     this.entryCache.clear();
     this.agentMappingCache.clear();
     this.rolloutPathById.clear();
@@ -1445,6 +1466,8 @@ export class CodexSessionReader implements ISessionReader {
         timestamp: Date.now(),
         sessions,
       });
+      if (options?.activeAfterMs !== undefined)
+        this.retainLatestCutoff(cacheKey);
       this.hydrateSessionFileCache(sessions);
       const visibleSessions = this.filterVisibleSessionsForScanMetrics(
         sessions,
@@ -1461,6 +1484,26 @@ export class CodexSessionReader implements ISessionReader {
         codexSharedScanCache.delete(cacheKey);
       }
       throw error;
+    }
+  }
+
+  /**
+   * The active-after cutoff advances over time, and each cutoff would
+   * otherwise keep its own copy of the directory's session list forever.
+   * Keep only `cacheKey` among this directory's settled cutoff scans.
+   */
+  private retainLatestCutoff(cacheKey: string): void {
+    const unfiltered = this.getSharedScanCacheKey();
+    const prefix = `${this.sessionsDir}::`;
+    for (const [key, entry] of codexSharedScanCache) {
+      if (
+        key !== cacheKey &&
+        key !== unfiltered &&
+        key.startsWith(prefix) &&
+        !entry.inFlight
+      ) {
+        codexSharedScanCache.delete(key);
+      }
     }
   }
 
@@ -1689,6 +1732,7 @@ export class CodexSessionReader implements ISessionReader {
         cached.mtimeMs === stats.mtimeMs &&
         cached.ctimeMs === stats.ctimeMs
       ) {
+        this.entryCacheBudget.touch(cached);
         this.cacheAgentMappingsFromEntries({
           sessionId,
           filePath,
@@ -1726,7 +1770,14 @@ export class CodexSessionReader implements ISessionReader {
       const existingOwner = this.entryReadOwners.get(sessionId);
       if (existingOwner) {
         existingOwner.joinedCallers += 1;
-        await existingOwner.promise;
+        const joined = await existingOwner.promise;
+        if (
+          joined?.uncached &&
+          joined.filePath === filePath &&
+          joined.startByte === startByte
+        ) {
+          return this.copyEntrySnapshot(joined);
+        }
         continue;
       }
 
@@ -1749,9 +1800,35 @@ export class CodexSessionReader implements ISessionReader {
       this.entryReadOwners.set(sessionId, owner);
 
       const refreshed = await promise;
-      if (refreshed && this.entryCache.get(sessionId) === refreshed) {
+      if (
+        refreshed &&
+        (refreshed.uncached || this.entryCache.get(sessionId) === refreshed)
+      ) {
         return this.copyEntrySnapshot(refreshed);
       }
+    }
+  }
+
+  /**
+   * Account a cached entry against the shared retention budget. An entry that
+   * alone exceeds the budget is dropped and served uncached; budget pressure
+   * from other entries evicts this one later through the release callback.
+   */
+  private retainEntry(sessionId: string, cached: CodexEntryCache): void {
+    const release = () => {
+      if (this.entryCache.get(sessionId) === cached) {
+        this.entryCache.delete(sessionId);
+      }
+      cached.uncached = true;
+    };
+    if (
+      !this.entryCacheBudget.admit(
+        cached,
+        cached.size - cached.startByte,
+        release,
+      )
+    ) {
+      release();
     }
   }
 
@@ -1797,6 +1874,7 @@ export class CodexSessionReader implements ISessionReader {
       cached.mtimeMs === stats.mtimeMs &&
       cached.ctimeMs === stats.ctimeMs
     ) {
+      this.entryCacheBudget.touch(cached);
       return cached;
     }
 
@@ -1836,6 +1914,7 @@ export class CodexSessionReader implements ISessionReader {
       cached.size = stats.size;
       cached.mtimeMs = stats.mtimeMs;
       cached.ctimeMs = stats.ctimeMs;
+      this.retainEntry(sessionId, cached);
       this.cacheAgentMappingsFromEntries({
         sessionId,
         filePath,
@@ -1871,9 +1950,11 @@ export class CodexSessionReader implements ISessionReader {
             startByte,
             stats.size - startByte,
           );
+    // A stale entry the budget evicted during the parse was being replaced
+    // anyway; only invalidation or a concurrent replacement voids this parse.
     if (
       revision !== this.entryCacheRevision ||
-      this.entryCache.get(sessionId) !== cached
+      this.entryCache.get(sessionId) !== (cached?.uncached ? undefined : cached)
     ) {
       return null;
     }
@@ -1890,7 +1971,11 @@ export class CodexSessionReader implements ISessionReader {
       nextLeafOrdinal: parsed.nextLeafOrdinal,
       normalizationSource: {},
     };
+    if (cached) {
+      this.entryCacheBudget.release(cached);
+    }
     this.entryCache.set(sessionId, refreshed);
+    this.retainEntry(sessionId, refreshed);
     const cacheStoreMs = Date.now() - cacheStoreStartedAt;
     this.cacheAgentMappingsFromEntries({
       sessionId,

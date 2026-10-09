@@ -1,5 +1,7 @@
 package com.yepanywhere.mobile.web
 
+import android.net.ConnectivityManager
+import android.net.Network
 import android.webkit.WebView
 import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebMessageCompat
@@ -105,6 +107,15 @@ class YaNativeTransportHost private constructor(
         @Volatile var receiving = false
         private val lifecycleLock = Any()
         private var sessionGeneration = 0
+        private val connectivity = view.context.getSystemService(ConnectivityManager::class.java)
+        private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                synchronized(lifecycleLock) {
+                    if (!closed && foreground.value.active && session != null)
+                        emit(JSONObject().put("type", "networkAvailable"))
+                }
+            }
+        }
 
         fun suspendSession() {
             synchronized(lifecycleLock) {
@@ -141,6 +152,7 @@ class YaNativeTransportHost private constructor(
                             if (generation == sessionGeneration && foreground.value.active) {
                                 emit(JSONObject().put("type", "state").put("phase", state.phase.name)
                                     .put("retryAttempt", state.retryAttempt)
+                                    .put("recoverable", state.recoverable)
                                     .put("error", state.errorMessage ?: JSONObject.NULL))
                             }
                         }
@@ -155,6 +167,7 @@ class YaNativeTransportHost private constructor(
         }
 
         fun start() {
+            connectivity.registerDefaultNetworkCallback(networkCallback)
             scope.launch {
                 try {
                     val snapshot = checkNotNull(runtime.pairedServers.snapshot(profileId))
@@ -288,6 +301,7 @@ class YaNativeTransportHost private constructor(
                 session?.close()
                 session = null
             }
+            connectivity.unregisterNetworkCallback(networkCallback)
             outbound.close()
             scope.cancel()
         }

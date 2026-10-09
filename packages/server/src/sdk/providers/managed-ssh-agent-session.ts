@@ -419,6 +419,12 @@ class RemoteAgentSession {
               this.rpc<boolean>("appendConversationContext", [turns]),
           }
         : {}),
+      ...(capabilities.mcpAppRequest
+        ? {
+            mcpAppRequest: (request) =>
+              this.rpc<unknown>("mcpAppRequest", [request]),
+          }
+        : {}),
       ...(capabilities.setMaxThinkingTokens
         ? {
             setMaxThinkingTokens: (tokens) =>
@@ -427,6 +433,12 @@ class RemoteAgentSession {
         : {}),
       ...(capabilities.setEffort
         ? { setEffort: (effort) => this.rpc("setEffort", [effort]) }
+        : {}),
+      ...(capabilities.setServiceTier
+        ? {
+            setServiceTier: (serviceTier?: string) =>
+              this.rpc("setServiceTier", [serviceTier ?? null]),
+          }
         : {}),
       ...(capabilities.setSessionOptions
         ? {

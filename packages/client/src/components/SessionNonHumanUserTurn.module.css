@@ -16,7 +16,7 @@
   color: var(--accent-color);
 }
 
-@media (pointer: coarse), (max-width: 600px) {
+@media (pointer: coarse), (width <= 600px) {
   .flag {
     min-width: 44px;
     min-height: 44px;

@@ -7,15 +7,11 @@
  * 3. Rendering pending text with inline formatting
  */
 
-import {
-  type Augment,
-  type AugmentGeneratorConfig,
-  createAugmentGenerator,
-} from "./augment-generator.js";
+import { type Augment, createAugmentGenerator } from "./augment-generator.js";
 import { BlockDetector } from "./block-detector.js";
 import type { SafeMarkdownRenderOptions } from "./safe-markdown.js";
 
-export type { Augment, AugmentGeneratorConfig };
+export type { Augment };
 
 export interface StreamChunkResult {
   raw: string; // The raw chunk to forward to client
@@ -29,34 +25,9 @@ export interface StreamCoordinator {
   reset(): void; // Reset state for new stream
 }
 
-export interface StreamCoordinatorOptions
-  extends Partial<AugmentGeneratorConfig> {
+export interface StreamCoordinatorOptions {
   safeMarkdownOptions?: SafeMarkdownRenderOptions;
 }
-
-/**
- * Default configuration for the AugmentGenerator.
- * Includes commonly used languages for syntax highlighting.
- */
-const DEFAULT_CONFIG: AugmentGeneratorConfig = {
-  languages: [
-    "javascript",
-    "js",
-    "typescript",
-    "ts",
-    "tsx",
-    "python",
-    "bash",
-    "json",
-    "css",
-    "html",
-    "yaml",
-    "sql",
-    "go",
-    "rust",
-    "diff",
-  ],
-};
 
 const STREAMING_CODE_LIVE_RENDER_MAX_CHARS = 24_000;
 
@@ -64,17 +35,13 @@ const STREAMING_CODE_LIVE_RENDER_MAX_CHARS = 24_000;
  * Creates a StreamCoordinator instance that manages the streaming markdown
  * rendering pipeline.
  *
- * @param config - Optional configuration for languages
+ * @param config - Optional safe-markdown rendering options
  * @returns Promise that resolves to a StreamCoordinator
  */
 export async function createStreamCoordinator(
   config?: StreamCoordinatorOptions,
 ): Promise<StreamCoordinator> {
-  const mergedConfig: AugmentGeneratorConfig = {
-    languages: config?.languages ?? DEFAULT_CONFIG.languages,
-  };
-
-  const generator = await createAugmentGenerator(mergedConfig);
+  const generator = await createAugmentGenerator();
   const safeMarkdownOptions = config?.safeMarkdownOptions;
   let detector = new BlockDetector();
   let blockIndex = 0;

@@ -29,7 +29,7 @@ export interface LocalImageDeps {
  *
  * Security: Only serves files that:
  * 1. Resolve (after symlink resolution) to a path under an allowed prefix
- * 2. Have a recognized image or video extension
+ * 2. Have a recognized image, video, or audio extension
  * 3. Are regular files (not directories, devices, etc.)
  */
 export function createLocalImageRoutes(deps: LocalImageDeps) {

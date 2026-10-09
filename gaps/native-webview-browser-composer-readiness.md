@@ -12,4 +12,14 @@ readiness a measured budget if needed. Keep the subsequent 100 ms input ceiling
 unchanged. The project-app fixture already separates initial route readiness
 from its final preview assertion.
 
+The same desktop composer-readiness failure recurred at line 156 in
+[CI 37691081022](https://github.com/kzahel/yepanywhere/actions/runs/37691081022)
+on `8610677ef`. Its retry passed; the subsequent input ceiling remains
+unchanged. This is still an open fixture/readiness diagnosis.
+
 Found 2026-10-01 while checking hosted iOS and main CI results.
+
+2026-10-08: the completed first browser shard of `37699374414` on `c33fe7c6f`
+again reports one retry at the desktop composer's five-second visibility
+assertion, with 194 other cases passing. The remaining superseded workflow was
+canceled after final-source CI started; this completed retry evidence remains.

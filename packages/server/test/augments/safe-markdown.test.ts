@@ -350,6 +350,62 @@ x \\] + y
   });
 });
 
+describe("renderSafeMarkdown — Unicode scripts", () => {
+  it("redraws script runs while keeping the authored glyphs", () => {
+    const html = renderSafeMarkdown("compare ∫₁^∞ x⁻ˢ dx");
+    expect(html).toContain(
+      '<span class="ya-uscript ya-uscript--sub" data-ya-script="1"><span class="ya-uscript__source">₁</span></span>',
+    );
+    expect(html).toContain(
+      '<span class="ya-uscript ya-uscript--sup" data-ya-script="−s"><span class="ya-uscript__source">⁻ˢ</span></span>',
+    );
+  });
+
+  it("leaves code and plain text untouched", () => {
+    expect(renderSafeMarkdown("`nˢ` and it's <b>")).toBe(
+      "<p><code>nˢ</code> and it's &lt;b&gt;</p>",
+    );
+  });
+});
+
+describe("renderSafeMarkdown — undelimited Unicode math", () => {
+  const regions = (html: string) =>
+    [
+      ...html.matchAll(
+        /<span class="ya-umath__text">(.*?)<\/span><span class="ya-umath__tex">/g,
+      ),
+    ].map((m) => m[1]?.replace(/<[^>]+>/g, ""));
+
+  it("pairs recognised math with a hidden KaTeX rendering", () => {
+    const html = renderSafeMarkdown("Promote the λ=.05 checkpoint.");
+    expect(regions(html)).toEqual(["λ=.05"]);
+    expect(html).toContain('<span class="ya-umath__tex"><span class="katex">');
+  });
+
+  it("keeps the script redraw inside the authored text", () => {
+    const html = renderSafeMarkdown(
+      "ζ(s) = Σ_{n≥1} 1/nˢ = 1 + 1/2ˢ + 1/3ˢ + …",
+    );
+    expect(regions(html)).toEqual([
+      "ζ(s) = Σ_{n≥1} 1/nˢ = 1 + 1/2ˢ + 1/3ˢ + …",
+    ]);
+    expect(html).toContain('data-ya-script="s"');
+    // Σ with limits is typeset as a summation operator, not a letter.
+    expect(html).toContain("op-symbol");
+  });
+
+  it("leaves prose arrows, numeric typography and code alone", () => {
+    for (const markdown of [
+      "The pipeline goes TeX → UnicodeMath → MathML.",
+      "Runs cost 4–6× more and recall rose ±2 points.",
+      "Set `next_token = argmax(logits)` before decoding.",
+      "The B′ mixture finished.",
+    ]) {
+      expect(renderSafeMarkdown(markdown)).not.toContain("ya-umath");
+    }
+  });
+});
+
 describe("renderSafeMarkdown — embedded HTML", () => {
   it("keeps grouped table spans", () => {
     const html = renderSafeMarkdown(`
@@ -577,6 +633,14 @@ describe("renderSafeMarkdown — local file links", () => {
     ["mp4", "video"],
     ["ogv", "video"],
     ["webm", "video"],
+    ["aac", "audio"],
+    ["flac", "audio"],
+    ["m4a", "audio"],
+    ["mp3", "audio"],
+    ["oga", "audio"],
+    ["ogg", "audio"],
+    ["opus", "audio"],
+    ["wav", "audio"],
   ])("recognizes .%s as local %s media", (extension, mediaType) => {
     const html = renderSafeMarkdown(
       `[asset](/tmp/rendered-media.${extension})`,
@@ -961,5 +1025,66 @@ describe("renderSafeMarkdown — URLs in fixed-font contexts", () => {
     );
     expect(html).not.toContain("<a ");
     expect(html).toContain("const x = 1;");
+  });
+});
+
+describe("renderSafeMarkdown — document anchors", () => {
+  const asDocument = { documentAnchors: {} };
+
+  it("links explicit targets and headings under the user-content prefix", () => {
+    const html = renderSafeMarkdown(
+      `| row | evidence |
+| --- | --- |
+| <a id="row-f"></a>F | [see](#evidence-for-f) |
+
+## Evidence for \`f\`
+
+Back to [the row](#row-f).
+`,
+      asDocument,
+    );
+
+    expect(html).toContain('<a id="user-content-row-f"></a>');
+    expect(html).toContain('<h2 id="user-content-evidence-for-f">');
+    expect(html).toContain('<a href="#user-content-evidence-for-f">see</a>');
+    expect(html).toContain('<a href="#user-content-row-f">the row</a>');
+  });
+
+  it("numbers duplicate headings and continues preceding slugs", () => {
+    const html = renderSafeMarkdown("# Notes\n\n# Notes\n\n# Notes-1\n", {
+      documentAnchors: { precedingHeadingSlugs: ["notes"] },
+    });
+
+    expect(html).toContain('<h1 id="user-content-notes-1">');
+    expect(html).toContain('<h1 id="user-content-notes-2">');
+    expect(html).toContain('<h1 id="user-content-notes-1-1">');
+  });
+
+  it("prefixes hostile ids, legacy names and raw HTML fragment links", () => {
+    const html = renderSafeMarkdown(
+      `<a id="root"></a><a name="old"></a><h3 id="app">App</h3>
+
+<a href="#root">raw</a> and <a id="has space" href="#">empty</a>
+`,
+      asDocument,
+    );
+
+    expect(html).toContain('<a id="user-content-root"></a>');
+    expect(html).toContain('<a id="user-content-old"></a>');
+    expect(html).toContain('<h3 id="user-content-app">');
+    expect(html).toContain('<a href="#user-content-root">raw</a>');
+    expect(html).toContain('<a href="#">empty</a>');
+    expect(html).not.toMatch(/\sid="(?:root|app|has space)"/);
+    expect(html).not.toContain("name=");
+  });
+
+  it("keeps message fragments free of ids", () => {
+    const html = renderSafeMarkdown(
+      '<a id="row-f"></a>\n\n## Heading\n\n[back](#row-f)\n',
+    );
+
+    expect(html).not.toContain("id=");
+    expect(html).not.toContain('href="#');
+    expect(html).toContain("back");
   });
 });

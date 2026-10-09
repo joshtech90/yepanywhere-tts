@@ -466,6 +466,43 @@ describe("TextBlock", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("plays local audio links inline and in the modal", async () => {
+    setInlineMediaExpandedPreference(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <I18nProvider>
+        <TextBlock
+          text="[clip](/tmp/clip.wav)"
+          augmentHtml={
+            '<span class="local-media-link-group"><button type="button" class="local-media-inline-toggle" data-media-path="/tmp/clip.wav" data-media-type="audio" data-expanded="false" aria-label="Expand audio" aria-expanded="false" title="Expand inline preview">+</button><a href="/api/local-image?path=%2Ftmp%2Fclip.wav" class="local-media-link" data-ya-resource="local-media" data-ya-path="/tmp/clip.wav" data-ya-media-type="audio" data-media-type="audio">clip<span class="local-media-type">(audio)</span></a></span><span class="local-media-inline-preview" data-media-path="/tmp/clip.wav" data-media-type="audio" data-expanded="false"></span>'
+          }
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(
+      container.querySelector(".local-media-inline-toggle") as HTMLElement,
+    );
+    const audioUrl = "/api/local-image?path=%2Ftmp%2Fclip.wav";
+    await waitFor(() => {
+      expect(
+        container
+          .querySelector(".local-media-inline-preview audio")
+          ?.getAttribute("src"),
+      ).toBe(audioUrl);
+    });
+
+    fireEvent.click(screen.getByRole("link", { name: /clip/i }));
+    await waitFor(() => {
+      expect(
+        screen.getByRole("dialog").querySelector("audio")?.getAttribute("src"),
+      ).toBe(audioUrl);
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("opens semantic local media links through the existing modal", async () => {
     vi.stubGlobal(
       "fetch",

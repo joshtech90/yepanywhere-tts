@@ -37,6 +37,11 @@ export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
     index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouter.id,
     introducedIn: "0.9.4",
   },
+  agentSessionView: {
+    name: "agent-session-view",
+    index: CAPABILITY_ID_ALLOCATIONS.agentSessionView.id,
+    introducedIn: "0.9.4",
+  },
   installedMachineControl: {
     name: "installed-machine-control",
     index: CAPABILITY_ID_ALLOCATIONS.installedMachineControl.id,
@@ -254,6 +259,34 @@ export interface ServerCapabilityDefinition {
 }
 
 export const SERVER_CAPABILITIES = {
+  agentSessionView: {
+    id: CAPABILITY_ID_ALLOCATIONS.agentSessionView.id,
+    name: "agent-session-view",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.agentSessionView.id,
+    },
+    description:
+      "Accepts each tab's report of the app, artifact or file it shows beside a session, so `ya-agent view` can tell the session's agent what the user has open.",
+    clientFallback:
+      "Publish nothing; the agent's `ya-agent view` stays unavailable or reports no clients.",
+    serverContract: {
+      routeModules: ["packages/server/src/routes/session-view.ts"],
+      routes: [
+        "PUT /api/sessions/:sessionId/view",
+        "DELETE /api/sessions/:sessionId/view/:clientId",
+      ],
+      requestFields: ["clientId", "device", "focused", "viewers"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Advertised only while the operator enables agent self inspection, so clients publish nowhere it is not collected.",
+    },
+  },
   agentAuthRouterMostRemaining: {
     id: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterMostRemaining.id,
     name: "agent-auth-router-most-remaining",
@@ -453,6 +486,92 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Servers before 0.9.4 have no breakdown route; the client must not request it from them.",
+    },
+  },
+  processServiceTierChange: {
+    id: CAPABILITY_ID_ALLOCATIONS.processServiceTierChange.id,
+    name: "process-service-tier-change",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Changes a live session's provider service tier (Codex Fast or Standard) through the process config route, live when the provider supports it and by restart otherwise.",
+    clientFallback:
+      "Show the current tier read-only in Session Info and make no service-tier process-config request.",
+    serverContract: {
+      routes: ["POST /api/processes/:processId/config"],
+      requestFields: ["serviceTier"],
+      responseFields: ["serviceTier"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Servers before 0.9.4 ignore serviceTier on the process config route, so the client must not offer the control there.",
+    },
+  },
+  mcpAppViews: {
+    id: CAPABILITY_ID_ALLOCATIONS.mcpAppViews.id,
+    name: "mcp-app-views",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Persists the default-off MCP App views setting, records a Codex tool call's declared view on its tool_use block, serves the sandbox proxy on the artifact origin, and answers a live session's view requests.",
+    clientFallback:
+      "Hide the setting and every view launcher, and make no MCP App request; tool rows show only their static result.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PUT /api/settings",
+        "POST /api/projects/:projectId/sessions/:sessionId/mcp-apps",
+      ],
+      requestFields: ["settings.mcpAppViews"],
+      responseFields: ["settings.mcpAppViews", "tool_use._mcpApp"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Servers through 0.9.2 have no view route or proxy, so a hosted client must not offer views there.",
+    },
+  },
+  projectCreationGitChoice: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectCreationGitChoice.id,
+    name: "project-creation-git-choice",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server honors gitInit: false when adding a project creates its folder, leaving the new folder without a repository.",
+    clientFallback:
+      "Show Git initialization as always on for a new folder and send no gitInit field.",
+    serverContract: {
+      routes: ["POST /api/projects"],
+      requestFields: ["gitInit"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Servers through 0.9.2 always initialize Git in a folder they create and ignore the field, so a hosted client must not offer the choice there.",
+    },
+  },
+  unicodeProseMath: {
+    id: CAPABILITY_ID_ALLOCATIONS.unicodeProseMath.id,
+    name: "unicode-prose-math",
+    kind: "permanent",
+    area: "rendering",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Rendered Markdown marks undelimited math in prose with a hidden KaTeX alternative that the client can reveal.",
+    clientFallback:
+      "Hide the Unicode math Appearance setting; prose math stays as written.",
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Servers through 0.9.2 emit no math markers, so the setting would have no effect there.",
     },
   },
   projectFileViewCommand: {

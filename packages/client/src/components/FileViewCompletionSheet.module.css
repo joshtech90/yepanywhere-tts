@@ -74,7 +74,7 @@
   color: var(--text-secondary);
   font-size: 11px;
 }
-@media (max-width: 759px) {
+@media (width < 760px) {
   .lines {
     max-height: 7.5em;
   }

@@ -118,7 +118,7 @@
   height: 100%;
   object-fit: contain;
 }
-@media (max-width: 550px) {
+@media (width <= 550px) {
   .actions {
     flex-direction: column;
   }

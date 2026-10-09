@@ -48,6 +48,7 @@ interface HostResponse<T> {
 
 interface WorkerCapabilities {
   publishAgentSelfSelection?: boolean;
+  publishAgentSessionViews?: boolean;
   probeLiveness: boolean;
   getProviderActivity: boolean;
   getProviderRetention: boolean;
@@ -60,6 +61,7 @@ interface WorkerCapabilities {
   setMaxThinkingTokens: boolean;
   setEffort: boolean;
   effortUpdatesActiveTurn?: boolean;
+  setServiceTier?: boolean;
   setSessionOptions: boolean;
   interrupt: boolean;
   supportedModels: boolean;
@@ -1369,6 +1371,12 @@ class HostedAgentSession {
               this.rpc<void>("publishAgentSelfSelection", [selection]),
           }
         : {}),
+      ...(capabilities.publishAgentSessionViews
+        ? {
+            publishAgentSessionViews: (views) =>
+              this.rpc<void>("publishAgentSessionViews", [views]),
+          }
+        : {}),
       publishAgentctlSessionId: async (sessionId, browserDebugEnvironment) => {
         // Make the routing decision synchronous with Process learning the YA
         // session id. A SIGHUP can arrive while the two remote binds await.
@@ -1432,6 +1440,12 @@ class HostedAgentSession {
         : {}),
       ...(capabilities.effortUpdatesActiveTurn
         ? { effortUpdatesActiveTurn: true }
+        : {}),
+      ...(capabilities.setServiceTier
+        ? {
+            setServiceTier: (serviceTier) =>
+              this.rpc("setServiceTier", [serviceTier ?? null]),
+          }
         : {}),
       ...(capabilities.setSessionOptions
         ? {

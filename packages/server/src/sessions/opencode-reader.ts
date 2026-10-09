@@ -127,7 +127,7 @@ interface OpenCodeCliListSession {
 // Shared across reader instances (one per project): the CLI list output is
 // global, so any project's spawn serves them all. Keyed by the opencode
 // binary path; holds the in-flight promise so concurrent validations
-// coalesce onto one subprocess.
+// coalesce onto one subprocess. Bounded by the opencode binaries in use.
 const cliSessionListCache = new Map<
   string,
   { atMs: number; promise: Promise<OpenCodeCliListSession[]> }

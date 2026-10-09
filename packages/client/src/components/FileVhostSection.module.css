@@ -164,7 +164,7 @@
   margin-left: auto;
 }
 
-@media (max-width: 599px) {
+@media (width < 600px) {
   .access,
   .form button,
   .actions button {

@@ -1,5 +1,19 @@
 import type { StagedAttachmentRef, UploadedFile } from "@yep-anywhere/shared";
 import type { DraftAttachmentState } from "./draftEnvelope";
+import {
+  isConnectionReconnectingError,
+  WebSocketCloseError,
+} from "./connection/types";
+
+/** A failed connection check is not evidence that a staged file disappeared. */
+export function isInterruptedDraftAttachmentValidation(
+  error: unknown,
+): boolean {
+  return (
+    isConnectionReconnectingError(error) ||
+    (error instanceof WebSocketCloseError && !error.isNonRetryable())
+  );
+}
 
 interface DraftAttachmentTransport {
   fetch<T>(path: string, init?: RequestInit): Promise<T>;

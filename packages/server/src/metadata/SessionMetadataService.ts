@@ -50,6 +50,8 @@ export interface ForkOrdinalClaim {
 export interface SessionMetadata {
   routerBinding?: {
     poolId?: string;
+    poolName?: string;
+    accountDisplayName?: string;
     policy?: "manual" | "round-robin" | "most-remaining";
     reason?: string;
     observedAt?: string;
@@ -235,6 +237,7 @@ export class SessionMetadataService {
   private state: SessionMetadataState;
   private dataDir: string;
   private filePath: string;
+  /** Session ID rewrites seen since process start; small ID pairs. */
   private sessionIdAliases = new Map<string, string>();
   private unsavedGoalObservations = new Set<string>();
   private metadataSaver = createCoalescingSaver(() => this.doSave());

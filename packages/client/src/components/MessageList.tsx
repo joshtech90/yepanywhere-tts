@@ -160,6 +160,7 @@ import {
 import { CopyTextButton } from "./ui/CopyTextButton";
 import { LinkifiedText } from "./ui/LinkifiedText";
 import styles from "./MessageList.module.css";
+import { useMcpAppViewsEnabled } from "../hooks/useMcpAppViewsEnabled";
 
 const EMPTY_TRANSCRIPT_DISPLAY_OBJECTS: readonly TranscriptDisplayObject[] = [];
 const PROGRESSIVE_INITIAL_RENDER_ITEM_TARGET = 120;
@@ -1832,6 +1833,7 @@ export const MessageList = memo(function MessageList({
   const { widerConversationActivityPreviews } =
     useWiderConversationActivityPreviews();
   const nowMs = useRelativeNow();
+  const mcpAppViews = useMcpAppViewsEnabled();
   const conversationViewActivated =
     !previousConversationViewEnabledRef.current &&
     effectiveConversationViewEnabled;
@@ -2269,6 +2271,7 @@ export const MessageList = memo(function MessageList({
       dismissedThinkingPreviewSlots: dismissedConversationThinkingPreviewSlots,
       expandedActivityIds: expandedConversationActivityIds,
       nowMs,
+      mcpAppViews,
     });
     if (isBrowserDebugPerformanceRecording()) {
       recordBrowserDebugPerformanceMetric(
@@ -2291,6 +2294,7 @@ export const MessageList = memo(function MessageList({
     fullDisplayRenderItems,
     isProcessing,
     isStreaming,
+    mcpAppViews,
     nowMs,
   ]);
   useEffect(() => {

@@ -1053,6 +1053,77 @@ describe("Supervisor", () => {
       ).resolves.toBe(true);
     });
 
+    it("changes the service tier live and persists it without restarting", async () => {
+      const setServiceTier = vi.fn(async (_serviceTier?: string) => {});
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue: new MessageQueue(),
+            setServiceTier,
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+      );
+      const metadata = createLaunchSettingsMetadata({
+        schemaVersion: 1,
+        revision: 2,
+        permissionMode: "default",
+        requestedModel: "gpt-5.5",
+        serviceTier: null,
+        thinking: null,
+        effort: null,
+      });
+      const supervisorWithMetadata = new Supervisor({
+        provider: testProvider(startSession),
+        sessionMetadataService: metadata.service,
+      });
+      const process = await supervisorWithMetadata.reactivateSession(
+        "/tmp/test",
+        "tier-change",
+      );
+      expect(process.supportsServiceTierChange).toBe(true);
+
+      const fast = await supervisorWithMetadata.reconfigureProcess(process.id, {
+        serviceTier: "priority",
+      });
+      expect(fast).toBe(process);
+      expect(setServiceTier).toHaveBeenLastCalledWith("priority");
+      expect(process.serviceTier).toBe("priority");
+      await vi.waitFor(() =>
+        expect(metadata.current()?.serviceTier).toBe("priority"),
+      );
+
+      const standard = await supervisorWithMetadata.reconfigureProcess(
+        process.id,
+        { serviceTier: undefined },
+      );
+      expect(standard).toBe(process);
+      expect(setServiceTier).toHaveBeenLastCalledWith(undefined);
+      expect(process.serviceTier).toBeUndefined();
+      await vi.waitFor(() =>
+        expect(metadata.current()?.serviceTier).toBeNull(),
+      );
+      expect(startSession).toHaveBeenCalledTimes(1);
+
+      await expect(
+        supervisorWithMetadata.abortProcess(process.id),
+      ).resolves.toBe(true);
+    });
+
     it("reuses existing process for same session", async () => {
       mockSdk.addScenario(createMockScenario("sess-123", "First"));
 

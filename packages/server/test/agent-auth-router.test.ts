@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
@@ -39,7 +40,11 @@ async function fixture(
     failCommit = false,
     failCancel = false,
     rejectPrepare: string | false = false,
-    enabled = true;
+    enabled = true,
+    accountName: string | undefined,
+    poolName: string | undefined,
+    overviewAccounts: unknown[] = [],
+    cliModels = false;
   const server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -63,6 +68,7 @@ async function fixture(
               ? ["most-remaining-v1", "admission-refresh-v1"]
               : []),
             ...(ownerManaged ? ["router-owned-pools-v1"] : []),
+            ...(cliModels ? ["catalog-cli-models-v1"] : []),
           ],
         }),
       );
@@ -91,8 +97,10 @@ async function fixture(
     )
       return res.end(
         JSON.stringify({
-          accounts: [],
-          pools: [],
+          accounts: overviewAccounts,
+          pools: poolName
+            ? [{ id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", name: poolName }]
+            : [],
           observedAt: "2026-10-03T08:00:00Z",
           quotaFreshSeconds: 120,
         }),
@@ -123,7 +131,13 @@ async function fixture(
           },
         ],
         accounts: [
-          { id: "account", provider: "codex", enabled, renewal: "manual" },
+          {
+            id: "account",
+            provider: "codex",
+            enabled,
+            renewal: "manual",
+            ...(accountName ? { displayName: accountName } : {}),
+          },
         ],
       }),
     );
@@ -163,8 +177,16 @@ async function fixture(
     disableAccount: () => {
       enabled = false;
     },
+    name: (account: string, pool?: string) => {
+      accountName = account;
+      poolName = pool;
+    },
     revoke: () => {
       revoked = true;
+    },
+    overviewAccounts: (accounts: unknown[], advertised: boolean) => {
+      overviewAccounts = accounts;
+      cliModels = advertised;
     },
   };
 }
@@ -523,6 +545,7 @@ it("native transport overrides carry no token in Codex arguments or ambient muta
     ANTHROPIC_AUTH_TOKEN: route.token,
     ANTHROPIC_API_KEY: "",
     CLAUDE_CODE_OAUTH_TOKEN: "",
+    ENABLE_TOOL_SEARCH: "true",
   });
 });
 
@@ -603,6 +626,36 @@ describe.skipIf(process.platform === "win32")("pool launch recovery", () => {
     await expect(
       restarted.launch("pooled", "codex", "fixture-model"),
     ).rejects.toThrow("cancelled");
+  });
+  it("keeps account and pool labels for recovery while the pin stays the ids", async () => {
+    const f = await fixture(true);
+    await f.connector.connect(f.socketPath);
+    f.name("Work\u0007 Claude", "work-claude");
+    const pool = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    await f.connector.launch(
+      "named",
+      "codex",
+      "fixture-model",
+      undefined,
+      pool,
+    );
+    expect(f.metadata.getMetadata("named")?.routerBinding).toMatchObject({
+      accountId: "account",
+      accountDisplayName: "Work Claude",
+      poolId: pool,
+      poolName: "work-claude",
+    });
+    f.name("Renamed", "ignored-after-first-save");
+    await f.connector.launch("named", "codex", "fixture-model");
+    expect(f.metadata.getMetadata("named")?.routerBinding).toMatchObject({
+      accountId: "account",
+      accountDisplayName: "Renamed",
+      poolName: "work-claude",
+    });
+    f.disableAccount();
+    await expect(
+      f.connector.launch("named", "codex", "fixture-model"),
+    ).rejects.toThrow("pinned router account (Renamed) is disabled");
   });
   it("cancels a rejected fresh pool allocation and retries cleanup durably", async () => {
     const f = await fixture(true);
@@ -752,3 +805,71 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
+
+describe.skipIf(process.platform === "win32")("router CLI model rows", () => {
+  // The selection fixture checked in by agent-auth-router's contract test.
+  const contract = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../shared/test/fixtures/aar-selection-claude.json",
+        import.meta.url,
+      ),
+      "utf-8",
+    ),
+  ) as { accounts: Record<string, unknown>[] };
+
+  it("maps advertised Claude rows like the direct list and drops the rest", async () => {
+    const f = await fixture(true);
+    await f.connector.connect(f.socketPath);
+    const claude = contract.accounts[0]!;
+    const hostile = {
+      ...claude,
+      id: "hostile",
+      cliModels: [
+        { value: "x".repeat(201), displayName: "dropped" },
+        { value: "sonnet", displayName: "N".repeat(500), extra: "dropped" },
+      ],
+    };
+    const codex = { ...claude, id: "codex", provider: "codex" };
+    f.overviewAccounts([claude, hostile, codex], true);
+
+    const selection = await f.connector.selection("claude");
+    const [mapped, bounded, other] = selection!.accounts;
+    expect(mapped?.cliModelsAt).toBe(claude.cliModelsAt);
+    expect(
+      mapped?.cliModels?.map((m) => [m.id, m.resolvedModel ?? null]),
+    ).toEqual(
+      expect.arrayContaining([
+        ["default", "claude-opus-fixture-2"],
+        ["sonnet", "claude-sonnet-fixture-2"],
+        ["haiku", "claude-haiku-fixture-1"],
+        ["opusplan", null],
+      ]),
+    );
+    expect(
+      mapped?.cliModels?.find((m) => m.id === "sonnet")?.description,
+    ).toBeTruthy();
+    // Like the direct list, rows the CLI did not report come from YA's
+    // fallback and carry no launch target.
+    const sonnet = bounded?.cliModels?.find((m) => m.id === "sonnet");
+    expect(sonnet).toMatchObject({ name: "N".repeat(200) });
+    expect(sonnet).not.toHaveProperty("extra");
+    expect(bounded?.cliModels?.some((m) => m.id.length > 200)).toBe(false);
+    expect(bounded?.cliModels?.filter((m) => m.resolvedModel)).toEqual([]);
+    expect(other).not.toHaveProperty("cliModels");
+    expect(other).not.toHaveProperty("cliModelsAt");
+    expect(
+      (await f.connector.overview()).accounts[0]?.cliModels?.length,
+    ).toBeGreaterThan(0);
+
+    const old = await fixture(true);
+    await old.connector.connect(old.socketPath);
+    old.overviewAccounts([claude], false);
+    const [unadvertised] = (await old.connector.selection("claude"))!.accounts;
+    expect(unadvertised).not.toHaveProperty("cliModels");
+    expect(unadvertised).not.toHaveProperty("cliModelsAt");
+    expect((await old.connector.overview()).accounts[0]).not.toHaveProperty(
+      "cliModels",
+    );
+  });
+});

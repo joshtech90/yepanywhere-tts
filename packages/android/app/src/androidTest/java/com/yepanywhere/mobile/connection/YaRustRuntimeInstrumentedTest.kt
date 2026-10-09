@@ -30,14 +30,15 @@ class YaRustRuntimeInstrumentedTest {
         val selected = store.selectedProfileId.first()
         val http = OkHttpClient()
         suspend fun demand(circuits: Int, sockets: Int) {
-            withTimeout(10_000) {
+            var observed: JSONObject? = null
+            withTimeoutOrNull(10_000) {
                 while (true) {
                     val value = withContext(Dispatchers.IO) { http.newCall(Request.Builder().url(checkNotNull(statusUrl)).build()).execute().use { JSONObject(checkNotNull(it.body).string()) } }
-                    val mux = value.getJSONObject("mux")
-                    if (mux.getInt("liveCircuits") == circuits && mux.getInt("physicalSockets") == sockets) break
+                    val mux = value.getJSONObject("mux").also { observed = it }
+                    if (mux.getInt("liveCircuits") == circuits && mux.getInt("physicalSockets") == sockets) return@withTimeoutOrNull
                     delay(25)
                 }
-            }
+            } ?: throw AssertionError("Relay mux expected $circuits circuits and $sockets sockets within 10 s; last observed $observed")
         }
         val profiles = mutableListOf<YaPairedServerProfile>()
         val managers = mutableListOf<YaServerConnectionManager>()

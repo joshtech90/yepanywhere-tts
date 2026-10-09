@@ -16,6 +16,17 @@ export interface NativeSourceDescriptor {
   binary: boolean;
 }
 
+/** Native operation failure, distinct from an HTTP response and bridge closure. */
+export class NativeOperationError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "NativeOperationError";
+  }
+}
+
 declare global {
   interface Window {
     yaNativeTransport?: NativeTransportChannel;
@@ -364,7 +375,12 @@ export class NativeTransportBridge {
     ) as Record<string, unknown>;
     if (message.type === "reply") {
       const pending = this.pending.get(String(message.id));
-      if (message.error) pending?.reject(new Error(String(message.error)));
+      if (message.error)
+        pending?.reject(
+          typeof message.errorCode === "string"
+            ? new NativeOperationError(message.errorCode, String(message.error))
+            : new Error(String(message.error)),
+        );
       else pending?.resolve(message.result);
     } else this.onEvent(message);
   }

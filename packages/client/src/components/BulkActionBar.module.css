@@ -99,7 +99,7 @@
 }
 
 /* Stack icon and text vertically on mobile */
-@media (max-width: 768px) {
+@media (width <= 768px) {
   .actions {
     gap: var(--space-1);
   }

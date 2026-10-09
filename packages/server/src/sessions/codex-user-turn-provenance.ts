@@ -1,8 +1,10 @@
-import type {
-  CodexEventMsgEntry,
-  CodexMessagePayload,
-  CodexResponseItemEntry,
-  CodexSessionEntry,
+import {
+  type CodexEventMsgEntry,
+  type CodexMessagePayload,
+  type CodexResponseItemEntry,
+  type CodexSessionEntry,
+  MCP_APP_CONTEXT_CLOSE,
+  MCP_APP_CONTEXT_OPEN,
 } from "@yep-anywhere/shared";
 
 /**
@@ -76,6 +78,7 @@ const MARKED_CONTEXT_FRAGMENTS: ReadonlyArray<
   ["<turn_aborted>", "</turn_aborted>"],
   ["<subagent_notification>", "</subagent_notification>"],
   ["<goal_context>", "</goal_context>"],
+  [MCP_APP_CONTEXT_OPEN, MCP_APP_CONTEXT_CLOSE],
 ];
 
 const CODEX_STARTUP_INSTRUCTIONS_RE =

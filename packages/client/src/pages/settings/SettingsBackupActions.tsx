@@ -9,6 +9,7 @@ import {
   applyBrowserSettingsBackup,
   captureBrowserSettings,
 } from "../../lib/browserSettingsBackup";
+import styles from "./SettingsTransfer.module.css";
 
 type Operation = "fetching" | "saving" | "loading" | null;
 
@@ -79,15 +80,10 @@ export function SettingsBackupActions() {
         : t("settingsBackupEmpty");
 
   return (
-    <section
-      className="settings-backup-actions"
-      aria-label={t("settingsBackupTitle")}
-    >
-      <span className="settings-backup-title">{t("settingsBackupTitle")}</span>
-      <span className="settings-backup-status">
-        {t("settingsBackupDescription")}
-      </span>
-      <div className="settings-backup-buttons">
+    <section className={styles.section} aria-label={t("settingsBackupTitle")}>
+      <span className={styles.title}>{t("settingsBackupTitle")}</span>
+      <span className={styles.status}>{t("settingsBackupDescription")}</span>
+      <div className={styles.buttons}>
         <button
           type="button"
           className="settings-button"
@@ -112,7 +108,7 @@ export function SettingsBackupActions() {
         </button>
       </div>
       <span
-        className={`settings-backup-status ${error ? "error" : ""}`}
+        className={`${styles.status} ${error ? styles.error : ""}`}
         role={error ? "alert" : "status"}
       >
         {status}

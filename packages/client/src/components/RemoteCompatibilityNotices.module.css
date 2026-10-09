@@ -16,7 +16,7 @@
   top: calc(env(safe-area-inset-top, 0px) + 4px);
   left: 50%;
   z-index: 195;
-  width: min(920px, calc(100vw - 24px));
+  width: min(920px, calc(100dvw - 24px));
   transform: translateX(-50%);
 }
 
@@ -161,7 +161,7 @@
   background: color-mix(in srgb, var(--text-primary) 88%, transparent);
 }
 
-@media (max-width: 720px) {
+@media (width <= 720px) {
   .root {
     align-items: stretch;
     flex-direction: column;

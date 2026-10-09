@@ -33,6 +33,7 @@ import {
   claudeGatewayLauncher,
 } from "./claude-gateway-launcher.js";
 import { ClaudeProvider } from "./claude.js";
+import { liveModelCatalog } from "./model-catalog-status.js";
 import type { AuthStatus } from "./types.js";
 
 interface GatewayModel {
@@ -825,6 +826,12 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
 
     const read = results.filter(
       (result): result is ServiceCatalogRead => result !== undefined,
+    );
+    const unread = services.length - read.length;
+    this.modelCatalogStatus = liveModelCatalog(
+      unread > 0
+        ? `${unread} of ${services.length} gateway services could not be read`
+        : undefined,
     );
     const { models, routes } = unionModelCatalogs(
       read.map((entry) => ({

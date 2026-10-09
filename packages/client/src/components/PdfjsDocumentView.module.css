@@ -6,7 +6,7 @@
 }
 
 :global(.file-viewer-fullscreen) .view {
-  height: calc(100vh - 50px);
+  height: calc(100dvh - 50px);
 }
 
 .scroller {

@@ -108,7 +108,8 @@ application-only detection with no validated runtime cannot launch. Claude may
 report a launchable runtime without Claude Desktop because YA bundles the
 Claude Agent SDK runtime; its auth probe and login guidance use that resolved
 runtime rather than assuming an unqualified `claude` command exists in Finder's
-environment.
+environment. [Provider sign-in](provider-sign-in.md) owns the login command
+format and the in-app sign-in routes.
 
 The server provider catalog remains authoritative for actual provider
 availability. Provider launch and authentication failures use the ordinary
@@ -259,6 +260,13 @@ The server and every descendant belong to an app-owned Windows process group
 or Job Object. Quit, restart, update, and uninstall attempt graceful shutdown
 and then terminate only that owned tree within a bounded deadline. No
 unqualified `bun.exe`, provider, shell, or PowerShell process kill is allowed.
+
+Opening any packaged window from the tray or a native command leaves the tray,
+the new window's close button, and every other window responsive. On Windows,
+creating a WebView inside a synchronous Tauri command or event handler
+deadlocks the event loop, so window creation always runs from an async command
+or a spawned task. Closing Server Output, Diagnostics, or the recovery window
+hides it; a failed hide is logged.
 
 The installed app has no sidecar console window. Interactive and quiet
 installation, update, reinstall, and uninstall are release-tested from a clean

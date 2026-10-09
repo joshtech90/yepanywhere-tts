@@ -1,8 +1,10 @@
-import { agentHarness } from "@yep-anywhere/shared";
-import type {
-  AgentSelfReport,
-  AgentSelfSelection,
-  AgentSelfValue,
+import { agentHarness, type SessionClientView } from "@yep-anywhere/shared";
+import {
+  type AgentSelfReport,
+  type AgentSelfSelection,
+  type AgentSelfValue,
+  type AgentViewReport,
+  agentViewReport,
 } from "../../agent-tools/protocol.js";
 import { createAgentSelfLease } from "../../agent-tools/service.js";
 import { startMachineControlToolsSession } from "./machine-control.js";
@@ -41,6 +43,7 @@ export class AgentSelfState {
   private selected: AgentSelfReport["selected"];
   private evidence: AgentSelfReport["providerEvidence"];
   private pendingEffort = false;
+  private views: readonly SessionClientView[] = [];
 
   constructor(
     private readonly provider: ProviderName,
@@ -78,6 +81,16 @@ export class AgentSelfState {
       );
     if (selection.pendingEffort !== undefined)
       this.pendingEffort = selection.pendingEffort;
+  }
+
+  /** The supervisor's latest per-client views; replaced whole, never merged. */
+  publishViews(views: readonly SessionClientView[]): void {
+    this.views = views;
+  }
+
+  viewSnapshot(): AgentViewReport | null {
+    if (!this.sessionId) return null;
+    return agentViewReport(this.sessionId, this.views);
   }
 
   accepted(setting: "model" | "effort", input: string | undefined): void {
@@ -171,9 +184,10 @@ export async function startAgentSelfSession(
       agentEnvironment: undefined,
     });
   const state = new AgentSelfState(provider, options);
-  const lease = await createAgentSelfLease((launchId) =>
-    state.snapshot(launchId),
-  );
+  const lease = await createAgentSelfLease({
+    self: (launchId) => state.snapshot(launchId),
+    view: () => state.viewSnapshot(),
+  });
   const environment = {
     ...lease.environment,
     AGENT_LAUNCHER: "yepanywhere",
@@ -212,6 +226,9 @@ export async function startAgentSelfSession(
       if (property === "iterator") return iterator;
       if (property === "publishAgentSelfSelection")
         return (selection: AgentSelfSelection) => state.select(selection);
+      if (property === "publishAgentSessionViews")
+        return (views: readonly SessionClientView[]) =>
+          state.publishViews(views);
       if (property === "publishAgentctlSessionId")
         return async (
           sessionId: string,

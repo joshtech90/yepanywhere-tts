@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-10-04.
+Last updated: 2026-10-08.
 
 This is Yep Anywhere's canonical product-priority overview. Keep initiative
 status, the next action, and major blockers here; keep implementation steps in
@@ -80,6 +80,56 @@ the viewer/download gap remain the next mobile release work.
 
 ### Current baseline
 
+- The October 7 [browser/Android interruption study](../testing/source-lifecycle-study-2026-10-07.md)
+  reproduces visible native synthetic 503s and slow passive wake recovery with
+  a real emulator/browser comparison harness. The original permanent-failure
+  diagnosis is narrowed: the WebView already retries after 60 seconds. The
+  first repair preserves typed operation errors instead of fabricated HTTP
+  responses; direct/mux emulator reproductions recover without the error.
+  Explicit recoverability, platform network signals, abandoned-subscription
+  cleanup and page catch-up acceptance are implemented. The
+  [second emulator hardening round](../testing/android-lifecycle-hardening-2026-10-07.md)
+  repairs shared draft-attachment preservation after failed validation and
+  corrects missing fixture routes. Offline notification taps now survive
+  recovery and process death, with unit and real-FCM emulator acceptance.
+  The full native live suite and all seven extended Android lifecycle cases
+  pass, including direct/relay outages, eight-cycle catch-up, process death,
+  real FCM and interrupted uploads. Matched Chrome runs retain an intermittent
+  initial-typing failure and an unhandled upload rejection as separate gaps;
+  standard web recovery policy stays unchanged. Full-device captures now cover
+  Android system icons as well as the WebView. The actual Release retains its
+  route and draft through an offline Android reboot, and native login labels
+  connection failures accurately. CI prebuilds the exact minified probe before
+  the emulator, streams test progress and gives the aggregate job 40 minutes
+  with unchanged per-test deadlines and app assertions. The final
+  [Android run 513](https://github.com/kzahel/yepanywhere/actions/runs/37712235822)
+  passes build and complete direct/relay acceptance, then publishes internal
+  `0.1.2-ci.513.1` / code `61301` from `a079aa3f9`. Play confirms availability
+  to internal testers. All 24 general CI and 12 runtime/SQLite jobs pass;
+  two browser retries remain recorded in the report. The earlier
+  [Maven dependency 429](../../gaps/android-ci-instrumentation-dependency-rate-limit.md)
+  remains an infrastructure follow-up, with its failed attempt preserved.
+  Native remains the sole app connection owner.
+  October 8 dependency maintenance reproduced a native lease teardown race
+  during repeated refresh. Android retirement now rejects late native calls
+  and drains admitted work before destroying its lease; deterministic JVM
+  regressions cover owned requests and external direct callers. Fresh
+  [hosted Android acceptance](https://github.com/kzahel/yepanywhere/actions/runs/37730248677)
+  passes the full minified direct/relay suite, including repeated refresh.
+  Dedicated physical-phone acceptance on the same repair passes direct and
+  100 MiB relay uploads plus repeated refresh in both modes. Real sequential
+  typing acknowledges all 29 characters without drops, with 26.5/25.7 ms
+  maxima under the unchanged physical-device 100 ms gate and zero transport
+  overflows. Hosted software rendering uses the existing 2,000 ms emulator
+  budget; it does not establish the physical typing requirement. The separate
+  [CI ADB connection loss](../../gaps/android-ci-live-adb-connection-loss.md)
+  remains an infrastructure diagnosis follow-up.
+  [Passive service-restoration latency](../../gaps/android-passive-service-restoration-slow-probe.md)
+  remains a measured UX follow-up under the retained 60-second probe policy.
+  The shared transport-unit conformance factory remains follow-up work;
+  physical update, modem, overnight and keyboard checks are the next acceptance
+  step using the available internal build.
+
 - Signed macOS and Windows desktop releases already exist. The
   [desktop release QA log](../testing/desktop-release-qa-log.md) records
   installer and updater validation; the
@@ -139,6 +189,25 @@ the viewer/download gap remain the next mobile release work.
   tester enrollment and production iOS push remain open. Android internal
   release delivery is available on explicit request; iOS release automation
   remains open. See [mobile store preparation](../distribution/mobile/README.md).
+  October 5 public Android setup saves category/contact, app-access instructions
+  and all 11 app-setup tasks, including content ratings and Data safety.
+  An isolated synthetic reviewer VM passes
+  native relay authentication, sample history, mock replies, restart and network
+  isolation checks. The listing now includes actual Android screenshots.
+  The publisher's [privacy and deletion policy](https://graehlarts.com/privacy.html#yepanywhere)
+  is live on October 6, with all three Play URLs saved against it.
+  The maintainer saved an all-ages content rating on October 6; preserve it.
+  Source integration is complete. Open testing has unlimited enrollment and
+  177 countries/regions with France excluded. Signed code 57901 with the privacy
+  link was submitted for Open beta 1 review on October 6. Android
+  build/lint/inspection and WebView instrumentation pass for the exact source.
+  The maintainer selected and saved a 13+ intended audience; the all-ages
+  content rating is unchanged. Play approved and published the release on
+  October 6. A later link check found the open-testing track paused. Resume is
+  saved, with quick checks completed. A later reload confirms its separate
+  activation change is in review despite the earlier confirmation error.
+  Public enrollment still reports App not available; await activation
+  publication before claiming public testers can install.
 - Native app CI now runs on relevant platform, shared mobile-core and packaging
   changes rather than ordinary web/server edits. Daily Android/iOS acceptance
   and the existing desktop nightly retain full shared-source coverage; manual
@@ -220,7 +289,13 @@ physical-phone acceptance evidence.
 The [WebView app implementation](../tactical/083-android-bundled-web-native-transport.md)
 reuses the existing native pairing and multi-host core and the web client's
 SourceTransport contract. It adds no server authentication protocol or child
-credential. The duplicate native dashboard and Conversation presentation are
+credential. Android now preserves typed request failures and keeps exhausted network
+recovery visibly reconnecting, with a native network-restored signal feeding
+the existing recovery scheduler. Browser recovery policy stays unchanged;
+subscription failures and cancellation now retain native semantics, with
+page catch-up acceptance covering session, Inbox, sidebar and retained drafts.
+The broader all-transport conformance suite remains follow-up work.
+The duplicate native dashboard and Conversation presentation are
 removed, with reusable decoder/projection helpers retained.
 
 The [Simple Client API experiment](../tactical/130-simple-client-api-and-three-client-demo.md)

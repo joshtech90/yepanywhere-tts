@@ -61,7 +61,7 @@
   color: var(--error-color);
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .content {
     padding: 0.5rem;
     max-width: 100%;

@@ -1251,6 +1251,13 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
         updates.codexReloadSafeSessions = body.codexReloadSafeSessions;
       }
 
+      if ("mcpAppViews" in body) {
+        if (typeof body.mcpAppViews !== "boolean") {
+          return c.json({ error: "mcpAppViews must be a boolean" }, 400);
+        }
+        updates.mcpAppViews = body.mcpAppViews;
+      }
+
       if ("idleReapHours" in body) {
         if (!isIdleReapHours(body.idleReapHours)) {
           return c.json(

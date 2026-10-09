@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { useI18n } from "../../i18n";
 import { useVersion } from "../../hooks/useVersion";
 import { ArtifactSettings } from "./ArtifactSettings";
+import { McpAppViewsSettings } from "./McpAppViewsSettings";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { SettingsSection } from "./SettingsSection";
 
@@ -16,6 +17,7 @@ export function AppsSettings() {
       ) : (
         <p>{t("settingsAppsUnavailable")}</p>
       )}
+      <McpAppViewsSettings />
     </SettingsSection>
   );
 }

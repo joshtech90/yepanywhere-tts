@@ -1,6 +1,6 @@
 :global(.modal):has(.body) {
-  width: min(44rem, calc(100vw - 1.5rem));
-  max-width: min(44rem, calc(100vw - 1.5rem));
+  width: min(44rem, calc(100dvw - 1.5rem));
+  max-width: min(44rem, calc(100dvw - 1.5rem));
   height: auto;
 }
 
@@ -153,10 +153,10 @@
   cursor: default;
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   :global(.modal):has(.body) {
-    width: 100vw;
-    max-width: 100vw;
+    width: 100dvw;
+    max-width: 100dvw;
     height: 100dvh;
   }
 
@@ -169,10 +169,10 @@
     gap: var(--space-2);
   }
 }
-@media (min-width: 900px) {
+@media (width >= 900px) {
   :global(.modal):has(.body) {
-    width: min(64rem, calc(100vw - 3rem));
-    max-width: min(64rem, calc(100vw - 3rem));
+    width: min(64rem, calc(100dvw - 3rem));
+    max-width: min(64rem, calc(100dvw - 3rem));
   }
   .body {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

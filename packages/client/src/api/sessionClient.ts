@@ -221,6 +221,8 @@ export function createSessionApi(fetchJSON: typeof FetchJson) {
           thinking?: { type: string };
           effort?: string;
           model?: string;
+          /** Provider service tier, e.g. Codex "priority"; absent is Standard. */
+          serviceTier?: string;
           /** YA model id (launch alias) for keying per-model settings. */
           requestedModel?: string;
           liveness?: SessionLivenessSnapshot;

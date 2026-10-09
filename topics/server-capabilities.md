@@ -17,6 +17,16 @@ none has the file-vhost routes. Without the new bit, replacement stays hidden
 and file addresses remain administrator-only. ID 105 retains its original
 meaning. Standing maintainer compatibility authorization applies.
 
+`agent-session-view` (permanent ID 119, explicit optional bit) owns
+`PUT /api/sessions/:sessionId/view` and
+`DELETE /api/sessions/:sessionId/view/:clientId`, through which a tab reports
+what it shows beside a session for `ya-agent view`. It is advertised only
+while `YEP_AGENT_SELF` is enabled. The 2026-10-06 optional release review
+checked v0.9.0, v0.9.1 and v0.9.2; none has the routes. Without the bit,
+clients report nothing and make no request. No existing capability changes
+meaning. Standing maintainer compatibility authorization applies. See
+[view inspection](agent-self.md#view-inspection).
+
 ## Most remaining router policy
 
 `agent-auth-router-most-remaining` (permanent optional ID 117) adds negotiated
@@ -57,6 +67,30 @@ review checked the approved v0.9.0–v0.9.2 corpus, which lacks project-app
 routes. Without the bit clients hide app/project cleanup controls and show
 update guidance. Existing project deletion retains its meaning. See
 [app inventory](project-service.md#app-address-in-project-settings).
+
+`process-service-tier-change` (permanent ID 118, version-implied from 0.9.4)
+owns the `serviceTier` request and response field on
+`POST /api/processes/:processId/config`. v0.9.0–v0.9.2 return the tier from
+process info and accept it on create and queue but ignore it on that route.
+Without the capability the client shows the tier read-only in Session Info and
+sends no tier change. No existing capability changes meaning. The maintainer
+approved this gate on 2026-10-06. See [service tier](service-tier.md#compatibility).
+
+`mcp-app-views` (permanent ID 120, version-implied from 0.9.4) owns the
+`mcpAppViews` server setting, the `_mcpApp` tool_use field,
+`POST /api/projects/:projectId/sessions/:sessionId/mcp-apps`, and the
+artifact-origin proxy path. v0.9.0–v0.9.2 lack all of them; without the
+capability clients hide the setting and every view button and send no view
+request. No existing capability changes meaning; the maintainer's standing
+compatibility approval covers the gate. See [MCP Apps](mcp-apps.md#compatibility).
+
+`project-creation-git-choice` (permanent ID 121, version-implied from 0.9.4)
+owns the `gitInit` request field on `POST /api/projects`: `false` creates a
+missing folder without a repository. v0.9.0–v0.9.2 always initialize Git in a
+folder they create and ignore the field; without the capability New session
+shows Git initialization checked and disabled and sends no field. No existing
+capability changes meaning; the maintainer's standing compatibility approval
+covers the gate. See [project names](project-names.md).
 
 `context-usage-breakdown` (permanent ID 108, version-implied from 0.9.4) owns
 `GET /api/sessions/:sessionId/context-breakdown`. v0.9.0–v0.9.2 lack the

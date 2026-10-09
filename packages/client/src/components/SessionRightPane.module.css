@@ -97,7 +97,7 @@
   color: var(--text-primary);
   text-decoration: none;
 }
-@media (min-width: 1100px) {
+@media (width >= 1100px) {
   .pane {
     grid-column: 2;
     padding-left: 8px;
@@ -113,7 +113,7 @@
   border-left: none;
   box-shadow: none;
 }
-@media (max-width: 1099px) {
+@media (width < 1100px) {
   .pane.projectFullscreen {
     inset: 0;
   }

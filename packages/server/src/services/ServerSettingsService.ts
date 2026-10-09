@@ -307,6 +307,11 @@ export interface ServerSettings {
   codexUpdatePolicy?: "auto" | "notify" | "off";
   /** Keep eligible local Linux Codex runtimes across YA server reloads. */
   codexReloadSafeSessions: boolean;
+  /**
+   * Host MCP App views (`topics/mcp-apps.md`): declare the UI extension to
+   * MCP servers of newly started Codex sessions and serve their views.
+   */
+  mcpAppViews: boolean;
   /** Best-effort idle provider reap grace in hours; negative disables it. */
   idleReapHours?: number;
   /**
@@ -405,6 +410,7 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   codexReasoningSummary: DEFAULT_CODEX_REASONING_SUMMARY,
   codexUpdatePolicy: "notify",
   codexReloadSafeSessions: false,
+  mcpAppViews: false,
   claudeSteerBackgroundBash: DEFAULT_CLAUDE_STEER_BACKGROUND_BASH,
   clientDefaults: DEFAULT_CLIENT_DEFAULTS,
   cacheMissBilling: DEFAULT_CACHE_MISS_BILLING_SETTINGS,
@@ -551,6 +557,10 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
     typeof settings.codexReloadSafeSessions === "boolean"
       ? settings.codexReloadSafeSessions
       : DEFAULT_SERVER_SETTINGS.codexReloadSafeSessions;
+  normalized.mcpAppViews =
+    typeof settings.mcpAppViews === "boolean"
+      ? settings.mcpAppViews
+      : DEFAULT_SERVER_SETTINGS.mcpAppViews;
   normalized.idleReapHours = isIdleReapHours(settings.idleReapHours)
     ? normalizeIdleReapHours(settings.idleReapHours)
     : undefined;

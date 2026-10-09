@@ -176,7 +176,7 @@
   box-shadow: 0 0 0 1px var(--cockpit-accent);
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .trigger {
     min-height: 3.1rem;
     padding: 0.28rem 0.2rem;
@@ -223,7 +223,7 @@
 
 /* Keyboard shortcuts mean nothing on a touch phone; the slot goes back to the
    bottom navigation, whose labels otherwise wrapped mid-word. */
-@media (max-width: 700px) and (pointer: coarse) {
+@media (width <= 700px) and (pointer: coarse) {
   .trigger {
     display: none;
   }

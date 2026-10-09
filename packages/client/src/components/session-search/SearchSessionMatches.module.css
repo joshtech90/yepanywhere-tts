@@ -2,7 +2,7 @@
   padding: 12px;
 }
 :global(.modal):has(.matches) {
-  width: calc(100vw - 24px);
+  width: calc(100dvw - 24px);
   max-width: none;
   height: calc(100dvh - 24px);
   max-height: none;

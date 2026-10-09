@@ -507,6 +507,21 @@ authenticates there. The baseline does not mint, delegate, or expose a child
 resume credential merely to avoid the second prompt. Any later delegated-token
 proposal requires its own security and compatibility review.
 
+A shared-credential replacement for this bridge landed on 2026-10-07 and was
+reverted the same day. Native handed the bundled document the profile's SRP
+resume credential, and the document opened its own socket. Installed servers
+close that socket with `4003 Forbidden: Invalid origin`: the WebSocket origin
+allowlist (`packages/server/src/middleware/allowed-hosts.ts`) admits neither
+`https://appassets.androidplatform.net` nor `yepapp://bundle`, and the relay's
+default origin policy (`packages/relay/src/origin-policy.ts`) rejects both as
+well. The document therefore never connected over any route. The design,
+including its security review, is
+`gaps/sketches/native-webview-shared-resume-credential.md` as of `65dcadaa5^`.
+Reviving it needs server and relay origin acceptance, a capability, and a
+fallback for servers without it. The planned direction instead keeps native as
+the only SRP owner and repairs this bridge against
+[a lifecycle conformance suite](../gaps/sketches/source-transport-lifecycle-conformance.md).
+
 ### Implemented bridge contract
 
 `window.yaNativeTransport` is restricted to the bundled app-assets origin and
@@ -533,6 +548,38 @@ subscriptions. Native generates wire request, subscription and upload ids.
 Browser profile metadata is not forwarded as native identity. Native alone
 restores subscriptions and owns bounded source reconnect. Speech and device
 signaling capabilities are absent until their native adapters are implemented.
+
+Android request and subscription failures that have no server response are operation errors,
+never invented HTTP statuses. Protocol-1 error replies keep the existing
+`error` text and add `errorCode`: `CONNECTION_UNAVAILABLE`, `TIMEOUT`, `OVERFLOW`,
+`INVALID_MESSAGE`, or `REAUTHENTICATION_REQUIRED`. The code, not message text,
+determines recovery. Unknown codes and older native replies without a code
+remain ordinary operation failures. This additive bundled-bridge field changes
+no server protocol or minimum server version; iOS may still send legacy text.
+
+Subscription setup replies and asynchronous `subscriptionError` events use the
+same `errorCode` vocabulary. Only a real server rejection supplies an HTTP
+`status`; native overload is `OVERFLOW`, and failed verification/authentication
+is non-retryable. A legacy error without a code stays an ordinary error rather
+than gaining an invented status.
+
+Closing a native-backed subscription retires its native intent even while the
+server socket is reconnecting. A native connection can restore only retained
+intents; managed web streams recreate their own abandoned subscriptions from
+the last consumed event ID. Retired IDs ignore late events and setup failures.
+An unsubscribe already queued behind native reconnect can reach the server
+after its socket resumes; this is bounded in-flight work, not a retained live
+subscription. Browser socket transports keep their existing teardown behavior.
+
+Only `CONNECTION_UNAVAILABLE` enters the client's existing reconnect retry path.
+An operation failure may arrive before the native state event: reads must wait
+for native readiness before their single retry. Native's reconnect remains the
+connection owner; operation errors must not start an independent socket or retry
+loop. Writes and uploads are never automatically replayed after an ambiguous
+failure. Timeouts, overload, verification and authentication failures retain
+their own classification. Genuine server responses preserve their status,
+headers and body, including a real 503. Late replies to cancelled or already
+retired operations cannot change the current source's readiness.
 
 Uploads stream at most 100 MiB in 64 KiB chunks, with exact offsets and the
 established encrypted binary upload format. Acknowledging a local upload frame
@@ -599,9 +646,30 @@ Android native reconnect retains lease owners and subscription intents, joins
 an existing acquisition/retry, and can replace a stale transport after network
 restoration. The WebView requests a new bounded native cycle on visible demand,
 network restoration or a visible 60-second backstop after exhaustion. There is
-no hidden retry timer. Authentication rejection/revocation and a broken local
-bridge are distinct from network failure and do not enter that recovery loop.
+no hidden retry timer. Android explicitly marks exhausted network failures as
+recoverable; callers continue to see `reconnecting`, not terminal disconnect.
+Android manager state events include `recoverable`: on `FAILED`, true denotes
+network exhaustion and false denotes terminal failure. Its presence advertises
+this recovery contract to the bundled adapter; a WebView `offline` event then
+also remains `reconnecting`, and a demand read can wait for native readiness
+within its existing bound. Legacy native hosts without this field retain their
+existing mapping. An Android default-network-available callback joins the same WebView recovery
+scheduler as visibility, activity and online signals; it creates no second
+retry timer and does nothing for hidden or suspended documents. Service
+restoration without a network event can still wait for the 60-second backstop.
+Authentication rejection/revocation, failed message/proof verification and a
+broken local bridge do not enter that recovery loop. Verification failure does
+not itself request sign-in. Native route fallback still tries another saved
+route, but an unverified response cannot become mere retry exhaustion when no
+route authenticates. These changes retain the existing owner identity,
+credentials and server authority; no new principal or grant is introduced.
 Recovery updates the mounted page without a document reload.
+For a retained session or Inbox view, recovery catches up messages and session
+metadata (including title/star changes made while asleep). A previously visited
+Inbox and the sidebar opened afterward agree with the recovered session. Unsent
+drafts survive the interruption. Temporary loss does not redirect to login or
+manufacture a server error; genuine server failures retain normal page error
+handling. These are page-level invariants in addition to socket readiness.
 
 Bundled native pages support pull-down refresh beginning at the top of the page
 or transcript, including pages that fit without overflow. Release after an
@@ -815,6 +883,14 @@ security policy. Rust tries the preferred candidate, then direct-first fallback,
 authenticates the saved identity on every attempt and persists the highest proof
 version before consumers. Authenticated reconnect stays limited to three attempts;
 Kotlin does not add another retry cycle after Rust exhausts them.
+
+Android transport retirement rejects new native operations before releasing
+its lease. It cancels owned requests, event reads and queued work; the native
+wrapper remains alive until admitted calls and transport coroutines have
+drained, including direct requests from external callers. `closeAndAwait`
+returns only after that teardown finishes. Refresh, document replacement and
+host switching must never dispatch through a destroyed lease or terminate the
+app because of late work from the retired document.
 
 Android connection setup accepts callers on the UI dispatcher: full login,
 profile pairing and resume perform their native future polling and protected

@@ -404,26 +404,17 @@ test.describe("Session Resumption", () => {
     // Refresh the page - stored session should now be invalid
     await page.reload();
 
-    // A confirmed rejection explains why sign-in is required before leaving
-    // the current page; only an explicit user action opens login.
-    await expect(
-      page.getByText("Sign in required", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      page.getByText(/Server rejected session resume:/),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "Retry", exact: true }),
-    ).toHaveCount(0);
-    await page.getByRole("button", { name: "Go to Login" }).click();
-    await expect(
-      page.locator('[data-testid="direct-mode-button"]'),
-    ).toBeVisible({
+    // No page was loaded after the reload, so a confirmed rejection opens the
+    // direct login form itself, explaining why sign-in is required.
+    await expect(page.locator('[data-testid="login-form"]')).toBeVisible({
       timeout: 10000,
     });
-
-    // Navigate to Direct Login to verify auth behavior
-    await goToDirectLogin(page);
+    await expect(page.locator('[data-testid="login-error"]')).toHaveText(
+      "The server rejected the saved session. Sign in again to reconnect.",
+    );
+    await expect(page.getByRole("button", { name: "Go to Login" })).toHaveCount(
+      0,
+    );
 
     // The wsURL should be pre-filled (connection settings remembered)
     // Fill in the old password - should fail

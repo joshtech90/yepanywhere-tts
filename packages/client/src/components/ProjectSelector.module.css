@@ -55,11 +55,11 @@
 }
 
 /* Only truncate on mobile where space is limited */
-@media (max-width: 768px) {
+@media (width <= 768px) {
   .text {
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: calc(100vw - 150px);
+    max-width: calc(100dvw - 150px);
   }
 }
 

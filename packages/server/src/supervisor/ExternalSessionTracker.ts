@@ -134,9 +134,17 @@ export class ExternalSessionTracker {
   private peerStatus?: PeerStatusSource;
   /** Batches session parsing to prevent OOM from concurrent file reads */
   private sessionParser: BatchProcessor<TrackedSessionSummary | null>;
-  /** Tracks sessions that have already emitted session-created */
+  /**
+   * Tracks sessions that have already emitted session-created. Semantic, not
+   * a cache: one session ID per external session seen since process start
+   * (reset on restart). Evicting would re-emit session-created.
+   */
   private createdSessions: Set<string> = new Set();
-  /** Cache of last known session state for change detection */
+  /**
+   * Last known session state for change detection. Grows with external
+   * sessions seen since process start (about 0.5–2 KB each); evicting would
+   * report a spurious change, so a bound must follow session removal.
+   */
   private sessionStateCache: Map<
     string,
     {

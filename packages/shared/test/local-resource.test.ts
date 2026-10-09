@@ -101,6 +101,14 @@ describe("local resource parsing", () => {
     ["mp4", "video"],
     ["ogv", "video"],
     ["webm", "video"],
+    ["aac", "audio"],
+    ["flac", "audio"],
+    ["m4a", "audio"],
+    ["mp3", "audio"],
+    ["oga", "audio"],
+    ["ogg", "audio"],
+    ["opus", "audio"],
+    ["wav", "audio"],
   ])("classifies .%s local-image paths as %s", (extension, mediaType) => {
     expect(
       parseLocalResourceHref(

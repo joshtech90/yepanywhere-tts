@@ -55,6 +55,30 @@ to 3.2.2 within its declared range, above the 3.2.1 patch floor for
 and [prototype-named headers](https://github.com/advisories/GHSA-x8mw-p69m-v3mx).
 Unrelated resolutions and advisory exclusions remain unchanged.
 
+The 2026-10-06 CI audit repair moves three transitive edges within their
+parents' declared ranges: the MCP SDK's `express -> proxy-addr` to 2.0.8
+([IPv4-mapped IP spoofing](https://github.com/advisories/GHSA-jqcg-44mw-7w3h)),
+`postcss -> source-map-js` to 1.2.2
+([event-loop denial of service](https://github.com/advisories/GHSA-68fv-2mgg-jv7q)),
+and the relay's `pino-pretty -> fast-copy` to 4.1.2
+([stack exhaustion](https://github.com/advisories/GHSA-jggr-w7fw-pc2j)).
+`pnpm -r update --depth=Infinity` also re-resolved unrelated jsdom CSS
+dependencies, so these were moved with temporary exact overrides that were
+then removed. [KaTeX's prototype-pollution gadget](https://github.com/advisories/GHSA-238p-pmpm-9mq7)
+is patched only in 0.18.2, outside mermaid's `^0.16.47` range (12.1.0 too),
+so the scoped `"mermaid>katex": "^0.18.6"` override shares the 0.18 copy the
+client and server already use. Mermaid calls only `renderToString` with
+`throwOnError`, `displayMode` and `output`, untouched by the 0.17 and 0.18
+breaking changes. Drop the override when mermaid declares a patched KaTeX.
+No new advisory exclusions are added.
+
+The 2026-10-07 CI audit repair moves the server's exact
+`@modelcontextprotocol/sdk` pin from 1.29.0 to 1.32.1, above the 1.31.0 patch
+floor for [OAuth credentials sent to an MCP-chosen authorization server](https://github.com/advisories/GHSA-6qxp-vccf-f47h).
+YA code imports nothing from the SDK; the pin satisfies
+`@anthropic-ai/claude-agent-sdk`'s `^1.29.0` peer range, which 1.32.1 stays
+within. No new advisory exclusions are added.
+
 ### Install-script allowlist
 
 Dependency install scripts (preinstall/install/postinstall) are blocked by
@@ -118,12 +142,26 @@ PRs open weekly, at most five at a time, after a release is 3 days old;
 security fixes skip both waits. The Dependency Dashboard issue lists
 everything pending.
 
+- Routine runtime updates are grouped for manual review: stable npm
+  web/server dependencies (plus 0.x patches), Android libraries, stable Go
+  bridge modules, and Rust crate patches. Provider SDKs and Tauri retain
+  their separate audit/group boundaries. Android build tools and Go
+  language/toolchain directives stay outside the library groups.
+- Major upgrades and 0.x minor upgrades require dashboard approval before
+  creating a PR and never automerge. Request migrations individually;
+  approving the entire pending queue defeats that boundary.
 - Renovate automerges only non-major devDependency updates at 1.0 or later
   and non-major GitHub Actions updates and digest pins. Everything else waits
   for review.
 - `platformAutomerge` is off: `main` has no required status checks, so
   GitHub's native automerge could merge a PR with failing checks. Renovate
   merges only after every check on the branch passes.
+- Initial GitHub Action digest pins skip the release-age wait: they freeze
+  references that already float to those commits. Renovate ages pins against
+  the newest matching release, which can otherwise leave a frequently
+  releasing Action unpinned indefinitely. Version upgrades and subsequent
+  digest updates retain the 3-day wait. See
+  [Renovate's pinDigest guidance](https://docs.renovatebot.com/key-concepts/minimum-release-age/#pindigest-updates).
 - Workflow runtime inputs (`node-version`, `go-version`, `toolchain`,
   `java-version`) are not updated; CI deliberately runs at the supported
   Node floor.
@@ -134,5 +172,8 @@ everything pending.
   [provider refresh](../../topics/provider-refresh.md) audit and the
   known-good STT snapshot respectively.
 
+Renovate 44's validator requires Node.js `^24.11.0`; use that runtime for
+this tooling even when the application uses another supported Node version.
 Before changing `renovate.json`, run
-`npx --package=renovate -- renovate-config-validator --strict`.
+`npx --yes --package=renovate@44 -- renovate-config-validator --strict`.
+Revisit the validator major/runtime when the hosted app moves to a new major.

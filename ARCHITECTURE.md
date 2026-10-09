@@ -109,6 +109,20 @@ controller. See
 Single-user / small-team scale is assumed throughout — see the cleanups
 section below for what would have to change at higher fan-out.
 
+## Bounded retention
+
+The server runs for weeks, so any process-lifetime map, set, array, or cache
+whose key space grows with sessions, projects, files, requests, or time must
+have a declared bound: a byte or entry LRU, a TTL released by the
+process-wide idle sweep (`lib/processIdleSweep.ts`), lifecycle deletion tied
+to its owner, a fixed key space, or an accepted small per-entry cost whose
+growth is documented. A plain `Map` or `Set` field on a long-lived service
+carries a comment naming its bound. Never add a timer per session, project, or
+cache. Long-lived async resources (watches, intervals, sockets, workers) must
+be created outside request-scoped `AsyncLocalStorage` contexts, or they retain
+that request's data until they close. Details and the owner table are in
+[`topics/server-performance-observability.md`](topics/server-performance-observability.md#bounded-retention).
+
 ## Detailed docs
 
 - [`docs/project/server-message-routing.md`](docs/project/server-message-routing.md)

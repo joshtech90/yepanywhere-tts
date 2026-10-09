@@ -1,4 +1,11 @@
-import { useId, useLayoutEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { useQuoteReply } from "../contexts/QuoteReplyContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
@@ -6,7 +13,12 @@ import { useTextTooltipAttributes } from "../hooks/useTooltipAppearance";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
 import { useSessionLastFile } from "../lib/sessionLastFile";
-import { useSessionViewerController } from "../lib/sessionViewerController";
+import {
+  getSessionViewerSnapshot,
+  minimizeSessionViewer,
+  useSessionViewerController,
+} from "../lib/sessionViewerController";
+import { readReloadedSessionFile } from "../lib/sessionViewerReload";
 import { buildProjectFileViewUrl } from "./FileDiffViewLinks";
 import {
   getProjectViewerFilePath,
@@ -58,6 +70,28 @@ export function LastSessionFile({
   const { t } = useI18n();
   const tooltip = useTextTooltipAttributes(file?.filePath);
   const [hasMargin, setHasMargin] = useState(false);
+
+  // A reload reopens the file viewer this tab had open, where it was. The
+  // record exists only while a viewer is open, so Close still means closed.
+  const reopened = useRef<string | null>(null);
+  useEffect(() => {
+    if (inactive || reopened.current === sessionId) return;
+    reopened.current = sessionId;
+    if (getSessionViewerSnapshot()) return;
+    const saved = readReloadedSessionFile(sessionId);
+    const savedFile = saved ? parseFileRoute(saved.route) : null;
+    if (!saved || !savedFile) return;
+    presentProjectFileViewer({
+      ...savedFile,
+      id: viewerId,
+      sessionId,
+      quoteReply,
+      openInNewTabUrl: toBrowserAppHref(
+        buildProjectFileViewUrl({ ...savedFile, basePath }),
+      ),
+    });
+    if (saved.minimized) minimizeSessionViewer(viewerId);
+  }, [inactive, sessionId, viewerId, quoteReply, basePath]);
 
   useLayoutEffect(() => {
     const parent = target?.parentElement;

@@ -1,8 +1,11 @@
-import type {
-  EffortLevel,
-  ModelInfo,
-  ProviderName,
-  ThinkingOption,
+import {
+  type EffortLevel,
+  type ModelInfo,
+  type ModelServiceTier,
+  type ProviderName,
+  SERVER_CAPABILITIES,
+  serverHasCapability,
+  type ThinkingOption,
 } from "@yep-anywhere/shared";
 import {
   Fragment,
@@ -20,6 +23,7 @@ import {
   useModelSettings,
 } from "../hooks/useModelSettings";
 import { useProviderSubscriptionUsage } from "../hooks/useProviderSubscriptionUsage";
+import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import {
   getEffortLevelLabel,
@@ -38,6 +42,11 @@ import {
   startsAdditionalModelGroup,
   withVisibleModelSelection,
 } from "../lib/modelCatalog";
+import {
+  isStandardServiceTier,
+  selectableServiceTiers,
+  serviceTierLabel,
+} from "../lib/serviceTiers";
 import { ProviderBadge } from "./ProviderBadge";
 import { ModelSubscriptionUsage } from "./ModelSubscriptionUsage";
 import { Modal } from "./ui/Modal";
@@ -150,6 +159,16 @@ export function ModelSwitchModal({
   const dismissedRef = useRef(false);
   const [activating, setActivating] = useState(false);
   const [activateError, setActivateError] = useState<string | null>(null);
+  /** Live process tier; null is Standard. */
+  const [currentServiceTier, setCurrentServiceTier] = useState<string | null>(
+    null,
+  );
+  const [savingServiceTier, setSavingServiceTier] = useState(false);
+  const { version } = useVersion();
+  const supportsServiceTierChange = serverHasCapability(
+    version,
+    SERVER_CAPABILITIES.processServiceTierChange,
+  );
 
   useEffect(() => {
     if (!processId) {
@@ -207,6 +226,11 @@ export function ModelSwitchModal({
         setThinkingModeState(resolvedThinkingMode);
         setCurrentEffortLevel(resolvedEffort);
         setEffortLevelState(resolvedEffort);
+        setCurrentServiceTier(
+          isStandardServiceTier(process?.serviceTier)
+            ? null
+            : (process?.serviceTier ?? null),
+        );
         setLastTouchedSection(null);
       })
       .catch((err) => {
@@ -256,6 +280,27 @@ export function ModelSwitchModal({
     thinkingModeOptions,
   );
   const showEffortOptions = thinkingModeOptions.includes("on");
+  // Tiers belong to the running model; a model switch keeps the current tier
+  // and Codex drops it for a model that does not offer it.
+  const currentModelInfo = useMemo(
+    () => models.find((model) => model.id === currentModelId) ?? null,
+    [models, currentModelId],
+  );
+  const serviceTierOptions = useMemo((): ModelServiceTier[] => {
+    const offered = selectableServiceTiers(currentModelInfo?.serviceTiers);
+    if (
+      currentServiceTier &&
+      !offered.some((tier) => tier.id === currentServiceTier)
+    ) {
+      offered.push({
+        id: currentServiceTier,
+        name: serviceTierLabel(currentServiceTier, undefined, t),
+      });
+    }
+    return offered;
+  }, [currentModelInfo, currentServiceTier, t]);
+  const showServiceTierOptions =
+    !!processId && supportsServiceTierChange && serviceTierOptions.length > 0;
 
   const dirty =
     !loading &&
@@ -308,6 +353,34 @@ export function ModelSwitchModal({
         );
         setSwitching(false);
       }
+    }
+  };
+
+  // Speed applies on its own: a live tier change needs no restart, while
+  // combining it with a model or effort change would force one.
+  const applyServiceTier = async (serviceTier: string | null) => {
+    if (!processId || savingServiceTier || serviceTier === currentServiceTier)
+      return;
+    setSavingServiceTier(true);
+    setError(null);
+    try {
+      const result = await api.setProcessConfig(processId, { serviceTier });
+      if (dismissedRef.current) return;
+      setCurrentServiceTier(
+        isStandardServiceTier(result.serviceTier)
+          ? null
+          : (result.serviceTier ?? null),
+      );
+    } catch (err: unknown) {
+      if (!dismissedRef.current) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : t("modelSwitchSpeedChangeFailed"),
+        );
+      }
+    } finally {
+      if (!dismissedRef.current) setSavingServiceTier(false);
     }
   };
 
@@ -582,6 +655,42 @@ export function ModelSwitchModal({
                       </Fragment>
                     );
                   })}
+                </div>
+              </section>
+            )}
+
+            {showServiceTierOptions && (
+              <section className="model-switch-section">
+                <div className="model-switch-section-header">
+                  <strong>{t("modelSwitchSpeedLabel")}</strong>
+                </div>
+                <div className="model-switch-chip-group">
+                  {[
+                    {
+                      id: null,
+                      name: t("serviceTierStandardLabel"),
+                      description: t("serviceTierStandardDescription"),
+                    },
+                    ...serviceTierOptions,
+                  ].map((tier) => {
+                    const isCurrent = currentServiceTier === tier.id;
+                    return (
+                      <button
+                        key={tier.id ?? "standard"}
+                        type="button"
+                        className={`model-switch-chip ${isCurrent ? "current active" : ""}`}
+                        aria-pressed={isCurrent}
+                        onClick={() => void applyServiceTier(tier.id)}
+                        disabled={switching || savingServiceTier}
+                        title={tier.description}
+                      >
+                        <span>{tier.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="model-switch-section-note">
+                  {t("modelSwitchSpeedLiveHint")}
                 </div>
               </section>
             )}

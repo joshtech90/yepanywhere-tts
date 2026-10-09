@@ -232,6 +232,51 @@ describe("Providers Routes", () => {
     ]);
   });
 
+  it("reports the provenance of the models it returns", async () => {
+    let fetchedAt = "2026-10-06T10:00:00.000Z";
+    const provider = createProvider({
+      getAvailableModels: vi.fn(async () => [{ id: "opus", name: "Opus" }]),
+      getModelCatalogStatus: vi.fn(() => ({
+        source: "live" as const,
+        fetchedAt,
+      })),
+    });
+    const routes = createProvidersRoutes({
+      providers: [provider],
+      cacheTtlMs: 60_000,
+    });
+
+    const first = (await (await routes.request("/claude")).json()) as {
+      provider: { modelCatalog?: unknown };
+    };
+    expect(first.provider.modelCatalog).toEqual({
+      source: "live",
+      fetchedAt: "2026-10-06T10:00:00.000Z",
+    });
+
+    fetchedAt = "2026-10-06T10:05:00.000Z";
+    const cached = (await (await routes.request("/claude")).json()) as {
+      provider: { modelCatalog?: { fetchedAt?: string } };
+    };
+    expect(cached.provider.modelCatalog?.fetchedAt).toBe(
+      "2026-10-06T10:00:00.000Z",
+    );
+    const refreshed = (await (
+      await routes.request("/claude?refresh=1")
+    ).json()) as { provider: { modelCatalog?: { fetchedAt?: string } } };
+    expect(refreshed.provider.modelCatalog?.fetchedAt).toBe(
+      "2026-10-06T10:05:00.000Z",
+    );
+  });
+
+  it("omits provenance for providers that do not report it", async () => {
+    const routes = createProvidersRoutes({ providers: [createProvider()] });
+    const json = (await (await routes.request("/claude")).json()) as {
+      provider: Record<string, unknown>;
+    };
+    expect(json.provider).not.toHaveProperty("modelCatalog");
+  });
+
   it("lets a forced refresh supersede older ordinary work", async () => {
     const ordinaryModels = deferred<ModelInfo[]>();
     const refreshedModels = deferred<ModelInfo[]>();

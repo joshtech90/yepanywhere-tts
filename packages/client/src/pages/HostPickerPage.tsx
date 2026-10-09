@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
 import { useRemoteConnection } from "../contexts/RemoteConnectionContext";
+import { signInRequiredState } from "../hooks/useSignInRequiredNotice";
 import { useI18n } from "../i18n";
 import {
   clearHostSession,
@@ -158,12 +159,18 @@ export function HostPickerPage() {
           err instanceof Error
             ? err.message
             : t("hostPickerErrorConnectionFailed");
-        if (requiresResumeLogin(categorizeResumeError(err))) {
+        const reason = categorizeResumeError(err);
+        if (requiresResumeLogin(reason)) {
+          // The server confirmed the saved session is gone, so the only way
+          // forward is the login form; it explains why it appeared.
           clearHostSession(host.id);
-          setHosts(loadSavedHosts().hosts);
+          navigate(
+            host.mode === "relay" ? relayLoginPath(host) : "/login/direct",
+            { state: signInRequiredState(reason) },
+          );
+          return;
         }
-        // Keep the explanation visible. Only a subsequent explicit choice
-        // opens login; transport/proof failures do not discard the session.
+        // Transport/proof failures keep the session and leave retry to the user.
         setError(getResumeError(err)?.message ?? message);
       } finally {
         setConnectingHostId(null);

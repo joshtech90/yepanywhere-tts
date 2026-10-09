@@ -76,7 +76,8 @@ export class GeminiSessionReader implements ISessionReader {
   private projectIdentityKey?: string;
   private hashToCwd?: Map<string, string> | Promise<Map<string, string>>;
 
-  // Cache of session ID -> file info for quick lookups
+  // Cache of session ID -> file info for quick lookups. Small metadata,
+  // bounded by the Gemini session files on disk.
   private sessionFileCache: Map<string, GeminiSessionCacheEntry> = new Map();
   private cacheTimestamp = 0;
   private readonly CACHE_TTL_MS = 5000; // 5 second cache

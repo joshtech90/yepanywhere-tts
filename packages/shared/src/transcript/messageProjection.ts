@@ -777,6 +777,7 @@ function processMessage(
               msg,
               block.input,
               block._displayActions,
+              block._mcpApp,
             );
             if (existingItem.status === "pending") {
               pendingToolCalls.set(block.id, existingIndex);
@@ -798,6 +799,7 @@ function processMessage(
           ...(block._displayActions
             ? { displayActions: block._displayActions }
             : {}),
+          ...(block._mcpApp ? { mcpApp: block._mcpApp } : {}),
           toolResult: undefined,
           status: isOrphaned ? "incomplete" : "pending",
           sourceMessages: [msg],
@@ -844,12 +846,14 @@ function updateToolCallSnapshot(
   message: Message,
   toolInput: unknown,
   displayActions: ToolCallItem["displayActions"],
+  mcpApp: ToolCallItem["mcpApp"],
 ): ToolCallItem {
   const withSource = appendSourceMessage(item, message);
   return {
     ...withSource,
     toolInput,
     displayActions,
+    ...(mcpApp ? { mcpApp } : {}),
   };
 }
 
@@ -937,6 +941,7 @@ function attachToolResult(
     toolName: item.toolName,
     toolInput: item.toolInput,
     ...(item.displayActions ? { displayActions: item.displayActions } : {}),
+    ...(item.mcpApp ? { mcpApp: item.mcpApp } : {}),
     toolResult: resultData,
     status,
     sourceMessages: appendSourceMessage(item, resultMessage).sourceMessages,

@@ -10,7 +10,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { SourceVersionedSingleFlight } from "../lib/sourceVersionedSingleFlight.js";
 import {
   type AugmentGenerator,
-  type AugmentGeneratorConfig,
   createAugmentGenerator,
 } from "./augment-generator.js";
 import { BlockDetector } from "./block-detector.js";
@@ -18,31 +17,10 @@ import {
   linkifyProjectPaths,
   resolveShapedPaths,
 } from "./project-path-links.js";
-import type { SafeMarkdownRenderOptions } from "./safe-markdown.js";
-
-/**
- * Default configuration for the AugmentGenerator.
- * Should match the streaming coordinator config.
- */
-const DEFAULT_CONFIG: AugmentGeneratorConfig = {
-  languages: [
-    "javascript",
-    "js",
-    "typescript",
-    "ts",
-    "tsx",
-    "python",
-    "bash",
-    "json",
-    "css",
-    "html",
-    "yaml",
-    "sql",
-    "go",
-    "rust",
-    "diff",
-  ],
-};
+import {
+  collectMarkdownHeadingSlugs,
+  type SafeMarkdownRenderOptions,
+} from "./safe-markdown.js";
 
 // Singleton generator instance (initialized lazily)
 let generatorPromise: Promise<AugmentGenerator> | null = null;
@@ -110,6 +88,8 @@ function markdownCacheKey(
     options?.localFileBasePath ?? null,
     options?.inlineLocalImages ?? false,
     options?.quartoMarkdown ?? false,
+    options?.siteRelativeReferences ?? false,
+    options?.documentAnchors ?? null,
     projectLinks?.projectId ?? null,
     projectLinks?.projectPath ?? null,
     projectLinks?.pathDiscovery ?? "resolve",
@@ -129,11 +109,10 @@ function markdownSourceVersion(
 
 /**
  * Get or create the shared AugmentGenerator instance.
- * Uses a singleton to avoid re-loading shiki themes/languages.
  */
 async function getGenerator(): Promise<AugmentGenerator> {
   if (!generatorPromise) {
-    generatorPromise = createAugmentGenerator(DEFAULT_CONFIG);
+    generatorPromise = createAugmentGenerator();
   }
   return generatorPromise;
 }
@@ -213,13 +192,30 @@ async function renderMarkdownToHtmlUncached(
   // Combine all blocks
   const allBlocks = [...completedBlocks, ...finalBlocks];
 
-  // Render each block and concatenate HTML
+  // Render each block and concatenate HTML. A document's blocks continue each
+  // other's heading slugs, so ids match a single render.
+  const documentAnchors = renderOptions?.documentAnchors;
+  const precedingHeadingSlugs = [
+    ...(documentAnchors?.precedingHeadingSlugs ?? []),
+  ];
   const htmlParts: string[] = [];
   for (let i = 0; i < allBlocks.length; i++) {
     const block = allBlocks[i];
     if (!block) continue;
-    const augment = await generator.processBlock(block, i, renderOptions);
+    const blockOptions = documentAnchors
+      ? {
+          ...renderOptions,
+          documentAnchors: {
+            precedingHeadingSlugs: [...precedingHeadingSlugs],
+          },
+        }
+      : renderOptions;
+    const augment = await generator.processBlock(block, i, blockOptions);
+    if (augment.degraded) retainable = false;
     htmlParts.push(augment.html);
+    if (documentAnchors) {
+      precedingHeadingSlugs.push(...collectMarkdownHeadingSlugs(block.content));
+    }
   }
 
   const html = htmlParts.join("\n");

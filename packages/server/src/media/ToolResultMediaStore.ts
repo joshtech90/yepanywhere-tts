@@ -25,6 +25,7 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { registerIdleSweep } from "../lib/processIdleSweep.js";
 import type { ProjectStoragePolicy } from "../projects/projectStoragePolicy.js";
 import type { ToolResultMediaCandidate } from "./inlineImageData.js";
 import { ToolResultMediaMessageMaterializer } from "./ToolResultMediaMessageMaterializer.js";
@@ -124,6 +125,8 @@ export class ToolResultMediaStore {
     ToolResultMediaCatalogEntry & { bytes: Buffer; lastAccessedAt: number }
   >();
   private transientMediaBytes = 0;
+  /** Expires transient media while no insert or read arrives to prune it. */
+  private unregisterTransientSweep: (() => void) | null = null;
 
   constructor(options: ToolResultMediaStoreOptions = {}) {
     this.dataDir = options.dataDir;
@@ -457,6 +460,9 @@ export class ToolResultMediaStore {
       lastAccessedAt: Date.now(),
     });
     this.transientMediaBytes += bytes.length;
+    this.unregisterTransientSweep ??= registerIdleSweep(() =>
+      this.pruneTransient(),
+    );
     this.pruneTransient();
   }
 
@@ -478,6 +484,10 @@ export class ToolResultMediaStore {
       }
       this.transientMedia.delete(id);
       this.transientMediaBytes -= entry.bytes.length;
+    }
+    if (this.transientMedia.size === 0) {
+      this.unregisterTransientSweep?.();
+      this.unregisterTransientSweep = null;
     }
   }
 }

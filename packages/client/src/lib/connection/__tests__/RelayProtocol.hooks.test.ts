@@ -193,6 +193,24 @@ describe("RelayProtocol hooks", () => {
     expect(protocol.subscriptions.size).toBe(0);
   });
 
+  it("keeps ordinary browser unsubscribe silent after its socket closes", async () => {
+    const sent: RemoteClientMessage[] = [];
+    let connected = true;
+    const protocol = new RelayProtocol({
+      sendMessage: (message) => sent.push(message),
+      sendUploadChunk: vi.fn(),
+      ensureConnected: async () => undefined,
+      isConnected: () => connected,
+    });
+    const subscription = protocol.subscribeActivity({ onEvent: () => {} });
+    await flushUntil(() => sent.length === 1);
+    connected = false;
+    subscription.close();
+    expect(sent.map((message) => message.type)).toEqual(["subscribe"]);
+    expect(protocol.subscriptions.size).toBe(0);
+    protocol.close();
+  });
+
   it("sends one unsubscribe for each subscription that was sent", async () => {
     const sent: RemoteClientMessage[] = [];
     const onClose = vi.fn();

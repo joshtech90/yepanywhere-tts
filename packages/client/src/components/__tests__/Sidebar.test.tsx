@@ -15,7 +15,7 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { UI_KEYS } from "../../lib/storageKeys";
+import { SAVED_HOSTS_KEY, UI_KEYS } from "../../lib/storageKeys";
 import { SWITCH_HOST_RELOAD_STORAGE_KEY } from "../../lib/switchHostReload";
 import { Sidebar } from "../Sidebar";
 
@@ -52,7 +52,10 @@ const {
   mockMoveItemToTop: vi.fn(),
   mockPromoteNow: vi.fn(),
   mockRemoteConnectionState: {
-    value: null as null | { disconnect: ReturnType<typeof vi.fn> },
+    value: null as null | {
+      disconnect: ReturnType<typeof vi.fn>;
+      currentRelayUsername?: string;
+    },
   },
   mockStarredLoadMore: vi.fn(),
   mockToggleExpanded: vi.fn(),
@@ -501,6 +504,82 @@ describe("Sidebar collapsed toggle", () => {
         configurable: true,
         value: originalLocation,
       });
+    }
+  });
+
+  it("right-click on Switch Host offers recent hosts and opens one by route", () => {
+    const host = (
+      relayUsername: string,
+      displayName: string,
+      lastConnected: string,
+    ) => ({
+      id: relayUsername,
+      displayName,
+      mode: "relay",
+      relayUrl: "wss://relay.example/ws",
+      relayUsername,
+      srpUsername: "me",
+      lastConnected,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    localStorage.setItem(
+      SAVED_HOSTS_KEY,
+      JSON.stringify({
+        version: 1,
+        hosts: [
+          host("older", "Older box", "2026-10-01T00:00:00.000Z"),
+          host("current", "This box", "2026-10-07T00:00:00.000Z"),
+          host("windows", "Windows", "2026-10-06T00:00:00.000Z"),
+        ],
+      }),
+    );
+    const disconnect = vi.fn();
+    mockRemoteConnectionState.value = {
+      disconnect,
+      currentRelayUsername: "current",
+    };
+    const onNavigate = vi.fn();
+
+    try {
+      render(
+        <MemoryRouter initialEntries={["/-/relay/current/projects"]}>
+          <Sidebar
+            isOpen={true}
+            onClose={() => {}}
+            onNavigate={onNavigate}
+            isDesktop={true}
+            isCollapsed={true}
+            onToggleExpanded={mockToggleExpanded}
+          />
+          <Routes>
+            <Route path="*" element={<LocationProbe />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      fireEvent.contextMenu(
+        screen.getByRole("button", { name: "Switch Host" }),
+      );
+      const items = screen
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent);
+      // The current host is omitted and the previous host leads.
+      expect(items).toEqual([
+        "Windowswindows",
+        "Older boxolder",
+        "sidebarSwitchHostMenuAllHosts",
+      ]);
+
+      fireEvent.click(screen.getAllByRole("menuitem")[0] as HTMLElement);
+
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/-/relay/windows/projects",
+      );
+      expect(onNavigate).toHaveBeenCalledOnce();
+      expect(disconnect).not.toHaveBeenCalled();
+      expect(screen.queryByRole("menu")).toBeNull();
+    } finally {
+      localStorage.removeItem(SAVED_HOSTS_KEY);
     }
   });
 

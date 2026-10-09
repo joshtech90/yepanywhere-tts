@@ -106,6 +106,19 @@ These run unconditionally and are not user-configurable:
   unsafe URLs, active embeds, and disallowed elements remain blocked. Assistant
   Markdown, tool-result Markdown, file previews, and persisted reloads use the
   same boundary.
+- **In-page document links** — a Markdown file preview is rendered as a whole
+  document (`documentAnchors` in `safe-markdown.ts`), so `[x](#name)` reaches
+  an author's `<a id="name">` or legacy `<a name="name">`, or a heading by its
+  GitHub-style slug (`x`, then `x-1`, `x-2` for repeats). Every kept id and
+  fragment href carries the `user-content-` prefix, applied in one place by the
+  document sanitizer, so a document's `root` cannot collide with or clobber the
+  page's own elements. Ranged previews and block-wise renders continue earlier
+  parts' heading slugs, so ids match a single render. The standalone rendered
+  document follows these links natively; `FileViewer` intercepts an unmodified
+  click and scrolls its own body, leaving the app URL and the parked viewer's
+  scroll ownership alone. Message Markdown keeps no ids: many messages share
+  one page and their ids would collide. The fragment of a cross-file
+  `other.md#name` link is not yet followed.
 - **Explicit rendered Markdown file links** — document previews show link color
   and an underline before hover, including links whose labels use inline code.
   Ordinary unlinked code keeps its surrounding text color and code background.
@@ -196,6 +209,65 @@ Presentation MathML passes the Markdown sanitizer, so extracts can keep the
 paper's MathML inside raw HTML tables, where TeX delimiters are not rendered.
 It is limited to layout elements with layout attributes. `annotation` holds
 only text; `annotation-xml` is escaped because it can carry arbitrary markup.
+
+## Unicode script characters
+
+Prose often writes math without TeX, using Unicode superscript and subscript
+characters (`1/nˢ`, `x⁻ˢ`, `∫₁`). The bundled prose fonts are Latin subsets,
+so those glyphs fall back to other fonts and the modifier letters render
+nearly illegibly small. The server Markdown renderer
+(`packages/server/src/augments/unicode-math.ts`) wraps each run and supplies
+its plain characters for CSS to draw as an ordinary 0.75em script in the
+prose font. The authored glyphs remain in the DOM at zero size, so copy,
+selection and source mapping see exactly what was written. Code spans and
+blocks are untouched, and line height does not change.
+
+The redraw is a per-character table and applies whether or not the
+plain-text math setting below is on.
+
+## Typeset plain-text math (opt-in)
+
+Appearance → **Typeset plain-text math** (default off) typesets math that
+prose writes without `$` delimiters: `ζ(s) = Σ_{n≥1} 1/nˢ`, `λ=.05`,
+`∫₁^∞ x⁻ˢ dx`. The setting appears only when the server advertises
+`unicode-prose-math`. Older servers mark nothing, so the client hides the
+toggle there and the prose stays as written.
+
+- **Detection** runs in the server's Markdown text rule on every prose text
+  token. It never runs on code spans, code blocks or delimited math. A
+  trained recognizer (`packages/server/src/augments/unicode-math-recognizer.ts`)
+  picks regions of whitespace-separated tokens. It is tuned for precision,
+  since a miss leaves legible Unicode while a false region garbles prose. It
+  does not mark arrows between words, numeric typography (`4–6×`, `±2`,
+  `60→110`), a lone symbol (`B′`, `λ`), identifiers, or Greek words.
+- **Markup:** each region becomes a `ya-umath` span holding the authored
+  text (with the script redraw) and a KaTeX rendering. A region KaTeX
+  rejects, or contains a glyph KaTeX cannot measure, stays plain text.
+- **Display:** the KaTeX half is hidden unless the root carries
+  `data-unicode-math="on"`, which the setting sets. Toggling changes only
+  that attribute; no message is re-rendered. The hidden half takes no
+  layout and is excluded from selection. With the setting off, ordinary
+  copy yields exactly the authored text; with it on, it yields KaTeX's
+  visible text, which drops spaces.
+- **Cost:** the recognizer runs on the server for every client, whatever
+  the setting. Rendered HTML grows only for messages with regions.
+
+Training data, evaluation and measured costs are in the
+[prose-math sketch](../gaps/sketches/unicode-prose-math.md).
+
+**Parameters and retraining.** The recognizer's trained parameters are
+`packages/server/src/augments/unicode-math-params.bin`, about 5 KB in the
+"UMB1" format documented at `loadUnicodeMathParams`, with int8 values. The
+server reads it on first use. Retraining is an optional step outside the
+normal build: `pnpm -s unicode-math:train` rebuilds the corpus and
+rewrites the file. Its sources are the local Claude and Codex session logs,
+plus arXiv papers from the pinned `scripts/unicode-math/papers.json`,
+fetched as HTML and cached. `--markdown` adds local paper extracts, and
+`--labels` adds hand-labelled rows, which hold private session text and are
+never committed. The step uses the server's own feature function and
+encoder, so a retrained file cannot disagree with the runtime. Results vary
+with the local session logs, so review recognition before committing a
+retrained file.
 
 ## File Content Viewer Contract
 

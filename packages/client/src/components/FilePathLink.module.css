@@ -19,7 +19,7 @@
 }
 
 .fileViewerModal {
-  width: min(calc(100vw - 0.75rem), 1200px);
+  width: min(calc(100dvw - 0.75rem), 1200px);
   max-width: 1200px;
   height: min(92vh, calc(100dvh - 0.75rem));
   max-height: min(92vh, calc(100dvh - 0.75rem));
@@ -73,17 +73,17 @@
   }
 }
 
-@media (max-width: 800px) {
+@media (width <= 800px) {
   :global(.modal-overlay):has(.fileViewerModal) {
     align-items: flex-end;
     padding: 0;
   }
 
   .fileViewerModal {
-    width: 100vw;
-    max-width: 100vw;
-    height: 100vh;
-    max-height: 100vh;
+    width: 100dvw;
+    max-width: 100dvw;
+    height: 100dvh;
+    max-height: 100dvh;
     border: none;
     border-radius: 0;
   }
@@ -124,7 +124,7 @@
   max-height: 100%;
 }
 
-@media (max-width: 800px) {
+@media (width <= 800px) {
   :global([data-session-viewer-layer])
     > :global(.modal-overlay):has(.fileViewerModal) {
     padding: 0;

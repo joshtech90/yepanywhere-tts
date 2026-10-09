@@ -63,20 +63,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           # JavaScript tasks install/build the root workspace, whose engines changed.
           node-version: '22.16.0'
           cache: pnpm
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '17'
@@ -138,7 +138,7 @@ jobs:
         run: pnpm --filter @yep-anywhere/android inspect:apks
 
       - name: Upload verified Play candidate
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: android-play-candidate-${{ github.run_attempt }}
           if-no-files-found: error
@@ -146,7 +146,7 @@ jobs:
 
       - name: Upload Android build artifacts and reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: android-app-build-${{ github.run_attempt }}
           if-no-files-found: ignore
@@ -159,24 +159,27 @@ jobs:
     name: WebView instrumentation
     needs: verify-android-app
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Run 37704886933/attempts/2 spent ~13 minutes preparing the APK/emulator
+    # and 8m18s in passing direct tests, then reached 30m during relay tests.
+    # Keep per-test deadlines unchanged; allow bounded whole-job headroom.
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           # JavaScript tasks install/build the root workspace, whose engines changed.
           node-version: '22.16.0'
           cache: pnpm
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '17'
@@ -219,10 +222,13 @@ jobs:
 
       # Do not starve the freshly booted launcher with Rust/NDK compilation.
       # Run 37219989321 left a Pixel Launcher ANR covering the live test UI.
+      # Use the live probe's exact variant throughout, including R8, so the
+      # later test:live command does not rebuild it beside the running emulator.
       - name: Build instrumented APKs before emulator startup
         working-directory: packages/android
         run: >-
           ./gradlew assembleBundledDebug assembleBundledDebugAndroidTest
+          -PyaNativeProbeCleartext=true -PyaNativeProbeMinify=true
           --warning-mode all --no-daemon
 
       - name: Enable KVM
@@ -233,7 +239,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Run WebView instrumentation
-        uses: ReactiveCircus/android-emulator-runner@v2
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 35
           target: google_apis
@@ -255,12 +261,13 @@ jobs:
             -camera-back none
           script: >-
             cd packages/android && ./gradlew connectedBundledDebugAndroidTest
+            -PyaNativeProbeCleartext=true -PyaNativeProbeMinify=true
             --warning-mode all --no-daemon && cd ../.. && pnpm --filter
             @yep-anywhere/android test:live
 
       - name: Upload Android instrumentation reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: android-app-instrumentation-${{ github.run_attempt }}
           if-no-files-found: ignore
@@ -284,15 +291,15 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: android-play-candidate-${{ github.run_attempt }}
           path: play-candidate
@@ -334,7 +341,7 @@ jobs:
 
       - name: Retain signed bundle and publication receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: android-play-release-${{ github.run_attempt }}
           path: |

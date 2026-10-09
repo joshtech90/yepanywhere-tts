@@ -12,7 +12,8 @@ Status: Draft proposal, with implemented resource samples and bounded Node
 stall profiles under *Server metrics* below
 (`packages/server/src/logging/resource-sample.ts`). No route, general event recorder, cache
 registry, pressure coordinator, or client panel described here is implemented
-or approved for implementation yet.
+or approved for implementation yet. The *Bounded retention* rule is a
+decision, implemented for the owners named there (tactical 149).
 
 ## Vocabulary
 
@@ -268,6 +269,53 @@ project/session identity when recorded, and free text over the bounded
 structured fields. Query limits and pagination protect both server and client;
 they must not impose arbitrary limits on unrelated product APIs.
 
+## Bounded retention
+
+**Decision (2026-10-07):** every process-lifetime collection whose key space
+grows with sessions, projects, files, requests, or time declares one bound:
+
+- a byte or entry LRU (`createLruMap`/`refreshLruMap`, retouched on hit);
+- a TTL released on access and by the process-wide idle sweep;
+- lifecycle deletion tied to the owning object;
+- a fixed key space; or
+- an accepted small per-entry cost whose growth is documented, such as one
+  session ID per session seen since process start.
+
+A plain `Map` or `Set` field on a long-lived service carries a comment naming
+its bound. Semantic sets, where an entry's absence changes behavior, are not
+caches: bound them by lifecycle or durable state, never by blind eviction.
+
+`lib/processIdleSweep.ts` owns the only idle-release interval: one unref'd
+60-second timer that runs while at least one owner holds releasable state.
+Owners register a sweep while they hold such state and unregister when empty.
+
+Two retention hazards found by the 2026-10-07 heap-snapshot investigation
+(tactical 149):
+
+- **Request context captured by long-lived resources.** A native watch
+  created while a request's `AsyncLocalStorage` store is active retains that
+  context frame, and through closures the request's data, until the watch
+  closes. About 100 directory watches created during message augmentation
+  each pinned one request's augmented messages (1–185 MB each).
+  `SharedDirectoryWatcher`, the highlight worker, and the idle-sweep
+  interval are created through `lib/outsideRequestContext.ts`, an
+  `AsyncLocalStorage.snapshot()` taken at module load. Create other
+  long-lived async resources (intervals, sockets, workers) the same way.
+- **Shiki WebAssembly memory.** Oniguruma WebAssembly memory grows and never
+  shrinks, and a highlighter dropped without `dispose()` strands its scanners
+  there (6–30 MB each); the per-stream augment generator created one per
+  stream. All highlighting now runs in one recyclable worker
+  (`highlighting/highlight-worker-host.ts`) that the host retires past
+  192 MB of isolate external memory (`YEP_HIGHLIGHT_WORKER_MAX_MB`), 10,000
+  jobs, or 5 idle minutes. Jobs queue on the main thread and the worker runs
+  one at a time, so retirement follows the job that crossed the budget and
+  only one worker is alive. Terminating the worker releases its whole
+  isolate. A crash or a 30-second stall rejects only the running job, and
+  the queue continues on a fresh worker; that fallback is plain output that
+  the Markdown cache does not retain. An unknown language falls back to plain
+  output for good. Worker stats appear under the maintenance diagnostics'
+  `caches.highlightWorker`.
+
 ## Memory-pressure containment
 
 V8 offers a queryable heap limit and current heap statistics, but YA should not
@@ -312,17 +360,23 @@ The 2026-08-05 audit supplies the initial registry backlog:
 
 | Owner | Current risk | Required pressure contract |
 |---|---|---|
-| App session readers | 500-entry FIFO without hit retouch; individual Codex readers may retain full parsed transcripts and mapping/file caches. Codex detail updates added per-session in-flight ownership, bounded plain-file reads, and invalidation-fenced publication on 2026-08-24, then append-aware normalized projection reuse on 2026-08-28 | Byte/rebuild-cost bound and access retouch; close and release cold project readers without interrupting active owners |
+| App session readers | 500-entry LRU with hit retouch since 2026-10-07; individual Codex readers retain mapping/file caches. Codex detail updates added per-session in-flight ownership, bounded plain-file reads, and invalidation-fenced publication on 2026-08-24, then append-aware normalized projection reuse on 2026-08-28 | Byte/rebuild-cost bound and access retouch; close and release cold project readers without interrupting active owners |
+| Codex parsed transcripts | Bounded 2026-10-07 (`codex-entry-cache-budget.ts`): every reader's detail entry cache is admitted to one process-wide source-byte LRU (default 256 MB, `YEP_CODEX_PARSE_CACHE_MB`) with retouch on hit and growth re-admission; a file over the whole budget is served uncached | Register with a future pressure coordinator as rebuildable; entries plus WeakMap-linked normalized copies release together |
 | Claude parsed transcripts | Added 2026-08-07 (`claude-transcript-cache.ts`): process-wide, source-byte LRU (default 192 MB, `YEP_CLAUDE_PARSE_CACHE_MB`), in-flight coalescing, incremental append parsing; a file over the whole budget is never retained | Register with a future pressure coordinator as rebuildable; entries plus WeakMap-linked normalized copies release together |
 | Pi parsed transcripts | Resolved 2026-08-07: one current version per file, 64-file LRU with access retouch | One current version per canonical file plus byte-bounded LRU |
-| Session summary index | Cold loads now share one mutable scope and validation cannot erase a newer dirty revision; 10,000 scopes remain bounded only by FIFO count, and eviction leaves validation/persisted-scope metadata behind, including another UTC-day cutoff key per scope/day | Evict the complete scope/cutoff record, preserve 10,000-project discovery, and cap live bytes; release disk-rebuildable cold scopes |
-| Codex shared session scans | Every UTC-day auto-archive cutoff can leave a provider-wide file array in the process-global scan cache | Retain only current/in-flight range generations under an entry/byte LRU |
+| Session summary index | Cold loads now share one mutable scope and validation cannot erase a newer dirty revision; 10,000 scopes bounded by an LRU with hit retouch whose eviction also drops the scope's validation times, persisted-scope flag, and (when clean) dirty revision (2026-10-07) | Cap live bytes; release disk-rebuildable cold scopes |
+| Codex shared session scans | Resolved 2026-10-07: per sessions directory, only the unfiltered scan, the latest settled cutoff, and in-flight scans are retained | Entry/byte LRU if many sessions directories appear |
 | Session discovery shards | Scanner, reader, and watcher paths now share one process owner per root and one cold load per shard; each loaded shard still stays in memory for that owner's lifetime | Release cold root indexes and byte/LRU-release clean shards; retain dirty/saving shards until durable |
 | Project path indexes | Resolved 2026-08-05: demand hydration, refcounted project claims, and 4 MiB per-project / 32 MiB process byte LRU (`project-path-links.md`) | Sparse demand hydration plus project byte/LRU release |
 | Glossary service | 512 parsed files, 128 graphs, and unbounded observed-path maps | Project/byte release; lower priority at typical sub-1,000-entry closure |
 | Git author palettes | Every touched project's author map remains process-global | Byte/LRU-release cold projects; reload durable app-data state on demand |
-| Review project stores | Full canonical review state remains resident for every touched project until whole-service reset | Flush pending work, then release cold project stores by byte/LRU and reload on demand |
-| External-session tracker | Process-lifetime `createdSessions` and state maps | Age/generation bounds and bulk expiry |
+| Review project stores | Clean stores past 8 MiB retained or 10 idle minutes are released and reload on demand (`maxRetainedStoreBytes`, `maxRetainedStoreAgeMs`) | Register with the pressure coordinator |
+| External-session tracker | Process-lifetime `createdSessions` and state maps (about 0.5–2 KB per external session seen); **Decision (deferred 2026-10-07):** documented growth, reset on restart | Delete on session removal or archive, never blind eviction |
+| Shiki highlighting | Resolved 2026-10-07: one recyclable worker retired by isolate external memory, job count, or idle time (see Bounded retention) | Main-thread highlight cache stays byte-bounded (32 MB) |
+| Project file completion inventories | 128 MiB / 1M paths per project plus a 256 MiB process-wide byte LRU; one-week unused expiry also runs from the idle sweep (2026-10-07, `project-path-links.md`) | Register with the pressure coordinator |
+| Git untracked snapshots | 16-project LRU of idle states since 2026-10-07; evicted projects reload the persisted snapshot | Byte bound if snapshots near the 50,000-path cap are common |
+| Linked-site walks, vocabulary session tops | 64-walk and 256-session LRUs since 2026-10-07 | — |
+| Transient tool-result media | 64 MB byte bound plus 30-minute TTL, pruned on insert, read, and the idle sweep since 2026-10-07 | — |
 
 Shedding order begins with inactive glossary/path/query state and cold provider
 readers, continues to parsed detail arrays for inactive sessions and then
@@ -345,9 +399,20 @@ user-turn and tool-lifecycle state. Stateful prior tool rows are copy-on-write,
 and compaction or a non-append source change rebuilds the projection. This
 removes whole-transcript normalization from routine incremental refreshes
 without making an earlier response projection mutable.
-This correctness owner does not resolve the remaining FIFO/byte-pressure work
-in the table above or the distinct read-only summary/projection coordination
-tracked by tacticals 038 and 056.
+Retention is bounded separately by the shared Codex parsed-transcript budget.
+Before it, a full-history sweep of 564 sessions (an agent-sessions audit)
+left one reader holding 165 parsed Codex sessions, 1.16 GB of source JSONL, as
+about 2.4 GB of live heap until the process restarted. Eviction calls the
+owning reader, which drops its map entry so the parsed entries and their
+normalized projection become collectable together. A read whose entry the
+budget declined or evicted still returns that read's snapshot, and a stale
+entry evicted during its own re-parse does not void the replacement; only
+invalidation or a concurrent replacement does. After the bound, the same sweep
+retained 256 MB of Codex source as about 270 MB of live heap, and repeated
+sweeps stayed flat. Roughly 700 MB of post-sweep heap outside this cache
+remains unattributed. This owner does not resolve the reader FIFO in the
+table above or the distinct read-only summary/projection coordination tracked
+by tacticals 038 and 056.
 
 The 2026-08-24 mutable-store slice also gave Codex discovery shards one shared
 process owner, made summary-index dirty acknowledgement revision-aware, fenced

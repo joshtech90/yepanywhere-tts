@@ -119,7 +119,7 @@
   color: var(--text-primary);
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .name {
     max-width: 80px;
   }

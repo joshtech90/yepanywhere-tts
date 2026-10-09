@@ -9,7 +9,13 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { type ReactNode, useEffect, useState } from "react";
-import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RelayConnectionGate } from "../RelayConnectionGate";
 
@@ -123,13 +129,25 @@ function RouteSwitchControl() {
   );
 }
 
+function RelayLoginProbe() {
+  const location = useLocation();
+  const state = location.state as { signInRequired?: string } | null;
+  return (
+    <>
+      <div>Relay login</div>
+      <div data-testid="relay-login-query">{location.search}</div>
+      <div data-testid="relay-login-reason">{state?.signInRequired ?? ""}</div>
+    </>
+  );
+}
+
 function TestRoutes() {
   return (
     <MemoryRouter initialEntries={["/-/relay/macbook/document"]}>
       <RouteSwitchControl />
       <Routes>
         <Route path="/login" element={<div>Host picker</div>} />
-        <Route path="/login/relay" element={<div>Relay login</div>} />
+        <Route path="/login/relay" element={<RelayLoginProbe />} />
         <Route path="/-/relay/:relayUsername" element={<RelayConnectionGate />}>
           <Route path="document" element={<CachedDocument />} />
         </Route>
@@ -345,5 +363,31 @@ describe("RelayConnectionGate", () => {
     expect(documentUnmounts).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Go to Login" }));
     expect(await screen.findByText("Relay login")).toBeTruthy();
+  });
+
+  it("opens the prefilled login form when the first resume is rejected", async () => {
+    testState.remote = {
+      ...testState.remote,
+      connection: null,
+      currentHostId: null,
+      currentRelayUsername: null,
+    };
+    testState.connectViaRelay.mockRejectedValueOnce(
+      new ResumeError("rejected", "Server rejected session resume: expired"),
+    );
+
+    render(<TestRoutes />);
+
+    expect(await screen.findByText("Relay login")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Go to Login" })).toBeNull();
+    expect(testState.clearHostSession).toHaveBeenCalledWith("host-1");
+    expect(screen.getByTestId("relay-login-reason").textContent).toBe(
+      "auth_failed",
+    );
+    const query = new URLSearchParams(
+      screen.getByTestId("relay-login-query").textContent ?? "",
+    );
+    expect(query.get("u")).toBe("macbook");
+    expect(query.get("r")).toBe("wss://relay.example.test/ws");
   });
 });

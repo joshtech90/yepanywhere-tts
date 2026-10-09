@@ -419,3 +419,24 @@ describe("PiProvider turn failure reporting", () => {
     ]);
   });
 });
+
+describe("PiProvider model list", () => {
+  it("labels its fallback and bypasses the cache on force", async () => {
+    const provider = new PiProvider();
+    const internals = provider as unknown as {
+      cachedModels: { at: number; models: Array<{ id: string }> } | null;
+      findPiLaunchTarget: () => Promise<null>;
+    };
+    internals.findPiLaunchTarget = async () => null;
+    internals.cachedModels = { at: Date.now(), models: [{ id: "cached" }] };
+
+    expect((await provider.getAvailableModels())[0]?.id).toBe("cached");
+    expect(
+      (await provider.getAvailableModels({ forceRefresh: true }))[0]?.id,
+    ).toBe("default");
+    expect(provider.getModelCatalogStatus()).toMatchObject({
+      source: "fallback",
+      error: "pi is not installed",
+    });
+  });
+});

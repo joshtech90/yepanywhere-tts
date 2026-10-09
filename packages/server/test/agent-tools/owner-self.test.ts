@@ -44,8 +44,60 @@ async function fixture() {
     expect(response.status).toBe(200);
     return response.json();
   };
-  return { controller, session, report, setEffort };
+  const view = async () => {
+    const response = await fetch(`${environment.AGENT_YA_API_URL}/v1/view`, {
+      headers: { Authorization: `Bearer ${environment.AGENT_YA_API_TOKEN}` },
+    });
+    expect(response.status).toBe(200);
+    return response.json();
+  };
+  return { controller, session, report, view, setEffort };
 }
+
+const tabView = {
+  clientId: "tab-one",
+  device: "Linux",
+  focused: true,
+  viewers: [],
+  publishedAt: "2026-10-06T10:00:00.000Z",
+  focusedAt: "2026-10-06T10:00:00.000Z",
+};
+
+it("Process and a retained owner hand client views to ya-agent view", async () => {
+  const { session, view } = await fixture();
+  const process = new Process(session.iterator, {
+    projectPath: "/test",
+    projectId: toUrlProjectId("/test"),
+    sessionId: "canonical-id",
+    provider: "claude",
+    queue: session.queue,
+    publishAgentSessionViewsFn: session.publishAgentSessionViews,
+    idleTimeoutMs: 10_000,
+  });
+  const owner = new ProviderSessionOwner({ runtimeId: "view-test-owner" });
+  const ready = await owner.start(async () => ({ session }));
+  expect(ready.capabilities.publishAgentSessionViews).toBe(true);
+  owner.begin();
+  try {
+    process.publishAgentSessionViews([tabView]);
+    await vi.waitFor(async () =>
+      expect(await view()).toMatchObject({
+        selectedClientId: "tab-one",
+        clients: [{ clientId: "tab-one" }],
+      }),
+    );
+    owner.attach("first", "generation-one", () => {});
+    await owner.handleControllerRequest("first", {
+      type: "rpc",
+      id: 1,
+      method: "publishAgentSessionViews",
+      args: [[]],
+    });
+    expect(await view()).toMatchObject({ selection: "none", clients: [] });
+  } finally {
+    await owner.shutdown("test complete");
+  }
+});
 
 it("Process publishes pending effort and clears it only after the provider boundary", async () => {
   const { controller, session, report, setEffort } = await fixture();

@@ -201,7 +201,9 @@ describe("streamed relay responses", () => {
       offset += chunk.data.byteLength;
     }
     expect(offset).toBe(size);
-    expect(joined).toEqual(bytes);
+    // Deep equality walks a typed array element by element: the whole test
+    // took 664ms here and exceeded 5s on loaded CI (graehl 37211422041).
+    expect(Buffer.compare(joined, bytes)).toBe(0);
     expect(received.map((item) => item.seq)).toEqual(
       received.map((_, index) => index),
     );

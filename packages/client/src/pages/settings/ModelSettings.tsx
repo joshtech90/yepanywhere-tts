@@ -39,6 +39,7 @@ import {
   getProviderSessionDefaults,
   withProviderSessionDefaults,
 } from "../../lib/newSessionDefaults";
+import { formatContextWindowLabel } from "../../lib/contextWindowLabel";
 import { providerSupportsLocalSessionSandbox } from "../../lib/providerCapabilities";
 import { serverHasAvailableSessionSandbox } from "../../lib/sessionSandboxAvailability";
 import { getSessionDefaultControlCopy } from "../../lib/sessionDefaultControlCopy";
@@ -446,7 +447,7 @@ export function ModelSettings() {
     const descriptionParts: string[] = [];
     if (option.parameterSize) descriptionParts.push(option.parameterSize);
     if (option.contextWindow) {
-      descriptionParts.push(`${Math.round(option.contextWindow / 1024)}K ctx`);
+      descriptionParts.push(formatContextWindowLabel(option.contextWindow));
     }
     if (option.parentModel) descriptionParts.push(option.parentModel);
     if (option.quantizationLevel) {

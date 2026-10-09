@@ -35,6 +35,7 @@ interface ProviderSnapshot {
 function snapshotModel(model: ModelInfo): ModelInfo {
   return {
     id: model.id,
+    resolvedModel: model.resolvedModel,
     name: model.name,
     description: model.description,
     size: model.size,
@@ -81,6 +82,13 @@ function snapshotProvider(provider: ProviderInfo): ProviderInfo {
     authenticated: provider.authenticated,
     enabled: provider.enabled,
     models: provider.models?.map(snapshotModel),
+    modelCatalog: provider.modelCatalog
+      ? {
+          source: provider.modelCatalog.source,
+          fetchedAt: provider.modelCatalog.fetchedAt,
+          error: provider.modelCatalog.error,
+        }
+      : undefined,
     additionalModelOptions: provider.additionalModelOptions?.map(snapshotModel),
     imageSizing: provider.imageSizing
       ? {

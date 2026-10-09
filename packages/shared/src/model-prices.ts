@@ -50,10 +50,11 @@ const UPSTREAM_PROVIDER_BY_YA_PROVIDER: Readonly<Record<string, string>> = {
  * because the vendored table does not name these models:
  *
  * - `platform.claude.com/docs/en/about-claude/pricing` — Claude Opus 5,
- *   Sonnet 5, Fable 5.1 and Mythos 5/5.1; Opus 5.5 added on 2026-09-28.
+ *   Sonnet 5, Fable 5.1 and Mythos 5/5.1; Opus 5.5 added on 2026-09-28;
+ *   Sonnet 5.5 and Haiku 5.5 on 2026-10-08.
  *   **Fable 5.1 and Mythos 5.1 break the family's usual 0.1x cache-read ratio
- *   at 0.025x, and Opus 5.5 at 0.05x**, which is exactly why this is a
- *   per-model table and not a set of per-provider ratios.
+ *   at 0.025x, and Opus 5.5 and Sonnet 5.5 at 0.05x**, which is exactly why
+ *   this is a per-model table and not a set of per-provider ratios.
  * - `developers.openai.com/api/docs/pricing` — the GPT-5.6 family, GPT-6
  *   Astra/Sol/Luna (standard short-context rates) and the Daybreak alias. `gpt-daybreak-blue` is an alias of `gpt-5.6-sol`
  *   and carries its rates.
@@ -69,6 +70,14 @@ const PUBLISHED_MODEL_PRICES: Readonly<
     // 2026-09-28). Without its own row it matched Opus 5 by prefix.
     "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
     "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    // Sonnet 5.5 keeps Sonnet 5's $2/$10 but caches at 0.05x (read
+    // 2026-10-08). Without its own row it matched Sonnet 5 by prefix.
+    "claude-sonnet-5-5": {
+      input: 2,
+      output: 10,
+      cacheRead: 0.1,
+      cacheWrite: 2.5,
+    },
     "claude-sonnet-5": {
       input: 2,
       output: 10,
@@ -92,6 +101,14 @@ const PUBLISHED_MODEL_PRICES: Readonly<
       output: 50,
       cacheRead: 1,
       cacheWrite: 12.5,
+    },
+    // The rates for prompts up to 100k tokens; HAIKU_5_5_CONTEXT_TIER
+    // reprices longer ones.
+    "claude-haiku-5-5": {
+      input: 0.1,
+      output: 0.5,
+      cacheRead: 0.01,
+      cacheWrite: 0.125,
     },
   },
   "openai-codex": {
@@ -149,13 +166,24 @@ const OPENAI_CONTEXT_TIER: ProviderContextTier = {
 };
 
 /**
+ * Haiku 5.5's prompt-length pricing (read 2026-10-08): above 100k prompt tokens
+ * every class, output included, costs five times its short-prompt rate — $0.10
+ * input becomes $0.50, $0.50 output becomes $2.50.
+ */
+const HAIKU_5_5_CONTEXT_TIER: ProviderContextTier = {
+  thresholdTokens: 100_000,
+  multipliers: { input: 5, cachedInput: 5, cacheWrite: 5, output: 5 },
+};
+
+/**
  * Whether a provider charges more for a long prompt, by upstream price list.
  *
  * **Anthropic is deliberately null.** It used to double input and charge half
  * again for output above 200k, but removed that on 2026-03-13: Claude 4.6 and
  * later "include the full 1M token context window at standard pricing". So a
  * `sonnet[1m]` or `fable[1m]` session is priced exactly like a short one, and
- * the premium that used to apply is not modelled for any current model.
+ * the premium that used to apply is not modelled for any current model. Haiku
+ * 5.5 is the published exception, in `CONTEXT_TIER_BY_MODEL`.
  */
 const CONTEXT_TIER_BY_UPSTREAM_PROVIDER: Readonly<
   Record<string, ProviderContextTier | null>
@@ -169,26 +197,46 @@ const CONTEXT_TIER_BY_UPSTREAM_PROVIDER: Readonly<
 };
 
 /**
+ * Tiers that belong to one model rather than its whole price list, matched by
+ * id prefix like the price tables. They override the provider's tier.
+ */
+const CONTEXT_TIER_BY_MODEL: Readonly<
+  Record<string, Readonly<Record<string, ProviderContextTier>>>
+> = {
+  anthropic: { "claude-haiku-5-5": HAIKU_5_5_CONTEXT_TIER },
+};
+
+/**
  * The long-context tier a YA provider's requests are priced under, or null when
- * prompt length does not change its rates. An unknown provider gets null rather
- * than an invented premium.
+ * prompt length does not change its rates. A model with its own tier, such as
+ * Haiku 5.5, gets that one. An unknown provider gets null rather than an
+ * invented premium.
  */
 export function providerContextTier(
   provider: string,
+  model?: string,
 ): ProviderContextTier | null {
   const upstream = UPSTREAM_PROVIDER_BY_YA_PROVIDER[provider];
   if (!upstream) return null;
-  return CONTEXT_TIER_BY_UPSTREAM_PROVIDER[upstream] ?? null;
+  const modelTiers = CONTEXT_TIER_BY_MODEL[upstream];
+  const modelTier =
+    model && modelTiers
+      ? longestPrefixMatch(modelTiers, normalizeModelId(model))
+      : undefined;
+  return modelTier ?? CONTEXT_TIER_BY_UPSTREAM_PROVIDER[upstream] ?? null;
 }
 
 /**
- * The prompt length above which a request enters its provider's long-context
- * tier, or null when that provider has none. The recorder asks this per
- * request, because no later reader can recover one request's prompt length
- * from a sum — and the threshold is not the same for every provider.
+ * The prompt length above which a request enters its long-context tier, or
+ * null when neither its provider nor its model has one. The recorder asks this
+ * per request, because no later reader can recover one request's prompt length
+ * from a sum — and the threshold is not the same for every provider or model.
  */
-export function longContextThresholdTokens(provider: string): number | null {
-  return providerContextTier(provider)?.thresholdTokens ?? null;
+export function longContextThresholdTokens(
+  provider: string,
+  model?: string,
+): number | null {
+  return providerContextTier(provider, model)?.thresholdTokens ?? null;
 }
 
 /**
@@ -206,11 +254,11 @@ function normalizeModelId(model: string): string {
 }
 
 /** Longest id in `prices` that the model starts with, so a dated id resolves. */
-function longestPrefixMatch(
-  prices: Readonly<Record<string, VendoredModelPrices>>,
+function longestPrefixMatch<T>(
+  prices: Readonly<Record<string, T>>,
   model: string,
-): VendoredModelPrices | undefined {
-  let best: VendoredModelPrices | undefined;
+): T | undefined {
+  let best: T | undefined;
   let bestLength = 0;
   for (const [id, entry] of Object.entries(prices)) {
     if (model.startsWith(id) && id.length > bestLength) {
@@ -298,6 +346,8 @@ export function unlistedEquivalentOutputTokens(
 export interface TokenCostOptions {
   /** YA provider name, which selects the long-context tier. */
   provider?: string;
+  /** Model id, which selects its own tier where it has one (Haiku 5.5). */
+  model?: string;
   /** Whether these counts were in that provider's long-context tier. */
   longContext?: boolean;
 }
@@ -306,7 +356,9 @@ export interface TokenCostOptions {
 function tierMultipliers(options: TokenCostOptions) {
   const flat = { input: 1, cachedInput: 1, cacheWrite: 1, output: 1 };
   if (!options.longContext || !options.provider) return flat;
-  return providerContextTier(options.provider)?.multipliers ?? flat;
+  return (
+    providerContextTier(options.provider, options.model)?.multipliers ?? flat
+  );
 }
 
 /** What one set of counts cost in US dollars, at one model's prices. */

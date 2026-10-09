@@ -89,7 +89,7 @@ button.filename:focus-visible {
   object-fit: contain;
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .rowHeader {
     gap: 6px;
   }

@@ -118,15 +118,38 @@ for (const mobile of [false, true]) {
         );
       }
       const input = page.getByRole("textbox", { name: "Message" });
+      // Time each keystroke in the page, from keydown to the frame after its
+      // input. Timing the test's own round trips counted CI scheduling: run
+      // 37270062285 failed this touch case at 101ms and then 146ms.
+      await input.evaluate((element) => {
+        const samples: number[] = [];
+        let keyAt = 0;
+        element.addEventListener("keydown", () => {
+          keyAt = performance.now();
+        });
+        element.addEventListener("input", () => {
+          const pressed = keyAt;
+          requestAnimationFrame(() =>
+            samples.push(performance.now() - pressed),
+          );
+        });
+        Object.assign(window, { keystrokeSamples: samples });
+      });
       await input.focus();
+      const message = "Continue the preview.";
       let expected = "";
-      for (const character of "Continue the preview.") {
+      for (const character of message) {
         expected += character;
-        const started = Date.now();
         await page.keyboard.type(character);
         expect(await input.inputValue()).toBe(expected);
-        expect(Date.now() - started).toBeLessThan(100);
       }
+      const samples = await page.evaluate(async () => {
+        await new Promise(requestAnimationFrame);
+        return (window as unknown as { keystrokeSamples: number[] })
+          .keystrokeSamples;
+      });
+      expect(samples).toHaveLength(message.length);
+      expect(Math.max(...samples)).toBeLessThan(100);
       expect(errors).toEqual([]);
     } finally {
       await context.close();

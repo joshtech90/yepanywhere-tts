@@ -243,4 +243,44 @@ describe("GitUntrackedCacheService", () => {
     expect(result.limit).toBe(1);
     expect(result.truncated).toBe(true);
   });
+
+  it("keeps only recently used project snapshots in memory and reloads others", async () => {
+    const other = join(tempDir, "other");
+    await mkdir(other);
+    for (const args of [
+      ["init"],
+      [
+        "-c",
+        "user.email=ya-test@example.com",
+        "-c",
+        "user.name=YA Test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+      ],
+    ])
+      await execFileAsync("git", ["-C", other, ...args]);
+    await writeFile(join(projectPath, "first.txt"), "first\n");
+    await writeFile(join(other, "second.txt"), "second\n");
+    const service = new GitUntrackedCacheService({
+      dataDir,
+      retainedProjectLimit: 1,
+    });
+    const states = (service as unknown as { states: Map<string, unknown> })
+      .states;
+
+    await expect(service.query(projectPath)).resolves.toMatchObject({
+      files: ["first.txt"],
+    });
+    await expect(service.query(other)).resolves.toMatchObject({
+      files: ["second.txt"],
+    });
+    expect([...states.keys()]).toEqual([other]);
+
+    await expect(service.query(projectPath)).resolves.toMatchObject({
+      files: ["first.txt"],
+    });
+    expect([...states.keys()]).toEqual([projectPath]);
+  });
 });

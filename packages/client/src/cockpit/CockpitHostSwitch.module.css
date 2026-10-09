@@ -22,6 +22,7 @@
 }
 
 .hostSwitch[data-variant="compact"] {
+  position: relative;
   width: 2.3rem;
   height: 2.3rem;
   min-height: 0;
@@ -86,10 +87,6 @@
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.8;
-}
-
-.hostSwitch[data-variant="compact"] {
-  position: relative;
 }
 
 .hostSwitch[data-variant="compact"] .switchMark {

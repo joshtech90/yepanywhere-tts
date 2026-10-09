@@ -74,7 +74,7 @@
   bottom: calc(100% + var(--space-1));
   left: 0;
   width: max(100%, 280px);
-  max-width: calc(100vw - 32px);
+  max-width: calc(100dvw - 32px);
   max-height: min(240px, 35dvh);
   overflow-y: auto;
   padding: var(--space-1);
@@ -149,7 +149,7 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .fields {
     grid-template-columns: minmax(0, 1fr) minmax(90px, 0.6fr);
   }
@@ -162,7 +162,7 @@
     min-height: 42px;
   }
   .models {
-    width: calc(100vw - 32px);
+    width: calc(100dvw - 32px);
   }
   .models button {
     min-height: 42px;

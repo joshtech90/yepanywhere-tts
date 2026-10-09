@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { toBrowserAssetHref } from "../lib/appHref";
+import { browserDeviceName } from "../lib/browserTab";
 import {
   BROWSER_LOCAL_KEYS,
   getOrCreateBrowserProfileId,
@@ -284,7 +285,7 @@ export function usePushNotifications() {
       await api.subscribePush(
         browserProfileId,
         subscriptionJson as PushSubscriptionJSON,
-        getDeviceName(),
+        browserDeviceName(),
       );
 
       setState((s) => ({
@@ -451,21 +452,4 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   }
 
   return outputArray;
-}
-
-/**
- * Generate a friendly device name based on user agent.
- */
-function getDeviceName(): string {
-  const ua = navigator.userAgent;
-
-  // Try to extract a meaningful name
-  if (/iPhone/.test(ua)) return "iPhone";
-  if (/iPad/.test(ua)) return "iPad";
-  if (/Android/.test(ua)) return "Android";
-  if (/Mac/.test(ua)) return "Mac";
-  if (/Windows/.test(ua)) return "Windows";
-  if (/Linux/.test(ua)) return "Linux";
-
-  return "Browser";
 }

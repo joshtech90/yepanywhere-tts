@@ -9,8 +9,15 @@ import { Hono } from "hono";
 import { detectDesktopProviderApplication } from "../desktop/providerDetection.js";
 import { SourceVersionedSingleFlight } from "../lib/sourceVersionedSingleFlight.js";
 import { getAllProviders } from "../sdk/providers/index.js";
-import type { AgentProvider } from "../sdk/providers/types.js";
+import type {
+  AgentProvider,
+  ProviderLoginLaunch,
+} from "../sdk/providers/types.js";
 import type { ModelInfoService } from "../services/ModelInfoService.js";
+import {
+  ProviderLoginError,
+  ProviderLoginService,
+} from "../services/ProviderLoginService.js";
 
 const PROVIDER_INFO_CACHE_TTL_MS = 5 * 60_000;
 const PROVIDER_INFO_NEGATIVE_CACHE_TTL_MS = 15_000;
@@ -33,6 +40,8 @@ interface ProviderRouteDeps {
   desktopRuntime?: boolean;
   /** Injectable coarse application detector for desktop route tests. */
   applicationDetector?: (provider: ProviderName) => boolean;
+  /** Provider sign-in runner, injectable for route tests. */
+  loginService?: ProviderLoginService;
 }
 
 interface ProviderInfoCacheValue {
@@ -83,6 +92,7 @@ function getProviderImageSizing(
  */
 export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
   const routes = new Hono();
+  const loginService = deps.loginService ?? new ProviderLoginService();
   const providerInfoOwner = new SourceVersionedSingleFlight<
     ProviderName,
     ProviderInfoCacheValue
@@ -152,7 +162,14 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
         expiresAt: authStatus.expiresAt?.toISOString(),
         user: authStatus.user,
         loginCommand: authStatus.loginCommand,
+        ...(provider.getLoginLaunch
+          ? {
+              supportsInAppLogin: true,
+              supportsHostTerminalLogin: loginService.supportsHostTerminal(),
+            }
+          : {}),
         models,
+        modelCatalog: provider.getModelCatalogStatus?.(),
         additionalModelOptions: provider.getAdditionalModelOptions?.(),
         imageSizing: getProviderImageSizing(provider.name),
         supportsPermissionMode: provider.supportsPermissionMode,
@@ -347,6 +364,86 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
 
     const providerInfo = await getProviderInfo(provider, forceRefresh);
     return c.json({ provider: providerInfo });
+  });
+
+  const resolveLoginLaunch = async (
+    c: Context,
+  ): Promise<
+    | { provider: AgentProvider; launch: ProviderLoginLaunch }
+    | { response: Response }
+  > => {
+    const provider = getExposedProvider(c.req.param("name") ?? "");
+    if (!provider?.getLoginLaunch) {
+      return {
+        response: c.json({ error: "Provider has no sign-in" }, 404),
+      };
+    }
+    const launch = await provider.getLoginLaunch();
+    if (!launch) {
+      return {
+        response: c.json({ error: "Provider CLI is not installed" }, 409),
+      };
+    }
+    return { provider, launch };
+  };
+
+  const loginErrorResponse = (c: Context, error: unknown) => {
+    if (error instanceof ProviderLoginError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    throw error;
+  };
+
+  // GET /api/providers/:name/login - current or recently finished sign-in
+  routes.get("/:name/login", (c) => {
+    const name = c.req.param("name") as ProviderName;
+    return c.json({ flow: loginService.get(name) });
+  });
+
+  // POST /api/providers/:name/login - start a sign-in relayed through YA
+  routes.post("/:name/login", async (c) => {
+    const resolved = await resolveLoginLaunch(c);
+    if ("response" in resolved) return resolved.response;
+    const name = resolved.provider.name as ProviderName;
+    return c.json({ flow: loginService.start(name, resolved.launch) });
+  });
+
+  // POST /api/providers/:name/login/code - paste back an authorization code
+  routes.post("/:name/login/code", async (c) => {
+    const name = c.req.param("name") as ProviderName;
+    const body = (await c.req.json().catch(() => null)) as {
+      flowId?: unknown;
+      code?: unknown;
+    } | null;
+    if (typeof body?.flowId !== "string" || typeof body.code !== "string") {
+      return c.json({ error: "flowId and code are required" }, 400);
+    }
+    try {
+      return c.json({
+        flow: loginService.submitCode(name, body.flowId, body.code),
+      });
+    } catch (error) {
+      return loginErrorResponse(c, error);
+    }
+  });
+
+  // DELETE /api/providers/:name/login?flowId= - stop a running sign-in
+  routes.delete("/:name/login", (c) => {
+    const name = c.req.param("name") as ProviderName;
+    const flowId = c.req.query("flowId");
+    return c.json({ flow: loginService.cancel(name, flowId) });
+  });
+
+  // POST /api/providers/:name/login/terminal - sign in on the host's desktop
+  routes.post("/:name/login/terminal", async (c) => {
+    const resolved = await resolveLoginLaunch(c);
+    if ("response" in resolved) return resolved.response;
+    try {
+      loginService.openHostTerminal(resolved.launch);
+      return c.json({ ok: true });
+    } catch (error) {
+      return loginErrorResponse(c, error);
+    }
   });
 
   return routes;

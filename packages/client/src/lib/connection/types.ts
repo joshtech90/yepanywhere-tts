@@ -1,3 +1,4 @@
+import { NativeOperationError } from "../nativeTransportBridge";
 import { getResumeError } from "./resumeErrors";
 import type {
   DeviceServerMessage,
@@ -149,6 +150,11 @@ export class SubscriptionError extends Error {
  * Check if an error is non-retryable (retrying won't help).
  */
 export function isNonRetryableError(error: unknown): boolean {
+  if (error instanceof NativeOperationError)
+    return (
+      error.code === "INVALID_MESSAGE" ||
+      error.code === "REAUTHENTICATION_REQUIRED"
+    );
   const resume = getResumeError(error);
   if (resume) return !resume.retryable;
   // Relay errors: only non-retryable if the cause is terminal (e.g., unknown username).

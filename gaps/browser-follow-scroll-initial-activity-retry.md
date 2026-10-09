@@ -11,4 +11,11 @@ This separate follow-scroll finding is outside the iOS CI repair. Diagnose
 the activity update and scroll acknowledgement ordering before changing its
 oracle; the existing held-selection scroll-jitter gap concerns a later state.
 
+The same 252 px initial-bottom miss recurred in
+[October 7 CI](https://github.com/kzahel/yepanywhere/actions/runs/37688149167/job/113021178853)
+at line 401 after intervening test edits. Its retry passed; a focused local
+run passed without retries. The recurrence remains unresolved.
+[CI 37691081022](https://github.com/kzahel/yepanywhere/actions/runs/37691081022)
+also required a retry, with a 294 px initial gap.
+
 Found 2026-10-01 while checking hosted iOS and main CI results.

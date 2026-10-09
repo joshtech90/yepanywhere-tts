@@ -2,6 +2,7 @@
 
 > `ya-agent self` reports the owning YA session's launch settings, current
 > selections, and observed provider evidence through a read-only local service.
+> `ya-agent view` reports what each browser tab shows beside that session.
 
 Topic: ya-agent-self
 
@@ -40,6 +41,8 @@ Operators can put this instruction in **both** `~/.codex/AGENTS.md` and
 > unknowns explicitly. The result identifies the owning YA session; an
 > inherited child-agent environment does not prove the child's own model.
 > If unavailable, say so rather than guessing from your prompt or aliases.
+> When the user refers to "the app", "this page" or the file they have open,
+> run `ya-agent view` and say which tab the answer describes.
 
 YA does not edit those instruction files. graehl/agents and `agentctl` remain
 independent consumers of session facts; no installation or change there is
@@ -73,10 +76,58 @@ worker paths, the service and observations outlive Hono controller detach and
 reattach. The process REST API remains separate and retains its existing
 semantics. No provider settings or durable session data are written by reads.
 
+## View inspection
+
+`ya-agent view` reports what the user's browser tabs show beside the owning
+session: an app, an artifact, a file viewer, a tool-detail panel, or the
+project app. It answers "which app is open" from the browser's state instead
+of the agent's own last printout. `--json` returns the versioned report;
+`--all` lists every reporting tab in human output, which otherwise shows
+only the selected one. Exit codes and failure JSON match `ya-agent self`.
+
+The server does not otherwise know this state: pane contents and the
+Appearance setting are browser-local, and tabs may differ. So each tab
+reports its own view, and the report never merges tabs:
+
+| Field | Meaning |
+| --- | --- |
+| `clients[]` | One entry per reporting tab, most recently focused first. |
+| `clients[].clientId`, `device` | Per-tab id (stable across reload, distinct per tab) and a coarse device label. |
+| `clients[].focused`, `focusedAt` | Whether the tab was visible and focused at its last report; when it last was. |
+| `clients[].publishedAt` | The tab's last report. A closed tab that could not report leaving keeps its entry; judge staleness by this age. |
+| `clients[].viewers[]` | Empty for a transcript-only tab. Each has `kind` (`app`, `artifact`, `file`, `panel`, `project-app`), `label`, `target`, optional `url`, `openedBy` (`session` or `user`), `state` (`open`, `minimized`), and `placement` (`right-pane`, `covering`, `full-view`). |
+| `selectedClientId`, `selection` | The tab a question most likely means: `most-recently-focused`, else `most-recently-published`, or `none` with no tabs. |
+
+`target` is in the agent's terms: the loopback URL the agent printed for a
+proxied app, the artifact link, the file path with its line suffix, `app` or
+`artifact:<id>` for the project app, and null for a panel. `url` is the
+browser-facing address. Both drop query and fragment, where YA places app
+bearers. `openedBy: session` means a fresh tool announcement or a turn-end
+project-app update opened it; every other open is a user gesture, including
+re-selecting an app the session had opened.
+
+Collection follows the same opt-in: only a server with `YEP_AGENT_SELF`
+enabled mounts `PUT /api/sessions/:sessionId/view` and
+`DELETE /api/sessions/:sessionId/view/:clientId` and advertises
+`agent-session-view`, and only then do clients report. A tab reports for the
+visible session route, at most once per 250 ms burst and only when its
+viewers or focus changed; leaving the route reports the departure. Reports
+are ordered per tab and invisible in the UI. A limited user's report is
+refused; that tab stops reporting until reload. The server keeps reports in
+memory only, at most eight tabs per session (least recently reported
+dropped) and 512 sessions, with no expiry timer. Each change is forwarded to
+the session's live provider owner, and a newly registered or remapped
+process receives the current list. A process launched without a self grant
+receives nothing.
+
+This is the pull half of
+[the sketch](../gaps/sketches/agent-visible-session-view.md); MCP and native
+tool adapters and a push notice remain there.
+
 ## Connection, lifetime, and failures
 
-The owner injects `AGENT_YA_API_URL` and `AGENT_YA_API_TOKEN`. The only route is
-`GET /v1/self`, authenticated by the bearer token. The token selects its own
+The owner injects `AGENT_YA_API_URL` and `AGENT_YA_API_TOKEN`. The only routes
+are `GET /v1/self` and `GET /v1/view`, authenticated by the bearer token. The token selects its own
 session; callers cannot choose a target. `AGENTCTL_SESSION_ID`, when available,
 is sent as `X-Agent-Session-Id` and checked against the bound canonical id.
 Token-only lookup supports shells without the late Bash session-id bridge.
@@ -114,6 +165,11 @@ launcher without credentials cannot acquire a new grant or call operator APIs.
 - `packages/server/test/agent-tools/`: actual CLI/service subprocess tests,
   scripted Claude SDK shell execution, supervisor boundary application, and
   retained-owner reattachment/remapping. No cloud LLM is required.
+- `packages/server/test/routes/session-view.test.ts`: report validation,
+  per-tab separation, focus memory, departure and bounds.
+- `packages/client/src/hooks/__tests__/useSessionViewPublication.test.tsx`:
+  capability gating, viewer projection without bearer queries, change-only
+  reports, other-session isolation, project app, and departure.
 - `packages/server/test/sdk/providers/codex.test.ts`: fake app-server launches
   a real Bash tool through the production Codex adapter.
 - `scripts/agent-self-smoke.mjs`: source or artifact-only imports plus real

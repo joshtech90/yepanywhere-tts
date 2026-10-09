@@ -94,6 +94,64 @@ describe("Processes Routes", () => {
     },
   );
 
+  it.each([
+    [{ serviceTier: "priority" }, "priority"],
+    [{ serviceTier: null }, undefined],
+    [{ serviceTier: "default" }, undefined],
+  ])("passes service tier %j to the supervisor", async (body, expected) => {
+    const reconfigureProcess = vi.fn(
+      async (_id: string, updates: { serviceTier?: string }) => ({
+        id: "proc-1",
+        resolvedModel: "gpt-5.5",
+        serviceTier: updates.serviceTier,
+      }),
+    );
+    const routes = createProcessesRoutes({
+      supervisor: {
+        getProcess: vi.fn(() => ({})),
+        reconfigureProcess,
+      } as unknown as Supervisor,
+      scanner: {} as ProjectScanner,
+      readerFactory: vi.fn(),
+    });
+
+    const response = await routes.request("/proc-1/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(200);
+    const updates = reconfigureProcess.mock.calls[0]?.[1];
+    expect(updates).toHaveProperty("serviceTier", expected);
+    expect(updates).not.toHaveProperty("model");
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+      serviceTier: expected ?? null,
+    });
+  });
+
+  it("rejects a malformed service tier", async () => {
+    const reconfigureProcess = vi.fn();
+    const routes = createProcessesRoutes({
+      supervisor: {
+        getProcess: vi.fn(() => ({})),
+        reconfigureProcess,
+      } as unknown as Supervisor,
+      scanner: {} as ProjectScanner,
+      readerFactory: vi.fn(),
+    });
+
+    const response = await routes.request("/proc-1/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serviceTier: "fast tier!" }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(reconfigureProcess).not.toHaveBeenCalled();
+  });
+
   it("does not acknowledge configuration whose persistence fails", async () => {
     const errorLog = vi
       .spyOn(console, "error")

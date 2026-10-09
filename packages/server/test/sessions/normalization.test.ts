@@ -175,6 +175,76 @@ describe("normalizeSession", () => {
     ]);
   });
 
+  it("replays a Codex MCP call with the view its tool declared", () => {
+    const timestamp = new Date().toISOString();
+    const loaded: LoadedSession = {
+      summary: {
+        id: "mcp-app-session",
+        projectId: "test-project" as UrlProjectId,
+        title: "MCP App",
+        fullTitle: "MCP App",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        messageCount: 1,
+        status: { state: "idle" },
+        provider: "codex",
+      },
+      data: {
+        provider: "codex",
+        session: {
+          entries: [
+            {
+              type: "response_item",
+              timestamp,
+              payload: {
+                type: "function_call",
+                name: "forecast",
+                namespace: "mcp__weather",
+                arguments: '{"city":"Oslo"}',
+                call_id: "call-mcp-1",
+              },
+            },
+            {
+              type: "event_msg",
+              timestamp,
+              payload: {
+                type: "mcp_tool_call_end",
+                call_id: "call-mcp-1",
+                invocation: { server: "weather", tool: "forecast" },
+                mcp_app_ui: {
+                  resourceUri: "ui://weather/forecast",
+                  preferredModelDisplayMode: "inline",
+                },
+                result: { Ok: { content: [] } },
+              },
+            },
+            {
+              type: "response_item",
+              timestamp,
+              payload: {
+                type: "function_call_output",
+                call_id: "call-mcp-1",
+                output: "sunny",
+              },
+            },
+          ],
+        } as CodexSessionContent,
+      } as UnifiedSession,
+    };
+
+    const toolUse = normalizeSession(loaded)
+      .messages.flatMap((message) =>
+        Array.isArray(message.message?.content) ? message.message.content : [],
+      )
+      .find((block) => block.type === "tool_use");
+    expect(toolUse?._mcpApp).toEqual({
+      server: "weather",
+      tool: "forecast",
+      resourceUri: "ui://weather/forecast",
+      displayMode: "inline",
+    });
+  });
+
   it("normalizes codex-oss sessions correctly", () => {
     const mockSession: LoadedSession = {
       summary: {

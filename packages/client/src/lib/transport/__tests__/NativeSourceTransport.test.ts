@@ -21,6 +21,198 @@ afterEach(() => {
 });
 
 describe("native source transport", () => {
+  it("keeps Android retry exhaustion recoverable without changing the backstop", async () => {
+    const { host, transport } = await setup();
+    vi.useFakeTimers();
+    await host.emit({ type: "state", phase: "FAILED", recoverable: true });
+    expect(transport.status.getSnapshot().state).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(host.commands).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(host.commands.map((command) => command.method)).toEqual([
+      "reconnect",
+    ]);
+    expect(transport.status.getSnapshot().state).toBe("ready");
+  });
+
+  it("uses native network restoration once and ignores it while suspended", async () => {
+    const { host, transport } = await setup();
+    await host.emit({ type: "state", phase: "SUSPENDED" });
+    await host.emit({ type: "networkAvailable" });
+    expect(host.commands).toHaveLength(0);
+    await host.emit({ type: "state", phase: "FAILED", recoverable: true });
+    let finish!: () => void;
+    host.handler = () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    await host.emit({ type: "networkAvailable" });
+    await host.emit({ type: "networkAvailable" });
+    await vi.waitFor(() => expect(host.commands).toHaveLength(1));
+    window.dispatchEvent(new Event("online"));
+    expect(host.commands).toHaveLength(1);
+    finish();
+    await vi.waitFor(() =>
+      expect(transport.status.getSnapshot().state).toBe("ready"),
+    );
+  });
+
+  it("does not retry a native verification failure or turn it into sign-in", async () => {
+    const { host, transport } = await setup();
+    vi.useFakeTimers();
+    const signIn = vi.fn();
+    transport.onAuthenticationRequired = signIn;
+    await host.emit({ type: "state", phase: "FAILED", recoverable: false });
+    await host.emit({ type: "networkAvailable" });
+    window.dispatchEvent(new Event("online"));
+    window.dispatchEvent(new Event("offline"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(transport.status.getSnapshot().state).toBe("disconnected");
+    expect(host.commands).toHaveLength(0);
+    expect(signIn).not.toHaveBeenCalled();
+  });
+
+  it("ignores an old native failure after the state event already retried its read", async () => {
+    const { host, transport } = await setup();
+    let reads = 0;
+    host.handler = () => {
+      if (++reads === 1) return new Promise(() => {});
+      return { status: 200, body: { recovered: true } };
+    };
+    const request = transport.fetch("/projects");
+    await vi.waitFor(() => expect(host.commands).toHaveLength(1));
+    const oldId = host.commands[0]?.id;
+    await host.emit({ type: "state", phase: "RETRYING" });
+    await host.emit({ type: "state", phase: "CONNECTED" });
+    await expect(request).resolves.toEqual({ recovered: true });
+    await host.emit({
+      type: "reply",
+      id: oldId,
+      error: "Native connection unavailable",
+      errorCode: "CONNECTION_UNAVAILABLE",
+    });
+    expect(transport.status.getSnapshot().state).toBe("ready");
+    expect(reads).toBe(2);
+  });
+
+  it("does not retry an abandoned read when its delayed native error arrives", async () => {
+    const { host, transport } = await setup();
+    host.handler = () => new Promise(() => {});
+    const controller = new AbortController();
+    const request = transport.fetch("/projects", { signal: controller.signal });
+    const rejected = expect(request).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await vi.waitFor(() => expect(host.commands).toHaveLength(1));
+    const id = host.commands[0]?.id;
+    controller.abort();
+    await rejected;
+    await host.emit({
+      type: "reply",
+      id,
+      error: "Native connection unavailable",
+      errorCode: "CONNECTION_UNAVAILABLE",
+    });
+    expect(transport.status.getSnapshot().state).toBe("ready");
+    expect(
+      host.commands.filter((command) => command.method === "request"),
+    ).toHaveLength(1);
+  });
+
+  it("waits for native recovery when a typed request failure precedes the state event", async () => {
+    const { host, transport } = await setup();
+    let reads = 0;
+    host.handler = () => {
+      reads++;
+      if (reads === 1) return new Promise(() => {});
+      return { status: 200, body: { recovered: true } };
+    };
+    const request = transport.fetch("/projects");
+    const result = expect(request).resolves.toEqual({ recovered: true });
+    await vi.waitFor(() => expect(host.commands).toHaveLength(1));
+    await host.emit({
+      type: "reply",
+      id: host.commands[0]?.id,
+      error: "Native connection unavailable",
+      errorCode: "CONNECTION_UNAVAILABLE",
+    });
+    await vi.waitFor(() =>
+      expect(transport.status.getSnapshot().state).toBe("reconnecting"),
+    );
+    expect(reads).toBe(1);
+    await host.emit({ type: "state", phase: "RETRYING" });
+    await host.emit({ type: "state", phase: "CONNECTED" });
+    await result;
+    expect(reads).toBe(2);
+  });
+
+  it.each(["POST", "PUT", "DELETE"])(
+    "does not replay an interrupted %s",
+    async (method) => {
+      const { host, transport } = await setup();
+      host.handler = () => new Promise(() => {});
+      const request = transport.fetch("/projects", { method });
+      const result = expect(request).rejects.toMatchObject({
+        name: "ConnectionReconnectingError",
+      });
+      await vi.waitFor(() => expect(host.commands).toHaveLength(1));
+      await host.emit({
+        type: "reply",
+        id: host.commands[0]?.id,
+        error: "Native connection unavailable",
+        errorCode: "CONNECTION_UNAVAILABLE",
+      });
+      await result;
+      await host.emit({ type: "state", phase: "CONNECTED" });
+      expect(
+        host.commands.filter((command) => command.method === "request"),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    "TIMEOUT",
+    "OVERFLOW",
+    "INVALID_MESSAGE",
+    "REAUTHENTICATION_REQUIRED",
+    "FUTURE_CODE",
+  ])(
+    "preserves %s without treating it as a server response or reconnecting",
+    async (code) => {
+      const { host, transport } = await setup();
+      host.handler = () => new Promise(() => {});
+      const request = transport.fetch("/projects");
+      const result = expect(request).rejects.toMatchObject({
+        code,
+        message: "Native operation failed",
+      });
+      await vi.waitFor(() => expect(host.commands).toHaveLength(1));
+      await host.emit({
+        type: "reply",
+        id: host.commands[0]?.id,
+        error: "Native operation failed",
+        errorCode: code,
+      });
+      await result;
+      expect(transport.status.getSnapshot().state).toBe("ready");
+      expect(host.commands).toHaveLength(1);
+    },
+  );
+
+  it("preserves genuine server 503 responses without retrying them", async () => {
+    const { host, transport } = await setup();
+    host.handler = () => ({
+      status: 503,
+      body: { error: "Server maintenance" },
+    });
+    await expect(transport.fetch("/projects")).rejects.toThrow(
+      "API error: 503: Server maintenance",
+    );
+    expect(host.commands).toHaveLength(1);
+    expect(transport.status.getSnapshot().state).toBe("ready");
+  });
+
   it("does not expire frame credit while the WebView is hidden", async () => {
     const { host, transport } = await setup();
     vi.useFakeTimers();
@@ -101,6 +293,41 @@ describe("native source transport", () => {
       expect(transport.status.getSnapshot().state).toBe("ready"),
     );
   });
+
+  it.each(["before", "after"])(
+    "keeps Android radio loss recoverable when its contract arrives %s offline",
+    async (order) => {
+      const { host, transport } = await setup();
+      if (order === "before")
+        await host.emit({
+          type: "state",
+          phase: "CONNECTED",
+          recoverable: false,
+        });
+      const online = vi
+        .spyOn(navigator, "onLine", "get")
+        .mockReturnValue(false);
+      window.dispatchEvent(new Event("offline"));
+      if (order === "after")
+        await host.emit({
+          type: "state",
+          phase: "CONNECTED",
+          recoverable: false,
+        });
+      expect(transport.status.getSnapshot().state).toBe("reconnecting");
+      const request = transport.fetch("/projects");
+      const result = expect(request).resolves.toEqual({ ok: true });
+      await Promise.resolve();
+      expect(host.commands).toHaveLength(0);
+      online.mockReturnValue(true);
+      window.dispatchEvent(new Event("online"));
+      await result;
+      expect(host.commands.map((command) => command.method)).toEqual([
+        "reconnect",
+        "request",
+      ]);
+    },
+  );
 
   it("shows loss immediately and waits for network restoration before recovery", async () => {
     const { host, transport } = await setup();

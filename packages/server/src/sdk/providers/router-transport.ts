@@ -14,6 +14,9 @@ export function claudeRouterEnvironment(
     CLAUDE_CODE_USE_FOUNDRY: "0",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
+    // Claude Code disables tool search for non-Anthropic base URLs; AAR
+    // forwards the body and anthropic-* headers, so deferred tools work.
+    ENABLE_TOOL_SEARCH: "true",
   };
 }
 export function codexRouterArguments(route: RouterLaunch): string[] {

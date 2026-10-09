@@ -227,7 +227,9 @@ export function useSessionRightPane(
         sessionId,
         label: latest.label,
         url: latest.url,
+        sourceUrl: latest.sourceUrl,
         artifactToken: latest.artifactToken,
+        openedBy: "session",
       });
   }, [active, latest, latestId, sessionId, sessionRightPaneEnabled]);
   const owned =
@@ -285,6 +287,7 @@ export function useSessionRightPane(
         sessionId,
         label: app.label,
         url,
+        sourceUrl: app.sourceUrl,
         artifactToken: app.artifactToken,
       });
       restoreSessionViewer(id);

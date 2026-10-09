@@ -64,6 +64,10 @@ test("installed MC readiness preserves typing and its selected affordance at des
   page,
   baseURL,
 }) => {
+  // The composer alone may take 15s on a cold CI start (below), the config's
+  // whole-test default. Linux CI 37270062285 reached it after 5.6s, typed
+  // the message, then ran out of test time at the next click.
+  test.setTimeout(45_000);
   await page.setViewportSize({ width: 1000, height: 600 });
   await page.addInitScript(() => {
     const samples: number[] = [];

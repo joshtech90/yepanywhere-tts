@@ -17,11 +17,10 @@
   position: relative;
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "messages"
-    "input";
+  grid-template:
+    "messages" minmax(0, 1fr)
+    "input" auto
+    / minmax(0, 1fr);
 }
 
 .messages {
@@ -48,14 +47,14 @@
   min-width: 0;
 }
 
-@media (max-width: 1099px) {
+@media (width < 1100px) {
   .workspace.rightPane .sessionColumn {
     /* Keep all session controls below its sibling drawer and backdrop. */
     isolation: isolate;
   }
 }
 
-@media (min-width: 1100px) {
+@media (width >= 1100px) {
   .workspace .sessionColumn {
     grid-column: 1;
     /* Clip vertically only: composer popovers (context usage, menus) that
@@ -65,7 +64,7 @@
   }
 
   .workspace:global(.main-content-constrained) {
-    grid-template-columns: minmax(0, 1fr) 0px;
+    grid-template-columns: minmax(0, 1fr) 0;
     transition: grid-template-columns var(--panel-slide-duration, 0.2s) ease;
   }
 
@@ -80,11 +79,10 @@
       );
   }
   .sessionSplit:global(.session-split-with-aside) {
-    grid-template-columns: minmax(0, 1fr) minmax(380px, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "messages aside"
-      "input aside";
+    grid-template:
+      "messages aside" minmax(0, 1fr)
+      "input aside" auto
+      / minmax(0, 1fr) minmax(380px, 1fr);
   }
 
   .sessionSplit:global(

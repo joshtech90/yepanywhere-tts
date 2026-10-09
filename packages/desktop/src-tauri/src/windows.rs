@@ -269,13 +269,28 @@ pub async fn open_dashboard_window(app: AppHandle) -> Result<(), String> {
     show_dashboard_window(&app).await
 }
 
+/// Show a packaged window from a synchronous event handler.
+///
+/// On Windows, building a webview inside a synchronous command or event
+/// handler deadlocks the event loop (Tauri `WebviewWindowBuilder` known
+/// issue), freezing every window and the tray. Build from an async task.
+pub fn spawn_show_window(app: &AppHandle, show: fn(&AppHandle) -> Result<(), String>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = show(&app) {
+            eprintln!("Failed to open window: {error}");
+        }
+    });
+}
+
+// Window-creating commands stay async for the same Windows deadlock.
 #[tauri::command]
-pub fn open_server_output_window(app: AppHandle) -> Result<(), String> {
+pub async fn open_server_output_window(app: AppHandle) -> Result<(), String> {
     show_server_output_window(&app)
 }
 
 #[tauri::command]
-pub fn open_diagnostics_window(app: AppHandle) -> Result<(), String> {
+pub async fn open_diagnostics_window(app: AppHandle) -> Result<(), String> {
     show_diagnostics_window(&app)
 }
 

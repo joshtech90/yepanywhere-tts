@@ -270,7 +270,7 @@
   color: var(--error-color);
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .table {
     min-width: 760px;
   }

@@ -19,6 +19,9 @@ import { ProjectAppInventorySection } from "./ProjectAppInventorySection";
 import { SettingsCollection } from "./SettingsCollection";
 import { ElidedPath } from "../../components/ui/ElidedPath";
 import { SettingsSortHeader, useSettingsTableSort } from "./SettingsTableSort";
+import { ResourceContextMenu } from "../../components/FileResourceActions";
+import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
+import { toBrowserAppHref } from "../../lib/appHref";
 
 /**
  * One row of the vhost table. Port and file rows are saved to separate lists,
@@ -82,17 +85,15 @@ export function vhostSiteUrl(
 const LINKED_FILE_TOOLTIP_LINES = 20;
 
 /**
- * What each saved file row serves through its links, by row name. Refetched
- * whenever the saved rows change; absent until the server answers, and on a
- * server without file rows (`savedSites` undefined).
+ * How the server sees each saved file row (what it is, what it links to), by
+ * row name. Refetched whenever the saved rows change; absent until the server
+ * answers, and on a server without file rows (`savedSites` undefined).
  */
-function useLinkedFiles(
+function useSiteViews(
   savedSites: ArtifactVhostSite[] | undefined,
-): Record<string, ArtifactVhostLinkedFiles> {
+): Record<string, ArtifactVhostSiteView> {
   const { transport } = useCurrentSourceRuntime();
-  const [linked, setLinked] = useState<
-    Record<string, ArtifactVhostLinkedFiles>
-  >({});
+  const [views, setViews] = useState<Record<string, ArtifactVhostSiteView>>({});
   useEffect(() => {
     if (!savedSites?.length) return;
     let cancelled = false;
@@ -101,22 +102,94 @@ function useLinkedFiles(
       .then(
         ({ sites }) => {
           if (cancelled) return;
-          setLinked(
-            Object.fromEntries(
-              sites.flatMap((site) =>
-                site.linkedFiles ? [[site.name, site.linkedFiles]] : [],
-              ),
-            ),
-          );
+          setViews(Object.fromEntries(sites.map((site) => [site.name, site])));
         },
-        // The count is an annotation; rows work without it.
+        // Views only annotate rows; rows work without them.
         () => {},
       );
     return () => {
       cancelled = true;
     };
   }, [savedSites, transport]);
-  return linked;
+  return views;
+}
+
+/** The authenticated YA file viewer for an absolute server path. */
+function fileViewerHref(basePath: string, path: string): string {
+  const query = new URLSearchParams({ mode: "interactive", path });
+  return new URL(
+    toBrowserAppHref(`${basePath}/file-view?${query}`),
+    window.location.href,
+  ).href;
+}
+
+/**
+ * An icon link: a click opens `url` in a new tab, and a right-click (or a
+ * touch long press) offers Open and Copy link. Clicks stay off the row.
+ */
+function LinkIcon({
+  url,
+  label,
+  kind,
+  onCopied,
+}: {
+  url: string;
+  label: string;
+  kind: "service" | "file";
+  onCopied: (copied: boolean) => void;
+}) {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  return (
+    <>
+      <a
+        className={styles.linkIcon}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={label}
+        onClick={(event) => event.stopPropagation()}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setMenu({ x: event.clientX, y: event.clientY });
+        }}
+      >
+        <span className={styles.linkIconLabel}>{label}</span>
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          {kind === "service" ? (
+            <>
+              <path d="M6.5 9.5a3 3 0 0 0 4.2 0l2.1-2.1a3 3 0 0 0-4.2-4.2l-.9.9" />
+              <path d="M9.5 6.5a3 3 0 0 0-4.2 0L3.2 8.6a3 3 0 0 0 4.2 4.2l.9-.9" />
+            </>
+          ) : (
+            <>
+              <path d="M9 1.5H4A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V6Z" />
+              <path d="M9 1.5V6h4.5M5.5 9h5M5.5 11.5h3" />
+            </>
+          )}
+        </svg>
+      </a>
+      {menu && (
+        <ResourceContextMenu
+          x={menu.x}
+          y={menu.y}
+          canStartNewSession={false}
+          onClose={() => setMenu(null)}
+          onOpen={() => window.open(url, "_blank", "noopener,noreferrer")}
+          onCopyLink={() => void writeClipboardText(url).then(onCopied)}
+        />
+      )}
+    </>
+  );
 }
 
 function linkedFilesTooltip(
@@ -190,7 +263,29 @@ function ArtifactSettingsForm({
   const [message, setMessage] = useState("");
   const vhostsSupported = status.vhosts !== undefined;
   const sitesSupported = status.vhostSites !== undefined;
-  const linkedFiles = useLinkedFiles(status.vhostSites);
+  const siteViews = useSiteViews(status.vhostSites);
+  const basePath = useRemoteBasePath();
+  /** A saved row's service link; undefined while unsaved or unauthorized. */
+  const rowUrl = (row: VhostDraft) =>
+    !savedRow(status, row)
+      ? undefined
+      : row.kind === "files"
+        ? vhostSiteUrl(row, status, access.config?.accessTokens)
+        : sessionVhostApp(
+            `http://localhost:${row.port}/`,
+            access.config,
+            window.location.href,
+            status.vhostPublicRoot ? "public" : undefined,
+          )?.url;
+  /** A saved file row's viewer link, for a row serving one existing file. */
+  const viewerUrl = (row: VhostDraft) =>
+    row.kind === "files" &&
+    savedRow(status, row) &&
+    siteViews[row.name]?.kind === "file"
+      ? fileViewerHref(basePath, siteViews[row.name]!.path)
+      : undefined;
+  const reportCopy = (copied: boolean) =>
+    setMessage(t(copied ? "fileViewerCopied" : "viewerCopyLinkFailed"));
   const pending = useRef(Promise.resolve());
   const saveRevision = useRef(0);
   const lastPayload = useRef<string | undefined>(undefined);
@@ -522,23 +617,33 @@ function ArtifactSettingsForm({
                       {row.kind === "files" ? (
                         <label className={styles.pathField}>
                           {t("artifactVhostPath")}
-                          <input
-                            type="text"
-                            value={row.path}
-                            onBlur={() => void save()}
-                            placeholder="~/site/index.html"
-                            autoComplete="off"
-                            spellCheck={false}
-                            onChange={(e) =>
-                              setVhosts((current) =>
-                                current.map((item, i) =>
-                                  i === index && item.kind === "files"
-                                    ? { ...item, path: e.target.value }
-                                    : item,
-                                ),
-                              )
-                            }
-                          />
+                          <span className={styles.withLinkIcon}>
+                            <input
+                              type="text"
+                              value={row.path}
+                              onBlur={() => void save()}
+                              placeholder="~/site/index.html"
+                              autoComplete="off"
+                              spellCheck={false}
+                              onChange={(e) =>
+                                setVhosts((current) =>
+                                  current.map((item, i) =>
+                                    i === index && item.kind === "files"
+                                      ? { ...item, path: e.target.value }
+                                      : item,
+                                  ),
+                                )
+                              }
+                            />
+                            {viewerUrl(row) && (
+                              <LinkIcon
+                                kind="file"
+                                url={viewerUrl(row)!}
+                                label={t("artifactVhostOpenInFileViewer")}
+                                onCopied={reportCopy}
+                              />
+                            )}
+                          </span>
                         </label>
                       ) : (
                         <>
@@ -678,25 +783,9 @@ function ArtifactSettingsForm({
                                 type="button"
                                 disabled={!access.config}
                                 onClick={async () => {
-                                  const url =
-                                    row.kind === "files"
-                                      ? vhostSiteUrl(
-                                          row,
-                                          status,
-                                          access.config?.accessTokens,
-                                        )
-                                      : sessionVhostApp(
-                                          `http://localhost:${row.port}/`,
-                                          access.config,
-                                          window.location.href,
-                                          status.vhostPublicRoot
-                                            ? "public"
-                                            : undefined,
-                                        )?.url;
-                                  setMessage(
-                                    url && (await writeClipboardText(url))
-                                      ? t("fileViewerCopied")
-                                      : t("viewerCopyLinkFailed"),
+                                  const url = rowUrl(row);
+                                  reportCopy(
+                                    !!url && (await writeClipboardText(url)),
                                   );
                                 }}
                               >
@@ -761,64 +850,80 @@ function ArtifactSettingsForm({
                   </tr>
                 </thead>
                 <tbody>
-                  {displayedVhosts.map((row) => (
-                    <tr key={row.id}>
-                      <td>
-                        <button
-                          type="button"
-                          aria-expanded={selectedId === row.id}
-                          onClick={() =>
-                            setSelectedId(selectedId === row.id ? null : row.id)
-                          }
-                        >
-                          <span aria-hidden="true">
-                            {selectedId === row.id ? "▾" : "▸"}{" "}
-                          </span>
-                          <span
-                            className={styles.domainName}
-                            title={row.name || undefined}
-                          >
-                            {row.name || t("artifactVhostAdd")}
-                          </span>
-                          {row.name && (
-                            <small className={styles.domainSuffix}>
-                              .{vhostPublicRoot || "localhost"}
-                            </small>
+                  {displayedVhosts.map((row) => {
+                    const url = rowUrl(row);
+                    const linked =
+                      row.kind === "files" && savedRow(status, row)
+                        ? siteViews[row.name]?.linkedFiles
+                        : undefined;
+                    return (
+                      <tr key={row.id}>
+                        <td>
+                          <div className={styles.domainCell}>
+                            <button
+                              type="button"
+                              aria-expanded={selectedId === row.id}
+                              onClick={() =>
+                                setSelectedId(
+                                  selectedId === row.id ? null : row.id,
+                                )
+                              }
+                            >
+                              <span aria-hidden="true">
+                                {selectedId === row.id ? "▾" : "▸"}{" "}
+                              </span>
+                              <span
+                                className={styles.domainName}
+                                title={row.name || undefined}
+                              >
+                                {row.name || t("artifactVhostAdd")}
+                              </span>
+                              {row.name && (
+                                <small className={styles.domainSuffix}>
+                                  .{vhostPublicRoot || "localhost"}
+                                </small>
+                              )}
+                            </button>
+                            {url && (
+                              <LinkIcon
+                                kind="service"
+                                url={url}
+                                label={t("artifactVhostOpenLink", {
+                                  name: row.name,
+                                })}
+                                onCopied={reportCopy}
+                              />
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          {row.kind === "files" && row.path ? (
+                            <ElidedPath path={row.path} />
+                          ) : (
+                            <span className={styles.target}>
+                              {row.kind === "files"
+                                ? t("artifactVhostServesFiles")
+                                : `:${row.port}`}
+                            </span>
                           )}
-                        </button>
-                      </td>
-                      <td>
-                        {row.kind === "files" && row.path ? (
-                          <ElidedPath path={row.path} />
-                        ) : (
-                          <span className={styles.target}>
-                            {row.kind === "files"
-                              ? t("artifactVhostServesFiles")
-                              : `:${row.port}`}
-                          </span>
-                        )}
-                        {row.kind === "files" &&
-                          savedRow(status, row) &&
-                          linkedFiles[row.name] && (
+                          {linked && (
                             <small
                               className={styles.linkedFiles}
-                              title={linkedFilesTooltip(
-                                linkedFiles[row.name]!,
-                                t,
-                              )}
+                              title={linkedFilesTooltip(linked, t)}
                             >
                               {t(
-                                linkedFiles[row.name]!.truncated
+                                linked.truncated
                                   ? "artifactVhostLinkedFilesTruncated"
                                   : "artifactVhostLinkedFiles",
-                                { count: linkedFiles[row.name]!.count },
+                                { count: linked.count },
                               )}
                             </small>
                           )}
-                      </td>
-                      {access.supported && <td>{accessLabel(row)}</td>}
-                    </tr>
-                  ))}
+                        </td>
+                        {access.supported && <td>{accessLabel(row)}</td>}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </SettingsCollection>

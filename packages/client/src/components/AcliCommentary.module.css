@@ -33,7 +33,7 @@
   position: fixed;
   z-index: 2000;
   box-sizing: border-box;
-  inline-size: min(480px, calc(100vw - 16px));
+  inline-size: min(480px, calc(100dvw - 16px));
   padding: 12px;
   overflow: auto;
   background: var(--bg-secondary);

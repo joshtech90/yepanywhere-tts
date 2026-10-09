@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Describe native mobile notification registration, push data and retention,
+  the synthetic review demo, and the public privacy/deletion contact.
+
 ### Fixed
 - Associate Google Play-signed Android installations with `yepanywhere.com`
   for password-manager credential sharing, retaining the development signer.

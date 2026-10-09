@@ -145,7 +145,7 @@
   font-size: var(--font-size-sm);
 }
 
-@media (max-width: 640px) {
+@media (width <= 640px) {
   .currentHeader {
     grid-template-columns: auto minmax(0, 1fr);
   }

@@ -59,6 +59,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type {
   EffortLevel,
+  ModelCatalogStatus,
   ModelInfo,
   SlashCommand,
   SubagentMaxDepth,
@@ -68,6 +69,11 @@ import {
   DEFAULT_SUBAGENT_MAX_DEPTH,
 } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
+import {
+  fallbackModelCatalog,
+  liveModelCatalog,
+  modelCatalogError,
+} from "./model-catalog-status.js";
 import { attachToolResultMediaCandidates } from "../../media/inlineImageData.js";
 import { selectCommandLookupTarget } from "../cli-detection.js";
 import { whichCommand } from "../which-command.js";
@@ -353,6 +359,7 @@ export class GrokACPProvider implements AgentProvider {
   private ambientXaiApiKey: string | undefined;
   private useAmbientXaiApiKey = false;
   private modelCache: ModelInfo[] | undefined;
+  private modelCatalogStatus: ModelCatalogStatus | undefined;
   private getConfiguredSubagentMaxDepth: () => SubagentMaxDepth = () =>
     DEFAULT_SUBAGENT_MAX_DEPTH;
   private log = getLogger();
@@ -462,9 +469,19 @@ export class GrokACPProvider implements AgentProvider {
     }
   }
 
-  /** Get the Grok CLI's visible model catalog with local cache metadata. */
-  async getAvailableModels(): Promise<ModelInfo[]> {
-    if (this.modelCache) {
+  getModelCatalogStatus(): ModelCatalogStatus | undefined {
+    return this.modelCatalogStatus;
+  }
+
+  /**
+   * Get the Grok CLI's visible model catalog with local cache metadata.
+   * A discovered catalog is kept until `forceRefresh`; the built-in fallback
+   * is never cached, so the next read retries discovery.
+   */
+  async getAvailableModels(options?: {
+    forceRefresh?: boolean;
+  }): Promise<ModelInfo[]> {
+    if (this.modelCache && options?.forceRefresh !== true) {
       return this.modelCache.map((model) => ({ ...model }));
     }
 
@@ -478,6 +495,7 @@ export class GrokACPProvider implements AgentProvider {
     }
 
     let modelsOutput: string | undefined;
+    let listingError = "Grok CLI is not installed";
     const grokPath = await this.findGrokPath();
     if (grokPath) {
       try {
@@ -488,6 +506,7 @@ export class GrokACPProvider implements AgentProvider {
         });
         modelsOutput = String(stdout);
       } catch (error) {
+        listingError = modelCatalogError(error);
         this.log.debug(
           { error },
           "Failed to query Grok model listing; using local cache",
@@ -496,10 +515,16 @@ export class GrokACPProvider implements AgentProvider {
     }
 
     const discovered = normalizeGrokModels(rawCache, modelsOutput);
-    this.modelCache =
-      discovered.length > 0
-        ? discovered
-        : LEGACY_GROK_MODELS.map((model) => ({ ...model }));
+    if (discovered.length === 0) {
+      this.modelCatalogStatus = fallbackModelCatalog(listingError);
+      return LEGACY_GROK_MODELS.map((model) => ({ ...model }));
+    }
+    this.modelCache = discovered;
+    // Grok's own models_cache.json still counts as live when only the
+    // listing command failed; the error records which read was missing.
+    this.modelCatalogStatus = liveModelCatalog(
+      modelsOutput === undefined ? listingError : undefined,
+    );
     return this.modelCache.map((model) => ({ ...model }));
   }
 

@@ -5,6 +5,8 @@ import android.os.Bundle
 import androidx.activity.viewModels
 import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -18,12 +20,15 @@ import com.yepanywhere.mobile.web.WebClientConfig
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.yepanywhere.mobile.notifications.NativePushPresenter
+import com.yepanywhere.mobile.notifications.resolveNativePushWhenReady
 import com.yepanywhere.mobile.notifications.NotificationFoundation
 import com.yepanywhere.mobile.notifications.NotificationStatusReader
 
@@ -36,6 +41,9 @@ class MainActivity : WebClientActivity() {
     private val homeViewModel by viewModels<YaHostManagementViewModel>()
     private var launchJob: Job? = null
     private var pendingPushProfile: String? = null
+    private data class PushLaunch(val subscription: String, val session: String?)
+    private data class PushDestination(val path: String?)
+    private var pendingPushLaunch: PushLaunch? = null
     private val pushPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val profile = pendingPushProfile
         pendingPushProfile = null
@@ -55,12 +63,16 @@ class MainActivity : WebClientActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pendingPushProfile = savedInstanceState?.getString("pendingPushProfile")
+        pendingPushLaunch = savedInstanceState?.getString("pendingPushSubscription")?.let {
+            PushLaunch(it, savedInstanceState.getString("pendingPushSession"))
+        }
         managementBack = object : androidx.activity.OnBackPressedCallback(false) {
             override fun handleOnBackPressed() { hideManagement() }
         }
         onBackPressedDispatcher.addCallback(this, managementBack)
         lifecycleScope.launch {
             homeViewModel.openProfile.collect {
+                cancelPendingPushLaunch()
                 pairingInput = null
                 if (ownsTabs) { openProfile(it, newTab = createNewTab); hideManagement() }
                 else startWebClient(null, it)
@@ -71,7 +83,7 @@ class MainActivity : WebClientActivity() {
             val list = runtime.pairedServers.listState.first()
             if (ownsTabs) restoreTabs(list.profiles.map { it.id }.toSet())
             initialized = true
-            routeLaunch(intent)
+            routeLaunch(intent, restorePendingPush = true)
             runtime.pairedServers.listState.collect { current ->
                 retainTabProfiles(current.profiles.map { it.id }.toSet())
                 if (!hasSelectedTab) showHostManagement()
@@ -80,6 +92,7 @@ class MainActivity : WebClientActivity() {
     }
 
     override fun showHostManagement(newTab: Boolean) {
+        if (hasSelectedTab) cancelPendingPushLaunch()
         createNewTab = newTab
         if (newTab && homeViewModel.state.value.profiles.isNotEmpty()) {
             val profiles = homeViewModel.state.value.profiles.toList()
@@ -122,6 +135,10 @@ class MainActivity : WebClientActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         pendingPushProfile?.let { outState.putString("pendingPushProfile", it) }
+        pendingPushLaunch?.let {
+            outState.putString("pendingPushSubscription", it.subscription)
+            outState.putString("pendingPushSession", it.session)
+        }
         super.onSaveInstanceState(outState)
     }
 
@@ -131,30 +148,55 @@ class MainActivity : WebClientActivity() {
         if (initialized) routeLaunch(intent)
     }
 
-    private fun routeLaunch(intent: Intent) {
+    private fun cancelPendingPushLaunch() {
+        if (pendingPushLaunch == null) return
+        pendingPushLaunch = null
         launchJob?.cancel()
-        val subscription = intent.getStringExtra(NativePushPresenter.SUBSCRIPTION_EXTRA)
-        if (subscription != null) {
-            val session = intent.getStringExtra(NativePushPresenter.SESSION_EXTRA)?.takeIf { Regex("^[A-Za-z0-9_-]{1,128}$").matches(it) }
+    }
+
+    private fun routeLaunch(intent: Intent, restorePendingPush: Boolean = false) {
+        launchJob?.cancel()
+        val push = intent.getStringExtra(NativePushPresenter.SUBSCRIPTION_EXTRA)?.let { subscription ->
+            PushLaunch(subscription, intent.getStringExtra(NativePushPresenter.SESSION_EXTRA)?.takeIf { Regex("^[A-Za-z0-9_-]{1,128}$").matches(it) })
+        } ?: pendingPushLaunch.takeIf { restorePendingPush }
+        pendingPushLaunch = push
+        if (push != null) {
             intent.removeExtra(NativePushPresenter.SUBSCRIPTION_EXTRA)
             intent.removeExtra(NativePushPresenter.SESSION_EXTRA)
             launchJob = lifecycleScope.launch {
                 val runtime = (application as YepAnywhereApplication).nativeRuntime
-                val binding = NativePushPresenter.destination(runtime, subscription) ?: return@launch
-                val lease = runtime.connectionManager(binding.profileId).acquire()
-                try {
-                    lease.request("GET", "/version")
-                    if (NativePushPresenter.destination(runtime, subscription) == null) return@launch
-                    runtime.pairedServers.select(binding.profileId)
-                    val path = session?.let {
-                        (lease.request("GET", "/security/clients/${binding.clientId}/native-push-subscription/destination?sessionId=$it").body as? org.json.JSONObject)?.optString("path")?.takeIf { path -> Regex("^/projects/[A-Za-z0-9_-]{1,2048}/sessions/[A-Za-z0-9_-]{1,128}$").matches(path) }
+                val owner = currentCoroutineContext().job
+                repeatOnLifecycle(Lifecycle.State.STARTED) {
+                    val binding = NativePushPresenter.destination(runtime, push.subscription)
+                    if (binding == null) {
+                        pendingPushLaunch = null
+                        owner.cancel()
+                        return@repeatOnLifecycle
                     }
-                    startWebClient(path?.let { WebClientConfig.fromBuild().origin + it }, binding.profileId)
-                } catch (error: kotlinx.coroutines.CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    // Expired/revoked hosts stay in native management for recovery.
-                } finally { kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { lease.releaseAndAwait() } }
+                    // Show the paired host while offline. Its normal foreground
+                    // owner drives recovery and explains it to the user.
+                    // A hosted client opens another Activity; opening it here
+                    // would background and cancel this destination lookup.
+                    if (config.bundled) startWebClient(null, binding.profileId)
+                    val manager = runtime.connectionManager(binding.profileId)
+                    val lease = manager.acquire()
+                    try {
+                        val destination = resolveNativePushWhenReady(manager.state) {
+                            lease.request("GET", "/version")
+                            if (NativePushPresenter.destination(runtime, push.subscription) != binding) return@resolveNativePushWhenReady null
+                            val path = push.session?.let {
+                                (lease.request("GET", "/security/clients/${binding.clientId}/native-push-subscription/destination?sessionId=$it").body as? org.json.JSONObject)?.optString("path")?.takeIf { path -> Regex("^/projects/[A-Za-z0-9_-]{1,2048}/sessions/[A-Za-z0-9_-]{1,128}$").matches(path) }
+                            }
+                            if (NativePushPresenter.destination(runtime, push.subscription) != binding) null else PushDestination(path)
+                        }
+                        if (destination != null) {
+                            runtime.pairedServers.select(binding.profileId)
+                            startWebClient(destination.path?.let { config.origin + it }, binding.profileId)
+                        }
+                        pendingPushLaunch = null
+                        owner.cancel()
+                    } finally { kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { lease.releaseAndAwait() } }
+                }
             }
             return
         }

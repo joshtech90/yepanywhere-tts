@@ -26,6 +26,7 @@ import {
 import { parseByteSize } from "../../lib/byteSize.js";
 import { createCoalescingSaver } from "../../lib/coalescingSaver.js";
 import { statFilesystem } from "../../lib/filesystemKind.js";
+import { createLruMap, refreshLruMap } from "../../lib/lruCollections.js";
 import { getLogger } from "../../logging/logger.js";
 import { BlockedBloom, BloomFile, bloomLoadForRate } from "./blocked-bloom.js";
 import { DistinctiveTop } from "./distinctive-top.js";
@@ -222,6 +223,9 @@ export interface VocabularyStoreOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+/** Sessions whose in-memory session term boost is retained. */
+const SESSION_TOP_LIMIT = 256;
+
 export class VocabularyStore {
   private wordsRevision = 0;
   private ignored: ReadonlySet<string> = new Set();
@@ -231,7 +235,12 @@ export class VocabularyStore {
   /** Only words written with a capital somewhere; the rest project to the key. */
   private readonly caseForms = new Map<string, VocabularyCaseForms>();
   private readonly top = new DistinctiveTop(500);
-  private readonly sessionTops = new Map<string, DistinctiveTop>();
+  /**
+   * Per-session terms observed since process start, least recently used
+   * first and bounded to `SESSION_TOP_LIMIT` sessions. Like a restart, an
+   * evicted session simply loses its in-memory session boost.
+   */
+  private readonly sessionTops = createLruMap<string, DistinctiveTop>();
   private readonly pendingWords = new Map<string, Counts>();
   private readonly sessions = new Map<
     string,
@@ -1009,9 +1018,15 @@ export class VocabularyStore {
 
   private sessionTop(sessionKey: string): DistinctiveTop {
     let top = this.sessionTops.get(sessionKey);
-    if (!top) {
+    if (top) {
+      refreshLruMap(this.sessionTops, sessionKey, top);
+    } else {
       top = new DistinctiveTop(100);
       this.sessionTops.set(sessionKey, top);
+      for (const key of this.sessionTops.keys()) {
+        if (this.sessionTops.size <= SESSION_TOP_LIMIT) break;
+        this.sessionTops.delete(key);
+      }
     }
     return top;
   }
@@ -1028,6 +1043,8 @@ export class VocabularyStore {
     const ranked = new Map(this.top.entries());
     const fromSession = new Set<string>();
     const session = sessionKey ? this.sessionTops.get(sessionKey) : undefined;
+    if (session && sessionKey)
+      refreshLruMap(this.sessionTops, sessionKey, session);
     if (session)
       for (const [word, score] of session.entries()) {
         ranked.set(word, score);

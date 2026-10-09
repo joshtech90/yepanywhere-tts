@@ -277,6 +277,127 @@ describe("ClaudeProvider model list", () => {
     });
   });
 
+  describe("refresh and provenance", () => {
+    const row = (id: string) => ({ id, name: id });
+    const authenticated = (provider: ClaudeProvider) =>
+      vi.spyOn(provider, "getAuthStatus").mockResolvedValue({
+        installed: true,
+        authenticated: true,
+        enabled: true,
+      });
+    const probe = (provider: ClaudeProvider) =>
+      vi.spyOn(
+        provider as unknown as { probeModels(): Promise<unknown[]> },
+        "probeModels",
+      );
+    const ids = async (
+      provider: ClaudeProvider,
+      options?: { forceRefresh?: boolean },
+    ) => (await provider.getAvailableModels(options)).map((model) => model.id);
+
+    it("labels the built-in list as a fallback when signed out", async () => {
+      const provider = new ClaudeProvider();
+      vi.spyOn(provider, "getAuthStatus").mockResolvedValue({
+        installed: true,
+        authenticated: false,
+        enabled: false,
+      });
+
+      expect(await ids(provider)).toContain("default");
+      expect(provider.getModelCatalogStatus()).toMatchObject({
+        source: "fallback",
+        error: "Claude is not signed in",
+      });
+    });
+
+    it("caches a live probe, re-probes on force and after an hour", async () => {
+      vi.useFakeTimers({ now: Date.parse("2026-10-06T10:00:00Z") });
+      try {
+        const provider = new ClaudeProvider();
+        authenticated(provider);
+        const probeModels = probe(provider)
+          .mockResolvedValueOnce([row("first")])
+          .mockResolvedValueOnce([row("forced")])
+          .mockResolvedValueOnce([row("expired")]);
+
+        expect(await ids(provider)).toContain("first");
+        expect(provider.getModelCatalogStatus()).toEqual({
+          source: "live",
+          fetchedAt: "2026-10-06T10:00:00.000Z",
+        });
+        expect(await ids(provider)).toContain("first");
+        expect(probeModels).toHaveBeenCalledTimes(1);
+
+        vi.setSystemTime(Date.parse("2026-10-06T10:05:00Z"));
+        expect(await ids(provider, { forceRefresh: true })).toContain("forced");
+        expect(provider.getModelCatalogStatus()?.fetchedAt).toBe(
+          "2026-10-06T10:05:00.000Z",
+        );
+
+        vi.setSystemTime(Date.parse("2026-10-06T11:04:00Z"));
+        expect(await ids(provider)).toContain("forced");
+        vi.setSystemTime(Date.parse("2026-10-06T11:06:00Z"));
+        expect(await ids(provider)).toContain("expired");
+        expect(probeModels).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not let an older probe overwrite a forced refresh", async () => {
+      const provider = new ClaudeProvider();
+      authenticated(provider);
+      let finishOld: (models: unknown[]) => void = () => {};
+      const probeModels = probe(provider)
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            finishOld = resolve;
+          }),
+        )
+        .mockResolvedValueOnce([row("new")]);
+
+      const old = ids(provider);
+      await vi.waitFor(() => expect(probeModels).toHaveBeenCalledTimes(1));
+      expect(await ids(provider, { forceRefresh: true })).toContain("new");
+      finishOld([row("old")]);
+      expect(await old).toContain("old");
+
+      expect(await ids(provider)).toContain("new");
+      expect(await ids(provider)).not.toContain("old");
+    });
+
+    it("keeps the last live list when a refresh fails", async () => {
+      const provider = new ClaudeProvider();
+      authenticated(provider);
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      probe(provider)
+        .mockResolvedValueOnce([row("live")])
+        .mockRejectedValueOnce(new Error("probe timed out"));
+
+      await ids(provider);
+      const fetchedAt = provider.getModelCatalogStatus()?.fetchedAt;
+      expect(await ids(provider, { forceRefresh: true })).toContain("live");
+      expect(provider.getModelCatalogStatus()).toEqual({
+        source: "live",
+        fetchedAt,
+        error: "probe timed out",
+      });
+    });
+
+    it("falls back when the first probe fails", async () => {
+      const provider = new ClaudeProvider();
+      authenticated(provider);
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      probe(provider).mockRejectedValueOnce(new Error("no runtime"));
+
+      expect(await ids(provider)).toContain("default");
+      expect(provider.getModelCatalogStatus()).toMatchObject({
+        source: "fallback",
+        error: "no runtime",
+      });
+    });
+  });
+
   it("resolves a launch alias to the concrete model the SDK reports", async () => {
     const provider = new ClaudeProvider();
     expect(provider.resolveLaunchModel("opus")).toBeUndefined();
@@ -409,9 +530,40 @@ describe("ClaudeProvider model list", () => {
       description: "Fable 5.1 · Most capable for your hardest tasks",
     });
     expect(models.find((model) => model.id === "claude-fable-5")).toMatchObject(
-      { name: "Fable 5", resolvedModel: "claude-fable-5" },
+      {
+        name: "Fable 5",
+        resolvedModel: "claude-fable-5",
+        catalogGroup: "additional",
+      },
     );
     expect(models.map((model) => model.id)).not.toContain("claude-fable-5-1");
+  });
+
+  it("marks the concrete previous versions additional and lists them last", () => {
+    // Claude Code 2.1.293's catalog, abridged: aliases, then concrete rows.
+    const models = mergeClaudeModels([
+      { id: "default", name: "Default", description: "Opus 5.5" },
+      { id: "sonnet", name: "Sonnet 5.5", description: "Sonnet 5.5" },
+      {
+        id: "claude-haiku-4-5-20251001",
+        name: "Haiku 4.5",
+        description: "Fastest for quick answers",
+      },
+      { id: "claude-sonnet-5", name: "Sonnet 5", description: "Sonnet 5" },
+      { id: "haiku", name: "Haiku 5.5", description: "Haiku 5.5" },
+    ]);
+
+    const previous = models.filter(
+      (model) => model.catalogGroup === "additional",
+    );
+    expect(previous.map((model) => model.id)).toEqual([
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5",
+    ]);
+    expect(models.slice(-2)).toEqual(previous);
+    expect(models.find((model) => model.id === "haiku")?.catalogGroup).toBe(
+      undefined,
+    );
   });
 
   it("merges the live Opus 5 extended row into the stable opus alias", () => {
@@ -650,7 +802,18 @@ describe("Claude login command", () => {
     );
   });
 
-  it("formats a PowerShell command for Windows executable paths", () => {
+  it("leaves a shell-neutral Windows path bare so cmd.exe and PowerShell both run it", () => {
+    expect(
+      formatClaudeLoginCommand(
+        "C:\\Users\\me\\AppData\\Local\\yep\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64\\claude.exe",
+        "win32",
+      ),
+    ).toBe(
+      "C:\\Users\\me\\AppData\\Local\\yep\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64\\claude.exe auth login --claudeai",
+    );
+  });
+
+  it("formats a PowerShell command for Windows paths that need quoting", () => {
     expect(
       formatClaudeLoginCommand(
         "C:\\Users\\me\\AppData\\Local\\Claude App\\claude.exe",

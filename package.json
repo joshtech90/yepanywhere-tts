@@ -21,12 +21,14 @@
     "i18n:scan": "node scripts/find-raw-i18n-copy.mjs",
     "agent:monitor": "node scripts/monitor-agent-process.mjs",
     "artifact:capture": "tsx packages/client/scripts/capture-artifact.ts",
+    "unicode-math:train": "tsx scripts/unicode-math/train.ts",
     "android:interop:check": "tsx --conditions source scripts/android-secure-interop-fixture.ts",
     "android:interop:write": "tsx scripts/android-secure-interop-fixture.ts --write",
     "android:probe-server": "pnpm --filter @yep-anywhere/server exec tsx --conditions source scripts/android-native-secure-probe-server.ts",
     "css:check": "node scripts/check-css-architecture.mjs",
     "css:health": "tsx scripts/css-health.ts",
     "css:inventory": "tsx scripts/css-inventory.ts",
+    "css:lint": "eslint --max-warnings 0 \"packages/client/src/**/*.css\" \"site/src/**/*.css\"",
     "css:modules:check": "tsx scripts/find-unused-css.ts --modules-check",
     "css:touched": "tsx scripts/report-touched-css.ts",
     "css:unused": "tsx scripts/find-unused-css.ts",
@@ -49,7 +51,7 @@
     "build:bundle": "tsx scripts/build-bundle.ts",
     "build:stable": "pnpm --filter client build:stable",
     "typecheck": "pnpm --filter shared build && pnpm -r --filter=!@yep-anywhere/android exec tsc --noEmit && pnpm tools:typecheck && pnpm e2e:typecheck",
-    "test": "node --test packages/mobile-core/scripts/sodium.test.mjs && pnpm -r --filter=!@yep-anywhere/android test",
+    "test": "node --test packages/mobile-core/scripts/sodium.test.mjs packages/client/e2e/lifecycle-study/network-gate.checks.mjs packages/client/e2e/lifecycle-study/acceptance.checks.mjs && pnpm -r --filter=!@yep-anywhere/android test",
     "test:e2e": "pnpm --filter client test:e2e",
     "test:e2e:ui": "pnpm --filter client test:e2e",
     "test:e2e:android": "pnpm --filter client test:e2e:android",
@@ -61,7 +63,7 @@
     "test:e2e:sdk:real": "pnpm --filter server test:e2e:real",
     "test:e2e:sdk:local": "pnpm --filter server test:e2e:local",
     "test:e2e:sdk:local:quality": "pnpm --filter server test:e2e:local:quality",
-    "lint": "node scripts/check-css-architecture.mjs && pnpm css:modules:check && pnpm tools:check && node scripts/biome.cjs lint .",
+    "lint": "node scripts/check-css-architecture.mjs && pnpm css:modules:check && pnpm css:lint && pnpm tools:check && node scripts/biome.cjs lint .",
     "format": "node scripts/biome.cjs format --write .",
     "format:check": "node scripts/biome.cjs format .",
     "prepare": "husky",
@@ -75,14 +77,17 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.6",
+    "@eslint/css": "^2.0.0",
     "esbuild": "0.27.2",
+    "eslint": "^10.12.0",
+    "eslint-cssicorn": "0.1.0",
     "husky": "^9.1.7",
     "postcss": "^8.5.23",
-    "postcss-selector-parser": "7.1.4",
+    "postcss-selector-parser": "7.1.6",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   },
-  "packageManager": "pnpm@10.34.5",
+  "packageManager": "pnpm@10.34.6",
   "engines": {
     "node": "^22.16 || ^23.11 || >=24.10"
   },
@@ -92,8 +97,8 @@
       "compatibleThroughVersion": "0.160.0"
     },
     "claudeCode": {
-      "compatibleThroughVersion": "2.1.283",
-      "claudeAgentSdkVersion": "0.3.283"
+      "compatibleThroughVersion": "2.1.293",
+      "claudeAgentSdkVersion": "0.3.293"
     },
     "piCli": {
       "compatibleThroughVersion": "0.84.2"

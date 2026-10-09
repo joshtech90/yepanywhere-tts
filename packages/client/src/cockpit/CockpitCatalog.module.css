@@ -208,7 +208,7 @@
   box-shadow: 0 0 0 1px var(--cockpit-accent);
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .searchField {
     min-height: 2.8rem;
   }

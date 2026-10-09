@@ -17,9 +17,19 @@ Status: implementation authorized 2026-07-25. Tactical plan:
 
 - Previous models are individual, default-off choices in Providers > Claude,
   not members of the default curated catalog.
-- The maintained server-owned registry contains `claude-opus-4-8`,
-  `claude-opus-4-6`, and `claude-sonnet-4-6`. It intentionally omits 4.7,
-  4.5, and earlier models.
+- The maintained server-owned registry contains `claude-fable-5`,
+  `claude-opus-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-opus-4-6`,
+  and `claude-sonnet-4-6`. It intentionally omits Opus 4.7, Haiku 4.5, 4.5,
+  and earlier models; the custom exact-id input still reaches them.
+- Since Claude Code 2.1.283 the live catalog lists concrete previous versions
+  (`claude-opus-4-8`, `claude-sonnet-5`, …) beside the aliases. The
+  direct catalog treats every concrete `claude-*` row the stable aliases do
+  not fold as a previous model: marked additional and hidden until opted in,
+  registry or custom. A selected live row keeps its live capabilities under the
+  registry's label, description and context window. The router pool picker
+  receives the same marked rows and, as with its other account-catalog models,
+  lists them under **Previous models** without an opt-in.
+  <!-- verified: Claude Code 2.1.293 / SDK 0.3.293 handshake 2026-10-08 -->
 - The compact settings row opens a checklist plus an advanced custom exact-id
   input. An empty selection is the off state.
 - Server settings retain the exact id, registry/custom origin, and a label

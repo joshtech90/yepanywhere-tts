@@ -1902,4 +1902,39 @@ describe("SessionIndexService", () => {
       await expect(stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
+
+  it("evicts the least recently used scope with its bookkeeping", async () => {
+    const lruService = new SessionIndexService({
+      dataDir,
+      projectsDir,
+      maxCacheSize: 2,
+    });
+    await lruService.initialize();
+    const dirs = ["a", "b", "c"].map((name) => join(projectsDir, name));
+    for (const dir of dirs) await mkdir(dir, { recursive: true });
+    const list = (dir: string) =>
+      lruService.getSessionsWithCache(
+        dir,
+        projectId,
+        new SessionReader({ sessionDir: dir }),
+      );
+    const internals = lruService as unknown as {
+      indexCache: Map<string, unknown>;
+      persistedIndexScopes: Set<string>;
+      lastFullValidationAt: Map<string, number>;
+    };
+
+    await list(dirs[0]!);
+    await list(dirs[1]!);
+    await list(dirs[0]!);
+    await list(dirs[2]!);
+
+    expect([...internals.indexCache.keys()]).toEqual([dirs[0], dirs[2]]);
+    expect(internals.persistedIndexScopes.has(dirs[1]!)).toBe(false);
+    expect(
+      [...internals.lastFullValidationAt.keys()].some((key) =>
+        key.startsWith(`${dirs[1]}::`),
+      ),
+    ).toBe(false);
+  });
 });

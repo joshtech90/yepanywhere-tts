@@ -19,6 +19,7 @@ export type {
 } from "./retained-session-collections.js";
 
 export * from "./session-content-search.js";
+export * from "./mcp-apps.js";
 export * from "./instructionRestoration.js";
 export * from "./limited-users.js";
 export * from "./sidebar-categories.js";
@@ -441,8 +442,12 @@ export type {
   CodexReasoningSummary,
   ProviderName,
   ProviderInfo,
+  ProviderLoginFlow,
+  ProviderLoginFlowState,
   ProviderImageSizing,
+  ModelCatalogStatus,
   ModelInfo,
+  ModelServiceTier,
   RecapMode,
   CacheMissBillingReason,
   CacheMissBillingOutcome,
@@ -1194,6 +1199,18 @@ export {
   isPublicSessionShareResponse,
 } from "./public-shares.js";
 export {
+  SESSION_VIEW_KINDS,
+  SESSION_VIEW_LIMITS,
+  isSessionClientView,
+  parseSessionViewPublication,
+} from "./session-view.js";
+export type {
+  SessionClientView,
+  SessionViewKind,
+  SessionViewPublication,
+  SessionViewViewer,
+} from "./session-view.js";
+export {
   findHtmlRootAssetReferences,
   PUBLIC_SHARE_MEDIA_ASSET_EXTENSIONS,
   resolveHtmlRootAssetPath,
@@ -1682,9 +1699,13 @@ export type {
   AgentAuthRouterPool,
   AgentAuthRouterPoolInput,
   AgentAuthRouterOverview,
+  AgentAuthRouterCliModel,
 } from "./agent-auth-router.js";
 
 export {
   routerModelSupportsThinking,
   resolveRouterModel,
+  routerAliasTargets,
+  routerCliModelTarget,
+  sanitizeRouterCliModels,
 } from "./agent-auth-router.js";

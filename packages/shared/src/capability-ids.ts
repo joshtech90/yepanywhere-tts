@@ -726,6 +726,36 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "agent-auth-router-recovery",
     introducedIn: "0.9.4",
   },
+  processServiceTierChange: {
+    id: 118,
+    direction: "server",
+    name: "process-service-tier-change",
+    introducedIn: "0.9.4",
+  },
+  agentSessionView: {
+    id: 119,
+    direction: "server",
+    name: "agent-session-view",
+    introducedIn: "0.9.4",
+  },
+  mcpAppViews: {
+    id: 120,
+    direction: "server",
+    name: "mcp-app-views",
+    introducedIn: "0.9.4",
+  },
+  projectCreationGitChoice: {
+    id: 121,
+    direction: "server",
+    name: "project-creation-git-choice",
+    introducedIn: "0.9.4",
+  },
+  unicodeProseMath: {
+    id: 122,
+    direction: "server",
+    name: "unicode-prose-math",
+    introducedIn: "0.9.4",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

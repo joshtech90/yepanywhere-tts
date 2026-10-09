@@ -85,7 +85,8 @@ export interface RemotePathCheckResult {
 
 /**
  * Get the home directory on a remote host.
- * Caches results per host to avoid repeated SSH calls.
+ * Caches results per host to avoid repeated SSH calls. Bounded by the
+ * configured remote hosts.
  */
 const remoteHomeCache = new Map<string, string>();
 

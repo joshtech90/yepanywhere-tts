@@ -101,6 +101,13 @@ limit and explicitly says V2 ignores it. The Providers caption must retain that
 limitation; YA must not imply that the setting constrains Codex V2 or Codex OSS
 without a separately verified control.
 
+## Service Tier
+
+YA sends the selected tier (`priority` for Fast) on thread start/resume and
+on every `turn/start`, and changes it live with `thread/settings/update`.
+Codex does not restore the tier on resume or record it in the rollout, so
+YA's launch settings are the only record. See [service tier](service-tier.md).
+
 ## Per-Turn Cyber Access Program
 
 The server-wide **Cyber access program** setting names the access program YA

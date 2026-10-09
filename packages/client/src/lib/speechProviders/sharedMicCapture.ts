@@ -435,8 +435,15 @@ export function stopSpeechStreamTracks(stream: MediaStream): void {
   setSpeechCaptureActivity(stream, null);
 }
 
-function muteWhileMicOpen(stream: MediaStream): void {
-  setSpeechCaptureActivity(stream, "capturing");
+function muteWhileMicOpen(
+  stream: MediaStream,
+  { retainedWhenIdle }: { retainedWhenIdle: boolean },
+): void {
+  // A retained stream outlives dictation, so the composer's capture phase,
+  // not the open device, owns ducking other apps.
+  setSpeechCaptureActivity(stream, "capturing", {
+    holdAudioFocus: !retainedWhenIdle,
+  });
   for (const track of stream.getTracks()) {
     // These tracks are newly acquired and privately owned by YA.
     track.onended = () => {
@@ -549,7 +556,7 @@ export function getSpeechMicStream({
   const constraints = speechMicConstraints(micDeviceId, reducePlayback);
   if (!keepWarm) {
     return navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
-      if (reducePlayback) muteWhileMicOpen(stream);
+      if (reducePlayback) muteWhileMicOpen(stream, { retainedWhenIdle: false });
       return stream;
     });
   }
@@ -595,7 +602,8 @@ export function getSpeechMicStream({
         (sharedActiveCaptureLeases > 0 ||
           (isDocumentVisible() && idleLeaseHeld))
       ) {
-        if (reducePlayback) muteWhileMicOpen(stream);
+        if (reducePlayback)
+          muteWhileMicOpen(stream, { retainedWhenIdle: true });
         managedSharedStreams.add(stream);
         sharedWarmStream = stream;
         activeLease?.bind(stream);

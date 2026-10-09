@@ -60,7 +60,7 @@
   }
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .testRow {
     flex-direction: column;
     align-items: stretch;

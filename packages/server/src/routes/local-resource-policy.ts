@@ -74,6 +74,14 @@ export const LOCAL_MEDIA_CONTENT_TYPES: Record<string, string> = {
   ".avi": "video/x-msvideo",
   ".mkv": "video/x-matroska",
   ".ogv": "video/ogg",
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".opus": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".flac": "audio/flac",
 };
 
 export const LOCAL_MEDIA_EXTENSIONS = new Set(

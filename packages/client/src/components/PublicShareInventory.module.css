@@ -155,7 +155,7 @@
   text-align: right;
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .row {
     align-items: stretch;
     flex-direction: column;

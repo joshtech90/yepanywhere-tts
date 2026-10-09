@@ -277,10 +277,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             "server-output" => {
-                let _ = crate::windows::show_server_output_window(app);
+                crate::windows::spawn_show_window(app, crate::windows::show_server_output_window);
             }
             "diagnostics" => {
-                let _ = crate::windows::show_diagnostics_window(app);
+                crate::windows::spawn_show_window(app, crate::windows::show_diagnostics_window);
             }
             "check-updates" => {
                 crate::updater::check(app, "manual");

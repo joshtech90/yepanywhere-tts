@@ -72,6 +72,23 @@ describe("Local image routes", () => {
     expect(await changed.text()).toBe("new-png-bytes");
   });
 
+  it("serves allowed audio files with an audio content type", async () => {
+    const filePath = path.join(tempDir, "clip.wav");
+    await writeFile(filePath, "wav-bytes");
+
+    const routes = createLocalImageRoutes({ allowedPaths: [tempDir] });
+    const response = await routes.request(
+      `/?path=${encodeURIComponent(filePath)}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("audio/wav");
+    expect(response.headers.get("content-disposition") ?? "inline").toMatch(
+      /^inline/,
+    );
+    expect(await response.text()).toBe("wav-bytes");
+  });
+
   it("derives validators and bytes from one opened file snapshot", async () => {
     const allowedDir = path.join(tempDir, "allowed");
     await mkdir(allowedDir, { recursive: true });

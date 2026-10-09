@@ -40,7 +40,7 @@
   left: 0;
   bottom: calc(100% + 0.35rem);
   z-index: 20;
-  width: min(21rem, calc(100vw - 2rem));
+  width: min(21rem, calc(100dvw - 2rem));
   padding: 0.65rem;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);

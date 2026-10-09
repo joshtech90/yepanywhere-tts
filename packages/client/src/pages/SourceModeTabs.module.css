@@ -43,7 +43,7 @@
 
 /* The `stacked` variant is the phone layout, where the tab strip is its own
    full-width row above the action row instead of sitting in the page header. */
-@media (max-width: 759px) {
+@media (width < 760px) {
   .tabs.stacked {
     display: grid;
     grid-auto-columns: minmax(0, 1fr);

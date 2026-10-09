@@ -1,5 +1,6 @@
 import { renderMarkdownToHtml } from "./markdown-augments.js";
 import {
+  collectMarkdownHeadingSlugs,
   renderSafeMarkdown,
   type SafeMarkdownRenderOptions,
 } from "./safe-markdown.js";
@@ -120,14 +121,19 @@ function appendMarkdownDefinitionContext(
  * requested source range expands to stable block/fence boundaries. Both the
  * in-app FileViewer and standalone local-file documents consume the same span
  * markers rather than maintaining separate alignment rules.
+ *
+ * A preview is a whole document, so its in-page links work. Its parts render
+ * separately; each continues the heading slugs of the parts before it, so ids
+ * match a single render.
  */
 export async function renderMarkdownFilePreview(
   content: string,
-  options: SafeMarkdownRenderOptions,
+  baseOptions: SafeMarkdownRenderOptions,
   contentStartLine: number,
   requestedRange: MarkdownSourceRange | null,
   viewMode: MarkdownFilePreviewViewMode,
 ): Promise<string> {
+  const options = { ...baseOptions, documentAnchors: {} };
   if (!requestedRange) {
     return await renderMarkdownToHtml(content, options);
   }
@@ -155,17 +161,26 @@ export async function renderMarkdownFilePreview(
     .join("\n");
   const after = lines.slice(snappedRange.endIndexExclusive).join("\n");
   const definitionLines = collectMarkdownDefinitionLines(lines);
-  const renderChunk = (markdown: string) =>
-    definitionLines.length > 0
+  const precedingHeadingSlugs: string[] = [];
+  const renderChunk = (markdown: string) => {
+    const chunkOptions = {
+      ...options,
+      documentAnchors: { precedingHeadingSlugs: [...precedingHeadingSlugs] },
+    };
+    precedingHeadingSlugs.push(...collectMarkdownHeadingSlugs(markdown));
+    return definitionLines.length > 0
       ? renderSafeMarkdown(
           appendMarkdownDefinitionContext(markdown, definitionLines),
-          options,
+          chunkOptions,
         )
-      : renderMarkdownToHtml(markdown, options);
+      : renderMarkdownToHtml(markdown, chunkOptions);
+  };
 
   const parts: string[] = [];
   if (viewMode !== "range" && before.trim()) {
     parts.push(await renderChunk(before));
+  } else {
+    precedingHeadingSlugs.push(...collectMarkdownHeadingSlugs(before));
   }
   parts.push(
     `<div class="markdown-preview-line-boundary markdown-preview-line-boundary-start" data-line="${spanStartLine}"></div>`,

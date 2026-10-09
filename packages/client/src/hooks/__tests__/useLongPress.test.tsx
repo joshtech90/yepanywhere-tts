@@ -61,3 +61,20 @@ it("runs the long press on right-click", () => {
   fireEvent.contextMenu(button);
   expect(onLongPress).toHaveBeenCalledTimes(1);
 });
+
+it("runs the long press on every repeated right-click", () => {
+  const { onLongPress, button } = setup();
+  fireEvent.pointerDown(button, { button: 2 });
+  fireEvent.contextMenu(button);
+  fireEvent.pointerDown(button, { button: 2 });
+  fireEvent.contextMenu(button);
+  expect(onLongPress).toHaveBeenCalledTimes(2);
+});
+
+it("runs a touch hold once though the browser also raises contextmenu", () => {
+  const { onLongPress, button } = setup();
+  fireEvent.pointerDown(button, { button: 0 });
+  vi.advanceTimersByTime(600);
+  fireEvent.contextMenu(button);
+  expect(onLongPress).toHaveBeenCalledTimes(1);
+});

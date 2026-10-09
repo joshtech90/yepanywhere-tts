@@ -56,3 +56,10 @@ export type { ThreadTokenUsageUpdatedNotification } from "./generated/v2/ThreadT
 export type { TurnCompletedNotification } from "./generated/v2/TurnCompletedNotification.js";
 export type { ErrorNotification } from "./generated/v2/ErrorNotification.js";
 export type { ThreadItem } from "./generated/v2/ThreadItem.js";
+export type { McpResourceReadParams } from "./generated/v2/McpResourceReadParams.js";
+export type { McpResourceReadResponse } from "./generated/v2/McpResourceReadResponse.js";
+export type { McpServerToolCallParams } from "./generated/v2/McpServerToolCallParams.js";
+export type { McpServerToolCallResponse } from "./generated/v2/McpServerToolCallResponse.js";
+export type { ListMcpServerStatusParams } from "./generated/v2/ListMcpServerStatusParams.js";
+export type { ListMcpServerStatusResponse } from "./generated/v2/ListMcpServerStatusResponse.js";
+export type { InitializeCapabilities } from "./generated/InitializeCapabilities.js";

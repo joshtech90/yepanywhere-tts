@@ -1416,13 +1416,12 @@ export function handleSessionSubscribe(
     return;
   }
 
-  let eventId = 0;
-  const sendEvent = (eventType: string, data: unknown) => {
+  const sendEvent = (eventType: string, data: unknown, eventId: string) => {
     send({
       type: "event",
       subscriptionId,
       eventType,
-      eventId: String(eventId++),
+      eventId,
       data,
     });
   };
@@ -1430,6 +1429,7 @@ export function handleSessionSubscribe(
   const { cleanup } = createSessionSubscription(process, sendEvent, {
     wantsLiveDeltas,
     wantsLiveToolOutput,
+    lastEventId: msg.lastEventId,
     sessionQueuePersistenceService,
     sessionMetadataService: supervisor.getSessionMetadataService(),
     resolveAbsoluteFilePaths,

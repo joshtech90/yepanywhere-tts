@@ -205,6 +205,7 @@ export class ReviewCommentService
   private releasesByAge = 0;
   private protectedSkips = 0;
   private reloadsAfterRelease = 0;
+  /** Store keys released since process start; one per review store. */
   private releasedKeys = new Set<string>();
   private activeStorageOperations = 0;
   private storageOperationsDrained: Promise<void> = Promise.resolve();

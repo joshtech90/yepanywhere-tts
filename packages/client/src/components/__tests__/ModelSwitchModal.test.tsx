@@ -15,11 +15,13 @@ const {
   mockGetProcessModels,
   mockSetProcessConfig,
   mockTranslate,
+  mockVersion,
 } = vi.hoisted(() => ({
   mockGetProcessInfo: vi.fn(),
   mockGetProcessModels: vi.fn(),
   mockSetProcessConfig: vi.fn(),
   mockTranslate: vi.fn((key: string) => key),
+  mockVersion: { current: { capabilities: [] as string[] } },
 }));
 
 vi.mock("../../api/client", () => ({
@@ -49,6 +51,10 @@ vi.mock("../../hooks/useProviderSubscriptionUsage", () => ({
   }),
 }));
 
+vi.mock("../../hooks/useVersion", () => ({
+  useVersion: () => ({ version: mockVersion.current, loading: false }),
+}));
+
 vi.mock("../../i18n", () => ({
   useI18n: () => ({ t: mockTranslate }),
 }));
@@ -74,6 +80,7 @@ describe("ModelSwitchModal", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    mockVersion.current = { capabilities: [] };
   });
 
   it("resets the shared modal scroller when switching tabs", () => {
@@ -294,5 +301,110 @@ describe("ModelSwitchModal", () => {
       expect(onModelChanged).toHaveBeenCalledTimes(1);
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  describe("speed", () => {
+    const codexModels = {
+      models: [
+        {
+          id: "gpt-5.6-sol",
+          name: "GPT-5.6-Sol",
+          serviceTiers: [
+            { id: "priority", name: "Fast", description: "1.5x speed" },
+          ],
+        },
+        { id: "gpt-5.6-luna", name: "GPT-5.6-Luna" },
+      ],
+    };
+
+    beforeEach(() => {
+      mockGetProcessModels.mockResolvedValue(codexModels);
+      mockGetProcessInfo.mockResolvedValue({
+        process: {
+          model: "gpt-5.6-sol",
+          provider: "codex",
+          thinking: undefined,
+          effort: "high",
+        },
+      });
+    });
+
+    const renderModal = (onClose = vi.fn()) =>
+      render(
+        <ModelSwitchModal
+          processId="process-1"
+          sessionId="session-1"
+          currentModel="gpt-5.6-sol"
+          onModelChanged={vi.fn()}
+          onClose={onClose}
+        />,
+      );
+
+    it("applies a tier on its own and keeps the modal open", async () => {
+      mockVersion.current = { capabilities: ["process-service-tier-change"] };
+      mockSetProcessConfig.mockResolvedValue({
+        success: true,
+        processId: "process-1",
+        serviceTier: "priority",
+      });
+      const onClose = vi.fn();
+      renderModal(onClose);
+
+      const standard = await screen.findByRole("button", {
+        name: "serviceTierStandardLabel",
+      });
+      expect(standard.getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(screen.getByRole("button", { name: "Fast" }));
+
+      await waitFor(() => {
+        expect(
+          screen
+            .getByRole("button", { name: "Fast" })
+            .getAttribute("aria-pressed"),
+        ).toBe("true");
+      });
+      expect(mockSetProcessConfig).toHaveBeenCalledWith("process-1", {
+        serviceTier: "priority",
+      });
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("offers Standard for a live tier the catalog no longer lists", async () => {
+      mockVersion.current = { capabilities: ["process-service-tier-change"] };
+      mockGetProcessInfo.mockResolvedValue({
+        process: {
+          model: "gpt-5.6-luna",
+          provider: "codex",
+          effort: "high",
+          serviceTier: "ultrafast",
+        },
+      });
+      mockSetProcessConfig.mockResolvedValue({
+        success: true,
+        processId: "process-1",
+        serviceTier: null,
+      });
+      renderModal();
+
+      const ultra = await screen.findByRole("button", {
+        name: "serviceTierUltraFastLabel",
+      });
+      expect(ultra.getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(
+        screen.getByRole("button", { name: "serviceTierStandardLabel" }),
+      );
+      await waitFor(() => {
+        expect(mockSetProcessConfig).toHaveBeenCalledWith("process-1", {
+          serviceTier: null,
+        });
+      });
+    });
+
+    it("hides the control from servers without live tier changes", async () => {
+      renderModal();
+
+      await screen.findByText("GPT-5.6-Luna");
+      expect(screen.queryByText("modelSwitchSpeedLabel")).toBeNull();
+    });
   });
 });

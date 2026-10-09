@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import type { GitUntrackedFileListResult } from "@yep-anywhere/shared";
 import { runGit } from "../git/gitExec.js";
+import { createLruMap, refreshLruMap } from "../lib/lruCollections.js";
 import { getLogger } from "../logging/logger.js";
 import { repositoryRelativePath } from "../review/repositoryPath.js";
 
@@ -19,6 +20,8 @@ const FULL_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const FILE_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
 const CACHE_FILE_LIMIT = 50_000;
 const RESPONSE_LIMIT = 500;
+/** Projects whose snapshots stay in memory; others reload from disk. */
+const RETAINED_PROJECT_LIMIT = 16;
 const GIT_LIST_MAX_BUFFER = 64 * 1024 * 1024;
 
 interface GitTreeState {
@@ -44,6 +47,8 @@ interface ProjectCacheState {
   loadPromise: Promise<void> | null;
   refreshPromise: Promise<UntrackedSnapshot> | null;
   persistPromise: Promise<void>;
+  /** Queries in progress; a busy state is never evicted. */
+  activeQueries: number;
 }
 
 export interface GitUntrackedCacheServiceOptions {
@@ -53,6 +58,7 @@ export interface GitUntrackedCacheServiceOptions {
   fileRecheckIntervalMs?: number;
   cacheFileLimit?: number;
   responseLimit?: number;
+  retainedProjectLimit?: number;
 }
 
 export interface GitUntrackedCacheQuery {
@@ -66,12 +72,17 @@ export interface GitUntrackedCacheQuery {
  * instead of launching another untracked enumeration.
  */
 export class GitUntrackedCacheService {
-  private readonly states = new Map<string, ProjectCacheState>();
+  /**
+   * Least recently used first, bounded by `retainedProjectLimit` idle
+   * entries. An evicted project reloads its persisted snapshot on next use.
+   */
+  private readonly states = createLruMap<string, ProjectCacheState>();
   private readonly now: () => number;
   private readonly fullRefreshIntervalMs: number;
   private readonly fileRecheckIntervalMs: number;
   private readonly cacheFileLimit: number;
   private readonly responseLimit: number;
+  private readonly retainedProjectLimit: number;
   private readonly cacheDir: string;
 
   constructor(options: GitUntrackedCacheServiceOptions) {
@@ -82,14 +93,25 @@ export class GitUntrackedCacheService {
       options.fileRecheckIntervalMs ?? FILE_RECHECK_INTERVAL_MS;
     this.cacheFileLimit = options.cacheFileLimit ?? CACHE_FILE_LIMIT;
     this.responseLimit = options.responseLimit ?? RESPONSE_LIMIT;
+    this.retainedProjectLimit =
+      options.retainedProjectLimit ?? RETAINED_PROJECT_LIMIT;
     this.cacheDir = join(options.dataDir, "indexes", "git-untracked");
   }
 
-  async query(
+  query(
     projectPath: string,
     query: GitUntrackedCacheQuery = {},
   ): Promise<GitUntrackedFileListResult> {
-    const state = this.stateFor(projectPath);
+    return this.withState(projectPath, (state) =>
+      this.queryState(state, projectPath, query),
+    );
+  }
+
+  private async queryState(
+    state: ProjectCacheState,
+    projectPath: string,
+    query: GitUntrackedCacheQuery,
+  ): Promise<GitUntrackedFileListResult> {
     await this.load(state, projectPath);
     const snapshot = await this.ensureCurrent(state, projectPath);
     const selected = selectFiles(snapshot.files, query);
@@ -143,28 +165,61 @@ export class GitUntrackedCacheService {
     };
   }
 
-  async all(projectPath: string): Promise<{
+  all(projectPath: string): Promise<{
     files: string[];
     truncated: boolean;
   }> {
+    return this.withState(projectPath, async (state) => {
+      await this.load(state, projectPath);
+      const snapshot = await this.ensureCurrent(state, projectPath);
+      return { files: snapshot.files, truncated: snapshot.truncated };
+    });
+  }
+
+  private async withState<T>(
+    projectPath: string,
+    run: (state: ProjectCacheState) => Promise<T>,
+  ): Promise<T> {
     const state = this.stateFor(projectPath);
-    await this.load(state, projectPath);
-    const snapshot = await this.ensureCurrent(state, projectPath);
-    return { files: snapshot.files, truncated: snapshot.truncated };
+    state.activeQueries += 1;
+    try {
+      return await run(state);
+    } finally {
+      state.activeQueries -= 1;
+      this.evictIdle();
+    }
   }
 
   private stateFor(projectPath: string): ProjectCacheState {
     let state = this.states.get(projectPath);
-    if (!state) {
+    if (state) {
+      refreshLruMap(this.states, projectPath, state);
+    } else {
       state = {
         snapshot: null,
         loadPromise: null,
         refreshPromise: null,
         persistPromise: Promise.resolve(),
+        activeQueries: 0,
       };
       this.states.set(projectPath, state);
     }
     return state;
+  }
+
+  /**
+   * Drop least recently used idle states past the limit. Every query awaits
+   * its own persistence, so an idle state has no write in flight and its
+   * replacement reads the latest persisted snapshot.
+   */
+  private evictIdle(): void {
+    let excess = this.states.size - this.retainedProjectLimit;
+    for (const [projectPath, state] of this.states) {
+      if (excess <= 0) break;
+      if (state.activeQueries > 0) continue;
+      this.states.delete(projectPath);
+      excess -= 1;
+    }
   }
 
   private async load(

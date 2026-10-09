@@ -1,5 +1,6 @@
 import type {
   ContextUsage,
+  ModelServiceTier,
   ProviderName,
   ProviderRuntimeStatus,
   SessionLivenessSnapshot,
@@ -11,8 +12,10 @@ import { useActivityBusState } from "../hooks/useActivityBusState";
 import type { ProcessState } from "../hooks/useSession";
 import { useI18n } from "../i18n";
 import { getProviderRuntimeReasonLabel } from "../lib/providerRuntimeStatus";
+import { isStandardServiceTier, serviceTierLabel } from "../lib/serviceTiers";
 import type { SessionStatus } from "../types";
 import styles from "./ProcessInfoModal.module.css";
+import { ROUTER_POLICY_KEYS, type RouterBinding } from "./RouterPoolSelector";
 import { Modal } from "./ui/Modal";
 
 interface ProcessInfo {
@@ -32,6 +35,7 @@ interface ProcessInfo {
   thinking?: { type: string };
   effort?: string;
   model?: string;
+  serviceTier?: string;
   executor?: string;
   liveness?: SessionLivenessSnapshot;
   providerRuntimeStatus?: ProviderRuntimeStatus;
@@ -41,6 +45,10 @@ interface ProcessInfoBodyProps {
   sessionId: string;
   provider: ProviderName;
   model?: string;
+  /** Last persisted launch tier; null is Standard, undefined is unknown. */
+  savedServiceTier?: string | null;
+  /** Catalog tiers for the session's model, used for display names. */
+  serviceTiers?: readonly ModelServiceTier[];
   status: SessionStatus;
   processState: ProcessState;
   sessionLiveness?: SessionLivenessSnapshot | null;
@@ -52,6 +60,7 @@ interface ProcessInfoBodyProps {
   approvalPolicy?: string;
   sandboxPolicy?: SessionSandboxPolicy;
   createdAt?: string;
+  routerBinding?: RouterBinding;
   /** Whether the session-specific SSE stream is connected */
   sessionStreamConnected: boolean;
   /** Timestamp of last SSE activity for this session */
@@ -210,6 +219,8 @@ export function ProcessInfoBody({
   sessionId,
   provider,
   model,
+  savedServiceTier,
+  serviceTiers,
   status,
   processState,
   sessionLiveness,
@@ -221,6 +232,7 @@ export function ProcessInfoBody({
   approvalPolicy,
   sandboxPolicy,
   createdAt,
+  routerBinding,
   sessionStreamConnected,
   lastSessionEventAt,
 }: ProcessInfoBodyProps) {
@@ -278,6 +290,22 @@ export function ProcessInfoBody({
       : wake.messageType
     : null;
 
+  // A live process reports its tier directly (absent means Standard); a
+  // stopped session falls back to its persisted launch settings.
+  const knownServiceTier: string | null | undefined = processInfo
+    ? (processInfo.serviceTier ?? null)
+    : savedServiceTier;
+  const showServiceTier =
+    knownServiceTier !== undefined &&
+    (provider === "codex" ||
+      provider === "codex-oss" ||
+      !isStandardServiceTier(knownServiceTier));
+  const serviceTierValue = !showServiceTier
+    ? null
+    : isStandardServiceTier(knownServiceTier)
+      ? serviceTierLabel(knownServiceTier, serviceTiers, t)
+      : `${serviceTierLabel(knownServiceTier, serviceTiers, t)} (${knownServiceTier})`;
+
   const getProviderDisplay = (p: string) => {
     switch (p) {
       case "claude":
@@ -324,6 +352,10 @@ export function ProcessInfoBody({
           mono
         />
         <InfoRow
+          label={t("processInfoLabelServiceTier")}
+          value={serviceTierValue}
+        />
+        <InfoRow
           label={t("processInfoLabelOwnership")}
           value={formatKebab(status.owner)}
         />
@@ -364,6 +396,56 @@ export function ProcessInfoBody({
           mono
         />
       </Section>
+
+      {routerBinding && (
+        <Section title={t("processInfoSectionRouter")}>
+          <InfoRow
+            label={t("processInfoLabelRouterPool")}
+            value={routerBinding.poolName}
+          />
+          <InfoRow
+            label={t("processInfoLabelRouterPoolId")}
+            value={routerBinding.poolId}
+            mono
+          />
+          <InfoRow
+            label={t("processInfoLabelRouterAccount")}
+            value={routerBinding.accountDisplayName}
+          />
+          <InfoRow
+            label={t("processInfoLabelRouterAccountId")}
+            value={routerBinding.accountId}
+            mono
+          />
+          <InfoRow
+            label={t("processInfoLabelRouterPolicy")}
+            value={
+              routerBinding.policy &&
+              t(ROUTER_POLICY_KEYS[routerBinding.policy])
+            }
+          />
+          <InfoRow
+            label={t("processInfoLabelRouterReason")}
+            value={routerBinding.reason}
+          />
+          <InfoRow
+            label={t("processInfoLabelRouterObserved")}
+            value={
+              routerBinding.observedAt && formatTime(routerBinding.observedAt)
+            }
+          />
+          <InfoRow
+            label={t("processInfoLabelRouterBindingId")}
+            value={routerBinding.id}
+            mono
+          />
+          <InfoRow
+            label={t("processInfoLabelRouterId")}
+            value={routerBinding.routerId}
+            mono
+          />
+        </Section>
+      )}
 
       {providerRuntimeStatus && (
         <Section title={t("processInfoSectionProviderRuntime")}>

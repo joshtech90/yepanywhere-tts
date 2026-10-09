@@ -14,6 +14,8 @@ export function useLongPress(onLongPress: () => void) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const start = useRef<{ x: number; y: number } | null>(null);
   const fired = useRef(false);
+  // The current press already ran the callback from its timer.
+  const held = useRef(false);
   const callback = useRef(onLongPress);
   callback.current = onLongPress;
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -26,6 +28,7 @@ export function useLongPress(onLongPress: () => void) {
   return {
     handlers: {
       onPointerDown: (event: React.PointerEvent) => {
+        held.current = false;
         // Secondary buttons arrive as contextmenu below.
         if (event.button > 0) return;
         fired.current = false;
@@ -33,6 +36,7 @@ export function useLongPress(onLongPress: () => void) {
         clearTimeout(timer.current);
         timer.current = setTimeout(() => {
           fired.current = true;
+          held.current = true;
           start.current = null;
           callback.current();
         }, LONG_PRESS_MS);
@@ -51,8 +55,13 @@ export function useLongPress(onLongPress: () => void) {
       onPointerCancel: cancel,
       onContextMenu: (event: React.MouseEvent) => {
         // A touch long press also raises contextmenu; either way it is ours.
+        // Only the press whose timer already ran is skipped, so a repeated
+        // right-click opens again even though no click cleared `fired`.
         event.preventDefault();
-        if (fired.current) return;
+        if (held.current) {
+          held.current = false;
+          return;
+        }
         cancel();
         fired.current = true;
         callback.current();

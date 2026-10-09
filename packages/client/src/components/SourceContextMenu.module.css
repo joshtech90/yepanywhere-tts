@@ -50,7 +50,7 @@
   z-index: 9999;
   display: flex;
   min-width: 216px;
-  max-width: min(280px, calc(100vw - 16px));
+  max-width: min(280px, calc(100dvw - 16px));
   flex-direction: column;
   padding: var(--space-1, 4px);
   background: var(--bg-surface);
@@ -102,7 +102,7 @@
 }
 
 /* Touch rows have no hover, so the trigger stays visible and grows its target. */
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .trigger {
     position: static;
     width: auto;

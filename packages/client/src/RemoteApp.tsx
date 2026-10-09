@@ -51,6 +51,8 @@ import { ToastProvider } from "./contexts/ToastContext";
 import { useI18n } from "./i18n";
 import { useCanAdministerHost } from "./hooks/useActingPrincipal";
 import { useNeedsAttentionBadge } from "./hooks/useNeedsAttentionBadge";
+import { signInRequiredState } from "./hooks/useSignInRequiredNotice";
+import { requiresResumeLogin } from "./lib/connection/remoteErrors";
 import { useSyncNotifyInAppSetting } from "./hooks/useNotifyInApp";
 import { primeProviderCache } from "./hooks/useProviders";
 import {
@@ -307,6 +309,25 @@ export function ConnectionGate() {
 
   // Not connected (and not auto-resuming)
   if (!connection) {
+    // With no page mounted there is nothing to preserve, so a confirmed
+    // rejection goes straight to the login form, which explains why.
+    if (autoResumeError && requiresResumeLogin(autoResumeError.reason)) {
+      const loginParams = new URLSearchParams({ returnTo });
+      if (autoResumeError.mode === "relay" && autoResumeError.relayUsername) {
+        loginParams.set("u", autoResumeError.relayUsername);
+        if (autoResumeError.serverUrl) {
+          loginParams.set("r", autoResumeError.serverUrl);
+        }
+      }
+      return (
+        <Navigate
+          to={`/login/${autoResumeError.mode}?${loginParams.toString()}`}
+          replace
+          state={signInRequiredState(autoResumeError.reason)}
+        />
+      );
+    }
+
     // If auto-resume failed with a connection error, show the modal
     if (autoResumeError) {
       return (

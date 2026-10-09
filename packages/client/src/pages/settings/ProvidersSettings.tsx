@@ -62,6 +62,7 @@ import { useServerSettings } from "../../hooks/useServerSettings";
 import { GatewayServicesSettings } from "./GatewayServicesSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
+import { ProviderSignIn } from "./ProviderSignIn";
 import {
   ClaudeAutoCompactPercentOverrideControl,
   YaCompactContextEarlyControl,
@@ -1791,6 +1792,9 @@ export function ProvidersSettings() {
         authenticated: serverInfo?.authenticated ?? false,
         enabled: serverInfo?.enabled ?? false,
         loginCommand: serverInfo?.loginCommand,
+        supportsInAppLogin: serverInfo?.supportsInAppLogin === true,
+        supportsHostTerminalLogin:
+          serverInfo?.supportsHostTerminalLogin === true,
         additionalModelOptions: serverInfo?.additionalModelOptions,
         supportsLaunchCompactPercentOverride:
           serverInfo?.supportsLaunchCompactPercentOverride === true,
@@ -2042,6 +2046,16 @@ export function ProvidersSettings() {
                             )
                           }
                         />
+                        {provider.supportsInAppLogin && (
+                          <ProviderSignIn
+                            provider={provider.id}
+                            displayName={provider.displayName}
+                            supportsHostTerminal={
+                              provider.supportsHostTerminalLogin
+                            }
+                            onSignedIn={reloadProviders}
+                          />
+                        )}
                       </div>
                     )}
                   {(provider.id === "claude" || provider.id === "codex") &&

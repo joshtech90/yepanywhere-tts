@@ -87,7 +87,7 @@
   overflow: hidden;
   border-top: 1px solid var(--border-color);
 }
-@media (min-width: 760px) {
+@media (width >= 760px) {
   .sheet[data-preview] {
     flex-direction: row;
     max-height: min(280px, 45vh);
@@ -103,7 +103,7 @@
     overflow-y: auto;
   }
 }
-@media (pointer: coarse), (max-width: 600px) {
+@media (pointer: coarse), (width <= 600px) {
   .row {
     min-height: 44px;
   }

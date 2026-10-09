@@ -37,6 +37,19 @@ describe("limited-user route policy", () => {
     expect(decide("POST", "/api/some-new-surface")).toEqual({ kind: "deny" });
   });
 
+  it("refuses provider sign-in, including the status read carrying a device code", () => {
+    expect(decide("GET", "/api/providers")).toEqual({ kind: "allow" });
+    expect(decide("GET", "/api/providers/codex/login")).toEqual({
+      kind: "deny",
+    });
+    expect(decide("POST", "/api/providers/claude/login/code")).toEqual({
+      kind: "deny",
+    });
+    expect(decide("POST", "/api/providers/codex/login/terminal")).toEqual({
+      kind: "deny",
+    });
+  });
+
   it("refuses Issues & PRs, which spend the host's ticket credentials", () => {
     expect(decide("GET", "/api/issues")).toEqual({ kind: "deny" });
     expect(decide("GET", "/api/issues/42")).toEqual({ kind: "deny" });

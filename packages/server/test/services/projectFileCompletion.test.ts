@@ -8,6 +8,7 @@ import * as directoryWatcher from "../../src/watcher/SharedDirectoryWatcher.js";
 import { EventBus } from "../../src/watcher/EventBus.js";
 import { getProjectPathIndex } from "../../src/projects/projectPathIndex.js";
 import { ProjectFileCompletion } from "../../src/services/projectFileCompletion.js";
+import { runIdleSweeps } from "../../src/lib/processIdleSweep.js";
 import { runGit } from "../../src/git/gitExec.js";
 import { createProjectFileCompletionRoutes } from "../../src/routes/project-file-completion.js";
 import type { ProjectScanner } from "../../src/projects/scanner.js";
@@ -205,6 +206,47 @@ it("retains 100 project inventories and expires by last use after a week", async
   await completed(service, projects[1]!, "known");
   expect(vi.mocked(spawn).mock.calls.length).toBeGreaterThan(beforeExpired);
 }, 30_000);
+
+it("releases least recently used inventories past the process byte budget", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ya-completion-total-"));
+  temporary.push(root);
+  // One "known.txt" entry accounts 146 bytes, so two inventories fit.
+  const service = createService(join(root, "data"), {
+    maxTotalRetainedBytes: 300,
+  });
+  const [a, b, c] = ["a", "b", "c"].map((name) => join(root, name));
+  for (const project of [a!, b!, c!]) {
+    await mkdir(project);
+    await writeFile(join(project, "known.txt"), "fixture");
+  }
+  await completed(service, a!, "known");
+  await completed(service, b!, "known");
+  expect((await service.query(a!, "known", [])).pending).toBe(false);
+  await completed(service, c!, "known");
+  expect((await service.query(a!, "known", [])).pending).toBe(false);
+  expect((await service.query(c!, "known", [])).pending).toBe(false);
+  expect((await service.query(b!, "known", [])).pending).toBe(true);
+});
+
+it("expires unused inventories from the process idle sweep", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ya-completion-sweep-"));
+  temporary.push(root);
+  let now = 0;
+  const service = createService(join(root, "data"), { now: () => now });
+  await writeFile(join(root, "known.txt"), "fixture");
+  await completed(service, root, "known");
+  const internals = service as unknown as {
+    inventories: Map<string, unknown>;
+    unregisterIdleSweep?: () => void;
+  };
+  expect(internals.inventories.size).toBe(1);
+  expect(internals.unregisterIdleSweep).toBeDefined();
+  now = 8 * 24 * 60 * 60 * 1000;
+  runIdleSweeps(now);
+  expect(internals.inventories.size).toBe(0);
+  // With nothing retained, the service no longer holds the process sweep.
+  expect(internals.unregisterIdleSweep).toBeUndefined();
+});
 
 it("notices checkout through metadata fingerprints without waiting for expiry", async () => {
   const root = await mkdtemp(join(tmpdir(), "ya-completion-checkout-"));

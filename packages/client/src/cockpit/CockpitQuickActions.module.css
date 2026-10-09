@@ -65,7 +65,7 @@
   height: 1px;
   padding: 0;
   overflow: hidden;
-  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
   border: 0;
   margin: -1px;
   white-space: nowrap;
@@ -79,7 +79,7 @@
   left: 0;
   z-index: 20;
   display: grid;
-  width: min(19rem, calc(100vw - 1.5rem));
+  width: min(19rem, calc(100dvw - 1.5rem));
   padding: 0.3rem;
   gap: 0.15rem;
   border: 1px solid var(--cockpit-border);
@@ -140,7 +140,7 @@
 }
 
 .dialog {
-  width: min(30rem, calc(100vw - 2rem));
+  width: min(30rem, calc(100dvw - 2rem));
   max-height: calc(100dvh - 2rem);
   padding: 1.2rem;
   overflow: auto;
@@ -268,7 +268,7 @@
   display: none;
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .trigger {
     width: 1.9rem;
     height: 1.9rem;

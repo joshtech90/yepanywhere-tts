@@ -183,7 +183,7 @@ describe("Local file routes", () => {
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("etag")).toBeNull();
     const html = await response.text();
-    expect(html).toContain("<h1>Notes</h1>");
+    expect(html).toContain('<h1 id="user-content-notes">Notes</h1>');
     expect(html).toContain("<table>");
     const resolvedImagePath = await realpath(imagePath);
     expect(html).toContain(
@@ -215,7 +215,7 @@ describe("Local file routes", () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     const resolvedIncludePath = await realpath(includePath);
-    expect(html).toContain("<h1>Report</h1>");
+    expect(html).toContain('<h1 id="user-content-report">Report</h1>');
     expect(html).toContain(
       `href="/api/local-file?path=${encodeURIComponent(resolvedIncludePath)}&amp;render=1"`,
     );
@@ -309,7 +309,9 @@ describe("Local file routes", () => {
       expect(response.headers.get("content-type")?.toLowerCase()).toBe(
         "text/html; charset=utf-8",
       );
-      expect(await response.text()).toContain("<h1>Notes</h1>");
+      expect(await response.text()).toContain(
+        '<h1 id="user-content-notes">Notes</h1>',
+      );
     },
   );
 
@@ -333,7 +335,7 @@ describe("Local file routes", () => {
       "text/html; charset=utf-8",
     );
     const html = await response.text();
-    expect(html).toContain("<h1>Notes</h1>");
+    expect(html).toContain('<h1 id="user-content-notes">Notes</h1>');
     expect(html).toContain("Raw");
   });
 

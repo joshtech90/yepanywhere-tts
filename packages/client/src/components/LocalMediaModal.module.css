@@ -111,7 +111,7 @@
   display: contents;
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .imageHeader {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
@@ -223,7 +223,7 @@
   margin: 0;
   padding: var(--space-3);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .fileHtmlFrame,

@@ -41,9 +41,11 @@ and how to present a partial cost.
 
 Two things that *were* verified rather than left open, recorded so nobody
 re-derives them: Anthropic removed its over-200k long-context premium on
-2026-03-13 and now prices the full 1M window flat, so no Claude model has a
+2026-03-13 and now prices the full 1M window flat, so Claude has no provider
 context tier; and OpenAI's tier starts above 272k, not 200k. Both are encoded in
-`CONTEXT_TIER_BY_UPSTREAM_PROVIDER`.
+`CONTEXT_TIER_BY_UPSTREAM_PROVIDER`. The one Claude exception, Haiku 5.5 (×5
+above 100k, published 2026-10-08), is a per-model tier in
+`CONTEXT_TIER_BY_MODEL`.
 
 Found 2026-09-21 while adding per-model and per-project token cost to
 Settings → Users usage.

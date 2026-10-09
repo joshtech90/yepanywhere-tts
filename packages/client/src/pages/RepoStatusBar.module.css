@@ -194,7 +194,7 @@
   margin-top: var(--space-3, 12px);
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .incomingDialog {
     width: auto;
   }

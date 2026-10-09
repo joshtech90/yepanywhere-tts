@@ -468,7 +468,9 @@ hosting models are explicitly rejected by the YA-server-only requirement:
   origin with per-widget CSP) and talk to the host via `ui/*` JSON-RPC over
   `postMessage` (`window.openai` wraps it). Directly validates the
   sandbox-plus-brokered-channel posture; evaluate MCP Apps as the meta-UI
-  message schema before defining a YA-private one.
+  message schema before defining a YA-private one. YA now hosts MCP App
+  views for Codex tool calls ([MCP Apps](mcp-apps.md)), which settles that
+  evaluation by construction.
   (https://developers.openai.com/apps-sdk/build/chatgpt-ui,
   https://developers.openai.com/apps-sdk/mcp-apps-in-chatgpt)
 - **Claude Artifacts** — agent-built single-page apps rendered in a sandboxed

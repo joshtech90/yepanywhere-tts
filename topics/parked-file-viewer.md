@@ -86,8 +86,8 @@ session composer and their narrower file authority.
 Authenticated sessions remember the last project file-view route in browser
 local storage, keyed by session ID, with no expiry. The route retains the file
 path, line/range and view mode; it stores no content or mounted viewer state.
-Opening another file, including a nested file, replaces that route. Close and
-page reload retain it, and neither automatically opens a viewer.
+Opening another file, including a nested file, replaces that route. Close
+retains it without opening a viewer.
 
 When no managed viewer is open or parked, a dim right chevron recalls that file
 through the existing session viewer. Its hover or keyboard-focus hint contains
@@ -104,6 +104,29 @@ The chevron is default-visible when it fits, explicitly accepted by graehl on
 the user requested lightweight per-session recall after using ×. Reopening
 fetches the current file and keeps the existing session in place; parking
 continues to preserve the live viewer's exact reading state.
+
+## Reload keeps an open viewer
+
+A reload or hot update must not cost the reader their place (graehl,
+2026-10-05, replacing the rule that reload never opens a viewer). While the
+session's managed project-file viewer is open or parked, this tab keeps a
+record in `sessionStorage` of its route, parked state and body scroll
+offset (`lib/sessionViewerReload.ts`). A reload reopens that viewer in the
+placement the current settings give it, covering modal or right pane, parked
+if it was parked, and scrolled to the saved offset once its content renders.
+The saved offset takes precedence over the route's line target. Selection,
+find and source/preview mode are not restored.
+
+Close and replacement by another viewer drop the record, so a reload after
+Close opens nothing. The record is tab-scoped: a new tab or a later visit
+starts without a viewer. App and artifact panes are excluded, because storage
+cannot establish that a saved app is still alive (see
+[`session-right-pane.md`](session-right-pane.md)). Share-sourced viewers are
+excluded as well, because a reload cannot rebuild the route they read through.
+
+A hot update that re-runs the viewer controller module keeps its open viewer
+and subscribers (`import.meta.hot.data`), so editing client code during
+development leaves the viewer in place.
 
 ## First trial: persistent composer controller
 

@@ -620,11 +620,12 @@ from being marked fresh; the next request reconciles again. Failed scans have
 a 60-second retry cooldown rather than an immediate retry loop.
 
 Each project retains at most 1,000,000 file/directory candidates and 128 MiB of
-accounted path storage. There is no project-count eviction limit: 100 recently
-used project inventories can coexist. Inventories unused for more than a week
-are removed on the next completion request, with no dormant timer. These are
-per-project accounting limits, not a process-wide heap guarantee; aggregate
-retention grows with the projects actually used. Cache state need not survive
+accounted path storage. Published inventories across all projects share a
+256 MiB accounted budget; past it, the least recently used settled inventories
+are released and rescan on their next request. There is no project-count
+limit, so 100 recently used small or medium project inventories can coexist.
+Inventories unused for more than a week are removed on the next completion
+request or by the process-wide idle sweep, with no per-project timer. Cache state need not survive
 a server restart. Optional disk persistence is deferred in
 `gaps/sketches/project-file-completion-persistence.md`.
 

@@ -329,10 +329,12 @@ describe("CodexProvider", () => {
         .mockResolvedValueOnce([{ id: "gpt-6.1-sol", name: "Sol 6.1" }]);
       const internals = testProvider as unknown as {
         isCodexCliInstalled: () => Promise<boolean>;
-        getModelsFromAppServer: () => Promise<ModelInfo[]>;
+        getModelsFromAppServer: () => Promise<{ models: ModelInfo[] }>;
       };
       internals.isCodexCliInstalled = vi.fn(async () => true);
-      internals.getModelsFromAppServer = modelProbe;
+      internals.getModelsFromAppServer = async () => ({
+        models: await modelProbe(),
+      });
 
       expect((await testProvider.getAvailableModels())[0]?.id).toBe(
         "gpt-6-astra",
@@ -349,6 +351,35 @@ describe("CodexProvider", () => {
         "gpt-6.1-sol",
       );
       expect(modelProbe).toHaveBeenCalledTimes(2);
+      expect(testProvider.getModelCatalogStatus()?.source).toBe("live");
+    });
+
+    it("labels the version-matched built-in list as a fallback", async () => {
+      const testProvider = new CodexProvider();
+      const internals = testProvider as unknown as {
+        isCodexCliInstalled: () => Promise<boolean>;
+        getModelsFromAppServer: () => Promise<{
+          models: ModelInfo[];
+          error?: string;
+        }>;
+        getFallbackCodexModels: () => Promise<ModelInfo[]>;
+      };
+      internals.isCodexCliInstalled = vi.fn(async () => true);
+      internals.getModelsFromAppServer = async () => ({
+        models: [],
+        error: "app-server exited",
+      });
+      internals.getFallbackCodexModels = async () => [
+        { id: "gpt-fallback", name: "Fallback" },
+      ];
+
+      expect((await testProvider.getAvailableModels())[0]?.id).toBe(
+        "gpt-fallback",
+      );
+      expect(testProvider.getModelCatalogStatus()).toMatchObject({
+        source: "fallback",
+        error: "app-server exited",
+      });
     });
   });
 
@@ -1787,6 +1818,56 @@ describe("CodexProvider app-server lifecycle", () => {
         "low",
         "high",
       ]);
+    } finally {
+      await session.abort();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("changes the service tier for later turns without restarting app-server", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-tier-"));
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-tier",
+      buildFakeCodexPermissionAppServer(logPath),
+    );
+    const testProvider = new CodexProvider({ codexPath });
+    const session = await testProvider.startSession({
+      cwd: tempDir,
+      initialMessage: { text: "fast turn" },
+      serviceTier: "priority",
+    });
+
+    try {
+      await consumeCodexTurn(session.iterator);
+      expect(session.setServiceTier).toBeTypeOf("function");
+      await session.setServiceTier?.(undefined);
+      session.queue.push({ text: "standard turn" });
+      await consumeCodexTurn(session.iterator);
+      await session.setServiceTier?.("priority");
+      session.queue.push({ text: "fast again" });
+      await consumeCodexTurn(session.iterator);
+
+      const requests = readFakeCodexRequests(logPath);
+      expect(
+        requests.filter((request) => request.method === "thread/start"),
+      ).toHaveLength(1);
+      expect(new Set(requests.map((request) => request.pid))).toHaveLength(1);
+      expect(
+        requests
+          .filter((request) => request.method === "thread/settings/update")
+          .map((request) => request.params),
+      ).toEqual([
+        { threadId: expect.any(String), serviceTier: null },
+        { threadId: expect.any(String), serviceTier: "priority" },
+      ]);
+      // Explicit null keeps a later turn/start from re-sending the launch tier.
+      expect(
+        requests
+          .filter((request) => request.method === "turn/start")
+          .map((request) => request.params?.serviceTier),
+      ).toEqual(["priority", null, "priority"]);
     } finally {
       await session.abort();
       rmSync(tempDir, { recursive: true, force: true });
@@ -5876,6 +5957,84 @@ describe("CodexProvider Event Normalization", () => {
     expect((params.clientInfo as { name?: unknown }).name).toEqual(
       expect.any(String),
     );
+    expect(params.capabilities).not.toHaveProperty("extensions");
+  });
+
+  it("declares the MCP Apps extension only when views are hosted", () => {
+    const provider = createTestProvider() as unknown as {
+      createInitializeParams: (
+        experimentalApiEnabled: boolean,
+        clientName: string | undefined,
+        mcpAppViews: boolean,
+      ) => { capabilities: Record<string, unknown> | null };
+    };
+
+    expect(
+      provider.createInitializeParams(true, undefined, true).capabilities,
+    ).toEqual({
+      experimentalApi: true,
+      extensions: {
+        "io.modelcontextprotocol/ui": {
+          mimeTypes: ["text/html;profile=mcp-app"],
+        },
+      },
+    });
+    expect(
+      provider.createInitializeParams(false, undefined, true).capabilities,
+    ).toBeNull();
+  });
+
+  it("carries an MCP tool's declared view beside its unchanged arguments", () => {
+    const provider = createTestProvider() as unknown as {
+      normalizeThreadItem: (item: Record<string, unknown>) => unknown;
+      convertItemToSDKMessages: (
+        item: unknown,
+        sessionId: string,
+        turnId: string,
+        sourceEvent: "item/started" | "item/completed",
+      ) => Array<{ message?: { content?: Array<Record<string, unknown>> } }>;
+    };
+    const base = {
+      id: "call-1",
+      type: "mcpToolCall",
+      server: "weather",
+      tool: "forecast",
+      status: "inProgress",
+      arguments: { city: "Oslo" },
+    };
+    const toolUse = (item: Record<string, unknown>) =>
+      provider.convertItemToSDKMessages(
+        provider.normalizeThreadItem(item),
+        "session-1",
+        "turn-1",
+        "item/started",
+      )[0]?.message?.content?.[0];
+
+    expect(
+      toolUse({
+        ...base,
+        mcpAppUi: {
+          resourceUri: "ui://weather/forecast",
+          preferredModelDisplayMode: "fullscreen",
+        },
+      }),
+    ).toMatchObject({
+      name: "weather:forecast",
+      input: { city: "Oslo" },
+      _mcpApp: {
+        server: "weather",
+        tool: "forecast",
+        resourceUri: "ui://weather/forecast",
+        displayMode: "fullscreen",
+      },
+    });
+    expect(
+      toolUse({ ...base, mcpAppResourceUri: "ui://weather/legacy" }),
+    ).toMatchObject({
+      input: { city: "Oslo" },
+      _mcpApp: { resourceUri: "ui://weather/legacy", displayMode: "inline" },
+    });
+    expect(toolUse(base)).not.toHaveProperty("_mcpApp");
   });
 
   it("records and recovers an unsupported experimental initialize", async () => {

@@ -1225,6 +1225,29 @@ describe("CodexSessionReader - OSS Support", () => {
     });
   });
 
+  it("keeps only the latest settled active-after cutoff scan", async () => {
+    const dataDir = join(tmpdir(), `codex-reader-data-${randomUUID()}`);
+    extraTempDirs.push(dataDir);
+    await createSessionFile("cutoff-one", "openai", "gpt-4o");
+    const cutoffReader = new CodexSessionReader({
+      sessionsDir: testDir,
+      dataDir,
+      slowLogThresholdMs: 60_000,
+    });
+    const status = async (activeAfterMs?: number) => {
+      await cutoffReader.listSessionFiles(testDir, { activeAfterMs });
+      return cutoffReader.getLastScanMetrics()?.sharedCacheStatus;
+    };
+
+    expect(await status()).toBe("miss");
+    expect(await status(1)).toBe("miss");
+    expect(await status(1)).toBe("hit");
+    expect(await status(2)).toBe("miss");
+    expect(await status(2)).toBe("hit");
+    expect(await status()).toBe("hit");
+    expect(await status(1)).toBe("miss");
+  });
+
   it("identifies session as codex-oss when model_provider is local", async () => {
     const sessionId = "oss-session-2";
     await createSessionFile(sessionId, "local", "deepseek-coder");

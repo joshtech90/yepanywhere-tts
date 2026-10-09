@@ -12,7 +12,7 @@
 }
 
 /* Desktop: stay below the header; if space is tight, cover scroll content. */
-@media (min-width: 768px) {
+@media (width >= 768px) {
   .container {
     top: calc(var(--space-4) + 48px);
     right: var(--space-4);

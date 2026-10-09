@@ -8,15 +8,26 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { quoteShellWord } from "../utils/posixShell.js";
 import {
   AGENT_SELF_PATH,
+  AGENT_VIEW_PATH,
   type AgentSelfErrorCode,
   type AgentSelfReport,
+  type AgentViewReport,
 } from "./protocol.js";
 
 const MAX_LEASES = 1024;
 const LEASE_LIFETIME_MS = 24 * 60 * 60 * 1000;
+
+/** Reads served for one grant; null means the session id is not bound yet. */
+export interface AgentSelfSnapshots {
+  self: (launchId: string) => AgentSelfReport | null;
+  view: () => AgentViewReport | null;
+}
 interface Entry {
   expiresAt: number;
-  snapshot: () => AgentSelfReport | null;
+  snapshot: Record<
+    typeof AGENT_SELF_PATH | typeof AGENT_VIEW_PATH,
+    () => (AgentSelfReport | AgentViewReport) | null
+  >;
 }
 interface Runtime {
   server: Server;
@@ -37,7 +48,11 @@ async function createRuntime(): Promise<Runtime> {
       response.writeHead(status);
       response.end(JSON.stringify({ schemaVersion: 1, error: { code } }));
     };
-    if (request.method !== "GET" || request.url !== AGENT_SELF_PATH) {
+    const path = request.url;
+    if (
+      request.method !== "GET" ||
+      (path !== AGENT_SELF_PATH && path !== AGENT_VIEW_PATH)
+    ) {
       fail(404, "unsupported-protocol");
       return;
     }
@@ -48,9 +63,9 @@ async function createRuntime(): Promise<Runtime> {
     const entry = entries.get(token);
     if (!entry) return fail(401, "unauthorized");
     if (Date.now() >= entry.expiresAt) return fail(401, "expired");
-    let report: AgentSelfReport | null;
+    let report: AgentSelfReport | AgentViewReport | null;
     try {
-      report = entry.snapshot();
+      report = entry.snapshot[path]();
     } catch {
       return fail(503, "owner-unavailable");
     }
@@ -132,7 +147,7 @@ export interface AgentSelfLease {
 
 /** One listener/bin per provider-owner process, no polling or per-session timers. */
 export async function createAgentSelfLease(
-  snapshot: (launchId: string) => AgentSelfReport | null,
+  snapshots: AgentSelfSnapshots,
 ): Promise<AgentSelfLease> {
   runtimePromise ??= createRuntime();
   const pending = runtimePromise;
@@ -143,14 +158,17 @@ export async function createAgentSelfLease(
     if (runtimePromise === pending) runtimePromise = undefined;
     throw error;
   }
-  if (runtime.closing) return createAgentSelfLease(snapshot);
+  if (runtime.closing) return createAgentSelfLease(snapshots);
   if (runtime.entries.size >= MAX_LEASES)
     throw new Error("Agent self capacity exceeded");
   const token = randomBytes(32).toString("hex");
   const launchId = randomUUID();
   runtime.entries.set(token, {
     expiresAt: Date.now() + LEASE_LIFETIME_MS,
-    snapshot: () => snapshot(launchId),
+    snapshot: {
+      [AGENT_SELF_PATH]: () => snapshots.self(launchId),
+      [AGENT_VIEW_PATH]: snapshots.view,
+    },
   });
   return {
     launchId,

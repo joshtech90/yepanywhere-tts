@@ -35,6 +35,111 @@ import org.junit.Test
 
 class YaServerConnectionManagerTest {
     @Test
+    fun nativeSubscriptionFailureRetiresIntentAndPreservesItsCodeAcrossTheBridge() = runBlocking {
+        val fixture = Fixture()
+        val transport = FakeTransport(fixture.credential)
+        fixture.connector.results.send(Result.success(transport))
+        val manager = fixture.manager()
+        val lease = manager.acquire()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val emitted = CopyOnWriteArrayList<JSONObject>()
+        val web = YaWebTransportSession("document", lease, scope, { emitted += it }) {}
+        try {
+            web.dispatch(JSONObject().put("handle", "document").put("id", "setup").put("method", "subscribe")
+                .put("params", JSONObject().put("subscriptionId", "local").put("channel", "activity")))
+            val wire = transport.awaitSent("subscribe").getString("subscriptionId")
+            transport.incoming.send(JSONObject().put("type", "subscriptionError").put("subscriptionId", wire)
+                .put("errorCode", "OVERFLOW").put("error", "Too many subscriptions"))
+            withTimeout(2_000) { while (emitted.none { it.optString("type") == "subscriptionError" }) delay(1) }
+            val error = emitted.first { it.optString("type") == "subscriptionError" }
+            assertEquals("local", error.getString("subscriptionId"))
+            assertEquals("OVERFLOW", error.getString("errorCode"))
+            assertFalse(error.has("status"))
+            assertEquals(wire, transport.awaitSent("unsubscribe").getString("subscriptionId"))
+            val next = FakeTransport(fixture.credential)
+            fixture.connector.results.send(Result.success(next))
+            lease.reconnect()
+            assertTrue(next.sent.none { it.optString("type") == "subscribe" })
+        } finally { web.close(); scope.cancel(); manager.shutdownAndAwait() }
+    }
+
+    @Test
+    fun terminalFailureAfterReadinessRejectsNewDemandWithoutSpinning() = runBlocking {
+        val fixture = Fixture()
+        val transport = FakeTransport(fixture.credential)
+        fixture.connector.results.send(Result.success(transport))
+        val manager = fixture.manager()
+        val lease = manager.acquire()
+        try {
+            lease.subscribe("activity")
+            transport.incoming.send(JSONObject().put("type", "state").put("phase", "FAILED").put("recoverable", false))
+            withTimeout(2_000) { manager.state.first { it.phase == YaConnectionPhase.FAILED } }
+            val error = withTimeout(2_000) { runCatching { lease.request("GET", "/sessions") }.exceptionOrNull() }
+            assertTrue(error is YaConnectionUnavailableException)
+            assertEquals(1, fixture.connector.resumeCalls)
+        } finally { lease.releaseAndAwait(); manager.shutdownAndAwait() }
+    }
+
+    @Test
+    fun exhaustedNetworkRecoveryKeepsCredentialAndCanBeRestarted() = runBlocking {
+        val fixture = Fixture()
+        repeat(2) { fixture.connector.results.send(Result.failure(java.io.IOException("offline"))) }
+        val manager = fixture.manager(retryDelaysMs = listOf(0))
+        val lease = manager.acquire()
+        try {
+            val failed = withTimeout(2_000) { manager.state.first { it.phase == YaConnectionPhase.FAILED } }
+            assertTrue(failed.recoverable)
+            assertEquals(2, fixture.connector.resumeCalls)
+            assertFalse(fixture.repository.credentialCleared)
+            fixture.connector.results.send(Result.success(FakeTransport(fixture.credential)))
+            lease.reconnect()
+            assertEquals(YaConnectionPhase.CONNECTED, manager.state.value.phase)
+            assertEquals(3, fixture.connector.resumeCalls)
+        } finally { lease.releaseAndAwait(); manager.shutdownAndAwait() }
+    }
+
+    @Test
+    fun invalidNativeProofIsTerminalAndCannotBeRestartedByDemand() = runBlocking {
+        val fixture = Fixture()
+        fixture.connector.results.send(Result.failure(uniffi.ya_mobile_core.CoreException.InvalidMessage()))
+        val manager = fixture.manager(retryDelaysMs = listOf(0))
+        val lease = manager.acquire()
+        try {
+            val failed = withTimeout(2_000) { manager.state.first { it.phase == YaConnectionPhase.FAILED } }
+            assertFalse(failed.recoverable)
+            assertTrue(runCatching { lease.reconnect() }.isFailure)
+            assertTrue(runCatching { lease.request("GET", "/sessions") }.isFailure)
+            assertEquals(1, fixture.connector.resumeCalls)
+            assertFalse(fixture.repository.credentialCleared)
+        } finally { lease.releaseAndAwait(); manager.shutdownAndAwait() }
+    }
+
+    @Test
+    fun requestErrorCrossesTheWebBridgeWithoutBecomingHttp() = runBlocking {
+        val fixture = Fixture()
+        val transport = FakeTransport(fixture.credential)
+        fixture.connector.results.send(Result.success(transport))
+        val manager = fixture.manager()
+        val lease = manager.acquire()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val emitted = CopyOnWriteArrayList<JSONObject>()
+        val web = YaWebTransportSession("document", lease, scope, { emitted += it }) {}
+        try {
+            web.dispatch(JSONObject().put("handle", "document").put("id", "read").put("method", "request")
+                .put("params", JSONObject().put("method", "GET").put("path", "/projects")))
+            val request = transport.awaitSent("request")
+            transport.incoming.send(JSONObject().put("type", "requestError").put("id", request.getString("id"))
+                .put("code", "CONNECTION_UNAVAILABLE"))
+            withTimeout(2_000) { while (emitted.none { it.optString("id") == "read" }) delay(1) }
+            val reply = emitted.first { it.optString("id") == "read" }
+            assertEquals("CONNECTION_UNAVAILABLE", reply.getString("errorCode"))
+            assertFalse(reply.has("result"))
+            assertEquals(YaConnectionPhase.CONNECTED, manager.state.value.phase)
+            assertFalse(transport.cancelled)
+        } finally { web.close(); scope.cancel(); manager.shutdownAndAwait() }
+    }
+
+    @Test
     fun uploadInterruptedByRecoveryDoesNotCloseWebDocument() = runBlocking {
         val fixture = Fixture()
         val first = FakeTransport(fixture.credential)

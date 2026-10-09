@@ -1,5 +1,6 @@
 import { IssueIcon } from "./IssueIcon";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
+import { useLongPress } from "../hooks/useLongPress";
 import { Link, useLocation } from "react-router-dom";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import styles from "./SidebarNavItem.module.css";
@@ -281,6 +282,8 @@ export interface SidebarNavButtonProps {
   title?: string;
   /** Extra class names appended to sidebar-nav-item */
   className?: string;
+  /** Secondary action on right-click or a held press, given the button's rect */
+  onLongPress?: (anchor: DOMRect) => void;
 }
 
 /**
@@ -296,12 +299,20 @@ export function SidebarNavButton({
   onClick,
   title,
   className = "",
+  onLongPress,
 }: SidebarNavButtonProps) {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const press = useLongPress(() => {
+    const button = buttonRef.current;
+    if (button) onLongPress?.(button.getBoundingClientRect());
+  });
   return (
     <button
+      ref={buttonRef}
       type="button"
       className={`sidebar-nav-item ${className}`.trim()}
-      onClick={onClick}
+      {...(onLongPress ? press.handlers : {})}
+      onClick={onLongPress ? press.click(onClick) : onClick}
       aria-label={label}
       title={title ?? label}
     >

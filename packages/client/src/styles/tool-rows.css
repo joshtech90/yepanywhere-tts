@@ -663,7 +663,7 @@ button.tool-summary {
   color: var(--timeline-dot-error, var(--error-color));
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .explored-group-body {
     margin-left: 6px;
     padding-left: 5px;

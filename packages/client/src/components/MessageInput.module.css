@@ -6,7 +6,7 @@
   display: none;
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .clearComposer {
     position: absolute;
     top: -16px;

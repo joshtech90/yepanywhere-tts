@@ -6,7 +6,11 @@ import { basename, dirname, extname, relative, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import { AppWebSocketProxy } from "./AppWebSocketProxy.js";
 import { getRequestListener } from "@hono/node-server";
-import { ARTIFACT_SANDBOX, ARTIFACT_TAB_PROTOCOL } from "@yep-anywhere/shared";
+import {
+  ARTIFACT_SANDBOX,
+  ARTIFACT_TAB_PROTOCOL,
+  MCP_APP_PROXY_PATH,
+} from "@yep-anywhere/shared";
 import { FRAME_FIND_AGENT_SCRIPT } from "@yep-anywhere/shared/find/frameFindAgent.generated";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -28,6 +32,11 @@ import {
   setVhostHostnames,
 } from "../middleware/allowed-hosts.js";
 import { fileBytesResponse } from "./fileResponse.js";
+import {
+  MCP_APP_PROXY_DOCUMENT,
+  mcpAppViewCsp,
+  parseMcpAppCspParam,
+} from "./mcpAppProxy.js";
 import { proxyLoopbackVhost } from "./vhost-proxy.js";
 import { linkedVhostSite, serveVhostSite } from "./VhostSiteServer.js";
 import {
@@ -135,7 +144,9 @@ const MAX_SESSION_APPS = 256;
 export class ArtifactServer {
   readonly vhostAccess: VhostAccess;
   readonly app = new Hono();
+  /** Expired grants are deleted on access and on each new grant; revoked ones at once. */
   private readonly grants = new Map<string, Grant>();
+  /** Bounded by `MAX_SESSION_APPS`. */
   private readonly sessionApps = new Map<string, SessionApp>();
   /**
    * Every name ever minted stays excluded from YA's host trust until exit,
@@ -146,6 +157,7 @@ export class ArtifactServer {
   private projectAppDelivery?: ProjectAppDelivery;
   private fileSiteAdmitted: (site: ArtifactVhostSite) => boolean = (site) =>
     !site.ownerUsername;
+  /** One host per served project. */
   private readonly projectHosts = new Set<string>();
   private listener: Server | undefined;
   private listening = false;
@@ -208,11 +220,19 @@ export class ArtifactServer {
             "sandbox allow-scripts",
           ),
         );
+      // The proxy's policy is the framed view's: the spec's restrictive
+      // default plus only the origins the view's resource declared.
+      if (c.req.path === MCP_APP_PROXY_PATH)
+        c.res.headers.set(
+          "Content-Security-Policy",
+          mcpAppViewCsp(parseMcpAppCspParam(c.req.query("csp"))),
+        );
     });
     this.app.get("/health", (c) => {
       c.header("Access-Control-Allow-Origin", "*");
       return c.json({ artifactViewer: 1 });
     });
+    this.app.get(MCP_APP_PROXY_PATH, (c) => c.html(MCP_APP_PROXY_DOCUMENT));
     this.app.all("/p/:token/*", async (c) =>
       this.projectAppDelivery
         ? this.projectAppDelivery.dispatchPath(c.req.raw, c.req.param("token"))

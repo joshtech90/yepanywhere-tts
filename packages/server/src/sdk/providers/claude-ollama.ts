@@ -12,6 +12,7 @@ import type {
 } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
 import { ClaudeProvider } from "./claude.js";
+import { liveModelCatalog, modelCatalogError } from "./model-catalog-status.js";
 import type { AuthStatus } from "./types.js";
 
 const DEFAULT_OLLAMA_URL = "http://localhost:11434";
@@ -183,6 +184,9 @@ export class ClaudeOllamaProvider extends ClaudeProvider {
         { signal: AbortSignal.timeout(5000) },
       );
       if (!response.ok) {
+        this.modelCatalogStatus = liveModelCatalog(
+          `Ollama returned HTTP ${response.status}`,
+        );
         return [];
       }
       const data = (await response.json()) as OllamaTagsResponse;
@@ -192,6 +196,7 @@ export class ClaudeOllamaProvider extends ClaudeProvider {
           fetchOllamaModelDetails(ClaudeOllamaProvider.ollamaUrl, m.name),
         ),
       );
+      this.modelCatalogStatus = liveModelCatalog();
       return baseModels.map((m, i) => ({
         id: m.name,
         name: m.name,
@@ -200,6 +205,7 @@ export class ClaudeOllamaProvider extends ClaudeProvider {
       }));
     } catch (error) {
       log.debug({ error }, "Failed to fetch Ollama models");
+      this.modelCatalogStatus = liveModelCatalog(modelCatalogError(error));
       return [];
     }
   }

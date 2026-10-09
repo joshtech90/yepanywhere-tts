@@ -60,6 +60,7 @@ export class InactivityPushNotifier {
   private readonly debounceMs: number;
   private readonly projectDisplayName: ProjectDisplayNameResolver;
   private readonly unsubscribe: () => void;
+  /** One small edge state per project. */
   private readonly projectStates = new Map<UrlProjectId, EdgeState>();
   private readonly dirtyProjects = new Set<UrlProjectId>();
   private checkAllKnownProjects = false;

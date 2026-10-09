@@ -33,7 +33,11 @@ the current editor text stays in memory and a storage failure is shown when the
 sync service is active. Keep that page open until storage works again.
 
 Background writes use a three-second quiet debounce and ten-second maximum
-wait during connected editing. Reconnect, window focus and foregrounding refresh
+wait during connected editing. A server change notice does not cut a pending
+debounce short: that save reads the server anyway. Preempting it turned each
+tab's save into the other tab's immediate save, so two tabs on one draft
+alternated writes on every keystroke (observed 2026-10-05: 682 accepted writes
+in an hour on one session draft). Reconnect, window focus and foregrounding refresh
 metadata. There is one source/account coordinator, with serialized saves per
 slot, coalesced refreshes and a bounded ten-second change long-poll. Stops abort
 requests and dispose listeners/timers. Session badges use paginated metadata;
@@ -86,7 +90,13 @@ union new IDs and respect removal of a base attachment.
 A remote change never replaces a focused input, its selection, or IME input.
 One-sided remote updates, including a cleared draft after another device sends,
 wait quietly while their editor is focused and apply after focus leaves. They
-are not conflicts and do not produce a notice. A composer identifies its draft
+are not conflicts and do not produce a notice. An input counts as focused only
+while its window has focus: a window left with its caret in a composer still
+takes another window's continuation, so returning to it shows the current
+draft. An empty composer with no edits since its last save is filled even while
+focused; that is a window opened to continue a draft begun elsewhere, and
+holding it left the composer empty and turned the next keystroke into a
+conflict. A composer identifies its draft
 so focus in another composer does not pause this slot; unmarked text editors
 retain the conservative focus protection. Deferred snapshots continue refreshing
 on server changes, reconnect and foregrounding, rather than freezing the first
@@ -101,10 +111,26 @@ storage handler, appending the whole draft again on each keystroke until storage
 filled and the browser stalled (observed 2026-09-30). Metadata that an earlier
 build stored as a pending sibling merge is discarded on load.
 
+One tab saves a shared draft: the one being typed in. A tab that receives a
+sibling's keystrokes for a draft leaves its saves to that sibling until fifteen
+seconds after the last one, then takes over, so a sibling closed before saving
+still reaches the server. The tab holding window focus records that claim in
+shared storage, and a background tab never writes server text into shared
+storage while a sibling holds it; it keeps the update pending instead. Such a
+write lands in the focused tab's composer through its storage event, replacing
+the text with one merged from an older copy, dropping keys typed since and moving
+the caret to the end (reported 2026-10-08 while typing in New session; the
+server's receipts showed two clients saving the new-session slot within a
+second of each other).
+
 The tabs also share one acknowledged base, which never moves back: a tab
 reconciles against the newest base any sibling stored (by server sequence), a
 keystroke never rewrites sync metadata, and a Web Lock per slot serializes
-reconciliation across tabs where the browser provides one. Otherwise a tab
+reconciliation across tabs where the browser provides one. A server read older
+than that base (by server sequence) is discarded unmerged. Otherwise a slow
+tab's read of a prefix typed before a send, merged after the send was cleared,
+came back as another device's edit and refilled the sending tab's composer
+through shared storage (observed 2026-10-05). Otherwise a tab
 still holding an older base saw a sibling's save of the same text as a
 three-way conflict. Builds before the review UI then merged it unattended
 when no text field held focus, sending the first line twice as "server text,
@@ -192,8 +218,12 @@ rollback leaves originals untouched. Copies remain ordinary indexed staging
 records across interruption. No project-local writes are introduced; the
 [attachment storage](attachment-storage.md) policy still applies.
 
-A failed revalidation or a missing file retains the synced reference and shows
-an unavailable notice instead of silently erasing it. Sending still validates
+A failed validation request retains draft references and visible attachment
+chips, including the browser-local fallback on older servers. Connection
+replacement and retryable socket closure are quiet; other failures explain that
+the check failed and the draft was kept. None proves that a file is missing.
+A completed validation reporting a missing file retains the synced reference
+and shows an unavailable notice instead of silently erasing it. Sending still validates
 attachments; users can remove unavailable references explicitly. Upload bytes
 that never completed are not promised to survive a browser reload.
 

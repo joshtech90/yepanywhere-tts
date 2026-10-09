@@ -83,6 +83,48 @@ describe("GrokACPProvider", () => {
   });
 
   describe("getAvailableModels", () => {
+    it("retries discovery after a fallback and re-reads on force", async () => {
+      const home = mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "grok-"));
+      try {
+        const isolated = new GrokACPProvider();
+        const internals = isolated as unknown as {
+          getGrokHome: () => string;
+          findGrokPath: () => Promise<string | null>;
+        };
+        internals.getGrokHome = () => home;
+        internals.findGrokPath = async () => null;
+        const writeCache = (id: string) =>
+          writeFileSync(
+            join(home, "models_cache.json"),
+            JSON.stringify({ models: { [id]: { info: { id, name: id } } } }),
+          );
+
+        await isolated.getAvailableModels();
+        expect(isolated.getModelCatalogStatus()).toMatchObject({
+          source: "fallback",
+          error: "Grok CLI is not installed",
+        });
+
+        writeCache("grok-cached");
+        expect(
+          (await isolated.getAvailableModels()).map((model) => model.id),
+        ).toEqual(["grok-cached"]);
+        expect(isolated.getModelCatalogStatus()?.source).toBe("live");
+
+        writeCache("grok-newer");
+        expect(
+          (await isolated.getAvailableModels()).map((model) => model.id),
+        ).toEqual(["grok-cached"]);
+        expect(
+          (await isolated.getAvailableModels({ forceRefresh: true })).map(
+            (model) => model.id,
+          ),
+        ).toEqual(["grok-newer"]);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
     it("should return a non-empty catalog with one default", async () => {
       const models = await provider.getAvailableModels();
       expect(models.length).toBeGreaterThan(0);

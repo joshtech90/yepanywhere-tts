@@ -14,7 +14,6 @@ export { BlockDetector, type CompletedBlock } from "./block-detector.js";
 export {
   type Augment,
   type AugmentGenerator,
-  type AugmentGeneratorConfig,
   createAugmentGenerator,
 } from "./augment-generator.js";
 

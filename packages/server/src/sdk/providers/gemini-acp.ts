@@ -20,7 +20,7 @@ import type {
   SessionUpdate,
   ToolKind,
 } from "@agentclientprotocol/sdk";
-import type { ModelInfo } from "@yep-anywhere/shared";
+import type { ModelCatalogStatus, ModelInfo } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
 import { selectCommandLookupTarget } from "../cli-detection.js";
 import { whichCommand } from "../which-command.js";
@@ -183,6 +183,10 @@ export class GeminiACPProvider implements AgentProvider {
         enabled: false,
       };
     }
+  }
+
+  getModelCatalogStatus(): ModelCatalogStatus {
+    return { source: "static" };
   }
 
   /**

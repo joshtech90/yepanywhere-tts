@@ -17,8 +17,9 @@
  * because a cache read is a tenth of a fresh prompt token and, on a provider
  * that has such a tier, a long request reprices the whole request. Only this
  * recorder sees a single request's prompt length, so the tier has to be decided
- * here — a sum cannot be un-summed later. The threshold is per provider, and
- * for a provider with no tier every request is standard. A turn total names no
+ * here — a sum cannot be un-summed later. The threshold is per provider, or per
+ * model where one has its own, and for a provider with no tier every request
+ * is standard. A turn total names no
  * single request, so it is recorded at the standard tier.
  */
 
@@ -102,9 +103,12 @@ export class SessionTokenUsageRecorder {
     }
 
     // The tier is the prompt this one request sent, not the turn's running sum,
-    // and the threshold is the provider's own — 272k on OpenAI, none at all on
-    // Anthropic, which prices its 1M window flat.
-    const threshold = longContextThresholdTokens(process.provider);
+    // and the threshold is the provider's or model's own — 272k on OpenAI,
+    // 100k on Haiku 5.5, none on other Claude models, which price 1M flat.
+    const threshold = longContextThresholdTokens(
+      process.provider,
+      usage.model ?? process.resolvedModel,
+    );
     const longContext =
       threshold !== null &&
       usage.requestPromptTokens !== undefined &&

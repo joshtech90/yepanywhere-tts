@@ -115,11 +115,48 @@ not carry a migration queue.
 |---|---|---|
 | `pnpm css:check` | Hard containment gate | Exits 1 for global growth, an unreviewed global file, or a stale/invalid baseline entry. `--record` is the only write mode and only lowers current ceilings. |
 | `pnpm css:modules:check` | Hard module usage/global-interop gate | Exits 1 for any module contract issue or an unusable scan; otherwise 0. It never edits CSS. |
-| `pnpm lint` | Combined repository gate | Runs containment, module contracts, and Biome; any child failure fails lint. |
+| `pnpm css:lint` | Hard authored-CSS lint gate | ESLint with `eslint-cssicorn` over `packages/client/src` and `site/src` CSS; exits 1 on any error or warning. It never edits CSS unless run by hand with `--fix`. |
+| `pnpm lint` | Combined repository gate | Runs containment, module contracts, CSS lint, and Biome; any child failure fails lint. |
 | `pnpm css:touched` | Advisory feature-diff prompt | Exits 0 for opportunity, deferral, or no matching owner; exits 2 for invalid arguments or a failed git comparison. It never edits files. |
 | `pnpm css:inventory` | Advisory ownership drill-down | A valid report exits 0 and never edits files; invalid arguments exit 2. |
 | `pnpm css:unused` | Advisory dead-code investigation | Exits 1 while potential global dead code or a module contract issue remains. `--dry-run` previews; explicit `--remove` may delete only reviewed global rules, never module selectors. |
 | `pnpm css:health` | Observational cross-signal summary | A successful scan exits 0 regardless of reported debt; invalid arguments or unreadable/unparseable input exit 2. It never builds or writes. |
+
+## CSS lint rules
+
+ESLint runs only on CSS here; Biome keeps TypeScript/JavaScript lint and all
+formatting. `eslint.config.js` enables every `eslint-cssicorn` rule for
+authored client and site CSS, minus these decisions:
+
+- **Rejected as churn without a defect class:** `lowercase` (mostly
+  `currentColor` spelling), `prefer-short-hex-color`, and
+  `prefer-modern-syntax` (`rgba(…)` to `rgb(… / 50%)`).
+- **Out of scope:** `packages/desktop` (also outside Biome) and
+  `packages/client/mockups` (throwaway mockups).
+
+Rules that shape new CSS:
+
+- Full-viewport sizes name their viewport: use `100dvh`/`100dvw`, matching
+  the app shell, not bare `100vh`/`100vw`. No `vh` fallback line is needed;
+  the client already requires `color-mix()`, which postdates dynamic
+  viewport units.
+- Media queries use range syntax (`width < 1100px` paired with
+  `width >= 1100px`), so adjacent breakpoints leave no fractional-width gap.
+  The production build lowers range syntax for older targets.
+- Wrap long words with `overflow-wrap: anywhere`, not the deprecated
+  `word-break: break-word`. Visually hidden elements use
+  `clip-path: inset(50%)`, not `clip: rect(…)`.
+- A base rule comes before every contextual override of the same property
+  (`no-descending-specificity`), in the legacy stylesheets too. When adding
+  an override, place it after its base; when moving rules to satisfy this,
+  check that no rule whose order flips has equal specificity, an
+  overlapping property, and a subject that can be the same element.
+- A selector appears once per file and media context. The diff palette in
+  `index.css` is the one deliberate exception: it is grouped separately from
+  the theme blocks under a scoped disable comment.
+- `no-unknown-animations` checks `animation` names against keyframes in the
+  same file. That is the CSS Modules contract too: a module's keyframe names
+  are renamed per module, so it cannot use a global keyframe by bare name.
 
 ## Ownership boundaries
 

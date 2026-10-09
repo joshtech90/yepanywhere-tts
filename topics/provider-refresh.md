@@ -1103,7 +1103,68 @@ Previous-model registry review:
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
 
-Current source refresh, 2026-09-26 (Claude Code 2.1.283 / SDK 0.3.283):
+Current source refresh, 2026-10-08 (Claude Code 2.1.293 / SDK 0.3.293):
+
+- `@anthropic-ai/claude-agent-sdk` advances from `0.3.283` to `0.3.293`,
+  which makes the `haiku` alias resolve to Haiku 5.5. Its native executable
+  reports Claude Code `2.1.293`; the independently installed `claude` reports
+  `2.1.291`. Root compatibility and SDK markers advance together.
+- The declared SDK diff is additive for YA. Unused additions include a
+  `get_task_output` control request, the `provider_not_allowed`,
+  `org_config_required_unavailable` and `org_config_refused` startup failure
+  reasons, a nullable `fallback_credit` on usage, and optional `run_id`,
+  `agent_id`, `parent_task_id`, `allowedProviders`, `autoCompactWindow` and
+  `idleCompaction` fields. The tool declarations add `OfferChromeSetup`,
+  artifact pin/unpin, an Agent `effort` input and a WebFetch `offset`.
+  `claude --help` drops `--client-data-url`, adds `--desktop`, lets `attach`
+  and `logs` take a session name, and replaces the `project` subcommand with
+  `purge`. YA uses none of these.
+- `resumeSessionAt`/`resumeDropsTurn` declarations are unchanged, and the
+  guard in the bundled executable keeps its rule order: `queued_command`
+  attachments in the discarded range are still refused. One addition: a
+  `session_cron_carry` attachment before the declared prompt, or after it
+  when no earlier entry in the range called a cron tool such as `CronDelete`,
+  no longer blocks the drop and is re-appended after the truncation point. The skippable attachment set adds
+  `skill_mention`, `account_memory_recall`, `withheld_memory` and
+  `elapsed_time_reminder`, and drops `audio_transcript`. YA does not mirror
+  these sets.
+- A clean-environment no-turn handshake returns 13 model rows and 73
+  commands; 0.3.283 returned 11 and 75 in the same session. `haiku` is "Haiku
+  5.5" (`claude-haiku-5-5`) and now reports effort `low`–`max`, adaptive
+  thinking and auto mode; `sonnet` is "Sonnet 5.5" (`claude-sonnet-5-5`); and
+  `fable` is a native alias. The concrete rows add `claude-haiku-4-5-20251001`
+  and `claude-sonnet-5`. `mergeClaudeModels()` now marks every concrete
+  `claude-*` row it does not fold as additional, and the direct catalog shows
+  them only when opted in ([older-claude-models](older-claude-models.md)). The
+  registry gains `claude-fable-5`, `claude-opus-5` and `claude-sonnet-5`. The
+  2.1.283 gap is closed, narrowed to the family-only keying in
+  `gaps/claude-reported-model-keyed-by-family.md`. `plugin-authoring` and
+  `plugin-types` leave the command list; `/goal` and `/loop` remain native.
+  The usage response has the same field paths, live and declared.
+- Paid probes on the bundled executable (authorized): `haiku`,
+  `claude-haiku-5-5` and `haiku[1m]` run as Haiku 5.5 at a 1M window with
+  128K output; `sonnet` and `sonnet[1m]` run as Sonnet 5.5 at 1M; and
+  `claude-haiku-4-5` stays 200K with 32K output. `getModelContextWindow()`
+  now sizes canonical Claude 5 Haiku ids at 1M. The recap helper's `haiku`
+  alias answered in about 4 s, against 6–9 s on Haiku 4.5, with no visible
+  thinking, so it stays unpinned.
+- Pricing, from the Anthropic pricing page read 2026-10-08: Sonnet 5.5 is
+  $2/$10 with 0.05x cache reads; Haiku 5.5 is $0.10/$0.50 up to 100k prompt
+  tokens and 5x every class above, the page's one exception to flat 1M
+  pricing. Both have their own rows in `PUBLISHED_MODEL_PRICES`, and Haiku
+  5.5's tier is a per-model tier the usage recorder reads from the serving
+  model. Claude Code's own `costUSD` prices Sonnet 5.5 cache reads at $0.20,
+  which overstates them.
+- 71 transcript rows written by Claude Code 2.1.293, from a Haiku 5.5 turn
+  with Read, Bash, Write and a subagent, validate against
+  `claude-sdk-schema` without failures.
+
+Status: Claude Code 2.1.293 / SDK 0.3.293 package, declared surfaces, resume
+truncation guard, model discovery and previous-model placement, context
+windows, pricing, commands, usage, and persisted-schema coverage are
+refreshed.
+
+Previous source refresh, 2026-09-26 (Claude Code 2.1.283 / SDK 0.3.283):
 
 - `@anthropic-ai/claude-agent-sdk` advances from `0.3.280` to `0.3.283`;
   its native executable reports Claude Code `2.1.283`. The independently

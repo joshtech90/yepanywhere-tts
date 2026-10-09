@@ -1,8 +1,8 @@
 .shell {
   display: flex;
   width: 100%;
-  height: 100vh;
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 100dvh;
   flex-direction: column;
   overflow: hidden;
   background: var(--bg-surface);
@@ -113,7 +113,7 @@
   }
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .sessionHeader {
     gap: var(--space-2);
     padding-inline: var(--space-2);
@@ -130,7 +130,7 @@
 .cockpitShell {
   display: grid;
   width: 100%;
-  height: 100vh;
+  height: 100dvh;
   place-items: center;
   background: #f6f7fb;
 }

@@ -46,7 +46,7 @@
 }
 
 .label {
-  padding: 2px 2px;
+  padding: 2px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -296,7 +296,7 @@
   }
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .panel {
     right: 6px;
     bottom: 0;

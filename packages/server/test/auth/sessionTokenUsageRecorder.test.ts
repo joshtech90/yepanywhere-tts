@@ -253,6 +253,47 @@ describe("SessionTokenUsageRecorder", () => {
     expect(records[0]?.longContext).toBe(false);
   });
 
+  it("flags a Haiku 5.5 request past 100k, its model having its own tier", () => {
+    const { recorder, records } = recorderWithLog();
+    const process = fakeProcess({ resolvedModel: "claude-opus-5-5" });
+
+    // A subagent on Haiku 5.5 is tiered by Haiku's threshold, not the
+    // session's model; cache reads count toward the prompt.
+    recorder.observeMessage(
+      process,
+      claudeFrame({
+        responseId: "short",
+        input: 1000,
+        cacheRead: 99_000,
+        output: 10,
+        model: "claude-haiku-5-5",
+      }),
+    );
+    recorder.observeMessage(
+      process,
+      claudeFrame({
+        responseId: "long",
+        input: 1000,
+        cacheRead: 99_001,
+        output: 10,
+        model: "claude-haiku-5-5",
+      }),
+    );
+    recorder.observeMessage(
+      process,
+      claudeFrame({ responseId: "main", input: 300_000, output: 10 }),
+    );
+    recorder.flush(process);
+
+    expect(
+      records.map((record) => [record.modelId, record.longContext]),
+    ).toEqual([
+      ["claude-haiku-5-5", false],
+      ["claude-opus-5-5", false],
+      ["claude-haiku-5-5", true],
+    ]);
+  });
+
   it("does not flag an OpenAI request at exactly the threshold", () => {
     const { recorder, records } = recorderWithLog();
     const process = fakeProcess({ provider: "codex" } as Partial<Process>);

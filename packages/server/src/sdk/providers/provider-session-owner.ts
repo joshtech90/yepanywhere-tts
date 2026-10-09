@@ -90,6 +90,7 @@ export interface ProviderSessionReadyMetadata {
   providerRetention: ProviderRetentionSnapshot;
   capabilities: {
     publishAgentSelfSelection?: boolean;
+    publishAgentSessionViews?: boolean;
     probeLiveness: boolean;
     getProviderActivity: boolean;
     getProviderRetention: boolean;
@@ -98,10 +99,12 @@ export interface ProviderSessionReadyMetadata {
     steer: boolean;
     steerUsesMessageQueue?: boolean;
     appendConversationContext?: boolean;
+    mcpAppRequest?: boolean;
     instructionRestoration?: boolean;
     setMaxThinkingTokens: boolean;
     setEffort: boolean;
     effortUpdatesActiveTurn?: boolean;
+    setServiceTier?: boolean;
     setSessionOptions: boolean;
     interrupt: boolean;
     supportedModels: boolean;
@@ -261,6 +264,7 @@ export class ProviderSessionOwner {
       providerRetention: this.providerRetention,
       capabilities: {
         publishAgentSelfSelection: Boolean(session.publishAgentSelfSelection),
+        publishAgentSessionViews: Boolean(session.publishAgentSessionViews),
         probeLiveness: Boolean(session.probeLiveness),
         getProviderActivity: Boolean(session.getProviderActivity),
         getProviderRetention: Boolean(session.getProviderRetention),
@@ -271,6 +275,7 @@ export class ProviderSessionOwner {
         steer: Boolean(session.steer),
         steerUsesMessageQueue: session.steerUsesMessageQueue,
         appendConversationContext: Boolean(session.appendConversationContext),
+        mcpAppRequest: Boolean(session.mcpAppRequest),
         instructionRestoration: Boolean(
           session.configureInstructionRestoration &&
             session.forceReadInstructions,
@@ -278,6 +283,7 @@ export class ProviderSessionOwner {
         setMaxThinkingTokens: Boolean(session.setMaxThinkingTokens),
         setEffort: Boolean(session.setEffort),
         effortUpdatesActiveTurn: session.effortUpdatesActiveTurn === true,
+        setServiceTier: Boolean(session.setServiceTier),
         setSessionOptions: Boolean(session.setSessionOptions),
         interrupt: Boolean(session.interrupt),
         supportedModels: Boolean(session.supportedModels),
@@ -878,6 +884,10 @@ export class ProviderSessionOwner {
         return await session.publishAgentSelfSelection?.(
           args[0] as import("../../agent-tools/protocol.js").AgentSelfSelection,
         );
+      case "publishAgentSessionViews":
+        return await session.publishAgentSessionViews?.(
+          args[0] as import("@yep-anywhere/shared").SessionClientView[],
+        );
       case "drainQueue":
         return session.queue.drain();
       case "probeLiveness":
@@ -922,6 +932,12 @@ export class ProviderSessionOwner {
               >[0],
             )
           : false;
+      case "mcpAppRequest":
+        if (!session.mcpAppRequest)
+          throw new Error("MCP App hosting is unavailable for this session");
+        return session.mcpAppRequest(
+          args[0] as Parameters<NonNullable<AgentSession["mcpAppRequest"]>>[0],
+        );
       case "hydrateInstructionReadHistory":
         if (!session.hydrateInstructionReadHistory)
           throw new Error("Instruction history hydration is unavailable");
@@ -946,6 +962,12 @@ export class ProviderSessionOwner {
           (args[0] ?? undefined) as Parameters<
             NonNullable<AgentSession["setEffort"]>
           >[0],
+        );
+      case "setServiceTier":
+        if (!session.setServiceTier)
+          throw new Error("Service tier change is unavailable");
+        return await session.setServiceTier(
+          typeof args[0] === "string" ? args[0] : undefined,
         );
       case "setSessionOptions":
         return session.setSessionOptions

@@ -115,13 +115,83 @@ test("pool overview, editor and policy selection retain typing under 48-account 
     name: "New session",
     exact: true,
   });
-  await selector
-    .getByRole("combobox", { name: "Pool", exact: true })
-    .selectOption("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+  const poolTrigger = selector.getByRole("button", {
+    name: "Filter by Pool",
+    exact: true,
+  });
+  await expect(poolTrigger).toContainText("Direct provider login");
+  await poolTrigger.click();
+  const poolPanel = page.getByRole("dialog", { name: "Filter by Pool" });
+  await expect(poolPanel.getByRole("button")).toHaveText([
+    /^Direct provider login/,
+    /^Personal Codex.*Round robin · 15 of 16 accounts offer Fixture model · best 45% left/,
+    /^Hand-picked Codex.*Manual · 3 of 4 accounts offer Fixture model · best 45% left/,
+  ]);
+  await recordUiCapture(page, "router-unified-selection-open-1000", {
+    width: 1000,
+    height: 600,
+  });
+  await poolPanel.getByRole("button", { name: /^Personal Codex/ }).click();
+  await expect(poolPanel).toHaveCount(0);
+  await expect(poolTrigger).toContainText("Personal Codex");
   await expect(selector.getByLabel("Selected route")).toContainText(
     '"poolId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"',
   );
-  await expect(selector.getByRole("combobox")).toHaveCount(1);
+  await expect(
+    selector.getByRole("button", { name: "Filter by Router account" }),
+  ).toHaveCount(0);
+  await poolTrigger.click();
+  await poolPanel.getByRole("button", { name: /^Hand-picked Codex/ }).click();
+  const accountTrigger = selector.getByRole("button", {
+    name: "Filter by Router account",
+    exact: true,
+  });
+  await expect(accountTrigger).toContainText("Choose an account");
+  await accountTrigger.click();
+  const accountPanel = page.getByRole("dialog", {
+    name: "Filter by Router account",
+  });
+  // Every pool account is listed with its reason, both cached windows and
+  // the observation state; only catalog facts disable a row.
+  await expect(accountPanel.getByRole("button")).toHaveText([
+    /Account 1.*Quota exhausted when last checked.*5h 0% left.*Week 45% left.*checked Oct 3/,
+    /Account 2.*5h 68% left.*Week 45% left.*from a request Oct 3.*last refresh failed/,
+    /Account 3.*Disabled in AAR.*5h 68% left.*Week 45% left.*checked Oct 3/,
+    /Account 4.*no quota observed/,
+  ]);
+  await expect(
+    accountPanel.getByRole("button", { name: /Account 3/ }),
+  ).toBeDisabled();
+  await expect(
+    accountPanel.getByRole("button", { name: /Account 1/ }),
+  ).toBeEnabled();
+  await recordUiCapture(page, "router-account-quota-open-1000", {
+    width: 1000,
+    height: 600,
+  });
+  await accountPanel.getByRole("button", { name: /Account 2/ }).click();
+  await expect(selector.getByLabel("Selected route")).toContainText(
+    '"accountId":"account-2"',
+  );
+  // The phone sheet must hold both quota lines without clipping the row.
+  await page.setViewportSize({ width: 375, height: 812 });
+  await accountTrigger.click();
+  const accountSheet = page.getByRole("dialog", {
+    name: "Filter by Router account",
+  });
+  await expect(accountSheet.getByRole("button")).toHaveCount(4);
+  expect(
+    await accountSheet
+      .getByRole("button", { name: /Account 2/ })
+      .evaluate((el) => el.scrollWidth <= el.clientWidth),
+  ).toBe(true);
+  await recordUiCapture(page, "router-account-quota-open-375", {
+    width: 375,
+    height: 812,
+  });
+  await page.keyboard.press("Escape");
+  await expect(accountSheet).toHaveCount(0);
+  await page.setViewportSize({ width: 1000, height: 600 });
   const prompt = selector.getByRole("textbox", { name: "Prompt" });
   await prompt.evaluate((element) => {
     const field = element as HTMLTextAreaElement;

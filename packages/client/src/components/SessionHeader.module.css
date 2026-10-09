@@ -29,11 +29,34 @@
   flex-shrink: 0;
 }
 
+/* The pinned router account is secondary to the title: it yields space first
+   and leaves narrow headers entirely; Session Info carries the full pin. */
 .routerAccount {
-  max-width: 12rem;
+  flex: 0 8 auto;
+  min-width: 2.5rem;
+  max-width: 10rem;
+  margin-left: var(--space-1);
+  padding: 0 var(--space-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.75rem;
+  font: inherit;
+  font-size: 0.6875rem;
+  line-height: 1.25rem;
   color: var(--text-secondary);
+  background: none;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.routerAccount:hover,
+.routerAccount:focus-visible {
+  color: var(--text-primary);
+}
+
+@media (width <= 700px) {
+  .routerAccount {
+    display: none;
+  }
 }

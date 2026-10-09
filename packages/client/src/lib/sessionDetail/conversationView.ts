@@ -31,6 +31,8 @@ export interface ConversationViewProjectionOptions {
   dismissedThinkingPreviewSlots?: ReadonlySet<ConversationThinkingPreviewSlot>;
   expandedActivityIds?: ReadonlySet<string>;
   nowMs: number;
+  /** MCP App hosting is on, so a call with a view is conversation. */
+  mcpAppViews?: boolean;
 }
 
 export interface ConversationViewWindow {
@@ -88,6 +90,7 @@ export type ConversationViewSurfaceReason = "activity" | "error" | "importance";
 
 export function conversationViewSurfaceReason(
   item: RenderItem,
+  { mcpAppViews = false }: { mcpAppViews?: boolean } = {},
 ): ConversationViewSurfaceReason {
   if (item.type === "thinking" || item.type === "conversation_activity") {
     return "activity";
@@ -112,10 +115,13 @@ export function conversationViewSurfaceReason(
   if (canonicalTool === "UpdatePlan" || canonicalTool === "AskUserQuestion") {
     return "importance";
   }
+  // A call whose view the reader can open is output meant for them; folded
+  // away, its Show app view button would be unreachable.
   if (
     isMediaToolCall(item) ||
     toolDeclaresCommentary(item) ||
-    (item.workflow?.markers.length ?? 0) > 0
+    (item.workflow?.markers.length ?? 0) > 0 ||
+    (mcpAppViews && item.mcpApp)
   ) {
     return "importance";
   }
@@ -486,8 +492,11 @@ export function projectConversationView(
     dismissedThinkingPreviewSlots = new Set<ConversationThinkingPreviewSlot>(),
     expandedActivityIds = new Set<string>(),
     nowMs,
+    mcpAppViews = false,
   }: ConversationViewProjectionOptions,
 ): RenderItem[] {
+  const isActivity = (item: RenderItem) =>
+    conversationViewSurfaceReason(item, { mcpAppViews }) === "activity";
   const groups = groupRenderItemsIntoTurns(items);
   let lastAssistantGroupIndex = -1;
   let lastActivityGroupIndex = -1;
@@ -500,7 +509,7 @@ export function projectConversationView(
   }
 
   const summaryIds = groups.map((group, groupIndex) => {
-    const firstHiddenItem = group.items.find(isConversationViewActivity);
+    const firstHiddenItem = group.items.find(isActivity);
     if (!firstHiddenItem) return null;
     lastActivityGroupIndex = groupIndex;
     return `conversation-activity-${firstHiddenItem.id}`;
@@ -528,7 +537,7 @@ export function projectConversationView(
       return group.items;
     }
 
-    const hiddenItems = group.items.filter(isConversationViewActivity);
+    const hiddenItems = group.items.filter(isActivity);
     if (hiddenItems.length === 0) {
       return group.items;
     }
@@ -576,7 +585,7 @@ export function projectConversationView(
     return [
       ...(expanded
         ? group.items
-        : group.items.filter((item) => !isConversationViewActivity(item))),
+        : group.items.filter((item) => !isActivity(item))),
       summary,
     ];
   });

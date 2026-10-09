@@ -1069,6 +1069,56 @@ describe("FileViewer", () => {
     ]);
   });
 
+  it("follows in-page Markdown links by scrolling the viewer body", async () => {
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "notes.md",
+          size: 64,
+          mimeType: "text/markdown",
+          isText: true,
+        },
+        rawUrl: "",
+        content: "[jump](#target)\n\n## Target",
+        renderedMarkdownHtml:
+          '<p><a href="#user-content-target">jump</a> <a href="#user-content-missing">gone</a></p><h2 id="user-content-target">Target</h2>',
+      })),
+    };
+    const startHash = window.location.hash;
+
+    const { container } = render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="notes.md"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+    const heading = await screen.findByRole("heading", { name: "Target" });
+    const viewerBody =
+      container.querySelector<HTMLElement>(".file-viewer-body");
+    expect(viewerBody).toBeTruthy();
+    Object.defineProperty(viewerBody, "scrollHeight", { value: 2000 });
+    Object.defineProperty(viewerBody, "clientHeight", { value: 500 });
+    Object.defineProperty(viewerBody, "getBoundingClientRect", {
+      value: () => ({ top: 100 }),
+    });
+    Object.defineProperty(heading, "getBoundingClientRect", {
+      value: () => ({ top: 900 }),
+    });
+
+    const jump = screen.getByRole("link", { name: "jump" });
+    expect(fireEvent.click(jump)).toBe(false);
+    expect(viewerBody!.scrollTop).toBe(750);
+
+    expect(fireEvent.click(screen.getByRole("link", { name: "gone" }))).toBe(
+      false,
+    );
+    expect(viewerBody!.scrollTop).toBe(750);
+    expect(window.location.hash).toBe(startHash);
+  });
+
   it("keeps select-all active while standalone selection actions mount", async () => {
     const originalRangeRect = Object.getOwnPropertyDescriptor(
       Range.prototype,

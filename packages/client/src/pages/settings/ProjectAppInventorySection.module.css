@@ -59,7 +59,7 @@
 .row > button {
   justify-self: start;
 }
-@media (max-width: 640px) {
+@media (width <= 640px) {
   .inventory button {
     min-height: 44px;
   }

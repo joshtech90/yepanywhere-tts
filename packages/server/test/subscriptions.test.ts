@@ -81,6 +81,8 @@ function createMockProcess(overrides?: Partial<Record<string, unknown>>): {
       };
     }),
     getMessageHistory: vi.fn(() => []),
+    getReplaySeq: vi.fn(() => undefined),
+    getReplayCursor: vi.fn(() => 0),
     getStreamingContent: vi.fn(() => null),
     accumulateStreamingText: vi.fn(),
     clearStreamingText: vi.fn(),
@@ -466,6 +468,34 @@ describe("createSessionSubscription", () => {
         ([, data]) => (data as { isReplay?: boolean }).isReplay === true,
       ),
     ).toBe(true);
+  });
+
+  it("never lets a replay frame claim a position still to be replayed", () => {
+    // In-turn steer echoes lead the history although buffered later.
+    const echo = { type: "user", uuid: "echo", message: { content: "e" } };
+    const older = {
+      type: "assistant",
+      uuid: "older",
+      message: { content: "o" },
+    };
+    const seqs = new Map<unknown, number>([
+      [echo, 5],
+      [older, 3],
+    ]);
+    const { process } = createMockProcess({
+      getMessageHistory: vi.fn(() => [echo, older]),
+      getReplaySeq: vi.fn((message: unknown) => seqs.get(message)),
+      getReplayCursor: vi.fn(() => 5),
+    });
+    const frames: Array<[string, string]> = [];
+    createSessionSubscription(process, (type, _data, eventId) => {
+      frames.push([type, eventId]);
+    });
+
+    expect(frames.filter(([type]) => type === "message")).toEqual([
+      ["message", "proc-1.2.1"],
+      ["message", "proc-1.5.2"],
+    ]);
   });
 
   it("enriches replay clones without mutating process history", async () => {

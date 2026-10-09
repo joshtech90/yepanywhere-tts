@@ -8,10 +8,7 @@ describe("StreamCoordinator", () => {
   let coordinator: StreamCoordinator;
 
   beforeAll(async () => {
-    coordinator = await createStreamCoordinator({
-      languages: ["javascript", "typescript", "python"],
-      theme: "github-dark",
-    });
+    coordinator = await createStreamCoordinator();
   });
 
   beforeEach(() => {
@@ -375,23 +372,9 @@ describe("StreamCoordinator", () => {
         "```rust\nfn main() {}\n```\n",
       );
 
-      // Should work with rust (one of the default languages)
+      // Rust loads on demand in the highlight worker
       expect(result.augments).toHaveLength(1);
       expect(result.augments[0]?.type).toBe("code");
-    });
-
-    it("allows partial config override", async () => {
-      const customCoordinator = await createStreamCoordinator({
-        theme: "github-light",
-      });
-      customCoordinator.reset();
-
-      const result = await customCoordinator.onChunk(
-        "```javascript\nconst x = 1;\n```\n",
-      );
-
-      expect(result.augments).toHaveLength(1);
-      expect(result.augments[0]?.html).toContain("<pre");
     });
   });
 

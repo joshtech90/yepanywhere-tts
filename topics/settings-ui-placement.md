@@ -80,6 +80,31 @@ keys never enter the server copy. Hosted clients show the controls only when
 the connected server advertises `browser-settings-backup`; older servers retain
 the ordinary local settings behavior.
 
+Because the slot lives on one server, it cannot carry preferences between
+servers. **Copy settings between servers**, beneath the slot controls, moves
+the same allowlisted set as text instead. It is purely client-side, so it
+shows for every resolved principal regardless of server capabilities.
+
+- **Copy settings** writes one JSON document,
+  `{ kind: "ya-client-settings", version: 1, sourceHost, copiedAt, settings }`,
+  to the clipboard. `sourceHost` is the copying page's host, shown only as a
+  label. Where clipboard write is unavailable (plain-HTTP origins), the text
+  appears in a read-only field for manual copying.
+- **Paste settings** reads the clipboard; where reading is unavailable or
+  denied, it opens a text field and **Review changes** instead. Text that is
+  not such a document, or names a newer version, is refused with a message.
+  Keys outside this client's allowlist are dropped, never applied, and
+  counted in the preview; a non-string value refuses the whole document.
+- The preview lists every portable setting whose value would change, with
+  `default` for an unset value. Applying replaces the whole portable set
+  exactly as **Apply to this browser** does, including resetting portable
+  keys the copy lacks, and then reloads. Nothing changes until the user
+  applies, and an already matching copy reports so without a preview.
+
+Server-persisted `clientDefaults` and every other server setting stay out of
+the text: they configure one host, and server-settings transfer is not
+pursued.
+
 ## Reviewed settings behavior
 
 **Appearance → Slide animations** is a browser-local preference, enabled by

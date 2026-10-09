@@ -43,6 +43,11 @@ import {
   presentSessionViewer,
 } from "../lib/sessionViewerController";
 import {
+  readReloadedSessionFile,
+  saveReloadedSessionFileScroll,
+  trackReloadedSessionFile,
+} from "../lib/sessionViewerReload";
+import {
   getAbsoluteFilePath,
   getPathBasename,
   getProjectRelativePath,
@@ -53,6 +58,7 @@ import {
 import {
   FileViewer,
   type FileViewerMode,
+  type FileViewerScrollMemory,
   type FileViewerSource,
 } from "./FileViewer";
 import {
@@ -724,6 +730,38 @@ export function FileViewerModal({
     lineEnd,
     viewMode,
   ]);
+  // The session's managed project-file viewer is what a reload reopens; a
+  // share-sourced one reads through a route a reload cannot rebuild. Its
+  // content renders in the viewer host, outside the session's context, so
+  // the session comes from the viewer's own registration.
+  const reloadedSessionId =
+    managedViewerId !== undefined &&
+    !nested &&
+    publicShareContext === null &&
+    !source &&
+    publishedViewer?.id === managedViewerId
+      ? publishedViewer.sessionId || null
+      : null;
+  const reloadRoute = buildProjectFileViewUrl({
+    projectId,
+    filePath: getProjectViewerFilePath(projectId, filePath),
+    lineNumber,
+    lineEnd,
+    viewMode,
+  });
+  const scrollMemory = useMemo<FileViewerScrollMemory | undefined>(() => {
+    if (!reloadedSessionId || managedViewerId === undefined) return undefined;
+    const saved = readReloadedSessionFile(reloadedSessionId);
+    return {
+      initialTop: saved?.route === reloadRoute ? saved.scrollTop : undefined,
+      save: (top) =>
+        saveReloadedSessionFileScroll(reloadedSessionId, managedViewerId, top),
+    };
+  }, [reloadedSessionId, managedViewerId, reloadRoute]);
+  useEffect(() => {
+    if (reloadedSessionId && managedViewerId !== undefined)
+      trackReloadedSessionFile(reloadedSessionId, managedViewerId, reloadRoute);
+  }, [reloadedSessionId, managedViewerId, reloadRoute]);
   // Beside the session, Escape belongs to whatever has focus there; only a
   // key pressed inside this viewer dismisses it.
   const docked = inRightPane && parentHost?.docked === true;
@@ -746,6 +784,7 @@ export function FileViewerModal({
       onClose={close}
       onMinimize={publicShareContext === null && !nested ? minimize : undefined}
       parentViewerId={managedViewerId}
+      scrollMemory={scrollMemory}
     />
   );
   const viewer = quoteReply ? (

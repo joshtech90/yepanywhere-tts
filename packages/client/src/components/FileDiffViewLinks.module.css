@@ -47,7 +47,7 @@
   background: var(--bg-tertiary);
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .headerLink {
     padding-inline: 0.34rem;
     font-size: 0.68rem;

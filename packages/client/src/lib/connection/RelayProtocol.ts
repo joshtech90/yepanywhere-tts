@@ -59,6 +59,8 @@ export interface RelayTransport {
   isConnected(): boolean;
   /** Release an abandoned native request; ordinary relay has no cancel frame. */
   cancelRequest?(id: string): void;
+  /** A local native bridge can retire intent even while its server socket is down. */
+  cancelSubscription?(id: string): void;
   /**
    * Whether this transport delivers streamed response chunks to
    * `handleResponseChunk`. Only then does a request ask to be streamed.
@@ -385,14 +387,16 @@ export class RelayProtocol {
       if (
         wasSent &&
         settlement.sendUnsubscribe &&
-        this.transport.isConnected()
+        (this.transport.cancelSubscription || this.transport.isConnected())
       ) {
         try {
           const message: RelayUnsubscribe = {
             type: "unsubscribe",
             subscriptionId,
           };
-          this.transport.sendMessage(message);
+          if (this.transport.cancelSubscription)
+            this.transport.cancelSubscription(subscriptionId);
+          else this.transport.sendMessage(message);
         } catch {
           // Connection teardown releases server-owned subscriptions.
         }
@@ -553,6 +557,16 @@ export class RelayProtocol {
     }
 
     handlers.onEvent(event.eventType, event.eventId, event.data);
+  }
+
+  /** Reject local operation setup without pretending the server answered HTTP. */
+  rejectSubscription(id: string, error: Error): void {
+    this.subscriptionSettlers.get(id)?.({
+      source: "error",
+      error,
+      notifyClose: false,
+      sendUnsubscribe: true,
+    });
   }
 
   private handleResponse(response: RelayResponse): void {

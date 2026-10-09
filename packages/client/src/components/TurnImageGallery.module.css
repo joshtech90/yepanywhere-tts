@@ -132,7 +132,7 @@
   color: var(--text-primary);
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .gallery {
     margin-right: calc(-1 * var(--space-2));
     padding-right: 0;
@@ -144,8 +144,7 @@
     gap: var(--space-2);
     max-height: min(var(--turn-gallery-max-height), 28dvh);
     padding-right: 18vw;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: auto hidden;
     overscroll-behavior-inline: contain;
     scroll-snap-type: x mandatory;
     scrollbar-width: thin;

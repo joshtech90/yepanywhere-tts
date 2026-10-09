@@ -69,6 +69,9 @@
 - Session list hidden duplicates (conservative duplicate-title hiding, fork/helper lineage, current/source session safety)
 - Deferred & tactical roadmap (prioritized: backgrounded-jobs badge, `Task*` list rendering, queue-across-compaction, rich-text gaps, OpenCode/pi provider fleshout)
 - pi provider (Zechner's pi-mono as agnostic backend: integration plan + periodic progress tracking)
+- [YA vs pi-durable](ya-vs-pi-durable.md) (pi's committed-state harness and
+  watch API compared with YA's provider-owned transcripts; sketch for a YA
+  session-state and subscription layer)
 - Provider read/edit disciplines (native edit formats vs YA's one canonical Read/Edit/Write presentation)
 - Collapse/expand mode (brainstorm: default-collapse more actions; expand subagent progress as pure outline UI)
 - Conversation view (opt-in condensed transcript preserving agent text,

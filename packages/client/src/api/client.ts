@@ -62,6 +62,7 @@ import type {
   PostCompactReplaySettings,
   LongContextEffortWarningSettings,
   ProviderInfo,
+  ProviderLoginFlow,
   ProviderChildSessionSummary,
   ProviderName,
   ProviderSubscriptionUsage,
@@ -569,6 +570,39 @@ export const api = {
         : undefined,
     ),
 
+  getProviderLogin: (provider: ProviderName) =>
+    fetchJSON<{ flow: ProviderLoginFlow | null }>(
+      `/providers/${encodeURIComponent(provider)}/login`,
+    ),
+
+  startProviderLogin: (provider: ProviderName) =>
+    fetchJSON<{ flow: ProviderLoginFlow }>(
+      `/providers/${encodeURIComponent(provider)}/login`,
+      { method: "POST" },
+    ),
+
+  submitProviderLoginCode: (
+    provider: ProviderName,
+    flowId: string,
+    code: string,
+  ) =>
+    fetchJSON<{ flow: ProviderLoginFlow }>(
+      `/providers/${encodeURIComponent(provider)}/login/code`,
+      { method: "POST", body: JSON.stringify({ flowId, code }) },
+    ),
+
+  cancelProviderLogin: (provider: ProviderName, flowId: string) =>
+    fetchJSON<{ flow: ProviderLoginFlow | null }>(
+      `/providers/${encodeURIComponent(provider)}/login?flowId=${encodeURIComponent(flowId)}`,
+      { method: "DELETE" },
+    ),
+
+  openProviderLoginTerminal: (provider: ProviderName) =>
+    fetchJSON<{ ok: true }>(
+      `/providers/${encodeURIComponent(provider)}/login/terminal`,
+      { method: "POST" },
+    ),
+
   getProviderSubscriptionUsage: (
     provider: ProviderName,
     options?: { refresh?: boolean },
@@ -601,17 +635,25 @@ export const api = {
    */
   addProject: (
     path: string,
-    options?: { create?: boolean; name?: string; codeName?: string },
+    options?: {
+      create?: boolean;
+      gitInit?: boolean;
+      name?: string;
+      codeName?: string;
+    },
   ) =>
     fetchJSON<{ project: Project; created?: boolean }>("/projects", {
       method: "POST",
       // `create` is the caller's confirmed answer to a path that does not
       // exist yet; without it the server refuses a missing directory.
+      // `gitInit: false` makes that folder without a repository; gated by
+      // `project-creation-git-choice`.
       // `name` and `codeName` are the user's choices when they differ from
       // what the server would derive; gated by `project-names`.
       body: JSON.stringify({
         path,
         ...(options?.create ? { create: true } : {}),
+        ...(options?.gitInit !== undefined ? { gitInit: options.gitInit } : {}),
         ...(options?.name ? { name: options.name } : {}),
         ...(options?.codeName ? { codeName: options.codeName } : {}),
       }),
@@ -1512,6 +1554,22 @@ export const api = {
       body: JSON.stringify(config),
     }),
 
+  /** Gated by the agent-session-view capability. */
+  publishSessionView: (
+    sessionId: string,
+    publication: import("@yep-anywhere/shared").SessionViewPublication,
+  ) =>
+    fetchJSON<{ ok: true }>(`/sessions/${encodeURIComponent(sessionId)}/view`, {
+      method: "PUT",
+      body: JSON.stringify(publication),
+    }),
+
+  departSessionView: (sessionId: string, clientId: string) =>
+    fetchJSON<{ ok: true }>(
+      `/sessions/${encodeURIComponent(sessionId)}/view/${encodeURIComponent(clientId)}`,
+      { method: "DELETE" },
+    ),
+
   getSessionContextBreakdown: (sessionId: string) =>
     fetchJSON<{ breakdown: ContextBreakdown | null }>(
       `/sessions/${encodeURIComponent(sessionId)}/context-breakdown`,
@@ -1534,6 +1592,8 @@ export const api = {
       model?: string;
       thinking?: ThinkingOption;
       showThinking?: ShowThinking;
+      /** null selects the standard tier. */
+      serviceTier?: string | null;
     },
   ) =>
     fetchJSON<{
@@ -1542,6 +1602,8 @@ export const api = {
       model?: string;
       thinking?: { type: string };
       effort?: string;
+      /** Absent from servers without the process-service-tier-change capability. */
+      serviceTier?: string | null;
     }>(`/processes/${processId}/config`, {
       method: "POST",
       body: JSON.stringify(config),
@@ -2144,6 +2206,8 @@ export interface ServerSettings {
   codexUpdatePolicy?: "auto" | "notify" | "off";
   /** Keep eligible local Linux Codex runtimes across YA server reloads. */
   codexReloadSafeSessions?: boolean;
+  /** Host MCP App views from Codex tool calls (topics/mcp-apps.md). */
+  mcpAppViews?: boolean;
   /** Best-effort idle provider reap grace in hours; negative disables it. */
   idleReapHours?: number;
   /** Max seconds between consecutive queued turns to join at delivery. */

@@ -1,7 +1,7 @@
 .root {
   position: fixed;
   z-index: 55;
-  width: min(380px, calc(100vw - 16px));
+  width: min(380px, calc(100dvw - 16px));
   pointer-events: none;
 }
 
@@ -243,7 +243,10 @@
   appearance: none;
   position: absolute;
   right: 34px;
-  width: var(--user-turn-nav-preview-max-width, min(340px, calc(100vw - 72px)));
+  width: var(
+    --user-turn-nav-preview-max-width,
+    min(340px, calc(100dvw - 72px))
+  );
   max-height: 4.4em;
   margin: 0;
   padding: 6px 8px;
@@ -386,7 +389,7 @@
   width: max-content;
   max-width: var(
     --user-turn-nav-preview-max-width,
-    min(340px, calc(100vw - 72px))
+    min(340px, calc(100dvw - 72px))
   );
   white-space: nowrap;
   -webkit-line-clamp: 1;
@@ -430,11 +433,11 @@
   line-height: 13px;
 }
 
-@media (min-width: 900px) {
+@media (width >= 900px) {
   .preview {
     width: var(
       --user-turn-nav-preview-max-width,
-      min(620px, calc(100vw - 120px))
+      min(620px, calc(100dvw - 120px))
     );
   }
 
@@ -442,7 +445,7 @@
     width: max-content;
     max-width: var(
       --user-turn-nav-preview-max-width,
-      min(620px, calc(100vw - 120px))
+      min(620px, calc(100dvw - 120px))
     );
   }
 }

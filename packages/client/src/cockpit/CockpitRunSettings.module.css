@@ -78,7 +78,7 @@
   line-height: 1.45;
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .segment {
     min-height: 2.75rem;
   }

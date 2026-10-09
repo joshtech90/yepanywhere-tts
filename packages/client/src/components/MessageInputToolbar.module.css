@@ -71,7 +71,10 @@
   left: 0;
   display: grid;
   box-sizing: border-box;
-  width: min(18rem, var(--thinking-menu-max-inline-size, calc(100vw - 1.5rem)));
+  width: min(
+    18rem,
+    var(--thinking-menu-max-inline-size, calc(100dvw - 1.5rem))
+  );
   gap: var(--space-3);
   padding: var(--space-3);
   transform: translateX(var(--thinking-menu-inline-shift, 0px));
@@ -357,7 +360,7 @@
   z-index: 2147483647;
   display: flex;
   box-sizing: border-box;
-  max-width: min(520px, calc(100vw - 16px));
+  max-width: min(520px, calc(100dvw - 16px));
   align-items: stretch;
   padding: 3px;
   border: 1px solid var(--tooltip-border);

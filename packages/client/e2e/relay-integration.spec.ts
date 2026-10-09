@@ -819,6 +819,56 @@ test.describe("Full Relay Integration", () => {
     }
   });
 
+  test("right-click Switch Host lists recent hosts and routes to the pick", async ({
+    page,
+    remotePreviewURL,
+    relayWsURL,
+  }) => {
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await loginViaRelay(page, remotePreviewURL, relayWsURL);
+    await page.evaluate((relayUrl: string) => {
+      const stored = JSON.parse(
+        localStorage.getItem("yep-anywhere-saved-hosts") ?? "{}",
+      );
+      stored.hosts.push({
+        id: "e2e-other-host",
+        displayName: "Windows box",
+        mode: "relay",
+        relayUrl,
+        relayUsername: "e2e-other-host",
+        srpUsername: "e2e-other-host",
+        lastConnected: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      });
+      localStorage.setItem("yep-anywhere-saved-hosts", JSON.stringify(stored));
+    }, relayWsURL);
+
+    const switchHost = page.getByRole("button", { name: "Switch Host" });
+    const otherHost = page.getByRole("menuitem", { name: /Windows box/ });
+    for (const viewport of [
+      { width: 1000, height: 600 },
+      { width: 375, height: 812 },
+    ]) {
+      await page.setViewportSize(viewport);
+      if (!(await switchHost.isVisible())) {
+        await page.getByRole("button", { name: "Open sidebar" }).click();
+      }
+      await switchHost.click({ button: "right" });
+      await expect(otherHost).toBeVisible();
+      await expect(
+        page.getByRole("menuitem", { name: "All hosts…" }),
+      ).toBeVisible();
+      await recordUiCapture(page, `switch-host-menu-${viewport.width}`);
+      if (viewport.width > 375) await page.keyboard.press("Escape");
+    }
+
+    await otherHost.click();
+    // The other host has no saved session, so its gate asks to sign in.
+    await expect(
+      page.locator('[data-testid="relay-username-input"]'),
+    ).toHaveValue("e2e-other-host", { timeout: 15_000 });
+  });
+
   // This test verifies that sessions persist across page refresh via relay.
   test("session persists after page refresh (auto-resume)", async ({
     page,
@@ -1149,9 +1199,17 @@ test.describe("Full Relay Integration", () => {
 
     await page.goto(`${remotePreviewURL}/${TEST_RELAY_USERNAME}/projects`);
 
+    // No page was loaded yet, so the rejection opens the login form directly
+    // with the explanation, rather than a modal the user must click through.
     await expect(
-      page.getByText("Sign in required", { exact: true }),
+      page.locator('[data-testid="relay-login-form"]'),
     ).toBeVisible();
+    await expect(page.locator('[data-testid="login-error"]')).toHaveText(
+      "The server rejected the saved session. Sign in again to reconnect.",
+    );
+    await expect(page.getByRole("button", { name: "Go to Login" })).toHaveCount(
+      0,
+    );
     for (const [name, size] of [
       ["desktop", { width: 1000, height: 600 }],
       ["phone", { width: 375, height: 812 }],
@@ -1159,10 +1217,6 @@ test.describe("Full Relay Integration", () => {
       await page.setViewportSize(size);
       await recordUiCapture(page, `resume-rejected-${name}`, size);
     }
-    await page.getByRole("button", { name: "Go to Login" }).click();
-    await expect(
-      page.locator('[data-testid="relay-login-form"]'),
-    ).toBeVisible();
     expect(new URL(page.url()).searchParams.get("returnTo")).toBe(
       relayAppPath(),
     );
@@ -1182,6 +1236,59 @@ test.describe("Full Relay Integration", () => {
       hosts: Array<{ session?: unknown }>;
     };
     expect(savedHosts.hosts[0]?.session).toBeUndefined();
+  });
+
+  test("choosing a saved host whose session was rejected opens its login form", async ({
+    page,
+    remotePreviewURL,
+    relayWsURL,
+  }) => {
+    await page.addInitScript(
+      (params: { relayUrl: string; relayUsername: string }) => {
+        const { relayUrl, relayUsername } = params;
+        localStorage.clear();
+        sessionStorage.clear();
+        localStorage.setItem(
+          "yep-anywhere-saved-hosts",
+          JSON.stringify({
+            version: 1,
+            hosts: [
+              {
+                id: "stale-relay-host",
+                displayName: relayUsername,
+                mode: "relay",
+                relayUrl,
+                relayUsername,
+                srpUsername: relayUsername,
+                session: {
+                  wsUrl: relayUrl,
+                  username: relayUsername,
+                  sessionId: "stale-session",
+                  sessionKey: btoa("stale session key material"),
+                  resumeProtocolVersion: 2,
+                },
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          }),
+        );
+      },
+      { relayUrl: relayWsURL, relayUsername: TEST_RELAY_USERNAME },
+    );
+
+    await page.goto(`${remotePreviewURL}/login`);
+    await page.getByTestId("host-item-stale-relay-host").click();
+
+    await expect(
+      page.locator('[data-testid="relay-login-form"]'),
+    ).toBeVisible();
+    await expect(page.locator('[data-testid="login-error"]')).toHaveText(
+      "The server rejected the saved session. Sign in again to reconnect.",
+    );
+    await expect(
+      page.locator('[data-testid="relay-username-input"]'),
+    ).toHaveValue(TEST_RELAY_USERNAME);
+    await expect(page.getByTestId("host-picker-error")).toHaveCount(0);
   });
 
   test("fresh relay login updates stale saved host relay URL", async ({

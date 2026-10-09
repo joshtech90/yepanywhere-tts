@@ -24,9 +24,15 @@ import {
   nearestGatewayEffortLevel,
   parseGatewayTemplateEffortRejection,
   type EffortLevel,
+  type ModelCatalogStatus,
   type ModelInfo,
 } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
+import {
+  fallbackModelCatalog,
+  liveModelCatalog,
+  modelCatalogError,
+} from "./model-catalog-status.js";
 import { whichCommand } from "../which-command.js";
 import { MessageQueue } from "../messageQueue.js";
 import { forkPiSessionFile } from "../../sessions/pi-fork.js";
@@ -273,6 +279,7 @@ export class PiProvider implements AgentProvider {
   private readonly configuredPath?: string;
   private readonly sessionsDir?: string;
   private cachedModels: { at: number; models: ModelInfo[] } | null = null;
+  private modelCatalogStatus: ModelCatalogStatus | undefined;
   private readonly cachedTerminalEvents = new Map<
     string,
     "agent_end" | "agent_settled"
@@ -303,14 +310,23 @@ export class PiProvider implements AgentProvider {
     };
   }
 
+  getModelCatalogStatus(): ModelCatalogStatus | undefined {
+    return this.modelCatalogStatus;
+  }
+
   /**
    * List models by briefly running an ephemeral `pi --mode rpc --no-session`
-   * and querying get_available_models. Cached for 5 minutes; falls back to a
-   * single "default" entry on any failure so the provider still appears.
+   * and querying get_available_models. Cached for 5 minutes or until
+   * `forceRefresh`; falls back to a single "default" entry on any failure so
+   * the provider still appears.
    */
-  async getAvailableModels(): Promise<ModelInfo[]> {
+  async getAvailableModels(options?: {
+    forceRefresh?: boolean;
+  }): Promise<ModelInfo[]> {
     const fresh =
-      this.cachedModels && Date.now() - this.cachedModels.at < 5 * 60_000;
+      options?.forceRefresh !== true &&
+      this.cachedModels &&
+      Date.now() - this.cachedModels.at < 5 * 60_000;
     if (fresh && this.cachedModels) {
       return this.cachedModels.models;
     }
@@ -323,7 +339,10 @@ export class PiProvider implements AgentProvider {
     const fallback: ModelInfo[] = [defaultModel];
 
     const piTarget = await this.findPiLaunchTarget();
-    if (!piTarget) return fallback;
+    if (!piTarget) {
+      this.modelCatalogStatus = fallbackModelCatalog("pi is not installed");
+      return fallback;
+    }
 
     let proc: ChildProcess | undefined;
     try {
@@ -349,9 +368,14 @@ export class PiProvider implements AgentProvider {
           : [];
       const result = models.length > 0 ? [defaultModel, ...models] : fallback;
       this.cachedModels = { at: Date.now(), models: result };
+      this.modelCatalogStatus =
+        models.length > 0
+          ? liveModelCatalog()
+          : fallbackModelCatalog("pi returned no models");
       return result;
     } catch (error) {
       getLogger().debug({ error }, "pi: model listing failed; using fallback");
+      this.modelCatalogStatus = fallbackModelCatalog(modelCatalogError(error));
       return fallback;
     } finally {
       proc?.kill("SIGTERM");

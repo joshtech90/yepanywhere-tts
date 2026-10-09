@@ -64,7 +64,8 @@ Primary code: `packages/client/src/lib/speechProviders/YaServerProvider.ts`
    stream. In Android Chromium this is the standards-facing request that lets
    the browser select its communication/AEC capture path and use a playback
    reference without exposing that reference to page JavaScript. It does not
-   guarantee Android audio focus or system-wide ducking. `noiseSuppression`
+   by itself hold Android audio focus; sustained ducking of other apps comes
+   from the capture-span focus hold in `mic-button-speech-ui.md`. `noiseSuppression`
    and `autoGainControl` remain **off** because they reshape speech level and
    timbre. Keep `channelCount: 1` (a proper mono downmix transcribes better
    than one channel of a stereo stream; dropping it hurt quality).
@@ -198,8 +199,10 @@ settings surface):
   the YA-media mute. Only actual track closure releases that ownership, even
   if the composer has become idle or unmounted. Explicit track stop and
   browser-originated track termination both restore playback when the last
-  capture owner ends. This extends to intentionally retained idle warm mics;
-  system-wide audio focus remains controlled by the tablet OS/browser.
+  capture owner ends. This extends to intentionally retained idle warm mics.
+  The Android audio-focus hold that keeps other apps ducked does not: a
+  retained stream mutes YA media only, and the hold follows active dictation
+  or recording.
 
   Settings copy should name this visibility scope. Prefer wording like "Keep
   this browser's microphone stream ready while this tab is visible between

@@ -346,7 +346,7 @@ export type ProcessEvent =
   | { type: "mode-applied"; mode: PermissionMode }
   | {
       type: "configuration-applied";
-      setting: "model" | "thinking" | "effort";
+      setting: "model" | "thinking" | "effort" | "serviceTier";
     }
   /** The served model changed, e.g. a reply named the model behind an alias. */
   | { type: "model-resolved"; model: string }

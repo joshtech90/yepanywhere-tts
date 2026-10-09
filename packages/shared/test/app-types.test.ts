@@ -83,7 +83,14 @@ describe("getModelContextWindow", () => {
     expect(getModelContextWindow("anthropic.claude-opus-5-5")).toBe(
       CLAUDE_EXTENDED_CONTEXT_WINDOW,
     );
+    expect(getModelContextWindow("claude-sonnet-5-5")).toBe(
+      CLAUDE_EXTENDED_CONTEXT_WINDOW,
+    );
+    expect(getModelContextWindow("claude-haiku-5-5")).toBe(
+      CLAUDE_EXTENDED_CONTEXT_WINDOW,
+    );
     expect(getModelContextWindow("claude-opus-4-8")).toBe(200_000);
+    expect(getModelContextWindow("claude-haiku-4-5-20251001")).toBe(200_000);
   });
 
   it("keeps non-codex provider fallback at default", () => {

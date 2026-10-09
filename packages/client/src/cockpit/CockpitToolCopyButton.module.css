@@ -67,7 +67,7 @@
   height: 1px;
   padding: 0;
   overflow: hidden;
-  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
   border: 0;
   margin: -1px;
   white-space: nowrap;
@@ -79,7 +79,7 @@
   box-shadow: 0 0 0 1px var(--cockpit-accent);
 }
 
-@media (max-width: 520px) {
+@media (width <= 520px) {
   .button {
     width: 2.7rem;
     min-width: 2.7rem;

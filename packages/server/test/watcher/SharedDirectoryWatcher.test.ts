@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { sep } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -138,4 +139,20 @@ it("replaces an old directory inode before sharing a newly acquired lease", () =
   expect(changed).toHaveBeenCalledWith("rename", null);
   first.close();
   second.close();
+});
+
+it("creates native watches outside the caller's async context", () => {
+  const requestContext = new AsyncLocalStorage<{ messages: unknown[] }>();
+  const storesAtCreation: unknown[] = [];
+  native.watch.mockImplementation(() => {
+    storesAtCreation.push(requestContext.getStore());
+    return new NativeWatch();
+  });
+  const registry = new SharedDirectoryWatcher();
+  const lease = requestContext.run({ messages: [] }, () =>
+    registry.watch("/project", { persistent: false }, vi.fn()),
+  );
+  expect(native.watch).toHaveBeenCalledTimes(1);
+  expect(storesAtCreation).toEqual([undefined]);
+  lease.close();
 });

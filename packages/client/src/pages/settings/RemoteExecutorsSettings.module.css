@@ -116,7 +116,7 @@
   margin-bottom: var(--space-1);
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .addItem:global(.settings-item) {
     display: block;
   }

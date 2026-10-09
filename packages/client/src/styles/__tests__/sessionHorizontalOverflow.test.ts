@@ -31,11 +31,11 @@ describe("session horizontal overflow contract", () => {
       /\.session-split\.session-split-with-aside\s*>\s*\.session-messages\s*\{[^}]*overflow-x:\s*auto\s*;/s,
     );
     expect(sessionPageCss).toMatch(
-      /\.sessionSplit:global\(\.session-split\)\s*\{[^}]*min-width:\s*0\s*;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*;/s,
+      /\.sessionSplit:global\(\.session-split\)\s*\{[^}]*min-width:\s*0\s*;[^}]*grid-template:[^;]*\/\s*minmax\(0,\s*1fr\)\s*;/s,
     );
     expect(sessionPageCss).toMatch(/\.messages\s*\{[^}]*min-width:\s*0\s*;/s);
     expect(galleryCss).toMatch(
-      /\.rows\s*\{[^}]*overflow-x:\s*auto\s*;[^}]*overflow-y:\s*hidden\s*;/s,
+      /\.rows\s*\{[^}]*overflow:\s*auto\s+hidden\s*;/s,
     );
     expect(rendererCss).toMatch(
       /\.code-block\s*\{[^}]*overflow-x:\s*auto\s*;/s,

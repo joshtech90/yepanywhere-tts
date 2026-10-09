@@ -50,7 +50,7 @@
   right: 0;
   top: calc(100% + 0.35rem);
   z-index: 4;
-  max-width: min(24rem, calc(100vw - 2rem));
+  max-width: min(24rem, calc(100dvw - 2rem));
   padding: 0.45rem 0.65rem;
   border: 1px solid
     color-mix(in srgb, var(--cockpit-danger) 42%, var(--cockpit-border));
@@ -61,7 +61,7 @@
   font-size: var(--cockpit-text-xs);
 }
 
-@media (max-width: 760px) {
+@media (width <= 760px) {
   .button {
     width: 2.7rem;
     height: 2.7rem;
@@ -74,14 +74,14 @@
     height: 1px;
     padding: 0;
     overflow: hidden;
-    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
     border: 0;
     margin: -1px;
     white-space: nowrap;
   }
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .button {
     width: 1.9rem;
     height: 1.9rem;

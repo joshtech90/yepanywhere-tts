@@ -1463,6 +1463,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
             resultTimestampMs={
               item.sourceMessages.length > 1 ? timestampMs : null
             }
+            mcpApp={item.mcpApp}
           />
         );
 

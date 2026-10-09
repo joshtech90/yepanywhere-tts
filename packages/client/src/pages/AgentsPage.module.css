@@ -266,7 +266,7 @@
   top: calc(100% + var(--space-1));
   right: 0;
   width: max-content;
-  max-width: min(22rem, calc(100vw - 2rem));
+  max-width: min(22rem, calc(100dvw - 2rem));
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);

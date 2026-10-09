@@ -34,8 +34,7 @@
 }
 
 :global(.ran-tool-row) .disclosureAnchor {
-  margin-inline-start: -1px;
-  margin-inline-end: 1px;
+  margin-inline: -1px 1px;
 }
 
 :global(.tool-row):has(.disclosureAnchor button)::before {

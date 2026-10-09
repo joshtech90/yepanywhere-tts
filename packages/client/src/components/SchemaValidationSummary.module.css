@@ -50,7 +50,7 @@
 }
 
 .content {
-  width: min(42rem, calc(100vw - 3rem));
+  width: min(42rem, calc(100dvw - 3rem));
   max-width: 100%;
 }
 
@@ -138,7 +138,7 @@
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .content {
     width: 100%;
   }

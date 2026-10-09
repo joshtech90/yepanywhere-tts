@@ -147,7 +147,58 @@
   display: none;
 }
 
-@media (max-width: 899px) {
+.projectSearchAnchor {
+  position: relative;
+}
+.newProject {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+.newProjectField {
+  display: grid;
+  gap: 4px;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+.newProjectField input {
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-family: var(--font-mono);
+}
+.newProjectTarget {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.newProjectGit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.newProjectPlan {
+  margin: 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--border-color);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+@media (width < 900px) {
   .optionLayout.optionLayout {
     grid-template-areas:
       "main"
@@ -173,7 +224,7 @@
   }
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .optionLayout :global(.new-session-provider-slot) {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -183,7 +234,7 @@
   }
 }
 
-@media (min-width: 900px) {
+@media (width >= 900px) {
   .optionLayout.optionLayout {
     grid-template-areas:
       "main project"
@@ -358,7 +409,7 @@
   max-width: none;
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   :global(.modal):has(.fullPane) {
     height: 100dvh;
     max-height: 100dvh;
@@ -370,4 +421,69 @@
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: var(--space-3);
+}
+
+/* Model list provenance under the model picker: muted while the list is live
+   and current, warning-toned when it is the built-in fallback or a refresh
+   failed. */
+.catalogStatus,
+.catalogStatusMuted {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
+.catalogStatus {
+  padding: 0.55rem 0.65rem;
+  border: 1px solid
+    color-mix(in srgb, var(--warning-color) 38%, var(--border-color));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warning-color) 8%, var(--bg-code));
+}
+
+.catalogStatusMuted {
+  margin-top: var(--space-1);
+  color: var(--text-dimmed);
+}
+
+.catalogAction {
+  flex: none;
+  min-height: 2rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.catalogStatusMuted .catalogAction {
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: underline;
+}
+
+.catalogAction:hover:not(:disabled) {
+  border-color: var(--text-dimmed);
+  background: var(--bg-hover);
+}
+
+.catalogStatusMuted .catalogAction:hover:not(:disabled) {
+  background: none;
+  color: var(--text-primary);
+}
+
+.catalogAction:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }

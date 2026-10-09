@@ -37,3 +37,10 @@ failure evidence rather than attributing it to contention or increasing waits.
 
 Found 2026-09-30 during final dependency-audit verification. Both preceding
 published CI unit runs passed; local repetition does not close this finding.
+
+2026-10-08 hosted evidence: general CI `37698697131` on `7c7a1261c`
+fails the real fake-Codex tool subprocess case waiting for `turn/start`.
+The captured timeline reaches `turn/start` and `shell-probe-start` at 9 ms,
+then records no probe completion before the waiter's deadline; maximum polling
+gap is 15 ms. This localizes this occurrence to the shell-probe completion
+boundary, not child bootstrap. Android lifecycle work did not change this path.

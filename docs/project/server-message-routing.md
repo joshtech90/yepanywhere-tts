@@ -104,6 +104,10 @@ Process:
    `deferredMessages`.
 2. Walk `process.getMessageHistory()` (concatenation of `previousBucket` +
    `currentBucket`) and re-emit each as a `message` with `isReplay: true`.
+   Process numbers each message when it is first buffered, and every session
+   event id (`<processId>.<cursor>.<frame>`) names a cursor the subscriber
+   has fully received. A resubscribe passing its last event id skips messages
+   at or before that cursor; an id from another Process replays everything.
 3. If a streaming response is mid-flight, `process.getStreamingContent()`
    returns the accumulated text + `messageId`; the augmenter renders that to
    pending HTML and emits a single catch-up frame so the client sees partial

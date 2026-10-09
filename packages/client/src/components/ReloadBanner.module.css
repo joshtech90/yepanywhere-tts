@@ -30,7 +30,7 @@
   );
   z-index: 200;
   display: flex;
-  max-width: min(720px, calc(100vw - 24px));
+  max-width: min(720px, calc(100dvw - 24px));
   align-items: flex-end;
   flex-direction: column;
   gap: var(--space-2);
@@ -177,7 +177,7 @@
 }
 
 /* Mobile adjustments */
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .stack {
     top: max(8px, env(safe-area-inset-top, 0px));
     right: 8px;
@@ -206,18 +206,15 @@
   .content {
     justify-content: flex-start;
     min-height: 26px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .actions {
     justify-content: flex-end;
     gap: var(--space-1);
     min-height: 30px;
-  }
-
-  .content {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .message {

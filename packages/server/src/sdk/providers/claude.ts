@@ -38,8 +38,10 @@ import {
   DEFAULT_SUBAGENT_MAX_DEPTH,
   GOAL_COMMAND_NAME,
   HELPER_SIDE_MODEL_CHEAPEST,
+  type AgentAuthRouterCliModel,
   type ClaudeAdditionalModelSelection,
   type EffortLevel,
+  type ModelCatalogStatus,
   type ModelInfo,
   type PromptCacheKeepaliveProviderInfo,
   type ProviderSubscriptionUsage,
@@ -48,14 +50,18 @@ import {
   getModelContextWindow,
 } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
-import { quoteShellWord } from "../../utils/posixShell.js";
 import {
   boundAutoTitleExcerpt,
   createAutoTitlePrompt,
 } from "./auto-title-prompt.js";
+import { formatExecutableInvocation } from "../../utils/executableInvocation.js";
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
 import { ClaudeTurnEffort } from "./claude-turn-effort.js";
+import {
+  fallbackModelCatalog,
+  modelCatalogError,
+} from "./model-catalog-status.js";
 import { normalizeClaudeContextUsage } from "./claude-context-breakdown.js";
 import {
   getClaudeAdditionalModelOptions,
@@ -89,7 +95,10 @@ import type {
   SDKMessage,
 } from "../types.js";
 import { createLaunchAgentctlSessionEnvBridge } from "./agentctl-session-env.js";
-import { filterEnvForChildProcess } from "./env-filter.js";
+import {
+  filterEnvForChildProcess,
+  stripYaControlPlaneCredentials,
+} from "./env-filter.js";
 import { normalizeClaudeSubscriptionUsage } from "./provider-subscription-usage.js";
 import type {
   AgentProvider,
@@ -100,6 +109,7 @@ import type {
   ProviderSessionOptionsUpdateResult,
   ProviderName,
   ProviderForkBoundary,
+  ProviderLoginLaunch,
   StartSessionOptions,
   SummaryGenerationRequest,
   SummaryGenerationResult,
@@ -131,7 +141,8 @@ const SIDE_SESSION_RECAP_TIMEOUT_MS = 20_000;
 const SIDE_SESSION_TITLE_TIMEOUT_MS = 30_000;
 const CLAUDE_PROMPT_CACHE_KEEPALIVE_TIMEOUT_MS = 60_000;
 const CLAUDE_PROMPT_CACHE_KEEPALIVE_MAX_BUDGET_USD = 0.02;
-const DEFAULT_CLAUDE_LOGIN_COMMAND = "claude auth login --claudeai";
+export const CLAUDE_LOGIN_ARGS = ["auth", "login", "--claudeai"] as const;
+const DEFAULT_CLAUDE_LOGIN_COMMAND = `claude ${CLAUDE_LOGIN_ARGS.join(" ")}`;
 const PROVIDER_MANAGED_SESSION_TITLE = "Yep Anywhere Session";
 const CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
 const CLAUDE_EFFORT_LEVELS: EffortLevel[] = [
@@ -534,13 +545,6 @@ function safeMtimeMs(path: string): number {
   }
 }
 
-function quotePowerShellDoubleQuoted(value: string): string {
-  return `"${value
-    .replace(/`/g, "``")
-    .replace(/\$/g, "`$")
-    .replace(/"/g, '`"')}"`;
-}
-
 export function formatClaudeLoginCommand(
   executablePath?: string,
   platform: NodeJS.Platform = process.platform,
@@ -549,13 +553,11 @@ export function formatClaudeLoginCommand(
   if (!trimmedPath || trimmedPath === "claude") {
     return DEFAULT_CLAUDE_LOGIN_COMMAND;
   }
-
-  const executable =
-    platform === "win32"
-      ? quotePowerShellDoubleQuoted(trimmedPath)
-      : quoteShellWord(trimmedPath);
-  const invocation = platform === "win32" ? `& ${executable}` : executable;
-  return `${invocation} auth login --claudeai`;
+  return formatExecutableInvocation(
+    trimmedPath,
+    CLAUDE_LOGIN_ARGS.join(" "),
+    platform,
+  );
 }
 
 function getClaudeDesktopCodeRoots(): string[] {
@@ -656,6 +658,14 @@ async function findPreferredClaudeLoginExecutable(): Promise<
   return undefined;
 }
 
+/** The executable the displayed login command names, as a runnable path. */
+async function resolveClaudeLoginExecutable(): Promise<string | undefined> {
+  return (
+    resolvePathExecutable("claude") ??
+    (await findPreferredClaudeLoginExecutable())
+  );
+}
+
 export async function getClaudeLoginCommand(): Promise<string> {
   return formatClaudeLoginCommand(await findPreferredClaudeLoginExecutable());
 }
@@ -676,10 +686,15 @@ async function* withCleanup<T>(
  * "Usage credits required for 1M context"), so it once kept a separate 200K
  * entry. Sonnet 5 lifted that gate: a live probe on this account runs
  * `--model sonnet` as `claude-sonnet-5[1m]` at a 1,000,000 window on the
- * standard tier with no error. The "Sonnet 5" label is pinned in the
+ * standard tier with no error. The "Sonnet 5.5" label is pinned in the
  * description (the name stays the generic "Sonnet") rather than taken from the
  * SDK, because older `supportedModels()` responses reported the `sonnet` alias
  * as "Sonnet 4.6" even when it routed to Sonnet 5 at runtime.
+ *
+ * SDK 0.3.293 resolves `sonnet` to Sonnet 5.5, and a live probe ran both
+ * `sonnet` and `sonnet[1m]` at a 1,000,000 window, so the rewrite no longer
+ * adds capability. It stays because removing it changes the launch spelling
+ * existing sessions resume with, which is a separate decision.
  *
  * Opus deliberately stays bare. SDK 0.3.280 resolves bare `opus` to Opus 5.5
  * with a 1M context window, so rewriting the stable alias adds no capability
@@ -693,7 +708,7 @@ const CLAUDE_LAUNCH_MODEL_ALIASES: Record<string, string> = {
 const ALWAYS_EXTENDED_DESCRIPTIONS: Record<string, string> = {
   opus: "Opus 5.5 with the full 1M-token context window",
   sonnet:
-    "Sonnet 5 with the full 1M-token context window · newer tokenizer bills ~30% more tokens",
+    "Sonnet 5.5 with the full 1M-token context window · newer tokenizer bills ~30% more tokens",
 };
 
 /** Normalize only aliases whose launch spelling still changes behavior. */
@@ -704,6 +719,9 @@ export function normalizeClaudeLaunchModel(
 }
 
 /** Static fallback list of Claude models (used if probe fails) */
+/** Re-probe the live catalog after this long; aliases move between releases. */
+const CLAUDE_MODEL_CACHE_TTL_MS = 60 * 60_000;
+
 const CLAUDE_MODELS_FALLBACK: ModelInfo[] = [
   {
     id: "default",
@@ -752,7 +770,8 @@ const CLAUDE_MODELS_FALLBACK: ModelInfo[] = [
     id: "haiku",
     name: "Haiku",
     description: "Fastest model for simple tasks",
-    contextWindow: getModelContextWindow("haiku", "claude"),
+    // SDK 0.3.293 resolves `haiku` to Haiku 5.5, which runs at 1M.
+    contextWindow: getModelContextWindow("claude-haiku-5-5", "claude"),
   },
   {
     id: "opusplan",
@@ -865,6 +884,23 @@ function mapClaudeSdkModel(model: ClaudeSdkModelInfo): ModelInfo {
   };
 }
 
+/**
+ * Map an agent-auth-router account's CLI rows exactly as the direct probe's
+ * rows, so pool and direct pickers show the same names and descriptions.
+ */
+export function mapClaudeCliModels(
+  rows: readonly AgentAuthRouterCliModel[],
+): ModelInfo[] {
+  return mergeClaudeModels(
+    rows.map((row) =>
+      mapClaudeSdkModel({
+        ...row,
+        description: row.description ?? "",
+      } as ClaudeSdkModelInfo),
+    ),
+  );
+}
+
 function claudeModelFamily(
   modelId: string,
 ): "opus" | "sonnet" | "haiku" | "fable" | undefined {
@@ -940,7 +976,7 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
   // capability metadata on the stable family aliases. This catalog projection
   // is independent of launch spelling: bare `opus` already launches the
   // current Opus generation with the same 1M window.
-  return merged
+  const folded = merged
     .filter((model) => model.id !== "opus[1m]" && model.id !== "sonnet[1m]")
     .map((model) => {
       if (model.id === "opus") {
@@ -967,6 +1003,20 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
       }
       return model;
     });
+
+  // Since Claude Code 2.1.283 the catalog also lists concrete previous
+  // versions (`claude-opus-4-8`, `claude-sonnet-5`, ...). The stable aliases
+  // speak for the current ones, so these rows are previous models: marked
+  // additional and moved last, for the opt-in projection to show only when
+  // selected. They stay in the list so a selected one keeps its live
+  // capabilities.
+  const isPrevious = (model: ModelInfo) => model.id.startsWith("claude-");
+  return [
+    ...folded.filter((model) => !isPrevious(model)),
+    ...folded
+      .filter(isPrevious)
+      .map((model) => ({ ...model, catalogGroup: "additional" as const })),
+  ];
 }
 
 async function withTimeout<T>(
@@ -1071,7 +1121,10 @@ export class ClaudeProvider implements AgentProvider {
     defaultInactivityMinutes: DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   };
   private cachedModels: ModelInfo[] | null = null;
+  private cachedModelsAt = 0;
+  private modelCacheGeneration = 0;
   private probePromise: Promise<ModelInfo[]> | null = null;
+  protected modelCatalogStatus: ModelCatalogStatus | undefined;
   private getAdditionalModelSelections: () =>
     | readonly ClaudeAdditionalModelSelection[]
     | undefined = () => [];
@@ -1108,6 +1161,22 @@ export class ClaudeProvider implements AgentProvider {
   protected invalidateModelCache(): void {
     this.cachedModels = null;
     this.probePromise = null;
+    this.modelCacheGeneration += 1;
+  }
+
+  getModelCatalogStatus(): ModelCatalogStatus | undefined {
+    return this.modelCatalogStatus;
+  }
+
+  /** Publish a live catalog unless a newer read has already started. */
+  private acceptLiveModels(models: ModelInfo[], generation: number): void {
+    if (generation !== this.modelCacheGeneration) return;
+    this.cachedModels = models;
+    this.cachedModelsAt = Date.now();
+    this.modelCatalogStatus = {
+      source: "live",
+      fetchedAt: new Date(this.cachedModelsAt).toISOString(),
+    };
   }
 
   private projectAdditionalModels(models: readonly ModelInfo[]): ModelInfo[] {
@@ -1210,6 +1279,22 @@ export class ClaudeProvider implements AgentProvider {
     }
   }
 
+  async getLoginLaunch(): Promise<ProviderLoginLaunch | null> {
+    // Gateway and Ollama variants authenticate through their own services.
+    if (this.name !== "claude") return null;
+    const executable = await resolveClaudeLoginExecutable();
+    if (!executable) return null;
+    return {
+      executable,
+      env: stripYaControlPlaneCredentials(process.env),
+      // Without a terminal the CLI prints its sign-in link and waits for the
+      // code the authorization page shows, read from stdin.
+      relayedArgs: CLAUDE_LOGIN_ARGS,
+      terminalArgs: CLAUDE_LOGIN_ARGS,
+      acceptsCode: true,
+    };
+  }
+
   private async withLoginCommand(status: AuthStatus): Promise<AuthStatus> {
     if (status.authenticated || status.loginCommand) {
       return status;
@@ -1271,38 +1356,63 @@ export class ClaudeProvider implements AgentProvider {
 
   /**
    * Get available Claude models.
-   * Fetches dynamically from SDK via a probe session, with caching.
-   * Falls back to static list if probe fails or user is not authenticated.
+   * Fetches dynamically from SDK via a probe session, cached for an hour or
+   * until `forceRefresh`. A failed re-probe keeps the last live list; with
+   * none, or without authentication, it returns the built-in fallback.
    */
-  async getAvailableModels(): Promise<ModelInfo[]> {
-    // Return cached models if available
-    if (this.cachedModels) {
+  async getAvailableModels(options?: {
+    forceRefresh?: boolean;
+  }): Promise<ModelInfo[]> {
+    const forceRefresh = options?.forceRefresh === true;
+    if (
+      !forceRefresh &&
+      this.cachedModels &&
+      Date.now() - this.cachedModelsAt < CLAUDE_MODEL_CACHE_TTL_MS
+    ) {
       return this.projectAdditionalModels(this.cachedModels);
     }
 
     // Check if user is authenticated before trying to probe
     const authStatus = await this.getAuthStatus();
     if (!authStatus.authenticated) {
-      return this.projectAdditionalModels(CLAUDE_MODELS_FALLBACK);
+      return this.useFallbackModels("Claude is not signed in");
     }
 
-    // If probe is already in progress, wait for it
-    if (this.probePromise) {
-      return this.projectAdditionalModels(await this.probePromise);
+    // Join a probe already in progress unless the caller asked for a new one.
+    let probe = forceRefresh ? null : this.probePromise;
+    let generation = this.modelCacheGeneration;
+    if (!probe) {
+      generation = ++this.modelCacheGeneration;
+      probe = this.probeModels();
+      this.probePromise = probe;
     }
-
-    // Start a new probe
-    this.probePromise = this.probeModels();
     try {
-      const models = await this.probePromise;
-      this.cachedModels = mergeClaudeModels(models);
-      return this.projectAdditionalModels(this.cachedModels);
+      const models = mergeClaudeModels(await probe);
+      this.acceptLiveModels(models, generation);
+      return this.projectAdditionalModels(models);
     } catch (error) {
-      console.warn("[Claude] Failed to probe models, using fallback:", error);
-      return this.projectAdditionalModels(CLAUDE_MODELS_FALLBACK);
+      console.warn("[Claude] Failed to probe models:", error);
+      if (this.cachedModels) {
+        if (
+          generation === this.modelCacheGeneration &&
+          this.modelCatalogStatus
+        ) {
+          this.modelCatalogStatus = {
+            ...this.modelCatalogStatus,
+            error: modelCatalogError(error),
+          };
+        }
+        return this.projectAdditionalModels(this.cachedModels);
+      }
+      return this.useFallbackModels(modelCatalogError(error));
     } finally {
-      this.probePromise = null;
+      if (this.probePromise === probe) this.probePromise = null;
     }
+  }
+
+  private useFallbackModels(error: string): ModelInfo[] {
+    this.modelCatalogStatus = fallbackModelCatalog(error);
+    return this.projectAdditionalModels(CLAUDE_MODELS_FALLBACK);
   }
 
   async getSubscriptionUsage(
@@ -1410,7 +1520,7 @@ export class ClaudeProvider implements AgentProvider {
     const mappedModels = mergeClaudeModels(
       models.map((model) => mapClaudeSdkModel(model)),
     );
-    this.cachedModels = mappedModels;
+    this.acceptLiveModels(mappedModels, ++this.modelCacheGeneration);
     return this.projectAdditionalModels(mappedModels);
   }
 

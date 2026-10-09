@@ -348,6 +348,11 @@ automatically support arbitrary navigation, workers, storage, WebSockets, or
 multi-file apps. Optional Tailscale and Cloudflare transport changes
 reachability, not this isolation requirement.
 
+A proposed hybrid frames a static, same-site content origin whose service
+worker obtains every byte from the trusted client over the encrypted relay. It
+was spiked in Chrome and is not implemented; see
+[`gaps/sketches/relay-artifact-frame.md`](../gaps/sketches/relay-artifact-frame.md).
+
 ## Open Decisions
 
 - The direct and hosted untrusted-content hostnames/registrable domains and how
@@ -596,6 +601,13 @@ a public visitor from a local one, subject to the usual caveat that the
 leftmost entry is only as trustworthy as the proxy that wrote it.
 
 **Copy app link** and **Revoke existing links** live beside each saved vhost.
+Each saved row in the vhost table also carries a link icon for the same URL:
+a click opens it in a new tab, and a right-click (a touch long press where the
+browser raises one) offers **Open** and **Copy link**. The icon is absent for
+an unsaved or edited row and for a private row whose access token is
+unavailable. A saved file row that serves one existing file has a file icon
+beside its path with the same gestures, for YA's authenticated file viewer
+(`/file-view`) on that path; a directory or missing path has none.
 Revocation durably increments that app's generation and rejects old URLs and
 cookies on subsequent requests and closes established app WebSockets. It does
 not stop the app or erase already
@@ -711,7 +723,11 @@ permits only YA's nonce-authorized selection script and a validated target-id
 message to the parent. That message can open source; it cannot write or invoke
 a script. Producer scripts and event handlers are removed.
 
-The static artifact handler exposes only GET/HEAD health and granted files.
+The static artifact handler exposes only GET/HEAD health, granted files, and
+the fixed MCP App sandbox proxy at `/.yep/mcp-app-proxy`. The proxy is
+YA-authored, holds no secrets, and frames an MCP App view in an opaque-origin
+`srcdoc` child under the view's own restrictive policy
+([MCP Apps § Isolation](mcp-apps.md#isolation)).
 The separate `/p/<launch-token>/` service route supports app HTTP/WebSockets
 as described above. `/api`, `/public-api`, desktop bootstrap, and YA control
 WebSocket upgrades remain unavailable on artifact hosts.

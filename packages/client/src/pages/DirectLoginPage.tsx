@@ -9,6 +9,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
 import { useRemoteConnection } from "../contexts/RemoteConnectionContext";
+import { useSignInRequiredNotice } from "../hooks/useSignInRequiredNotice";
 import { useI18n } from "../i18n";
 import { createDirectHost, loadSavedHosts, saveHost } from "../lib/hostStorage";
 
@@ -35,7 +36,8 @@ export function DirectLoginPage() {
   const [password, setPassword] = useState("");
   // Always default to "remember me" - logout feature can be added later
   const [rememberMe, setRememberMe] = useState(true);
-  const [localError, setLocalError] = useState<string | null>(null);
+  const signInNotice = useSignInRequiredNotice();
+  const [localError, setLocalError] = useState<string | null>(signInNotice);
 
   // If auto-resume is in progress, show a loading screen
   if (isAutoResuming) {

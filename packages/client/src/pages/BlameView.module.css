@@ -6,7 +6,7 @@
    `.blame-browser-columns > .blame-view`. Both live outside this module. */
 .root {
   position: relative;
-  max-height: calc(100vh - 200px);
+  max-height: calc(100dvh - 200px);
   overflow: auto;
   border: 1px solid var(--border-subtle, #21262d);
   border-radius: var(--radius-md, 8px);

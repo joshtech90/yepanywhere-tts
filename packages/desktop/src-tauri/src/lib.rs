@@ -40,6 +40,12 @@ fn window_close_action(
     })
 }
 
+fn hide_closing_window(window: &tauri::Window) {
+    if let Err(error) = window.hide() {
+        eprintln!("Failed to hide window {}: {error}", window.label());
+    }
+}
+
 #[tauri::command]
 fn get_config() -> Result<config::AppConfig, String> {
     Ok(config::load_config())
@@ -178,11 +184,11 @@ pub fn run() {
                 };
                 match action {
                     WindowCloseAction::Hide => {
-                        let _ = window.hide();
+                        hide_closing_window(window);
                         api.prevent_close();
                     }
                     WindowCloseAction::HideAndUnloadDashboard => {
-                        let _ = window.hide();
+                        hide_closing_window(window);
                         api.prevent_close();
                         windows::schedule_dashboard_unload(
                             window.app_handle(),

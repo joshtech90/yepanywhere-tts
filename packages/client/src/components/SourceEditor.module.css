@@ -149,7 +149,7 @@
 .tabs {
   display: none;
 }
-@media (max-width: 650px) {
+@media (width <= 650px) {
   .header {
     flex-wrap: wrap;
   }

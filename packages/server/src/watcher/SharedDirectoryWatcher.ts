@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { type FSWatcher, realpathSync, statSync, watch } from "node:fs";
 import { sep } from "node:path";
+import { runOutsideRequestContext } from "../lib/outsideRequestContext.js";
 
 type Listener = (event: string, filename: string | null) => void;
 interface WatchEntry {
@@ -111,10 +112,8 @@ export class SharedDirectoryWatcher {
     entry.native = null;
     replaced?.close();
     entry.recursive = recursive;
-    const native = watch(
-      entry.path,
-      { recursive, persistent: false },
-      (event, filename) => {
+    const native: FSWatcher = runOutsideRequestContext(() =>
+      watch(entry.path, { recursive, persistent: false }, (event, filename) => {
         if (entry.native !== native) return;
         for (const lease of [...entry.leases]) {
           if (
@@ -123,7 +122,7 @@ export class SharedDirectoryWatcher {
           )
             lease.emit("change", event, filename);
         }
-      },
+      }),
     );
     entry.native = native;
     native.on("error", (error) => {

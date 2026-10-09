@@ -19,6 +19,7 @@ import { promisify } from "node:util";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   EffortLevel,
+  ModelCatalogStatus,
   ModelInfo,
   OpenCodeMessagePartDeltaEvent,
   OpenCodeMessagePartUpdatedEvent,
@@ -36,6 +37,11 @@ import { whichCommand } from "../which-command.js";
 import { MessageQueue } from "../messageQueue.js";
 import { stripYaControlPlaneCredentials } from "./env-filter.js";
 import { selectOpenCodeBinary } from "./opencode-binary-selection.js";
+import {
+  fallbackModelCatalog,
+  liveModelCatalog,
+  modelCatalogError,
+} from "./model-catalog-status.js";
 import {
   mapOpenCodeQuestionAnswers,
   normalizeOpenCodeTool,
@@ -258,6 +264,7 @@ export class OpenCodeProvider implements AgentProvider {
   readonly supportsSteering = false;
 
   private readonly opencodePath?: string;
+  private modelCatalogStatus: ModelCatalogStatus | undefined;
 
   constructor(config: OpenCodeProviderConfig = {}) {
     this.opencodePath = config.opencodePath;
@@ -299,6 +306,10 @@ export class OpenCodeProvider implements AgentProvider {
       authenticated: true,
       enabled: true,
     };
+  }
+
+  getModelCatalogStatus(): ModelCatalogStatus | undefined {
+    return this.modelCatalogStatus;
   }
 
   /**
@@ -348,11 +359,13 @@ export class OpenCodeProvider implements AgentProvider {
         description: "Use the default configured in opencode.json",
       };
 
+      this.modelCatalogStatus = liveModelCatalog();
       return localGlmModels.length > 0
         ? [...localGlmModels, defaultModel, ...otherModels]
         : [defaultModel, ...otherModels];
-    } catch {
+    } catch (error) {
       // Return default models if command fails
+      this.modelCatalogStatus = fallbackModelCatalog(modelCatalogError(error));
       return [
         { id: "opencode/big-pickle", name: "Big Pickle (Free)" },
         { id: "auto", name: "Auto (recommended)" },

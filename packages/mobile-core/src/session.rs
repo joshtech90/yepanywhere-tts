@@ -322,6 +322,7 @@ async fn resume_candidates(
     storage: &Option<Arc<dyn crate::CredentialPersistence>>,
 ) -> Result<Secure> {
     let mut rejected = 0;
+    let mut invalid = false;
     for index in 0..routes.len() {
         match resume_secure(
             &routes[index].options(&credential.username),
@@ -337,10 +338,13 @@ async fn resume_candidates(
                 return Ok(secure);
             }
             Err(Error::ReauthenticationRequired) => rejected += 1,
+            Err(Error::InvalidMessage) => invalid = true,
             Err(_) => {}
         }
     }
-    if rejected == routes.len() {
+    if invalid {
+        Err(Error::InvalidMessage)
+    } else if rejected == routes.len() {
         Err(Error::ReauthenticationRequired)
     } else {
         Err(Error::Unavailable)
@@ -575,12 +579,15 @@ impl Actor {
             .filter(|value| value.to_string().len() <= 2048)
             .cloned()
             .unwrap_or(json!("Native subscription failed"));
-        let status = error["status"]
+        let mut bounded = json!({"type":"subscriptionError","subscriptionId":id,"error":detail});
+        if let Some(code) = error.get("errorCode").and_then(Value::as_str) {
+            bounded["errorCode"] = json!(code);
+        } else if let Some(status) = error["status"]
             .as_u64()
-            .filter(|status| *status <= 599)
-            .unwrap_or(502);
-        let bounded =
-            json!({"type":"subscriptionError","subscriptionId":id,"status":status,"error":detail});
+            .filter(|status| (400..=599).contains(status))
+        {
+            bounded["status"] = json!(status);
+        }
         self.lease
             .lagged
             .lock()
@@ -598,7 +605,7 @@ impl Actor {
             .map_err(|_| Error::Closed)?
             .push(&v)?;
         for id in retired {
-            self.retire_subscription(id.clone(), json!({"type":"subscriptionError","subscriptionId":id,"status":429,"error":"Native subscription consumer fell behind"}))?;
+            self.retire_subscription(id.clone(), json!({"type":"subscriptionError","subscriptionId":id,"errorCode":"OVERFLOW","error":"Native subscription consumer fell behind"}))?;
         }
         self.lease.wake.notify_one();
         Ok(())
@@ -625,7 +632,7 @@ impl Actor {
         for id in conversations {
             self.retire_subscription(
                 id,
-                json!({"status":502,"error":"Conversation connection interrupted"}),
+                json!({"errorCode":"CONNECTION_UNAVAILABLE","error":"Conversation connection interrupted"}),
             )?;
         }
         self.event(json!({"type":"state","phase":"RETRYING"}))?;
@@ -669,8 +676,8 @@ impl Actor {
                     self.event(json!({"type":"state","phase":"CONNECTED","routeId":self.routes[0].route_id}))?;
                     return Ok(());
                 }
-                Err(Error::ReauthenticationRequired) => {
-                    return Err(Error::ReauthenticationRequired);
+                Err(error @ (Error::ReauthenticationRequired | Error::InvalidMessage)) => {
+                    return Err(error);
                 }
                 Err(_) => {}
             }
@@ -730,7 +737,9 @@ impl Actor {
                 } else {
                     "FAILED"
                 };
-                let _ = self.event(json!({"type":"state","phase":phase}));
+                let recoverable =
+                    matches!(error, Error::Unavailable | Error::Timeout | Error::Closed);
+                let _ = self.event(json!({"type":"state","phase":phase,"recoverable":recoverable}));
                 break;
             }
         }
@@ -1091,6 +1100,26 @@ pub(crate) mod tests {
         )
     }
     #[tokio::test]
+    async fn failed_proof_is_not_reported_as_network_exhaustion() {
+        let (bad, bad_peer) = peer(3, "tampered-proof").await;
+        let storage = Arc::new(super::storage_tests::Storage::default());
+        let result = resume_routes(
+            vec![NativeRoute {
+                route_id: "unverified".into(),
+                endpoint: bad.endpoint,
+                relay_target: None,
+            }],
+            credential().username.clone(),
+            &serde_json::to_vec(&credential()).unwrap(),
+            storage,
+        )
+        .await;
+        assert!(matches!(result, Err(Error::InvalidMessage)));
+        bad_peer.abort();
+        let _ = bad_peer.await;
+    }
+
+    #[tokio::test]
     async fn route_fallback_authenticates_saved_identity_and_persists_pin() {
         let (bad, bad_peer) = peer(3, "tampered-proof").await;
         let (good, good_peer) = peer(4, "").await;
@@ -1192,6 +1221,9 @@ pub(crate) mod tests {
             error.contains("subscriptionError") && error.contains("lagging"),
             "{error}"
         );
+        let typed: Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(typed["errorCode"], "OVERFLOW");
+        assert!(typed.get("status").is_none());
         assert!(
             session
                 .dispatch(
@@ -1238,6 +1270,7 @@ pub(crate) mod tests {
         let terminal: Value = serde_json::from_str(&terminal).unwrap();
         assert_eq!(terminal["type"], "state");
         assert_eq!(terminal["phase"], "FAILED");
+        assert_eq!(terminal["recoverable"], false);
         assert!(
             timeout(Duration::from_millis(500), session.next_event())
                 .await

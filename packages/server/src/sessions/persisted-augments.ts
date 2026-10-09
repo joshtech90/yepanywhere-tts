@@ -101,6 +101,22 @@ export async function augmentExitPlanModeAndReadResults(
 }
 
 /**
+ * Build the cache observer in its own scope. Every closure in one function
+ * shares that function's V8 context, so an observer created inside
+ * `augmentPersistedSessionMessages` would retain `messages` for as long as any
+ * async resource that captured the observer's AsyncLocalStorage store lives.
+ */
+function countCacheResults(
+  diagnostics: PersistedAugmentDiagnostics,
+): (result: MarkdownAugmentCacheResult) => void {
+  return (result) => {
+    if (result === "hit") diagnostics.cacheHits += 1;
+    else if (result === "joined") diagnostics.cacheJoins += 1;
+    else diagnostics.cacheMisses += 1;
+  };
+}
+
+/**
  * Apply the same persisted-message augmentation pipeline used by session GET.
  */
 export async function augmentPersistedSessionMessages(
@@ -115,27 +131,24 @@ export async function augmentPersistedSessionMessages(
     changedMessages: 0,
     inputMessages: messages.length,
   };
-  const observeCacheResult = (result: MarkdownAugmentCacheResult): void => {
-    if (result === "hit") diagnostics.cacheHits += 1;
-    else if (result === "joined") diagnostics.cacheJoins += 1;
-    else diagnostics.cacheMisses += 1;
-  };
-
-  await observeMarkdownAugmentCache(observeCacheResult, async () => {
-    await waitForDelay(options.delayMs);
-    await Promise.all(
-      messages.map(async (message) => {
-        const augmentableMessage = asAugmentableMessage(message);
-        const fieldsBefore = countAugmentOutputFields(augmentableMessage);
-        await augmentFinalizedMessage(augmentableMessage, {
-          safeMarkdownOptions,
-        });
-        if (countAugmentOutputFields(augmentableMessage) !== fieldsBefore) {
-          diagnostics.changedMessages += 1;
-        }
-      }),
-    );
-  });
+  await observeMarkdownAugmentCache(
+    countCacheResults(diagnostics),
+    async () => {
+      await waitForDelay(options.delayMs);
+      await Promise.all(
+        messages.map(async (message) => {
+          const augmentableMessage = asAugmentableMessage(message);
+          const fieldsBefore = countAugmentOutputFields(augmentableMessage);
+          await augmentFinalizedMessage(augmentableMessage, {
+            safeMarkdownOptions,
+          });
+          if (countAugmentOutputFields(augmentableMessage) !== fieldsBefore) {
+            diagnostics.changedMessages += 1;
+          }
+        }),
+      );
+    },
+  );
 
   return diagnostics;
 }

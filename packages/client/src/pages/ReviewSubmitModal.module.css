@@ -121,7 +121,7 @@
   opacity: 0.5;
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .modal {
     min-width: 0;
   }

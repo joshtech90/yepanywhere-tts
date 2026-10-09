@@ -70,8 +70,6 @@ function pageSide(port: MessagePort, pieces: Uint8Array[]) {
   return received;
 }
 
-const nextTurn = () => new Promise((resolve) => setTimeout(resolve, 0));
-
 describe("service worker streamed downloads", () => {
   it("serves a registered body as an attachment, pulling it from the page", async () => {
     const { fetchFor, message } = loadServiceWorker();
@@ -90,8 +88,7 @@ describe("service worker streamed downloads", () => {
       },
       [channel.port2],
     );
-    await nextTurn();
-    expect(received).toEqual(["registered"]);
+    await vi.waitFor(() => expect(received).toEqual(["registered"]));
 
     const response = await fetchFor("__ya-download/dl-1/report%201.bin");
     expect(response?.status).toBe(200);
@@ -123,9 +120,10 @@ describe("service worker streamed downloads", () => {
     await message({ type: "streamed-download", id: "dl-3" }, [channel.port2]);
     const response = await fetchFor("__ya-download/dl-3/x");
     await response!.body!.cancel();
-    await nextTurn();
 
-    expect(received).toContain("cancel");
+    // A port message is not due within one timer turn; under a loaded full
+    // suite it arrived later than that and this read an empty list.
+    await vi.waitFor(() => expect(received).toContain("cancel"));
     channel.port1.close();
   });
 });

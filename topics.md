@@ -440,3 +440,11 @@
 - [relay-streamed-responses](topics/media-rendering-and-routing.md#relay-transfer-size) - Raw, flow-controlled relay file bodies; downloads to disk via the service worker; viewer media next.
 
 - android-internal-delivery - Verified AAB delivery to Play internal testing.
+
+- service-tier - Codex Fast/Standard selection at launch, live change, and Session Info display.
+
+- source-transport-lifecycle-conformance - One sleep, wake and reconnect suite for every source transport, including the native bridge.
+
+- relay-artifact-frame - Scripted HTML artifacts over the encrypted relay through a same-site service-worker content origin.
+
+- unicode-prose-math - Legible Unicode scripts and opt-in typesetting of math written without $ delimiters.

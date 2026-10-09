@@ -6,6 +6,7 @@ import com.yepanywhere.mobile.profiles.YaPairedServerSnapshot
 import com.yepanywhere.mobile.profiles.YaPairedServerProfile
 import com.yepanywhere.mobile.profiles.YaServerRoute
 import java.util.Locale
+import uniffi.ya_mobile_core.CoreException
 
 enum class YaPairingRouteKind {
     DIRECT,
@@ -39,6 +40,7 @@ internal fun YaPairingInput.resolveRoute(username: String): YaServerRoute = when
 enum class YaNativeUiError {
     INVALID_SERVER_DETAILS,
     AUTHENTICATION_FAILED,
+    SERVER_UNAVAILABLE,
     CONNECTION_FAILED,
     PUSH_FAILED,
     SERVER_UPDATE_REQUIRED,
@@ -83,4 +85,11 @@ internal fun savedHostConnection(
     snapshot.resumeCredential?.isEligibleAt(nowEpochMs) != true -> YaConnectionState(YaConnectionPhase.REAUTHENTICATION_REQUIRED)
     connection.phase == YaConnectionPhase.REAUTHENTICATION_REQUIRED -> YaConnectionState(YaConnectionPhase.IDLE)
     else -> connection
+}
+
+/** Connection setup failures are not evidence that the password was rejected. */
+internal fun nativeHostActionError(error: Throwable): YaNativeUiError = when (error) {
+    is CoreException.Unavailable, is CoreException.Timeout, is CoreException.Closed ->
+        YaNativeUiError.SERVER_UNAVAILABLE
+    else -> YaNativeUiError.AUTHENTICATION_FAILED
 }

@@ -161,7 +161,7 @@ Relay only sees encrypted blobs. SRP handshake passes through relay to yepanywhe
 | 401/403 | Stop reconnecting, signal login required |
 | Reconnect | `connected` event triggers `fetchNewMessages()` with `?afterMessageId` |
 
-**Note:** SSE `lastEventId` is ignored, but JSONL incremental fetch handles missed messages.
+**Note:** the session subscription honors `lastEventId` (see Current Gaps §1); JSONL incremental fetch handles messages older than the replay buffer.
 
 #### WebSocketConnection
 
@@ -288,17 +288,18 @@ interface StoredSession {
 
 ## Current Gaps
 
-### 1. SSE Stream `lastEventId` Not Implemented (Low Impact)
+### 1. Session Stream `lastEventId` Resume (Resolved)
 
-**Status:** Not implemented
-**Impact:** Low
-**Location:** `packages/server/src/routes/stream.ts`
+**Status:** Implemented for the WebSocket/relay session subscription
+**Location:** `packages/server/src/subscriptions.ts`
 
-The SSE stream ignores the `?lastEventId=X` parameter for streaming events (SDK messages). However:
-- SDK messages clear every 30-60s (two clearing buckets)
-- JSONL incremental fetch IS implemented via `?afterMessageId=X` (see above)
-- On reconnect, client fetches missed JSONL messages and SSE replays its buffer
-- This covers the gap for any realistic offline period
+Session event ids are `<processId>.<cursor>.<frame>`. A resubscribe that
+passes the last id it received skips buffered messages at or before that
+cursor. An id from another Process (server restart, new provider process) or
+an older server's plain counter replays the whole buffer, as before. The
+buffer still holds only 15-30 s of messages, so the client's JSONL
+incremental fetch via `?afterMessageId=X` (see above) remains the catch-up
+for anything older.
 
 ### 2. Activity Stream Has No Catch-up
 

@@ -291,7 +291,7 @@ function localResourceApiPath(
 function isLocalMediaType(
   value: string | null,
 ): value is LocalResourceMediaType {
-  return value === "image" || value === "video";
+  return value === "image" || value === "video" || value === "audio";
 }
 
 export async function fetchMediaBlob(
@@ -310,12 +310,12 @@ function buildMediaApiPath(
 }
 
 /**
- * The server URL a direct transport can hand a video element, which streams
- * and range-seeks it instead of holding the whole file in a Blob. Null over
- * relay, for images (SVG sizing and image actions read their bytes), and when
- * a media source supplies the bytes itself.
+ * The server URL a direct transport can hand a video or audio element, which
+ * streams and range-seeks it instead of holding the whole file in a Blob. Null
+ * over relay, for images (SVG sizing and image actions read their bytes), and
+ * when a media source supplies the bytes itself.
  */
-function directLocalVideoUrl(
+function directLocalPlayerUrl(
   path: string,
   mediaType: LocalResourceMediaType,
   mediaSource: LocalMediaSource | undefined,
@@ -323,7 +323,7 @@ function directLocalVideoUrl(
   scope?: LocalFileScope,
 ): string | null {
   if (
-    mediaType !== "video" ||
+    mediaType === "image" ||
     !transport.capabilities.sameOriginUrls ||
     mediaSource?.fetchBlob
   ) {
@@ -454,6 +454,13 @@ function renderInlinePreview(
     video.preload = "metadata";
     video.src = url;
     frame.append(video);
+  } else if (mediaType === "audio") {
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.className = inlinePreviewClass.player;
+    audio.preload = "metadata";
+    audio.src = url;
+    frame.append(audio);
   } else {
     const button = document.createElement("button");
     button.type = "button";
@@ -639,7 +646,7 @@ function LocalMediaModalView({
     let transferredObjectUrl = false;
     setError(null);
 
-    const directUrl = directLocalVideoUrl(
+    const directUrl = directLocalPlayerUrl(
       path,
       mediaType,
       mediaSource,
@@ -857,6 +864,9 @@ function LocalMediaModalView({
                 className={styles.player}
                 src={displayedMedia.url}
               />
+            ) : displayedMedia?.mediaType === "audio" ? (
+              // biome-ignore lint/a11y/useMediaCaption: user-generated local files, no captions available
+              <audio controls autoPlay src={displayedMedia.url} />
             ) : null}
           </div>
         )}
@@ -1785,7 +1795,7 @@ export function useLocalMediaInlinePreviews(
       const pending = pendingMedia.get(cacheKey);
       if (pending) return pending;
 
-      const directUrl = directLocalVideoUrl(
+      const directUrl = directLocalPlayerUrl(
         path,
         mediaType,
         mediaSource,

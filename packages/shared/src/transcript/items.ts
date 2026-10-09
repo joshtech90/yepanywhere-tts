@@ -4,6 +4,7 @@ import type {
   ToolResultMedia,
   TranscriptDisplayObject,
 } from "../index.js";
+import type { McpAppToolCall } from "../mcp-apps.js";
 import type { ContentBlock, Message } from "./message.js";
 import type { WorkflowAnnotation } from "./workflowTags.js";
 
@@ -74,6 +75,8 @@ export interface ToolCallItem extends RenderItemBase {
   toolInput: unknown; // tool_use.input
   /** Derived semantics carried for grouping; renderers ignore them for now. */
   displayActions?: ToolDisplayAction[];
+  /** The MCP App view the called tool declared. */
+  mcpApp?: McpAppToolCall;
   toolResult?: ToolResultData; // undefined while pending
   /** "incomplete" means the turn ended without YA observing a result. */
   status: "pending" | "complete" | "error" | "aborted" | "incomplete";

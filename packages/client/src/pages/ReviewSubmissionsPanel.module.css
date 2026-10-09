@@ -323,7 +323,7 @@
   justify-content: flex-end;
 }
 
-@media (max-width: 759px) {
+@media (width < 760px) {
   .panel {
     display: block;
   }

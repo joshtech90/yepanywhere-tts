@@ -68,7 +68,7 @@
   color: var(--cockpit-danger);
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .chip {
     min-height: 2.9rem;
     user-select: none;

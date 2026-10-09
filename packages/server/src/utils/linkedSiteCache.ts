@@ -4,11 +4,14 @@ import {
   type LinkedSiteInspector,
   walkLinkedSite,
 } from "@yep-anywhere/shared";
+import { createLruMap, refreshLruMap } from "../lib/lruCollections.js";
 
 /** How long a walk is reused before the files it inspected are rechecked. */
 const RECHECK_MS = 2000;
 /** Largest document a walk reads for its links; a larger one is a leaf. */
 export const MAX_LINKED_DOCUMENT_BYTES = 8 * 1024 * 1024;
+/** Linked-site walks retained; an evicted root walks again on next use. */
+const MAX_CACHED_SITES = 64;
 
 interface CachedLinkedSite {
   site: LinkedSite;
@@ -17,7 +20,8 @@ interface CachedLinkedSite {
   stamps: Map<string, string>;
 }
 
-const linkedSites = new Map<string, CachedLinkedSite>();
+/** Least recently used first, bounded to `MAX_CACHED_SITES` walks. */
+const linkedSites = createLruMap<string, CachedLinkedSite>();
 
 /**
  * Everything `rootPath` links to (`walkLinkedSite`), reused for a moment and
@@ -39,6 +43,7 @@ export async function cachedLinkedSite(
       (await stampsCurrent(cached.stamps)))
   ) {
     cached.checkedAt = now;
+    refreshLruMap(linkedSites, key, cached);
     return cached.site;
   }
   const stamps = new Map<string, string>();
@@ -46,7 +51,11 @@ export async function cachedLinkedSite(
     stamps.set(path, await fileStamp(path));
     return inspect(path, document);
   });
-  linkedSites.set(key, { site, checkedAt: now, stamps });
+  refreshLruMap(linkedSites, key, { site, checkedAt: now, stamps });
+  for (const oldest of linkedSites.keys()) {
+    if (linkedSites.size <= MAX_CACHED_SITES) break;
+    linkedSites.delete(oldest);
+  }
   return site;
 }
 

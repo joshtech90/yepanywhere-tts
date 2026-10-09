@@ -67,7 +67,7 @@
 
 /* The narrow commit layout hides this disclosure entirely; the sibling
    `.source-search-shortcut` kbd hint keeps its own rule in renderers.css. */
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .root {
     display: none;
   }

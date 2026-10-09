@@ -129,7 +129,7 @@ class YaHostManagementViewModel(application: Application) : AndroidViewModel(app
         viewModelScope.launch {
             try { block() }
             catch (error: CancellationException) { throw error }
-            catch (_: Throwable) { mutableState.value = mutableState.value.copy(error = YaNativeUiError.AUTHENTICATION_FAILED) }
+            catch (error: Throwable) { mutableState.value = mutableState.value.copy(error = nativeHostActionError(error)) }
             finally { mutableState.value = mutableState.value.copy(actionInProgress = false) }
         }
     }

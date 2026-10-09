@@ -172,7 +172,7 @@
   white-space: pre-wrap;
 }
 
-@media (max-width: 600px) {
+@media (width <= 600px) {
   .card {
     padding: 0.65rem 0.7rem 0.6rem;
   }

@@ -1,5 +1,5 @@
 .dialog {
-  width: min(34rem, calc(100vw - 2rem));
+  width: min(34rem, calc(100dvw - 2rem));
   max-width: none;
   max-height: min(40rem, calc(100dvh - 2rem));
   padding: 0;
@@ -195,9 +195,9 @@
   outline-offset: 1px;
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .dialog {
-    width: calc(100vw - 1rem);
+    width: calc(100dvw - 1rem);
     max-height: calc(100dvh - 1rem);
   }
 

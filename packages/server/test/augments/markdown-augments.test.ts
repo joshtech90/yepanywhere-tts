@@ -1,14 +1,19 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   __test__,
   augmentTextBlocks,
   markdownAugmentCacheDiagnostics,
   renderMarkdownToHtml,
 } from "../../src/augments/markdown-augments.js";
+import {
+  HighlightWorkerUnavailableError,
+  highlightWorker,
+} from "../../src/highlighting/highlight-worker-host.js";
 import type { ProjectPathIndex } from "../../src/projects/projectPathIndex.js";
 
 afterEach(() => {
   __test__.resetMarkdownHtmlCache();
+  vi.restoreAllMocks();
 });
 
 describe("assistant markdown augments", () => {
@@ -30,6 +35,26 @@ describe("assistant markdown augments", () => {
       cacheHits: 1,
       retainedEntries: 1,
       workStarts: 1,
+    });
+  });
+
+  it("does not retain plain fallbacks for a temporarily unavailable highlighter", async () => {
+    const markdown = "```python\nx = 1\n```";
+    vi.spyOn(highlightWorker, "highlight").mockRejectedValueOnce(
+      new HighlightWorkerUnavailableError("Highlight worker stalled"),
+    );
+    const fallback = await renderMarkdownToHtml(markdown);
+    expect(fallback).not.toContain("var(--shiki-");
+    expect(markdownAugmentCacheDiagnostics()).toMatchObject({
+      retainedEntries: 0,
+      unretainedCompletions: 1,
+    });
+
+    const highlighted = await renderMarkdownToHtml(markdown);
+    expect(highlighted).toContain("var(--shiki-");
+    expect(markdownAugmentCacheDiagnostics()).toMatchObject({
+      retainedEntries: 1,
+      workStarts: 2,
     });
   });
 

@@ -83,6 +83,7 @@ import {
   SessionAppAction,
 } from "../components/SessionRightPane";
 import { useSessionRightPane } from "../hooks/useSessionRightPane";
+import { useSessionViewPublication } from "../hooks/useSessionViewPublication";
 import { useSessionThinkingSelection } from "../hooks/useSessionThinkingSelection";
 import { ProjectAppViewer } from "../components/ProjectAppViewer";
 import type { VoiceInputButtonRef } from "../components/VoiceInputButton";
@@ -116,6 +117,7 @@ import { ProviderBadge } from "../components/ProviderBadge";
 import { QuestionAnswerPanel } from "../components/QuestionAnswerPanel";
 import { RecentSessionsDropdown } from "../components/RecentSessionsDropdown";
 import { RestartSessionModal } from "../components/RestartSessionModal";
+import { routerBindingChip } from "../components/RouterPoolSelector";
 import { SessionHeartbeatModal } from "../components/SessionHeartbeatModal";
 import { SessionMenu } from "../components/SessionMenu";
 import { SessionPublicShareControls } from "../components/SessionPublicShareControls";
@@ -148,6 +150,7 @@ import {
   startEarlyTypingHandoff,
 } from "../lib/earlyTypingHandoff";
 import { AsyncQuestionsProvider } from "../contexts/AsyncQuestionsContext";
+import { ComposerInsertContext } from "../contexts/ComposerInsertContext";
 import { useEngagementTracking } from "../hooks/useEngagementTracking";
 import { useBtwAsides } from "../hooks/useBtwAsides";
 import { useGeneratedTitleEnabled } from "../hooks/useGeneratedTitleEnabled";
@@ -191,6 +194,7 @@ import {
 } from "../components/FilePathLink";
 import {
   deleteDraftAttachmentRef,
+  isInterruptedDraftAttachmentValidation,
   validateDraftAttachmentRefs,
 } from "../lib/draftAttachmentStaging";
 import { draftTextIsAccountedFor } from "../lib/draftSendReconcile";
@@ -615,7 +619,12 @@ function SessionPageContent({
   const [projectAppOpen, setProjectAppOpen] = useState(!!navState.projectApp);
   // Full view hides the session and sidebar behind the app until Back.
   const [projectAppFull, setProjectAppFull] = useState(false);
+  // Which side last opened it, for the agent's view report.
+  const [projectAppOpenedBy, setProjectAppOpenedBy] = useState<
+    "session" | "user"
+  >("user");
   const projectAppPress = useLongPress(() => {
+    setProjectAppOpenedBy("user");
     setProjectAppOpen(true);
     setProjectAppFull(true);
   });
@@ -801,7 +810,10 @@ function SessionPageContent({
     projectId,
     projectServiceSupported,
     processState === "in-turn" || processState === "waiting-input",
-    () => setProjectAppOpen(true),
+    () => {
+      setProjectAppOpenedBy("session");
+      setProjectAppOpen(true);
+    },
   );
   const projectAppEnabled =
     projectServiceSupported && (!!projectAppTarget || projectDeclaresApp);
@@ -821,6 +833,17 @@ function SessionPageContent({
     !isDomLingerParked && !loading,
     sessionId,
     { projectId, fetchAppLinks: canUseBearerGrants },
+  );
+  useSessionViewPublication(
+    sessionId,
+    !isDomLingerParked && !loading,
+    projectAppEnabled && projectAppOpen
+      ? {
+          target: projectAppTarget,
+          full: projectAppFull,
+          openedBy: projectAppOpenedBy,
+        }
+      : null,
   );
   useEffect(() => {
     if (rightPane.paneViewer?.id) setProjectAppOpen(false);
@@ -1437,6 +1460,11 @@ function SessionPageContent({
     [effectiveProvider, providers],
   );
   const currentProviderInfo = providerCapabilities.providerInfo;
+  const providerServiceTiers = useMemo(
+    () =>
+      currentProviderInfo?.models?.flatMap((model) => model.serviceTiers ?? []),
+    [currentProviderInfo],
+  );
   // Default to true for backwards compatibility (except slash commands)
   const supportsPermissionMode =
     currentProviderInfo?.supportsPermissionMode ?? true;
@@ -4608,20 +4636,14 @@ function SessionPageContent({
         ) {
           return;
         }
-        if (syncEnabled) {
-          showToast(t("sessionDraftAttachmentsUnavailable"), "info");
-          return;
-        }
-        console.warn(
-          "[SessionPage] Failed to validate draft attachments:",
-          err,
-        );
-        controls.setAttachmentState(null);
-        setComposerAttachments([], {
+        // An interrupted validation says nothing about whether the file exists.
+        // Keep its chip too; sending still requires server materialization.
+        setComposerAttachments(state.refs, {
           persistDraft: false,
           revokeRemovedPreviewUrls: true,
         });
-        showToast(t("sessionDraftAttachmentsUnavailable"), "info");
+        if (!isInterruptedDraftAttachmentValidation(err))
+          showToast(t("sessionDraftAttachmentsValidationFailed"), "info");
       }
     },
     [
@@ -5903,6 +5925,7 @@ function SessionPageContent({
                   {...projectAppPress.handlers}
                   onClick={projectAppPress.click(() => {
                     setProjectAppFull(false);
+                    setProjectAppOpenedBy("user");
                     setProjectAppOpen((value) => !value);
                   })}
                 >
@@ -6167,23 +6190,27 @@ function SessionPageContent({
                       serverHasCapability(
                         versionInfo,
                         SERVER_CAPABILITIES.agentAuthRouter.name,
-                      ) && (
-                        <span
-                          className={sessionHeaderStyles.routerAccount}
-                          title={
-                            session.routerBinding.reason ??
-                            t("routerPinnedAccount", {
-                              account: session.routerBinding.accountId,
-                            })
-                          }
-                        >
-                          {t("routerPinnedAccount", {
-                            account: session.routerBinding.accountId,
-                          })}
-                          {session.routerBinding.policy &&
-                            ` · ${t(session.routerBinding.policy === "most-remaining" ? "routerPoolMostRemaining" : session.routerBinding.policy === "round-robin" ? "routerPoolRoundRobin" : "routerPoolManual")}`}
-                        </span>
-                      )}
+                      ) &&
+                      (() => {
+                        const chip = routerBindingChip(
+                          t,
+                          session.routerBinding,
+                        );
+                        return (
+                          <button
+                            type="button"
+                            className={sessionHeaderStyles.routerAccount}
+                            title={chip.tooltip}
+                            aria-label={chip.tooltip}
+                            onClick={() => {
+                              setModelPanelInitialTab("info");
+                              setShowModelSwitchModal(true);
+                            }}
+                          >
+                            {chip.label}
+                          </button>
+                        );
+                      })()}
                     {currentGoal && (
                       <GoalFlag
                         objective={currentGoal}
@@ -6561,6 +6588,8 @@ function SessionPageContent({
                   sessionId={actualSessionId}
                   provider={session.provider}
                   model={session.model}
+                  savedServiceTier={savedLaunchSettings?.serviceTier}
+                  serviceTiers={providerServiceTiers}
                   status={status}
                   processState={processState}
                   sessionLiveness={sessionLiveness}
@@ -6572,6 +6601,7 @@ function SessionPageContent({
                   approvalPolicy={session.approvalPolicy}
                   sandboxPolicy={session.sandboxPolicy}
                   createdAt={session.createdAt}
+                  routerBinding={session.routerBinding}
                   sessionStreamConnected={sessionUpdatesConnected}
                   lastSessionEventAt={lastStreamActivityAt}
                 />
@@ -7309,7 +7339,9 @@ function SessionPageContent({
       }
     >
       <RoutedSessionContext value={Boolean(session?.routerBinding)}>
-        {content}
+        <ComposerInsertContext value={insertQuotedSelection}>
+          {content}
+        </ComposerInsertContext>
       </RoutedSessionContext>
     </AsyncQuestionsProvider>
   );

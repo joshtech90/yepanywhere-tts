@@ -558,6 +558,11 @@ Re-check and date-stamp:
   SSH-port-forward access (binds `127.0.0.1`, key auth). A reference
   implementation of Plan B's embedding and a competitive data point for remote
   pi supervision. Desktop-oriented; modest traction.
+- **pi-durable and pi's experimental server/client** — a committed-state agent
+  harness plus a session-worker server serving `Transcript` and
+  `AgentController` services; compared with YA in
+  [`ya-vs-pi-durable.md`](ya-vs-pi-durable.md) (pinned 2026-10-05). Recheck
+  whether the durable agent leaves `experimental/`.
 - **General:** RPC protocol stability (`modes/rpc/rpc-types.ts`), any official pi
   web UI / TUI split, and whether refactors move the session/event surface a YA
   adapter binds to. Also: `git log origin/main..upstream/main` on `~/pi` before

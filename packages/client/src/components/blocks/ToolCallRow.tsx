@@ -62,6 +62,8 @@ import { WorkflowOutput } from "../WorkflowOutput";
 import { ToolCommentaryBoundary } from "../ToolCommentaryBoundary";
 import { TimelineDisclosure } from "../TimelineDisclosure";
 import styles from "./ToolCallRow.module.css";
+import type { McpAppToolCall } from "@yep-anywhere/shared";
+import { McpAppToolCard } from "../McpAppToolCard";
 
 interface Props {
   id: string;
@@ -75,6 +77,8 @@ interface Props {
   startTimestampMs?: number | null;
   /** Result arrival time; null while pending or when no result message. */
   resultTimestampMs?: number | null;
+  /** The MCP App view the called tool declared. */
+  mcpApp?: McpAppToolCall;
 }
 
 export const DEFERRED_PREVIEW_HEIGHT = {
@@ -713,6 +717,7 @@ const ToolCallRowContent = memo(function ToolCallRowContent({
   resultTimestampMs,
   originalOutput,
   prepared,
+  mcpApp,
 }: Props & { originalOutput?: unknown; prepared: PreparedToolDisplay }) {
   const [summaryExpanded, setSummaryExpanded] = useRememberedDisclosureState(
     id,
@@ -1632,6 +1637,16 @@ const ToolCallRowContent = memo(function ToolCallRowContent({
             />
           )}
         </div>
+      )}
+
+      {mcpApp && (
+        <McpAppToolCard
+          mcpApp={mcpApp}
+          callId={id}
+          toolInput={toolInput}
+          toolResult={toolResult}
+          status={status}
+        />
       )}
     </div>
   );

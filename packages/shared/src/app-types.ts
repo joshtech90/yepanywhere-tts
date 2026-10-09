@@ -8,6 +8,7 @@
  * App types extend these with runtime fields that are computed or added during processing.
  */
 
+import type { McpAppToolCall } from "./mcp-apps.js";
 import type { SessionClearloopBadge } from "./session-rewind.js";
 import type {
   AssistantEntry,
@@ -57,6 +58,8 @@ export interface AppContentBlock {
   input?: unknown;
   /** YA-derived presentation semantics; recomputed rather than persisted. */
   _displayActions?: ToolDisplayAction[];
+  /** The MCP App view this tool call's tool declared. */
+  _mcpApp?: McpAppToolCall;
   /** Server-confirmed file links for visible command or result text. */
   _projectPathLinks?: ProjectPathLinkTarget[];
   // tool_result block
@@ -364,7 +367,7 @@ export const CLAUDE_EXTENDED_CONTEXT_WINDOW = 1_000_000;
  * Known context window sizes for different models.
  *
  * Claude models:
- * - Claude 5.x Fable / Opus / Sonnet canonical ids: 1M
+ * - Claude 5.x Fable / Opus / Sonnet / Haiku canonical ids: 1M
  * - Opus / Sonnet / Haiku standard aliases: 200K
  * - Explicit "[1m]" Claude variants: 1M
  * - Sonnet 3.5: 200K
@@ -407,6 +410,8 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
  * - "claude-opus-5-5" → opus → 1M
  * - "claude-fable-5" → fable → 1M
  * - "claude-sonnet-5" → sonnet → 1M
+ * - "claude-haiku-5-5" → haiku → 1M
+ * - "claude-haiku-4-5-20251001" → haiku → 200K
  * - "claude-sonnet-4-20250514" → sonnet → 200K
  * - "sonnet[1m]" → sonnet → 1M
  * - "claude-3-5-sonnet-20241022" → sonnet → 200K
@@ -433,7 +438,7 @@ export function getModelContextWindow(
     return CLAUDE_EXTENDED_CONTEXT_WINDOW;
   }
 
-  if (/(?:^|[./])claude-(?:opus|sonnet)-5(?:-\d+)?$/.test(lowerModel)) {
+  if (/(?:^|[./])claude-(?:opus|sonnet|haiku)-5(?:-\d+)?$/.test(lowerModel)) {
     return CLAUDE_EXTENDED_CONTEXT_WINDOW;
   }
 
@@ -684,6 +689,9 @@ export interface AppSessionSummary {
   /** Public, immutable account pin. Never contains transport credentials. */
   routerBinding?: {
     poolId?: string;
+    /** Labels captured from AAR; identity stays the ids. Absent on older pins. */
+    poolName?: string;
+    accountDisplayName?: string;
     policy?: "manual" | "round-robin" | "most-remaining";
     reason?: string;
     observedAt?: string;

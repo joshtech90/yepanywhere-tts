@@ -50,7 +50,10 @@ export class PushNotifier {
   private supervisor: Supervisor;
   private readonly projectDisplayName: ProjectDisplayNameResolver;
   private unsubscribe: (() => void) | null = null;
-  /** Track sessions we've sent notifications for (to know when to send dismiss) */
+  /**
+   * Track sessions we've sent notifications for (to know when to send
+   * dismiss). Each entry is deleted when its dismiss is sent.
+   */
   private sessionsWithNotification = new Set<string>();
   // Key by process lifetime: replacement sessions cannot inherit suppression,
   // and terminated processes do not leave an unbounded session-id ledger.

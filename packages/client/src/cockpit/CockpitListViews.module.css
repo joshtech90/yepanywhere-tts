@@ -287,7 +287,7 @@
   outline-offset: 2px;
 }
 
-@media (max-width: 700px) {
+@media (width <= 700px) {
   .root {
     padding: 0.9rem 0.78rem 1.5rem;
   }

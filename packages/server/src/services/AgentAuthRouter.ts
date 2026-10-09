@@ -4,7 +4,10 @@ import { mkdir } from "node:fs/promises";
 import http from "node:http";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { routerModelSupportsThinking } from "@yep-anywhere/shared";
+import {
+  routerModelSupportsThinking,
+  sanitizeRouterCliModels,
+} from "@yep-anywhere/shared";
 import type {
   ModelInfo,
   ThinkingConfig,
@@ -17,6 +20,7 @@ import type {
   AgentAuthRouterRecovery,
 } from "@yep-anywhere/shared";
 import type { SessionMetadataService } from "../metadata/SessionMetadataService.js";
+import { mapClaudeCliModels } from "../sdk/providers/claude.js";
 import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 
 export interface RouterLaunch {
@@ -59,6 +63,7 @@ interface Info {
   capabilities: string[];
 }
 export interface RouterAccount {
+  displayName?: string;
   directAccountAccess?: boolean;
   id: string;
   provider: "claude" | "codex";
@@ -118,6 +123,32 @@ function routerOffline() {
   );
 }
 /**
+ * Map each Claude account's CLI rows through the direct list's pipeline, so
+ * pool and direct pickers agree. Rows are dropped unless the router
+ * advertises them, and are bounded before mapping.
+ */
+function withCliModels<T>(overview: T, info: Info): T {
+  const accounts = (overview as { accounts?: unknown } | null)?.accounts;
+  if (!Array.isArray(accounts)) return overview;
+  const supported = info.capabilities.includes("catalog-cli-models-v1");
+  return {
+    ...overview,
+    accounts: accounts.map((account: Record<string, unknown>) => {
+      const { cliModels, cliModelsAt, ...rest } = account;
+      const rows =
+        supported && account.provider === "claude"
+          ? sanitizeRouterCliModels(cliModels)
+          : undefined;
+      if (!rows?.length) return rest;
+      return {
+        ...rest,
+        cliModels: mapClaudeCliModels(rows),
+        ...(typeof cliModelsAt === "string" ? { cliModelsAt } : {}),
+      };
+    }),
+  };
+}
+/**
  * Only 4xx policy refusals are the router's own decisions; 5xx bodies may
  * describe upstream failures and stay generic. Accepted reasons are short
  * plain text, so they cannot carry tokens, paths or markup.
@@ -138,6 +169,16 @@ function rejectionReason(
     /* Generic message below. */
   }
   return undefined;
+}
+/**
+ * Account and pool names are display labels the session keeps after AAR is
+ * down or the account is gone, so recovery can name what to re-enable.
+ */
+function routerLabel(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: strip them
+  const label = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  return label ? label.slice(0, 80) : undefined;
 }
 /** No fetch fallback: control traffic can only use the verified Unix socket. */
 export async function routerRequest<T>(
@@ -496,7 +537,7 @@ export class AgentAuthRouter {
       const result = await routerRequest<T>(c.socketPath, path, c.token, body);
       if (path === "/v1/overview" || path === "/v1/overview/refresh")
         return {
-          ...result,
+          ...withCliModels(result, info),
           canManagePools: !ownerManaged,
           supportedPolicies: info.capabilities.includes("most-remaining-v1")
             ? ["manual", "round-robin", "most-remaining"]
@@ -505,6 +546,23 @@ export class AgentAuthRouter {
         };
       return result;
     });
+  }
+  /** Best effort: a missing label never blocks a launch. */
+  private async poolLabel(
+    c: Connection,
+    poolId: string,
+  ): Promise<string | undefined> {
+    try {
+      const { pools } = await routerRequest<AgentAuthRouterOverview>(
+        c.socketPath,
+        "/v1/overview",
+        c.token,
+        {},
+      );
+      return routerLabel(pools.find((p) => p.id === poolId)?.name);
+    } catch {
+      return undefined;
+    }
   }
   private readonly discoveryJobs = new Map<
     string,
@@ -519,7 +577,7 @@ export class AgentAuthRouter {
     let job = this.discoveryJobs.get(key);
     if (!job) {
       job = (async () => {
-        await this.info(c);
+        const info = await this.info(c);
         const result = await routerRequest<AgentAuthRouterOverview>(
           c.socketPath,
           "/v1/selection",
@@ -528,7 +586,7 @@ export class AgentAuthRouter {
         );
         if (this.connection().id !== c.id)
           throw new RouterUnavailable(409, "Router connection changed");
-        return result;
+        return withCliModels(result, info);
       })().finally(() => this.discoveryJobs.delete(key));
       this.discoveryJobs.set(key, job);
     }
@@ -675,17 +733,31 @@ export class AgentAuthRouter {
         "/v1/accounts",
         c.token,
       );
+      const accountName = (id: string | undefined) =>
+        routerLabel(accounts.find((a) => a.id === id)?.displayName);
       if (
         selectedId &&
         !accounts.some(
           (a) => a.id === selectedId && a.provider === provider && a.enabled,
         )
-      )
+      ) {
+        const pinned = existing?.accountDisplayName;
         throw new RouterUnavailable(
           409,
-          "The pinned router account is disabled, removed, or no longer granted. Re-enable the same account in AAR and retry, or start a new session with an available account. This session's pin will not change.",
+          `The pinned router account${pinned ? ` (${pinned})` : ""} is disabled, removed, or no longer granted. Re-enable the same account in AAR and retry, or start a new session with an available account. This session's pin will not change.`,
           "account-unavailable",
         );
+      }
+      // A rename in AAR reaches the saved label whenever the pin resumes.
+      const currentName = existing && accountName(existing.accountId);
+      if (
+        existing &&
+        currentName &&
+        currentName !== existing.accountDisplayName
+      )
+        await this.metadata.updateMetadata(sessionId, {
+          routerBinding: { ...existing, accountDisplayName: currentName },
+        });
       const requestedThinking: ThinkingOption =
         settings?.thinking?.type === "disabled"
           ? "off"
@@ -720,7 +792,9 @@ export class AgentAuthRouter {
             id: allocation.id,
             routerId: c.routerId,
             accountId: accountId ?? "",
-            ...(poolId ? { poolId, policy } : {}),
+            ...(poolId
+              ? { poolId, policy }
+              : { accountDisplayName: accountName(accountId) }),
             provider,
           },
         });
@@ -757,7 +831,8 @@ export class AgentAuthRouter {
             tokenHash: hash(allocation.token),
           },
         );
-        if (allocation.poolId) {
+        const pinnedPoolId = allocation.poolId;
+        if (pinnedPoolId) {
           if (
             !selected.accountId ||
             (allocation.accountId &&
@@ -780,8 +855,12 @@ export class AgentAuthRouter {
               id: allocation.id,
               routerId: c.routerId,
               accountId: selected.accountId,
+              accountDisplayName:
+                accountName(selected.accountId) ?? existing?.accountDisplayName,
               provider,
-              poolId: allocation.poolId,
+              poolId: pinnedPoolId,
+              poolName:
+                existing?.poolName ?? (await this.poolLabel(c, pinnedPoolId)),
               policy: selected.policy,
               reason: selected.reason,
               observedAt: selected.observedAt,

@@ -59,11 +59,19 @@ export interface AgentAuthRouterOverview {
     freshness: "fresh" | "stale" | "unknown";
     models: ModelInfo[];
     catalogAt: string | null;
+    /**
+     * The account's own Claude CLI model rows (AAR `catalog-cli-models-v1`),
+     * mapped by YA's server exactly like the direct Claude model list. Absent
+     * for Codex, older routers, and accounts whose CLI has not been read yet.
+     */
+    cliModels?: ModelInfo[];
+    cliModelsAt?: string;
     attemptedAt: string | null;
     error: string | null;
     blocked?: "auth-unavailable" | "cooldown";
     cooldownUntil?: string;
-    quota: { observedAt: string } | null;
+    /** `source` is absent from routers without quota-inference-headers-v1. */
+    quota: { observedAt: string; source?: "probe" | "inference" } | null;
     windows: {
       bucket: string;
       windowMinutes: number | null;
@@ -111,13 +119,123 @@ export function routerModelSupportsThinking(
   );
 }
 
-/** Resolve only ordinary family aliases, never composite modes or arbitrary names. */
+/**
+ * One row of AAR's `cliModels`: the account CLI's `initialize.models` entry,
+ * the same shape as the Claude Agent SDK's `supportedModels()` rows.
+ */
+export interface AgentAuthRouterCliModel {
+  value: string;
+  displayName: string;
+  description?: string;
+  resolvedModel?: string;
+  supportsEffort?: boolean;
+  supportedEffortLevels?: string[];
+  supportsAdaptiveThinking?: boolean;
+  supportsFastMode?: boolean;
+  supportsAutoMode?: boolean;
+}
+
+const routerText = (value: unknown, max: number): string | undefined =>
+  typeof value === "string" && value.length > 0
+    ? value.slice(0, max)
+    : undefined;
+
+/**
+ * Type-check and bound router-reported CLI rows with the same limits AAR
+ * applies. YA does not rely on the router having done so.
+ */
+export function sanitizeRouterCliModels(
+  value: unknown,
+): AgentAuthRouterCliModel[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, 64).flatMap((entry): AgentAuthRouterCliModel[] => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const row = entry as Record<string, unknown>;
+    if (
+      typeof row.value !== "string" ||
+      !row.value.length ||
+      row.value.length > 200
+    )
+      return [];
+    const model: AgentAuthRouterCliModel = {
+      value: row.value,
+      displayName: routerText(row.displayName, 200) ?? row.value,
+    };
+    const description = routerText(row.description, 300);
+    if (description) model.description = description;
+    if (
+      typeof row.resolvedModel === "string" &&
+      row.resolvedModel.length > 0 &&
+      row.resolvedModel.length <= 200
+    )
+      model.resolvedModel = row.resolvedModel;
+    for (const flag of [
+      "supportsEffort",
+      "supportsAdaptiveThinking",
+      "supportsFastMode",
+      "supportsAutoMode",
+    ] as const) {
+      if (typeof row[flag] === "boolean") model[flag] = row[flag];
+    }
+    if (Array.isArray(row.supportedEffortLevels))
+      model.supportedEffortLevels = [
+        ...new Set(
+          row.supportedEffortLevels
+            .slice(0, 16)
+            .filter((level): level is string => typeof level === "string")
+            .map((level) => level.slice(0, 32)),
+        ),
+      ];
+    return [model];
+  });
+}
+
+/**
+ * The concrete catalog id a CLI row launches. The CLI reports extended-context
+ * variants as `<id>[1m]`; router catalogs and admission use the bare id.
+ */
+export function routerCliModelTarget(model: ModelInfo): string | undefined {
+  return model.resolvedModel?.replace(/\[1m\]$/, "") || undefined;
+}
+
+/**
+ * What each CLI row launches across these accounts: the concrete id they all
+ * report, or `null` when they disagree or report none. Empty when no account
+ * carries CLI rows, as with routers older than `catalog-cli-models-v1`.
+ */
+export function routerAliasTargets(
+  accounts: readonly { cliModels?: ModelInfo[] }[],
+): Map<string, string | null> {
+  const targets = new Map<string, string | null>();
+  for (const account of accounts)
+    for (const model of account.cliModels ?? []) {
+      const target = routerCliModelTarget(model) ?? null;
+      const previous = targets.get(model.id);
+      targets.set(
+        model.id,
+        previous === undefined || previous === target ? target : null,
+      );
+    }
+  return targets;
+}
+
+/**
+ * Resolve a selection to a concrete catalog id. With CLI rows (`aliases`
+ * non-empty) only the accounts' reported targets count; without them, only
+ * ordinary family aliases are guessed, never composite modes or arbitrary
+ * names.
+ */
 export function resolveRouterModel(
   model: string | null | undefined,
   models: readonly ModelInfo[],
+  aliases: ReadonlyMap<string, string | null> = new Map(),
 ): string | undefined {
   if (!model) return undefined;
   if (models.some((m) => m.id === model)) return model;
+  if (aliases.size) {
+    const target = aliases.get(model);
+    return target && models.some((m) => m.id === target) ? target : undefined;
+  }
   if (!["opus", "sonnet", "haiku", "fable"].includes(model)) return undefined;
   return models
     .filter((m) => m.id.startsWith(`claude-${model}-`))

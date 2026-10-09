@@ -97,7 +97,9 @@ turn can still report progress and completion.
 The last successfully applied model, thinking, and effort selections remain
 session state after the live provider process is reaped. Session metadata and
 detail responses expose that public subset as `effectiveModelSettings`; they
-do not expose retained permission or service-tier launch state. The client
+do not expose retained permission or service-tier launch state (Session Info
+reads the tier from the live process or `effectiveLaunchSettings`; see
+[service tier](service-tier.md)). The client
 resolves model controls and badges from the live process first, then these
 durable settings, then the initial Codex configuration acknowledgement used by
 older servers. Therefore an initial `medium` acknowledgement cannot overwrite

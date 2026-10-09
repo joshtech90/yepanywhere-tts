@@ -24,6 +24,8 @@ interface SessionViewerBase {
   label: string;
   briefLabel?: string;
   closeAction?: SessionViewerCloseAction;
+  /** Set when the session's own output opened it; absent means a user gesture. */
+  openedBy?: "session";
 }
 
 export interface PanelViewerRegistration extends SessionViewerBase {
@@ -56,6 +58,8 @@ export type SessionViewerRegistration =
   | (SessionViewerBase & {
       kind: "vhost";
       url: string;
+      /** The loopback URL the agent printed, before vhost rewriting. */
+      sourceUrl?: string;
       onClose?: never;
       artifactToken?: string;
     })
@@ -69,9 +73,25 @@ export type SessionViewerControllerState = SessionViewerRegistration & {
   restore: () => void;
 };
 
-let current: SessionViewerControllerState | null = null;
-const listeners = new Set<() => void>();
-let resumeRevision = 0;
+interface ControllerStore {
+  current: SessionViewerControllerState | null;
+  listeners: Set<() => void>;
+  resumeRevision: number;
+}
+
+// A hot update re-runs this module; carrying the store across keeps the open
+// viewer, and the subscribers of the replaced module, in place.
+// Vitest provides import.meta.hot without data.
+const hotData: { store?: ControllerStore } | undefined = import.meta.hot?.data;
+const store: ControllerStore = hotData?.store ?? {
+  current: null,
+  listeners: new Set(),
+  resumeRevision: 0,
+};
+if (hotData) hotData.store = store;
+let current = store.current;
+const listeners = store.listeners;
+let resumeRevision = store.resumeRevision;
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -105,6 +125,8 @@ function replaceCurrent(next: SessionViewerControllerState | null): void {
     resumeRevision += 1;
   }
   current = next;
+  store.current = next;
+  store.resumeRevision = resumeRevision;
   emit();
 }
 
@@ -224,6 +246,11 @@ function subscribe(listener: () => void): () => void {
 function getSnapshot(): SessionViewerControllerState | null {
   return current;
 }
+
+export {
+  getSnapshot as getSessionViewerSnapshot,
+  subscribe as subscribeSessionViewer,
+};
 
 export function useSessionViewerController(): SessionViewerControllerState | null {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);

@@ -25,6 +25,7 @@ import {
   getGeminiUserMessageText,
   getMessageContent,
   isConversationEntry,
+  mcpAppToolCallFromCodexItem,
   normalizeCodexAsyncUserInputQuestions,
 } from "@yep-anywhere/shared";
 import {
@@ -644,6 +645,9 @@ function convertCodexEntries(
       if (entry.payload.type === "patch_apply_end") {
         attachCodexCodeModePatchResult(entry.payload, state.toolCallContexts);
       }
+      if (entry.payload.type === "mcp_tool_call_end") {
+        attachCodexMcpApp(entry.payload, state.toolUseMessages);
+      }
       const duplicateContextCompacted = isDuplicateCodexContextCompactedEvent(
         entry,
         state.compactedTimestampMs,
@@ -897,6 +901,43 @@ function findCodexToolUseInput(message: Message, callId: string): unknown {
  * Only associate a single exact command in the same turn with one open Bash
  * call. Ambiguous/missing evidence must not turn arbitrary stdout into status.
  */
+/**
+ * A completed MCP call records the view its tool declared; attach it to the
+ * still-open tool call so replay offers the same view as the live turn. The
+ * end event precedes the call's output, which closes the tool call.
+ */
+function attachCodexMcpApp(
+  payload: CodexEventMsgEntry["payload"],
+  toolUseMessages: Map<string, Message>,
+): void {
+  const record = payload as Record<string, unknown>;
+  const callId = typeof record.call_id === "string" ? record.call_id : null;
+  const invocation =
+    record.invocation && typeof record.invocation === "object"
+      ? (record.invocation as Record<string, unknown>)
+      : null;
+  const server =
+    typeof invocation?.server === "string" ? invocation.server : null;
+  const tool = typeof invocation?.tool === "string" ? invocation.tool : null;
+  const message = callId ? toolUseMessages.get(callId) : undefined;
+  if (!message || !server || !tool) return;
+  const mcpApp = mcpAppToolCallFromCodexItem(
+    {
+      mcpAppUi: record.mcp_app_ui,
+      mcpAppResourceUri: record.mcp_app_resource_uri,
+    },
+    server,
+    tool,
+  );
+  const content = message.message?.content;
+  if (!mcpApp || !Array.isArray(content)) return;
+  for (const block of content) {
+    if (block.type === "tool_use" && block.id === callId) {
+      block._mcpApp = mcpApp;
+    }
+  }
+}
+
 function attachCodexCodeModeCommandExecution(
   payload: CodexEventMsgEntry["payload"],
   contexts: Map<string, CodexToolCallContext>,

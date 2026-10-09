@@ -38,7 +38,13 @@ import { useI18n } from "../i18n";
 import { useToastContext } from "../contexts/ToastContext";
 import { bangHistoryViewEnabled } from "../lib/bangCommandAvailability";
 import { buildFrontendReloadUrl } from "../lib/frontendReload";
+import { getRelayBasePath } from "../lib/remoteRoutePaths";
 import { markSwitchHostReload } from "../lib/switchHostReload";
+import {
+  recentRelayHosts,
+  type SwitchableRelayHost,
+  SwitchHostMenu,
+} from "./SwitchHostMenu";
 import { isNearScrollEnd } from "../lib/predictiveScroll";
 import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import { sessionCollectionRecordToGlobalSessionItem } from "../lib/sessionCollectionRecords";
@@ -714,6 +720,27 @@ export function Sidebar({
     );
   };
 
+  // Browser relay connections list recent hosts on right-click/hold; the
+  // native shell owns its own host list behind switchHost.
+  const [switchHostMenu, setSwitchHostMenu] = useState<{
+    anchor: DOMRect;
+    hosts: SwitchableRelayHost[];
+  } | null>(null);
+  const currentRelayUsername = remoteConnection?.currentRelayUsername ?? null;
+  const handleOpenSwitchHostMenu =
+    currentRelayUsername && !remoteConnection?.switchHost
+      ? (anchor: DOMRect) =>
+          setSwitchHostMenu({
+            anchor,
+            hosts: recentRelayHosts(currentRelayUsername),
+          })
+      : undefined;
+  const closeSwitchHostMenu = useCallback(() => setSwitchHostMenu(null), []);
+  const handlePickRecentHost = (host: SwitchableRelayHost) => {
+    onNavigate();
+    navigate(`${getRelayBasePath(host.relayUsername)}/projects`);
+  };
+
   const filteredStarredSessions = useMemo(
     () =>
       sessionCollectionRecordsToSidebarSessionItems(orderedSessions.starred),
@@ -1334,7 +1361,13 @@ export function Sidebar({
               <SidebarNavButton
                 className="sidebar-switch-host"
                 onClick={handleSwitchHost}
+                onLongPress={handleOpenSwitchHostMenu}
                 label={t("sidebarSwitchHost")}
+                title={
+                  handleOpenSwitchHostMenu
+                    ? t("sidebarSwitchHostTitle")
+                    : undefined
+                }
                 icon={
                   <svg
                     width="16"
@@ -1353,6 +1386,15 @@ export function Sidebar({
                     <path d="M21 13v2a4 4 0 0 1-4 4H3" />
                   </svg>
                 }
+              />
+            )}
+            {switchHostMenu && (
+              <SwitchHostMenu
+                anchor={switchHostMenu.anchor}
+                hosts={switchHostMenu.hosts}
+                onPick={handlePickRecentHost}
+                onShowAll={handleSwitchHost}
+                onClose={closeSwitchHostMenu}
               />
             )}
           </SidebarNavSection>

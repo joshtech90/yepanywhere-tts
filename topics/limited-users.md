@@ -368,6 +368,7 @@ percent-encoding is refused.
 | turn/approval/interrupt/permission-mode change on a session | the session's project in `newSessionProjects` or `joinProjects`, **and** the session runs sandboxed with its network firewall on (its live process enforces both, or with no process its last launch recorded both), else 403 with reason `unsandboxed-session`, **and**, for a request that starts provider work (a turn, an answer or approval, a delivered deferred message), it is fresh — whoever started it — else 403 with reason `stale-session` ([Freshness](#freshness)) |
 | any session the user started | always at least readable, including after its project grant is removed |
 | Issues & PRs (`/api/issues*`) | 403, and the nav entry is hidden: it spends the host's ticket-system credentials |
+| provider sign-in (`/api/providers/:name/login*`) | 403, including the status read: a live device code would sign the host's CLI into whichever account enters it ([Provider sign-in](provider-sign-in.md)) |
 | Inbox, Projects, Source Control, All Sessions | served, with every project and session outside the user's grants removed before pagination; All Sessions project options and aggregate statistics use the same scope |
 | Project Queue | global list and promote-now responses include only ordinary items, recovered items and project statuses (including blocker session titles) in granted projects; the route builds them from the user's grants so other projects' entries are never read for them, and a response-field allowlist backs that up. The global dispatch pause remains visible because it gates the user's own items. Promote-now needs `newSessionProjects` on the project in its path; pausing or resuming dispatch 403 |
 | Project Queue items | queuing needs `newSessionProjects`; a new-session target is held to the create rule (sandbox and its firewall forced, a firewall opt-out refused, lock applied, remote executor refused) and an existing-session target may name neither a remote executor nor a value outside the lock; a queued YA command 403. The item records the user, who alone may edit, retry, reorder, or delete it (404 otherwise). At dispatch their grants are read again: without `newSessionProjects` the item fails, an existing-session target must run sandboxed with its firewall on and be in the item's project or one they started, and the turn and any new session are attributed to them. Staged attachments are taken only from their own draft store and stay in it through restart, dispatch and cleanup; a reference from another account's store is refused (400), and a superuser edit of their item cannot add the superuser's drafts to it ([Project Queue § Attachments](project-queue.md#attachments)) |
@@ -701,7 +702,11 @@ this install and how much.
     tokens (prompt classes ×2, output ×1.5), while **Anthropic prices its full
     1M window flat** — it removed its own over-200k premium on 2026-03-13, so
     `sonnet[1m]`, `opus[1m]` and `fable[1m]` cost exactly what their short
-    requests cost. A record carries the tier only when it is the long one, so an
+    requests cost. **A model may carry its own tier, which overrides its
+    provider's**: Haiku 5.5, Anthropic's published exception, reprices every
+    class ×5 above 100k prompt tokens, and the recorder reads the threshold of
+    the model that served the request, so a Haiku 5.5 subagent in an Opus
+    session is tiered as Haiku. A record carries the tier only when it is the long one, so an
     install on a provider without one pays nothing for the distinction, and a
     long-context flag on such a provider changes no price. **A turn total is
     recorded at the standard tier**, since its sum names no single request;

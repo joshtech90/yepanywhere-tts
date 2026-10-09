@@ -28,6 +28,7 @@ import { useI18n } from "../i18n";
 
 import { getResumeError } from "../lib/connection/resumeErrors";
 import { useResumeRecovery } from "../hooks/useResumeRecovery";
+import { signInRequiredState } from "../hooks/useSignInRequiredNotice";
 import {
   canRetryResume,
   categorizeResumeError,
@@ -369,6 +370,17 @@ export function RelayConnectionGate() {
       );
 
     case "error": {
+      // With no page mounted there is nothing to preserve, so a confirmed
+      // rejection goes straight to the login form, which explains why.
+      if (error && requiresResumeLogin(error.reason)) {
+        return (
+          <Navigate
+            to={relayLoginTarget}
+            replace
+            state={signInRequiredState(error.reason)}
+          />
+        );
+      }
       const defaultError: AutoResumeError = {
         reason: "other",
         mode: "relay",

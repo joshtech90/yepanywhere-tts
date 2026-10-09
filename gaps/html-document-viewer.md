@@ -103,7 +103,10 @@ supported asset graph in an early spike using established parsers or build-time
 inlining, not regex source rewriting. If an opaque broker cannot support the
 chosen build reliably, use the already-specified isolated content host (the
 implemented choice for interactive artifacts). Do not
-fall back to execution on an authenticated YA origin.
+fall back to execution on an authenticated YA origin. For hosted relay
+clients without a tunnel, the service-worker content origin in
+[the relay artifact frame sketch](sketches/relay-artifact-frame.md) replaces
+the static broker candidate.
 
 Static and scripted documents are both part of the target. An initial static
 slice or fully inlined adapter must leave unsupported functionality explicit.

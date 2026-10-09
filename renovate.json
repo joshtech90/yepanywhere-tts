@@ -18,6 +18,61 @@
   },
   "packageRules": [
     {
+      "description": "Group stable web/server runtime updates for manual review; provider SDKs and Tauri keep their own audits and groups.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["dependencies", "optionalDependencies"],
+      "matchPackageNames": [
+        "!@anthropic-ai/*",
+        "!@agentclientprotocol/*",
+        "!@modelcontextprotocol/*",
+        "!@tauri-apps/*"
+      ],
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchCurrentVersion": "!/^[v=~^]*0\\./",
+      "groupName": "web runtime (non-major)"
+    },
+    {
+      "description": "Only patches of 0.x runtime packages join routine web updates; minor releases require approval below.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["dependencies", "optionalDependencies"],
+      "matchPackageNames": [
+        "!@anthropic-ai/*",
+        "!@agentclientprotocol/*",
+        "!@modelcontextprotocol/*",
+        "!@tauri-apps/*"
+      ],
+      "matchUpdateTypes": ["patch"],
+      "matchCurrentVersion": "/^[v=~^]*0\\./",
+      "groupName": "web runtime (non-major)"
+    },
+    {
+      "description": "Review Android library updates together, leaving Gradle, Kotlin compiler and SDK/toolchain migrations separate.",
+      "matchManagers": ["gradle"],
+      "matchPackageNames": [
+        "androidx.*:*",
+        "com.google.firebase:*",
+        "net.java.dev.jna:*",
+        "org.jetbrains.kotlinx:*"
+      ],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "Android libraries (non-major)"
+    },
+    {
+      "description": "Group bridge module updates without changing the Go language or toolchain directives.",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["require", "indirect"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchCurrentVersion": "!/^[v=~^]*0\\./",
+      "groupName": "Go bridge modules (non-major)"
+    },
+    {
+      "description": "Group Rust patches for manual review; Tauri retains its coordinated npm/Cargo groups and 0.x minor upgrades stay separate.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["!/^tauri(?:-|$)/"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "Rust crates (patch)"
+    },
+    {
       "description": "Automerge non-major devDependency updates once every check passes. 0.x packages stay manual because their minor releases may break.",
       "matchDepTypes": ["devDependencies"],
       "matchUpdateTypes": ["minor", "patch"],
@@ -31,6 +86,12 @@
       "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
       "groupName": "GitHub Actions (non-major)",
       "automerge": true
+    },
+    {
+      "description": "Initial Action digest pins freeze already-floating references; aging the newest matching release can leave the whole group unpinned indefinitely. Version and digest updates retain the cooldown.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["pinDigest"],
+      "minimumReleaseAge": null
     },
     {
       "description": "Workflow runtime versions (node-version, go-version, toolchain) are deliberate; CI runs at the supported Node floor.",
@@ -59,6 +120,20 @@
       "description": "The optional STT pixi environment is held to a known-good snapshot and is not exercised by CI; request updates from the Dependency Dashboard.",
       "matchManagers": ["pixi"],
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Major migrations are requested deliberately from the dashboard, not opened as routine weekly PRs.",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "automerge": false
+    },
+    {
+      "description": "Pre-1.0 minor releases can break compatibility; request them deliberately and keep them out of routine groups.",
+      "matchCurrentVersion": "/^[v=~^]*0\\./",
+      "matchUpdateTypes": ["minor"],
+      "dependencyDashboardApproval": true,
+      "automerge": false,
+      "groupName": null
     }
   ]
 }

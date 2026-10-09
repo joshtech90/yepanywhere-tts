@@ -298,6 +298,123 @@ test("finds within the file viewer after a click in its content", async ({
   }
 });
 
+// A cell too wide for the viewer makes the preview scroll sideways only.
+const wideTableSpecimen = `# Reload specimen\n\n${Array.from(
+  { length: 150 },
+  (_, i) => `Filler ${i}.`,
+).join(
+  "\n\n",
+)}\n\n| Arm | Note |\n|---|---|\n| deep needle | ${"x".repeat(600)} |\n`;
+
+test("in the right pane, finds past a wide table and keeps its place on reload", async ({
+  page,
+  baseURL,
+}) => {
+  const originalReadme = readFileSync(externalReadmePath, "utf8");
+  writeFileSync(externalReadmePath, wideTableSpecimen);
+  try {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto(`${baseURL}/settings/appearance`);
+    const setting = page.getByRole("checkbox", {
+      name: "Session right pane",
+      exact: true,
+    });
+    await setting.locator("..").click();
+    await expect(setting).toBeChecked();
+    await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
+    await dismissOnboardingIfVisible(page);
+    await page.locator('a[data-ya-private-project-file-link="true"]').click();
+    const pane = page.getByRole("complementary", { name: "Session pane" });
+    const body = pane.locator(".file-viewer-body");
+    await pane.getByText("Filler 0.", { exact: true }).click();
+    await page.keyboard.press("Control+f");
+    await page
+      .getByRole("searchbox", { name: "Find in this view" })
+      .fill("deep needle");
+    await expect(page.getByRole("search").getByText("1/1")).toBeVisible();
+    await expect(
+      pane.getByRole("cell", { name: "deep needle" }),
+    ).toBeInViewport();
+    // Measure without the find field, which a reload does not bring back.
+    await page.keyboard.press("Escape");
+    const scrolled = await body.evaluate((element) => element.scrollTop);
+    expect(scrolled).toBeGreaterThan(1000);
+
+    await page.reload();
+    await expect(pane.getByText("Reload specimen")).toBeAttached();
+    await expect
+      .poll(() => body.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(scrolled - 4);
+    await expect(
+      pane.getByRole("cell", { name: "deep needle" }),
+    ).toBeInViewport();
+  } finally {
+    writeFileSync(externalReadmePath, originalReadme);
+  }
+});
+
+test("finds past a wide table, and a reload keeps the viewer where it was", async ({
+  page,
+  baseURL,
+}) => {
+  const originalReadme = readFileSync(externalReadmePath, "utf8");
+  writeFileSync(externalReadmePath, wideTableSpecimen);
+  try {
+    await page.setViewportSize({ width: 1200, height: 600 });
+    await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
+    await dismissOnboardingIfVisible(page);
+    await page.locator('a[data-ya-private-project-file-link="true"]').click();
+    const viewer = page.locator(".file-viewer");
+    const body = viewer.locator(".file-viewer-body");
+    await viewer.getByText("Filler 0.", { exact: true }).click();
+    await page.keyboard.press("Control+f");
+    await page
+      .getByRole("searchbox", { name: "Find in this view" })
+      .fill("deep needle");
+    await expect(page.getByRole("search").getByText("1/1")).toBeVisible();
+    // The match is revealed inside the body, not merely counted.
+    await expect(
+      viewer.getByRole("cell", { name: "deep needle" }),
+    ).toBeInViewport();
+    await page.keyboard.press("Escape");
+    const scrolled = await body.evaluate((element) => element.scrollTop);
+    expect(scrolled).toBeGreaterThan(1000);
+
+    await page.reload();
+    await expect(viewer.getByText("Reload specimen")).toBeAttached();
+    await expect
+      .poll(() => body.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(scrolled - 4);
+    await expect(
+      viewer.getByRole("cell", { name: "deep needle" }),
+    ).toBeInViewport();
+
+    // Minimized stays minimized; Close means a reload opens nothing.
+    await viewer
+      .getByRole("button", { name: "Minimize file viewer", exact: true })
+      .click();
+    await page.reload();
+    const parked = page.getByRole("button", { name: /Close file viewer:/ });
+    await expect(parked).toBeVisible();
+    await expect(viewer).toBeHidden();
+    await parked.click();
+    await page.reload();
+    await expect(
+      page.locator('a[data-ya-private-project-file-link="true"]'),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(() =>
+        Object.keys(sessionStorage).filter((key) =>
+          key.startsWith("yep-anywhere-session-open-file:"),
+        ),
+      ),
+    ).toEqual([]);
+    await expect(viewer).toBeHidden();
+  } finally {
+    writeFileSync(externalReadmePath, originalReadme);
+  }
+});
+
 for (const viewport of [
   { name: "desktop", width: 1920, height: 1080 },
   { name: "desktop-1024", width: 1024, height: 768 },
