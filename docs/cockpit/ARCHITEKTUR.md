@@ -286,10 +286,10 @@ die ID des letzten Textsegments ihrer Endantwort, damit sie offen bleibt, wenn
 eine aeltere Seite den Prompt ihres Durchgangs nachliefert oder fruehere
 Elemente in die Antwortgruppe einfuegt. Waehrend der Agent arbeitet, bleibt
 alles seit dem letzten Prompt offen, auch ein Durchgang, den eine
-Hintergrundmeldung mittendrin begonnen hat. Ob eine aeltere Seite angekommen
-ist, entscheidet der erste kanonische Eintrag, denn Falten aendert sichtbare
-Zeilen, nicht kanonische; die Position stellt der erste echte sichtbare
-Eintrag wieder her.
+Hintergrundmeldung mittendrin begonnen hat. Beim Nachladen aelterer Seiten ist der
+erste echte sichtbare Eintrag der Anker. Eine aeltere Seite gilt als
+angekommen, wenn vor ihm mehr kanonische Eintraege stehen als beim Start der
+Anfrage; Falten aendert nur sichtbare Zeilen, Live-Zeilen landen dahinter.
 
 Vorlesen ruft direkt den bestehenden appweiten Controller in `readAloud.ts`
 auf. Dessen Token stellt weiterhin genau eine Wiedergabe fuer alte und neue UI

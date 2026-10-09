@@ -463,13 +463,14 @@ export function CockpitSessionDetail({
   const scrollRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   const prependRef = useRef<{
-    /** Visible row whose position is restored after the prepend. */
+    /** First real visible row; its position is restored after the prepend. */
     anchorKey: string;
     /**
-     * First canonical entry when the request started. Rows appearing before
-     * it are the prepend; folding changes visible rows, not canonical ones.
+     * Canonical entries before the anchor when the request started. Only a
+     * prepend raises it: live rows land after it, and folding changes visible
+     * rows, not canonical ones.
      */
-    historyKey: string;
+    anchorIndex: number;
     anchorTop: number | null;
     projectId: string;
     sessionId: string;
@@ -587,13 +588,13 @@ export function CockpitSessionDetail({
         setPinnedEntryKey(null);
       } else {
         const entriesBeforeAnchor = countEntriesBeforeCockpitScrollAnchor(
-          prepend.historyKey,
+          prepend.anchorKey,
           transcriptEntries,
         );
         if (entriesBeforeAnchor === null) {
           prependRef.current = null;
           setPinnedEntryKey(null);
-        } else if (entriesBeforeAnchor > 0) {
+        } else if (entriesBeforeAnchor > prepend.anchorIndex) {
           const anchorElement = findTranscriptEntryElement(
             container,
             prepend.anchorKey,
@@ -694,12 +695,14 @@ export function CockpitSessionDetail({
     const anchorKey = visibleEntries.find(
       (entry) => entry.kind !== "fold",
     )?.key;
-    const historyKey = transcriptEntries[0]?.key;
-    if (container && anchorKey && historyKey) {
+    const anchorIndex = anchorKey
+      ? countEntriesBeforeCockpitScrollAnchor(anchorKey, transcriptEntries)
+      : null;
+    if (container && anchorKey && anchorIndex !== null) {
       const anchorElement = findTranscriptEntryElement(container, anchorKey);
       prependRef.current = {
         anchorKey,
-        historyKey,
+        anchorIndex,
         anchorTop: anchorElement?.getBoundingClientRect().top ?? null,
         projectId,
         sessionId,
