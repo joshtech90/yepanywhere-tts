@@ -555,7 +555,10 @@ describe("foldCockpitTurns", () => {
   it("folds the steps of a turn the user wrote into while it was working", () => {
     const prompt = createUserEntry("user-1");
     const note = createAssistantEntry("asst-1", { text: "Looking into it." });
-    const tool = createToolEntry("tool-1");
+    const tool = {
+      ...createToolEntry("tool-1"),
+      tool: { status: "complete" } as CockpitToolEntry["tool"],
+    };
     const next = createUserEntry("user-2", "Are you working on it?");
     const answer = createAssistantEntry("asst-2", { text: "Yes, done now." });
 
@@ -592,5 +595,41 @@ describe("foldCockpitTurns", () => {
     });
 
     expect(result).toEqual([prompt, failed, next]);
+  });
+
+  it("keeps failed and stopped steps in view when the user wrote during the work", () => {
+    const prompt = createUserEntry("user-1");
+    const failed = {
+      ...createToolEntry("tool-1"),
+      tool: { status: "error" } as CockpitToolEntry["tool"],
+    };
+    const fine = {
+      ...createToolEntry("tool-2"),
+      tool: { status: "complete" } as CockpitToolEntry["tool"],
+    };
+    const stopped = {
+      ...createToolEntry("tool-3"),
+      tool: { status: "aborted" } as CockpitToolEntry["tool"],
+    };
+    const next = createUserEntry("user-2", "[Request interrupted by user]");
+
+    const result = foldCockpitTurns([prompt, failed, fine, stopped, next], {
+      expandedFoldKeys: new Set(),
+      latestTurnOpen: false,
+    });
+
+    expect(result).toEqual([
+      prompt,
+      {
+        kind: "fold",
+        key: "tool-3\0fold",
+        expanded: false,
+        steps: 1,
+        notes: 0,
+      },
+      failed,
+      stopped,
+      next,
+    ]);
   });
 });

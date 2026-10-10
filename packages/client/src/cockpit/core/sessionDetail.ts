@@ -237,6 +237,20 @@ export function createCockpitTranscriptEntries(input: {
   // Turn markers have no row of their own; they mark the neighbouring entry
   // so the Cockpit can tell where a provider turn began or was aborted.
   let turnStartPending = false;
+  // Whether the agent's turn had ended with a finished answer; status lines in
+  // between do not count as the agent continuing.
+  const afterFinishedAnswer = () => {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (entry?.kind === "boundary") continue;
+      return (
+        entry?.kind === "assistant" &&
+        entry.text.length > 0 &&
+        !entry.isStreaming
+      );
+    }
+    return false;
+  };
   const push = (entry: CockpitTranscriptEntry) => {
     if (turnStartPending && entry.kind !== "user") entry.turnStart = true;
     turnStartPending = false;
@@ -292,11 +306,15 @@ export function createCockpitTranscriptEntries(input: {
   for (const item of input.renderItems) {
     // Text the provider injects in the user's role, such as the instructions
     // of a skill the agent loaded, is part of the agent's work, not a prompt.
+    // Injected after a finished answer (a scheduled wake-up), it starts a
+    // turn of its own, so that answer stays an answer.
     if (
       item.type === "user_prompt" &&
       item.sourceMessages.length > 0 &&
       item.sourceMessages.every((message) => message.isMeta === true)
     ) {
+      flushAssistant();
+      if (afterFinishedAnswer()) turnStartPending = true;
       continue;
     }
 
@@ -343,14 +361,7 @@ export function createCockpitTranscriptEntries(input: {
     // step, so the turn stays whole.
     if (item.type === "task_notification") {
       flushAssistant();
-      const last = entries[entries.length - 1];
-      if (
-        last?.kind === "assistant" &&
-        last.text.length > 0 &&
-        !last.isStreaming
-      ) {
-        turnStartPending = true;
-      }
+      if (afterFinishedAnswer()) turnStartPending = true;
       continue;
     }
 

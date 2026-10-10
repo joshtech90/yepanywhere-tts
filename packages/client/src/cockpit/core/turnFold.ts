@@ -127,10 +127,15 @@ function countHidden(entries: readonly CockpitTranscriptEntry[]) {
   return { steps, notes };
 }
 
+/** A step that failed, was stopped or never finished. */
+function isFailedStep(entry: CockpitTranscriptEntry): boolean {
+  return entry.kind === "tool" && entry.tool.status !== "complete";
+}
+
 /**
  * The user wrote again while the agent was still working, so the turn has no
- * answer of its own; its steps fold without one. A failed last step stays in
- * view, because it may be why the user wrote.
+ * answer of its own; its steps fold without one. Failed, stopped and
+ * unfinished steps stay in view, because they may be why the user wrote.
  */
 function foldInterjectedTurn(
   head: CockpitTranscriptEntry[],
@@ -138,18 +143,19 @@ function foldInterjectedTurn(
   expandedFoldKeys: ReadonlySet<string>,
 ): CockpitDisplayEntry[] {
   const last = body[body.length - 1];
+  const keep = (entry: CockpitTranscriptEntry) =>
+    staysVisible(entry) || isFailedStep(entry);
   if (
     last?.kind !== "tool" ||
-    last.tool.status === "error" ||
     body.some((entry) => entry.turnAborted) ||
-    body.every(staysVisible)
+    body.every(keep)
   ) {
     return [...head, ...body];
   }
-  const { steps, notes } = countHidden(body);
+  const { steps, notes } = countHidden(body.filter((entry) => !keep(entry)));
   const fold = foldRow(last, expandedFoldKeys.has(foldKey(last)), steps, notes);
   if (fold.expanded) return [...head, fold, ...body];
-  return [...head, fold, ...body.filter(staysVisible)];
+  return [...head, fold, ...body.filter(keep)];
 }
 
 function foldTurn(

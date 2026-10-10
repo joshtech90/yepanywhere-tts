@@ -101,6 +101,62 @@ describe("Cockpit session detail projection", () => {
     expect(entries.some((entry) => entry.kind === "boundary")).toBe(false);
   });
 
+  it("starts a turn after a finished answer even across a status line or a wake-up", () => {
+    const answer: RenderItem = {
+      type: "text",
+      id: "answer-1",
+      text: "Done.",
+      sourceBlockIndex: 0,
+      sourceMessages: [{ uuid: "assistant-a" }],
+    };
+    const later = (id: string): RenderItem => ({
+      type: "text",
+      id,
+      text: "Second answer.",
+      sourceBlockIndex: 0,
+      sourceMessages: [{ uuid: `assistant-${id}` }],
+    });
+    const afterBoundary = createCockpitTranscriptEntries({
+      sourceKey: "local",
+      sessionId: "session-1",
+      renderItems: [
+        answer,
+        {
+          type: "system",
+          id: "compact-1",
+          subtype: "compact_boundary",
+          content: "",
+          sourceMessages: [{ uuid: "compact-1" }],
+        },
+        {
+          type: "task_notification",
+          id: "n-1",
+          raw: "<task-notification />",
+          sourceMessages: [{ uuid: "n-1" }],
+        },
+        later("later-1"),
+      ],
+    });
+    const afterWakeUp = createCockpitTranscriptEntries({
+      sourceKey: "local",
+      sessionId: "session-1",
+      renderItems: [
+        answer,
+        {
+          type: "user_prompt",
+          id: "wake-1",
+          content: "Check the rollout.",
+          sourceMessages: [{ uuid: "wake-1", isMeta: true }],
+        },
+        later("later-2"),
+      ],
+    });
+
+    expect(afterBoundary.at(-1)).toMatchObject({ turnStart: true });
+    expect(afterWakeUp.at(-1)).toMatchObject({ turnStart: true });
+    expect(afterWakeUp.some((entry) => entry.kind === "user")).toBe(false);
+  });
+
   it("keeps text the provider injects in the user's role out of the prompts", () => {
     const entries = createCockpitTranscriptEntries({
       sourceKey: "local",

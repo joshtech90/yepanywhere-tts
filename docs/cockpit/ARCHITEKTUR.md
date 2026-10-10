@@ -278,9 +278,12 @@ nur dann einen eigenen Durchgang, wenn direkt davor eine fertige Antwort stand;
 dieser faltet getrennt, und die Antwort davor bleibt sichtbar. Mitten in der
 Arbeit ist sie nur ein weiterer Schritt. Text, den der Provider in der Rolle
 des Nutzers einschiebt (`isMeta`, etwa die Anleitung eines geladenen Skills),
-ist kein Prompt und erscheint nicht. Schreibt der Nutzer, waehrend der Agent
-noch arbeitet, hat der Abschnitt davor keine Endantwort; seine Schritte falten
-dann ohne Antwortkarte, ausser der letzte Schritt ist fehlgeschlagen. Beide Marker haben keine eigene Zeile, sie
+ist kein Prompt und erscheint nicht; kommt er nach einer fertigen Antwort
+(ein geplanter Weckruf), beginnt er wie eine Hintergrundmeldung einen eigenen
+Durchgang. Status- und Kompaktierungsgrenzen dazwischen zaehlen dafuer nicht.
+Schreibt der Nutzer, waehrend der Agent noch arbeitet, hat der Abschnitt davor
+keine Endantwort; seine Schritte falten dann ohne Antwortkarte, aber
+fehlgeschlagene, gestoppte und unfertige Schritte bleiben sichtbar. Beide Marker haben keine eigene Zeile, sie
 markieren den benachbarten Eintrag (`turnStart`, `turnAborted`). Sichtbar
 bleiben Status- und Kompaktierungsgrenzen sowie `AskUserQuestion` und
 `ExitPlanMode`, weil Frage und Plan Joschas eigene Entscheidungen tragen. Die
