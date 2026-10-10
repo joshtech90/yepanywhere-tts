@@ -290,6 +290,16 @@ export function createCockpitTranscriptEntries(input: {
   };
 
   for (const item of input.renderItems) {
+    // Text the provider injects in the user's role, such as the instructions
+    // of a skill the agent loaded, is part of the agent's work, not a prompt.
+    if (
+      item.type === "user_prompt" &&
+      item.sourceMessages.length > 0 &&
+      item.sourceMessages.every((message) => message.isMeta === true)
+    ) {
+      continue;
+    }
+
     if (item.type === "user_prompt") {
       flushAssistant();
       const prompt = parseUserPrompt(contentText(item.content));
@@ -328,9 +338,19 @@ export function createCockpitTranscriptEntries(input: {
       continue;
     }
 
+    // A background task reporting back after the agent's finished answer
+    // wakes it into a new turn of its own. During work it is just another
+    // step, so the turn stays whole.
     if (item.type === "task_notification") {
       flushAssistant();
-      turnStartPending = true;
+      const last = entries[entries.length - 1];
+      if (
+        last?.kind === "assistant" &&
+        last.text.length > 0 &&
+        !last.isStreaming
+      ) {
+        turnStartPending = true;
+      }
       continue;
     }
 

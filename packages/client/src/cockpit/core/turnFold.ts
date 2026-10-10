@@ -77,22 +77,26 @@ function withoutThinking(entry: CockpitAssistantEntry): CockpitAssistantEntry {
  * turn's prompt or merge earlier items into the answer's group, but not
  * change its last segment, so an opened fold stays open while history loads.
  */
-export function foldKey(answer: CockpitAssistantEntry): string {
-  const lastSegment = answer.text[answer.text.length - 1];
-  return `${lastSegment?.id ?? answer.key}\0fold`;
+export function foldKey(last: CockpitTranscriptEntry): string {
+  if (last.kind !== "assistant") return `${last.key}\0fold`;
+  const lastSegment = last.text[last.text.length - 1];
+  return `${lastSegment?.id ?? last.key}\0fold`;
 }
 
-// Unchanged fold rows keep their identity, keyed by the answer they stand
-// before, so a live update does not re-render every historical fold.
-const foldsByAnswer = new WeakMap<CockpitAssistantEntry, CockpitFoldEntry>();
+// Unchanged fold rows keep their identity, keyed by the turn's last entry, so
+// a live update does not re-render every historical fold.
+const foldsByLastEntry = new WeakMap<
+  CockpitTranscriptEntry,
+  CockpitFoldEntry
+>();
 
 function foldRow(
-  answer: CockpitAssistantEntry,
+  last: CockpitTranscriptEntry,
   expanded: boolean,
   steps: number,
   notes: number,
 ): CockpitFoldEntry {
-  const previous = foldsByAnswer.get(answer);
+  const previous = foldsByLastEntry.get(last);
   if (
     previous &&
     previous.expanded === expanded &&
@@ -103,36 +107,68 @@ function foldRow(
   }
   const fold: CockpitFoldEntry = {
     kind: "fold",
-    key: foldKey(answer),
+    key: foldKey(last),
     expanded,
     steps,
     notes,
   };
-  foldsByAnswer.set(answer, fold);
+  foldsByLastEntry.set(last, fold);
   return fold;
+}
+
+function countHidden(entries: readonly CockpitTranscriptEntry[]) {
+  let steps = 0;
+  let notes = 0;
+  for (const entry of entries) {
+    if (staysVisible(entry)) continue;
+    if (entry.kind === "tool") steps += 1;
+    else if (entry.kind === "assistant" && entry.text.length > 0) notes += 1;
+  }
+  return { steps, notes };
+}
+
+/**
+ * The user wrote again while the agent was still working, so the turn has no
+ * answer of its own; its steps fold without one. A failed last step stays in
+ * view, because it may be why the user wrote.
+ */
+function foldInterjectedTurn(
+  head: CockpitTranscriptEntry[],
+  body: readonly CockpitTranscriptEntry[],
+  expandedFoldKeys: ReadonlySet<string>,
+): CockpitDisplayEntry[] {
+  const last = body[body.length - 1];
+  if (
+    last?.kind !== "tool" ||
+    last.tool.status === "error" ||
+    body.some((entry) => entry.turnAborted) ||
+    body.every(staysVisible)
+  ) {
+    return [...head, ...body];
+  }
+  const { steps, notes } = countHidden(body);
+  const fold = foldRow(last, expandedFoldKeys.has(foldKey(last)), steps, notes);
+  if (fold.expanded) return [...head, fold, ...body];
+  return [...head, fold, ...body.filter(staysVisible)];
 }
 
 function foldTurn(
   prompt: CockpitTranscriptEntry | null,
   body: readonly CockpitTranscriptEntry[],
   expandedFoldKeys: ReadonlySet<string>,
+  interjected: boolean,
 ): CockpitDisplayEntry[] {
   const head = prompt ? [prompt] : [];
   const answer = body[body.length - 1];
-  // A turn that ended on a tool call, was aborted or interrupted, or is still
-  // writing has no final answer to stand for it; the reader needs to see what
-  // happened.
   if (!isFinalAnswer(answer) || body.some((entry) => entry.turnAborted)) {
+    if (interjected) return foldInterjectedTurn(head, body, expandedFoldKeys);
+    // Otherwise a turn that ended on a tool call, was aborted or interrupted,
+    // or is still writing has no final answer to stand for it; the reader
+    // needs to see what happened.
     return [...head, ...body];
   }
 
-  let steps = 0;
-  let notes = 0;
-  for (const entry of body.slice(0, -1)) {
-    if (staysVisible(entry)) continue;
-    if (entry.kind === "tool") steps += 1;
-    else if (entry.kind === "assistant" && entry.text.length > 0) notes += 1;
-  }
+  const { steps, notes } = countHidden(body.slice(0, -1));
   const hidesSomething =
     answer.thinking.length > 0 ||
     body.slice(0, -1).some((entry) => !staysVisible(entry));
@@ -196,6 +232,11 @@ export function foldCockpitTurns(
     if (index >= firstOpenTurn) {
       return turn.prompt ? [turn.prompt, ...turn.body] : turn.body;
     }
-    return foldTurn(turn.prompt, turn.body, expandedFoldKeys);
+    return foldTurn(
+      turn.prompt,
+      turn.body,
+      expandedFoldKeys,
+      Boolean(turns[index + 1]?.prompt),
+    );
   });
 }

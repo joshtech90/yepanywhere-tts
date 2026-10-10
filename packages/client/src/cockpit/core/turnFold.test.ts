@@ -551,4 +551,46 @@ describe("foldCockpitTurns", () => {
     expect(result[1]).toMatchObject({ kind: "fold", expanded: true });
     expect(result.slice(2)).toEqual([tool, grown]);
   });
+
+  it("folds the steps of a turn the user wrote into while it was working", () => {
+    const prompt = createUserEntry("user-1");
+    const note = createAssistantEntry("asst-1", { text: "Looking into it." });
+    const tool = createToolEntry("tool-1");
+    const next = createUserEntry("user-2", "Are you working on it?");
+    const answer = createAssistantEntry("asst-2", { text: "Yes, done now." });
+
+    const result = foldCockpitTurns([prompt, note, tool, next, answer], {
+      expandedFoldKeys: new Set(),
+      latestTurnOpen: false,
+    });
+
+    expect(result).toEqual([
+      prompt,
+      {
+        kind: "fold",
+        key: "tool-1\0fold",
+        expanded: false,
+        steps: 1,
+        notes: 1,
+      },
+      next,
+      answer,
+    ]);
+  });
+
+  it("keeps a failed last step in view when the user wrote during the work", () => {
+    const prompt = createUserEntry("user-1");
+    const failed = {
+      ...createToolEntry("tool-1"),
+      tool: { status: "error" } as CockpitToolEntry["tool"],
+    };
+    const next = createUserEntry("user-2", "What went wrong?");
+
+    const result = foldCockpitTurns([prompt, failed, next], {
+      expandedFoldKeys: new Set(),
+      latestTurnOpen: false,
+    });
+
+    expect(result).toEqual([prompt, failed, next]);
+  });
 });

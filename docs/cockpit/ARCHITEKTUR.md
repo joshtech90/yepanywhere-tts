@@ -273,9 +273,14 @@ vollstaendig. Endet er, waehrend der Leser in seinen Schritten hochgescrollt
 ist, bleibt er offen, bis der Leser wieder am Ende steht oder der naechste
 Durchgang beginnt. Nicht gefaltet werden Durchgaenge ohne fertige Endantwort
 (Ende auf einem Werkzeugaufruf, per `turn_aborted` abgebrochen, unterbrochen,
-noch schreibend). Ein Durchgang, den der Agent ohne Prompt selbst beginnt,
-etwa nach einer `task_notification` einer Hintergrundaufgabe, faltet getrennt;
-die Antwort davor bleibt sichtbar. Beide Marker haben keine eigene Zeile, sie
+noch schreibend). Eine `task_notification` einer Hintergrundaufgabe beginnt
+nur dann einen eigenen Durchgang, wenn direkt davor eine fertige Antwort stand;
+dieser faltet getrennt, und die Antwort davor bleibt sichtbar. Mitten in der
+Arbeit ist sie nur ein weiterer Schritt. Text, den der Provider in der Rolle
+des Nutzers einschiebt (`isMeta`, etwa die Anleitung eines geladenen Skills),
+ist kein Prompt und erscheint nicht. Schreibt der Nutzer, waehrend der Agent
+noch arbeitet, hat der Abschnitt davor keine Endantwort; seine Schritte falten
+dann ohne Antwortkarte, ausser der letzte Schritt ist fehlgeschlagen. Beide Marker haben keine eigene Zeile, sie
 markieren den benachbarten Eintrag (`turnStart`, `turnAborted`). Sichtbar
 bleiben Status- und Kompaktierungsgrenzen sowie `AskUserQuestion` und
 `ExitPlanMode`, weil Frage und Plan Joschas eigene Entscheidungen tragen. Die

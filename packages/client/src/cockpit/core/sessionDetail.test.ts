@@ -52,23 +52,34 @@ const initialItems: RenderItem[] = [
 
 describe("Cockpit session detail projection", () => {
   it("marks where the agent began a turn on its own and where a turn was aborted", () => {
+    const notification = (id: string): RenderItem => ({
+      type: "task_notification",
+      id,
+      raw: "<task-notification />",
+      sourceMessages: [{ uuid: id }],
+    });
     const entries = createCockpitTranscriptEntries({
       sourceKey: "local",
       sessionId: "session-1",
       renderItems: [
         ...initialItems,
-        {
-          type: "task_notification",
-          id: "notification-1",
-          raw: "<task-notification />",
-          sourceMessages: [{ uuid: "notification-1" }],
-        },
+        // Mid-work: the turn ended on a tool call, so this is just a step.
+        notification("notification-1"),
         {
           type: "text",
           id: "text-2",
-          text: "The background task finished.",
+          text: "The checklist is ready for review.",
           sourceBlockIndex: 0,
           sourceMessages: [{ uuid: "assistant-2" }],
+        },
+        // After a finished answer: the agent wakes into a turn of its own.
+        notification("notification-2"),
+        {
+          type: "text",
+          id: "text-3",
+          text: "The background task finished.",
+          sourceBlockIndex: 0,
+          sourceMessages: [{ uuid: "assistant-3" }],
         },
         {
           type: "system",
@@ -88,6 +99,24 @@ describe("Cockpit session detail projection", () => {
     });
     expect(entries.filter((entry) => entry.turnStart)).toHaveLength(1);
     expect(entries.some((entry) => entry.kind === "boundary")).toBe(false);
+  });
+
+  it("keeps text the provider injects in the user's role out of the prompts", () => {
+    const entries = createCockpitTranscriptEntries({
+      sourceKey: "local",
+      sessionId: "session-1",
+      renderItems: [
+        ...initialItems,
+        {
+          type: "user_prompt",
+          id: "skill-body",
+          content: "Base directory for this skill: /skills/example",
+          sourceMessages: [{ uuid: "skill-body", isMeta: true }],
+        },
+      ],
+    });
+
+    expect(entries.filter((entry) => entry.kind === "user")).toHaveLength(1);
   });
 
   it("keeps warm-return rows stable and preserves rendered Markdown", () => {
