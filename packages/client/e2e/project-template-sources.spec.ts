@@ -128,6 +128,15 @@ for (const release of ["0.8.0", "0.8.1"])
     page,
     baseURL,
   }) => {
+    // These releases ignore bootstrap negotiation and return ordinary settings.
+    // Otherwise the current fixture server supplies its real bundled version,
+    // bypassing the legacy /version response below on New Session.
+    await page.route("**/api/settings?bootstrap=*", async (route) => {
+      const url = new URL(route.request().url());
+      url.searchParams.delete("bootstrap");
+      const response = await route.fetch({ url: url.toString() });
+      await route.fulfill({ response });
+    });
     await page.route("**/api/version*", async (route) => {
       const response = await route.fetch();
       const version = await response.json();
@@ -178,9 +187,13 @@ for (const release of ["0.8.0", "0.8.1"])
     await expect(
       page.locator('[data-provider-host-degraded="true"]'),
     ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "New project", exact: true }),
-    ).toHaveCount(0);
+    // New project also creates a plain folder on older servers. Only the
+    // template choices and requests require the template capability.
+    await page
+      .getByRole("button", { name: "New project", exact: true })
+      .click();
+    await expect(page.getByText("Empty folder", { exact: true })).toBeVisible();
+    await expect(page.getByText("Storybook", { exact: true })).toHaveCount(0);
     expect(requests).toBe(0);
   });
 

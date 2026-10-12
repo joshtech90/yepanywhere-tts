@@ -17,7 +17,6 @@ import {
   type Principal,
 } from "../../src/auth/principal.js";
 import { getLogger } from "../../src/logging/logger.js";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import {
   canonicalizeProjectPath,
   encodeProjectId,
@@ -49,6 +48,10 @@ import type {
   Project,
   SessionSummary,
 } from "../../src/supervisor/types.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -5203,7 +5206,7 @@ describe("Sessions metadata route", () => {
     const project = createProject();
     const dataDir = await mkdtemp(join(tmpdir(), "ya-fork-ordinal-"));
     try {
-      const sessionMetadataService = new SessionMetadataService({ dataDir });
+      const sessionMetadataService = createTestSessionMetadataService(dataDir);
       await sessionMetadataService.initialize();
       await sessionMetadataService.setTitle("sess-1", "Refactor session");
       const forkSession = vi
@@ -5247,6 +5250,7 @@ describe("Sessions metadata route", () => {
         1,
       );
     } finally {
+      closeTestDiscoveryDatabases();
       await rm(dataDir, { recursive: true, force: true });
     }
   });

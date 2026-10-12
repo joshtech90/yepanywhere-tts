@@ -174,6 +174,62 @@ describe("Supervisor", () => {
       });
     });
 
+    it("launches new sessions under YA's id and resumes without one", async () => {
+      const launches: Parameters<AgentProvider["startSession"]>[0][] = [];
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          launches.push(options);
+          // A provider that honors the caller's id reports it back.
+          const sessionId =
+            options.resumeSessionId ?? options.newSessionId ?? "provider-id";
+          const queue = new MessageQueue();
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: sessionId,
+            };
+            for await (const message of queue) {
+              void message;
+              yield { type: "result" as const, session_id: sessionId };
+              return;
+            }
+          }
+          return { iterator: iterator(), queue, abort: () => {} };
+        },
+      );
+      const eventBus = new EventBus();
+      const events: BusEvent[] = [];
+      eventBus.subscribe((event) => events.push(event));
+      const idSupervisor = new Supervisor({
+        provider: testProvider(startSession),
+        eventBus,
+      });
+
+      const started = await idSupervisor.startSession("/tmp/test", {
+        text: "hi",
+      });
+      if (!("sessionId" in started)) throw new Error("expected a process");
+      const created = await idSupervisor.createSession("/tmp/test");
+      if (!("sessionId" in created)) throw new Error("expected a process");
+      const resumed = await idSupervisor.resumeSession(
+        "existing-session",
+        "/tmp/test",
+        { text: "again" },
+      );
+      if (!("sessionId" in resumed)) throw new Error("expected a process");
+
+      expect(launches[0]?.newSessionId).toBe(started.sessionId);
+      expect(launches[1]?.newSessionId).toBe(created.sessionId);
+      expect(launches[2]).toMatchObject({
+        resumeSessionId: "existing-session",
+      });
+      expect(launches[2]?.newSessionId).toBeUndefined();
+      expect(
+        events.filter((event) => event.type === "session-id-remapped"),
+      ).toEqual([]);
+    });
+
     it("tracks process in getAllProcesses", async () => {
       mockSdk.addScenario(createMockScenario("sess-123", "Hello!"));
 

@@ -2,10 +2,10 @@
  * SessionMetadataService manages custom session metadata (titles, archive status).
  * This enables renaming sessions and archiving them to hide from default view.
  *
- * State is persisted to a JSON file for durability across server restarts.
+ * State is persisted to the server's SQLite database, one row per session.
+ * The legacy `session-metadata.json` is imported once and never written again.
  */
 
-import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -33,6 +33,7 @@ import {
   sanitizeSessionTitle,
 } from "@yep-anywhere/shared";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import type { SqliteDatabase, SqliteStatement } from "../storage/sqlite.js";
 
 export type { EffectiveSessionLaunchSettings } from "@yep-anywhere/shared";
 
@@ -52,7 +53,8 @@ export interface SessionMetadata {
     poolId?: string;
     poolName?: string;
     accountDisplayName?: string;
-    policy?: "manual" | "round-robin" | "most-remaining";
+    policy?: string;
+    policyLabel?: string;
     reason?: string;
     observedAt?: string;
     id: string;
@@ -184,18 +186,23 @@ export interface SessionMetadata {
 export interface SessionMetadataState {
   /** Map of sessionId -> metadata */
   sessions: Record<string, SessionMetadata>;
-  /** Schema version for future migrations */
-  version: number;
 }
 
-const CURRENT_VERSION = 3;
+/** Shape of the legacy `session-metadata.json`, read only by the one-time import. */
+interface LegacySessionMetadataFile {
+  sessions?: Record<string, SessionMetadata>;
+  version?: number;
+}
+
 const MAX_RECAP_MESSAGES_PER_SESSION = 200;
 const MAX_SYNTHETIC_DONE_MESSAGES_PER_SESSION = 200;
 const MAX_CACHE_MISS_BILLING_EVENTS_PER_SESSION = 100;
 
 export interface SessionMetadataServiceOptions {
-  /** Directory to store metadata state (defaults to ~/.yep-anywhere) */
+  /** Data directory holding the legacy JSON file to import (defaults to ~/.yep-anywhere) */
   dataDir?: string;
+  /** The server's discovery database; the caller owns and closes it. */
+  database: SqliteDatabase;
 }
 
 /** Public projection omits the persisted acknowledgement tombstone. */
@@ -236,51 +243,137 @@ export function goalCommandOf(
 export class SessionMetadataService {
   private state: SessionMetadataState;
   private dataDir: string;
-  private filePath: string;
+  private legacyFilePath: string;
+  private readonly database: SqliteDatabase;
+  private readonly statements: {
+    selectImport: SqliteStatement;
+    insertImport: SqliteStatement;
+    selectAll: SqliteStatement;
+    upsert: SqliteStatement;
+    remove: SqliteStatement;
+  };
+  /** Last JSON written per session, so a save writes only changed rows. */
+  private persisted = new Map<string, string>();
   /** Session ID rewrites seen since process start; small ID pairs. */
   private sessionIdAliases = new Map<string, string>();
   private unsavedGoalObservations = new Set<string>();
   private metadataSaver = createCoalescingSaver(() => this.doSave());
   private save = this.metadataSaver.flush;
 
-  constructor(options: SessionMetadataServiceOptions = {}) {
+  constructor(options: SessionMetadataServiceOptions) {
     this.dataDir =
       options.dataDir ??
       path.join(
         process.env.HOME ?? process.env.USERPROFILE ?? ".",
         ".yep-anywhere",
       );
-    this.filePath = path.join(this.dataDir, "session-metadata.json");
-    this.state = { sessions: {}, version: CURRENT_VERSION };
+    this.legacyFilePath = path.join(this.dataDir, "session-metadata.json");
+    this.database = options.database;
+    this.statements = {
+      selectImport: this.database.prepare(
+        "SELECT source FROM session_metadata_import WHERE id = 1",
+      ),
+      insertImport: this.database.prepare(
+        "INSERT INTO session_metadata_import (id, imported_at, source) VALUES (1, ?, ?)",
+      ),
+      selectAll: this.database.prepare(
+        "SELECT session_id, metadata FROM session_metadata",
+      ),
+      upsert: this.database.prepare(
+        "INSERT INTO session_metadata (session_id, metadata) VALUES (?, ?) ON CONFLICT (session_id) DO UPDATE SET metadata = excluded.metadata",
+      ),
+      remove: this.database.prepare(
+        "DELETE FROM session_metadata WHERE session_id = ?",
+      ),
+    };
+    this.state = { sessions: {} };
   }
 
   /**
-   * Initialize the service by loading state from disk.
-   * Creates the data directory and file if they don't exist.
+   * Load state from the database, first importing the legacy JSON file if
+   * this database has never imported it. A legacy file that cannot be read or
+   * parsed stops startup rather than being silently replaced.
    */
   async initialize(): Promise<void> {
-    console.log(`[SessionMetadataService] Initializing from: ${this.filePath}`);
-    await fs.mkdir(this.dataDir, { recursive: true });
-    const content = await fs.readFile(this.filePath, "utf-8").catch((error) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
-    });
-    if (content === undefined) return;
-    try {
-      const parsed = JSON.parse(content) as SessionMetadataState;
-      console.log(
-        `[SessionMetadataService] Loaded ${Object.keys(parsed.sessions).length} sessions from disk`,
-      );
+    if (!this.statements.selectImport.get()) {
+      await this.importLegacyFile();
+    }
+    for (const row of this.statements.selectAll.all<{
+      session_id: string;
+      metadata: string;
+    }>()) {
+      this.state.sessions[row.session_id] = JSON.parse(
+        row.metadata,
+      ) as SessionMetadata;
+      this.persisted.set(row.session_id, row.metadata);
+    }
+    console.log(
+      `[SessionMetadataService] Loaded ${this.persisted.size} sessions from the database`,
+    );
 
-      this.state = {
-        sessions: parsed.sessions ?? {},
-        version: CURRENT_VERSION,
-      };
+    let changed = false;
+    for (const metadata of Object.values(this.state.sessions)) {
+      if (!metadata.transcriptDisplayObjects) {
+        continue;
+      }
+      const recovered = metadata.transcriptDisplayObjects.map((object) => {
+        if (object.status === "generating") {
+          return {
+            ...object,
+            status: "error" as const,
+            error: "Fork summary interrupted by server restart",
+          };
+        }
+        if (object.kind === "bang-command" && object.status === "running") {
+          return {
+            ...object,
+            status: "killed" as const,
+            error: "Interrupted by server restart",
+          };
+        }
+        return object;
+      });
+      if (
+        recovered.some(
+          (object, index) =>
+            object !== metadata.transcriptDisplayObjects?.[index],
+        )
+      ) {
+        metadata.transcriptDisplayObjects = recovered;
+        changed = true;
+      }
+    }
+    if (changed) {
+      await this.save();
+    }
+  }
 
-      const migrateLegacyLineage = (parsed.version ?? 0) < 3;
-      let changed = parsed.version !== CURRENT_VERSION;
-      for (const metadata of Object.values(this.state.sessions)) {
-        if (migrateLegacyLineage && metadata.parentSessionId) {
+  private async importLegacyFile(): Promise<void> {
+    const content = await fs
+      .readFile(this.legacyFilePath, "utf-8")
+      .catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+          return undefined;
+        throw new Error(
+          `Cannot read ${this.legacyFilePath} for import into the database`,
+          { cause: error },
+        );
+      });
+    let sessions: Record<string, SessionMetadata> = {};
+    if (content !== undefined) {
+      let parsed: LegacySessionMetadataFile;
+      try {
+        parsed = JSON.parse(content) as LegacySessionMetadataFile;
+      } catch (error) {
+        throw new Error(
+          `Cannot import ${this.legacyFilePath}: it is not valid JSON. Repair or move it aside and restart.`,
+          { cause: error },
+        );
+      }
+      sessions = parsed.sessions ?? {};
+      if ((parsed.version ?? 0) < 3) {
+        for (const metadata of Object.values(sessions)) {
+          if (!metadata.parentSessionId) continue;
           if (
             /^\/btw(?:\s+|$)/i.test(metadata.customTitle?.trimStart() ?? "")
           ) {
@@ -290,45 +383,24 @@ export class SessionMetadataService {
             metadata.parentSessionId = undefined;
             metadata.parentSessionKind = undefined;
           }
-          changed = true;
-        }
-        if (!metadata.transcriptDisplayObjects) {
-          continue;
-        }
-        const recovered = metadata.transcriptDisplayObjects.map((object) => {
-          if (object.status === "generating") {
-            return {
-              ...object,
-              status: "error" as const,
-              error: "Fork summary interrupted by server restart",
-            };
-          }
-          if (object.kind === "bang-command" && object.status === "running") {
-            return {
-              ...object,
-              status: "killed" as const,
-              error: "Interrupted by server restart",
-            };
-          }
-          return object;
-        });
-        if (
-          recovered.some(
-            (object, index) =>
-              object !== metadata.transcriptDisplayObjects?.[index],
-          )
-        ) {
-          metadata.transcriptDisplayObjects = recovered;
-          changed = true;
         }
       }
-      if (changed) {
-        await this.save();
+    }
+    const imported = this.database.transaction(() => {
+      // Another connection may have imported while the file was being read.
+      if (this.statements.selectImport.get()) return false;
+      for (const [sessionId, metadata] of Object.entries(sessions)) {
+        this.statements.upsert.run(sessionId, JSON.stringify(metadata));
       }
-    } catch (error) {
-      throw new Error(
-        `Cannot initialize session metadata from ${this.filePath}; refusing to replace existing state`,
-        { cause: error },
+      this.statements.insertImport.run(
+        new Date().toISOString(),
+        content === undefined ? "none" : "json",
+      );
+      return true;
+    });
+    if (imported && content !== undefined) {
+      console.log(
+        `[SessionMetadataService] Imported ${Object.keys(sessions).length} sessions from ${this.legacyFilePath}; the file is no longer read or written`,
       );
     }
   }
@@ -1448,27 +1520,35 @@ export class SessionMetadataService {
   }
 
   private async doSave(): Promise<void> {
-    const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
+    const changed = new Map<string, string>();
+    for (const [sessionId, metadata] of Object.entries(this.state.sessions)) {
+      const text = JSON.stringify(metadata);
+      if (this.persisted.get(sessionId) !== text) changed.set(sessionId, text);
+    }
+    const removed = [...this.persisted.keys()].filter(
+      (sessionId) => !(sessionId in this.state.sessions),
+    );
+    if (changed.size === 0 && removed.length === 0) return;
     try {
-      const content = JSON.stringify(this.state, null, 2);
-      await fs.writeFile(temporaryPath, content, {
-        encoding: "utf-8",
-        flag: "wx",
-        mode: 0o600,
+      this.database.transaction(() => {
+        for (const [sessionId, text] of changed) {
+          this.statements.upsert.run(sessionId, text);
+        }
+        for (const sessionId of removed) {
+          this.statements.remove.run(sessionId);
+        }
       });
-      await fs.rename(temporaryPath, this.filePath);
     } catch (error) {
       console.error("[SessionMetadataService] Failed to save state:", error);
       throw error;
-    } finally {
-      await fs.rm(temporaryPath, { force: true });
     }
+    for (const [sessionId, text] of changed)
+      this.persisted.set(sessionId, text);
+    for (const sessionId of removed) this.persisted.delete(sessionId);
   }
 
-  /**
-   * Get the file path for testing purposes.
-   */
+  /** Where session metadata is stored, for diagnostics. */
   getFilePath(): string {
-    return this.filePath;
+    return path.join(this.dataDir, "discovery.sqlite");
   }
 }

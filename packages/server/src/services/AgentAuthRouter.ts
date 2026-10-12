@@ -19,7 +19,10 @@ import type {
   AgentAuthRouterPoolPolicy,
   AgentAuthRouterRecovery,
 } from "@yep-anywhere/shared";
-import type { SessionMetadataService } from "../metadata/SessionMetadataService.js";
+import type {
+  SessionMetadata,
+  SessionMetadataService,
+} from "../metadata/SessionMetadataService.js";
 import { mapClaudeCliModels } from "../sdk/providers/claude.js";
 import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 
@@ -61,6 +64,8 @@ interface Info {
   routerId: string;
   inferenceOrigin: string;
   capabilities: string[];
+  supportedPolicies?: string[];
+  policies?: { id: string; label: string }[];
 }
 export interface RouterAccount {
   displayName?: string;
@@ -525,23 +530,12 @@ export class AgentAuthRouter {
           "Manage accounts, pools and grants in Agent Auth Router.",
           "operation-rejected",
         );
-      if (
-        (body as { policy?: string }).policy === "most-remaining" &&
-        !info.capabilities.includes("most-remaining-v1")
-      )
-        throw new RouterUnavailable(
-          409,
-          "Update AAR to use Most remaining.",
-          "unsupported",
-        );
       const result = await routerRequest<T>(c.socketPath, path, c.token, body);
+      // The router's own policy list and labels pass through unchanged.
       if (path === "/v1/overview" || path === "/v1/overview/refresh")
         return {
           ...withCliModels(result, info),
           canManagePools: !ownerManaged,
-          supportedPolicies: info.capabilities.includes("most-remaining-v1")
-            ? ["manual", "round-robin", "most-remaining"]
-            : ["manual", "round-robin"],
           admissionRefresh: info.capabilities.includes("admission-refresh-v1"),
         };
       return result;
@@ -632,6 +626,94 @@ export class AgentAuthRouter {
       await this.flushCancellations(c);
     });
   }
+  /**
+   * Refuse before copying a transcript whose child could not inherit this
+   * session's pin. Synchronous, so a fork never starts on a stale connection.
+   */
+  assertInheritable(parentSessionId: string): void {
+    const binding = this.metadata?.getMetadata(parentSessionId)?.routerBinding;
+    if (binding) this.inheritable(binding);
+  }
+  private inheritable(binding: NonNullable<SessionMetadata["routerBinding"]>): {
+    c: Connection;
+    source: Allocation;
+  } {
+    const c = this.connection();
+    const source = this.state.allocations[binding.id];
+    if (
+      !source ||
+      source.cancelled ||
+      !source.accountId ||
+      source.connectionId !== c.id ||
+      binding.routerId !== c.routerId
+    )
+      throw new RouterUnavailable(
+        409,
+        "This session lost its router binding, so a copy could not keep its account. Start a new session instead.",
+      );
+    return { c, source };
+  }
+  /**
+   * Give a forked or cloned child its own binding for the parent's account:
+   * a separate allocation and token, never a reselection
+   * (docs/tactical/150-ya-owned-session-ids.md step 8). The router prepares
+   * and commits it at the child's first launch, like any pinned resume, and a
+   * rejection there stays retryable. The child's metadata is written first,
+   * so a failure after that leaves a child that refuses to launch; the
+   * Supervisor discards a copy whose inheritance fails at all.
+   */
+  inheritBinding(
+    parentSessionId: string,
+    childSessionId: string,
+  ): Promise<void> {
+    return this.serialize(async () => {
+      if (!this.metadata)
+        throw new RouterUnavailable(409, "Router metadata unavailable");
+      const parent = this.metadata.getMetadata(parentSessionId)?.routerBinding;
+      if (!parent) return;
+      const id = randomUUID();
+      await this.metadata.updateMetadata(childSessionId, {
+        routerBinding: {
+          id,
+          routerId: parent.routerId,
+          accountId: parent.accountId,
+          accountDisplayName: parent.accountDisplayName,
+          provider: parent.provider,
+          ...(parent.poolId
+            ? {
+                poolId: parent.poolId,
+                poolName: parent.poolName,
+                policy: "manual",
+              }
+            : {}),
+          reason: "Inherited from the copied session's account",
+        },
+      });
+      const { c, source } = this.inheritable(parent);
+      await this.save({
+        ...this.state,
+        allocations: {
+          ...this.state.allocations,
+          [id]: {
+            id,
+            connectionId: c.id,
+            accountId: source.accountId,
+            ...(source.poolId
+              ? {
+                  poolId: source.poolId,
+                  policy: "manual" as const,
+                  requestedAccountId: source.accountId,
+                }
+              : {}),
+            provider: source.provider,
+            model: source.model,
+            thinking: source.thinking,
+            token: token("aar_"),
+          },
+        },
+      });
+    });
+  }
   async validateSessionSettings(
     sessionId: string,
     model: string | undefined,
@@ -689,16 +771,6 @@ export class AgentAuthRouter {
         throw new RouterUnavailable(
           409,
           "Update AAR to use pools.",
-          "unsupported",
-        );
-      if (
-        !existing &&
-        policy === "most-remaining" &&
-        !info.capabilities.includes("most-remaining-v1")
-      )
-        throw new RouterUnavailable(
-          409,
-          "Update AAR to use Most remaining.",
           "unsupported",
         );
       await this.flushCancellations(c);
@@ -817,10 +889,10 @@ export class AgentAuthRouter {
             ...(allocation.poolId
               ? {
                   poolId: allocation.poolId,
-                  supportedPolicies: [
+                  // Routers before 2026-10-11 admit only policies a client lists.
+                  supportedPolicies: info.supportedPolicies ?? [
                     "manual",
                     "round-robin",
-                    "most-remaining",
                   ],
                   policy: allocation.policy,
                   accountId: allocation.requestedAccountId,
@@ -862,6 +934,9 @@ export class AgentAuthRouter {
               poolName:
                 existing?.poolName ?? (await this.poolLabel(c, pinnedPoolId)),
               policy: selected.policy,
+              policyLabel: routerLabel(
+                info.policies?.find((p) => p.id === selected.policy)?.label,
+              ),
               reason: selected.reason,
               observedAt: selected.observedAt,
             },
@@ -885,6 +960,7 @@ export class AgentAuthRouter {
       } catch (error) {
         // Definitive rejection of a fresh launch must not leave a usable reservation.
         // Lost replies remain recoverable through the persisted allocation identity.
+        // An inherited binding is an existing pin: a rejection stays retryable.
         if (
           !existing &&
           error instanceof RouterUnavailable &&

@@ -19,7 +19,7 @@ afterEach(() => {
 function harness(overrides: Partial<IssueSettings> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ya-issue-confirm-"));
   directories.push(dir);
-  const db = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
+  const db = new DiscoverySqliteService({ dataDir: dir });
   let settings: IssueSettings = {
     enabled: true,
     scope: "viewed",
@@ -32,7 +32,7 @@ function harness(overrides: Partial<IssueSettings> = {}) {
     },
     ...overrides,
   };
-  const store = new IssueStore(db.getDatabase()!, () => settings);
+  const store = new IssueStore(db.getDatabase(), () => settings);
   const credentials = new IssueCredentials({
     env: { GITHUB_TOKEN: "gh-secret", JIRA_API_TOKEN: "jira-secret" },
     cliToken: async () => null,
@@ -271,8 +271,8 @@ describe("tracker confirmation", () => {
   it("registers a bare Jira key once, not once per question asked about it", () => {
     const dir = mkdtempSync(join(tmpdir(), "ya-issue-confirm-"));
     directories.push(dir);
-    const service = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
-    const database = service.getDatabase()!;
+    const service = new DiscoverySqliteService({ dataDir: dir });
+    const database = service.getDatabase();
     let registrations = 0;
     // Resolving a bare key to a canonical identity registers that identity, so
     // asking the question writes a row. Count those writes: deciding whether a

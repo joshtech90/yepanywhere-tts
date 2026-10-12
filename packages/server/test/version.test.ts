@@ -37,6 +37,8 @@ const SQLITE_GATED_CAPABILITY_NAMES: ReadonlySet<string> = new Set([
   SERVER_CAPABILITIES.speechVocabularySessionTerms.name,
 ]);
 
+const originalFetch = global.fetch;
+
 describe("GET /version", () => {
   it("advertises router recovery only when local router support is available", async () => {
     const { getServerCapabilities } = await importVersion();
@@ -55,10 +57,10 @@ describe("GET /version", () => {
       ).toBe(available);
     }
   });
-  const originalFetch = global.fetch;
 
   beforeEach(() => {
     vi.resetModules();
+    mockFetch(() => new Response(null, { status: 204 }));
   });
 
   afterEach(() => {
@@ -504,8 +506,8 @@ describe("GET /version", () => {
       [0, 1],
       // Current optional bits remain; retired IDs 70 and 71 are absent.
       [2, 12288],
-      // Bits 109 and 110 enable file-address replacement and app deletion.
-      [3, 24576],
+      // Bits 109, 110 and 126: file replacement, app deletion, vhost OAuth.
+      [3, 1073766400],
     ]);
     expect(
       serverHasCapability(
@@ -754,6 +756,13 @@ describe("GET /version", () => {
 describe("process-generation version facts", () => {
   beforeEach(() => {
     vi.resetModules();
+    global.fetch = vi.fn(
+      () => new Response(null, { status: 204 }),
+    ) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
   });
 
   it("probes the install once no matter how many requests arrive", async () => {

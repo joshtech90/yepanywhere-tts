@@ -577,6 +577,9 @@ const BASE_CAPABILITIES: string[] = [
   PROJECT_CODE_NAMES_CAPABILITY,
   PROJECT_NAMES_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
+  SERVER_CAPABILITIES.retainedRecents.name,
+  SERVER_CAPABILITIES.retainedProjects.name,
+  SERVER_CAPABILITIES.providerDescriptors.name,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
@@ -711,6 +714,8 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   if (options?.getDraftSyncAvailable?.())
     capabilities.push(SERVER_CAPABILITIES.draftSync.name);
   capabilities.push(SERVER_CAPABILITIES.vhostBearerAccess.name);
+  capabilities.push(SERVER_CAPABILITIES.vhostOauthAccess.name);
+  capabilities.push(SERVER_CAPABILITIES.vhostOauthProviders.name);
   if (options?.vhostAppControlAvailable)
     capabilities.push(SERVER_CAPABILITIES.vhostAppControl.name);
   if (options?.agentAuthRouterAvailable) {
@@ -813,9 +818,37 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
   const routes = new Hono();
 
   routes.get("/", async (c) => {
-    const currentVersionInfo = await (
+    const fresh =
+      c.req.query("fresh") === "1" || c.req.query("fresh") === "true";
+    const currentVersionRequest = (
       options?.getCurrentVersionInfo ?? getCurrentVersionInfo
     )();
+    const [
+      currentVersionInfo,
+      deviceBridgeStatus,
+      sessionSandboxAvailability,
+      latest,
+    ] = await Promise.all([
+      currentVersionRequest,
+      options?.getDeviceBridgeStatus
+        ? options.getDeviceBridgeStatus({ forceRefresh: fresh })
+        : Promise.resolve<DeviceBridgeStatus>({
+            state: options?.getDeviceBridgeState?.() ?? "unavailable",
+          }),
+      (
+        options?.getSessionSandboxAvailability ??
+        getLocalSessionSandboxAvailability
+      )({ forceRefresh: fresh }),
+      currentVersionRequest.then(({ version }) =>
+        options?.desktopRuntime
+          ? null
+          : (options?.getLatestVersion ?? getLatestVersion)(
+              version.split("-")[0] || version,
+              options?.installId,
+              { forceRefresh: fresh },
+            ),
+      ),
+    ]);
     const current = currentVersionInfo.version;
     const clientVersion =
       c.req.query("clientVersion") ?? c.req.header("X-Yep-Client-Version");
@@ -824,15 +857,6 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
       current,
     );
     const compactCapabilities = c.req.query("capabilities") === "compact-v1";
-    const fresh =
-      c.req.query("fresh") === "1" || c.req.query("fresh") === "true";
-    const deviceBridgeStatus = options?.getDeviceBridgeStatus
-      ? await options.getDeviceBridgeStatus({ forceRefresh: fresh })
-      : { state: options?.getDeviceBridgeState?.() ?? "unavailable" };
-    const sessionSandboxAvailability = await (
-      options?.getSessionSandboxAvailability ??
-      getLocalSessionSandboxAvailability
-    )({ forceRefresh: fresh });
     const capabilities = getServerCapabilities({
       ...options,
       getDeviceBridgeState: () => deviceBridgeStatus.state,
@@ -847,15 +871,6 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
     // For dev versions like "v0.1.7-3-g050bfd2", extract base version "v0.1.7"
     // to compare against the update server.
     const baseVersion = current.split("-")[0] || current;
-    const latest = options?.desktopRuntime
-      ? null
-      : await (options?.getLatestVersion ?? getLatestVersion)(
-          baseVersion,
-          options?.installId,
-          {
-            forceRefresh: fresh,
-          },
-        );
     const updateAvailable = latest ? isNewerSemver(baseVersion, latest) : false;
 
     const info: VersionInfo = {

@@ -6,9 +6,13 @@ import { toUrlProjectId } from "@yep-anywhere/shared";
 import type { AppSessionSummary } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionIndexService } from "../../src/indexes/SessionIndexService.js";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
+import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { Session, type SessionDeps } from "../../src/sessions/Session.js";
 import { SessionReader } from "../../src/sessions/reader.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 describe("Session", () => {
   let testDir: string;
@@ -36,7 +40,7 @@ describe("Session", () => {
       dataDir: indexDir,
       projectsDir: testDir,
     });
-    metadataService = new SessionMetadataService({ dataDir: metadataDir });
+    metadataService = createTestSessionMetadataService(metadataDir);
 
     await indexService.initialize();
     await metadataService.initialize();
@@ -50,6 +54,7 @@ describe("Session", () => {
   });
 
   afterEach(async () => {
+    closeTestDiscoveryDatabases();
     await rm(testDir, { recursive: true, force: true });
   });
 

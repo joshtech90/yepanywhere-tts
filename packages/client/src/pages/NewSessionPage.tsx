@@ -9,7 +9,7 @@ import {
   SERVER_CAPABILITIES,
   serverHasCapability,
 } from "@yep-anywhere/shared";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { NewSessionForm } from "../components/NewSessionForm";
@@ -24,10 +24,15 @@ import {
   setRecentProjectId,
 } from "../hooks/useRecentProject";
 import { useRecentSessions } from "../hooks/useRecentSessions";
+import { useNewSessionProjectSnapshot } from "../hooks/useNewSessionProjectSnapshot";
 import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { useToastContext } from "../contexts/ToastContext";
 import { useProjectAppComposing } from "../hooks/useProjectAppComposing";
+import { useProjectAppUpdates } from "../hooks/useProjectAppUpdates";
+import styles from "./NewSessionPage.module.css";
+
+const ignoreProjectAppUpdate = () => {};
 
 const RECENT_PROJECT_SESSION_LIMIT = 30;
 const DETACHED_PROJECT_PARAM = "detached";
@@ -59,7 +64,7 @@ export function NewSessionPage() {
     [],
   );
   const [searchParams, setSearchParams] = useSearchParams();
-  const projectId = searchParams.get("projectId") ?? undefined;
+  const requestedProjectId = searchParams.get("projectId") ?? undefined;
   const preferredProvider = searchParams.get("provider") ?? undefined;
   const preferredModel = searchParams.get("model") ?? undefined;
   const preferredThinking = parsePreferredThinking(
@@ -70,7 +75,7 @@ export function NewSessionPage() {
   );
   const preferredExecutor = searchParams.get("executor") ?? undefined;
   const requestedDetached =
-    !projectId && searchParams.get(DETACHED_PROJECT_PARAM) === "1";
+    !requestedProjectId && searchParams.get(DETACHED_PROJECT_PARAM) === "1";
   const { openSidebar, isWideScreen } = useNavigationLayout();
   const { projectAppComposingEnabled } = useProjectAppComposing();
 
@@ -78,26 +83,99 @@ export function NewSessionPage() {
     onError: () => showToast(t("incomingShareAttachmentUnavailable"), "error"),
   });
 
-  const { projects, loading: projectsLoading } = useProjects();
+  const {
+    projects: liveProjects,
+    loading: projectsLoading,
+    complete: projectsComplete,
+    error: projectsError,
+  } = useProjects({
+    bootstrapTier: "route",
+  });
+  const projectCollectionConfirmed = projectsComplete && !projectsError;
   const { version } = useVersion();
   const supportsProjectCodeNames = serverHasCapability(
     version,
     PROJECT_CODE_NAMES_CAPABILITY,
   );
-  const { recentSessions, isLoading: recentSessionsLoading } =
-    useRecentSessions({
-      limit: RECENT_PROJECT_SESSION_LIMIT,
+  const {
+    recentProjectIds: liveRecentProjectIds,
+    isLoadingVisits: recentSessionsLoading,
+  } = useRecentSessions({
+    limit: RECENT_PROJECT_SESSION_LIMIT,
+  });
+  const { projects, cachedProjects, recentProjectIds, unconfirmedProjectIds } =
+    useNewSessionProjectSnapshot({
+      projects: liveProjects,
+      complete: projectCollectionConfirmed,
+      recentProjectIds: liveRecentProjectIds,
+      visitsLoading: recentSessionsLoading,
+      projectId: requestedProjectId,
     });
-  const { project, loading: projectLoading, error } = useProject(projectId);
+  // The initial selection is already determined by these facts. Rendering it
+  // must not wait for the router to commit the URL normalization below.
+  let projectId = requestedProjectId;
+  if (!projectId && !requestedDetached && projects.length > 0) {
+    const storedRecentProjectId = getRecentProjectId();
+    const hasValidStoredRecentProject = projects.some(
+      (candidate) => candidate.id === storedRecentProjectId,
+    );
+    if (
+      !recentSessionsLoading ||
+      hasValidStoredRecentProject ||
+      recentProjectIds.length > 0
+    ) {
+      projectId =
+        resolvePreferredProjectId(
+          projects,
+          recentProjectIds[0],
+          projectCollectionConfirmed,
+        ) ?? undefined;
+    }
+  }
+  const collectionProject = liveProjects.find(
+    (candidate) => candidate.id === projectId,
+  );
+  // A missing row is meaningful only after discovery finishes. Detail reads
+  // then support existing directories that have never hosted a session.
+  const needsProjectDetail =
+    !collectionProject && (projectCollectionConfirmed || !!projectsError);
+  const {
+    project,
+    loading: detailLoading,
+    error,
+  } = useProject(needsProjectDetail ? projectId : undefined);
+  const confirmedSelectedProject = collectionProject ?? project;
+  const projectLoading =
+    Boolean(projectId) &&
+    !confirmedSelectedProject &&
+    (!needsProjectDetail || detailLoading);
   const selectedProject =
+    confirmedSelectedProject ??
     (projectId
       ? projects.find((candidate) => candidate.id === projectId)
-      : null) ?? project;
-  const recentProjectIds = useMemo(
-    () =>
-      Array.from(new Set(recentSessions.map((session) => session.projectId))),
-    [recentSessions],
+      : null) ??
+    (projectLoading
+      ? cachedProjects.find((candidate) => candidate.id === projectId)
+      : null);
+
+  // Offered only for a project that declares a usable app; there is no turn
+  // here to open it after, so updates need no action.
+  const projectHasApp = useProjectAppUpdates(
+    projectId,
+    projectAppComposingEnabled &&
+      serverHasCapability(version, SERVER_CAPABILITIES.projectService.name),
+    false,
+    ignoreProjectAppUpdate,
   );
+  const projectAppButton = projectHasApp ? (
+    <Link
+      className={`btn-secondary ${styles.appButton}`}
+      to={`${basePath}/projects/${projectId}/app?compose=1`}
+      title={t("projectAppWhileComposing")}
+    >
+      {t("projectAppLabel")}
+    </Link>
+  ) : undefined;
 
   // Update browser tab title (must be called unconditionally before any early returns)
   useDocumentTitle(
@@ -107,47 +185,22 @@ export function NewSessionPage() {
   );
 
   useEffect(() => {
-    if (!projectId || !selectedProject) return;
+    if (!projectId || !confirmedSelectedProject) return;
     setRecentProjectId(projectId);
-  }, [projectId, selectedProject]);
+  }, [projectId, confirmedSelectedProject]);
 
   useEffect(() => {
-    if (
-      projectId ||
-      requestedDetached ||
-      projectsLoading ||
-      projects.length === 0
-    ) {
-      return;
-    }
-
-    const storedRecentProjectId = getRecentProjectId();
-    const hasValidStoredRecentProject = Boolean(
-      storedRecentProjectId &&
-        projects.some((project) => project.id === storedRecentProjectId),
-    );
-    if (recentSessionsLoading && !hasValidStoredRecentProject) {
-      return;
-    }
-
-    const preferredProjectId = resolvePreferredProjectId(
-      projects,
-      recentProjectIds[0],
-    );
-    if (!preferredProjectId) {
+    if (requestedProjectId || requestedDetached || !projectId) {
       return;
     }
 
     const nextParams = new URLSearchParams(searchParams);
-    nextParams.set("projectId", preferredProjectId);
+    nextParams.set("projectId", projectId);
     nextParams.delete(DETACHED_PROJECT_PARAM);
     setSearchParams(nextParams, { replace: true });
   }, [
     projectId,
-    projects,
-    projectsLoading,
-    recentProjectIds,
-    recentSessionsLoading,
+    requestedProjectId,
     requestedDetached,
     searchParams,
     setSearchParams,
@@ -169,7 +222,8 @@ export function NewSessionPage() {
 
   // The composer does not wait for the selected project's record: a tab opened
   // here is for typing, and the form holds the start until the project arrives.
-  const renderError = !selectedProject && !projectLoading ? error : null;
+  const renderError =
+    !confirmedSelectedProject && !projectLoading ? error : null;
 
   if (renderError) {
     return (
@@ -196,27 +250,21 @@ export function NewSessionPage() {
         title={t("newSessionTitle")}
         onOpenSidebar={openSidebar}
         isWideScreen={isWideScreen}
+        actions={projectAppButton}
       />
 
       <main className="page-scroll-container">
         <div className="page-content-inner new-session-page-shell">
-          {projectAppComposingEnabled &&
-            projectId &&
-            serverHasCapability(
-              version,
-              SERVER_CAPABILITIES.projectService.name,
-            ) && (
-              <Link to={`${basePath}/projects/${projectId}/app?compose=1`}>
-                {t("projectAppWhileComposing")}
-              </Link>
-            )}
           <NewSessionForm
             incomingShareFiles={incomingShareFiles}
             projectId={projectId}
             selectedProject={selectedProject}
             projects={projects}
             recentProjectIds={recentProjectIds}
-            projectsLoading={projectsLoading}
+            projectsLoading={projectsLoading && projects.length === 0}
+            unconfirmedProjectIds={unconfirmedProjectIds.filter(
+              (id) => id !== confirmedSelectedProject?.id,
+            )}
             onProjectChange={handleProjectChange}
             preferredProvider={preferredProvider as ProviderName | undefined}
             preferredModel={preferredModel}

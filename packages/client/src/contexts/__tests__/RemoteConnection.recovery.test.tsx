@@ -7,7 +7,13 @@ import {
   screen,
 } from "@testing-library/react";
 import { useEffect, useState, type ReactNode } from "react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useNavigate,
+  useLocation,
+} from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   RemoteConnectionProvider,
@@ -23,8 +29,17 @@ import {
   getSourceRuntimeRegistry,
   resetSourceRuntimeRegistryForTests,
 } from "../../lib/sourceRuntime";
-import { getHostByRelayUsername, upsertRelayHost } from "../../lib/hostStorage";
-import { resolveSourceKeyForSavedHost } from "../../lib/sourceIdentity";
+import {
+  getHostByRelayUsername,
+  upsertRelayHost,
+  loadSavedHosts,
+} from "../../lib/hostStorage";
+import {
+  resolveSourceKeyForSavedHost,
+  resolveSourceKeyForUnsavedScope,
+} from "../../lib/sourceIdentity";
+import { ClientSummarySourceBinding } from "../ClientSummarySourceBinding";
+import { useClientSummarySourceKey } from "../../lib/clientSummaryStore";
 import { createManagedStream } from "../../lib/transport/ManagedStream";
 
 // Mock only the paired socket acquisition and unrelated app shell, not the
@@ -156,6 +171,113 @@ afterEach(() => {
 });
 
 describe("remote recovery ownership", () => {
+  it.each([
+    { endpoint: relayUrl, identity: "another-user" },
+    { endpoint: "wss://another-relay/ws", identity: "test-host" },
+  ])(
+    "temporary relay scope $endpoint / $identity owns its runtime without overwriting saved credentials",
+    async ({ endpoint, identity }) => {
+      let state: ReturnType<typeof useRemoteConnection> | undefined;
+      let navigate: ReturnType<typeof useNavigate> | undefined;
+      function Probe() {
+        state = useRemoteConnection();
+        navigate = useNavigate();
+        const source = useClientSummarySourceKey();
+        const location = useLocation();
+        return (
+          <>
+            <ClientSummarySourceBinding />
+            <output data-testid="source">{source}</output>
+            <output data-testid="location">
+              {location.pathname}
+              {location.search}
+            </output>
+          </>
+        );
+      }
+      render(
+        <MemoryRouter initialEntries={["/login/relay"]}>
+          <RemoteConnectionProvider>
+            <Probe />
+            <Routes>
+              <Route
+                path="/-/relay/:relayUsername"
+                element={<RelayConnectionGate />}
+              >
+                <Route path="inbox" element={<div>Scoped content</div>} />
+              </Route>
+              <Route path="/login/relay" element={<div>Scoped login</div>} />
+            </Routes>
+          </RemoteConnectionProvider>
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await state!.connectViaRelay({
+          relayUrl,
+          relayUsername: "test-host",
+          srpUsername: "test-host",
+          srpPassword: "",
+          session: resumeSession,
+          rememberMe: true,
+        });
+      });
+      const saved = localStorage.getItem("yep-anywhere-saved-hosts");
+      await act(async () => {
+        await state!.connectViaRelay({
+          relayUrl: endpoint,
+          relayUsername: "test-host",
+          srpUsername: identity,
+          srpPassword: "",
+          session: { ...resumeSession, username: identity },
+          rememberMe: false,
+        });
+        navigate!("/-/relay/test-host/inbox");
+      });
+      await flush();
+      const expected = resolveSourceKeyForUnsavedScope({
+        mode: "relay",
+        endpoint,
+        relayUsername: "test-host",
+        identity,
+      });
+      expect(state!.currentHostId).toBeNull();
+      expect(state!.activeSourceKey).toBe(expected);
+      expect(screen.getByTestId("source").textContent).toBe(expected);
+      const transport =
+        getSourceRuntimeRegistry().getOrCreateSourceTransport(expected);
+      await expect(transport.fetch("/api/scope-probe")).resolves.toMatchObject({
+        authenticated: true,
+      });
+      expect(sockets[0]!.sent).not.toContainEqual(
+        expect.objectContaining({ type: "request", path: "/api/scope-probe" }),
+      );
+      expect(sockets[1]!.sent).toContainEqual(
+        expect.objectContaining({ type: "request", path: "/api/scope-probe" }),
+      );
+      expect(localStorage.getItem("yep-anywhere-saved-hosts")).toBe(saved);
+      expect(loadSavedHosts().hosts).toHaveLength(1);
+      act(() => sockets[1]!.close(4001));
+      await flush();
+      expect(state!.connection).toBeNull();
+      expect(state!.activeSourceKey).toBe(expected);
+      expect(screen.getByText("Scoped content")).toBeTruthy();
+      act(() => window.dispatchEvent(new Event("online")));
+      await flush();
+      expect(sockets).toHaveLength(2);
+      expect(state!.autoResumeError?.serverUrl).toBe(endpoint);
+      fireEvent.click(screen.getByRole("button", { name: "hostOfflineRetry" }));
+      await flush();
+      expect(sockets).toHaveLength(2);
+      expect(screen.getByText("Scoped login")).toBeTruthy();
+      const target = screen.getByTestId("location").textContent!;
+      const params = new URLSearchParams(target.split("?")[1]);
+      expect(params.get("r")).toBe(endpoint);
+      expect(params.get("as") ?? "test-host").toBe(identity);
+      expect(localStorage.getItem("yep-anywhere-saved-hosts")).toBe(saved);
+      act(() => sockets[0]!.close());
+    },
+  );
+
   it("retains context, draft and storage across exhausted retries and restores live subscriptions", async () => {
     render(<App />);
     await flush();

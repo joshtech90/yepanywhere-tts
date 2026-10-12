@@ -111,6 +111,7 @@ import { onboardingApi } from "./onboardingClient";
 import { getDesktopAuthToken } from "./plainFetch";
 import { pushApi, pushSettingsApi } from "./pushClient";
 import { recentsApi } from "./recentsClient";
+import { projectsApi } from "./projectsClient";
 import { serverMetadataApi } from "./serverMetadataClient";
 import { fetchJSON } from "./sourceApiFetch";
 import { createSessionApi } from "./sessionClient";
@@ -296,7 +297,7 @@ export function isUnchangedGlobalSessionsResponse(
 export interface SessionOptions {
   routerAccountId?: string;
   routerPoolId?: string;
-  routerPolicy?: "manual" | "round-robin" | "most-remaining";
+  routerPolicy?: string;
   creationProvenance?: SessionCreationProvenance;
   /** @deprecated Old selection is rejected; use machineControl. */
   computerControl?: boolean;
@@ -487,11 +488,7 @@ export const api = {
       models: { id: string; name: string; contextWindow?: number }[];
     }>(`/agent-auth-router/accounts/${encodeURIComponent(id)}/catalog`),
   routerOverview: (
-    body: {
-      poolId?: string;
-      model?: string;
-      policy?: "manual" | "round-robin" | "most-remaining";
-    } = {},
+    body: { poolId?: string; model?: string; policy?: string } = {},
   ) =>
     fetchJSON<AgentAuthRouterOverview>("/agent-auth-router/overview", {
       method: "POST",
@@ -616,7 +613,7 @@ export const api = {
         : undefined,
     ),
 
-  getProjects: () => fetchJSON<{ projects: Project[] }>("/projects"),
+  getProjects: projectsApi.getProjects,
 
   /** Subfolders of a folder on the server host, for the Cockpit's picker. */
   browseDirectories: (path?: string) =>

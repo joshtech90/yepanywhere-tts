@@ -1,9 +1,17 @@
 import {
   SecureConnection,
   type RelaySocketFactory,
+  type SessionEstablishmentKind,
 } from "./connection/SecureConnection";
 import { openRelayClientSocket } from "./connection/RelayClientSocket";
-import { updateHostSession, type SavedHost } from "./hostStorage";
+import { getResumeError } from "./connection/resumeErrors";
+import { scopeForHost, mutateResumeCredentials } from "./rejectedResumeStorage";
+import {
+  beginHostCredentialAttempt,
+  commitHostCredential,
+  isHostCredentialAttemptCurrent,
+  type SavedHost,
+} from "./hostStorage";
 
 export class MultiHostSignInRequiredError extends Error {
   constructor(message: string) {
@@ -14,6 +22,9 @@ export class MultiHostSignInRequiredError extends Error {
 
 export function isSavedHostSignInRequiredError(error: unknown): boolean {
   if (error instanceof MultiHostSignInRequiredError) return true;
+  const resume = getResumeError(error);
+  if (resume)
+    return resume.kind === "rejected" || resume.kind === "incompatible";
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
   return (
@@ -38,10 +49,22 @@ export async function connectSavedHost(
     throw new MultiHostSignInRequiredError("A saved session is required");
   }
 
+  const owner = await mutateResumeCredentials(() => {
+    signal.throwIfAborted();
+    return beginHostCredentialAttempt(scopeForHost(host), session);
+  });
+
   const callbacks = {
     onDisconnect,
-    onSessionEstablished: (nextSession: typeof session) => {
-      updateHostSession(host.id, nextSession);
+    isAttemptCurrent: () =>
+      !signal.aborted && isHostCredentialAttemptCurrent(owner),
+    onSessionEstablished: (
+      nextSession: typeof session,
+      kind: SessionEstablishmentKind,
+    ) => {
+      return mutateResumeCredentials(() => {
+        if (!signal.aborted) commitHostCredential(owner, nextSession, kind);
+      });
     },
   };
 

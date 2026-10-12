@@ -1,5 +1,28 @@
 {
-  "supportedPolicies": ["manual", "round-robin", "most-remaining"],
+  "supportedPolicies": [
+    "manual",
+    "round-robin",
+    "most-remaining",
+    "weekly-pace"
+  ],
+  "policies": [
+    {
+      "id": "manual",
+      "label": "Manual"
+    },
+    {
+      "id": "round-robin",
+      "label": "Round robin"
+    },
+    {
+      "id": "most-remaining",
+      "label": "Most remaining"
+    },
+    {
+      "id": "weekly-pace",
+      "label": "Weekly pace"
+    }
+  ],
   "admissionRefresh": true,
   "canManagePools": false,
   "observedAt": "<timestamp>",

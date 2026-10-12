@@ -692,7 +692,9 @@ export interface AppSessionSummary {
     /** Labels captured from AAR; identity stays the ids. Absent on older pins. */
     poolName?: string;
     accountDisplayName?: string;
-    policy?: "manual" | "round-robin" | "most-remaining";
+    policy?: string;
+    /** The router's display name for `policy`, captured at launch. */
+    policyLabel?: string;
     reason?: string;
     observedAt?: string;
     id: string;

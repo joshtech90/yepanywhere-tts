@@ -60,6 +60,14 @@ describe("a limited user's edits to shared project metadata through the app", ()
     projectMetadataService = new ProjectMetadataService({ dataDir });
     await projectMetadataService.initialize();
 
+    // The superuser's project, in which archer may start sessions.
+    sharedPath = join(testDir, "shared");
+    await mkdir(sharedPath);
+    sharedId = toUrlProjectId(sharedPath);
+    await projectMetadataService.addProject(sharedId, sharedPath);
+    await limitedUsersService.grantNewSessionProject("archer", sharedId);
+
+    // Start discovery after the fixture registration, as a persisted startup.
     instance = createApp({
       sdk: new MockClaudeSDK(),
       dataDir,
@@ -71,13 +79,6 @@ describe("a limited user's edits to shared project metadata through the app", ()
       serverSettingsService,
       projectMetadataService,
     });
-
-    // The superuser's project, in which archer may start sessions.
-    sharedPath = join(testDir, "shared");
-    await mkdir(sharedPath);
-    sharedId = toUrlProjectId(sharedPath);
-    await projectMetadataService.addProject(sharedId, sharedPath);
-    await limitedUsersService.grantNewSessionProject("archer", sharedId);
   });
 
   afterEach(async () => {

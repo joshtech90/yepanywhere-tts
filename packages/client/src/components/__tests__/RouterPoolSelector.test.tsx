@@ -80,10 +80,18 @@ const model = {
   supportsAdaptiveThinking: true,
   supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
 };
+const POLICIES = [
+  { id: "manual", label: "Manual" },
+  { id: "round-robin", label: "Round robin" },
+  { id: "most-remaining", label: "Most remaining" },
+  { id: "weekly-pace", label: "Weekly pace" },
+];
 function overview(): AgentAuthRouterOverview {
   return {
     observedAt: "now",
     quotaFreshSeconds: 120,
+    supportedPolicies: POLICIES.map((p) => p.id),
+    policies: POLICIES,
     pools: [
       {
         id: "work",
@@ -181,8 +189,8 @@ it("lists Direct first and every pool with its policy and compatible count, disa
   ]);
   expect(options.map((o) => o.title)).toEqual([
     "routerDirectDescription",
-    "routerPoolMostRemaining · routerPoolCompatibleAccounts",
-    "routerPoolRoundRobin · routerReasonNoAccountOffers",
+    "Most remaining · routerPoolCompatibleAccounts",
+    "Round robin · routerReasonNoAccountOffers",
   ]);
   expect(options.map((o) => (o as HTMLButtonElement).disabled)).toEqual([
     false,
@@ -202,7 +210,7 @@ it("lists Direct first and every pool with its policy and compatible count, disa
   fireEvent.click(options[0]!);
   expect(change).toHaveBeenLastCalledWith(null);
 });
-it("keeps an unavailable selection and offers manual account choice only for multiple compatible members", () => {
+it("offers the pool default, the router's other policies and each account in any pool, and keeps an unavailable selection", () => {
   const data = overview(),
     change = vi.fn();
   const props = {
@@ -222,28 +230,55 @@ it("keeps an unavailable selection and offers manual account choice only for mul
   expect(
     dropdown("routerPool").getByTestId("filter-selected").textContent,
   ).toBe("work");
-  expect(screen.queryByTestId("filter-routerAccount")).toBeNull();
+  // An automatic pool: its default first, then other policies, then accounts.
+  const choices = () => dropdown("routerAccount").getAllByRole("button");
+  expect(choices().map((o) => [o.textContent, o.title])).toEqual([
+    ["Most remaining", "routerPolicyPoolDefault"],
+    ["Round robin", ""],
+    ["Weekly pace", ""],
+    ["routerAccountNumberrouterQuotaNotObserved", ""],
+    ["routerAccountNumberrouterQuotaNotObserved", ""],
+  ]);
+  expect(
+    dropdown("routerAccount").getByTestId("filter-selected").textContent,
+  ).toBe("policy:most-remaining");
+  fireEvent.click(choices()[2]!);
+  expect(change).toHaveBeenLastCalledWith({
+    ...props.value,
+    accountId: "",
+    policy: "weekly-pace",
+  });
+  fireEvent.click(choices()[4]!);
+  expect(change).toHaveBeenLastCalledWith({
+    ...props.value,
+    accountId: "b",
+    policy: undefined,
+  });
+  fireEvent.click(choices()[0]!);
+  expect(change).toHaveBeenLastCalledWith({
+    ...props.value,
+    accountId: "",
+    policy: undefined,
+  });
+  // A Manual default needs a pick unless only one account fits.
   data.pools[0]!.policy = "manual";
   view.rerender(<RouterPoolSelector {...props} />);
-  expect(
-    dropdown("routerAccount")
-      .getAllByRole("button")
-      .map((o) => o.textContent),
-  ).toEqual([
+  expect(choices().map((o) => o.textContent)).toEqual([
+    "Round robin",
+    "Most remaining",
+    "Weekly pace",
     "routerAccountNumberrouterQuotaNotObserved",
     "routerAccountNumberrouterQuotaNotObserved",
   ]);
-  fireEvent.click(dropdown("routerAccount").getAllByRole("button")[1]!);
-  expect(change).toHaveBeenLastCalledWith({
-    sourceKey: "local",
-    poolId: "work",
-    accountId: "b",
-  });
+  expect(
+    dropdown("routerAccount").getByTestId("filter-selected").textContent,
+  ).toBe("");
   data.accounts[1]!.enabled = false;
   view.rerender(<RouterPoolSelector {...props} />);
-  const accounts = dropdown("routerAccount").getAllByRole("button");
   expect(
-    accounts.map((o) => [o.title, (o as HTMLButtonElement).disabled]),
+    choices()
+      .slice(3)
+      .map((o) => [o.title, (o as HTMLButtonElement).disabled]),
   ).toEqual([
     ["", false],
     ["routerReasonDisabled", true],
@@ -265,7 +300,7 @@ it("keeps an unavailable selection and offers manual account choice only for mul
   expect(screen.getByRole("status").textContent).toBe(
     "routerSelectionUnavailable",
   );
-  expect(change).toHaveBeenCalledTimes(1);
+  expect(change).toHaveBeenCalledTimes(3);
 });
 it("shows discovery failure with Retry, and progress while checking", () => {
   const retry = vi.fn();
@@ -441,17 +476,15 @@ it("explains a pool no account can serve", () => {
   const workOption = () =>
     dropdown("routerPool").getByRole("button", { name: "Work" });
   expect(workOption().title).toBe(
-    "routerPoolMostRemaining · routerReasonNoAccountSupportsEffort",
+    "Most remaining · routerReasonNoAccountSupportsEffort",
   );
   expect(workOption()).toHaveProperty("disabled", true);
   view.rerender(<RouterPoolSelector {...props} model={null} />);
-  expect(workOption().title).toBe(
-    "routerPoolMostRemaining · routerReasonChooseModel",
-  );
+  expect(workOption().title).toBe("Most remaining · routerReasonChooseModel");
   for (const a of data.accounts) a.enabled = false;
   view.rerender(<RouterPoolSelector {...props} />);
   expect(workOption().title).toBe(
-    "routerPoolMostRemaining · routerReasonNoEnabledAccounts",
+    "Most remaining · routerReasonNoEnabledAccounts",
   );
 });
 const quotaWindow = (
@@ -508,9 +541,7 @@ it("shows every cached quota window per account and the best remaining per pool"
   expect(tightestRemaining(data.accounts[1]!, "claude-opus-4-8")).toBe(40);
   expect(
     dropdown("routerPool").getByRole("button", { name: "Work" }).title,
-  ).toBe(
-    "routerPoolManual · routerPoolCompatibleAccounts · routerPoolBestRemaining",
-  );
+  ).toBe("Manual · routerPoolCompatibleAccounts · routerPoolBestRemaining");
   const metas = dropdown("routerAccount").getAllByTestId("meta");
   expect(metas.map((m) => m.textContent)).toEqual([
     "routerQuotaLinerouterQuotaLinerouterQuotaLine",
@@ -567,7 +598,8 @@ it("labels a session pin by saved names and never shows the account id", () => {
     accountId: "b9e7a2a3-d2a2-40b7-b000-000000000000",
     provider: "claude" as const,
     poolId: "pool",
-    policy: "round-robin" as const,
+    policy: "round-robin",
+    policyLabel: "Round robin",
     reason: "Round robin among eligible accounts",
   };
   const named = routerBindingChip(t, {
@@ -580,15 +612,20 @@ it("labels a session pin by saved names and never shows the account id", () => {
     "routerChipTooltipTitle",
     "routerChipTooltipPool:work-claude",
     "routerChipTooltipAccount:Alice",
-    "routerChipTooltipPolicy:routerPoolRoundRobin",
+    "routerChipTooltipPolicy:Round robin",
     "Round robin among eligible accounts",
     "routerChipTooltipOpen",
   ]);
   // Pins saved before names were kept: the id stays in the tooltip only.
   const legacy = routerBindingChip(t, pin);
-  expect(legacy.label).toBe("routerPoolRoundRobin");
-  expect(legacy.tooltip).toContain(pin.accountId);
-  expect(routerBindingChip(t, { ...pin, policy: undefined }).label).toBe(
-    "routerChipFallback",
+  expect(legacy.label).toBe("Round robin");
+  // Pins saved before labels were kept show the policy id.
+  expect(routerBindingChip(t, { ...pin, policyLabel: undefined }).label).toBe(
+    "round-robin",
   );
+  expect(legacy.tooltip).toContain(pin.accountId);
+  expect(
+    routerBindingChip(t, { ...pin, policy: undefined, policyLabel: undefined })
+      .label,
+  ).toBe("routerChipFallback");
 });

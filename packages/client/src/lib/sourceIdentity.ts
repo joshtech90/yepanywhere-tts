@@ -25,6 +25,7 @@ import {
   createClientSummaryDirectSourceKey,
   createClientSummaryHostSourceKey,
 } from "./clientSummaryStore";
+import { resumeScopeKey, type ResumeScope } from "./rejectedResumeStorage";
 import type { SavedHost } from "./hostStorage";
 
 export function createServerInstanceSourceKey(
@@ -57,4 +58,11 @@ function normalizeDirectSourceUrl(wsUrl: string): string {
   } catch {
     return trimmed;
   }
+}
+
+/** Temporary browser connections never borrow another principal's runtime. */
+export function resolveSourceKeyForUnsavedScope(
+  scope: ResumeScope,
+): ClientSummarySourceKey {
+  return asClientSummarySourceKey(`remote:${resumeScopeKey(scope)}`);
 }

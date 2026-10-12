@@ -27,6 +27,7 @@ import { ProjectQueueService } from "../src/services/ProjectQueueService.js";
 import { RecentsService } from "../src/recents/RecentsService.js";
 import { ProjectGlossarySubscriptionManager } from "../src/projects/projectGlossarySubscriptionManager.js";
 import { SessionMetadataService } from "../src/metadata/SessionMetadataService.js";
+import { DiscoverySqliteService } from "../src/storage/discovery-sqlite.js";
 
 const username = process.env.YA_NATIVE_PROBE_USERNAME;
 const password = process.env.YA_NATIVE_PROBE_PASSWORD;
@@ -155,7 +156,11 @@ const projectQueueService = new ProjectQueueService({
   attachmentStagingService,
 });
 const recentsService = new RecentsService({ dataDir });
-const sessionMetadataService = new SessionMetadataService({ dataDir });
+const discoverySqlite = new DiscoverySqliteService({ dataDir });
+const sessionMetadataService = new SessionMetadataService({
+  dataDir,
+  database: discoverySqlite.getDatabase(),
+});
 await Promise.all([
   attachmentStagingService.initialize(),
   serverSettingsService.initialize(),
@@ -179,6 +184,7 @@ const {
   glossaryIndexService,
 } = createApp({
   dataDir,
+  discoverySqlite,
   getCatalogFamilies: () => install.getCatalogFamilies(),
   sdk: new MockClaudeSDK(),
   projectsDir,

@@ -150,8 +150,8 @@ it("indexes Codex visible user/assistant text with stable source identity and ex
 });
 it("automatically drains a durable recent queue larger than its in-memory batch and preserves state on restart", async () => {
   const dir = directory();
-  const service = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
-  const store = new IssueStore(service.getDatabase()!, () => ({
+  const service = new DiscoverySqliteService({ dataDir: dir });
+  const store = new IssueStore(service.getDatabase(), () => ({
     enabled: true,
     scope: "viewed",
     recentDays: 7,
@@ -217,9 +217,8 @@ it("automatically drains a durable recent queue larger than its in-memory batch 
 it("automatic viewed windows need no registered issues and disable fences delayed writes", async () => {
   const service = new DiscoverySqliteService({
     dataDir: directory(),
-    mode: "auto",
   });
-  const store = new IssueStore(service.getDatabase()!, () => ({
+  const store = new IssueStore(service.getDatabase(), () => ({
     enabled: true,
     scope: "viewed",
     recentDays: 7,
@@ -337,9 +336,8 @@ it("retains ordinal identity across frozen Codex lineage segments", async () => 
 it("deletion fences an in-flight batch without losing other references in the same session", async () => {
   const service = new DiscoverySqliteService({
     dataDir: directory(),
-    mode: "auto",
   });
-  const store = new IssueStore(service.getDatabase()!, () => ({
+  const store = new IssueStore(service.getDatabase(), () => ({
     enabled: true,
     scope: "viewed",
     recentDays: 7,
@@ -403,8 +401,8 @@ it("deletion fences an in-flight batch without losing other references in the sa
 });
 it("sweeps a catalog for moved projects without a write transaction per session", async () => {
   const dir = directory();
-  const service = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
-  const database = service.getDatabase()!;
+  const service = new DiscoverySqliteService({ dataDir: dir });
+  const database = service.getDatabase();
   let transactions = 0;
   // SQLite takes a file lock per transaction, and on a network data directory
   // each lock is a round trip on the event loop, so the count itself is the
@@ -485,9 +483,8 @@ it("re-admits an unchanged recent catalog without a write per session", {
 }, async () => {
   const service = new DiscoverySqliteService({
     dataDir: directory(),
-    mode: "auto",
   });
-  const database = service.getDatabase()!;
+  const database = service.getDatabase();
   let writes = 0;
   let admissions = 0;
   // Recent scope admits every recent session on every publication, and the
@@ -575,14 +572,13 @@ it("re-admits an unchanged recent catalog without a write per session", {
 it("re-queues a paused job when the catalog admits it again", async () => {
   const service = new DiscoverySqliteService({
     dataDir: directory(),
-    mode: "auto",
   });
   const settings: IssueSettings = {
     enabled: true,
     scope: "recent",
     recentDays: 60,
   };
-  const store = new IssueStore(service.getDatabase()!, () => settings);
+  const store = new IssueStore(service.getDatabase(), () => settings);
   // Thirty days old, so only the wide window admits it.
   const row = {
     sessionId: "s",
@@ -634,8 +630,8 @@ it("re-queues a paused job when the catalog admits it again", async () => {
 });
 it("skips a republished catalog that has not changed, and still sweeps on demand", async () => {
   const dir = directory();
-  const service = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
-  const store = new IssueStore(service.getDatabase()!, () => ({
+  const service = new DiscoverySqliteService({ dataDir: dir });
+  const store = new IssueStore(service.getDatabase(), () => ({
     enabled: true,
     scope: "viewed",
     recentDays: 7,
@@ -699,9 +695,8 @@ it("reads a reference straddling a capture chunk boundary", async () => {
   const text = `${"x".repeat(32 * 1024 - 6)} https://github.com/a/b/pull/42 tail`;
   const service = new DiscoverySqliteService({
     dataDir: directory(),
-    mode: "auto",
   });
-  const store = new IssueStore(service.getDatabase()!, () => ({
+  const store = new IssueStore(service.getDatabase(), () => ({
     enabled: true,
     scope: "viewed",
     recentDays: 7,

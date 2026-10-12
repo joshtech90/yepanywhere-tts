@@ -8,7 +8,7 @@ import { AuthService } from "../../src/auth/AuthService.js";
 import { LimitedUsersService } from "../../src/auth/LimitedUsersService.js";
 import { SESSION_COOKIE_NAME } from "../../src/auth/routes.js";
 import { ProjectMetadataService } from "../../src/metadata/ProjectMetadataService.js";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
+import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import {
   encodeProjectId,
   DETACHED_PROJECT_PATH,
@@ -25,6 +25,10 @@ import type {
   SessionLaunchOptions,
 } from "../../src/supervisor/Supervisor.js";
 import { createApp } from "../setup/create-app.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 /**
  * The preparation session a template creation launches is a session its
@@ -67,7 +71,7 @@ beforeEach(async () => {
   await serverSettingsService.updateSettings({ limitedUsersEnabled: true });
   const projectMetadataService = new ProjectMetadataService({ dataDir });
   await projectMetadataService.initialize();
-  sessionMetadataService = new SessionMetadataService({ dataDir });
+  sessionMetadataService = createTestSessionMetadataService(dataDir);
   await sessionMetadataService.initialize();
 
   instance = createApp({
@@ -115,6 +119,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks();
   await instance.disposeSessionReaders();
+  closeTestDiscoveryDatabases();
   await rm(root, { recursive: true, force: true });
 });
 

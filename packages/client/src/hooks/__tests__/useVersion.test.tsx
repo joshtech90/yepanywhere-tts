@@ -1,14 +1,28 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VersionInfo } from "../../api/client";
+import {
+  encodeVersionedServerCapabilities,
+  SERVER_CAPABILITIES,
+} from "@yep-anywhere/shared";
+import { getSourceRuntimeRegistry } from "../../lib/sourceRuntime";
+import { resetClientQueryBootstrapForTests } from "../../lib/clientQueryBootstrap";
+import { primeLocalProjects, useProjects } from "../useProjects";
+import {
+  resetRecentSessionsForTests,
+  primeLocalRecentSessions,
+  useRecentSessions,
+} from "../useRecentSessions";
 import { resetClientQueryControllerForTests } from "../../lib/clientQueryController";
 import {
   asClientSummarySourceKey,
+  LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
   resetClientSummaryStoreForTests,
   setCurrentClientSummarySourceKey,
 } from "../../lib/clientSummaryStore";
 import {
   ensureVersionInfo,
+  primeLocalVersion,
   resetVersionSnapshotsForTests,
   useVersion,
 } from "../useVersion";
@@ -48,7 +62,12 @@ vi.mock("../../api/client", () => ({
 }));
 
 vi.mock("../../lib/activityBus", () => ({
-  activityBus: { on: mocks.activityBus.on },
+  activityBus: {
+    on: mocks.activityBus.on,
+    onSource: (_sourceKey: string, event: string, handler: () => void) =>
+      mocks.activityBus.on(event, handler),
+    retainSourceStream: () => () => {},
+  },
 }));
 
 vi.mock("../../lib/connection", () => ({
@@ -94,6 +113,8 @@ beforeEach(() => {
   vi.setSystemTime(0);
   resetClientSummaryStoreForTests();
   resetClientQueryControllerForTests();
+  resetClientQueryBootstrapForTests();
+  resetRecentSessionsForTests();
   resetVersionSnapshotsForTests();
   setCurrentClientSummarySourceKey(SOURCE_A);
   mocks.getVersion.mockReset();
@@ -107,6 +128,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+  resetClientQueryBootstrapForTests();
+  resetRecentSessionsForTests();
   resetVersionSnapshotsForTests();
   resetClientQueryControllerForTests();
   resetClientSummaryStoreForTests();
@@ -114,6 +138,143 @@ afterEach(() => {
 });
 
 describe("useVersion", () => {
+  it.each([false, true])(
+    "shares the local pre-mount version read (resolved=%s)",
+    async (resolved) => {
+      setCurrentClientSummarySourceKey(LOCAL_CLIENT_SUMMARY_SOURCE_KEY);
+      let release!: (version: VersionInfo) => void;
+      mocks.getVersion.mockImplementationOnce(
+        () =>
+          new Promise<VersionInfo>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const priming = primeLocalVersion();
+      await settle();
+      expect(mocks.getVersion).toHaveBeenCalledTimes(1);
+      if (resolved) {
+        release(versionInfo());
+        await priming;
+      }
+      const mounted = renderHook(() => useVersion());
+      await settle();
+      expect(mocks.getVersion).toHaveBeenCalledTimes(1);
+      if (!resolved)
+        await act(async () => {
+          release(versionInfo());
+          await priming;
+        });
+      await settle();
+      expect(mounted.result.current.version).toEqual(versionInfo());
+      expect(mocks.getVersion).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([false, true])(
+    "shares pre-mount collection reads (resolved=%s)",
+    async (resolved) => {
+      setCurrentClientSummarySourceKey(LOCAL_CLIENT_SUMMARY_SOURCE_KEY);
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const fetch = vi
+        .spyOn(
+          getSourceRuntimeRegistry().getOrCreateSourceRuntime(
+            LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+          ).transport,
+          "fetch",
+        )
+        .mockImplementation(async (url) => {
+          await pending;
+          if (url === "/projects?summaryMode=retained") return { projects: [] };
+          if (url === "/recents?limit=100&summaryMode=retained")
+            return { recents: [] };
+          throw new Error(`Unexpected collection request: ${url}`);
+        });
+      const priming = Promise.all([
+        primeLocalProjects(),
+        primeLocalRecentSessions(),
+      ]);
+      await settle();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      if (resolved) {
+        release();
+        await priming;
+      }
+      const projects = renderHook(() =>
+        useProjects({ bootstrapTier: "route" }),
+      );
+      const recents = renderHook(() => useRecentSessions());
+      await settle();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      if (!resolved)
+        await act(async () => {
+          release();
+          await priming;
+        });
+      await settle();
+      expect(projects.result.current.complete).toBe(true);
+      expect(projects.result.current.error).toBeNull();
+      expect(recents.result.current.isLoadingVisits).toBe(false);
+      expect(recents.result.current.error).toBeNull();
+      expect(mocks.getVersion).not.toHaveBeenCalled();
+    },
+  );
+
+  it("loads projects and recent visits while version acquisition is unresolved", async () => {
+    let resolveVersion!: (version: VersionInfo) => void;
+    mocks.getVersion.mockImplementationOnce(
+      () =>
+        new Promise<VersionInfo>((resolve) => {
+          resolveVersion = resolve;
+        }),
+    );
+    const recent = {
+      sessionId: "recent",
+      projectId: "project",
+      projectName: "Project",
+      provider: "claude",
+      visitedAt: "2026-10-09T00:00:00Z",
+      title: "Recent",
+    };
+    const project = {
+      id: "project",
+      path: "/project",
+      name: "Project",
+      sessionCount: 1,
+      activeOwnedCount: 0,
+      activeExternalCount: 0,
+      projectQueueBlockingCount: 0,
+      lastActivity: recent.visitedAt,
+    };
+    const fetch = vi
+      .spyOn(
+        getSourceRuntimeRegistry().getOrCreateSourceRuntime(SOURCE_A).transport,
+        "fetch",
+      )
+      .mockImplementation(async (url) => {
+        if (url === "/projects?summaryMode=retained")
+          return { projects: [project] };
+        if (url === "/recents?limit=100&summaryMode=retained")
+          return { recents: [recent] };
+        throw new Error(`Unexpected collection request: ${url}`);
+      });
+    const version = renderHook(() => useVersion());
+    const projects = renderHook(() => useProjects({ bootstrapTier: "route" }));
+    const recents = renderHook(() => useRecentSessions());
+    await settle();
+    expect(mocks.getVersion).toHaveBeenCalledTimes(1);
+    expect(version.result.current.version).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(projects.result.current.projects).toMatchObject([project]);
+    expect(projects.result.current.complete).toBe(true);
+    expect(recents.result.current.recentProjectIds).toEqual(["project"]);
+    expect(recents.result.current.isLoadingVisits).toBe(false);
+    await act(async () => resolveVersion(versionInfo({ current: "0.9.2" })));
+    await settle();
+  });
+
   it("shares cold capability acquisition with navigation and later version consumers", async () => {
     let results: unknown[] = [];
     await act(async () => {
@@ -127,6 +288,45 @@ describe("useVersion", () => {
     await settle();
     expect(mocks.getVersion).toHaveBeenCalledTimes(1);
   });
+  it.each([
+    { current: "0.9.2" },
+    {
+      current: "0.9.4",
+      ...encodeVersionedServerCapabilities([], "0.9.4", [
+        SERVER_CAPABILITIES.retainedProjects.name,
+        SERVER_CAPABILITIES.retainedRecents.name,
+      ]),
+    },
+  ])(
+    "honors known absent or withdrawn collection capabilities: %j",
+    async (facts) => {
+      mocks.getVersion.mockResolvedValue(versionInfo(facts));
+      await act(async () => {
+        await ensureVersionInfo(SOURCE_A);
+      });
+      const fetch = vi
+        .spyOn(
+          getSourceRuntimeRegistry().getOrCreateSourceRuntime(SOURCE_A)
+            .transport,
+          "fetch",
+        )
+        .mockImplementation(async (url) => {
+          if (url === "/projects") return { projects: [] };
+          if (url === "/recents?limit=100") return { recents: [] };
+          throw new Error(`Unexpected collection request: ${url}`);
+        });
+      const projects = renderHook(() =>
+        useProjects({ bootstrapTier: "route" }),
+      );
+      const recents = renderHook(() => useRecentSessions());
+      await settle();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(projects.result.current.complete).toBe(true);
+      expect(projects.result.current.error).toBeNull();
+      expect(recents.result.current.isLoadingVisits).toBe(false);
+      expect(recents.result.current.error).toBeNull();
+    },
+  );
   it("shares one request across simultaneously mounted consumers", async () => {
     mocks.getVersion.mockResolvedValue(
       versionInfo({

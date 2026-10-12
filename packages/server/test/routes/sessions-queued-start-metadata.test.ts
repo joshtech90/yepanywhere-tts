@@ -9,7 +9,7 @@ import {
   PRINCIPAL_VARIABLE,
   type Principal,
 } from "../../src/auth/principal.js";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
+import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { encodeProjectId } from "../../src/projects/paths.js";
 import {
   createSessionsRoutes,
@@ -22,6 +22,10 @@ import {
   Supervisor,
 } from "../../src/supervisor/Supervisor.js";
 import type { Project } from "../../src/supervisor/types.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 /**
  * A session start that waits for a free worker records the same launch
@@ -52,12 +56,13 @@ describe("a session start that waits for a worker", () => {
       lastActivity: null,
       provider: "claude",
     };
-    metadata = new SessionMetadataService({ dataDir: join(root, "data") });
+    metadata = createTestSessionMetadataService(join(root, "data"));
     await metadata.initialize();
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    closeTestDiscoveryDatabases();
     await rm(root, { recursive: true, force: true });
   });
 

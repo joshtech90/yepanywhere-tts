@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
+import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { encodeProjectId } from "../../src/projects/paths.js";
 import {
   createSessionsRoutes,
@@ -22,6 +22,10 @@ import { MockClaudeSDK } from "../../src/sdk/mock.js";
 import { SessionReader } from "../../src/sessions/reader.js";
 import { Supervisor } from "../../src/supervisor/Supervisor.js";
 import type { Project } from "../../src/supervisor/types.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 /**
  * A clone of a sandboxed Claude session stays inside the source's settled
@@ -70,7 +74,7 @@ describe.skipIf(process.platform !== "linux")(
           message: { role: "user", content: "Build the canvas" },
         })}\n`,
       );
-      metadata = new SessionMetadataService({ dataDir });
+      metadata = createTestSessionMetadataService(dataDir);
       await metadata.initialize();
       await metadata.setSessionSandbox("source-session", {
         level: "project-write",
@@ -94,6 +98,7 @@ describe.skipIf(process.platform !== "linux")(
     });
 
     afterEach(async () => {
+      closeTestDiscoveryDatabases();
       await rm(root, { recursive: true, force: true });
     });
 

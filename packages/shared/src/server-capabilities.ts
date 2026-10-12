@@ -72,6 +72,11 @@ export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
     index: CAPABILITY_ID_ALLOCATIONS.vhostBearerAccess.id,
     introducedIn: "0.8.2",
   },
+  vhostOauthAccess: {
+    name: "vhost-oauth-access",
+    index: CAPABILITY_ID_ALLOCATIONS.vhostOauthAccess.id,
+    introducedIn: "0.9.4",
+  },
   vhostAppControl: {
     name: "vhost-app-control",
     index: CAPABILITY_ID_ALLOCATIONS.vhostAppControl.id,
@@ -302,13 +307,14 @@ export const SERVER_CAPABILITIES = {
       index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterMostRemaining.id,
     },
     description:
-      "Negotiates Most remaining with AAR and reports admission refresh and policy evidence.",
+      "Passes AAR's own policy list and labels through, accepts any router policy as a per-session override, and reports admission refresh and policy evidence.",
     clientFallback:
-      "Keep Manual and Round robin; hide Most remaining and refuse unsupported pool defaults with upgrade guidance.",
+      "Offer the policies the server reports; a server without this bit may refuse an override at launch.",
     serverContract: {
-      requestFields: ["routerPolicy: most-remaining"],
+      requestFields: ["routerPolicy"],
       responseFields: [
         "supportedPolicies",
+        "policies",
         "admissionRefresh",
         "selection.decisions.evidence",
       ],
@@ -1721,6 +1727,61 @@ export const SERVER_CAPABILITIES = {
       reason: "Bearer enforcement and management must roll out together.",
     },
   },
+  vhostOauthAccess: {
+    id: CAPABILITY_ID_ALLOCATIONS.vhostOauthAccess.id,
+    name: "vhost-oauth-access",
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.9.4",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.vhostOauthAccess.id,
+    },
+    description:
+      "Public vhost OAuth admission with one shared provider, email allowlists and access logs.",
+    clientFallback:
+      "Hide OAuth controls and logs; make no OAuth management requests.",
+    serverContract: {
+      routes: [
+        "GET /api/artifacts/vhosts/oauth",
+        "PUT /api/artifacts/vhosts/oauth",
+        "PUT /api/artifacts/vhosts/oauth/enabled",
+        "PUT /api/artifacts/vhosts/:name/oauth",
+        "GET /api/artifacts/vhosts/oauth/log",
+      ],
+      routeModules: ["packages/server/src/routes/vhostOauth.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Sign-in enforcement and its settings must be available together.",
+    },
+  },
+  vhostOauthProviders: {
+    id: CAPABILITY_ID_ALLOCATIONS.vhostOauthProviders.id,
+    name: "vhost-oauth-providers",
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Independently managed hosted sign-in providers and visitor provider selection.",
+    clientFallback:
+      "Keep the single-provider form and make no provider-list management requests.",
+    serverContract: {
+      routes: [
+        "PUT /api/artifacts/vhosts/oauth/providers/:id",
+        "PUT /api/artifacts/vhosts/oauth/providers/:id/enabled",
+        "DELETE /api/artifacts/vhosts/oauth/providers/:id",
+      ],
+      routeModules: ["packages/server/src/routes/vhostOauthProviders.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Provider configuration and selection must be supported together.",
+    },
+  },
   vhostAppControl: {
     id: CAPABILITY_ID_ALLOCATIONS.vhostAppControl.id,
     name: "vhost-app-control",
@@ -1947,6 +2008,72 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Independently updated clients and servers retain the complete-list fallback.",
+    },
+  },
+  retainedRecents: {
+    id: CAPABILITY_ID_ALLOCATIONS.retainedRecents.id,
+    name: "retained-recents",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Recent visits read the retained session catalog without foreground provider discovery.",
+    clientFallback: "Omit summaryMode and use the complete recents response.",
+    serverContract: {
+      routes: ["GET /api/recents"],
+      requestFields: ["summaryMode"],
+      responseFields: ["catalog", "visits"],
+      events: ["session-catalog-updated", "recents-changed"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers retain the complete-request recents path.",
+    },
+  },
+  retainedProjects: {
+    id: CAPABILITY_ID_ALLOCATIONS.retainedProjects.id,
+    name: "retained-projects",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Project collections return retained discovery without foreground transcript scans.",
+    clientFallback: "Omit summaryMode and use complete project enumeration.",
+    serverContract: {
+      routes: ["GET /api/projects"],
+      requestFields: ["summaryMode"],
+      responseFields: ["catalog"],
+      events: ["projects-changed"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers retain the complete-request project path.",
+    },
+  },
+  providerDescriptors: {
+    id: CAPABILITY_ID_ALLOCATIONS.providerDescriptors.id,
+    name: "provider-descriptors",
+    kind: "transitional",
+    area: "providers",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Enumerates exposed provider identities without installation, authentication or model discovery.",
+    clientFallback:
+      "Use the complete providers response and make no descriptor request.",
+    serverContract: {
+      routes: ["GET /api/providers/descriptors"],
+      responseFields: ["providers.name", "providers.displayName"],
+    },
+    lifecycle: {
+      kind: "transitional",
+      reviewAfter: "2026-12-09",
+      removeClientGateWhen:
+        "The core 60-day stable support corpus provides descriptors and the Maintainer approves removal.",
+      removeServerAdvertisementWhen:
+        "No maintained client branches on provider-descriptors.",
     },
   },
   projectDirectoryStoragePolicy: {

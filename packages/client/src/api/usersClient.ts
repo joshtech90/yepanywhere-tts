@@ -1,3 +1,4 @@
+import { eraseTabCredential } from "../lib/hostStorage";
 import type {
   ActingPrincipal,
   LimitedUserLock,
@@ -6,6 +7,7 @@ import type {
   TemplateCreationGrant,
   UsageReport,
 } from "@yep-anywhere/shared";
+import { forgetRetainedResumes } from "../lib/rejectedResumeStorage";
 import { fetchJSON } from "./sourceApiFetch";
 
 /** Fields the superuser may set when creating or editing a limited user. */
@@ -61,9 +63,16 @@ export const usersApi = {
     }),
 
   /** End the acting identity; the reply says where this client should go. */
-  logoutUser: () =>
-    fetchJSON<{
-      success: boolean;
-      redirect: "relay-login" | "direct-login" | "stay";
-    }>("/users/logout", { method: "POST" }),
+  logoutUser: async () => {
+    forgetRetainedResumes();
+    // Bind the request to the current source before waiting for another tab's lock.
+    const [, response] = await Promise.all([
+      eraseTabCredential(),
+      fetchJSON<{
+        success: boolean;
+        redirect: "relay-login" | "direct-login" | "stay";
+      }>("/users/logout", { method: "POST" }),
+    ]);
+    return response;
+  },
 };

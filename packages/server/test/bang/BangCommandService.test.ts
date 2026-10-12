@@ -11,11 +11,15 @@ import * as path from "node:path";
 import { Writable } from "node:stream";
 import type { BangCommandTranscriptDisplayObject } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
+import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import {
   BangCommandService,
   type BangCommandServiceOptions,
 } from "../../src/services/BangCommandService.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 const SESSION = "session-1";
 
@@ -63,13 +67,14 @@ beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "ya-bang-data-"));
   projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "ya-bang-proj-"));
   vi.stubEnv("HOME", dataDir);
-  metadata = new SessionMetadataService({ dataDir });
+  metadata = createTestSessionMetadataService(dataDir);
   await metadata.initialize();
   events = [];
 });
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  closeTestDiscoveryDatabases();
   await fs.rm(dataDir, { recursive: true, force: true });
   await fs.rm(projectDir, { recursive: true, force: true });
 });
@@ -469,7 +474,7 @@ describe("BangCommandService", () => {
       cwd: projectDir,
       status: "running",
     });
-    const reloaded = new SessionMetadataService({ dataDir });
+    const reloaded = createTestSessionMetadataService(dataDir);
     await reloaded.initialize();
     const recovered = reloaded
       .getTranscriptDisplayObjects(SESSION)

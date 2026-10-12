@@ -3,7 +3,7 @@ import { mkdir, realpath, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toUrlProjectId } from "@yep-anywhere/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppResult } from "../../src/app.js";
 import { AuthService } from "../../src/auth/AuthService.js";
 import { LimitedUsersService } from "../../src/auth/LimitedUsersService.js";
@@ -162,20 +162,37 @@ describe("a limited user's project creation through the app", () => {
     await expect(stat(join(outside, "missing"))).rejects.toThrow();
   });
 
-  it("refuses to claim a project the superuser already added under its root", async () => {
-    const projectPath = join(root, "shared");
-    await mkdir(projectPath);
-    const projectId = toUrlProjectId(projectPath);
-    await projectMetadataService.addProject(projectId, projectPath);
+  it.each(["before discovery", "during preparation"])(
+    "refuses to claim a project registered %s",
+    async (timing) => {
+      const projectPath = join(root, "shared");
+      await mkdir(projectPath);
+      const projectId = toUrlProjectId(projectPath);
+      expect(await instance.scanner.getProject(projectId)).toBeNull();
+      if (timing === "before discovery") {
+        await projectMetadataService.addProject(projectId, projectPath);
+      } else {
+        const getOrCreate = instance.scanner.getOrCreateProject.bind(
+          instance.scanner,
+        );
+        vi.spyOn(instance.scanner, "getOrCreateProject").mockImplementationOnce(
+          async (id) => {
+            const project = await getOrCreate(id);
+            await projectMetadataService.addProject(projectId, projectPath);
+            return project;
+          },
+        );
+      }
 
-    expect((await addProject(projectPath)).status).toBe(403);
-    expect(
-      projectMetadataService.getMetadata(projectId)?.ownerUsername,
-    ).toBeUndefined();
-    expect(
-      limitedUsersService.getActiveGrants("archer")?.newSessionProjects,
-    ).toEqual([]);
-  });
+      expect((await addProject(projectPath)).status).toBe(403);
+      expect(
+        projectMetadataService.getMetadata(projectId)?.ownerUsername,
+      ).toBeUndefined();
+      expect(
+        limitedUsersService.getActiveGrants("archer")?.newSessionProjects,
+      ).toEqual([]);
+    },
+  );
 
   it("refuses to bring back a project the superuser hid", async () => {
     const projectPath = join(root, "retired");

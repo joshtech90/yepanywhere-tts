@@ -8,13 +8,16 @@ import type { AppResult } from "../../src/app.js";
 import { AuthService } from "../../src/auth/AuthService.js";
 import { LimitedUsersService } from "../../src/auth/LimitedUsersService.js";
 import { SESSION_COOKIE_NAME } from "../../src/auth/routes.js";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { MockClaudeSDK } from "../../src/sdk/mock.js";
 import { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
 import { SessionCatalogService } from "../../src/services/SessionCatalogService.js";
 import type { SessionCatalogRow } from "../../src/sessions/catalog-types.js";
 import type { SessionSeenEvent } from "../../src/watcher/EventBus.js";
 import { createApp } from "../setup/create-app.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 /**
  * Session-scoped limited-user decisions read the session catalog the app
@@ -65,7 +68,7 @@ describe("limited-user session access through the app's session catalog", () => 
     await mkdir(join(projectsDir, "localhost", encodedPath), {
       recursive: true,
     });
-    const sessionMetadataService = new SessionMetadataService({ dataDir });
+    const sessionMetadataService = createTestSessionMetadataService(dataDir);
     await sessionMetadataService.initialize();
     for (const seeded of seededSessions) {
       await writeFile(
@@ -192,6 +195,7 @@ describe("limited-user session access through the app's session catalog", () => 
 
   afterEach(async () => {
     await instance.disposeSessionReaders();
+    closeTestDiscoveryDatabases();
     await rm(testDir, { recursive: true, force: true });
   });
 

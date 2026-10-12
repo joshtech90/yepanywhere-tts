@@ -108,7 +108,10 @@ describe("Codex clone route", () => {
     const getSessionFilePath = vi.spyOn(reader, "getSessionFilePath");
     const getSession = vi.spyOn(reader, "getSession");
     const routes = createSessionsRoutes({
-      supervisor: { forkSession } as unknown as SessionsDeps["supervisor"],
+      supervisor: {
+        forkSession,
+        assertRouterBindingInheritable: () => {},
+      } as unknown as SessionsDeps["supervisor"],
       scanner: {
         getOrCreateProject: vi.fn(async () => project),
       } as SessionsDeps["scanner"],
@@ -149,7 +152,10 @@ describe("Codex clone route", () => {
     });
     const getSessionFilePath = vi.spyOn(reader, "getSessionFilePath");
     const routes = createSessionsRoutes({
-      supervisor: { forkSession } as unknown as SessionsDeps["supervisor"],
+      supervisor: {
+        forkSession,
+        assertRouterBindingInheritable: () => {},
+      } as unknown as SessionsDeps["supervisor"],
       scanner: {
         getOrCreateProject: vi.fn(async () => project),
       } as SessionsDeps["scanner"],
@@ -174,7 +180,10 @@ describe("Codex clone route", () => {
     }));
     const setSessionSandbox = vi.fn();
     const routes = createSessionsRoutes({
-      supervisor: { forkSession } as unknown as SessionsDeps["supervisor"],
+      supervisor: {
+        forkSession,
+        assertRouterBindingInheritable: () => {},
+      } as unknown as SessionsDeps["supervisor"],
       scanner: {
         getOrCreateProject: vi.fn(async () => project),
       } as SessionsDeps["scanner"],

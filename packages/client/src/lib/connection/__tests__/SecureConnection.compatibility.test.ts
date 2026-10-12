@@ -785,6 +785,7 @@ describe("SecureConnection protocol compatibility", () => {
     expect(conn.storedSession.resumeProtocolVersion).toBe(2);
     expect(onSessionEstablished).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId, resumeProtocolVersion: 2 }),
+      "resume",
     );
     expect(onAuthenticated).toHaveBeenCalledTimes(1);
 

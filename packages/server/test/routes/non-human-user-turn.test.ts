@@ -2,7 +2,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { NotificationService } from "../../src/notifications/NotificationService.js";
 import { MockServerClaudeProvider } from "../../src/sdk/mock.js";
 import { Supervisor } from "../../src/supervisor/Supervisor.js";
@@ -13,10 +12,14 @@ import {
   type SessionsDeps,
 } from "../../src/routes/sessions.js";
 import { createInboxRoutes } from "../../src/routes/inbox.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 it("delivers explicit cross-session input, surfaces Inbox attention, and acknowledges only the visited turn", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "delivered-turn-route-"));
-  const metadata = new SessionMetadataService({ dataDir });
+  const metadata = createTestSessionMetadataService(dataDir);
   await metadata.initialize();
   const eventBus = new EventBus();
   const notifications = new NotificationService({ dataDir, eventBus });
@@ -157,11 +160,12 @@ it("delivers explicit cross-session input, surfaces Inbox attention, and acknowl
     expect((await (await inbox.request("/")).json()).needsAttention).toEqual(
       [],
     );
-    const restored = new SessionMetadataService({ dataDir });
+    const restored = createTestSessionMetadataService(dataDir);
     await restored.initialize();
     expect(restored.getPendingNonHumanUserTurn("receiver")).toBeUndefined();
   } finally {
     await process?.abort();
+    closeTestDiscoveryDatabases();
     await rm(dataDir, { recursive: true });
   }
 });

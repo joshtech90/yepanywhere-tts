@@ -17,6 +17,7 @@ import {
   SESSION_SANDBOXING_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
   type SessionSandboxBlocker,
+  toUrlProjectId,
 } from "@yep-anywhere/shared";
 import {
   Fragment,
@@ -70,6 +71,7 @@ const {
   draftKeys,
   modelSettingsState,
   providersState,
+  providerDescriptorsState,
   providerRowState,
   remoteExecutorsState,
   serverSettingsState,
@@ -172,6 +174,12 @@ const {
       }>;
     }>,
     loading: false,
+    stale: false,
+  },
+  providerDescriptorsState: {
+    providers: undefined as
+      | import("@yep-anywhere/shared").ProviderDescriptor[]
+      | undefined,
   },
   providerRowState: {
     fresh: true,
@@ -182,6 +190,11 @@ const {
     executors: [] as string[],
   },
   serverSettingsState: {
+    error: null as string | null,
+    refetch: vi.fn(),
+    displayDefaults: undefined as
+      | import("@yep-anywhere/shared").NewSessionDefaults
+      | undefined,
     settings: null as {
       newSessionDefaults?: {
         provider?: "claude" | "claude-gateway" | "codex" | "opencode";
@@ -460,6 +473,12 @@ vi.mock("../../hooks/useModelSettings", () => ({
   ],
 }));
 
+vi.mock("../../hooks/useProviderDescriptors", () => ({
+  useProviderDescriptors: (enabled: boolean) => ({
+    providers: enabled ? providerDescriptorsState.providers : undefined,
+  }),
+}));
+
 vi.mock("../../hooks/useProviders", () => ({
   useProviders: () => ({
     ...providersState,
@@ -514,11 +533,12 @@ vi.mock("../../hooks/useRemoteExecutors", () => ({
 vi.mock("../../hooks/useServerSettings", () => ({
   useServerSettings: () => ({
     settings: serverSettingsState.settings,
+    displayDefaults: serverSettingsState.displayDefaults,
     isLoading: serverSettingsState.isLoading,
-    error: null,
+    error: serverSettingsState.error,
     updateSettings: vi.fn(),
     updateSetting: mockUpdateSetting,
-    refetch: vi.fn(),
+    refetch: serverSettingsState.refetch,
   }),
 }));
 
@@ -798,6 +818,7 @@ function installObjectUrlMock() {
 
 describe("NewSessionForm", () => {
   beforeEach(() => {
+    providerDescriptorsState.providers = undefined;
     coarsePointerState.current = false;
     actingPrincipalState.principal = {
       superuser: true,
@@ -853,11 +874,15 @@ describe("NewSessionForm", () => {
       },
     ];
     providersState.loading = false;
+    providersState.stale = false;
     providerRowState.fresh = true;
     providerRowState.refreshing = false;
     providerRowState.error = null;
     remoteExecutorsState.executors = [];
     serverSettingsState.settings = null;
+    serverSettingsState.error = null;
+    serverSettingsState.refetch.mockClear();
+    serverSettingsState.displayDefaults = undefined;
     serverSettingsState.isLoading = true;
     filterDropdownState.selected = [];
     toolbarVisibilityState.projectQueue = false;
@@ -1011,12 +1036,33 @@ describe("NewSessionForm", () => {
 
     claude.modelCatalog = { source: "static" };
     rerender(<NewSessionForm projectId="project-1" />);
-    expect(
-      screen.queryByRole("button", { name: "newSessionModelCatalogRefresh" }),
-    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionModelCatalogRefresh" }),
+    );
+    expect(mockRefreshProviderRow).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers explicit discovery when no provider is installed", () => {
+    providersState.providers = providersState.providers.map((provider) => ({
+      ...provider,
+      installed: false,
+      authenticated: false,
+      enabled: false,
+      models: [],
+    }));
+    render(<NewSessionForm projectId="project-1" />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionModelCatalogRefresh" }),
+    );
+    expect(mockRefetchProviders).toHaveBeenCalledTimes(1);
+    expect(mockRefreshProviderRow).not.toHaveBeenCalled();
   });
 
   it("keeps an explicit Claude selection when saved Codex defaults load later", async () => {
+    serverSettingsState.displayDefaults = {
+      provider: "codex",
+      model: "gpt-5.3-codex",
+    };
     const { rerender } = render(<NewSessionForm projectId="project-1" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Claude" }));
@@ -1026,6 +1072,8 @@ describe("NewSessionForm", () => {
     );
     expect(selectedDropdownValue("newSessionModelTitle")).toBe("opus");
 
+    expect(mockUpdateSetting).not.toHaveBeenCalled();
+
     serverSettingsState.settings = {
       newSessionDefaults: {
         provider: "codex",
@@ -1034,6 +1082,7 @@ describe("NewSessionForm", () => {
       },
     };
     serverSettingsState.isLoading = false;
+    serverSettingsState.displayDefaults = undefined;
 
     rerender(<NewSessionForm projectId="project-1" />);
 
@@ -1046,6 +1095,66 @@ describe("NewSessionForm", () => {
       ).not.toContain("selected");
       expect(selectedDropdownValue("newSessionModelTitle")).toBe("opus");
     });
+  });
+
+  it("renders retained display defaults while settings are pending and then reconciles", async () => {
+    serverSettingsState.displayDefaults = {
+      provider: "codex",
+      providers: {
+        codex: {
+          model: "gpt-5.3-codex",
+          thinkingMode: "on",
+          effortLevel: "high",
+        },
+      },
+    };
+    const view = () => (
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />
+    );
+    const { rerender } = render(view());
+    expect(selectedDropdownValue("newSessionModelTitle")).toBe("gpt-5.3-codex");
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "hello" },
+    });
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "newSessionStartAction",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    serverSettingsState.error = "offline";
+    serverSettingsState.isLoading = false;
+    rerender(view());
+    expect(selectedDropdownValue("newSessionModelTitle")).toBe("gpt-5.3-codex");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "newSessionDefaultsUnavailable",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionDefaultsRetry" }),
+    );
+    expect(serverSettingsState.refetch).toHaveBeenCalledTimes(1);
+    serverSettingsState.error = null;
+    serverSettingsState.settings = {
+      newSessionDefaults: { provider: "claude", model: "opus" },
+    };
+    serverSettingsState.isLoading = false;
+    serverSettingsState.displayDefaults = undefined;
+    rerender(view());
+    await waitFor(() =>
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe("opus"),
+    );
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "newSessionStartAction",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
   });
 
   it("does not reuse the Claude fallback model when switching to Codex", async () => {
@@ -1533,9 +1642,18 @@ describe("NewSessionForm", () => {
     };
     serverSettingsState.isLoading = false;
 
+    const project = {
+      ...chooserProjects[0]!,
+      id: toUrlProjectId(chooserProjects[0]!.path),
+    };
     const { rerender } = render(
-      <NewSessionForm projectId="project-1" projects={[]} />,
+      <NewSessionForm projectId={project.id} projects={[]} />,
     );
+
+    expect(
+      screen.getByPlaceholderText("newSessionProjectPathPlaceholder"),
+    ).toHaveProperty("value", project.path);
+    expect(mockAddProject).not.toHaveBeenCalled();
 
     const composer = screen.getByPlaceholderText("newSessionPlaceholder");
     fireEvent.change(composer, { target: { value: "hello" } });
@@ -1548,9 +1666,9 @@ describe("NewSessionForm", () => {
 
     rerender(
       <NewSessionForm
-        projectId="project-1"
-        selectedProject={chooserProjects[0]}
-        projects={[...chooserProjects]}
+        projectId={project.id}
+        selectedProject={project}
+        projects={[project]}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Claude" }));
@@ -1562,6 +1680,48 @@ describe("NewSessionForm", () => {
     await waitFor(() => {
       expect(mockStartSession).toHaveBeenCalledTimes(1);
     });
+    expect(mockStartSession.mock.calls[0]?.slice(0, 2)).toEqual([
+      project.id,
+      "hello",
+    ]);
+  });
+
+  it("shows a cached project but blocks Start and Queue until confirmed", async () => {
+    serverSettingsState.settings = {
+      newSessionDefaults: { provider: "claude", permissionMode: "default" },
+    };
+    serverSettingsState.isLoading = false;
+    versionState.version = { capabilities: [PROJECT_QUEUE_CAPABILITY] };
+    const view = (unconfirmedProjectIds: string[]) => (
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+        unconfirmedProjectIds={unconfirmedProjectIds}
+      />
+    );
+    const { rerender } = render(view(["project-1"]));
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Opus 4.8" })[0]!);
+    const composer = screen.getByPlaceholderText("newSessionPlaceholder");
+    fireEvent.change(composer, { target: { value: "hello" } });
+    expect(
+      screen.getByPlaceholderText("newSessionProjectPathPlaceholder"),
+    ).toHaveProperty("value", chooserProjects[0]?.path);
+    expect(screen.getByText(/newSessionProjectRefreshing/)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    ).toHaveProperty("disabled", true);
+    fireEvent.keyDown(composer, { key: "Enter" });
+    fireEvent.keyDown(composer, { key: "Enter", ctrlKey: true });
+    expect(mockStartSession).not.toHaveBeenCalled();
+    expect(mockCreateProjectQueueItem).not.toHaveBeenCalled();
+    rerender(view([]));
+    expect(screen.queryByText(/newSessionProjectRefreshing/)).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+    await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
     expect(mockStartSession.mock.calls[0]?.slice(0, 2)).toEqual([
       "project-1",
       "hello",
@@ -1586,7 +1746,44 @@ describe("NewSessionForm", () => {
     fireEvent.click(dropdownOption("routerPool", "Work"));
     expect(selectedDropdownValue("routerPool")).toBe("work");
     expect(screen.queryByLabelText("routerModel")).toBeNull();
-    expect(screen.queryByTestId("filter-routerAccount")).toBeNull();
+    // A router that lists no policies still offers the pool default.
+    expect(selectedDropdownValue("routerAccount")).toBe("policy:round-robin");
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+    await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+    const options = mockStartSession.mock.calls[0]?.[2];
+    expect(options).toMatchObject({
+      provider: "claude",
+      routerPoolId: "work",
+      model: "claude-opus-4-8",
+      thinking: "on:high",
+    });
+    expect(options.routerPolicy).toBeUndefined();
+    expect(options.routerAccountId).toBeUndefined();
+  });
+
+  it("pins a picked account in an automatic pool with the manual policy", async () => {
+    versionState.version = { capabilities: ["agent-auth-router"] };
+    modelSettingsState.thinkingMode = "on";
+    serverSettingsState.isLoading = false;
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+    openAdvancedOptions();
+    fireEvent.click(screen.getAllByRole("button", { name: "Opus 4.8" })[0]!);
+    await screen.findByTestId("filter-routerPool");
+    fireEvent.click(dropdownOption("routerPool", "Work"));
+    fireEvent.click(dropdownOption("routerAccount", "routerAccountNumber"));
+    expect(selectedDropdownValue("routerAccount")).toBe("routed-account");
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
       target: { value: "hello" },
     });
@@ -1595,10 +1792,9 @@ describe("NewSessionForm", () => {
     );
     await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
     expect(mockStartSession.mock.calls[0]?.[2]).toMatchObject({
-      provider: "claude",
       routerPoolId: "work",
-      model: "claude-opus-4-8",
-      thinking: "on:high",
+      routerPolicy: "manual",
+      routerAccountId: "routed-account",
     });
   });
 
@@ -1823,6 +2019,73 @@ describe("NewSessionForm", () => {
         { deliveryIntent: "direct", turnEffort: "slow" },
       ),
     );
+  });
+
+  it("shows descriptors while withholding launch until the selected runtime is known", async () => {
+    const claude = providersState.providers[0]!;
+    providersState.providers = [];
+    providersState.loading = true;
+    providerDescriptorsState.providers = [
+      { name: "claude", displayName: "Claude" },
+      { name: "pi", displayName: "pi" },
+    ];
+    versionState.version = {
+      capabilities: [SERVER_CAPABILITIES.providerDescriptors.name],
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: { provider: "claude", model: "opus" },
+    };
+    serverSettingsState.isLoading = false;
+    const props = {
+      projectId: "project-1",
+      selectedProject: chooserProjects[0],
+      projects: [...chooserProjects],
+    };
+    const { rerender } = render(<NewSessionForm {...props} />);
+    expect(screen.getByRole("button", { name: "pi" })).toHaveProperty(
+      "disabled",
+      false,
+    );
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "wait for selected runtime" },
+    });
+    expect(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    ).toHaveProperty("disabled", true);
+    providersState.providers = [claude];
+    rerender(<NewSessionForm {...props} />);
+    expect(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    ).toHaveProperty("disabled", false);
+  });
+
+  it("keeps a persisted provider display from authorizing a launch", () => {
+    providersState.stale = true;
+    providersState.loading = true;
+    providerRowState.fresh = false;
+    providerRowState.refreshing = true;
+    serverSettingsState.settings = {
+      newSessionDefaults: { provider: "claude", model: "opus" },
+    };
+    serverSettingsState.isLoading = false;
+    const props = {
+      projectId: "project-1",
+      selectedProject: chooserProjects[0],
+      projects: [...chooserProjects],
+    };
+    const { rerender } = render(<NewSessionForm {...props} />);
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "wait for current runtime status" },
+    });
+    expect(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    ).toHaveProperty("disabled", true);
+    providerRowState.fresh = true;
+    providerRowState.refreshing = false;
+    rerender(<NewSessionForm {...props} />);
+    expect(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    ).toHaveProperty("disabled", false);
   });
 
   it("allows a launchable provider to start before authentication is confirmed", async () => {
@@ -3566,6 +3829,32 @@ describe("NewSessionForm", () => {
     expect(localStorage.getItem("yep-anywhere-new-project-git-init")).toBe(
       "false",
     );
+  });
+
+  it("lists projects over an open New project, which a choice closes", () => {
+    const onProjectChange = vi.fn();
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+        onProjectChange={onProjectChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "templateNewProject" }));
+    expect(
+      screen.getByRole("region", { name: "templateNewProject" }),
+    ).toBeDefined();
+    fireEvent.click(
+      container.querySelector(
+        ".new-session-project-summary",
+      ) as HTMLButtonElement,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Beta/ }));
+    expect(onProjectChange).toHaveBeenCalledWith("project-2");
+    expect(
+      screen.queryByRole("region", { name: "templateNewProject" }),
+    ).toBeNull();
   });
 
   it("keeps Git on for servers that always initialize it", () => {

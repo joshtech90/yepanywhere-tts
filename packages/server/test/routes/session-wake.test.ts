@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { encodeProjectId } from "../../src/projects/paths.js";
 import { createSessionWakeRoutes } from "../../src/routes/session-wake.js";
 import { MockClaudeSDK } from "../../src/sdk/mock.js";
@@ -12,6 +11,10 @@ import {
   loadOrCreateSessionWakeSecret,
 } from "../../src/services/SessionWakeService.js";
 import { createApp } from "../setup/create-app.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 function request(token: string, body: unknown): RequestInit {
   return {
@@ -155,9 +158,7 @@ describe("session wake route", () => {
     const secret = Buffer.alloc(32, 11);
     const sdk = new MockClaudeSDK();
     const startSession = vi.spyOn(sdk, "startSession");
-    const metadata = new SessionMetadataService({
-      dataDir: join(root, "data"),
-    });
+    const metadata = createTestSessionMetadataService(join(root, "data"));
     await metadata.initialize();
     const projectId = encodeProjectId(homedir());
     await metadata.setWorkingProject("cold-session", projectId, projectId);
@@ -216,6 +217,7 @@ describe("session wake route", () => {
       expect(resumeSession).toHaveBeenCalledTimes(callsAfterAccepted);
     } finally {
       await supervisor.getProcessForSession("cold-session")?.abort();
+      closeTestDiscoveryDatabases();
       await rm(root, { recursive: true });
     }
   });

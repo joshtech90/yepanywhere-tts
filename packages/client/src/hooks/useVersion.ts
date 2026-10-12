@@ -1,14 +1,23 @@
+import {
+  type VersionSnapshot,
+  EMPTY_VERSION_SNAPSHOT,
+  VERSION_QUERY_KEY,
+  getVersionSnapshot,
+  subscribeVersionSnapshots,
+  applyVersionSnapshot,
+  resetVersionQueryForTests,
+} from "../lib/versionQuery";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { type VersionInfo, api } from "../api/client";
 import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext";
 import {
-  createClientQueryKey,
   ensureClientQuery,
   type ClientQueryCoverage,
   type ClientQueryRequestContext,
 } from "../lib/clientQueryController";
 import {
   type ClientSummarySourceKey,
+  LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
   useClientSummarySourceKey,
 } from "../lib/clientSummaryStore";
 import { isRemoteClient } from "../lib/connection";
@@ -19,7 +28,6 @@ interface UseVersionOptions {
   freshOnMount?: boolean;
 }
 
-const VERSION_QUERY_KEY = createClientQueryKey({ endpoint: "version" });
 const VERSION_REVALIDATE_EVENTS = ["reconnect"] as const;
 const PENDING_SPEECH_BACKEND_RETRY_MS = 1000;
 
@@ -32,64 +40,17 @@ const PENDING_SPEECH_BACKEND_RETRY_MS = 1000;
  */
 const FRESH_VERSION_COVERAGE: ClientQueryCoverage = { fresh: true };
 
-interface VersionSnapshot {
-  version: VersionInfo | null;
-  observedAt?: number;
-}
-
-const EMPTY_VERSION_SNAPSHOT: VersionSnapshot = { version: null };
-
-const versionSnapshotsBySource = new Map<
-  ClientSummarySourceKey,
-  VersionSnapshot
->();
-const versionSnapshotListeners = new Set<() => void>();
-
-function emitVersionSnapshotChange(): void {
-  for (const listener of Array.from(versionSnapshotListeners)) {
-    listener();
-  }
-}
-
-function subscribeVersionSnapshots(listener: () => void): () => void {
-  versionSnapshotListeners.add(listener);
-  return () => {
-    versionSnapshotListeners.delete(listener);
-  };
-}
-
-function getVersionSnapshot(
-  sourceKey: ClientSummarySourceKey,
-): VersionSnapshot {
-  return versionSnapshotsBySource.get(sourceKey) ?? EMPTY_VERSION_SNAPSHOT;
-}
-
-function acceptVersionSnapshot(
-  sourceKey: ClientSummarySourceKey,
-  version: VersionInfo,
-  observedAt: number,
-): void {
-  const current = versionSnapshotsBySource.get(sourceKey);
-  if (current?.observedAt !== undefined && current.observedAt > observedAt) {
-    return;
-  }
-
-  versionSnapshotsBySource.set(sourceKey, { version, observedAt });
-  emitVersionSnapshotChange();
-  syncPendingSpeechFollowUp(sourceKey);
-}
-
 function versionFetcher(
   context: ClientQueryRequestContext,
 ): Promise<VersionInfo> {
   return api.getVersion({ fresh: context.coverage.fresh === true });
 }
 
-function applyVersionSnapshot(
-  version: VersionInfo,
-  context: ClientQueryRequestContext,
-): void {
-  acceptVersionSnapshot(context.sourceKey, version, context.requestStartedAt);
+export { readVersionInfo } from "../lib/versionQuery";
+
+/** Local entrypoint hint; mounted consumers join the same capability read. */
+export function primeLocalVersion() {
+  return ensureVersionInfo(LOCAL_CLIENT_SUMMARY_SOURCE_KEY);
 }
 
 /** Resolve capability-dependent first requests through the existing source owner. */
@@ -138,6 +99,7 @@ async function ensureFreshVersion(
 interface VersionFollowUpEntry {
   retainedCount: number;
   timer: ReturnType<typeof setTimeout> | null;
+  unsubscribe: () => void;
 }
 
 const versionFollowUpsBySource = new Map<
@@ -200,7 +162,13 @@ function retainPendingSpeechFollowUp(
 ): () => void {
   let entry = versionFollowUpsBySource.get(sourceKey);
   if (!entry) {
-    entry = { retainedCount: 0, timer: null };
+    entry = {
+      retainedCount: 0,
+      timer: null,
+      unsubscribe: subscribeVersionSnapshots(() =>
+        syncPendingSpeechFollowUp(sourceKey),
+      ),
+    };
     versionFollowUpsBySource.set(sourceKey, entry);
   }
   entry.retainedCount += 1;
@@ -215,6 +183,7 @@ function retainPendingSpeechFollowUp(
       if (entry.timer) {
         clearTimeout(entry.timer);
       }
+      entry.unsubscribe();
       versionFollowUpsBySource.delete(sourceKey);
     }
   };
@@ -237,8 +206,9 @@ function useVersionSnapshot(
  * answer, not another acquisition: `useVersion` retains this fact at the
  * `route` tier, so a second retainer here would only add a consumer competing
  * for a request already in flight. Before it resolves this reads `null`, which
- * every synchronous gate treats as "capability absent". Collection fetchers
- * join `ensureVersionInfo` before choosing their first request's mode.
+ * capability gates treat as "capability absent". Projects and recents can send
+ * a backward-compatible read preference without waiting for this snapshot;
+ * capability-dependent session collection reads still join `ensureVersionInfo`.
  */
 export function useRetainedVersionInfo(
   sourceKey: ClientSummarySourceKey,
@@ -247,9 +217,9 @@ export function useRetainedVersionInfo(
 }
 
 export function resetVersionSnapshotsForTests(): void {
-  versionSnapshotsBySource.clear();
-  versionSnapshotListeners.clear();
+  resetVersionQueryForTests();
   for (const entry of versionFollowUpsBySource.values()) {
+    entry.unsubscribe();
     if (entry.timer) {
       clearTimeout(entry.timer);
     }

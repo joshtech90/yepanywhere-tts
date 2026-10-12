@@ -30,8 +30,15 @@ let listener: ReturnType<typeof createHttpServer>;
 let directory: string;
 let base: string;
 let entry: string;
+const oauthEnvironment = new Map<string, string>();
 
 test.beforeAll(async () => {
+  for (const [name, value] of Object.entries(process.env)) {
+    if (name.startsWith("YEP_VHOST_OAUTH_") && value !== undefined) {
+      oauthEnvironment.set(name, value);
+      delete process.env[name];
+    }
+  }
   const scratch = resolve(clientRoot, "../../.artifacts/artifact-browser");
   await mkdir(scratch, { recursive: true });
   directory = await mkdtemp(join(scratch, "run-"));
@@ -61,6 +68,12 @@ test.beforeAll(async () => {
   process.env.VITE_DISABLE_CLI_UPDATE_NOTIFICATIONS = "true";
   vite = await createViteServer({
     root: clientRoot,
+    // The Edit-link test opens the full app at /file-view. A dependency the
+    // scan misses is optimized mid-load, and the forced reload strands a page
+    // on a second React copy.
+    optimizeDeps: {
+      entries: ["e2e/fixtures/artifact-viewer.html", "index.html"],
+    },
     server: { port: 0, host: "127.0.0.1" },
   });
   await vite.listen();
@@ -117,6 +130,7 @@ test.afterAll(async () => {
   }
   if (vite) await vite.close();
   if (directory) await rm(directory, { recursive: true });
+  for (const [name, value] of oauthEnvironment) process.env[name] = value;
 });
 
 test("replaces the derived file address and acknowledges sequential manual typing during updates", async ({
@@ -244,7 +258,7 @@ test("sorts app tables by full paths and elides their paths responsively", async
     }),
   );
   await page.goto(`${base}/e2e/fixtures/artifact-viewer.html?settings`);
-  const vhosts = page.getByRole("table", { name: "HTTP vhosts" });
+  const vhosts = page.getByRole("table", { name: "Hosted apps" });
   const projects = page.getByRole("table", { name: "Project apps" });
   await vhosts.getByRole("button", { name: "Serves", exact: true }).click();
   await expect(vhosts.locator("tbody tr").first()).toContainText("alpha");
@@ -659,7 +673,7 @@ test("hands a framed PDF to a new tab through the viewer, never a popup", async 
   const element = page.locator('iframe[title="handoff.html"]');
   await expect(element).toHaveAttribute(
     "sandbox",
-    "allow-scripts allow-same-origin",
+    "allow-scripts allow-same-origin allow-downloads",
   );
   const frame = page.frameLocator('iframe[title="handoff.html"]');
   await frame.getByRole("link", { name: "Paper" }).click();
@@ -691,6 +705,39 @@ test("hands a framed PDF to a new tab through the viewer, never a popup", async 
   // ask the tab itself.
   expect(await tab.evaluate(() => window.opener)).toBeNull();
   await tab.close();
+});
+
+test("saves a file the framed artifact builds in the page", async ({
+  page,
+}) => {
+  const htmlPath = join(directory, "bundle", "blob-download.html");
+  await writeFile(
+    htmlPath,
+    `<!doctype html><title>Blob download</title>
+<button id="save">Download</button>
+<script>
+document.getElementById("save").addEventListener("click", () => {
+  const blob = new Blob(["saved by the artifact"], { type: "text/plain" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "notes.txt";
+  document.body.append(link);
+  link.click();
+  link.remove();
+});
+</script>`,
+  );
+  const grant = await instance.artifactServer.createGrant(htmlPath, "local");
+  await page.goto(
+    `${base}/file-view?mode=interactive&artifactUrl=${encodeURIComponent(grant.url)}`,
+  );
+  const frame = page.frameLocator('iframe[title="blob-download.html"]');
+  const downloaded = page.waitForEvent("download");
+  await frame.getByRole("button", { name: "Download" }).click();
+  const download = await downloaded;
+  expect(download.suggestedFilename()).toBe("notes.txt");
+  const path = await download.path();
+  expect(await readFile(path, "utf8")).toBe("saved by the artifact");
 });
 
 test("finds within the scriptless preview without giving it scripts", async ({
@@ -1091,4 +1138,336 @@ test("omits expiry controls and writes when older metadata lacks the field", asy
   expect((await write).postDataJSON()).not.toHaveProperty("expiryDays");
   await expect(page.getByRole("status")).toHaveText("Artifact settings saved");
   expect(instance.artifactServer.config.expiryDays).toBe(2);
+});
+
+test("edits OAuth email rows without losing sequential input during updates", async ({
+  page,
+}) => {
+  await instance.artifactServer.configure({
+    ...instance.artifactServer.config,
+    publicOrigin: "https://files.example.net",
+    vhostPublicRoot: "example.net",
+    vhosts: [{ name: "memo", port: 19432 }],
+    vhostSites: [],
+  });
+  await instance.artifactServer.vhostOauth.configure({
+    provider: {
+      kind: "entra",
+      tenantId: "common",
+      issuer: "",
+      clientId: "test-client",
+      callbackUrl: "https://auth.example.net/callback",
+      visitorIp: "peer",
+    },
+    secret: "test-only",
+  });
+  await instance.artifactServer.vhostOauth.setPolicy("memo", ["*@*"]);
+  await page.goto(`${base}/e2e/fixtures/artifact-viewer.html?settings`);
+  const providerSection = page
+    .locator("summary")
+    .filter({ hasText: "Hosted sign-in provider" });
+  await providerSection.click();
+  const enabled = page.getByRole("checkbox", {
+    name: "Enable hosted sign-in",
+    exact: true,
+  });
+  await expect(enabled).toBeChecked();
+  await page.getByText("Provider settings", { exact: true }).click();
+  const secret = page.getByLabel(
+    "Client secret value (leave blank to keep existing)",
+    { exact: true },
+  );
+  await expect(secret).toHaveAttribute("type", "password");
+  let typedSecret = "";
+  await secret.focus();
+  for (const character of "new-test-secret-abcd") {
+    typedSecret += character;
+    await page.keyboard.type(character);
+    await expect(secret).toHaveValue(typedSecret, { timeout: 100 });
+  }
+  await expect(secret).toHaveAttribute("type", "password");
+  await page
+    .getByRole("button", { name: "Save sign-in provider", exact: true })
+    .click();
+  await expect(secret).toHaveValue("");
+  await expect(secret).toHaveAttribute("placeholder", "••••abcd");
+  const provider = page.getByRole("combobox", {
+    name: "Hosted sign-in provider (OAuth)",
+    exact: true,
+  });
+  await provider.selectOption("google");
+  await expect(page.getByLabel("OpenID Connect issuer URL")).toHaveValue(
+    "https://accounts.google.com",
+  );
+  await expect(secret).toHaveAttribute("placeholder", "");
+  await secret.fill("google-test-secret-abcd");
+  await page.getByRole("button", { name: "Save sign-in provider" }).click();
+  await expect
+    .poll(() => instance.artifactServer.vhostOauth.status().provider.kind)
+    .toBe("oidc");
+  expect(instance.artifactServer.vhostOauth.status().provider.issuer).toBe(
+    "https://accounts.google.com",
+  );
+  await provider.selectOption("entra");
+  await secret.fill("new-test-secret-abcd");
+  await page.getByRole("button", { name: "Save sign-in provider" }).click();
+  await expect
+    .poll(() => instance.artifactServer.vhostOauth.status().provider.kind)
+    .toBe("entra");
+  for (const viewport of [
+    { width: 1200, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await secret.evaluate((input) =>
+      input.closest("label")!.scrollIntoView({ block: "start" }),
+    );
+    await recordUiCapture(page, `vhost-provider-${viewport.width}`, viewport);
+  }
+  await providerSection.click();
+  await page
+    .getByRole("button", { name: "Sign-in required", exact: true })
+    .click();
+  const email = page.getByRole("textbox", {
+    name: "Allowed email or domain 1",
+    exact: true,
+  });
+  await expect(email).toBeFocused();
+  expect(
+    await email.evaluate((input: HTMLInputElement) => [
+      input.selectionStart,
+      input.selectionEnd,
+    ]),
+  ).toEqual([0, 3]);
+  const before = await page
+    .getByTestId("background-updates")
+    .getAttribute("data-updates");
+  let expected = "";
+  for (const character of "*@rws.com") {
+    expected += character;
+    await page.keyboard.type(character);
+    await expect(email).toHaveValue(expected, { timeout: 100 });
+  }
+  await expect(page.getByTestId("background-updates")).not.toHaveAttribute(
+    "data-updates",
+    before!,
+  );
+  await email.press("Tab");
+  await expect
+    .poll(() => instance.artifactServer.vhostOauth.status().policies.memo)
+    .toEqual(["*@rws.com"]);
+  await page
+    .getByRole("button", {
+      name: "+ Allow another email or domain",
+      exact: true,
+    })
+    .click();
+  const second = page.getByRole("textbox", {
+    name: "Allowed email or domain 2",
+    exact: true,
+  });
+  await second.pressSequentially("person@rws.com");
+  await second.press("Tab");
+  await expect(page.getByText("Already allowed by *@rws.com")).toBeVisible();
+  for (const viewport of [
+    { width: 1000, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page
+      .getByText("Already allowed by *@rws.com")
+      .scrollIntoViewIfNeeded();
+    await recordUiCapture(page, `vhost-oauth-${viewport.width}`, viewport);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  }
+  await page
+    .getByRole("button", { name: "All access logs", exact: true })
+    .click();
+  await expect(page.getByText("No sign-in checks recorded yet.")).toBeVisible();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Minimize details", exact: true })
+    .click();
+  await providerSection.click();
+  await enabled.uncheck();
+  await expect(enabled).not.toBeChecked();
+  await providerSection.click();
+  const blocked = page.getByText(
+    "Blocked: hosted sign-in is disabled or unconfigured.",
+    { exact: true },
+  );
+  await expect(blocked).toBeVisible();
+  expect(instance.artifactServer.vhostOauth.status().policies.memo).toEqual([
+    "*@rws.com",
+    "person@rws.com",
+  ]);
+  for (const viewport of [
+    { width: 1000, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await blocked.scrollIntoViewIfNeeded();
+    await recordUiCapture(page, `vhost-blocked-${viewport.width}`, viewport);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  }
+  await providerSection.click();
+  await enabled.check();
+  await expect(blocked).toHaveCount(0);
+  expect(instance.artifactServer.vhostOauth.status().secretSuffix).toBe("abcd");
+  await page.route("**/api/artifacts/vhosts/oauth", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      json: {
+        ...body,
+        locked: true,
+        providers: body.providers.map((entry: { id: string }) => ({
+          ...entry,
+          locked: entry.id === "default",
+        })),
+      },
+    });
+  });
+  await page.reload();
+  await providerSection.click();
+  await page.getByText("Provider settings", { exact: true }).click();
+  await expect(provider).toBeDisabled();
+  await expect(secret).toBeDisabled();
+  await expect(secret).toHaveAttribute("placeholder", "••••abcd");
+  await expect(page.getByText(/Managed by environment/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Save sign-in provider" }),
+  ).toHaveCount(0);
+  await page.getByText("Provider settings", { exact: true }).click();
+  await page.getByRole("button", { name: "Add sign-in provider" }).click();
+  const newProvider = page
+    .locator("section")
+    .filter({ has: page.getByRole("button", { name: "Cancel", exact: true }) });
+  await expect(
+    newProvider.getByRole("combobox", {
+      name: "Hosted sign-in provider (OAuth)",
+      exact: true,
+    }),
+  ).toHaveValue("google");
+  await newProvider
+    .getByLabel("Application (client) ID", { exact: true })
+    .fill("google-client");
+  await newProvider
+    .getByLabel("Client secret value (leave blank to keep existing)", {
+      exact: true,
+    })
+    .pressSequentially("google-secret-1234");
+  await newProvider
+    .getByRole("button", { name: "Save sign-in provider" })
+    .click();
+  await expect(
+    page.getByRole("checkbox", { name: "Google", exact: true }),
+  ).toBeChecked();
+  await expect(
+    page.getByRole("checkbox", { name: "Microsoft", exact: true }),
+  ).toBeChecked();
+  for (const viewport of [
+    { width: 1200, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await providerSection.evaluate((element) =>
+      element.scrollIntoView({ block: "start" }),
+    );
+    await recordUiCapture(
+      page,
+      `vhost-provider-list-${viewport.width}`,
+      viewport,
+    );
+  }
+  const google = instance.artifactServer.vhostOauth
+    .status()
+    .providers!.find(
+      (entry) => entry.provider.issuer === "https://accounts.google.com",
+    )!;
+  await page
+    .getByRole("checkbox", { name: "Microsoft", exact: true })
+    .uncheck();
+  await expect
+    .poll(
+      () => instance.artifactServer.vhostOauth.status().providers![0]!.enabled,
+    )
+    .toBe(false);
+  await page.getByRole("checkbox", { name: "Microsoft", exact: true }).check();
+  await expect
+    .poll(
+      () => instance.artifactServer.vhostOauth.status().providers![0]!.enabled,
+    )
+    .toBe(true);
+  await page.route("https://memo.example.net/**", async (route) => {
+    const response = await instance.artifactServer.vhostOauth.admit(
+      new Request(route.request().url()),
+      { name: "memo", port: 19432 },
+    );
+    if (!(response instanceof Response))
+      throw new Error("Expected app sign-in response");
+    await route.fulfill({
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
+      body: await response.text(),
+    });
+  });
+  await page.goto("https://memo.example.net/");
+  await expect(
+    page.getByRole("link", { name: "Continue with Google" }),
+  ).toHaveAttribute("href", new RegExp(`provider=${google.id}`));
+  await expect(
+    page.getByRole("link", { name: "Continue with Microsoft" }),
+  ).toBeVisible();
+  for (const viewport of [
+    { width: 1200, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await recordUiCapture(page, `vhost-sign-in-${viewport.width}`, viewport);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    expect(
+      await page
+        .getByRole("link", { name: "Continue with Google" })
+        .evaluate((element) => element.getBoundingClientRect().height),
+    ).toBeGreaterThanOrEqual(48);
+  }
+  await page.route("**/api/version*", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      json: {
+        ...(await response.json()),
+        current: "0.9.3",
+        capabilities: ["vhost-oauth-access"],
+        capabilityExtensions: [],
+        capabilityBits: [],
+        optionalCapabilityBits: [],
+      },
+    });
+  });
+  const unsupportedRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/oauth/providers/"))
+      unsupportedRequests.push(request.url());
+  });
+  await page.goto(`${base}/e2e/fixtures/artifact-viewer.html?settings`);
+  await providerSection.click();
+  await expect(
+    page.getByRole("button", { name: "Add sign-in provider" }),
+  ).toHaveCount(0);
+  await expect(provider).toBeVisible();
+  expect(unsupportedRequests).toEqual([]);
 });

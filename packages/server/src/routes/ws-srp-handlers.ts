@@ -384,7 +384,19 @@ export async function handleSrpResumeInit(
   msg: SrpSessionResumeInit,
   remoteSessionService: RemoteSessionService | undefined,
 ): Promise<void> {
+  const refuse = (reason: string) =>
+    getLogger().info(
+      {
+        event: "srp_resume_refused",
+        phase: "init",
+        sessionId: msg.sessionId.slice(0, 256),
+        identity: msg.identity.slice(0, 256),
+        reason,
+      },
+      "SRP resume init refused",
+    );
   if (!remoteSessionService) {
+    refuse("service_unavailable");
     sendSrpMessage(ws, {
       type: "srp_invalid",
       reason: "unknown",
@@ -395,6 +407,7 @@ export async function handleSrpResumeInit(
   // Resume init is only invalid when this socket already has an established SRP
   // transport key. Trusted local policy may set authenticated without SRP.
   if (hasEstablishedSrpTransport(connState)) {
+    refuse("already_authenticated");
     sendSrpMessage(ws, {
       type: "srp_invalid",
       reason: "invalid_proof",
@@ -403,6 +416,7 @@ export async function handleSrpResumeInit(
   }
 
   if (!msg.clientNonce) {
+    refuse("missing_nonce");
     sendSrpMessage(ws, {
       type: "srp_invalid",
       reason: "invalid_proof",
@@ -411,10 +425,12 @@ export async function handleSrpResumeInit(
   }
 
   try {
+    const failure = remoteSessionService.getResumeSessionFailure(msg.sessionId);
     const session = remoteSessionService.getSession(msg.sessionId);
 
     // Keep failure mode generic (don't leak session validity details).
     if (!session || session.username !== msg.identity) {
+      refuse(!session ? (failure ?? "missing_session") : "identity_mismatch");
       sendSrpMessage(ws, {
         type: "srp_invalid",
         reason: "invalid_proof",
@@ -441,6 +457,7 @@ export async function handleSrpResumeInit(
       `[WS Relay] Resume challenge sent for ${msg.identity} (${msg.sessionId})`,
     );
   } catch (err) {
+    refuse("internal_error");
     console.error("[WS Relay] Session resume init error:", err);
     sendSrpMessage(ws, {
       type: "srp_invalid",
@@ -458,7 +475,19 @@ export async function handleSrpResume(
   msg: SrpSessionResume,
   remoteSessionService: RemoteSessionService | undefined,
 ): Promise<void> {
+  const refuse = (reason: string) =>
+    getLogger().info(
+      {
+        event: "srp_resume_refused",
+        phase: "proof",
+        sessionId: msg.sessionId.slice(0, 256),
+        identity: msg.identity.slice(0, 256),
+        reason,
+      },
+      "SRP resume proof refused",
+    );
   if (!remoteSessionService) {
+    refuse("service_unavailable");
     sendSrpMessage(ws, {
       type: "srp_invalid",
       reason: "unknown",
@@ -475,6 +504,7 @@ export async function handleSrpResume(
       pendingChallenge.sessionId !== msg.sessionId ||
       pendingChallenge.username !== msg.identity
     ) {
+      refuse("challenge_mismatch");
       sendSrpMessage(ws, {
         type: "srp_invalid",
         reason: "invalid_proof",
@@ -483,6 +513,7 @@ export async function handleSrpResume(
     }
 
     if (Date.now() - pendingChallenge.issuedAt > RESUME_CHALLENGE_MAX_AGE_MS) {
+      refuse("expired_challenge");
       sendSrpMessage(ws, {
         type: "srp_invalid",
         reason: "invalid_proof",
@@ -508,6 +539,7 @@ export async function handleSrpResume(
     }
 
     if (session.username !== msg.identity) {
+      refuse("identity_mismatch");
       console.warn(
         `[WS Relay] Session resume identity mismatch: ${msg.identity} vs ${session.username}`,
       );

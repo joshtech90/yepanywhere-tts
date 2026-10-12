@@ -4,13 +4,16 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 import { toUrlProjectId } from "@yep-anywhere/shared";
-import { createTestViteServer } from "./support/vite-server";
+import { e2ePaths } from "./fixtures";
 import { createApp } from "../../server/test/setup/create-app";
-import { createFrontendProxy } from "../../server/src/frontend/proxy";
+import { createStaticRoutes } from "../../server/src/frontend/static";
 import { MockServerClaudeProvider } from "../../server/src/sdk/mock";
 import { ProjectMetadataService } from "../../server/src/metadata/ProjectMetadataService";
 import { SessionMetadataService } from "../../server/src/metadata/SessionMetadataService";
+import { DiscoverySqliteService } from "../../server/src/storage/discovery-sqlite";
 import { LimitedUsersService } from "../../server/src/auth/LimitedUsersService";
+import { AuthService } from "../../server/src/auth/AuthService";
+import { ServerSettingsService } from "../../server/src/services/ServerSettingsService";
 import { initFileAccess } from "../../server/src/middleware/file-access";
 import { recordUiCapture } from "./support/ui-capture";
 
@@ -18,16 +21,15 @@ const clientRoot = resolve(import.meta.dirname, "..");
 const requireServer = createRequire(join(clientRoot, "../server/package.json"));
 const requireClient = createRequire(join(clientRoot, "package.json"));
 const { getRequestListener } = requireServer("@hono/node-server");
-let vite: Awaited<ReturnType<typeof createTestViteServer>>;
 let instance: ReturnType<typeof createApp>;
+let discovery: DiscoverySqliteService | undefined;
 let listener: ReturnType<typeof createServer>;
 let directory: string;
 let base: string;
 let projectId: string;
 
 test.beforeAll(async () => {
-  // CI36630063508 paid cold Vite transforms plus 2.57s of version readiness
-  // (sandbox probe and update check). Readiness owns those operations.
+  // CI36630063508 paid 2.57s of sandbox/version readiness. Setup owns it.
   test.setTimeout(30_000);
   const scratch = resolve(clientRoot, "../../.artifacts/project-app-browser");
   await mkdir(scratch, { recursive: true });
@@ -48,36 +50,43 @@ test.beforeAll(async () => {
   const metadata = new ProjectMetadataService({ dataDir });
   await metadata.initialize();
   await metadata.addProject(projectId, project, "archer");
-  const sessionMetadata = new SessionMetadataService({ dataDir });
+  discovery = new DiscoverySqliteService({ dataDir });
+  const sessionMetadata = new SessionMetadataService({
+    dataDir,
+    database: discovery.getDatabase(),
+  });
   await sessionMetadata.initialize();
   const limitedUsers = new LimitedUsersService({ dataDir });
   await limitedUsers.initialize();
+  const settings = new ServerSettingsService({ dataDir });
+  await settings.initialize();
+  const auth = new AuthService({ dataDir });
+  await auth.initialize();
   initFileAccess({
     uploadsDir: directory,
     homeDir: directory,
     tempPaths: [directory],
     envPaths: [directory],
   });
-  vite = await createTestViteServer({
-    root: clientRoot,
-    server: { port: 0, host: "127.0.0.1" },
-  });
-  await vite.listen();
-  const viteAddress = vite.httpServer!.address();
-  if (!viteAddress || typeof viteAddress === "string")
-    throw new Error("Missing Vite port");
   instance = createApp({
     provider: new MockServerClaudeProvider(),
     sessionMetadataService: sessionMetadata,
     limitedUsersService: limitedUsers,
+    serverSettingsService: settings,
+    authService: auth,
     dataDir,
+    discoverySqlite: discovery,
     projectsDir: join(directory, "sessions"),
     projectMetadataService: metadata,
-    frontendProxy: createFrontendProxy({
-      vitePort: viteAddress.port,
-      viteHost: "127.0.0.1",
-    }),
   });
+  // Exercise the app with the invocation's built client. Cold source transforms
+  // consumed the handoff assertion in CI38129869711; only the garden's own
+  // live-preview server needs Vite/HMR. Missing APIs must not return SPA HTML.
+  instance.app.all("/api/*", (c) => c.json({ error: "Not found" }, 404));
+  instance.app.route(
+    "/",
+    createStaticRoutes({ distPath: e2ePaths.clientDist }),
+  );
   listener = createServer(getRequestListener(instance.app.fetch));
   listener.on("upgrade", (req, socket, head) =>
     instance.artifactServer.handleUpgrade(req, socket, head),
@@ -92,7 +101,6 @@ test.beforeAll(async () => {
     localOrigin: `http://artifacts.localhost:${address.port}`,
   });
   await Promise.all([
-    vite.warmupRequest("/src/main.tsx"),
     process.platform === "linux"
       ? (async () => {
           const response = await fetch(`${base}/api/version`, {
@@ -122,7 +130,7 @@ test.afterAll(async () => {
       listener.close((error) => (error ? reject(error) : ready())),
     );
   }
-  if (vite) await vite.close();
+  discovery?.close();
   if (directory) await rm(directory, { recursive: true });
 });
 

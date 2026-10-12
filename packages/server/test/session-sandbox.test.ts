@@ -19,7 +19,6 @@ import {
 import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { SessionMetadataService } from "../src/metadata/SessionMetadataService.js";
 import { AuthService } from "../src/auth/AuthService.js";
 import { SESSION_COOKIE_NAME } from "../src/auth/routes.js";
 import { createAuthMiddleware } from "../src/middleware/auth.js";
@@ -42,6 +41,10 @@ import {
   createLaunchAgentctlSessionEnvBridge,
 } from "../src/sdk/providers/agentctl-session-env.js";
 import type { UrlProjectId } from "@yep-anywhere/shared";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "./utils/session-metadata-database.js";
 
 // The availability probe mounts throwaway state under its state root; keep
 // that out of the real YA data directory.
@@ -106,6 +109,7 @@ describe("session sandbox", { timeout: 20_000 }, () => {
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    closeTestDiscoveryDatabases();
     await Promise.all(
       roots.splice(0).map((root) => rm(root, { recursive: true })),
     );
@@ -1283,7 +1287,7 @@ describe("session sandbox", { timeout: 20_000 }, () => {
       })}\n`,
     );
 
-    const writer = new SessionMetadataService({ dataDir });
+    const writer = createTestSessionMetadataService(dataDir);
     await writer.initialize();
     await writer.setSessionSandbox("replayable-session", {
       level: "project-write",
@@ -1294,7 +1298,7 @@ describe("session sandbox", { timeout: 20_000 }, () => {
       provider: "claude",
     });
 
-    const reloaded = new SessionMetadataService({ dataDir });
+    const reloaded = createTestSessionMetadataService(dataDir);
     await reloaded.initialize();
     const metadata = reloaded.getMetadata("replayable-session");
     expect(metadata).toMatchObject({

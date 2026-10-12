@@ -101,13 +101,33 @@ test.describe("Remote Login Flow", () => {
     await expect(page.locator('[data-testid="login-button"]')).toBeVisible();
   });
 
-  test("successful login renders main app", async ({
+  test("unremembered direct login does not borrow another saved principal", async ({
     page,
     remoteClientURL,
     wsURL,
   }) => {
     await page.goto(remoteClientURL);
     await goToDirectLogin(page);
+
+    const savedCredentials = await page.evaluate((endpoint) => {
+      const saved = JSON.stringify({
+        version: 1,
+        hosts: [
+          {
+            id: "previous-principal",
+            displayName: "Previous principal",
+            mode: "direct",
+            wsUrl: endpoint,
+            srpUsername: "previous-user",
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      });
+      localStorage.setItem("yep-anywhere-saved-hosts", saved);
+      sessionStorage.setItem("yep-anywhere-tab-host", "previous-principal");
+      return saved;
+    }, wsURL);
+    await page.locator('[data-testid="remember-me-checkbox"]').uncheck();
 
     // Fill in login form
     await page.fill('[data-testid="ws-url-input"]', wsURL);
@@ -127,6 +147,16 @@ test.describe("Remote Login Flow", () => {
     await expect(page.locator(".sidebar")).toBeVisible({
       timeout: 5000,
     });
+    expect(
+      await page.evaluate(() =>
+        localStorage.getItem("yep-anywhere-saved-hosts"),
+      ),
+    ).toBe(savedCredentials);
+    expect(
+      await page.evaluate(() =>
+        sessionStorage.getItem("yep-anywhere-tab-credential-owner"),
+      ),
+    ).toBeNull();
   });
 
   test("wrong password shows error", async ({

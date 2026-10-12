@@ -589,6 +589,13 @@ reload banner stays, since reloading their own page is theirs to do. Hiding is
 cosmetic; the middleware above is the enforcement, and it refuses the restart,
 safe-restart, and Codex update routes.
 
+Client identity remains unresolved until the current server's settings confirm
+that limited users are disabled, or its `/users/me` response identifies the
+acting principal. Failed identity requests never confirm the superuser
+placeholder. Switching servers immediately invalidates the displayed identity;
+responses from a previous server or superseded refresh cannot restore it.
+The placeholder is not a confirmed account for selecting browser snapshots.
+
 ### Browser defaults for limited users
 
 User direction, 2026-09-28. The superuser sets browser-local preferences
@@ -815,7 +822,11 @@ A limited user creates projects only where the superuser said they may.
   project or adding it again. A limited user adds a directory, never an
   existing project: adding a path that is already a project with another
   owner or none, or one the superuser hid, is refused, while their own
-  project may be added again. Ownership is not itself
+  project may be added again. Registered ownership applies immediately,
+  including while discovery is refreshing or retains an older snapshot.
+  Registration or hiding during directory preparation is checked again before
+  the new owner is recorded.
+  Ownership is not itself
   access: creating the project also adds it to the creator's new-session
   grants, so it is theirs to list, open, and start sessions in the moment it
   exists. That is an ordinary grant, shown in Settings → Users, and the

@@ -132,6 +132,10 @@ the disabled Start a reason. Never change the model or pool automatically.
 Store `routerPoolId` and `routerAccountId` in
 `newSessionDefaults.providers[provider]` (shared type, `newSessionDefaults.ts`,
 server parser, auto-save effect). Choosing Direct saves a cleared value.
+Since 2026-10-11 the Router account dropdown can also choose a policy override
+(`routerPolicy`) for any pool, and an account in any pool; a remembered
+choice should cover the policy too, and the Manual-only conditions below now
+apply to an explicitly picked account.
 
 Keep the saved preference separate from the effective selection. Until the user
 changes the pool in this form, derive the effective value: the saved pool

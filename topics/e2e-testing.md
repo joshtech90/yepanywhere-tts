@@ -10,7 +10,15 @@ test in that suite should exercise a failure that a smaller boundary cannot
 observe. Running an existing browser test after a change and adding a
 permanent browser test are separate decisions.
 
-Choose the smallest boundary that can falsify the observable contract:
+Before retaining or adding any case, apply
+[test value and CI cost](../docs/development/testing.md#test-value-and-ci-cost).
+Agents may remove shallow tests, including those useful only as initial
+implementation evidence. Moving a trivial mocked assertion to a cheaper layer
+does not automatically make it worth retaining. Preserve meaningful regression,
+integration and rare-race detection; reduce the seconds spent on retained cases.
+
+For a test worth retaining, choose the smallest boundary that can falsify the
+observable contract:
 
 | Contract under test | Preferred check |
 | --- | --- |
@@ -213,6 +221,10 @@ real application but does not import source modules or depend on development
 behavior. Retain Vite for source-entry/component and dev-server contracts.
 Remote relay, frozen-share layout and artifact gateway fixtures likewise use
 the invocation's `remotePreviewURL` when they require no source imports or HMR.
+The in-process Project App fixture also serves the invocation's built client;
+only its project's live-preview process needs Vite/HMR. It mounts real auth and
+server-settings services so principal resolution can admit the Apps settings
+pane. Unknown API requests return 404 instead of falling through to SPA HTML.
 The artifact gateway keeps a distinct viewer hostname, private relay and HTTPS
 artifact origin; its file route must return the remote shell rather than raw
 artifact HTML. Private fixtures can read the shared preview port without

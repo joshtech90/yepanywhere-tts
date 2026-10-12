@@ -33,10 +33,17 @@ export interface AgentAuthRouterRecovery extends AgentAuthRouterStatus {
   issue?: { code: AgentAuthRouterIssueCode; message: string };
 }
 
-export type AgentAuthRouterPoolPolicy =
-  | "manual"
-  | "round-robin"
-  | "most-remaining";
+/**
+ * An AAR pool policy id. The router owns the set; YA offers whatever it lists
+ * in `supportedPolicies`/`policies`. Only "manual" changes YA behavior: it
+ * needs an account.
+ */
+export type AgentAuthRouterPoolPolicy = string;
+/** A router policy with the router's English display name. */
+export interface AgentAuthRouterPolicyInfo {
+  id: AgentAuthRouterPoolPolicy;
+  label: string;
+}
 export interface AgentAuthRouterPool {
   id: string;
   name: string;
@@ -51,6 +58,8 @@ export interface AgentAuthRouterOverview {
   /** False for router-owned pools. Absent on legacy servers/routers. */
   canManagePools?: boolean;
   supportedPolicies?: AgentAuthRouterPoolPolicy[];
+  /** Router display names; absent from routers before 2026-10-11. */
+  policies?: AgentAuthRouterPolicyInfo[];
   admissionRefresh?: boolean;
   observedAt: string;
   quotaFreshSeconds: number;

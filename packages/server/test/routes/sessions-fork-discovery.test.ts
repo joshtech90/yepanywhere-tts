@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { encodeProjectId } from "../../src/projects/paths.js";
 import {
   createSessionsRoutes,
@@ -16,10 +15,15 @@ import { PiSessionReader } from "../../src/sessions/pi-reader.js";
 import { ClaudeSessionReader } from "../../src/sessions/reader.js";
 import { Supervisor } from "../../src/supervisor/Supervisor.js";
 import type { Project } from "../../src/supervisor/types.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 const directories: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  closeTestDiscoveryDatabases();
   await Promise.all(
     directories
       .splice(0)
@@ -137,9 +141,7 @@ describe("fork discovery before immediate navigation", () => {
             : { sessionId, filePath };
         },
       );
-      const metadata = new SessionMetadataService({
-        dataDir: join(dir, "metadata"),
-      });
+      const metadata = createTestSessionMetadataService(join(dir, "metadata"));
       await metadata.initialize();
       const settings = {
         permissionMode: "bypassPermissions" as const,

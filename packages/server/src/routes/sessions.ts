@@ -46,7 +46,8 @@ import {
   type ClearloopService,
 } from "../services/ClearloopService.js";
 import { turnIndexOf } from "../sessions/turn-index.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { hostname } from "node:os";
 import { performance } from "node:perf_hooks";
 import { Hono } from "hono";
@@ -162,10 +163,12 @@ import type {
 import {
   ForkSettingsPersistenceError,
   ResumeCompactionError,
+  routedSessionUnsupportedMessage,
   RetryableSessionLaunchError,
   SessionConfigurationConflictError,
   SessionMessageRejectedError,
 } from "../supervisor/Supervisor.js";
+import { RouterUnavailable } from "../services/AgentAuthRouter.js";
 import type { QueuedResponse } from "../supervisor/WorkerQueue.js";
 import type {
   ContentBlock,
@@ -426,7 +429,7 @@ async function resolveSessionReader({
 interface StartSessionBody {
   routerAccountId?: string;
   routerPoolId?: string;
-  routerPolicy?: "manual" | "round-robin" | "most-remaining";
+  routerPolicy?: string;
   creationProvenance?: SessionCreationProvenance;
   computerControl?: boolean;
   machineControl?: boolean;
@@ -480,7 +483,7 @@ function hasSessionMessageContent(body: StartSessionBody): boolean {
 interface CreateSessionBody {
   routerAccountId?: string;
   routerPoolId?: string;
-  routerPolicy?: "manual" | "round-robin" | "most-remaining";
+  routerPolicy?: string;
   creationProvenance?: SessionCreationProvenance;
   computerControl?: boolean;
   machineControl?: boolean;
@@ -2107,6 +2110,12 @@ function extractContextUsageFromSDKMessages(
 
 export function createSessionsRoutes(deps: SessionsDeps): Hono {
   const routes = new Hono();
+  // Successors of a router-pinned session would launch without its pin and
+  // run on the owner's direct provider login; refuse them up front.
+  const isRoutedSession = (sessionId: string): boolean =>
+    Boolean(
+      deps.sessionMetadataService?.getMetadata?.(sessionId)?.routerBinding,
+    );
   const recordCreationProvenance = async (
     sessionId: string,
     value: unknown,
@@ -5632,6 +5641,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
   routes.post("/projects/:projectId/sessions/:sessionId/restart", async (c) => {
     const projectId = c.req.param("projectId");
     const sessionId = c.req.param("sessionId");
+    if (isRoutedSession(sessionId)) {
+      return c.json(
+        { error: routedSessionUnsupportedMessage("Restart and handoff") },
+        409,
+      );
+    }
 
     if (!isUrlProjectId(projectId)) {
       return c.json({ error: "Invalid project ID format" }, 400);
@@ -5867,7 +5882,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             error:
               error instanceof Error ? error.message : "Transcript fork failed",
           },
-          500,
+          error instanceof RouterUnavailable ? 409 : 500,
         );
       }
 
@@ -6141,6 +6156,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     async (c) => {
       const projectId = c.req.param("projectId");
       const sessionId = c.req.param("sessionId");
+      if (isRoutedSession(sessionId)) {
+        return c.json(
+          { error: routedSessionUnsupportedMessage("Handoff") },
+          409,
+        );
+      }
       if (!isUrlProjectId(projectId)) {
         return c.json({ error: "Invalid project ID format" }, 400);
       }
@@ -7320,6 +7341,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         },
         "Transcript fork failed",
       );
+      // A copy of a pinned session that could not keep its account.
+      if (error instanceof RouterUnavailable) {
+        return c.json({ error: error.message }, 409);
+      }
       return c.json(
         hasIntentFields && !(error instanceof ForkSettingsPersistenceError)
           ? {
@@ -7427,6 +7452,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
   routes.post("/projects/:projectId/sessions/:sessionId/retitle", async (c) => {
     const projectId = c.req.param("projectId");
     const sessionId = c.req.param("sessionId");
+    if (isRoutedSession(sessionId)) {
+      return c.json(
+        { error: routedSessionUnsupportedMessage("Title generation") },
+        409,
+      );
+    }
 
     if (!isUrlProjectId(projectId)) {
       return c.json({ error: "Invalid project ID format" }, 400);
@@ -7648,6 +7679,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     async (c) => {
       const projectId = c.req.param("projectId");
       const sessionId = c.req.param("sessionId");
+      // Its summary step calls the provider directly, without the pin.
+      if (isRoutedSession(sessionId)) {
+        return c.json(
+          { error: routedSessionUnsupportedMessage("Fork with summary") },
+          409,
+        );
+      }
 
       if (!isUrlProjectId(projectId)) {
         return c.json({ error: "Invalid project ID format" }, 400);
@@ -9061,14 +9099,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
   // POST /api/projects/:projectId/sessions/:sessionId/clone - Clone a session
   routes.post("/projects/:projectId/sessions/:sessionId/clone", async (c) => {
-    if (
-      deps.sessionMetadataService?.getMetadata(c.req.param("sessionId"))
-        ?.routerBinding
-    )
-      return c.json(
-        { error: "Clone of routed sessions is not supported yet" },
-        409,
-      );
     const projectId = c.req.param("projectId");
     const sessionId = c.req.param("sessionId");
 
@@ -9115,6 +9145,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         : undefined;
 
     try {
+      // A copy of a router-pinned session must be able to keep its account.
+      deps.supervisor.assertRouterBindingInheritable(sessionId);
       // Get session directory from project
       const sessionDir = project.sessionDir;
       if (!sessionDir) {
@@ -9239,6 +9271,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       } else {
         result = await cloneClaudeSession(sessionDir, sessionId);
       }
+      // The Codex path forks through the Supervisor, which already did this.
+      if (!shouldCloneFromCodex) {
+        const copyId = result.newSessionId;
+        await deps.supervisor.inheritRouterBinding(sessionId, copyId, () =>
+          rm(join(sessionDir, `${copyId}.jsonl`), { force: true }),
+        );
+      }
       if (cloneSettings) {
         await deps.supervisor.recordForkLaunchSettings(
           result.newSessionId,
@@ -9285,7 +9324,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to clone session";
-      return c.json({ error: message }, 500);
+      return c.json(
+        { error: message },
+        error instanceof RouterUnavailable ? 409 : 500,
+      );
     }
   });
 

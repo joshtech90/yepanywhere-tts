@@ -292,11 +292,16 @@ these constraints before it ships:
   `allow-same-origin`. A dedicated untrusted origin may later receive narrowly
   justified sandbox tokens for storage/workers; it never gains YA origin.
   The isolated artifact origin's frames and its response `sandbox` directive
-  share one token list, `ARTIFACT_SANDBOX` in `packages/shared`, and it grants
-  no popups, downloads, or top-level navigation. A popup allowed to escape the
-  sandbox would be same-origin with its opener frame, so it could reach
-  `opener.top`, the YA tab, and navigate it (reverse tabnabbing) even though
-  it never gains YA's origin.
+  share one token list, `ARTIFACT_SANDBOX` in `packages/shared`:
+  `allow-scripts allow-same-origin allow-downloads`. It grants no popups or
+  top-level navigation. A popup allowed to escape the sandbox would be
+  same-origin with its opener frame, so it could reach `opener.top`, the YA
+  tab, and navigate it (reverse tabnabbing) even though it never gains YA's
+  origin. Downloads are allowed by maintainer decision (2026-10-09): artifact
+  HTML is the operator's own, and a page that saves a file it builds, such as
+  a Blob behind an `<a download>`, needs the token. This accepts that any
+  artifact may start a download; a download confers no YA origin, opener, or
+  navigation of the YA tab.
   Chromium refuses its PDF viewer inside any sandboxed frame, so a frame
   navigation to a PDF is answered with a hand-off page. Its Open and Download
   buttons post a `yep-artifact-tab/1` request to the parent; the viewer opens
@@ -616,6 +621,129 @@ Browsers that prohibit embedded cookies may require opening the signed link
 in a new tab; broader browser verification remains tracked in the access gap.
 WebSocket upgrades use the same app gate, as described below.
 
+### Hosted vhost sign-in
+
+Hosted vhosts can opt into **Sign-in required** in Apps. This is a visitor
+principal scoped to the configured public hostname, not a YA operator account
+or a project/session grant. Localhost, session sandbox apps, project apps and
+artifact grant URLs keep their existing access rules. OAuth admission runs
+before file serving and proxying: a private bearer link, public flag or file
+password cannot bypass an enabled sign-in policy. Apps copies the public URL
+without a bearer for these hosts. Forwarding the visitor identity to served
+content is not implemented; authentication cookies and credentials are stripped
+before proxying.
+
+Up to eight confidential OpenID Connect registrations can serve all configured
+hosts. Apps lists them with independent enable switches, editable settings and
+an add-provider action; additional registrations can be removed. The default
+registration can be disabled. Visitors choose among enabled providers using
+provider-named buttons on a responsive sign-in page. A denied login offers the
+same choices again. These pages need no scripts or external assets; their
+stylesheet is authorized by a content hash.
+The separate HTTPS callback host must route to this YA server (either its main
+listener or artifact listener); a static Pages site cannot exchange codes.
+Each pending login binds its chosen provider and callback URL. A callback at
+another configured host or path cannot consume that login. Providers may share
+the same callback URL; state selects the bound provider, never a callback query
+parameter. The callback uses authorization code flow, PKCE, state and nonce, verifies
+signed ID tokens, then issues a one-use, one-minute handoff bound to the
+initiating host and browser cookie. The return address is stored server-side
+and must be relative. Host-only `__Host-` cookies are Secure, HttpOnly and
+SameSite=Lax; no parent-domain cookie is used. App sessions last one hour and
+are memory-only. Restart requires sign-in again. Access changes, provider
+changes and app link revocation reject old sessions; configuration changes
+close app sockets. OAuth WebSockets require the same app Origin and close no
+later than session expiry.
+
+The initial allow-list is explicitly `*@*`: any authenticated account, not
+anonymous access. Rows contain case-insensitive email globs, with `*` as the
+only wildcard; an empty list denies everyone. The editor highlights rows
+covered by an exact duplicate or a simple full-side wildcard. Opening the
+sign-in region selects the first row for replacement. Up to 32 rows per host
+and 1024 host policies are retained separately from legacy vhost configuration,
+so old clients cannot silently remove protection.
+
+Entra defaults to the `common` authority. Work-account domain authorization
+uses Microsoft Graph's tenant-managed member `userPrincipalName`, with `oid`
+and tenant issuer validation; it requests `openid profile email` and delegated
+`https://graph.microsoft.com/User.Read`. Guests are not accepted as company
+domain members. Personal Microsoft accounts can use the unrestricted `*@*`
+policy, but their email claims do not establish work-domain membership and do
+not satisfy narrower rows. Generic OIDC requires a verified email in the
+signed ID token or subject-checked UserInfo response. Provider consent policy
+and publisher verification remain external prerequisites.
+
+Without environment configuration, the owner configures the provider and a
+masked secret in Apps. The Google preset fills the standard OIDC issuer
+`https://accounts.google.com`; it still requires the owner's registered client
+ID, secret and callback URL. Custom OIDC issuers remain editable. The preset
+uses the existing `oidc` wire format and needs no new server capability.
+The full saved secret is never returned; the empty secret field shows only a
+masked placeholder with a four-character suffix for values at least twelve
+characters long.
+Shorter values show no suffix. Settings persist owner-only under
+`{dataDir}/artifacts/vhost-oauth.json`. For environment-managed deployments,
+set all three required variables:
+
+- `YEP_VHOST_OAUTH_CLIENT_ID`
+- `YEP_VHOST_OAUTH_CLIENT_SECRET` (the secret value, not its registration ID)
+- `YEP_VHOST_OAUTH_CALLBACK_URL` (the registered exact HTTPS callback URL)
+
+Optional variables are `YEP_VHOST_OAUTH_PROVIDER` (`entra` by default, or
+`oidc`), `YEP_VHOST_OAUTH_TENANT_ID` (`common`, `organizations`, or a directory
+UUID), `YEP_VHOST_OAUTH_ISSUER` (required for generic OIDC), and
+`YEP_VHOST_OAUTH_VISITOR_IP` (`peer`, `cloudflare`, or `x-real-ip`). Any OAuth
+environment variable activates this authoritative mode: incomplete/invalid
+configuration fails explicitly. The default provider settings become read-only in Apps,
+with an environment-management explanation and no provider-save action;
+the full environment secret is neither returned nor copied into persisted settings.
+Additional providers and host allow-lists remain editable. Provider configuration never enables a host
+implicitly. Restart after changing environment variables.
+
+The separate **Enable hosted sign-in** switch defaults on and becomes
+effective when environment or manual provider configuration is complete.
+Switching off retains credentials and every email list, including across
+restart, and remains available when environment settings lock provider edits.
+It invalidates sessions, pending sign-ins and app sockets. Hosts requiring
+sign-in stay blocked with HTTP 503 while disabled or unconfigured; Apps
+highlights those host rows red with the reason. Their saved email lists remain
+editable for repair. Re-enabling requires a fresh sign-in. Older OAuth servers
+without the `enabled` status field retain their existing behavior and receive
+no requests to the enable endpoint.
+
+Disabling or removing any provider invalidates pending logins, app sessions and
+sockets. With no enabled configured provider, protected hosts remain blocked.
+Existing single-provider storage and API writes address the default provider
+and preserve additional providers. This additive storage choice preserves
+configured credentials and old-client edits without replacing the saved schema.
+Environment credentials are never copied into that storage.
+
+The separate `vhost-oauth-providers` capability gates provider-list management
+routes and controls. Without it, clients retain the single-provider form and
+make no requests to `/artifacts/vhosts/oauth/providers/:id` or its enable route.
+The optional-feature release review checked v0.9.1 and v0.9.2 (the latest two
+stable releases; none were released in the preceding fourteen days on
+2026-10-10). Both predate hosted OAuth. The original `vhost-oauth-access`
+capability keeps its existing meaning and fallback.
+
+Only completed browser-bound OAuth checks are logged, with UTC timestamp,
+hostname, account address when available, outcome and optional IP. Ordinary paths,
+asset requests, authorization codes and tokens are not logged. Apps provides
+per-host history icons after first access, an overall log view, manual refresh
+and a download of the latest 500 checks. The owner-only JSONL journal is
+`{dataDir}/artifacts/logs/vhost-oauth-access.jsonl`; it rotates at one MiB into
+compressed archives. The default IP source is the TCP peer, excluding loopback.
+Explicit tunnel modes accept the selected header only from a loopback peer;
+the operator must ensure the tunnel overwrites that header. Raw forwarded
+headers are not trusted by default.
+
+The optional `vhost-oauth-access` capability gates the new controls and API
+requests. The reviewed v0.9.0–v0.9.2 release corpus lacks it; older servers keep
+their existing Apps behavior without OAuth requests. Provider and log routes
+remain behind YA owner authentication. Tests exercise signed-token rejection,
+browser/host binding, expiry, revocation, credential stripping and sequential
+email entry under concurrent browser updates.
+
 ### App WebSocket access
 
 The Node main listener and separate artifact listener route app upgrades to
@@ -703,8 +831,9 @@ The granted directory supports relative stylesheets, images/SVG, webfonts,
 classic scripts, modules/dynamic imports, JSON fetches, and linked HTML files.
 Root-relative paths address the artifact host itself and are not mapped to a
 grant. Directory indexes, history-router fallback, service workers, nested
-frames, popups, forms, downloads, native bridges, and device permissions are
-not supplied; a PDF reaches a new tab only through the viewer's hand-off
+frames, popups, forms, native bridges, and device permissions are not
+supplied, though a page may start downloads (*Sandboxed embedding*); a PDF
+reaches a new tab only through the viewer's hand-off
 described under *Sandboxed embedding*. External HTTP(S)/WebSocket services remain subject to the
 browser's ordinary network/CORS rules and the artifact author's setup.
 

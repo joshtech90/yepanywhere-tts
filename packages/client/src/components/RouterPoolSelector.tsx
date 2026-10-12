@@ -14,17 +14,33 @@ import { FilterDropdown } from "./FilterDropdown";
 export interface RouterSelection {
   sourceKey: string;
   poolId: string;
+  /** A picked account; the router pins it with policy "manual". */
   accountId: string;
+  /** A policy overriding the pool default; absent means the default. */
+  policy?: string;
 }
 import styles from "./RouterPoolSelector.module.css";
 
 const DIRECT = "";
 
-export const ROUTER_POLICY_KEYS = {
-  manual: "routerPoolManual",
-  "round-robin": "routerPoolRoundRobin",
-  "most-remaining": "routerPoolMostRemaining",
-} as const satisfies Record<AgentAuthRouterPoolPolicy, string>;
+const POLICY_OPTION = "policy:";
+
+/** The router's English name for a policy, or its id. */
+export function routerPolicyLabel(
+  data: Pick<AgentAuthRouterOverview, "policies"> | null | undefined,
+  policy: AgentAuthRouterPoolPolicy,
+): string {
+  return data?.policies?.find((p) => p.id === policy)?.label ?? policy;
+}
+
+/** Policies the router offers, in its order. */
+function routerPolicies(data: AgentAuthRouterOverview | null) {
+  return (
+    data?.policies ??
+    data?.supportedPolicies?.map((id) => ({ id, label: id })) ??
+    []
+  );
+}
 
 const EFFORT_KEYS = {
   low: "effortLevelLowLabel",
@@ -58,7 +74,7 @@ export function routerBindingChip(
   t: Translate,
   binding: RouterBinding,
 ): { label: string; tooltip: string } {
-  const policy = binding.policy && t(ROUTER_POLICY_KEYS[binding.policy]);
+  const policy = binding.policyLabel ?? binding.policy;
   const names = [binding.poolName, binding.accountDisplayName].filter(Boolean);
   return {
     label: names.join(" · ") || policy || t("routerChipFallback"),
@@ -451,46 +467,84 @@ export function RouterPoolSelector({
     return { accounts, concreteModel, modelLabel };
   };
   const poolAccounts = pool ? describePool(pool.id) : null;
+  // Any pool offers its default, the router's other automatic policies, and
+  // each account. The pool's policy is only a default.
+  const listed = routerPolicies(data);
+  const automatic = pool
+    ? [
+        ...(listed.some((p) => p.id === pool.policy)
+          ? []
+          : [{ id: pool.policy, label: pool.policy }]),
+        ...listed,
+      ]
+        .filter((p) => p.id !== "manual")
+        .sort(
+          (a, b) => Number(b.id === pool.policy) - Number(a.id === pool.policy),
+        )
+    : [];
   const chooseAccount =
-    pool?.policy === "manual" &&
-    poolAccounts &&
-    poolAccounts.accounts.length > 1 ? (
+    pool && poolAccounts?.accounts.length ? (
       <div className={`new-session-helper-section ${styles.section}`}>
         <h3>{accountLabel}</h3>
         <FilterDropdown<string>
           label={accountLabel}
-          options={poolAccounts.accounts.map((a, index) => {
-            const issue = routerAccountIssue(
-              t,
-              a,
-              model,
-              poolAccounts.modelLabel,
-              poolAccounts.concreteModel,
-              thinking,
-            );
-            return {
-              value: a.id,
-              label:
-                a.displayName ||
-                t("routerAccountNumber", { number: index + 1 }),
-              description: issue?.text,
-              icon: dot(
-                issue ? (issue.blocking ? "blocked" : "advice") : "ready",
-              ),
-              meta: <AccountQuota account={a} />,
-              disabled: disabled || !!issue?.blocking,
-            };
-          })}
+          options={[
+            ...automatic.map((p) => ({
+              value: `${POLICY_OPTION}${p.id}`,
+              label: p.label,
+              description:
+                p.id === pool.policy ? t("routerPolicyPoolDefault") : undefined,
+              icon: dot(members.length ? "ready" : "blocked"),
+              disabled: disabled || !members.length,
+            })),
+            ...poolAccounts.accounts.map((a, index) => {
+              const issue = routerAccountIssue(
+                t,
+                a,
+                model,
+                poolAccounts.modelLabel,
+                poolAccounts.concreteModel,
+                thinking,
+              );
+              return {
+                value: a.id,
+                label:
+                  a.displayName ||
+                  t("routerAccountNumber", { number: index + 1 }),
+                description: issue?.text,
+                icon: dot(
+                  issue ? (issue.blocking ? "blocked" : "advice") : "ready",
+                ),
+                meta: <AccountQuota account={a} />,
+                disabled: disabled || !!issue?.blocking,
+              };
+            }),
+          ]}
           selected={
             value?.accountId
               ? [value.accountId]
-              : members.length === 1 && members[0]
-                ? [members[0].id]
-                : []
+              : value?.policy
+                ? [`${POLICY_OPTION}${value.policy}`]
+                : pool.policy !== "manual"
+                  ? [`${POLICY_OPTION}${pool.policy}`]
+                  : members.length === 1 && members[0]
+                    ? [members[0].id]
+                    : []
           }
-          onChange={([accountId]) => {
-            if (!disabled && value && accountId !== undefined)
-              onChange({ ...value, accountId });
+          onChange={([choice]) => {
+            if (disabled || !value || choice === undefined) return;
+            if (!choice.startsWith(POLICY_OPTION))
+              return onChange({
+                ...value,
+                accountId: choice,
+                policy: undefined,
+              });
+            const policy = choice.slice(POLICY_OPTION.length);
+            onChange({
+              ...value,
+              accountId: "",
+              policy: policy === pool.policy ? undefined : policy,
+            });
           }}
           multiSelect={false}
           placeholder={t("routerPoolChooseAccount")}
@@ -544,7 +598,7 @@ export function RouterPoolSelector({
                 value: p.id,
                 label: p.name,
                 description: [
-                  t(ROUTER_POLICY_KEYS[p.policy]),
+                  routerPolicyLabel(data, p.policy),
                   compatible.length
                     ? t("routerPoolCompatibleAccounts", {
                         count: compatible.length,

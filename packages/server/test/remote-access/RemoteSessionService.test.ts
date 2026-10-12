@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getLogger } from "../../src/logging/logger.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encrypt } from "../../src/crypto/nacl-wrapper.js";
 import { RemoteSessionService } from "../../src/remote-access/RemoteSessionService.js";
@@ -87,6 +88,21 @@ describe("RemoteSessionService", () => {
       expect(session).toBeNull();
     });
 
+    it("classifies missing and expired sessions locally without changing the public refusal", async () => {
+      expect(service.getResumeSessionFailure("absent")).toBe("missing_session");
+      const id = await service.createSession(
+        "testuser",
+        new Uint8Array(32).fill(0x42),
+      );
+      expect(service.getResumeSessionFailure(id)).toBeNull();
+      const session = service.getSession(id);
+      if (!session) throw new Error("Missing fixture session");
+      session.lastUsed = new Date(
+        Date.now() - 8 * 24 * 60 * 60 * 1000,
+      ).toISOString();
+      expect(service.getResumeSessionFailure(id)).toBe("expired_session");
+    });
+
     it("returns session for valid session ID", async () => {
       const sessionKey = new Uint8Array(32).fill(0x42);
       const sessionId = await service.createSession("testuser", sessionKey);
@@ -140,7 +156,7 @@ describe("RemoteSessionService", () => {
     });
 
     it("rejects proof with old timestamp", async () => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const log = vi.spyOn(getLogger(), "info").mockImplementation(() => {});
       const sessionKey = new Uint8Array(32).fill(0x42);
       const sessionId = await service.createSession("testuser", sessionKey);
       const challenge = "test-challenge";
@@ -161,11 +177,36 @@ describe("RemoteSessionService", () => {
         challenge,
       );
       expect(validatedSession).toBeNull();
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("Resume proof rejected due to timestamp skew"),
+      expect(log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "srp_resume_refused",
+          phase: "proof",
+          sessionId,
+          reason: "timestamp_skew",
+        }),
+        "SRP resume proof refused",
       );
-      warn.mockRestore();
+      expect(JSON.stringify(log.mock.calls)).not.toContain(proof);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(
+        Buffer.from(sessionKey).toString("base64"),
+      );
+      log.mockRestore();
     });
+
+    it.each([undefined, null, "now"])(
+      "rejects a non-numeric proof timestamp: %s",
+      async (timestamp) => {
+        const key = new Uint8Array(32).fill(0x42);
+        const sessionId = await service.createSession("testuser", key);
+        const challenge = "test-challenge";
+        const proof = JSON.stringify(
+          encrypt(JSON.stringify({ timestamp, sessionId, challenge }), key),
+        );
+        expect(
+          await service.validateProof(sessionId, proof, challenge),
+        ).toBeNull();
+      },
+    );
 
     it("accepts proof within the 5 minute skew window", async () => {
       const sessionKey = new Uint8Array(32).fill(0x42);

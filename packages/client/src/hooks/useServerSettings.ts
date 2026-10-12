@@ -1,7 +1,22 @@
+import {
+  type ServerSettingsSnapshot,
+  type ServerSettingsResponse,
+  EMPTY_SERVER_SETTINGS_SNAPSHOT,
+  SERVER_SETTINGS_QUERY_KEY,
+  subscribeServerSettingsSnapshots,
+  getServerSettingsSnapshot,
+  acceptServerSettingsSnapshot,
+  nextMutationObservedAt,
+  applySettingsQuerySnapshot,
+} from "../lib/serverSettingsQuery";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { ServerSettings } from "../api/client";
+import type { NewSessionDefaults } from "@yep-anywhere/shared";
 import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext";
-import { createClientQueryKey } from "../lib/clientQueryController";
+import {
+  ensureClientQuery,
+  type ClientQueryRequestContext,
+} from "../lib/clientQueryController";
 import {
   type ClientSummarySourceKey,
   LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
@@ -14,6 +29,7 @@ import { useRetainedClientQuery } from "./useRetainedClientQuery";
 
 interface UseServerSettingsResult {
   settings: ServerSettings | null;
+  displayDefaults: NewSessionDefaults | undefined;
   isLoading: boolean;
   error: string | null;
   /** Resolves with the settings the server accepted, once they are applied. */
@@ -25,72 +41,7 @@ interface UseServerSettingsResult {
   refetch: () => Promise<void>;
 }
 
-interface ServerSettingsSnapshot {
-  settings: ServerSettings | null;
-  observedAt?: number;
-}
-
-const EMPTY_SERVER_SETTINGS_SNAPSHOT: ServerSettingsSnapshot = {
-  settings: null,
-};
-
-const SERVER_SETTINGS_QUERY_KEY = createClientQueryKey({
-  endpoint: "settings",
-});
 const SERVER_SETTINGS_REVALIDATE_EVENTS = ["refresh", "reconnect"] as const;
-type ServerSettingsResponse = { settings: ServerSettings };
-
-const serverSettingsSnapshotsBySource = new Map<
-  ClientSummarySourceKey,
-  ServerSettingsSnapshot
->();
-const serverSettingsSnapshotListeners = new Set<() => void>();
-
-function emitServerSettingsSnapshotChange(): void {
-  for (const listener of Array.from(serverSettingsSnapshotListeners)) {
-    listener();
-  }
-}
-
-function subscribeServerSettingsSnapshots(listener: () => void): () => void {
-  serverSettingsSnapshotListeners.add(listener);
-  return () => {
-    serverSettingsSnapshotListeners.delete(listener);
-  };
-}
-
-function getServerSettingsSnapshot(
-  sourceKey: ClientSummarySourceKey,
-): ServerSettingsSnapshot {
-  return (
-    serverSettingsSnapshotsBySource.get(sourceKey) ??
-    EMPTY_SERVER_SETTINGS_SNAPSHOT
-  );
-}
-
-function acceptServerSettingsSnapshot(
-  sourceKey: ClientSummarySourceKey,
-  settings: ServerSettings,
-  observedAt: number,
-): void {
-  const current = serverSettingsSnapshotsBySource.get(sourceKey);
-  if (current?.observedAt !== undefined && current.observedAt > observedAt) {
-    return;
-  }
-
-  serverSettingsSnapshotsBySource.set(sourceKey, {
-    settings,
-    observedAt,
-  });
-  emitServerSettingsSnapshotChange();
-}
-
-function nextMutationObservedAt(sourceKey: ClientSummarySourceKey): number {
-  const currentObservedAt =
-    serverSettingsSnapshotsBySource.get(sourceKey)?.observedAt ??
-    Number.NEGATIVE_INFINITY;
-  return Math.max(Date.now(), currentObservedAt + 1);
-}
 
 function getSourceTransport(sourceKey: ClientSummarySourceKey) {
   return getSourceRuntimeRegistry().getOrCreateSourceRuntime(sourceKey)
@@ -103,6 +54,26 @@ function fetchServerSettingsForSource(
   return getSourceTransport(sourceKey).fetch<ServerSettingsResponse>(
     "/settings",
   );
+}
+
+async function fetchSettingsQuery(context: ClientQueryRequestContext) {
+  try {
+    return await fetchServerSettingsForSource(context.sourceKey);
+  } catch (err) {
+    console.error("[useServerSettings] Failed to fetch settings:", err);
+    throw err;
+  }
+}
+
+/** Local entrypoint hint; mounted consumers join the same source-owned read. */
+export async function primeLocalServerSettings() {
+  await ensureClientQuery({
+    sourceKey: LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+    key: SERVER_SETTINGS_QUERY_KEY,
+    fetcher: fetchSettingsQuery,
+    applySnapshot: applySettingsQuerySnapshot,
+  });
+  return getServerSettingsSnapshot(LOCAL_CLIENT_SUMMARY_SOURCE_KEY).settings;
 }
 
 function updateServerSettingsForSource(
@@ -130,10 +101,7 @@ function useServerSettingsSnapshot(
   );
 }
 
-export function resetServerSettingsForTests(): void {
-  serverSettingsSnapshotsBySource.clear();
-  serverSettingsSnapshotListeners.clear();
-}
+export { resetServerSettingsForTests } from "../lib/serverSettingsQuery";
 
 /**
  * Hook for managing server-wide settings.
@@ -165,21 +133,8 @@ export function useServerSettings(): UseServerSettingsResult {
     ready,
     hasData: snapshot.observedAt !== undefined,
     revalidateOn: SERVER_SETTINGS_REVALIDATE_EVENTS,
-    fetcher: async (context) => {
-      try {
-        return await fetchServerSettingsForSource(context.sourceKey);
-      } catch (err) {
-        console.error("[useServerSettings] Failed to fetch settings:", err);
-        throw err;
-      }
-    },
-    applySnapshot: (response, context) => {
-      acceptServerSettingsSnapshot(
-        context.sourceKey,
-        response.settings,
-        context.requestStartedAt,
-      );
-    },
+    fetcher: fetchSettingsQuery,
+    applySnapshot: applySettingsQuerySnapshot,
   });
 
   useEffect(() => {
@@ -226,6 +181,7 @@ export function useServerSettings(): UseServerSettingsResult {
 
   return {
     settings: snapshot.settings,
+    displayDefaults: snapshot.displayDefaults,
     isLoading: loading,
     error: mutationError ?? (queryError ? queryError.message : null),
     updateSettings,

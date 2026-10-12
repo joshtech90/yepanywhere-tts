@@ -19,6 +19,14 @@ pnpm dev
 
 Open http://localhost:3400 in your browser.
 
+For everyday use of a source checkout with fewer browser requests, run
+`pnpm dev --built-client`. It builds the client once at startup and again on
+manual reload, serves cached production chunks, and keeps the source backend
+and provider-host reload support. Client edits wait for a successful reload
+and browser refresh. Plain `pnpm dev` keeps HMR. See
+[built-client lifecycle](../../topics/reload-safe-provider-runtimes.md#built-client-for-everyday-source-checkout-use)
+for build failure and asset retention behavior.
+
 If you only want the main app and do not want to install the relay workspace, use:
 
 ```bash
@@ -67,7 +75,7 @@ Server state is stored in a data directory (default: `~/.yep-anywhere/`). This i
 - `logs/` - Server logs
 - `indexes/` - Session index cache
 - `uploads/` - Uploaded files
-- `session-metadata.json` - Custom titles, archive/starred status
+- `discovery.sqlite` - Session metadata (custom titles, archive/starred status) and other durable SQLite state
 - `notifications.json` - Last-seen timestamps
 - `push-subscriptions.json` - Web push subscriptions
 - `vapid.json` - VAPID keys for push

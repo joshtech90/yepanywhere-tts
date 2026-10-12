@@ -439,10 +439,21 @@ function hasGlibcRuntime(): boolean {
   if (typeof process.report?.getReport !== "function") {
     return false;
   }
-  const report = process.report.getReport() as {
-    header?: { glibcVersionRuntime?: string };
+  // Node supports this since 22.0; the workspace's report type omits it.
+  const processReport = process.report as typeof process.report & {
+    excludeNetwork: boolean;
   };
-  return Boolean(report.header?.glibcVersionRuntime);
+  const excludeNetwork = processReport.excludeNetwork;
+  try {
+    // Libc selection must not wait for interface inspection or reverse DNS.
+    processReport.excludeNetwork = true;
+    const report = processReport.getReport() as {
+      header?: { glibcVersionRuntime?: string };
+    };
+    return Boolean(report.header?.glibcVersionRuntime);
+  } finally {
+    processReport.excludeNetwork = excludeNetwork;
+  }
 }
 
 function getClaudeSdkNativePackageNames(): string[] {
@@ -1124,6 +1135,7 @@ export class ClaudeProvider implements AgentProvider {
   private cachedModelsAt = 0;
   private modelCacheGeneration = 0;
   private probePromise: Promise<ModelInfo[]> | null = null;
+  private cliAuthPromise: Promise<AuthStatus | null> | null = null;
   protected modelCatalogStatus: ModelCatalogStatus | undefined;
   private getAdditionalModelSelections: () =>
     | readonly ClaudeAdditionalModelSelection[]
@@ -1307,6 +1319,17 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   private async getCliAuthStatus(): Promise<AuthStatus | null> {
+    if (this.cliAuthPromise) return this.cliAuthPromise;
+    const pending = this.readCliAuthStatus();
+    this.cliAuthPromise = pending;
+    try {
+      return await pending;
+    } finally {
+      this.cliAuthPromise = null;
+    }
+  }
+
+  private async readCliAuthStatus(): Promise<AuthStatus | null> {
     try {
       const claudePath = resolveLocalClaudeCodeExecutable();
       if (!claudePath) return null;
@@ -2483,6 +2506,8 @@ export class ClaudeProvider implements AgentProvider {
         options: {
           cwd: effectiveCwd,
           resume: options.resumeSessionId,
+          // Claude writes a new session under YA's id (plan 150 step 4).
+          sessionId: options.resumeSessionId ? undefined : options.newSessionId,
           resumeSessionAt: options.resumeSessionAt,
           ...(options.resumeSessionAt && options.resumeDropsTurn
             ? { resumeDropsTurn: options.resumeDropsTurn }

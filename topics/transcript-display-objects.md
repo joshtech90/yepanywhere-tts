@@ -76,8 +76,9 @@ for the storage choice:
 2. **A YA (server) restart** — they reappear in the same transcript position
    after the server bounces.
 
-- **Implemented server-side.** Objects live in `session-metadata.json`,
-  associated with the source YA session. Metadata REST responses and
+- **Implemented server-side.** Objects live in session metadata (the
+  `session_metadata` table of `discovery.sqlite`), associated with the source
+  YA session. Metadata REST responses and
   `session-metadata-changed` events carry the complete current object set, so
   clients converge across tabs and devices.
 - Schema versions are additive over existing metadata. Older files migrate in

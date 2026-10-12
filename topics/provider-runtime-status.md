@@ -391,7 +391,7 @@ data if it becomes reliably available, otherwise use bounded runtime status.
 Terminal runtime status is retained in a bounded, in-memory Supervisor map
 keyed by YA session id. It survives provider process reaping and client
 disconnects, but not a YA server restart. It is not stored in
-`session-metadata.json` and is not a transcript display object.
+session metadata and is not a transcript display object.
 
 The map has a fixed entry cap and no timer or background loop. A retained
 status must never retain a provider process, watcher, heartbeat, or client

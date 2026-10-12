@@ -71,6 +71,50 @@ removed after bootstrap. Without it, missing, malformed, non-JSON, mismatched,
 or unavailable prior metadata/assets fail the deployment. This does not
 complete direct/LAN static-server generation retention or static encoding.
 
+For an initial New Session URL, both browser entrypoints resolve the app,
+layout and page component wrappers before mounting React. The hosted entry
+also resolves the applicable direct or relay connection gate. Downloaded
+modules must not introduce another series of loading fallbacks merely because
+their component wrappers have not yet observed the resolved imports. Connection
+and data readiness keep their existing boundaries; the preboot composer retains
+typing until the real form adopts it. Other initial routes remain lazy.
+
+The local New Session entry starts version/capability discovery alongside its
+settings, projects and recent-visit reads while route modules load. Mounted
+consumers join the same retained query, including when it already completed.
+Capability-dependent requests still require the returned current-source facts;
+early acquisition neither invents support nor delays mounting on its response.
+
+For New Session and Settings URLs, the local entry starts settings and version
+HTTP reads before loading the React runtime. Only New Session then acquires the
+selected provider as soon as current settings resolve; opening Settings does
+not start a provider probe through this entry.
+Their state owners are independent of React and the remote transport
+implementation; mounted hooks consume the same accepted snapshots and query
+identities. Desktop authentication still uses the canonical plain HTTP helper.
+Remote clients acquire through their connected transport, and direct access to
+the wrong Vite port starts no early API reads. Speech-validation follow-ups
+remain retained only while a version consumer is mounted.
+
+The question badge and menu used by navigation are separate from the inline
+question-message renderer. Showing the sidebar must not load KaTeX, Markdown
+renderers or file viewers through that badge. Session messages still acquire
+their rich rendering code with the session route. A built-client browser check
+requires New Session to mount without requesting the KaTeX chunk.
+
+## Shared package initialization
+
+The shared package declares its library modules free of import-time effects
+outside their own exports. Bundlers can therefore omit unused modules reached
+through its root barrel and load provider schemas with their actual consumers.
+This preserves validation when a consumer imports a schema; it avoids eagerly
+constructing unrelated schemas merely to import a helper or constant.
+
+The frame-search agent is the explicit exception in both source and compiled
+paths: importing that entry installs browser listeners. Its package metadata
+preserves that installation. Build tests exercise a helper-only initial graph,
+a deferred validator with valid and invalid data, and the frame-agent installer.
+
 ## Development dependency graphs and manual reload
 
 Local and remote Vite development servers keep separate optimized-dependency
@@ -89,20 +133,23 @@ Notifications use `VITE_API_PORT` when explicitly set, otherwise the launch's
 
 Manual mode preserves the current page only while it can use its loaded code.
 Before acquiring a dynamic module, the browser checks the Vite source
-generation. If source has changed, it reloads the current URL before executing
-the import, preserving query/hash and browser-stored drafts, including the
-pre-boot new-session composer's text
-([early typing handoff](early-typing-handoff.md#pre-boot-composer)). Only a
+generation. If source has changed, the import rejects with an instruction to
+reload the tab when ready. It must not navigate or reload the document:
+background imports cannot opt every open tab into a frontend update. A route
+that needs changed code offers the existing error boundary's manual Reload
+Page action; already loaded code continues until the user chooses to refresh.
+Only a
 change to a file in Vite's served module graph moves the generation; a file no
 page has loaded (a test, scratch output, a doc under the client root) cannot
 leave a page stale, and treating it as a change made every booting tab reload
 and restart its load while peers wrote unrelated files. The generation is
 checked again after acquisition (including failed imports), so a concurrent
 edit cannot return a stale module to the caller. An unchanged generation does
-not reload; a fresh document adopts the new generation. Check failures remain
-explicit errors rather than silently importing unchecked code.
+not reload; a manually refreshed document adopts the new generation. An
+unreachable generation endpoint retries before allowing the import with an
+explicit warning; unavailability alone does not prove a version mismatch.
 
-This is a development-only browser recovery, not a server restart or a
+This is a development-only import guard, not a server restart or a
 minimum-server-version requirement. It neither interrupts provider sessions
 nor adds requests to production/hosted clients. The runtime upgrade notice
 remains advisory for older servers. The chosen boundary is module acquisition

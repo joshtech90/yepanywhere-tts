@@ -239,6 +239,12 @@ export interface StartSessionOptions {
   /** Session ID to resume (optional) */
   resumeSessionId?: string;
   /**
+   * YA's id for a new session. Providers that accept a caller-chosen id use
+   * it as the native id, so the session never changes id once its provider
+   * reports one; others ignore it. Never set together with `resumeSessionId`.
+   */
+  newSessionId?: string;
+  /**
    * Resume only up to and including the message with this transcript UUID.
    * Used with `resumeSessionId` to drop an unsafe transcript tail (e.g. a
    * trailing SDK API-error message). Providers without prefix-resume support

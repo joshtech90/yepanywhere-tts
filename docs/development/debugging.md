@@ -28,7 +28,7 @@ Environment variables:
 
 Remote collection of browser `console.log/warn/error` from mobile clients. Useful for debugging connection issues on devices where you can't open DevTools.
 
-**Enable:** Developer Mode settings → "Remote Log Collection" toggle.
+**Enable:** Developer Mode settings → "Browser Diagnostics" toggle.
 
 **Storage:** `{dataDir}/logs/client-logs/` (default: `~/.yep-anywhere/logs/client-logs/`). One JSONL file per device per day, named `client-{YYYY-MM-DD}-{deviceId}.jsonl`. The device UUID is persisted in the client's `localStorage`.
 
@@ -51,6 +51,50 @@ tail -f ~/.yep-anywhere/logs/client-logs/*.jsonl
 ```
 
 **Implementation:** `packages/client/src/lib/diagnostics/ClientLogCollector.ts` (client), `packages/server/src/routes/client-logs.ts` (server `POST /api/client-logs`).
+
+## Rejected SRP resume credentials
+
+Before reproducing a lost-login problem, enable **Settings → Development →
+Retain rejected SRP sessions for debugging** on the affected browser origin.
+This default-off preference is independent of **Browser Diagnostics**; enable
+both to retain the key locally and upload safe attempt evidence. Enabling Browser
+Diagnostics queues client info and telemetry immediately and flushes if a transport
+is ready; the POST acknowledgement is the receipt, not a separate ping.
+Neither setting recovers evidence from an earlier failure.
+
+Use Chrome remote debugging/CDP (ADB for an authorized phone) on the exact hosted
+tab. Keep keys inside the browser; do not print or copy raw localStorage.
+The only operator interface is the opt-in console helper:
+
+```js
+const records = window.__YA_RESUME_DEBUG__.list(); // safe metadata; no keys
+const id = records[0].id;
+await window.__YA_RESUME_DEBUG__.probe(id); // { outcome: "authenticated" } or bounded failure
+window.__YA_RESUME_DEBUG__.cancel(id);
+window.__YA_RESUME_DEBUG__.forget(id);
+```
+
+A probe uses the saved endpoint and identity with fresh nonces and normal
+verification, checks an encrypted request and closes its socket. It does not
+change route, active credentials or source. A fresh password login can coexist
+with the retained copy, so diagnosis can continue after access returns. The copy
+expires after 72 hours from first quarantine; repeats do not renew it. At most
+one per scope/eight total and eight observations per record are kept. Reads and
+startup prune expired material; a closed origin cannot perform physical deletion.
+Opt-out, host removal, explicit logout and debugger forgetting purge copies and
+cancel probes. Switch Host does not purge them. Without Web Locks, no diagnostic
+credential is retained. The helper is absent when opted out.
+
+Correlate `SrpResume` entries in client logs with server-local
+`event: "srp_resume_refused"` by session ID, identity and time. Server entries name
+init/proof phase and known refusal cause without keys/proofs. An uploaded
+pre-authentication refusal is evidence received, not cryptographic proof the key
+is permanently invalid. A successful probe is useful evidence of a transient or
+incorrect rejection; it does not identify the original cause by itself.
+
+The October 11 morning-login report remains unproven: the old phone session was
+still valid on the running server, but client diagnostics were enabled afterward.
+Retaining evidence prepares the next reproduction; it is not a regression fix.
 
 ## Maintenance Server
 

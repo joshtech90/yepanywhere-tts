@@ -12,6 +12,14 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BROWSER_LOCAL_KEYS, UI_KEYS } from "../../lib/storageKeys";
 import { NewSessionPage } from "../NewSessionPage";
+import { NewSessionForm } from "../../components/NewSessionForm";
+import type { ActingPrincipal } from "@yep-anywhere/shared";
+import { writeNewSessionProjectSnapshot } from "../../lib/newSessionProjectSnapshot";
+
+const identity = vi.hoisted(() => ({
+  principal: { username: null } as ActingPrincipal,
+  resolved: false,
+}));
 
 const { projectFetch, projectsState, recentSessionsState, versionState } =
   vi.hoisted(() => ({
@@ -39,47 +47,68 @@ const { projectFetch, projectsState, recentSessionsState, versionState } =
         },
       ],
       loading: false,
+      complete: true,
       error: null as Error | null,
     },
     recentSessionsState: {
       recentSessions: [] as Array<{ projectId: string }>,
+      recentProjectIds: [] as string[],
+      isLoadingVisits: false,
       isLoading: false,
       error: null as Error | null,
     },
   }));
 
+const { projectAppInfo } = vi.hoisted(() => ({
+  projectAppInfo: vi.fn(async (_projectId: string) => ({
+    declaration: { name: "app" },
+    state: "running",
+  })),
+}));
+
+vi.mock("../../api/projectApp", () => ({
+  projectAppApi: { info: projectAppInfo },
+}));
+
 vi.mock("../../components/NewSessionForm", () => ({
-  NewSessionForm: ({
-    incomingShareFiles,
-    projectId,
-    selectedProject,
-    onProjectChange,
-  }: {
-    incomingShareFiles?: readonly File[];
-    projectId?: string;
-    selectedProject?: { name: string } | null;
-    onProjectChange?: (projectId: string | null) => void;
-  }) => (
-    <div>
-      <div data-testid="incoming-share-files">
-        {incomingShareFiles?.length ?? 0}
+  NewSessionForm: vi.fn(
+    ({
+      incomingShareFiles,
+      projectId,
+      selectedProject,
+      onProjectChange,
+    }: {
+      incomingShareFiles?: readonly File[];
+      projectId?: string;
+      selectedProject?: { name: string } | null;
+      onProjectChange?: (projectId: string | null) => void;
+    }) => (
+      <div>
+        <div data-testid="incoming-share-files">
+          {incomingShareFiles?.length ?? 0}
+        </div>
+        <div data-testid="form-project-id">{projectId ?? "none"}</div>
+        <div data-testid="form-project-name">
+          {selectedProject?.name ?? "none"}
+        </div>
+        <button type="button" onClick={() => onProjectChange?.("project-2")}>
+          Select Beta
+        </button>
+        <button type="button" onClick={() => onProjectChange?.(null)}>
+          Select No Project
+        </button>
       </div>
-      <div data-testid="form-project-id">{projectId ?? "none"}</div>
-      <div data-testid="form-project-name">
-        {selectedProject?.name ?? "none"}
-      </div>
-      <button type="button" onClick={() => onProjectChange?.("project-2")}>
-        Select Beta
-      </button>
-      <button type="button" onClick={() => onProjectChange?.(null)}>
-        Select No Project
-      </button>
-    </div>
+    ),
   ),
 }));
 
 vi.mock("../../components/PageHeader", () => ({
-  PageHeader: ({ title }: { title: string }) => <div>{title}</div>,
+  PageHeader: ({ title, actions }: { title: string; actions?: ReactNode }) => (
+    <div>
+      {title}
+      {actions}
+    </div>
+  ),
 }));
 
 vi.mock("../../contexts/ToastContext", () => ({
@@ -92,6 +121,10 @@ vi.mock("../../hooks/useDocumentTitle", () => ({
 
 vi.mock("../../hooks/useVersion", () => ({
   useVersion: () => ({ version: versionState }),
+}));
+
+vi.mock("../../hooks/useActingPrincipal", () => ({
+  useActingPrincipal: () => identity,
 }));
 
 vi.mock("../../hooks/useProjects", () => ({
@@ -190,8 +223,12 @@ describe("NewSessionPage", () => {
     window.localStorage.clear();
     versionState.capabilities = [];
     projectFetch.settled = false;
+    identity.resolved = false;
     projectsState.loading = false;
+    projectsState.complete = true;
     recentSessionsState.recentSessions = [];
+    recentSessionsState.recentProjectIds = [];
+    recentSessionsState.isLoadingVisits = false;
     recentSessionsState.isLoading = false;
   });
 
@@ -205,34 +242,49 @@ describe("NewSessionPage", () => {
     versionState.capabilities = ["project-service"];
     localStorage.setItem(UI_KEYS.sessionRightPane, "true");
     renderPage("/new-session?projectId=project-1");
-    expect(
-      screen.queryByRole("link", { name: "projectAppWhileComposing" }),
-    ).toBeNull();
+    expect(screen.queryByRole("link", { name: "projectAppLabel" })).toBeNull();
   });
 
-  it("shows app composing only after opting into app composing", () => {
+  it("offers the App button only after opting into app composing", async () => {
     versionState.capabilities = ["project-service"];
     localStorage.setItem(UI_KEYS.projectAppComposing, "true");
     renderPage("/new-session?projectId=project-1");
     expect(
-      screen
-        .getByRole("link", { name: "projectAppWhileComposing" })
-        .getAttribute("href"),
+      (
+        await screen.findByRole("link", { name: "projectAppLabel" })
+      ).getAttribute("href"),
     ).toBe("/projects/project-1/app?compose=1");
+    expect(projectAppInfo).toHaveBeenCalledWith("project-1");
+  });
+
+  it("hides the App button for a project without an app", async () => {
+    versionState.capabilities = ["project-service"];
+    localStorage.setItem(UI_KEYS.projectAppComposing, "true");
+    projectAppInfo.mockResolvedValueOnce({
+      declaration: undefined,
+      state: "missing",
+    } as never);
+    renderPage("/new-session?projectId=project-1");
+    await waitFor(() => expect(projectAppInfo).toHaveBeenCalled());
+    expect(screen.queryByRole("link", { name: "projectAppLabel" })).toBeNull();
   });
 
   it("keeps app composing hidden when the server lacks support", () => {
     localStorage.setItem(UI_KEYS.projectAppComposing, "true");
     renderPage("/new-session?projectId=project-1");
-    expect(
-      screen.queryByRole("link", { name: "projectAppWhileComposing" }),
-    ).toBeNull();
+    expect(screen.queryByRole("link", { name: "projectAppLabel" })).toBeNull();
+    expect(projectAppInfo).not.toHaveBeenCalled();
   });
 
   it("uses the stored recent project when opened without a project", async () => {
     window.localStorage.setItem(BROWSER_LOCAL_KEYS.recentProject, "project-2");
 
     renderPage("/new-session");
+
+    expect(vi.mocked(NewSessionForm).mock.calls[0]?.[0]).toMatchObject({
+      projectId: "project-2",
+      selectedProject: { name: "Beta" },
+    });
 
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe(
@@ -253,6 +305,50 @@ describe("NewSessionPage", () => {
     });
   });
 
+  it("keeps the first render detached when explicitly requested", () => {
+    localStorage.setItem(BROWSER_LOCAL_KEYS.recentProject, "project-2");
+    renderPage("/new-session?detached=1");
+    expect(
+      vi.mocked(NewSessionForm).mock.calls[0]?.[0].projectId,
+    ).toBeUndefined();
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/new-session?detached=1",
+    );
+  });
+
+  it("does not choose an arbitrary first project before visits arrive", () => {
+    recentSessionsState.isLoadingVisits = true;
+    renderPage("/new-session");
+    expect(
+      vi.mocked(NewSessionForm).mock.calls[0]?.[0].projectId,
+    ).toBeUndefined();
+    expect(screen.getByTestId("location").textContent).toBe("/new-session");
+  });
+
+  it("waits for collection completion before replacing an undiscovered preference", async () => {
+    projectsState.complete = false;
+    localStorage.setItem(BROWSER_LOCAL_KEYS.recentProject, "undiscovered");
+    recentSessionsState.recentProjectIds = ["project-2"];
+    const view = () => (
+      <MemoryRouter initialEntries={["/new-session"]}>
+        <NewSessionPage />
+        <LocationProbe />
+      </MemoryRouter>
+    );
+    const { rerender } = render(view());
+    expect(screen.getByTestId("location").textContent).toBe("/new-session");
+    expect(localStorage.getItem(BROWSER_LOCAL_KEYS.recentProject)).toBe(
+      "undiscovered",
+    );
+    projectsState.complete = true;
+    rerender(view());
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/new-session?projectId=project-2",
+      ),
+    );
+  });
+
   it("stores dropdown project changes and updates the URL", async () => {
     renderPage("/new-session?detached=1");
 
@@ -266,6 +362,18 @@ describe("NewSessionPage", () => {
     );
   });
 
+  it("selects the recent project before session titles finish loading", async () => {
+    recentSessionsState.recentProjectIds = ["project-2"];
+    recentSessionsState.isLoading = true;
+    renderPage("/new-session");
+    await waitFor(() =>
+      expect(screen.getByTestId("form-project-id").textContent).toBe(
+        "project-2",
+      ),
+    );
+    expect(screen.getByTestId("form-project-name").textContent).toBe("Beta");
+  });
+
   it("shows the composer before the selected project's record arrives", () => {
     renderPage("/new-session?projectId=project-late");
     expect(screen.getByTestId("form-project-id").textContent).toBe(
@@ -273,6 +381,31 @@ describe("NewSessionPage", () => {
     );
     expect(screen.getByTestId("form-project-name").textContent).toBe("none");
     expect(screen.queryByText("newSessionLoading")).toBeNull();
+  });
+
+  it("does not hide a server rejection behind a cached project", () => {
+    identity.resolved = true;
+    const cached = {
+      ...projectsState.projects[0]!,
+      id: "project-late",
+      name: "Cached project",
+    };
+    writeNewSessionProjectSnapshot("local", identity.principal, [cached], []);
+    const view = () => (
+      <MemoryRouter initialEntries={["/new-session?projectId=project-late"]}>
+        <NewSessionPage />
+      </MemoryRouter>
+    );
+    const { rerender } = render(view());
+    expect(screen.getByTestId("form-project-name").textContent).toBe(
+      "Cached project",
+    );
+    projectFetch.settled = true;
+    rerender(view());
+    expect(screen.queryByTestId("form-project-id")).toBeNull();
+    expect(screen.getByText(/newSessionErrorPrefix/).textContent).toContain(
+      "not found",
+    );
   });
 
   it("reports a selected project that failed to load", () => {

@@ -57,6 +57,19 @@
   cursor: pointer;
 }
 
+.provider {
+  margin-block: 24px;
+}
+
+.provider > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.provider[open] > summary {
+  margin-block-end: 16px;
+}
+
 .vhosts {
   display: flex;
   flex-direction: column;
@@ -65,7 +78,27 @@
 }
 
 .vhostHeading {
+  margin: 0;
+  font-size: 16px;
   font-weight: 600;
+}
+
+.vhostHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.vhostIntro {
+  display: grid;
+  gap: 12px;
+}
+
+.vhostIntro p {
+  margin: 0;
+  line-height: 1.5;
 }
 
 .vhostRow {
@@ -185,10 +218,37 @@
   white-space: nowrap;
 }
 .table {
-  --settings-first-column-width: 50%;
+  --settings-first-column-width: 40%;
 }
 .table th:nth-child(2) {
-  width: 26%;
+  width: 22%;
+}
+/* One line per access label; a cramped column ellipsizes, never breaks
+   the word letter by letter. */
+.accessButton {
+  max-width: 100%;
+  padding-inline: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@container settings-collection (max-width: 560px) {
+  .table {
+    --settings-first-column-width: 40%;
+  }
+  .table th:nth-child(2) {
+    width: 20%;
+  }
+}
+.table .oauthBlocked > td {
+  background: color-mix(in srgb, var(--error-color, #c44343) 12%, transparent);
+}
+.table .oauthBlocked button,
+.table .oauthBlocked small {
+  color: var(--error-color, #c44343);
+}
+.table .oauthBlocked small {
+  display: block;
 }
 .linkedFiles {
   display: block;

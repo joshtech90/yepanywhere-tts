@@ -14,10 +14,6 @@ import {
 } from "@yep-anywhere/shared";
 import "./startupEnv.js";
 import { readArtifactConfig, type ArtifactConfig } from "./artifacts/config.js";
-import {
-  parseSqliteMode,
-  type SqliteMode,
-} from "./storage/discovery-sqlite.js";
 import { DEFAULT_IDLE_TIMEOUT_SECONDS } from "./defaults.js";
 import { captureStartupEnvSettings } from "./envSettings.js";
 import { getDefaultCodexSessionsDir } from "./projects/codex-scanner.js";
@@ -75,8 +71,6 @@ export interface Config {
   dataDir: string;
   /** Whether this server was launched by the Tauri desktop app. */
   desktopRuntime: boolean;
-  /** Optional discovery storage; evaluated once at startup. */
-  sqliteMode: SqliteMode;
   /** Desktop-provided Codex CLI path. When set, it is authoritative. */
   codexCliPath?: string;
   /** Startup fallback for Codex update_plan availability. */
@@ -370,7 +364,6 @@ export function loadConfig(): Config {
     dataDir,
     artifacts: readArtifactConfig(process.env),
     desktopRuntime,
-    sqliteMode: parseSqliteMode(process.env.YEP_SQLITE),
     codexCliPath,
     codexPlanToolMode: parseCodexPlanToolMode(
       process.env.YEP_CODEX_UPDATE_PLAN,

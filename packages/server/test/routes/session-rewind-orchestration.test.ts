@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionRewindRecord } from "@yep-anywhere/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
+import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { encodeProjectId } from "../../src/projects/paths.js";
 import {
   createSessionsRoutes,
@@ -20,6 +20,10 @@ import { ClaudeSessionReader } from "../../src/sessions/reader.js";
 import type { Process } from "../../src/supervisor/Process.js";
 import { Supervisor } from "../../src/supervisor/Supervisor.js";
 import type { Project } from "../../src/supervisor/types.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 type YaCommandRunner = Parameters<
   NonNullable<ProjectQueueScheduler["setYaCommandRunner"]>
@@ -28,6 +32,7 @@ type YaCommandRunner = Parameters<
 const directories: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  closeTestDiscoveryDatabases();
   await Promise.all(
     directories
       .splice(0)
@@ -99,7 +104,7 @@ async function createRewindFixture(
       .join("\n")}\n`,
   );
 
-  const metadata = new SessionMetadataService({ dataDir: dir });
+  const metadata = createTestSessionMetadataService(dir);
   await metadata.initialize();
   await metadata.setProvider(sessionId, "claude");
 

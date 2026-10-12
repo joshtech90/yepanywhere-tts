@@ -4,6 +4,7 @@ import {
   setRemoteLogCollectionEnabledValue,
   subscribeDeveloperMode,
 } from "../../hooks/useDeveloperMode";
+import { subscribeResumeObservations } from "../resumeDiagnostics";
 import { ClientLogCollector } from "./ClientLogCollector";
 
 export const clientLogCollector = new ClientLogCollector();
@@ -17,6 +18,7 @@ const statusListeners = new Set<() => void>();
 let currentStatus: ClientLogCollectionStatus = buildStatus();
 let developerModeUnsubscribe: (() => void) | null = null;
 let initCount = 0;
+let resumeUnsubscribe: (() => void) | null = null;
 
 function buildStatus(): ClientLogCollectionStatus {
   const localRequested = getRemoteLogCollectionEnabled();
@@ -86,6 +88,9 @@ export function initClientLogCollection(): () => void {
   if (initCount === 1) {
     currentStatus = buildStatus();
     applyCollectionStatus();
+    resumeUnsubscribe = subscribeResumeObservations((event) =>
+      clientLogCollector.record("info", "SrpResume", JSON.stringify(event)),
+    );
     developerModeUnsubscribe = subscribeDeveloperMode(applyCollectionStatus);
   }
 
@@ -95,6 +100,8 @@ export function initClientLogCollection(): () => void {
     initCount = 0;
     developerModeUnsubscribe?.();
     developerModeUnsubscribe = null;
+    resumeUnsubscribe?.();
+    resumeUnsubscribe = null;
     currentStatus = buildStatus();
     clientLogCollector.stop();
     notifyStatusListeners();

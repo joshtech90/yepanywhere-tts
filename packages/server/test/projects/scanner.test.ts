@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -76,6 +76,7 @@ describe("ProjectScanner cache", () => {
   const tempDirs: string[] = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await Promise.all(
       tempDirs
         .splice(0)
@@ -185,6 +186,495 @@ describe("ProjectScanner cache", () => {
     ]);
 
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("acquires independent provider inputs while Claude discovery is pending", async () => {
+    const projectsDir = join(tmpdir(), `parallel-discovery-${randomUUID()}`);
+    tempDirs.push(projectsDir);
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const codexScanner = new CodexSessionScanner({
+      sessionsDir: join(projectsDir, "codex"),
+    });
+    const codexRead = vi.spyOn(codexScanner, "listProjects");
+    const scanner = new ProjectScanner({
+      projectsDir,
+      codexScanner,
+      enableGemini: false,
+    });
+    const internals = scanner as unknown as {
+      readClaudeDirectories: () => Promise<Map<string, unknown>>;
+    };
+    const readClaude = internals.readClaudeDirectories.bind(scanner);
+    vi.spyOn(internals, "readClaudeDirectories").mockImplementationOnce(
+      async () => {
+        started();
+        await gate;
+        return readClaude();
+      },
+    );
+    const result = scanner.listProjects();
+    try {
+      await entered;
+      expect(codexRead).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await result;
+      await scanner.dispose();
+    }
+  });
+
+  it.each(["localhost", ""])(
+    "refreshes only the changed Claude directory under %s",
+    async (host) => {
+      const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
+      tempDirs.push(projectsDir);
+      const eventBus = new EventBus();
+      const first = await createClaudeProject(
+        projectsDir,
+        host,
+        "/home/user/one",
+        "one",
+      );
+      await createClaudeProject(projectsDir, host, "/home/user/two", "two");
+      const scanner = new ProjectScanner({
+        projectsDir,
+        enableCodex: false,
+        enableGemini: false,
+        eventBus,
+      });
+      try {
+        await scanner.listProjects();
+        const read = vi.spyOn(
+          scanner as unknown as {
+            getProjectDirInfo: (path: string) => Promise<unknown>;
+          },
+          "getProjectDirInfo",
+        );
+        await createClaudeProject(projectsDir, host, "/home/user/one", "added");
+        eventBus.emit({
+          type: "file-change",
+          provider: "claude",
+          fileType: "session",
+          path: join(projectsDir, first, "added.jsonl"),
+          relativePath: join(first, "added.jsonl"),
+          changeType: "create",
+          timestamp: new Date().toISOString(),
+        });
+        const projects = await scanner.listProjects();
+        expect(
+          projects.find((p) => p.path === "/home/user/one")?.sessionCount,
+        ).toBe(2);
+        expect(
+          projects.find((p) => p.path === "/home/user/two")?.sessionCount,
+        ).toBe(1);
+        expect(read.mock.calls).toEqual([[join(projectsDir, first)]]);
+
+        read.mockClear();
+        await rm(join(projectsDir, first, "added.jsonl"));
+        eventBus.emit({
+          type: "file-change",
+          provider: "claude",
+          fileType: "session",
+          path: join(projectsDir, first, "added.jsonl"),
+          relativePath: join(first, "added.jsonl"),
+          changeType: "delete",
+          timestamp: new Date().toISOString(),
+        });
+        expect(
+          (await scanner.listProjects()).map((p) => p.sessionCount),
+        ).toEqual([1, 1]);
+        expect(read.mock.calls).toEqual([[join(projectsDir, first)]]);
+
+        read.mockClear();
+        await writeFile(
+          join(projectsDir, first, "one.jsonl"),
+          `${JSON.stringify({ type: "user", cwd: "/home/user/two" })}\n`,
+        );
+        eventBus.emit({
+          type: "file-change",
+          provider: "claude",
+          fileType: "session",
+          path: join(projectsDir, first, "one.jsonl"),
+          relativePath: join(first, "one.jsonl"),
+          changeType: "modify",
+          timestamp: new Date().toISOString(),
+        });
+        expect(await scanner.listProjects()).toEqual([
+          expect.objectContaining({ path: "/home/user/two", sessionCount: 2 }),
+        ]);
+        expect(read.mock.calls).toEqual([[join(projectsDir, first)]]);
+
+        read.mockClear();
+        const third = await createClaudeProject(
+          projectsDir,
+          host,
+          "/home/user/three",
+          "three",
+        );
+        eventBus.emit({
+          type: "file-change",
+          provider: "claude",
+          fileType: "session",
+          path: join(projectsDir, third, "three.jsonl"),
+          relativePath: join(third, "three.jsonl"),
+          changeType: "create",
+          timestamp: new Date().toISOString(),
+        });
+        expect(await scanner.listProjects()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              path: "/home/user/two",
+              sessionCount: 2,
+            }),
+            expect.objectContaining({
+              path: "/home/user/three",
+              sessionCount: 1,
+            }),
+          ]),
+        );
+        expect(read.mock.calls).toEqual([[join(projectsDir, third)]]);
+
+        read.mockClear();
+        await createClaudeProject(
+          projectsDir,
+          host,
+          "/home/user/three",
+          "four",
+        );
+        eventBus.emit({
+          type: "file-change",
+          provider: "claude",
+          fileType: "session",
+          path: join(projectsDir, third, "four.jsonl"),
+          relativePath: join(third, "four.jsonl"),
+          changeType: "create",
+          timestamp: new Date().toISOString(),
+        });
+        read.mockRejectedValueOnce(
+          new Error("injected directory read failure"),
+        );
+        await expect(scanner.listProjects()).rejects.toThrow(
+          "injected directory read failure",
+        );
+        expect(
+          (await scanner.listProjects()).find(
+            (p) => p.path === "/home/user/three",
+          )?.sessionCount,
+        ).toBe(2);
+        expect(read.mock.calls).toEqual([
+          [join(projectsDir, third)],
+          [join(projectsDir, third)],
+        ]);
+      } finally {
+        await scanner.dispose();
+      }
+    },
+  );
+
+  it("serves retained projects while discovery is blocked", async () => {
+    const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
+    tempDirs.push(projectsDir);
+    const eventBus = new EventBus();
+    const publish = vi.fn();
+    eventBus.subscribe((event) => {
+      if (event.type === "projects-changed") publish(event);
+    });
+    await createClaudeProject(
+      projectsDir,
+      "localhost",
+      "/home/user/project-one",
+      "sess-1",
+    );
+    const scanner = new ProjectScanner({
+      projectsDir,
+      enableCodex: false,
+      enableGemini: false,
+      eventBus,
+    });
+    await scanner.listProjects();
+    const internals = scanner as unknown as {
+      scanProjects: () => Promise<Project[]>;
+    };
+    const originalScan = internals.scanProjects.bind(scanner);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const scan = vi
+      .spyOn(internals, "scanProjects")
+      .mockImplementation(async () => {
+        await gate;
+        return originalScan();
+      });
+    scanner.invalidateCache();
+    const refresh = scanner.refreshRetainedProjects();
+    try {
+      const results = await Promise.all(
+        Array.from({ length: 30 }, () => scanner.readRetainedProjects()),
+      );
+      expect(scan).toHaveBeenCalledTimes(1);
+      for (const result of results) {
+        expect(result.projects.map((project) => project.path)).toEqual([
+          "/home/user/project-one",
+        ]);
+        expect(result.complete).toBe(true);
+        expect(result.refreshing).toBe(true);
+      }
+    } finally {
+      const disposal = scanner.dispose();
+      release();
+      await refresh;
+      await disposal;
+    }
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect removed registered directories after discovery", async () => {
+    const dataDir = join(tmpdir(), `project-metadata-${randomUUID()}`);
+    tempDirs.push(dataDir);
+    const projectPath = join(dataDir, "registered");
+    await mkdir(projectPath, { recursive: true });
+    const metadata = new ProjectMetadataService({ dataDir });
+    await metadata.initialize();
+    await metadata.addProject(encodeProjectId(projectPath), projectPath);
+    const scanner = new ProjectScanner({
+      projectsDir: join(dataDir, "no-transcripts"),
+      enableCodex: false,
+      enableGemini: false,
+      projectMetadataService: metadata,
+    });
+    try {
+      expect(
+        (await scanner.readRetainedProjects()).projects.some(
+          (p) => p.path === projectPath,
+        ),
+      ).toBe(true);
+      await scanner.refreshRetainedProjects();
+      await rm(projectPath, { recursive: true });
+      scanner.invalidateCache();
+      await scanner.refreshRetainedProjects();
+      const result = await scanner.readRetainedProjects();
+      expect(result.complete).toBe(true);
+      expect(result.projects.some((p) => p.path === projectPath)).toBe(false);
+    } finally {
+      await scanner.dispose();
+    }
+  });
+
+  it.each(["expired", "recent"])(
+    "restores %s retained projects without certifying them as current",
+    async (age) => {
+      const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
+      tempDirs.push(projectsDir);
+      const projectScanCachePath = join(projectsDir, "project-cache.json");
+      const options = {
+        projectsDir,
+        projectScanCachePath,
+        enableCodex: false,
+        enableGemini: false,
+        cacheTtlMs: 60_000,
+      };
+      await createClaudeProject(
+        projectsDir,
+        "localhost",
+        "/home/user/one",
+        "one",
+      );
+      const first = new ProjectScanner(options);
+      await first.listProjects();
+      await first.dispose();
+      const saved = JSON.parse(await readFile(projectScanCachePath, "utf-8"));
+      saved.generatedAt = age === "expired" ? 0 : Date.now();
+      await writeFile(projectScanCachePath, JSON.stringify(saved));
+      await createClaudeProject(
+        projectsDir,
+        "localhost",
+        "/home/user/two",
+        "two",
+      );
+
+      const restored = new ProjectScanner(options);
+      try {
+        const retained = await restored.readRetainedProjects();
+        expect(retained.projects.map((project) => project.path)).toEqual([
+          "/home/user/one",
+        ]);
+        expect(retained.complete).toBe(true);
+        expect(retained.refreshing).toBe(true);
+        expect(await restored.listProjects()).toHaveLength(2);
+      } finally {
+        await restored.dispose();
+      }
+
+      const otherSource = new ProjectScanner({
+        ...options,
+        projectsDir: join(projectsDir, "other"),
+      });
+      try {
+        const retained = await otherSource.readRetainedProjects();
+        expect(retained.projects).toEqual([]);
+        expect(retained.complete).toBe(false);
+      } finally {
+        await otherSource.dispose();
+      }
+    },
+  );
+
+  it("keeps retained projects on failure and bounds request-driven retries", async () => {
+    const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
+    tempDirs.push(projectsDir);
+    await createClaudeProject(
+      projectsDir,
+      "localhost",
+      "/home/user/one",
+      "one",
+    );
+    const scanner = new ProjectScanner({
+      projectsDir,
+      enableCodex: false,
+      enableGemini: false,
+    });
+    await scanner.listProjects();
+    const internals = scanner as unknown as {
+      scanProjects: () => Promise<Project[]>;
+    };
+    const scan = vi
+      .spyOn(internals, "scanProjects")
+      .mockRejectedValue(new Error("discovery unavailable"));
+    try {
+      await scanner.refreshRetainedProjects();
+      const results = await Promise.all(
+        Array.from({ length: 30 }, () => scanner.readRetainedProjects()),
+      );
+      expect(scan).toHaveBeenCalledTimes(1);
+      for (const result of results) {
+        expect(result.projects).toHaveLength(1);
+        expect(result.refreshError).toBe("discovery unavailable");
+        expect(result.refreshing).toBe(false);
+      }
+    } finally {
+      await scanner.dispose();
+    }
+  });
+
+  it("publishes a trailing refresh for changes arriving during retained discovery", async () => {
+    const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
+    tempDirs.push(projectsDir);
+    const eventBus = new EventBus();
+    const publications: string[][] = [];
+    eventBus.subscribe((event) => {
+      if (event.type === "projects-changed")
+        publications.push(event.projectIds);
+    });
+    await createClaudeProject(
+      projectsDir,
+      "localhost",
+      "/home/user/one",
+      "one",
+    );
+    const scanner = new ProjectScanner({
+      projectsDir,
+      enableCodex: false,
+      enableGemini: false,
+      eventBus,
+    });
+    await scanner.listProjects();
+    const internals = scanner as unknown as {
+      scanProjects: () => Promise<Project[]>;
+    };
+    const originalScan = internals.scanProjects.bind(scanner);
+    let release!: () => void;
+    let captured!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      captured = resolve;
+    });
+    const scan = vi
+      .spyOn(internals, "scanProjects")
+      .mockImplementationOnce(async () => {
+        const result = await originalScan();
+        captured();
+        await gate;
+        return result;
+      });
+    const refresh = scanner.refreshRetainedProjects();
+    try {
+      await started;
+      await createClaudeProject(
+        projectsDir,
+        "localhost",
+        "/home/user/two",
+        "two",
+      );
+      scanner.invalidateCache();
+      release();
+      await refresh;
+      await vi.waitFor(() =>
+        expect(
+          publications.some((ids) =>
+            ids.includes(encodeProjectId("/home/user/two")),
+          ),
+        ).toBe(true),
+      );
+      expect(scan).toHaveBeenCalledTimes(2);
+      expect((await scanner.readRetainedProjects()).projects).toHaveLength(2);
+    } finally {
+      release();
+      await refresh;
+      await scanner.dispose();
+    }
+  });
+
+  it("starts first retained discovery without the file-event debounce", async () => {
+    const projectsDir = join(tmpdir(), `initial-discovery-${randomUUID()}`);
+    tempDirs.push(projectsDir);
+    const scanner = new ProjectScanner({
+      projectsDir,
+      enableCodex: false,
+      enableGemini: false,
+    });
+    const refresh = vi
+      .spyOn(scanner, "refreshRetainedProjects")
+      .mockResolvedValue(undefined);
+    vi.useFakeTimers();
+    try {
+      await scanner.readRetainedProjects();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      await scanner.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels queued retained discovery on disposal", async () => {
+    const scanner = new ProjectScanner({
+      projectsDir: join(tmpdir(), randomUUID()),
+      enableCodex: false,
+      enableGemini: false,
+    });
+    const internals = scanner as unknown as {
+      scanProjects: () => Promise<Project[]>;
+    };
+    const scan = vi.spyOn(internals, "scanProjects");
+    const retained = await scanner.readRetainedProjects();
+    expect(retained.complete).toBe(false);
+    expect(retained.refreshing).toBe(true);
+    await scanner.dispose();
+    await scanner.refreshRetainedProjects();
+    await expect(scanner.readRetainedProjects()).rejects.toThrow(
+      "Project scanner is disposed",
+    );
+    expect(scan).not.toHaveBeenCalled();
   });
 
   it("preserves invalidation that arrives during an active scan", async () => {
@@ -551,6 +1041,264 @@ describe("ProjectScanner cache", () => {
 
     const projects = await scanner.listProjects();
     expect(projects).toHaveLength(2);
+  });
+
+  it.each(["claude", "codex", "gemini"] as const)(
+    "does not rescan unrelated aged provider inputs for a %s event",
+    async (provider) => {
+      const root = join(tmpdir(), `provider-isolation-${randomUUID()}`);
+      tempDirs.push(root);
+      const projectsDir = join(root, "claude");
+      const codexDir = join(root, "codex");
+      const geminiDir = join(root, "gemini");
+      const claudeSuffix = await createClaudeProject(
+        projectsDir,
+        "localhost",
+        "/projects/claude",
+        "one",
+      );
+      await mkdir(codexDir, { recursive: true });
+      await mkdir(join(geminiDir, "project", "chats"), { recursive: true });
+      const codexFile = join(codexDir, "rollout-one.jsonl");
+      const geminiFile = join(
+        geminiDir,
+        "project",
+        "chats",
+        "session-one.json",
+      );
+      await writeFile(
+        codexFile,
+        `${JSON.stringify({ type: "session_meta", payload: { id: "one", cwd: "/projects/codex", timestamp: "2026-10-09T00:00:00Z" } })}\n`,
+      );
+      await writeFile(
+        geminiFile,
+        JSON.stringify({
+          sessionId: "one",
+          projectHash: "gemini-hash",
+          startTime: "2026-10-09T00:00:00Z",
+          lastUpdated: "2026-10-09T00:00:00Z",
+          messages: [],
+        }),
+      );
+      const codexScanner = new CodexSessionScanner({ sessionsDir: codexDir });
+      const geminiScanner = new GeminiSessionScanner({
+        sessionsDir: geminiDir,
+      });
+      const codexScans = vi.spyOn(
+        codexScanner as unknown as {
+          scanFiles: (...args: unknown[]) => Promise<unknown>;
+        },
+        "scanFiles",
+      );
+      const geminiScans = vi.spyOn(
+        geminiScanner as unknown as { scanFilesystem: () => Promise<unknown> },
+        "scanFilesystem",
+      );
+      const eventBus = new EventBus();
+      const scanner = new ProjectScanner({
+        projectsDir,
+        codexScanner,
+        geminiScanner,
+        eventBus,
+      });
+      try {
+        expect(await scanner.listProjects()).toHaveLength(3);
+        codexScans.mockClear();
+        geminiScans.mockClear();
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+        const path =
+          provider === "claude"
+            ? join(projectsDir, claudeSuffix, "one.jsonl")
+            : provider === "codex"
+              ? codexFile
+              : geminiFile;
+        eventBus.emit({
+          type: "file-change",
+          provider,
+          path,
+          relativePath: `${claudeSuffix}/one.jsonl`,
+          changeType: "modify",
+          timestamp: new Date().toISOString(),
+          fileType: "session",
+        });
+        expect(await scanner.listProjects()).toHaveLength(3);
+        if (provider === "codex")
+          expect(codexScans).toHaveBeenCalledWith([codexFile]);
+        else expect(codexScans).not.toHaveBeenCalled();
+        expect(geminiScans).not.toHaveBeenCalled();
+
+        codexScans.mockClear();
+        await rm(codexFile);
+        await rm(geminiFile);
+        scanner.invalidateCache();
+        expect(await scanner.listProjects()).toEqual([
+          expect.objectContaining({ path: "/projects/claude" }),
+        ]);
+        expect(codexScans).toHaveBeenCalledTimes(1);
+        expect(geminiScans).toHaveBeenCalledTimes(1);
+      } finally {
+        await scanner.dispose();
+      }
+    },
+  );
+
+  it("updates only the changed Codex rollout through watcher events", async () => {
+    const root = join(tmpdir(), `codex-incremental-${randomUUID()}`);
+    tempDirs.push(root);
+    const sessionsDir = join(root, "codex");
+    const eventBus = new EventBus();
+    const codexScanner = new CodexSessionScanner({ sessionsDir });
+    const files = ["08", "09"].map((day) =>
+      join(sessionsDir, "2026", "10", day, `rollout-${day}.jsonl`),
+    );
+    for (const [index, file] of files.entries()) {
+      await mkdir(join(sessionsDir, "2026", "10", index === 0 ? "08" : "09"), {
+        recursive: true,
+      });
+      await writeFile(
+        file,
+        `${JSON.stringify({ type: "session_meta", payload: { id: String(index), cwd: `/projects/${index}`, timestamp: "2026-10-09T00:00:00Z" } })}\n`,
+      );
+    }
+    const scanner = new ProjectScanner({
+      projectsDir: join(root, "claude"),
+      codexScanner,
+      enableCodex: true,
+      enableGemini: false,
+      eventBus,
+    });
+    try {
+      expect(await scanner.listProjects()).toHaveLength(2);
+      const changed = files[0]!;
+      await writeFile(
+        changed,
+        `${JSON.stringify({ type: "session_meta", payload: { id: "0", cwd: "/projects/1", timestamp: "2026-10-09T00:00:00Z" } })}\n`,
+      );
+      eventBus.emit({
+        type: "file-change",
+        provider: "codex",
+        path: changed,
+        relativePath: "2026/10/08/rollout-08.jsonl",
+        changeType: "modify",
+        timestamp: new Date().toISOString(),
+        fileType: "session",
+      });
+      expect(await scanner.listProjects()).toEqual([
+        expect.objectContaining({ path: "/projects/1", sessionCount: 2 }),
+      ]);
+      expect(codexScanner.getLastScanMetrics()).toMatchObject({
+        directoriesVisited: 0,
+        sessionsParsed: 1,
+        discovery: { firstLineReadsPlain: 1 },
+      });
+    } finally {
+      await scanner.dispose();
+    }
+  });
+
+  it("updates only the changed Gemini file through watcher events", async () => {
+    const root = join(tmpdir(), `gemini-incremental-${randomUUID()}`);
+    tempDirs.push(root);
+    const sessionsDir = join(root, "gemini");
+    const eventBus = new EventBus();
+    const geminiScanner = new GeminiSessionScanner({ sessionsDir });
+    const files = ["first", "second"].map((name) =>
+      join(sessionsDir, name, "chats", `session-${name}.json`),
+    );
+    const writeSession = async (file: string, projectHash: string) => {
+      await writeFile(
+        file,
+        JSON.stringify({
+          sessionId: file,
+          projectHash,
+          startTime: "2026-10-09T00:00:00Z",
+          lastUpdated: "2026-10-09T00:00:00Z",
+          messages: [],
+        }),
+      );
+    };
+    for (const [index, file] of files.entries()) {
+      await mkdir(
+        join(sessionsDir, index === 0 ? "first" : "second", "chats"),
+        { recursive: true },
+      );
+      await writeSession(file, index === 0 ? "first-hash" : "second-hash");
+    }
+    const scanner = new ProjectScanner({
+      projectsDir: join(root, "claude"),
+      geminiScanner,
+      enableCodex: false,
+      enableGemini: true,
+      cacheTtlMs: 60_000,
+      eventBus,
+    });
+    const reads = vi.spyOn(
+      geminiScanner as unknown as {
+        readSessionMeta: (file: string, dir: string) => Promise<unknown>;
+      },
+      "readSessionMeta",
+    );
+    try {
+      expect(await scanner.listProjects()).toHaveLength(2);
+      reads.mockClear();
+      const changed = files[0]!;
+      await writeSession(changed, "second-hash");
+      eventBus.emit({
+        type: "file-change",
+        provider: "gemini",
+        path: changed,
+        relativePath: "first/chats/session-first.json",
+        changeType: "modify",
+        timestamp: new Date().toISOString(),
+        fileType: "session",
+      });
+      expect(await scanner.listProjects()).toEqual([
+        expect.objectContaining({ sessionCount: 2, provider: "gemini" }),
+      ]);
+      expect(reads.mock.calls.map(([file]) => file)).toEqual([changed]);
+      const notify = (
+        path: string,
+        changeType: "create" | "modify" | "delete",
+      ) => {
+        reads.mockClear();
+        eventBus.emit({
+          type: "file-change",
+          provider: "gemini",
+          path,
+          relativePath: "first/chats/session-first.json",
+          changeType,
+          timestamp: new Date().toISOString(),
+          fileType: "session",
+        });
+      };
+      await rm(changed);
+      notify(changed, "delete");
+      expect(await scanner.listProjects()).toEqual([
+        expect.objectContaining({ sessionCount: 1 }),
+      ]);
+      expect(reads.mock.calls.map(([file]) => file)).toEqual([changed]);
+
+      await writeSession(changed, "third-hash");
+      notify(changed, "create");
+      expect(await scanner.listProjects()).toHaveLength(2);
+      expect(reads.mock.calls.map(([file]) => file)).toEqual([changed]);
+
+      await rm(changed);
+      await mkdir(changed);
+      notify(changed, "modify");
+      await expect(scanner.listProjects()).rejects.toMatchObject({
+        code: "EISDIR",
+      });
+      await rm(changed, { recursive: true });
+      await writeSession(changed, "second-hash");
+      reads.mockClear();
+      expect(await scanner.listProjects()).toEqual([
+        expect.objectContaining({ sessionCount: 2 }),
+      ]);
+      expect(reads.mock.calls.map(([file]) => file)).toEqual([changed]);
+    } finally {
+      await scanner.dispose();
+    }
   });
 
   it("invalidates shared codex scanner cache on codex file-change events", async () => {

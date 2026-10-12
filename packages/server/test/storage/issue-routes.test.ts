@@ -25,9 +25,9 @@ it("gates all data routes, validates settings, saves through the shared settings
   const dataDir = mkdtempSync(join(tmpdir(), "ya-issue-routes-"));
   const settings = new ServerSettingsService({ dataDir });
   await settings.initialize();
-  const db = new DiscoverySqliteService({ dataDir, mode: "auto" });
+  const db = new DiscoverySqliteService({ dataDir });
   const store = new IssueStore(
-    db.getDatabase()!,
+    db.getDatabase(),
     () => settings.getSetting("issueAssociations") ?? DEFAULT_ISSUE_SETTINGS,
   );
   const indexer = new IssueIndexer(store, {
@@ -271,9 +271,9 @@ it("sorts issues across pages by session activity, source mention time, and name
       aggressiveMatching: true,
     },
   });
-  const db = new DiscoverySqliteService({ dataDir, mode: "auto" });
+  const db = new DiscoverySqliteService({ dataDir });
   const store = new IssueStore(
-    db.getDatabase()!,
+    db.getDatabase(),
     () => settings.getSetting("issueAssociations")!,
   );
   const indexer = new IssueIndexer(store, {
@@ -396,8 +396,8 @@ it("attaches a hand-resolved reference in one write, with the note as its excerp
   await settings.updateSettings({
     issueAssociations: { enabled: true, scope: "viewed", recentDays: 7 },
   });
-  const db = new DiscoverySqliteService({ dataDir, mode: "auto" });
-  const database = db.getDatabase()!;
+  const db = new DiscoverySqliteService({ dataDir });
+  const database = db.getDatabase();
   // The route used to insert the evidence row and then rewrite its kind and
   // excerpt, which is why it knew the column names. Count what this reference
   // pays for: the store writes it as manual evidence in the one insert.
@@ -469,9 +469,9 @@ it("asks a tracker only about a reference YA captured in that project", async ()
       confirmation: { enabled: true, jiraSite: "", jiraEmail: "" },
     },
   });
-  const db = new DiscoverySqliteService({ dataDir, mode: "auto" });
+  const db = new DiscoverySqliteService({ dataDir });
   const store = new IssueStore(
-    db.getDatabase()!,
+    db.getDatabase(),
     () => settings.getSetting("issueAssociations")!,
   );
   const indexer = new IssueIndexer(store, {

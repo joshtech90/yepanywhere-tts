@@ -26,11 +26,11 @@ const services: DiscoverySqliteService[] = [];
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "ya-issues-"));
   dirs.push(dir);
-  const service = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
+  const service = new DiscoverySqliteService({ dataDir: dir });
   services.push(service);
   return {
     dir,
-    store: new IssueStore(service.getDatabase()!, () => ({
+    store: new IssueStore(service.getDatabase(), () => ({
       enabled: true,
       scope: "viewed",
       recentDays: 7,
@@ -158,9 +158,9 @@ describe("durable issue evidence", () => {
     expect(item).toMatchObject({ sessionCount: 2, unresolved: false });
     expect(store.evidence(item.id)).toHaveLength(3);
     service.close();
-    const reopened = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
+    const reopened = new DiscoverySqliteService({ dataDir: dir });
     services.push(reopened);
-    expect(new IssueStore(reopened.getDatabase()!).list("ABC-123")).toEqual([
+    expect(new IssueStore(reopened.getDatabase()).list("ABC-123")).toEqual([
       item,
     ]);
   });
@@ -184,9 +184,9 @@ describe("durable issue evidence", () => {
   it("records the extraction rules version that produced each evidence row", () => {
     const dir = mkdtempSync(join(tmpdir(), "ya-issues-"));
     dirs.push(dir);
-    const service = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
+    const service = new DiscoverySqliteService({ dataDir: dir });
     services.push(service);
-    const database = service.getDatabase()!;
+    const database = service.getDatabase();
     // The column's schema default answers a stored-row query whether or not
     // the insert supplies a version, so watch what the insert itself binds.
     const bound: SqliteValue[][] = [];

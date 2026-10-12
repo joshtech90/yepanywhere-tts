@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
+import { forgetRetainedResumes } from "../lib/rejectedResumeStorage";
 import { UI_KEYS } from "../lib/storageKeys";
 
 interface DeveloperModeSettings {
@@ -10,6 +11,7 @@ interface DeveloperModeSettings {
   remoteLogCollectionEnabled: boolean;
   /** Show connection status bars (green/orange/red) */
   showConnectionBars: boolean;
+  retainRejectedSrpSessions: boolean;
 }
 
 const DEFAULT_SETTINGS: DeveloperModeSettings = {
@@ -17,6 +19,7 @@ const DEFAULT_SETTINGS: DeveloperModeSettings = {
   relayDebugEnabled: false,
   remoteLogCollectionEnabled: false,
   showConnectionBars: false,
+  retainRejectedSrpSessions: false,
 };
 
 function getBrowserLocalStorage(): Storage | null {
@@ -34,6 +37,7 @@ function normalizeSettings(raw: unknown): DeveloperModeSettings {
   }
   const parsed = raw as Partial<DeveloperModeSettings>;
   return {
+    retainRejectedSrpSessions: parsed.retainRejectedSrpSessions === true,
     crossHostDelegationEnabled:
       parsed.crossHostDelegationEnabled ??
       DEFAULT_SETTINGS.crossHostDelegationEnabled,
@@ -80,11 +84,25 @@ function getSnapshot() {
 }
 
 function updateSettings(newSettings: DeveloperModeSettings) {
+  if (
+    !newSettings.retainRejectedSrpSessions &&
+    currentSettings.retainRejectedSrpSessions
+  )
+    forgetRetainedResumes();
   currentSettings = newSettings;
   saveSettings(newSettings);
   for (const listener of listeners) {
     listener();
   }
+}
+
+// A stale tab must not re-enable retention when changing an unrelated setting.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== UI_KEYS.developerMode && event.key !== null) return;
+    currentSettings = loadSettings();
+    for (const listener of listeners) listener();
+  });
 }
 
 export function setRemoteLogCollectionEnabledValue(enabled: boolean): void {
@@ -126,6 +144,13 @@ export function useDeveloperMode() {
     updateSettings({ ...currentSettings, showConnectionBars: enabled });
   }, []);
 
+  const setRetainRejectedSrpSessions = useCallback((enabled: boolean) => {
+    updateSettings({
+      ...currentSettings,
+      retainRejectedSrpSessions: enabled,
+    });
+  }, []);
+
   return {
     crossHostDelegationEnabled: settings.crossHostDelegationEnabled,
     setCrossHostDelegationEnabled,
@@ -133,6 +158,8 @@ export function useDeveloperMode() {
     setRelayDebugEnabled,
     remoteLogCollectionEnabled: settings.remoteLogCollectionEnabled,
     setRemoteLogCollectionEnabled,
+    retainRejectedSrpSessions: settings.retainRejectedSrpSessions,
+    setRetainRejectedSrpSessions,
     showConnectionBars: settings.showConnectionBars,
     setShowConnectionBars,
   };

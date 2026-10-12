@@ -82,6 +82,8 @@ export function DevelopmentSettings() {
     setCrossHostDelegationEnabled,
     relayDebugEnabled,
     setRelayDebugEnabled,
+    retainRejectedSrpSessions,
+    setRetainRejectedSrpSessions,
     remoteLogCollectionEnabled,
     setRemoteLogCollectionEnabled,
   } = useDeveloperMode();
@@ -98,6 +100,7 @@ export function DevelopmentSettings() {
             validationEnabled: validationSettings.enabled,
             crossHostDelegationEnabled,
             relayDebugEnabled,
+            retainRejectedSrpSessions,
             remoteLogCollectionEnabled,
             sessionScrollBehaviorMode,
             serviceWorkerEnabled: serverSettings.serviceWorkerEnabled ?? true,
@@ -108,6 +111,7 @@ export function DevelopmentSettings() {
       validationSettings.enabled,
       crossHostDelegationEnabled,
       relayDebugEnabled,
+      retainRejectedSrpSessions,
       remoteLogCollectionEnabled,
       serverSettings,
       sessionScrollBehaviorMode,
@@ -118,6 +122,7 @@ export function DevelopmentSettings() {
       setValidationEnabled(snapshot.validationEnabled);
       setCrossHostDelegationEnabled(snapshot.crossHostDelegationEnabled);
       setRelayDebugEnabled(snapshot.relayDebugEnabled);
+      setRetainRejectedSrpSessions(snapshot.retainRejectedSrpSessions);
       setRemoteLogCollectionEnabled(snapshot.remoteLogCollectionEnabled);
       setSessionScrollBehaviorMode(snapshot.sessionScrollBehaviorMode);
       void updateServerSetting(
@@ -133,6 +138,7 @@ export function DevelopmentSettings() {
       setValidationEnabled,
       setCrossHostDelegationEnabled,
       setRelayDebugEnabled,
+      setRetainRejectedSrpSessions,
       setRemoteLogCollectionEnabled,
       setSessionScrollBehaviorMode,
       updateServerSetting,
@@ -279,6 +285,20 @@ export function DevelopmentSettings() {
               type="checkbox"
               checked={remoteLogCollectionEnabled}
               onChange={(e) => setRemoteLogCollectionEnabled(e.target.checked)}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("developmentRetainRejectedSrpTitle")}
+          description={t("developmentRetainRejectedSrpDescription")}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              aria-label={t("developmentRetainRejectedSrpTitle")}
+              checked={retainRejectedSrpSessions}
+              onChange={(e) => setRetainRejectedSrpSessions(e.target.checked)}
             />
             <span className="toggle-slider" />
           </label>

@@ -46,16 +46,14 @@ startup normalization boundary:
 `packages/server/src/startupEnv.ts` implements this normalization before the
 rest of the server module graph is evaluated.
 
-## Optional discovery storage
+## Discovery storage
 
-`YEP_SQLITE=off|auto|on` controls optional discovery storage at server startup.
-Servers default to `auto`; an explicit `off` disables storage. `auto` refuses to
-open the database when the data directory is on a network filesystem, and `on`
-opens it there anyway for an operator who has measured their own share. The
-desktop launcher preserves that same default and explicit choices. Invalid values
-fail configuration parsing.
-There is no legacy alias. See [optional SQLite storage](optional-sqlite.md) for
-runtime support, database location, and nonfatal initialization failures.
+SQLite storage is required and has no setting. `YEP_SQLITE` was removed on
+2026-10-11 and is ignored. A server whose data directory is on a network
+filesystem refuses to start; place the data directory on local disk with
+`YEP_DATA_DIR`. There is no legacy alias. See
+[built-in SQLite storage](optional-sqlite.md#startup-policy) for runtime
+support, database location, and the startup refusals.
 
 ## Compatibility renames
 

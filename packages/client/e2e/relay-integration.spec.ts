@@ -32,6 +32,7 @@ import {
   waitForRelayStatus,
 } from "./fixtures.js";
 
+import type {} from "../src/lib/resumeDebugger.js";
 import { recordUiCapture } from "./support/ui-capture.js";
 
 // Test credentials
@@ -303,6 +304,104 @@ test.describe("Full Relay Integration", () => {
       await expect(
         page.locator('[data-testid="custom-relay-url-input"]'),
       ).toHaveValue(otherRelay);
+    }
+  });
+
+  test("new-session tabs mount ready route modules without loading fallbacks", async ({
+    page,
+    context,
+    remotePreviewURL,
+    relayWsURL,
+  }) => {
+    await loginViaRelay(page, remotePreviewURL, relayWsURL);
+    const tab = await context.newPage();
+    await tab.addInitScript(() => {
+      const typingSamples: Array<{ ms: number; retained: boolean }> = [];
+      Object.assign(window, { sawModuleFallback: false, typingSamples });
+      let keyStarted = 0;
+      document.addEventListener("keydown", (event) => {
+        if (event.target instanceof HTMLTextAreaElement)
+          keyStarted = performance.now();
+      });
+      document.addEventListener("input", (event) => {
+        if (!(event.target instanceof HTMLTextAreaElement)) return;
+        const target = event.target;
+        const expected = target.value;
+        const started = keyStarted;
+        requestAnimationFrame(() => {
+          const field =
+            document.querySelector<HTMLTextAreaElement>(
+              ".new-session-form textarea",
+            ) ?? target;
+          typingSamples.push({
+            ms: performance.now() - started,
+            retained: field.value.startsWith(expected),
+          });
+        });
+      });
+      new MutationObserver(() => {
+        if (document.querySelector('[data-startup-phase="module"]')) {
+          Object.assign(window, { sawModuleFallback: true });
+        }
+      }).observe(document, { childList: true, subtree: true });
+    });
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let held = false;
+    await tab.route("**/assets/NewSessionPage-*.js", async (route) => {
+      held = true;
+      await ready;
+      await route.continue();
+    });
+    try {
+      await tab.goto(remoteRelayUrl(remotePreviewURL, "new-session"), {
+        waitUntil: "commit",
+      });
+      await expect.poll(() => held).toBe(true);
+      await expect(tab.locator("#yep-preboot-composer textarea")).toBeVisible();
+      const initialText = await tab
+        .locator("#yep-preboot-composer textarea")
+        .inputValue();
+      const text = " across startup";
+      const typing = tab.keyboard.type(text, { delay: 25 });
+      release();
+      await typing;
+      await expect(tab.locator(".new-session-form textarea")).toBeVisible();
+      await expect(tab.locator(".new-session-form textarea")).toHaveValue(
+        initialText + text,
+      );
+      await expect
+        .poll(() =>
+          tab.evaluate(
+            () =>
+              (window as unknown as { typingSamples: unknown[] }).typingSamples
+                .length,
+          ),
+        )
+        .toBe(text.length);
+      const samples = await tab.evaluate(
+        () =>
+          (
+            window as unknown as {
+              typingSamples: Array<{ ms: number; retained: boolean }>;
+            }
+          ).typingSamples,
+      );
+      expect(
+        samples.every((sample) => sample.retained && sample.ms <= 100),
+      ).toBe(true);
+      expect(
+        await tab.evaluate(
+          () =>
+            (window as unknown as { sawModuleFallback: boolean })
+              .sawModuleFallback,
+        ),
+      ).toBe(false);
+    } finally {
+      release();
+      await tab.close();
     }
   });
 
@@ -1148,6 +1247,151 @@ test.describe("Full Relay Integration", () => {
     ).toBe(true);
   });
 
+  test("retained rejected resume can be probed without replacing the live source", async ({
+    page,
+    remotePreviewURL,
+    relayWsURL,
+  }) => {
+    let rejectOnce = false;
+    let resumeAttempts = 0;
+    let probeClosed = false;
+    const socketStates: { closed: boolean }[] = [];
+    const nonces: string[] = [];
+    await page.routeWebSocket(relayWsURL, (socket) => {
+      const server = socket.connectToServer();
+      const state = { closed: false };
+      socketStates.push(state);
+      let probe = false;
+      socket.onMessage((message) => {
+        if (typeof message === "string") {
+          const msg = JSON.parse(message) as {
+            type?: string;
+            clientNonce?: string;
+          };
+          if (msg.type === "srp_resume_init") {
+            resumeAttempts++;
+            nonces.push(msg.clientNonce ?? "");
+            if (rejectOnce) {
+              rejectOnce = false;
+              socket.send(
+                JSON.stringify({
+                  type: "srp_invalid",
+                  reason: "invalid_proof",
+                }),
+              );
+              return;
+            }
+            probe = true;
+          }
+        }
+        server.send(message);
+      });
+      socket.onClose((code, reason) => {
+        state.closed = true;
+        if (probe) probeClosed = true;
+        server.close({ code, reason });
+      });
+    });
+    await loginViaRelay(page, remotePreviewURL, relayWsURL);
+    await page.goto(remoteRelayUrl(remotePreviewURL, "settings/development"));
+    const toggle = page.getByRole("checkbox", {
+      name: "Retain rejected SRP sessions for debugging",
+    });
+    await toggle.locator("..").click();
+    await expect(toggle).toBeChecked();
+    for (const [name, size] of [
+      ["desktop", { width: 1000, height: 600 }],
+      ["phone", { width: 375, height: 812 }],
+    ] as const) {
+      await page.setViewportSize(size);
+      await page
+        .getByText("Retain rejected SRP sessions for debugging", {
+          exact: true,
+        })
+        .evaluate((element) => {
+          element
+            .closest("[data-settings-item]")
+            ?.scrollIntoView({ block: "center", behavior: "instant" });
+        });
+      await expect
+        .poll(() =>
+          toggle.evaluate((element) => {
+            const row = element.closest("[data-settings-item]");
+            if (!row) return false;
+            row.scrollIntoView({ block: "center", behavior: "instant" });
+            const bounds = row.getBoundingClientRect();
+            return bounds.top >= 50 && bounds.bottom <= window.innerHeight;
+          }),
+        )
+        .toBe(true);
+      await recordUiCapture(page, `srp-retention-development-${name}`, size);
+    }
+    rejectOnce = true;
+    await page.reload();
+    await expect(page.getByTestId("relay-login-form")).toBeVisible();
+    const retainedId = await page.evaluate(
+      () => window.__YA_RESUME_DEBUG__?.list()[0]?.id,
+    );
+    expect(retainedId).toBeTruthy();
+    const afterRejection = resumeAttempts;
+    await page.reload();
+    await expect(page.getByTestId("relay-login-form")).toBeVisible();
+    expect(resumeAttempts).toBe(afterRejection);
+    expect(
+      await page.evaluate(() => window.__YA_RESUME_DEBUG__?.list().length),
+    ).toBe(1);
+    // Restore access with a new password session while keeping the refused copy.
+    await page.getByTestId("srp-password-input").fill(TEST_SRP_PASSWORD);
+    await page.getByTestId("login-button").click();
+    await expect(page.getByTestId("relay-login-form")).not.toBeVisible();
+    await page.goto(remoteRelayUrl(remotePreviewURL, "settings"));
+    const search = page.getByRole("searchbox", { name: "Search settings" });
+    await expect(search).toBeVisible();
+    const before = await page.evaluate(() => ({
+      url: location.href,
+      credentials: localStorage.getItem("yep-anywhere-remote-credentials"),
+      hosts: localStorage.getItem("yep-anywhere-saved-hosts"),
+    }));
+    const count = resumeAttempts;
+    const liveSockets = socketStates.filter((socket) => !socket.closed);
+    expect(liveSockets.length).toBeGreaterThan(0);
+    probeClosed = false;
+    const result = await page.evaluate(
+      (id) => window.__YA_RESUME_DEBUG__?.probe(id ?? ""),
+      retainedId,
+    );
+    expect(result).toEqual({ outcome: "authenticated" });
+    expect(resumeAttempts).toBe(count + 1);
+    expect(new Set(nonces).size).toBe(nonces.length);
+    await expect.poll(() => probeClosed).toBe(true);
+    expect(liveSockets.every((socket) => !socket.closed)).toBe(true);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(
+      await page.evaluate(() => ({
+        url: location.href,
+        credentials: localStorage.getItem("yep-anywhere-remote-credentials"),
+        hosts: localStorage.getItem("yep-anywhere-saved-hosts"),
+      })),
+    ).toEqual(before);
+    await expect(search).toBeVisible();
+    expect(
+      await page.evaluate(() => window.__YA_RESUME_DEBUG__?.list().length),
+    ).toBe(1);
+    await page.goto(remoteRelayUrl(remotePreviewURL, "settings/development"));
+    await page
+      .getByRole("checkbox", {
+        name: "Retain rejected SRP sessions for debugging",
+      })
+      .locator("..")
+      .click();
+    expect(
+      await page.evaluate(() => ({
+        helper: typeof window.__YA_RESUME_DEBUG__,
+        retained: localStorage.getItem("yep-anywhere-rejected-srp-resume-v1"),
+      })),
+    ).toEqual({ helper: "undefined", retained: null });
+  });
+
   test("old relay resume rejection explains why fresh login is needed", async ({
     page,
     remotePreviewURL,
@@ -1291,7 +1535,7 @@ test.describe("Full Relay Integration", () => {
     await expect(page.getByTestId("host-picker-error")).toHaveCount(0);
   });
 
-  test("fresh relay login updates stale saved host relay URL", async ({
+  test("fresh relay login preserves a saved host at a different endpoint", async ({
     page,
     remotePreviewURL,
     relayWsURL,
@@ -1332,8 +1576,13 @@ test.describe("Full Relay Integration", () => {
     const savedHosts = await page.evaluate(() =>
       JSON.parse(localStorage.getItem("yep-anywhere-saved-hosts") ?? "{}"),
     );
-    expect(savedHosts.hosts[0]?.relayUrl).toBe(relayWsURL);
-    expect(savedHosts.hosts[0]?.session).toBeDefined();
+    expect(savedHosts.hosts[0]?.relayUrl).toBe(
+      "wss://relay.yepanywhere.com/ws",
+    );
+    const authenticated = savedHosts.hosts.find(
+      (host: { relayUrl: string }) => host.relayUrl === relayWsURL,
+    );
+    expect(authenticated?.session).toBeDefined();
   });
 
   test("mock project visible through relay connection", async ({

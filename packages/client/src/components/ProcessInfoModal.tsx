@@ -15,7 +15,7 @@ import { getProviderRuntimeReasonLabel } from "../lib/providerRuntimeStatus";
 import { isStandardServiceTier, serviceTierLabel } from "../lib/serviceTiers";
 import type { SessionStatus } from "../types";
 import styles from "./ProcessInfoModal.module.css";
-import { ROUTER_POLICY_KEYS, type RouterBinding } from "./RouterPoolSelector";
+import type { RouterBinding } from "./RouterPoolSelector";
 import { Modal } from "./ui/Modal";
 
 interface ProcessInfo {
@@ -419,10 +419,7 @@ export function ProcessInfoBody({
           />
           <InfoRow
             label={t("processInfoLabelRouterPolicy")}
-            value={
-              routerBinding.policy &&
-              t(ROUTER_POLICY_KEYS[routerBinding.policy])
-            }
+            value={routerBinding.policyLabel ?? routerBinding.policy}
           />
           <InfoRow
             label={t("processInfoLabelRouterReason")}

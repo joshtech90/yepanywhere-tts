@@ -662,6 +662,7 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
               : t("voiceInputStartLabel" as never)
       }
       aria-pressed={isPressed}
+      data-speech-streaming={serverStreaming}
     >
       <span className={styles.backendLabel} aria-hidden="true">
         {compactSpeechMethodLabel}

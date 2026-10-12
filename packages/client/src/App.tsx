@@ -32,6 +32,7 @@ import {
   useReloadNotifications,
 } from "./hooks/useReloadNotifications";
 import { useClientSummarySourceKey } from "./lib/clientSummaryStore";
+import { initResumeDebugger } from "./lib/resumeDebugger";
 import { initClientLogCollection } from "./lib/diagnostics";
 import { isCockpitPathname } from "./cockpit/core/navigation";
 
@@ -102,6 +103,7 @@ function AppContent({ children, showCodexUpdatePrompt }: AppContentProps) {
 
   // Client-side log collection for connection diagnostics
   useEffect(() => initClientLogCollection(), []);
+  useEffect(() => initResumeDebugger(), []);
 
   // Sync notifyInApp setting to service worker on app startup and SW restarts
   useSyncNotifyInAppSetting();

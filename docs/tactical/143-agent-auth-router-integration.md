@@ -10,6 +10,16 @@ approved implementation in both repositories, commits on main,
 and live provider tests using temporary YA profile directories. This does not
 establish a shipped contract or prove credential renewal.
 
+## Router-listed policies and per-session choice (2026-10-11)
+
+At the maintainer's request a pool's AAR policy became a default. AAR lists
+its policies with English labels and no longer requires clients to name them;
+YA passes the list through, and New Session offers the pool default, the
+router's other policies and each account (an account pins with Manual). This
+delivers the policy-or-account choice described under
+[account pools](#account-pools-policies-and-selection). See the
+[owning contract](../../topics/agent-auth-router.md#most-remaining-and-admission-refresh).
+
 ## Most remaining follow-up (2026-10-04)
 
 The approved next slice adds Most remaining, bounded quota/catalog refresh at

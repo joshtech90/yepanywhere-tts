@@ -1070,6 +1070,10 @@ function SessionPageContent({
   const lastSentComposerSubmissionRef = useRef<SentComposerSubmission | null>(
     null,
   );
+  // Copies of a router-pinned session inherit its account; successors that
+  // start a fresh session (handoff, title helper) or call the provider
+  // directly (fork with summary) cannot yet.
+  const routedSession = Boolean(session?.routerBinding);
   const {
     asideComposerRef,
     asideDraft,
@@ -1549,6 +1553,8 @@ function SessionPageContent({
     forkAvailability.reason === "server-missing-codex-lineage"
       ? t("codexForkServerUpdateRequired")
       : undefined;
+  // Title generation runs a helper session, which cannot keep a router pin.
+  const supportsTitleGeneration = supportsForkFromTurn && !routedSession;
   const forkAfterDisabled =
     status.owner === "external" ||
     processState === "in-turn" ||
@@ -3059,11 +3065,14 @@ function SessionPageContent({
       if (
         requiresHandoffAfterClaudeResumeError(finalError, effectiveProvider)
       ) {
-        setShowHandoffModal(true);
+        // A routed session cannot hand off yet, so offer no handoff modal.
+        if (!routedSession) setShowHandoffModal(true);
         showToast(
-          errorMsg.includes("API error: 409")
-            ? CLAUDE_HANDOFF_REQUIRED_MESSAGE
-            : errorMsg,
+          routedSession
+            ? t("routedSessionHandoffRequired")
+            : errorMsg.includes("API error: 409")
+              ? CLAUDE_HANDOFF_REQUIRED_MESSAGE
+              : errorMsg,
           "error",
         );
       } else {
@@ -3562,11 +3571,14 @@ function SessionPageContent({
       if (
         requiresHandoffAfterClaudeResumeError(finalError, effectiveProvider)
       ) {
-        setShowHandoffModal(true);
+        // A routed session cannot hand off yet, so offer no handoff modal.
+        if (!routedSession) setShowHandoffModal(true);
         showToast(
-          errorMsg.includes("API error: 409")
-            ? CLAUDE_HANDOFF_REQUIRED_MESSAGE
-            : errorMsg,
+          routedSession
+            ? t("routedSessionHandoffRequired")
+            : errorMsg.includes("API error: 409")
+              ? CLAUDE_HANDOFF_REQUIRED_MESSAGE
+              : errorMsg,
           "error",
         );
       } else {
@@ -5369,12 +5381,14 @@ function SessionPageContent({
       displayTitle,
       generatedTitleLength,
     );
-    if (!supportsForkFromTurn) {
+    if (!supportsTitleGeneration) {
       setRetitleState({
         requestId,
         status: "error",
         submittedTurnText,
-        error: t("sessionRetitleUnsupported"),
+        error: routedSession
+          ? t("routedSessionTitleUnavailable")
+          : t("sessionRetitleUnsupported"),
       });
       return;
     }
@@ -5537,7 +5551,7 @@ function SessionPageContent({
     }
 
     handleGenerateAndApplyTitle();
-    if (supportsForkFromTurn) {
+    if (supportsTitleGeneration) {
       draftControlsRef.current?.confirmInputClear();
     } else {
       draftControlsRef.current?.restoreFromStorage();
@@ -6265,7 +6279,7 @@ function SessionPageContent({
                         <polyline points="6 9 12 15 18 9" />
                       </svg>
                     </button>
-                    {supportsForkFromTurn && generatedTitleEnabled && (
+                    {supportsTitleGeneration && generatedTitleEnabled && (
                       <button
                         type="button"
                         className="session-title-generate-trigger"
@@ -6322,7 +6336,7 @@ function SessionPageContent({
                     onToggleRead={handleToggleRead}
                     onRename={handleStartEditingTitle}
                     onGenerateTitle={
-                      supportsForkFromTurn
+                      supportsTitleGeneration
                         ? handleGenerateAndApplyTitle
                         : undefined
                     }
@@ -6351,7 +6365,7 @@ function SessionPageContent({
                     }
                     onRestoreWarnings={handleRestorePendingElsewhereWarning}
                     onHandoff={
-                      effectiveProvider
+                      effectiveProvider && !routedSession
                         ? () => setShowHandoffModal(true)
                         : undefined
                     }
@@ -6625,7 +6639,7 @@ function SessionPageContent({
           />
         )}
 
-        {showHandoffModal && effectiveProvider && (
+        {showHandoffModal && effectiveProvider && !routedSession && (
           <RestartSessionModal
             projectId={projectId}
             sessionId={actualSessionId}
@@ -6837,14 +6851,16 @@ function SessionPageContent({
                             : undefined
                         }
                         onForkAfterSummaryUserMessage={
-                          supportsForkFromTurn
+                          supportsForkFromTurn && !routedSession
                             ? beginForkAfterSummary
                             : undefined
                         }
                         forkAfterUserMessageDisabled={forkAfterDisabled}
                         forkUnavailableMessage={forkUnavailableMessage}
                         onCopyUserMessage={copyUserMessage}
-                        onHandoffFromUserMessage={handoffFromUserMessage}
+                        onHandoffFromUserMessage={
+                          routedSession ? undefined : handoffFromUserMessage
+                        }
                         markdownAugments={markdownAugments}
                         activeToolApproval={activeToolApproval}
                         hasOlderMessages={pagination?.hasOlderMessages}

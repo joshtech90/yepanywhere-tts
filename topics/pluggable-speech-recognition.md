@@ -647,31 +647,30 @@ disables the extra processor). Direct Grok still does not consume this list.
 
 Status 2026-09-09: persistent vocabulary collection and Grok-through-YA
 biasing are implemented as independent, default-off Speech settings. The
-speech-vocabulary UI still appears only when discovery SQLite is ready (the
-default `YEP_SQLITE=auto`). Explicit `YEP_SQLITE=off` remains authoritative.
+speech-vocabulary UI appears when discovery SQLite is ready, which every
+current server is because it does not start otherwise. Older servers could run
+without it and then hid the UI.
 Ranking approximations are recorded in
 `gaps/sketches/speech-vocabulary-ranking-approximations.md`.
 
 ### Design decisions
 
-- **Gate the vocabulary services and their two capabilities on discovery
-  SQLite being ready** (vs. building them whenever a SQLite driver loads):
-  readiness is the one place that already establishes all three facts this
-  feature needs. The runtime has a working SQLite driver, the owner did not
-  set `YEP_SQLITE=off`, and the data directory is local disk rather than a
-  network share. The learned table is its own database file rather than a
-  table inside `discovery.sqlite`, so dropping the gate would open SQLite for
-  an owner who turned it off and would put a written-per-scan table on exactly
-  the share the discovery refusal exists to avoid. The cost accepted is that
-  `YEP_SQLITE=off` disables a feature whose own storage would otherwise still
-  work, which is what the settings copy tells the owner.
+- **Rely on discovery SQLite having opened** (vs. building the vocabulary
+  services whenever a SQLite driver loads): a running server has already
+  established both facts this feature needs. The runtime has a working SQLite
+  driver, and the data directory is local disk rather than a network share.
+  The learned table is its own database file rather than a table inside
+  `discovery.sqlite`, so without that guarantee it would put a
+  written-per-scan table on exactly the share the discovery refusal exists to
+  avoid. Until 2026-10-11 storage was optional and the services were gated on
+  readiness; the server now refuses to start instead, so the gate is gone.
 
 ### Where the learned table lives
 
 The learned table and its fingerprint filter live in the data directory,
 alongside the settings file. That directory is local disk whenever this feature
-can run at all: learning is gated on discovery SQLite being ready, and startup
-refuses to open that database on a network filesystem, so the placement the
+can run at all: the server only starts once discovery SQLite has opened, and
+startup refuses that database on a network filesystem, so the placement the
 earlier separate reservation searched for is now guaranteed rather than sought
 (see [optional SQLite](optional-sqlite.md) § Data directory placement). The
 filter is still sized against free space and keeps a gigabyte of headroom, so a

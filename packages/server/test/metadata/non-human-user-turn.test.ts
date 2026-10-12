@@ -2,18 +2,23 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
+import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 let dataDir: string;
 let service: SessionMetadataService;
 
 beforeEach(async () => {
   dataDir = await mkdtemp(join(tmpdir(), "non-human-turn-"));
-  service = new SessionMetadataService({ dataDir });
+  service = createTestSessionMetadataService(dataDir);
   await service.initialize();
 });
 
 afterEach(async () => {
+  closeTestDiscoveryDatabases();
   await rm(dataDir, { recursive: true });
 });
 
@@ -25,13 +30,13 @@ it("persists a delivered turn and its acknowledgement across restarts", async ()
   };
   await service.recordNonHumanUserTurn("receiver", turn);
   await service.setTitle("receiver", "Working session");
-  const restored = new SessionMetadataService({ dataDir });
+  const restored = createTestSessionMetadataService(dataDir);
   await restored.initialize();
   expect(restored.getPendingNonHumanUserTurn("receiver")).toEqual(turn);
   expect(
     await restored.acknowledgeNonHumanUserTurn("receiver", turn.messageId),
   ).toBe(true);
-  const reopened = new SessionMetadataService({ dataDir });
+  const reopened = createTestSessionMetadataService(dataDir);
   await reopened.initialize();
   expect(reopened.getPendingNonHumanUserTurn("receiver")).toBeUndefined();
   await reopened.recordNonHumanUserTurn("receiver", turn);

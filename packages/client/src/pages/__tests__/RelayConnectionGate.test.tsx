@@ -358,7 +358,8 @@ describe("RelayConnectionGate", () => {
     expect(
       await screen.findByText("Server rejected session resume: expired"),
     ).toBeTruthy();
-    expect(testState.clearHostSession).toHaveBeenCalledWith("host-1");
+    // Credential retirement belongs to the attempted handshake, not mutable UI host state.
+    expect(testState.clearHostSession).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(documentUnmounts).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Go to Login" }));
@@ -380,7 +381,8 @@ describe("RelayConnectionGate", () => {
 
     expect(await screen.findByText("Relay login")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Go to Login" })).toBeNull();
-    expect(testState.clearHostSession).toHaveBeenCalledWith("host-1");
+    // Credential retirement belongs to the attempted handshake, not mutable UI host state.
+    expect(testState.clearHostSession).not.toHaveBeenCalled();
     expect(screen.getByTestId("relay-login-reason").textContent).toBe(
       "auth_failed",
     );

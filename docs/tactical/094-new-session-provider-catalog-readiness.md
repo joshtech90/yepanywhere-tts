@@ -4,7 +4,17 @@
 > refresh only the provider facts the user needs without making an unrelated
 > provider's CLI discovery part of the New Session critical path.
 
-Status: Current-route readiness is implemented (2026-08-05); three acceptance
+Status update (2026-10-09): capability-gated identity enumeration is implemented
+through `GET /api/providers/descriptors` and consumed by New Session. It reads
+the same exposed-provider set without auth/model probes. The stable-release
+review and old-server fallback are recorded in
+[server capabilities](../../topics/server-capabilities.md). The new selector
+is usable while the aggregate is held; explicit selections still require an
+installed named row before launch. Server snapshots and aggregate failure
+isolation remain open. Earlier status, measurement gates and implementation
+recommendations below record the pre-descriptor slice.
+
+Earlier status: Current-route readiness is implemented (2026-08-05); three acceptance
 criteria remain partial. Forced refreshes are generation safe, Gateway launch
 requires a successful current named probe, browser snapshots are versioned and
 allowlisted, and New Session usage telemetry waits behind selected-provider
@@ -152,7 +162,8 @@ provider-card rows, and a fresh server still computes the aggregate on demand.
 
 The app shell's `primeProviderCache()` and New Session continue to join one
 aggregate request. That avoids duplicate client requests but does not make the
-aggregate cheap. The server retains successful provider rows for five minutes;
+aggregate cheap. The server now retains provider rows until explicit refresh,
+relevant configuration change or restart (maintainer direction, 2026-10-09);
 there is no durable server provider/model snapshot across restart.
 
 New Session concurrently requests recent project choices. That route is not a
@@ -184,15 +195,16 @@ therefore crosses the 2 s descriptor/refresh reconsideration threshold.
 
 The aggregate route calls every exposed provider through `Promise.all` and,
 within each row, calls authentication and model discovery concurrently. This
-still has four undesirable consequences:
+still has three undesirable consequences:
 
 - an unselected OpenCode catalog delays first-visit provider cards and the
   aggregate correction, though it no longer delays selected Codex controls;
-- providers such as Claude may repeat authentication work because their model
-  method checks authentication again internally;
 - Codex OSS may run `ollama list` independently for auth and models; and
 - one uncaught provider failure rejects the complete provider response rather
   than leaving other providers usable from their last successful rows.
+
+Claude shares an in-flight authentication command between status and model
+discovery; later requests check authentication again after it settles.
 
 The configured Claude Gateway path still has an additional side effect.
 `getAvailableModels()` calls `gatewayLauncher.ensureReady()`, so server startup
@@ -233,9 +245,10 @@ product purposes.
 
 The existing provider route now owns each provider row independently through
 `SourceVersionedSingleFlight`. Its source version includes the provider's model
-catalog key and a monotonic acquisition generation. Accepted rows have a
-five-minute TTL and a shared 4 MiB byte budget. This is enough to order current
-process work and prevent stale completion; it is not a durable server snapshot
+catalog key and a monotonic acquisition generation. Accepted rows do not expire
+or evict by byte size: one row per registered provider bounds retained entries.
+Explicit refresh and configuration-key changes replace those rows. This orders
+current process work and prevents stale completion; it is not a durable server snapshot
 and adds no freshness/error fields to the wire response.
 
 A persisted install-scoped provider/model snapshot remains conditional on the
@@ -383,7 +396,7 @@ slice; three remain partial and have explicit evidence gates.
 | 7 | Cached rows and requests remain isolated by client source and provider | Source-switch tests plus distinct source/provider cache keys | **Met** |
 | 8 | Browser snapshots retain only versioned display/capability fields | Inspect serialized fixture containing identity, expiry, login command, and unknown authorization | **Met** — all four excluded fields become zero; unknown/unversioned snapshots are removed |
 | 9 | Browser and server restart retain a bounded, non-secret last-successful model snapshot | Reload with aggregate held, then restart with a clean browser | **Partial** — browser snapshot is bounded by its allowlist and storage quota; server persistence is absent |
-| 10 | Server route retention and refresh work have one byte-bounded generation owner | Inspect owner budget and test ordinary/forced overlap, coalescing, late success, and late failure | **Met** — one `SourceVersionedSingleFlight` owner with a 4 MiB accepted-value budget |
+| 10 | Server route retention and refresh work have one generation owner, retaining one result per provider until explicit refresh or configuration change | Test cross-client reuse after a year and above the former byte limit, plus ordinary/forced overlap and late completion | **Met** — one `SourceVersionedSingleFlight` owner, no expiry or size eviction; finite registered-provider key set |
 | 11 | One provider failure does not erase another provider's usable row | Fail named and aggregate provider probes independently | **Partial** — named failure retains stale display data; aggregate `Promise.all` still rejects |
 
 Criterion 4's route measurement is also recorded in tactical 093, without

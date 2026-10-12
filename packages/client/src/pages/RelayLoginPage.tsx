@@ -1,3 +1,4 @@
+import { mutateResumeCredentials } from "../lib/rejectedResumeStorage";
 /**
  * RelayLoginPage - Login form for remote access via relay server.
  *
@@ -129,23 +130,26 @@ export function RelayLoginPage() {
 
     // Save the current relay URL before connecting so session callbacks and
     // later relay routes do not reuse a stale relay endpoint.
-    const host = upsertRelayHost({
-      relayUrl: effectiveRelayUrl,
-      relayUsername: username,
-      srpUsername: username,
-    });
-    // Set currentHostId before connect so the session callback can use it
-    setCurrentHostId(host.id);
-
     setStatus("connecting_relay");
-    connectViaRelay({
-      relayUrl: effectiveRelayUrl,
-      relayUsername: username,
-      srpUsername: username,
-      srpPassword: password,
-      rememberMe: true,
-      onStatusChange: setStatus,
+    mutateResumeCredentials(() => {
+      const host = upsertRelayHost({
+        relayUrl: effectiveRelayUrl,
+        relayUsername: username,
+        srpUsername: username,
+      });
+      // Set currentHostId before connect so the session callback can use it
+      setCurrentHostId(host.id);
     })
+      .then(() =>
+        connectViaRelay({
+          relayUrl: effectiveRelayUrl,
+          relayUsername: username,
+          srpUsername: username,
+          srpPassword: password,
+          rememberMe: true,
+          onStatusChange: setStatus,
+        }),
+      )
       .then(() => {
         // Host already saved and currentHostId already set
       })
@@ -243,11 +247,13 @@ export function RelayLoginPage() {
     );
 
     if (rememberMe) {
-      const host = upsertRelayHost({
-        relayUrl,
-        relayUsername: username,
-        srpUsername,
-      });
+      const host = await mutateResumeCredentials(() =>
+        upsertRelayHost({
+          relayUrl,
+          relayUsername: username,
+          srpUsername,
+        }),
+      );
       // Set currentHostId before connect so the session callback can use it
       setCurrentHostId(host.id);
     }

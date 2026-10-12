@@ -219,6 +219,7 @@ function getProjectQueueCountForProject(
 async function getProjectActivityCounts(
   supervisor: Supervisor | undefined,
   externalTracker: ExternalSessionTracker | undefined,
+  retained = false,
 ): Promise<Map<string, ProjectActivityCounts>> {
   const counts = new Map<string, ProjectActivityCounts>();
 
@@ -247,8 +248,10 @@ async function getProjectActivityCounts(
   // Count external sessions - convert to UrlProjectId for consistent keys
   if (externalTracker) {
     for (const sessionId of externalTracker.getExternalSessions()) {
-      const info =
-        await externalTracker.getExternalSessionInfoWithUrlId(sessionId);
+      const info = await externalTracker.getExternalSessionInfoWithUrlId(
+        sessionId,
+        { retained },
+      );
       if (info) {
         const existing = getMutableProjectActivityCounts(
           counts,
@@ -466,12 +469,17 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
 
   // GET /api/projects - List all projects
   routes.get("/", async (c) => {
-    const rawProjects = (await deps.scanner.listProjects()).filter(
-      (project) => !isDetachedProjectPath(project.path),
-    );
+    const retained =
+      c.req.query("summaryMode") === "retained"
+        ? await deps.scanner.readRetainedProjects()
+        : undefined;
+    const rawProjects = (
+      retained?.projects ?? (await deps.scanner.listProjects())
+    ).filter((project) => !isDetachedProjectPath(project.path));
     const activityCounts = await getProjectActivityCounts(
       deps.supervisor,
       deps.externalTracker,
+      retained !== undefined,
     );
     const codeNameByProjectId = await codeNamesForProjects(rawProjects);
     const captionByProjectId = await captionsForProjects(rawProjects);
@@ -503,6 +511,16 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       );
     });
 
+    if (retained) {
+      const { projects: _projects, refreshError, ...catalog } = retained;
+      return c.json({
+        projects,
+        catalog: {
+          ...catalog,
+          ...(principalFor(c).kind === "limited" ? {} : { refreshError }),
+        },
+      });
+    }
     return c.json({ projects });
   });
 
@@ -629,12 +647,15 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     // that is already here under another owner or none, nor show one the
     // superuser hid. Their own project may be added again.
     if (owner) {
-      const existing = await deps.scanner.getProject(
-        toUrlProjectId(normalizedPath),
-      );
+      const projectId = toUrlProjectId(normalizedPath);
+      // Discovery can still be refreshing or retain an older empty snapshot.
+      // Registered ownership is authoritative even before discovery catches up.
+      const existing = await deps.scanner.getProject(projectId);
+      const registered = deps.projectMetadataService?.getMetadata(projectId);
       if (
         deps.projectMetadataService?.isHiddenProjectPath(normalizedPath) ||
-        (existing && existing.ownerUsername !== owner.username)
+        ((registered ?? existing) &&
+          (registered ?? existing)?.ownerUsername !== owner.username)
       ) {
         return c.json(
           {
@@ -685,6 +706,22 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
 
     // Persist the project so it appears in future listings
     if (deps.projectMetadataService) {
+      // Another request may have registered or hidden it during directory
+      // preparation. Recheck immediately before addProject mutates metadata.
+      const registered = deps.projectMetadataService.getMetadata(projectId);
+      if (
+        owner &&
+        (deps.projectMetadataService.isHiddenProjectPath(normalizedPath) ||
+          (registered && registered.ownerUsername !== owner.username))
+      ) {
+        return c.json(
+          {
+            error:
+              "This directory is already a project; ask the superuser for access",
+          },
+          403,
+        );
+      }
       await deps.projectMetadataService.addProject(
         projectId,
         normalizedPath,

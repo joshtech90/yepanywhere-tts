@@ -29,6 +29,7 @@ import { createArtifactRoutes } from "./routes/artifacts.js";
 import { createVhostSiteRoutes } from "./routes/vhostSites.js";
 import { createVhostAppRoutes } from "./routes/vhostApps.js";
 import { createVhostAccessRoutes } from "./routes/vhostAccess.js";
+import { createVhostOauthRoutes } from "./routes/vhostOauth.js";
 import {
   createSessionAppRoutes,
   sessionAppBrokerSocket,
@@ -271,6 +272,7 @@ import { agentSelfEnabled } from "./sdk/providers/agent-self.js";
 import { createSessionsRoutes } from "./routes/sessions.js";
 import { createSessionWakeRoutes } from "./routes/session-wake.js";
 import { createSettingsRoutes } from "./routes/settings.js";
+import { streamNewSessionBootstrap } from "./routes/new-session-bootstrap.js";
 import { createSharingRoutes } from "./routes/sharing.js";
 import { createSupervisorQueueRoutes } from "./routes/supervisor-queue.js";
 import { createToolResultMediaRoutes } from "./routes/tool-result-media.js";
@@ -295,10 +297,7 @@ import type { SpeechBackendInstallService } from "./services/voice/speechBackend
 import { createSecurityClientRoutes } from "./routes/security-clients.js";
 import { createNativePushRoutes } from "./routes/native-push.js";
 import type { NativePushService } from "./push/NativePushService.js";
-import {
-  DiscoverySqliteService,
-  type SqliteMode,
-} from "./storage/discovery-sqlite.js";
+import { DiscoverySqliteService } from "./storage/discovery-sqlite.js";
 import {
   createVersionRoutes,
   type VersionRouteOptions,
@@ -509,7 +508,12 @@ export interface AppOptions {
   getCatalogFamilies?: () => readonly ProviderCatalogFamily[];
   /** Data directory for persistent state (for onboarding state) */
   dataDir?: string;
-  sqliteMode?: SqliteMode;
+  /**
+   * The server's required SQLite database. When omitted, the app opens its own
+   * below `dataDir` and closes it on dispose; a passed service stays owned by
+   * the caller, which shares it with session metadata.
+   */
+  discoverySqlite?: DiscoverySqliteService;
   /** NetworkBindingService for runtime binding configuration */
   networkBindingService?: NetworkBindingService;
   /**
@@ -816,20 +820,15 @@ export function createApp(options: AppOptions): AppResult {
           );
         })
     : Promise.resolve();
-  const discoverySqlite = new DiscoverySqliteService({
-    dataDir: effectiveDataDir,
-    mode: options.sqliteMode ?? "auto",
-    onError: (error) =>
-      console.warn("[DiscoverySqlite] Storage failed:", error),
-  });
-  const draftDatabase = discoverySqlite.getDatabase();
+  const ownsDiscoverySqlite = !options.discoverySqlite;
+  const discoverySqlite =
+    options.discoverySqlite ??
+    new DiscoverySqliteService({ dataDir: effectiveDataDir });
   let draftStore: DraftStore | undefined;
-  if (draftDatabase) {
-    try {
-      draftStore = new DraftStore(draftDatabase);
-    } catch (error) {
-      console.warn("[DraftSync] Storage unavailable:", error);
-    }
+  try {
+    draftStore = new DraftStore(discoverySqlite.getDatabase());
+  } catch (error) {
+    console.warn("[DraftSync] Storage unavailable:", error);
   }
   const draftCleanup = draftStore
     ? setInterval(() => {
@@ -1062,6 +1061,8 @@ export function createApp(options: AppOptions): AppResult {
           new Request(new URL(path, context.req.url), {
             method,
             headers,
+            // The dispatcher accepts only POST | PUT, defaulting to POST;
+            // Oxlint's no-invalid-fetch-options incorrectly assumes GET here.
             body: JSON.stringify(body),
           }),
           undefined,
@@ -1196,6 +1197,10 @@ export function createApp(options: AppOptions): AppResult {
     eventBus: options.eventBus,
     cacheTtlMs: options.projectScanCacheTtlMs,
   });
+  // Restore retained rows and start bounded discovery while the server starts,
+  // so the first route bootstrap consumes prepared state instead of owning it.
+  // The scanner retains refresh failures and drains this work during disposal.
+  void scanner.refreshRetainedProjects();
   knownProjectsForGrants = () => {
     const known = new Map<string, string>();
     for (const project of scanner.cachedProjects())
@@ -1384,6 +1389,7 @@ export function createApp(options: AppOptions): AppResult {
   );
   app.route("/api", createVhostAppRoutes(vhostAppControl));
   app.route("/api", createVhostAccessRoutes(artifactServer));
+  app.route("/api", createVhostOauthRoutes(artifactServer));
   // Sandboxed sessions' loopback servers, through their port brokers. The
   // supervisor is assigned later; both callbacks run only at request time.
   artifactServer.setSessionAppUpstream((sessionId) =>
@@ -1482,7 +1488,7 @@ export function createApp(options: AppOptions): AppResult {
       await vocabularyLearning?.close();
       if (draftCleanup) clearInterval(draftCleanup);
       draftStore?.close();
-      discoverySqlite.close();
+      if (ownsDiscoverySqlite) discoverySqlite.close();
       await retainedCollections?.dispose();
       await projectQueueScheduler?.dispose();
       await artifactServer.close();
@@ -2986,7 +2992,7 @@ export function createApp(options: AppOptions): AppResult {
       }),
     );
   const issueDatabase = discoverySqlite.getDatabase();
-  if (issueDatabase && options.serverSettingsService) {
+  if (options.serverSettingsService) {
     const catalog = retainedCollections;
     const settings = options.serverSettingsService;
     const readerFor = async (
@@ -3096,12 +3102,11 @@ export function createApp(options: AppOptions): AppResult {
     );
     indexer.configure();
   }
-  // The learned vocabulary keeps its own SQLite file beside discovery's, so it
-  // needs the three facts discovery readiness already establishes: this runtime
-  // has a SQLite driver, the owner did not set `YEP_SQLITE=off`, and the data
-  // directory is local disk rather than a share
+  // The learned vocabulary keeps its own SQLite file beside discovery's. The
+  // server only starts once discovery has opened, which establishes the facts
+  // it needs: a SQLite driver and a data directory on local disk
   // (topics/pluggable-speech-recognition.md § Keyterm Biasing).
-  if (discoverySqlite.getStatus().state === "ready") {
+  {
     const catalog = retainedCollections;
     const store = new VocabularyStore(effectiveDataDir);
     const keyterms = new VocabularyKeyterms(store, effectiveDataDir);
@@ -3416,6 +3421,9 @@ export function createApp(options: AppOptions): AppResult {
       "/api/recents",
       createRecentsRoutes({
         recentsService: options.recentsService,
+        retainedCollections,
+        projectDisplayName,
+        sessionMetadataService: options.sessionMetadataService,
         scanner,
         readerFactory,
         sessionIndexService: options.sessionIndexService,
@@ -3455,6 +3463,19 @@ export function createApp(options: AppOptions): AppResult {
       "/api/settings",
       createSettingsRoutes({
         serverSettingsService: options.serverSettingsService,
+        newSessionBootstrap: (context) =>
+          streamNewSessionBootstrap(context, async (path, signal) => {
+            const headers = new Headers(context.req.raw.headers);
+            headers.delete("Accept-Encoding");
+            headers.delete("Content-Length");
+            headers.delete("If-None-Match");
+            headers.delete("If-Modified-Since");
+            headers.set("Accept", "application/json");
+            return app.fetch(
+              new Request(new URL(path, context.req.url), { headers, signal }),
+              context.env,
+            );
+          }),
         projectStoragePolicy,
         hostAwakeService: options.hostAwakeService,
         sessionMetadataService: options.sessionMetadataService,

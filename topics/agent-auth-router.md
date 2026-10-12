@@ -1,10 +1,12 @@
 # Agent Auth Router
 
 YA supports an optional local Agent Auth Router (AAR) connection for pinned native Claude and Codex sessions on macOS and Linux.
-Router-owned pools support Manual, Round robin and Most remaining selection for
-new sessions. Automatic admission refreshes stale evidence when AAR advertises
-that support. Existing sessions keep their chosen account. Earliest reset, Auto
-and cross-account continuation remain future work.
+Router-owned pools offer every selection policy the connected AAR lists
+(currently Manual, Round robin, Most remaining and Weekly pace) for new sessions.
+A pool's policy is its default; New Session can choose another router policy or
+a specific account. Automatic admission refreshes stale evidence when AAR
+advertises that support. Existing sessions keep their chosen account. Auto and
+cross-account continuation remain future work.
 The design and deferred work are in [plan 143](../docs/tactical/143-agent-auth-router-integration.md).
 
 ## Set up and use
@@ -19,8 +21,9 @@ The design and deferred work are in [plan 143](../docs/tactical/143-agent-auth-r
    automatically on opening, provider changes and returning to the visible form.
 3. On **New Session**, choose native Claude or Codex, expand advanced options,
    keep the normal Model and Thinking selections and optionally choose a compatible
-   Pool. The pool uses its router-configured policy; only multi-account Manual
-   pools require an account choice.
+   Pool. The pool uses its router-configured default policy unless the Router
+   account dropdown chooses another router policy or a specific account; a
+   Manual default with more than one fitting account requires a choice.
    Use a local, unsandboxed launch. Normal direct-provider sessions stay opt-in
    to their existing authentication path; selecting a router never changes a
    native profile's login.
@@ -96,13 +99,13 @@ running on a remote executor back through the owner's loopback listener.
 Settings → Providers offers **Pools and usage** when the YA server advertises
 `agent-auth-router-pools` (permanent optional capability 115) and AAR supports
 `pools-v1`. AAR owns named single-provider pools with up to 16 accounts
-and a Manual, Round robin or Most remaining default. Manage pools and grants in AAR. YA lists
+and a default policy. Manage pools and grants in AAR. YA lists
 only pools granted to its integration. Older AAR versions retain their scoped
-editor; this fallback grants no global administration authority. In New Session, choose a pool, catalog model
-and policy; Manual also requires an explicit account. The session header shows a
+editor; this fallback grants no global administration authority. In New Session, choose a pool and catalog
+model, and optionally another router policy or an account. The session header shows a
 compact chip with the pin's saved pool and account names, never the raw account
-id; it falls back to the policy for pins saved without names and is hidden on
-narrow screens. Its tooltip lists pool, account, policy and reason, and it opens
+id; it falls back to the policy (AAR's label captured at launch, else its id) for
+pins saved without names and is hidden on narrow screens. Its tooltip lists pool, account, policy and reason, and it opens
 Session Info, whose Router section lists the names with the pool, account,
 binding and router ids. The pin keeps AAR's names as display labels captured at
 launch, so an AAR outage or removed account still shows which account to restore;
@@ -119,7 +122,7 @@ usage** explicitly refreshes that account's catalog and quotas. There is no
 background polling. Failed refreshes retain the last successful windows with a
 stale label. A reset passing does not establish restored quota.
 
-Round robin and Most remaining require fresh catalog membership and fresh applicable quota with
+Automatic policies require fresh catalog membership and fresh applicable quota with
 headroom; unknown, stale, exhausted, disabled or blocked accounts are excluded.
 Manual permits unknown quota with validated catalog membership, but cannot ignore
 known applicable exhaustion or observed authentication/rate-limit blocks. Neither
@@ -147,13 +150,15 @@ an explicit upgrade requirement for pool operations.
 
 ## Most remaining and admission refresh
 
-Optional capability 117 (`agent-auth-router-most-remaining`) gates the new policy
-in YA. AAR must also advertise `most-remaining-v1`. YA projects `supportedPolicies`
-and `admissionRefresh` from the connected router's capabilities, and sends its
-supported policy list during allocation. Legacy AAR keeps Manual/Round robin;
-a client connected to legacy YA hides Most remaining and disables unsupported pool defaults with update
-guidance. AAR refuses an unnegotiated Most remaining default before provider I/O.
-Existing capability meanings and the protocol floor do not change. The
+Optional capability 117 (`agent-auth-router-most-remaining`) originally gated
+this policy. Since 2026-10-11 YA no longer knows individual policies: it passes
+AAR's own `supportedPolicies` and `policies` (`{ id, label }`, English labels)
+through unchanged, shows the router's label (or the id from a router without
+labels), sends the router's list during allocation for AAR versions that still
+require it, and accepts any policy id the router accepts. A pin keeps the
+policy label captured at launch as `policyLabel`. See
+[server capabilities](server-capabilities.md#most-remaining-router-policy).
+The protocol floor does not change. The
 2026-10-04 optional release review checked stable v0.9.0, v0.9.1 and v0.9.2;
 all lack AAR routes. This follows the maintainer-approved additive policy plan.
 
@@ -237,9 +242,35 @@ an isolation boundary against that user's own local files.
   the same pin before provider launch.
 - Local macOS/Linux owner launches only. Windows control transport, remote
   executors and YA project-write sandboxes are refused.
-- Clone/fork, YA recap/title helper sessions and project queue selection are
-  refused for routed sessions in this slice. Native child work stays inside
-  its routed provider process. One-turn Codex effort modifiers are refused
+- Clone and fork copy the parent's account. Menu Clone, turn forks, and
+  /btw and question asides make the transcript copy as before, then give the
+  copy its own binding: a separate allocation and token for the parent's
+  account, prepared with the Manual policy at the copy's first launch, never a
+  reselection. A copy is refused before any transcript is written when the
+  parent's binding is cancelled, missing, from another router or still has no
+  account. If inheritance fails after the copy exists, the copy's transcript is
+  deleted and the request returns 409, logged as `routed_copy_binding_failed`;
+  the copy's metadata is written before its allocation, so a copy that
+  survives a failed deletion refuses to launch. A router rejection at the
+  copy's first launch stays retryable, like any pinned resume. Only a crash in
+  the moment between writing the transcript copy and writing its metadata can
+  leave a copy without a pin. Verified live on 2026-10-11 through a Claude
+  pool; Codex copies follow the same path, and `thread/fork` itself needs no
+  network, though see
+  [`gaps/routed-codex-calls-chatgpt-with-direct-login.md`](../gaps/routed-codex-calls-chatgpt-with-direct-login.md).
+- Restart/handoff, fork with summary, YA recap/title helper sessions and
+  project queue selection are refused for routed sessions in this slice,
+  because they start a fresh session, or call the provider directly as the
+  fork summary's generator does, without the pin, on the owner's direct login.
+  The restart, stale-handoff, fork-summary and retitle routes return 409 with
+  that reason before doing any work. The session view hides fork with
+  summary, title generation and both Handoff entries (session menu and turn
+  notch); a routed Claude session whose
+  transcript needs handoff to continue gets a toast to start a new session
+  instead of the handoff dialog. Carrying the pin into a replacement session
+  is a separate decision.
+- Native child work stays inside its routed provider process. One-turn Codex
+  effort modifiers are refused
   until their effort catalog is account-scoped; they must not probe the direct
   account. The new-session form uses provider-default reasoning; explicit
   API effort values remain subject to provider support.
@@ -310,9 +341,11 @@ follow-ups. The original candidate descriptions below are historical.
    a visible selection explanation. Preserve model scopes, freshness checks,
    atomic startup reservations and existing session pins. Percentages describe
    relative headroom, not absolute token capacity or equal account entitlements.
-3. **Clone and helper inheritance.** Extend supported fork/clone, title and
-   recap paths to inherit the parent's account through distinct, separately
-   revocable child bindings. Recheck current grants and compose with
+3. **Clone and helper inheritance.** Fork and clone inheritance shipped
+   2026-10-11 (above). Remaining: fork summaries, title and recap helpers
+   (summary generation must accept a router launch), and whether
+   restart/handoff replacements keep the pin. Extend them to inherit the
+   parent's account through distinct, separately revocable child bindings. Recheck current grants and compose with
    [successor settings inheritance](../docs/tactical/140-clone-session-settings-inheritance.md).
    Prove cancellation, restart and revocation without account reselection or
    direct-provider fallback. Unsupported paths remain explicitly refused until
@@ -406,14 +439,17 @@ additional feature bit or legacy launch UI is introduced. The plan is
 [AAR unified selection](https://github.com/kzahel/agent-auth-router/blob/main/docs/unified-session-selection.md).
 
 The ordinary provider/model/thinking controls remain visible. One Pool selector
-uses compatible granted members and the router's configured policy. It is laid
+uses compatible granted members and the pool's default policy. It is laid
 out like the other New Session options: a Pool dropdown listing Direct first and
 then every granted pool for the provider, each with its policy and how many of
 its accounts offer the selected model; a pool no account can serve is listed
 with the reason (no enabled accounts, no model chosen, no account offers the
-model, or no account supports the effort) but cannot be chosen. Manual pools
-with more than one account add a separate Router account dropdown listing
-every account: those that cannot run the selection are disabled with the
+model, or no account supports the effort) but cannot be chosen. Choosing a pool
+adds a Router account dropdown (since 2026-10-11): the pool's default policy,
+marked Pool default, then the router's other automatic policies, then every
+account. A policy overrides the default for this session; an account pins it
+with `routerPolicy: "manual"`. A Manual default selects its only fitting
+account, or asks for a choice. Accounts that cannot run the selection are disabled with the
 reason (disabled in AAR, no model chosen, model not offered, effort
 unsupported), and otherwise compatible accounts note cached auth rejection,
 cooldown or exhausted quota without being disabled, because AAR decides at

@@ -34,6 +34,8 @@ const SECURE_TRANSPORT_REGISTRATION: SourceTransportRegistration = {
 export interface ClientSummarySourceRemoteState {
   currentDirectUrl: string | null;
   currentHostId: string | null;
+  currentRelayUsername?: string | null;
+  activeSourceKey?: ClientSummarySourceKey | null;
 }
 
 function firstPathSegment(pathname: string): string {
@@ -56,6 +58,8 @@ export function resolveClientSummarySourceKey(options: {
 
   const relayUsername = getRelayUsernameFromRoute(pathname);
   if (relayUsername) {
+    if (remote.activeSourceKey && remote.currentRelayUsername === relayUsername)
+      return remote.activeSourceKey;
     const host = getHostByRelayUsername(relayUsername);
     return host
       ? resolveSourceKeyForSavedHost(host)
@@ -70,6 +74,8 @@ export function resolveClientSummarySourceKey(options: {
     return REMOTE_NONE_CLIENT_SUMMARY_SOURCE_KEY;
   }
 
+  if (remote.activeSourceKey && remote.currentDirectUrl)
+    return remote.activeSourceKey;
   const currentHost = remote.currentHostId
     ? getHostById(remote.currentHostId)
     : undefined;
@@ -90,6 +96,8 @@ export function ClientSummarySourceBinding(): null {
   const hasRemote = remote !== null;
   const currentDirectUrl = remote?.currentDirectUrl ?? null;
   const currentHostId = remote?.currentHostId ?? null;
+  const currentRelayUsername = remote?.currentRelayUsername ?? null;
+  const activeSourceKey = remote?.activeSourceKey ?? null;
   const sourceKey = useMemo(
     () =>
       remote?.nativeSource?.sourceKey ??
@@ -99,12 +107,16 @@ export function ClientSummarySourceBinding(): null {
           ? {
               currentDirectUrl,
               currentHostId,
+              currentRelayUsername,
+              activeSourceKey,
             }
           : null,
       }),
     [
       currentDirectUrl,
       currentHostId,
+      currentRelayUsername,
+      activeSourceKey,
       hasRemote,
       location.pathname,
       remote?.nativeSource,

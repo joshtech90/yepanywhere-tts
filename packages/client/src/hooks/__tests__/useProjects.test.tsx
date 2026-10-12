@@ -1,6 +1,10 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Project } from "../../types";
+import {
+  applyVersionSnapshot,
+  resetVersionQueryForTests,
+} from "../../lib/versionQuery";
 
 const mocks = vi.hoisted(() => {
   const handlers = new Map<string, Set<(data: unknown) => void>>();
@@ -61,10 +65,32 @@ vi.mock("../../contexts/RemoteConnectionContext", () => ({
 }));
 
 import { resetClientQueryControllerForTests } from "../../lib/clientQueryController";
+import {
+  acquireClientQueryBootstrapSlot,
+  resetClientQueryBootstrapForTests,
+} from "../../lib/clientQueryBootstrap";
+import { LOCAL_CLIENT_SUMMARY_SOURCE_KEY } from "../../lib/clientSummarySourceKey";
 import { resetClientSummaryStoreForTests } from "../../lib/clientSummaryStore";
 import { useProject, useProjects } from "../useProjects";
+import { getSourceRuntimeRegistry } from "../../lib/sourceRuntime";
+import {
+  createClientSummaryHostSourceKey,
+  setCurrentClientSummarySourceKey,
+} from "../../lib/clientSummarySourceKey";
 
 const RECENT = "2026-06-27T11:00:00.000Z";
+
+function setVersion(current: string) {
+  applyVersionSnapshot(
+    { current, latest: null, updateAvailable: false },
+    {
+      sourceKey: LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+      key: "version",
+      coverage: {},
+      requestStartedAt: Date.now(),
+    },
+  );
+}
 
 async function settle() {
   await act(async () => {
@@ -89,10 +115,20 @@ function project(id: string, overrides: Partial<Project> = {}): Project {
 }
 
 beforeEach(() => {
+  setCurrentClientSummarySourceKey(LOCAL_CLIENT_SUMMARY_SOURCE_KEY);
+  resetClientQueryBootstrapForTests();
   resetClientSummaryStoreForTests();
   resetClientQueryControllerForTests();
   mocks.getProject.mockReset();
   mocks.getProjects.mockReset();
+  resetVersionQueryForTests();
+  setVersion("0.9.2");
+  vi.spyOn(
+    getSourceRuntimeRegistry().getOrCreateSourceRuntime(
+      LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+    ).transport,
+    "fetch",
+  ).mockImplementation(mocks.getProjects);
   mocks.isRemoteClient.mockReset();
   mocks.isRemoteClient.mockReturnValue(false);
   mocks.remoteState.connection = null;
@@ -102,12 +138,94 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetClientQueryBootstrapForTests();
   resetClientQueryControllerForTests();
   resetClientSummaryStoreForTests();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("useProjects", () => {
+  it("keeps a pending collection response bound to its original source", async () => {
+    vi.useFakeTimers();
+    let release!: (value: unknown) => void;
+    mocks.getProjects.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const other = createClientSummaryHostSourceKey("other");
+    const fetchOther = vi
+      .spyOn(
+        getSourceRuntimeRegistry().getOrCreateSourceRuntime(other).transport,
+        "fetch",
+      )
+      .mockResolvedValue({ projects: [project("other-project")] });
+    const hook = renderHook(() => useProjects({ bootstrapTier: "route" }));
+    await settle();
+    act(() => setCurrentClientSummarySourceKey(other));
+    await settle();
+    expect(hook.result.current.projects[0]?.id).toBe("other-project");
+    act(() => release({ projects: [project("local-project")] }));
+    await settle();
+    expect(mocks.getProjects).toHaveBeenCalledExactlyOnceWith("/projects");
+    expect(fetchOther).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.projects[0]?.id).toBe("other-project");
+  });
+
+  it("gates retained reads and waits for an incomplete collection to publish", async () => {
+    vi.useFakeTimers();
+    resetVersionQueryForTests();
+    setVersion("0.9.4");
+    mocks.getProjects
+      .mockResolvedValueOnce({
+        projects: [],
+        catalog: { complete: false, refreshing: true },
+      })
+      .mockResolvedValueOnce({
+        projects: [project("ready")],
+        catalog: { complete: true, refreshing: false },
+      });
+    const first = renderHook(() => useProjects({ bootstrapTier: "route" }));
+    const second = renderHook(() => useProjects({ bootstrapTier: "route" }));
+    await settle();
+    expect(mocks.getProjects).toHaveBeenCalledExactlyOnceWith(
+      "/projects?summaryMode=retained",
+    );
+    expect(first.result.current.loading).toBe(true);
+    expect(second.result.current.loading).toBe(true);
+    await act(async () => {
+      mocks.activityBus.emit("projects-changed", { projectIds: ["ready"] });
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    await settle();
+    expect(first.result.current.loading).toBe(false);
+    expect(second.result.current.projects[0]?.id).toBe("ready");
+    expect(mocks.getProjects).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts a route's project selector while unrelated route work is pending", async () => {
+    vi.useFakeTimers();
+    const unrelatedRoute = acquireClientQueryBootstrapSlot(
+      LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+      "route",
+    );
+    mocks.getProjects.mockResolvedValue({ projects: [project("project-a")] });
+    renderHook(() => useProjects());
+    await settle();
+    expect(mocks.getProjects).not.toHaveBeenCalled();
+
+    const selector = renderHook(() => useProjects({ bootstrapTier: "route" }));
+    await settle();
+    expect(selector.result.current.projects[0]?.id).toBe("project-a");
+    expect(mocks.getProjects).toHaveBeenCalledTimes(1);
+    expect(mocks.getProjects).toHaveBeenCalledWith("/projects");
+    unrelatedRoute.settle();
+    await settle();
+    expect(mocks.getProjects).toHaveBeenCalledTimes(1);
+  });
+
   it("feeds project list responses into the collection store", async () => {
     mocks.getProjects.mockResolvedValue({
       projects: [project("project-a"), project("project-b")],

@@ -18,7 +18,7 @@ import {
   selectSessionCollectionQueryRecords,
 } from "./clientSummaryQueries";
 import type { SessionCollectionRecord } from "./clientSummaryCollections";
-import { clearHostSession, type SavedHost } from "./hostStorage";
+import type { SavedHost } from "./hostStorage";
 import { resolveSourceKeyForSavedHost } from "./sourceIdentity";
 import {
   getSourceRuntimeRegistry,
@@ -436,7 +436,6 @@ export async function connectSavedHostForMonitor(
     }
     connection?.close();
     if (isSavedHostSignInRequiredError(error)) {
-      clearHostSession(host.id);
       throw new MultiHostSignInRequiredError(
         error instanceof Error ? error.message : String(error),
       );

@@ -182,12 +182,6 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
 
   // Data & profiles
   {
-    name: "YEP_SQLITE",
-    group: "Data & profiles",
-    description:
-      "Discovery storage: auto (default), off, or on to open it even when the data directory is on a network share. Restart to apply.",
-  },
-  {
     name: "YEP_DATA_DIR",
     group: "Data & profiles",
     description:

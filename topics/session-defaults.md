@@ -96,15 +96,75 @@ exact saved provider and provider-local model in its final control region, then
 revalidates installation, authentication, alternatives, and capabilities in
 place. An unselected provider's discovery does not delay or clear that choice.
 
-The dynamic catalog keeps the existing two request shapes:
+Provider, model and effort positions exist before their data arrives. Hidden,
+inert copies of the controls reserve their dimensions; they expose no choices
+or launch authority. Each populated control replaces its own placeholder
+independently. Authentication copy reserves a second provider-label line, and
+the model placeholder includes the badge's geometry. Catalog status occupies
+a separate row below all three controls and reserves its wrapping height before
+the response, so it cannot push the effort picker or advanced-options button.
+Refresh remains available for static or unavailable model lists, using the
+same explicit selected-provider discovery action.
+
+New tabs restore a seven-day, source-scoped browser snapshot of provider,
+provider-local model, thinking mode and effort while settings load. Only these
+display fields are retained; permissions, sandbox policy, paid tiers, helper
+targets, credentials and the rest of the settings document are excluded. They
+are server-wide defaults already readable by every authenticated principal,
+not a cached identity or grant. Project snapshots need a separate account
+boundary and are not part of this cache.
+
+The settings owner writes the snapshot only when it accepts a response or
+mutation, preserving its request-order rules. Cached display defaults never
+populate the authoritative settings object or mark its query complete. Start,
+Project Queue and automatic preference writes wait for current settings when
+the display was restored from storage. Typing and selecting controls remain
+available. Current settings reconcile untouched controls; an explicit user
+selection survives. A failed settings read retains the display and offers a
+retry. Missing, malformed or expired storage falls back to normal acquisition.
+
+The local `/new-session` entry starts current settings acquisition before its
+React runtime loads. It uses canonical same-origin HTTP, the same query identity and
+snapshot publication as `useServerSettings`; a mounted consumer joins pending
+work or reuses its accepted response. A failed primer does not mark settings
+ready and leaves retry/error presentation with the mounted owner. It neither
+populates settings from display storage nor relaxes launch or identity checks.
+
+After those current settings resolve, the local entry starts the named provider
+read for a recognized URL preference, otherwise the saved provider or ordinary
+Claude default. It shares the form's row cache and pending request instead of
+waiting for the form's seeding effect. Settings failure starts no provider read.
+This is an acquisition hint: the mounted form still reconciles current provider
+availability and principal locks. The primer does not select or authorize a launch.
+
+The provider chooser separates identity enumeration from dynamic readiness:
+
+- Capability-gated `GET /api/providers/descriptors` returns exposed `name` and
+  `displayName` pairs immediately, applying the same enabled-provider filter
+  as the other provider routes without running installation, auth or model
+  probes. Descriptor acquisition uses the source-bound retained query owner;
+  refresh and reconnect revalidate it. Unknown/older servers receive no such
+  request and keep the aggregate-only chooser.
+- New Session can offer descriptor choices before the complete catalog. Unknown
+  installation is not displayed as missing or unauthenticated. Selecting a
+  choice starts its named read; an explicit selection cannot enable Start or
+  Queue until its row confirms an installed runtime. The existing implicit
+  server-default launch remains available when no provider was selected.
 
 - `GET /api/providers` returns the exposed provider-card collection and remains
   the complete-response compatibility path.
 - `GET /api/providers/:name` resolves and refreshes one selected provider without
   probing unrelated providers.
 
-The server retains provider rows through one byte-bounded,
-source-versioned owner. Ordinary callers join current work, concurrent forced
+The server retains one provider row per registered provider for its lifetime,
+including unavailable-provider results. Ordinary reads from any client reuse
+that result without time expiry or size eviction; opening a tab does not
+schedule a background probe. Explicit Refresh or a changed model-catalog
+configuration key starts discovery again. The fixed provider set bounds the
+number of retained rows, rather than a shared byte budget that could make a
+large catalog rediscover itself on every read.
+
+One source-versioned owner coordinates acquisition. Ordinary callers join current work, concurrent forced
 callers coalesce, forced work supersedes older ordinary work, and late old
 success or failure cannot replace or delete the newer row. The provider's model
 catalog key participates in generation identity. Aggregate `Promise.all`
@@ -125,7 +185,8 @@ fallback list or a failed refresh. Refresh is the named `refresh=1` probe for
 the selected provider. Pool launches omit the line until the router catalog
 carries its own provenance.
 
-The client persists a versioned, source-scoped browser snapshot for seven days.
+The client persists a versioned, source-scoped browser display snapshot without
+age expiry.
 An explicit allowlist retains provider/model display metadata and capabilities;
 identity, expiry, login commands, credentials, authorization material, raw
 provider output, and unknown configuration are excluded. Hydration marks the
@@ -137,10 +198,20 @@ source consumer: a later aggregate settings reload supersedes an older named
 cache entry, while a late older aggregate cannot displace newer named facts or
 reintroduce an old error.
 
+Accepted named rows also persist independently, using the same non-expiring
+allowlist and source boundary. A sibling tab can restore the selected model
+and capabilities while the complete catalog is still waiting on unrelated
+providers. A named snapshot never becomes a partial provider collection or a
+current probe result. Newer accepted aggregate responses retire older named
+snapshots; late older aggregates preserve newer named displays. Current named
+or aggregate runtime status is required to authorize an explicit launch;
+persisted installation status alone does not enable Start or Project Queue.
+
 Display validity and launch authority are separate. A stale selected row may
-remain visible while a named probe is pending or failed. Claude Gateway starts
-a forced named probe after the selection becomes current; Start and Project
-Queue launch remain blocked until that successful response advertises the
+remain visible while a named read is pending or failed. Claude Gateway uses
+the ordinary server cache after the selection becomes current; opening a tab
+does not force discovery. Start and Project Queue launch remain blocked until
+a current server response advertises the
 required model. Actual new-session process creation repeats the Gateway-only
 advertised-model check, so deferred Project Queue and internal worker-queue
 launches cannot reuse enqueue-time authority. A Project Queue item held by the
@@ -149,7 +220,7 @@ validation failure moves it to `failed` with the catalog error rather than
 removing its prompt. At worker capacity, a direct Gateway caller without that
 durable failure channel receives the existing `queue_full` response instead of
 a queued acceptance whose later failure would discard its prompt. Retry
-refreshes Gateway alone. Other providers retain ordinary five-minute row reuse
+refreshes Gateway alone. Other providers retain ordinary server-row reuse
 and exact unlisted model-id behavior.
 
 For ordinary local providers, `installed` is the New Session selection and
@@ -165,12 +236,13 @@ New Session's initial subscription-usage read is admitted as supplementary
 startup work after earlier route tiers. Direct-demand usage consumers and every
 explicit Refresh remain immediate.
 
-There is no persisted server provider/model snapshot, so a clean browser on a
-fresh server still awaits the aggregate for provider cards. Generic Gateway
+There is no persisted server provider/model snapshot. A clean browser on a
+capable server can enumerate choices immediately through descriptors; dynamic
+installation, auth and model facts still come from provider rows. Generic Gateway
 model discovery can still start its configured runtime, and aggregate failure
-is not isolated by row. The measured aggregate median crosses the threshold for
-reconsidering descriptor/model-refresh separation; those wire changes still
-require the compatibility review in
+is not isolated by row. The descriptor capability removes that aggregate from
+identity enumeration, preserving its complete-response failure semantics for
+existing clients. Server persistence and broader failure isolation remain in
 [`docs/tactical/094-new-session-provider-catalog-readiness.md`](../docs/tactical/094-new-session-provider-catalog-readiness.md).
 
 ## Recap fallback semantics

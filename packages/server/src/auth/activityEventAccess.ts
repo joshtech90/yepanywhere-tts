@@ -39,6 +39,7 @@ export function limitedActivityEvent(
     // Carry no project data; clients refetch their filtered lists on them.
     case "backend-reloaded":
     case "session-queue-persistence-changed":
+    case "recents-changed":
       return event;
     case "session-catalog-updated": {
       // The refresh error is an operator diagnostic, not list state.
@@ -61,7 +62,11 @@ export function limitedActivityEvent(
     case "project-captions-changed":
     case "projects-changed": {
       const projectIds = event.projectIds.filter(access.isProjectAccessible);
-      return projectIds.length > 0 ? { ...event, projectIds } : null;
+      const collectionRefresh =
+        event.type === "projects-changed" && event.collectionRefresh;
+      return projectIds.length > 0 || collectionRefresh
+        ? { ...event, projectIds }
+        : null;
     }
 
     case "session-created":

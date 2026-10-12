@@ -348,7 +348,9 @@ DOM-mutation rate and measure only once it falls below a small threshold.
   - `heartbeatTurnsAfterMinutes: 30`
   - `heartbeatForceAfterMinutes: 5`
   - provider `codex`.
-- `session-metadata.json` is authoritative at `~/.yep-anywhere/session-metadata.json`.
+- Session metadata was then authoritative at `~/.yep-anywhere/session-metadata.json`.
+  Since 2026-10-11 it lives in the `session_metadata` table of
+  `~/.yep-anywhere/discovery.sqlite`.
 
 ## Heartbeat pipeline checkpoints that could block delivery
 

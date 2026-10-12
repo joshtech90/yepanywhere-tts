@@ -1,6 +1,30 @@
 import type { EnrichedRecentEntry } from "@yep-anywhere/shared";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { api } from "../api/client";
+import { createRecentsApi } from "../api/recentsClient";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext";
+import { isRemoteClient } from "../lib/connection";
+import {
+  ensureClientQuery,
+  invalidateClientQuery,
+} from "../lib/clientQueryController";
+import { LOCAL_CLIENT_SUMMARY_SOURCE_KEY } from "../lib/clientSummaryStore";
+import { getSourceRuntimeRegistry } from "../lib/sourceRuntime";
+import { catalogLoadState } from "../lib/clientSummaryCollections";
+import { useRetainedClientQuery } from "./useRetainedClientQuery";
+import {
+  RECENTS_QUERY_KEY,
+  EMPTY_RECENTS_SNAPSHOT,
+  createRecentsQuery,
+  readRecentsSnapshot,
+  publishRecentsSnapshot,
+  subscribeRecents,
+  retainRecentsSource,
+  hasRecentsConsumers,
+} from "../lib/recentsQuery";
+
+export { resetRecentSessionsForTests } from "../lib/recentsQuery";
 
 export type { EnrichedRecentEntry };
 
@@ -13,6 +37,27 @@ export interface RecentSessionEntry {
 
 interface UseRecentSessionsOptions {
   limit?: number;
+}
+
+const REVALIDATE_EVENTS = [
+  "refresh",
+  "reconnect",
+  "session-catalog-updated",
+  "recents-changed",
+  "session-id-remapped",
+  "projects-changed",
+] as const;
+
+export function primeLocalRecentSessions() {
+  const runtime = getSourceRuntimeRegistry().getOrCreateSourceRuntime(
+    LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+  );
+  return ensureClientQuery(
+    createRecentsQuery(
+      runtime.sourceKey,
+      createRecentsApi(runtime.transport.fetch.bind(runtime.transport)),
+    ),
+  );
 }
 
 /**
@@ -32,77 +77,117 @@ export function recordSessionVisit(sessionId: string, projectId: string): void {
  */
 export function useRecentSessions(options: UseRecentSessionsOptions = {}): {
   recentSessions: EnrichedRecentEntry[];
+  recentProjectIds: string[];
+  isLoadingVisits: boolean;
   isLoading: boolean;
   error: Error | null;
   recordVisit: (sessionId: string, projectId: string) => void;
   clearRecents: () => void;
   refetch: () => void;
 } {
-  const { limit } = options;
-  const [recentSessions, setRecentSessions] = useState<EnrichedRecentEntry[]>(
-    [],
+  const { limit = 50 } = options;
+  const runtime = useCurrentSourceRuntime();
+  const { sourceKey } = runtime;
+  useEffect(() => retainRecentsSource(sourceKey), [sourceKey]);
+  const recentsApi = useMemo(
+    () => createRecentsApi(runtime.transport.fetch.bind(runtime.transport)),
+    [runtime],
   );
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const fetchRecents = useCallback(async () => {
-    try {
-      const response = await api.getRecents(limit);
-      setRecentSessions(response.recents);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error("Failed to fetch"));
-    } finally {
-      setIsLoading(false);
-    }
-  }, [limit]);
-
-  useEffect(() => {
-    fetchRecents();
-  }, [fetchRecents]);
+  const remoteConnection = useOptionalRemoteConnection();
+  const ready = !isRemoteClient() || Boolean(remoteConnection?.connection);
+  const snapshot = useSyncExternalStore(
+    subscribeRecents,
+    () => readRecentsSnapshot(sourceKey),
+    () => EMPTY_RECENTS_SNAPSHOT,
+  );
+  const { loading, error, refetch } = useRetainedClientQuery({
+    ...createRecentsQuery(sourceKey, recentsApi),
+    bootstrapTier: "route",
+    ready,
+    hasData: snapshot.loaded,
+    revalidateOn: REVALIDATE_EVENTS,
+  });
+  const fetchRecents = useCallback(() => {
+    if (hasRecentsConsumers(sourceKey)) void refetch({ force: true });
+  }, [refetch, sourceKey]);
 
   const recordVisit = useCallback(
     (sessionId: string, projectId: string) => {
       // Optimistic update: move existing entry to front (preserving enrichment)
-      setRecentSessions((prev) => {
-        const existing = prev.find((e) => e.sessionId === sessionId);
-        const filtered = prev.filter((e) => e.sessionId !== sessionId);
-        if (existing) {
-          // Move existing entry to front with updated timestamp
-          return [
+      const prev = readRecentsSnapshot(sourceKey);
+      const existing = prev.recents.find((e) => e.sessionId === sessionId);
+      const recents = existing
+        ? [
             { ...existing, visitedAt: new Date().toISOString() },
-            ...filtered,
-          ];
-        }
-        // New entry - will be enriched on next refetch
-        return prev;
+            ...prev.recents.filter((e) => e.sessionId !== sessionId),
+          ]
+        : prev.recents;
+      invalidateClientQuery(sourceKey, RECENTS_QUERY_KEY);
+      publishRecentsSnapshot(sourceKey, {
+        ...prev,
+        recents,
+        visits: [
+          { sessionId, projectId, visitedAt: new Date().toISOString() },
+          ...prev.visits.filter((entry) => entry.sessionId !== sessionId),
+        ].slice(0, 100),
       });
 
       // Fire and forget to server
-      api.recordVisit(sessionId, projectId).catch((err) => {
-        console.error("Failed to record session visit:", err);
-        // Refetch to sync with server state
-        fetchRecents();
-      });
+      recentsApi
+        .recordVisit(sessionId, projectId)
+        .then(fetchRecents)
+        .catch((err) => {
+          console.error("Failed to record session visit:", err);
+          // Refetch to sync with server state
+          fetchRecents();
+        });
     },
-    [fetchRecents],
+    [fetchRecents, recentsApi, sourceKey],
   );
 
   const clearRecents = useCallback(() => {
     // Optimistic update
-    setRecentSessions([]);
-
-    api.clearRecents().catch((err) => {
-      console.error("Failed to clear recents:", err);
-      // Refetch to sync with server state
-      fetchRecents();
+    invalidateClientQuery(sourceKey, RECENTS_QUERY_KEY);
+    publishRecentsSnapshot(sourceKey, {
+      recents: [],
+      visits: [],
+      loaded: true,
     });
-  }, [fetchRecents]);
+
+    recentsApi
+      .clearRecents()
+      .then(fetchRecents)
+      .catch((err) => {
+        console.error("Failed to clear recents:", err);
+        // Refetch to sync with server state
+        fetchRecents();
+      });
+  }, [fetchRecents, recentsApi, sourceKey]);
+
+  const catalogState = catalogLoadState(
+    snapshot.catalog,
+    snapshot.recents.length,
+  );
+  const recentProjectIds = useMemo(
+    () => [
+      ...new Set(
+        snapshot.visits.slice(0, limit).map((entry) => entry.projectId),
+      ),
+    ],
+    [snapshot.visits, limit],
+  );
 
   return {
-    recentSessions,
-    isLoading,
-    error,
+    recentSessions: snapshot.recents.slice(0, limit),
+    recentProjectIds,
+    isLoadingVisits: loading || !ready,
+    isLoading:
+      loading ||
+      !ready ||
+      (snapshot.recents.length === 0 &&
+        snapshot.visits.length > 0 &&
+        Boolean(snapshot.catalog?.refreshing)),
+    error: error ?? catalogState.refreshError,
     recordVisit,
     clearRecents,
     refetch: fetchRecents,

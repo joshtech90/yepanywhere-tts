@@ -1,5 +1,8 @@
 import { useEffect, useMemo } from "react";
 import { api } from "../api/client";
+import { createProjectsApi } from "../api/projectsClient";
+import { catalogLoadState } from "../lib/clientSummaryCollections";
+import { createProjectsQuery } from "../lib/projectsQuery";
 import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import {
@@ -10,18 +13,22 @@ import {
 } from "../lib/activityBus";
 import {
   createClientQueryKey,
-  type ClientQueryRequestContext,
+  ensureClientQuery,
 } from "../lib/clientQueryController";
 import {
   useProjectCollectionRecord,
   useProjectCollectionRecords,
+  useProjectCollectionCatalog,
+  LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
 } from "../lib/clientSummaryStore";
+import {
+  getSourceRuntimeRegistry,
+  type YaSourceRuntime,
+} from "../lib/sourceRuntime";
 import { isRemoteClient } from "../lib/connection";
+import type { ClientQueryBootstrapTier } from "../lib/clientQueryBootstrap";
 import { useRetainedClientQuery } from "./useRetainedClientQuery";
 
-const PROJECTS_QUERY_KEY = createClientQueryKey({
-  endpoint: "projects",
-});
 const PROJECTS_REVALIDATE_EVENTS = [
   "refresh",
   "reconnect",
@@ -33,7 +40,6 @@ const PROJECTS_REVALIDATE_EVENTS = [
   "projects-changed",
 ] as const;
 
-type ProjectsResponse = Awaited<ReturnType<typeof api.getProjects>>;
 type ProjectResponse = Awaited<ReturnType<typeof api.getProject>>;
 interface ProjectQueryMeta {
   projectId: string | undefined;
@@ -156,27 +162,47 @@ export function useProject(projectId: string | undefined) {
   );
 }
 
-export function useProjects() {
+function projectsQueryForRuntime(runtime: YaSourceRuntime) {
+  const projectsApi = createProjectsApi(
+    runtime.transport.fetch.bind(runtime.transport),
+  );
+  return createProjectsQuery(runtime.sourceKey, projectsApi.getProjects);
+}
+
+export function primeLocalProjects() {
+  return ensureClientQuery(
+    projectsQueryForRuntime(
+      getSourceRuntimeRegistry().getOrCreateSourceRuntime(
+        LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+      ),
+    ),
+  );
+}
+
+export function useProjects({
+  bootstrapTier = "navigation",
+}: {
+  bootstrapTier?: ClientQueryBootstrapTier;
+} = {}) {
   const runtime = useCurrentSourceRuntime();
-  const sourceKey = runtime.sourceKey;
-  const sourceSummary = runtime.summary;
+  const query = useMemo(() => projectsQueryForRuntime(runtime), [runtime]);
   const projects = useProjectCollectionRecords();
+  const catalog = useProjectCollectionCatalog();
   const ready = useRemoteReady();
-  const { loading, error, refetch } = useRetainedClientQuery<ProjectsResponse>({
-    sourceKey,
-    key: PROJECTS_QUERY_KEY,
-    bootstrapTier: "navigation",
+  const { loading, error, refetch } = useRetainedClientQuery({
+    ...query,
+    bootstrapTier,
     ready,
     hasData: projects.length > 0,
     revalidateOn: PROJECTS_REVALIDATE_EVENTS,
-    fetcher: () => api.getProjects(),
-    applySnapshot: (data, context: ClientQueryRequestContext) => {
-      sourceSummary.reportProjectsCollectionSnapshot(
-        { projects: data.projects },
-        context.requestStartedAt,
-      );
-    },
   });
 
-  return { projects, loading, error, refetch };
+  const status = catalogLoadState(catalog, projects.length);
+  return {
+    projects,
+    complete: !loading && catalog?.complete !== false,
+    loading: loading || status.awaitingFirstRows,
+    error: error ?? status.refreshError,
+    refetch,
+  };
 }

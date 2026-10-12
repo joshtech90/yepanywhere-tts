@@ -12,10 +12,8 @@ import { pathToFileURL } from "node:url";
 
 const [expected, storageDir = "packages/server/dist/storage", sharedFile] =
   process.argv.slice(2);
-assert.ok(
-  ["ready", "unsupported"].includes(expected),
-  "Pass ready or unsupported",
-);
+// SQLite is required: every supported runtime must provide it.
+assert.equal(expected, "ready", "Pass ready");
 const { DiscoverySqliteService, migrateDiscoveryDatabase } = await import(
   pathToFileURL(resolve(storageDir, "discovery-sqlite.js")).href
 );
@@ -25,33 +23,16 @@ const { loadSqliteDriver } = await import(
 const temporary = mkdtempSync(join(tmpdir(), "ya-sqlite-contract-"));
 const connections = [];
 function openService(dataDir, extra = {}) {
-  const service = new DiscoverySqliteService({
-    mode: "auto",
-    dataDir,
-    ...extra,
-  });
+  const service = new DiscoverySqliteService({ dataDir, ...extra });
   connections.push(service);
   return service;
 }
 try {
-  let loads = 0;
-  const offDir = join(temporary, "off");
-  const off = openService(offDir, {
-    mode: "off",
-    loadDriver: () => {
-      loads++;
-      throw new Error("must not load");
-    },
-  });
-  assert.deepEqual(off.getStatus(), { state: "disabled" });
-  assert.equal(loads, 0);
-  assert.equal(existsSync(offDir), false);
-
   const unsupportedDir = join(temporary, "unsupported");
-  const unsupported = openService(unsupportedDir, {
-    loadDriver: () => undefined,
-  });
-  assert.deepEqual(unsupported.getStatus(), { state: "unsupported" });
+  assert.throws(
+    () => openService(unsupportedDir, { loadDriver: () => undefined }),
+    /no built-in SQLite/,
+  );
   assert.equal(existsSync(unsupportedDir), false);
 
   const dataDir = join(temporary, "enabled");
@@ -60,9 +41,7 @@ try {
   // Status snapshots cannot mutate retained readiness.
   service.getStatus().state = "error";
   assert.equal(service.getStatus().state, expected);
-  if (expected === "unsupported") {
-    assert.equal(existsSync(dataDir), false);
-  } else {
+  {
     const db = service.getDatabase();
     assert.ok(db);
     assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
@@ -151,7 +130,7 @@ try {
     service.close();
     service.close();
     assert.throws(() => insert.run(6, "after close", null), /closed/);
-    assert.equal(service.getDatabase(), undefined);
+    assert.throws(() => service.getDatabase(), /closed/);
     assert.equal(service.getStatus().state, "disabled");
     const reopened = openService(dataDir);
     assert.equal(
@@ -197,15 +176,7 @@ try {
     reopened.close();
     const databaseFile = join(dataDir, "discovery.sqlite");
     const newerBytes = readFileSync(databaseFile);
-    let initializationError;
-    const newer = openService(dataDir, {
-      onError: (error) => {
-        initializationError = error;
-      },
-    });
-    assert.equal(newer.getStatus().state, "error");
-    assert.match(initializationError.message, /newer/);
-    assert.equal(newer.getDatabase(), undefined);
+    assert.throws(() => openService(dataDir), /newer/);
     assert.deepEqual(readFileSync(databaseFile), newerBytes);
 
     const corruptDir = join(temporary, "corrupt");
@@ -215,15 +186,14 @@ try {
     const corruptFile = join(corruptDir, "discovery.sqlite");
     const corruptBytes = Buffer.from("This is not a SQLite database");
     writeFileSync(corruptFile, corruptBytes);
-    assert.equal(openService(corruptDir).getStatus().state, "error");
+    assert.throws(() => openService(corruptDir), /Cannot open/);
     assert.deepEqual(readFileSync(corruptFile), corruptBytes);
 
     const invalidDirectory = join(temporary, "file-instead-of-directory");
     writeFileSync(invalidDirectory, "keep");
-    assert.equal(openService(invalidDirectory).getStatus().state, "error");
+    assert.throws(() => openService(invalidDirectory));
     assert.equal(readFileSync(invalidDirectory, "utf8"), "keep");
 
-    let closeError;
     const closeFailure = openService(join(temporary, "close-failure"), {
       loadDriver: () => ({
         open(path) {
@@ -237,14 +207,20 @@ try {
           };
         },
       }),
-      onError: (error) => {
-        closeError = error;
-      },
     });
     assert.equal(closeFailure.getStatus().state, "ready");
-    closeFailure.close();
-    assert.equal(closeFailure.getStatus().state, "error");
-    assert.equal(closeFailure.getDatabase(), undefined);
+    const warn = console.warn;
+    let closeError;
+    console.warn = (_prefix, error) => {
+      closeError = error;
+    };
+    try {
+      closeFailure.close();
+    } finally {
+      console.warn = warn;
+    }
+    assert.equal(closeFailure.getStatus().state, "disabled");
+    assert.throws(() => closeFailure.getDatabase(), /closed/);
     assert.match(closeError.message, /close failure/);
 
     // CI supplies the same path to Node then Bun: the second runtime must read

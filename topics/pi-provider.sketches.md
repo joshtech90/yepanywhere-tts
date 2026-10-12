@@ -16,6 +16,52 @@ Related topics: [agent context injection](agent-context-injection.md),
 [session sandbox network boundary](session-sandbox-network-boundary.md),
 [vanilla defaults](vanilla-defaults.md).
 
+## Pi 1.x adoption candidates
+
+Surfaces Pi added between 0.84.2 and 1.1.0 that YA could use but does not.
+The 2026-10-11 refresh adopted only the `prompt` disposition, for handled
+commands ([pi-provider](pi-provider.md#settled-turn-boundary--compatible-through-pi-110)).
+
+- **Cancelled versus finished turns.** Pi 1.1.0 adds `aborted` to
+  `agent_settled`. YA could show a stopped Pi turn as interrupted rather than
+  completed, the way it treats other providers' interrupted turns.
+- **Steer and follow-up dispositions.** `steer` and `follow_up` responses also
+  report `handled` or `queued`. YA's queued-message UI could confirm that Pi
+  actually queued a steer instead of assuming it.
+- **Windows launch entry.** The published bin is now `dist/bundle/cli.js`. YA's
+  Windows descriptor still launches the unbundled `dist/cli.js`, which works.
+  Prefer the bundle when present, if its startup is measurably faster on
+  Windows.
+
+## Port the Copilot device-login fix if Pi's Copilot sign-in fails
+
+Trigger: Pi's GitHub Copilot `/login` fails again, so Copilot-routed models
+(Sol, Opus, and others under `github-copilot/*`) are unreachable through Pi.
+
+Branch `login-github-oauth` on `graehl/pi` (`60a50dd7b`, `7b9194c62`; based on
+pre-0.81 upstream, about 109 lines including a test) hardens the Copilot
+device flow in Pi's `github-copilot` OAuth module:
+
+- rejects a blank `device_code` or `user_code` when the flow starts, before
+  polling a code GitHub will refuse;
+- turns `incorrect_device_code` and `expired_token` into "start the login
+  again" instead of a raw `Device flow failed: …`;
+- adds poll-count and elapsed-time diagnostics, which separate a blank or
+  truncated issued code from a valid code GitHub's token endpoint rejected on
+  its first poll.
+
+It came from upstream issue earendil-works/pi#5928 (a first Copilot `/login`
+failing with `incorrect_device_code` after a blank organization). The issue
+closed as not reproducible, and upstream `main` at `v1.1.0-22` still lacks all
+three changes. The module has since moved from
+`packages/ai/src/utils/oauth/github-copilot.ts` to
+`packages/ai/src/auth/oauth/github-copilot.ts`, so the commits need a manual
+port rather than a rebase.
+
+If it recurs: port onto current upstream, run Pi from the `~/pi` build
+(`PI_EXECUTABLE`), reproduce, and open an upstream PR with the diagnostics.
+Neither YA nor Pi's normal RPC path needs the fork otherwise.
+
 ## YA-supplied web tools for tool-light providers
 
 ### Problem

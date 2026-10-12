@@ -1,21 +1,32 @@
 # Built-in SQLite storage
 
-> SQLite is normal YA storage infrastructure for keeping cold data out of RAM
-> and avoiding startup-blocking JSON loads. It uses the runtime builtin, without
-> a native package build. Product features keep their own enablement and retention
+> SQLite is required YA storage infrastructure. It holds session metadata, keeps
+> cold data out of RAM and avoids startup-blocking JSON loads. It uses the
+> runtime builtin, without a native package build. A server that cannot open it
+> does not start. Product features keep their own enablement and retention
 > policies; opening storage does not enable learning, search, or indexing.
 
 Topic: optional-sqlite
 
-Verified: 2026-09-10
+Verified: 2026-10-11
 
-See also: [YA environment variables](ya-env-vars.md) for `YEP_SQLITE` and
-`YEP_DATA_DIR`.
+See also: [YA environment variables](ya-env-vars.md) for `YEP_DATA_DIR`.
 
 ## Startup policy
 
-`YEP_SQLITE` accepts `off`, `auto` or `on`. An unset value means `auto`; invalid
-values are configuration errors. Changes take effect after restarting the server.
+The server opens `{dataDir}/discovery.sqlite` once at startup, before any
+service that stores state in it. If it cannot, the server logs one actionable
+`[Startup]` line and exits with a non-zero status. Every failure is fatal:
+
+- the runtime has no SQLite builtin;
+- the data directory cannot be created or sits on a network filesystem;
+- the file is foreign, malformed, newer than this build, locked past the
+  250 ms wait, or fails a migration.
+
+There is no setting to disable storage or to open it anyway. The operator
+corrects the cause, typically by moving the data directory with
+`YEP_DATA_DIR`, and restarts. `YEP_SQLITE` was removed on 2026-10-11; the server
+and desktop launcher no longer read or pass it.
 
 ## Data directory placement
 
@@ -29,15 +40,10 @@ one-minute sample, and `GET /health` took 4–13 s while the dev frontend proxy
 returned 502. The same database on local NVMe answered the same read
 transactions in 0.008 ms.
 
-So `auto` identifies the data directory's filesystem before opening anything.
-On a network filesystem it opens no database, reports `error`, and names the
-filesystem in the status so a client can advise moving the data directory.
-Losing this database's features is a far smaller harm than a server that stops
-answering. `on` skips the check and opens the database wherever the data
-directory is, for an operator who has measured their own share; `off` still
-disables storage entirely. `YEP_DATA_DIR` remains the way to place the data
-directory on local disk and is what the refusal message and the client banner
-recommend.
+So startup identifies the data directory's filesystem before opening anything.
+On a network filesystem the server refuses to start, naming the filesystem and
+recommending `YEP_DATA_DIR` on local disk. A server that will not start is
+explicit; one that starts and stops answering is not. There is no override.
 
 Classification is positive evidence only. `packages/server/src/lib/filesystemKind.ts`
 owns the one table of filesystem identities and names a category — network,
@@ -80,31 +86,10 @@ to every resolved data directory, including an explicit `YEP_DATA_DIR`. Setting
 that variable is an authoritative choice of location; it is not a claim that
 the location can take file locks, and the consequence of being wrong is a
 server that stops answering rather than a preference YA disagrees with.
-`YEP_SQLITE=on` is the explicit way to accept that cost.
 
-This default is infrastructure, not a feature opt-in. Independent features
-still govern learning, indexing, retention, and their own background work.
-An explicit `off` is a development/recovery escape hatch: SQLite-dependent
-capabilities may be unavailable or hidden. The previous unset/off default
-was not persisted by browsers, so it needs no client migration; restarting
-updated YA with no explicit setting initializes storage automatically.
-
-- `off` does not load either SQLite builtin, create a connection, or create a
-  discovery database.
-- `auto` attempts initialization once per Hono generation. A missing builtin
-  produces `unsupported`; an open, filesystem, lock, or migration failure
-  produces `error`. Either state preserves ordinary server operation.
-- The desktop launcher supplies `auto` when `YEP_SQLITE` is absent and preserves
-  an explicit inherited value, including `off`. `YEP_DESKTOP` alone is not a
-  storage override.
-
-The service retains status; version requests do not probe storage or retry
-initialization. Restarting after correcting an error performs another attempt.
-Server logs retain initialization error details; wire status contains no paths
-or raw exception messages.
-
-Close failures are also logged and do not interrupt the remaining app teardown.
-The service clears its connection and reports `error` after a failed close.
+Initialization runs once per server process. Version requests do not probe
+storage. Server logs retain initialization error details; wire status contains
+no paths or raw exception messages.
 
 ## Runtime adapters
 
@@ -189,8 +174,7 @@ on applicable versions is not suppressed by the service.
 [Draft synchronization](draft-synchronization.md) stores current snapshots,
 operation receipts, recovery copies and file ownership in migration 008 of the
 existing database. These are durable personal data, not rebuildable discovery
-indexes. Disabling SQLite hides the optional draft capability and leaves browser
-persistence working; it does not delete these tables. Backups and migrations
+indexes. Backups and migrations
 must preserve them along with the other non-rebuildable tables.
 Migration 009 adds the account/sequence index used for bounded draft metadata
 catch-up. It preserves all draft rows, revisions, retry receipts and retention;
@@ -200,8 +184,10 @@ the existing schema migration transaction owns its creation.
 
 The database is `{dataDir}/discovery.sqlite`, using the existing profile and
 `YEP_DATA_DIR` resolution. No project or Git-metadata writes are introduced.
-One connection belongs to each Hono generation and closes during the existing
-reload/shutdown disposal path. Separate profiles have separate databases.
+The server opens one connection at startup and shares it between session
+metadata and the app; it closes when the process exits. An app created without
+that connection, as tests do, opens and disposes its own. Separate profiles
+have separate databases.
 
 The initial schema reserves a YA application identity (`0x59414449`, ASCII
 `YADI`). Historical version 2 added speech vocabulary tables; version 3 removed
@@ -215,6 +201,7 @@ mappings, and operational indexing/resolution/deletion state. Migration 7 only
 schedules its URL-learning and candidate backfill; bounded post-startup worker
 batches own the conversion.
 Opening the database does not enable that experiment.
+Version 10 adds [session metadata](#session-metadata).
 
 One statically registered, consecutive migration sequence owns `user_version`.
 Historical SQL lives in frozen named modules; released migrations are append-only.
@@ -230,29 +217,57 @@ Pending migrations and version advancement run in one immediate transaction.
 Foreign keys are enabled and lock waits are bounded to 250 ms, including the
 migration lock. The default rollback journal remains unchanged. Even a no-op
 startup takes the immediate lock; concurrent mixed-version profile use is not
-supported, and contention may report error without data loss.
+supported. Lock contention at startup refuses to start, without data loss.
 
 An existing foreign database, malformed database, or newer schema is refused.
 YA does not reset or delete it. A failed migration rolls back its statements
 and schema version. Initialization closes a partially opened connection before
-retaining error status. The database is not disposable: issue decisions, manual titles and historical
+refusing startup. The database is not disposable: issue decisions, manual titles and historical
 evidence must survive independently of rebuildable indexing checkpoints.
-There are no automatic down migrations. Disabling a feature does not roll back
-the schema. An older reader that refuses this schema also loses discovery-gated
-speech capabilities/routes, while preserving the separate speech files. Recover
-by upgrading again or explicitly restoring a consistent pre-upgrade backup.
+There are no automatic down migrations, and downgrading is not supported: an
+older build cannot read session metadata from this database. Disabling a
+feature does not roll back the schema. Recover by upgrading again or explicitly
+restoring a consistent pre-upgrade backup.
 
-Existing JSON metadata/caches and OpenCode's independently owned database and
+Other JSON metadata/caches and OpenCode's independently owned database and
 reader are unaffected.
 
 Relay and push broker moved off `better-sqlite3` to this adapter on 2026-09-10,
 so the repository ships no native SQLite addon and needs no compiler on any
 host. Their `relay.db` and `push-broker.db` files are ordinary SQLite and were
-not migrated or rewritten. Unlike the server's optional discovery store, both
-exist to persist a registry, so a missing builtin is a startup failure rather
-than a degraded state. That removes the Rocky Linux 8 prebuild floor that
+not migrated or rewritten. Like the server's discovery store, both exist to
+persist durable state, so a missing builtin is a startup failure rather than a
+degraded state. That removes the Rocky Linux 8 prebuild floor that
 previously broke both suites: the prebuilt binary required a newer glibc than
 enterprise Linux 8 provides, and no library path could satisfy it.
+
+## Session metadata
+
+Migration 10 adds `session_metadata`, one row per session keyed by session id,
+holding that session's metadata object as JSON, and `session_metadata_import`,
+a single row recording that the legacy file was handled.
+
+- **One-time import.** On first start after the upgrade, YA imports
+  `{dataDir}/session-metadata.json` in one transaction and records the import.
+  Pre-version-3 lineage fields are converted on the way in. A missing file
+  records an empty import.
+- **Never read or written again.** After the import the JSON file is left on
+  disk, unchanged, for manual recovery only. Later edits to it have no effect.
+- **Unreadable file.** A legacy file that cannot be read or parsed stops
+  startup and records no import, so a repaired file is imported on the next
+  start. YA never replaces it.
+- **Writes.** Each save compares every session's metadata with what was last
+  written and writes only the changed rows, plus deletions, in one
+  transaction. A failed transaction leaves every row as it was, and the next
+  save retries it. Saves are synchronous, so only saves requested while one
+  is in progress coalesce.
+- **Concurrent first start.** The import re-checks its marker inside its
+  transaction, so two connections initializing together import once.
+- **Maintenance scripts.** `scripts/prune-stale-index-entries.ts` edits rows
+  directly and refuses until the server has imported; stop the server before
+  running it, because a running server keeps its own copy and writes it back.
+- **Restart recovery.** Fork-summary jobs left `generating` and bang commands
+  left `running` load as interrupted errors, as before.
 
 ## Availability and frontend compatibility
 
@@ -265,9 +280,12 @@ sqlite?: {
 };
 ```
 
-An absent field means that source server does not report SQLite state. A
-frontend must not infer readiness from its own runtime, desktop presence, or
-server semver. The field passes through the existing source-scoped version
+Current servers always report `ready`, because they do not start otherwise.
+`disabled`, `unsupported`, `error` and `networkFilesystem` come only from older
+servers, which could run without storage; clients keep handling them for those
+servers through the compatibility horizon. An absent field means that source
+server does not report SQLite state. A frontend must not infer readiness from
+its own runtime, desktop presence, or server semver. The field passes through the existing source-scoped version
 snapshot, including legacy and negotiated capability encodings.
 
 `networkFilesystem` is present only when placement was the reason for `error`,
@@ -296,14 +314,15 @@ This change adds no frontend consumer, endpoint, or unsupported fallback call.
 `scripts/test-discovery-sqlite.mjs` runs the same contract against packaged
 modules across the supported Node boundaries and Desktop's pinned Bun. It
 covers persistence, parameters, rollback, migrations, newer/corrupt files,
-contention, teardown and disabled/unsupported driver behavior. Shared-file
+contention, teardown and refusal without a driver. Shared-file
 checks verify Node/Bun interoperability.
 
 `scripts/test-sqlite-startup.mjs` checks real packaged `/api/version` state and
 runtime identity in disposable profiles. The Server Runtime And SQLite workflow
 also verifies fresh npm installation rather than only attached workspace deps.
-Linux, macOS and Windows run full Node/Bun startup across disabled, ready and
-error SQLite states. The [restored matrix](https://github.com/kzahel/yepanywhere/actions/runs/34485119811)
+Linux, macOS and Windows run full Node/Bun startup with a usable database, and
+check that an unusable one makes the server exit non-zero without publishing a
+port. The [restored matrix](https://github.com/kzahel/yepanywhere/actions/runs/34485119811)
 passed all twelve OS/Node combinations on 2026-09-10; Windows no longer excludes
 full packaged startup.
 Node 20 is no longer a supported main-server runtime; an old running server

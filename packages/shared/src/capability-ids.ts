@@ -756,6 +756,36 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "unicode-prose-math",
     introducedIn: "0.9.4",
   },
+  retainedRecents: {
+    id: 123,
+    direction: "server",
+    name: "retained-recents",
+    introducedIn: "0.9.4",
+  },
+  retainedProjects: {
+    id: 124,
+    direction: "server",
+    name: "retained-projects",
+    introducedIn: "0.9.4",
+  },
+  providerDescriptors: {
+    id: 125,
+    direction: "server",
+    name: "provider-descriptors",
+    introducedIn: "0.9.4",
+  },
+  vhostOauthAccess: {
+    id: 126,
+    direction: "server",
+    name: "vhost-oauth-access",
+    introducedIn: "0.9.4",
+  },
+  vhostOauthProviders: {
+    id: 127,
+    direction: "server",
+    name: "vhost-oauth-providers",
+    introducedIn: "0.9.4",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

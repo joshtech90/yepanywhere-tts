@@ -1,3 +1,4 @@
+import { mutateResumeCredentials } from "../lib/rejectedResumeStorage";
 /**
  * DirectLoginPage - Direct connection form for remote access via SecureConnection.
  *
@@ -94,7 +95,10 @@ export function DirectLoginPage() {
     let rememberedHostId: string | null = null;
     if (rememberMe) {
       const existing = loadSavedHosts().hosts.find(
-        (h) => h.mode === "direct" && h.wsUrl === wsUrl,
+        (h) =>
+          h.mode === "direct" &&
+          h.wsUrl === wsUrl &&
+          h.srpUsername === username.trim(),
       );
       const host =
         existing ??
@@ -103,7 +107,7 @@ export function DirectLoginPage() {
           srpUsername: username.trim(),
         });
       if (!existing) {
-        saveHost(host);
+        await mutateResumeCredentials(() => saveHost(host));
       }
       rememberedHostId = host.id;
       setCurrentHostId(host.id);

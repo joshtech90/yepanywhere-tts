@@ -27,7 +27,7 @@ import { persistedSandboxFromProcess } from "./sessionSandboxMetadata.js";
 export interface ModelSettings {
   routerAccountId?: string;
   routerPoolId?: string;
-  routerPolicy?: "manual" | "round-robin" | "most-remaining";
+  routerPolicy?: string;
   /** Explicit installed CLI advertisement for this provider launch. */
   machineControl?: boolean;
   /** Private credential proof; never accepted from JSON or restored settings. */

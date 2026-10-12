@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -18,10 +19,13 @@ import {
 } from "../src/sdk/providers/index.js";
 import type { AgentProvider } from "../src/sdk/providers/types.js";
 import type { ServerSettings } from "../src/services/ServerSettingsService.js";
+import {
+  loadSqliteDriver,
+  type SqliteDatabase,
+} from "../src/storage/sqlite.js";
 
 const DEFAULT_SAMPLES = 5;
 const MAX_SUPPORTED_SERVER_SETTINGS_VERSION = 2;
-const MAX_SUPPORTED_SESSION_METADATA_VERSION = 3;
 
 const benchmarkConsole = {
   log: console.log.bind(console),
@@ -135,22 +139,28 @@ export async function persistedMetadataIncludesProvider(
   dataDir: string,
   providerName: string,
 ): Promise<boolean> {
+  // Read without opening through the server's startup path, so a benchmark
+  // never migrates or imports into the data directory it inspects.
+  const file = join(dataDir, "discovery.sqlite");
+  if (!existsSync(file)) return false;
+  const driver = loadSqliteDriver();
+  if (!driver) throw new Error("Provider benchmark metadata is unreadable");
+  let database: SqliteDatabase | undefined;
   try {
-    const parsed = JSON.parse(
-      await readFile(join(dataDir, "session-metadata.json"), "utf8"),
-    ) as { version?: unknown; sessions?: unknown };
+    database = driver.open(file);
+    database.exec("PRAGMA busy_timeout = 250");
     if (
-      typeof parsed.version !== "number" ||
-      !Number.isInteger(parsed.version) ||
-      parsed.version < 1 ||
-      parsed.version > MAX_SUPPORTED_SESSION_METADATA_VERSION ||
-      !parsed.sessions ||
-      typeof parsed.sessions !== "object" ||
-      Array.isArray(parsed.sessions)
+      !database
+        .prepare("SELECT 1 AS imported FROM session_metadata_import")
+        .get()
     ) {
-      throw new Error("invalid metadata state");
+      throw new Error("session metadata not imported yet");
     }
-    return Object.values(parsed.sessions).some((metadata) => {
+    const rows = database
+      .prepare("SELECT metadata FROM session_metadata")
+      .all<{ metadata: string }>();
+    return rows.some((row) => {
+      const metadata = JSON.parse(row.metadata) as unknown;
       if (
         !metadata ||
         typeof metadata !== "object" ||
@@ -164,9 +174,12 @@ export async function persistedMetadataIncludesProvider(
       }
       return provider === providerName;
     });
-  } catch (error) {
-    if (isMissingFile(error)) return false;
-    throw new Error("Provider benchmark metadata is unreadable");
+  } catch {
+    throw new Error(
+      "Provider benchmark metadata is unreadable; start the server once to migrate it",
+    );
+  } finally {
+    database?.close();
   }
 }
 

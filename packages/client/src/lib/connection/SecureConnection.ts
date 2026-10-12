@@ -66,7 +66,18 @@ import {
   generateNonce,
 } from "./nacl-wrapper";
 import { SrpClientSession } from "./srp-client";
-import { ResumeError } from "./resumeErrors";
+import { ResumeError, type ResumeFailureKind } from "./resumeErrors";
+import {
+  resumeGeneration,
+  safeResumeEndpoint,
+  retireRejectedResume,
+  type ResumeScope,
+} from "../rejectedResumeStorage";
+import {
+  emitResumeObservation,
+  type ResumeObservation,
+} from "../resumeDiagnostics";
+import { generateUUID } from "../uuid";
 import {
   type Connection,
   ConnectionReconnectingError,
@@ -129,9 +140,19 @@ export interface RelayConnectionConfig {
   openSocket?: RelaySocketFactory;
 }
 
+export type SessionEstablishmentKind = "password" | "resume";
+
 export interface SecureConnectionCallbacks {
+  /** Prevent superseded attempts from retiring credentials. */
+  isAttemptCurrent?: () => boolean;
+  /** Diagnostic probes never mutate active credentials. */
+  diagnosticProbe?: boolean;
+  onResumeObservation?: (event: ResumeObservation) => void;
   /** Session established (for storing session data). */
-  onSessionEstablished?: (session: StoredSession) => void;
+  onSessionEstablished?: (
+    session: StoredSession,
+    kind: SessionEstablishmentKind,
+  ) => void | Promise<void>;
   /** Connection lost (for UI state updates). */
   onDisconnect?: (error: Error) => void;
   /** SRP authentication or resumption succeeded. */
@@ -209,9 +230,18 @@ export class SecureConnection implements Connection {
 
   // Stored session for resumption (optional)
   private storedSession: StoredSession | null = null;
+  private readonly resumeCallbacks: SecureConnectionCallbacks;
+  private resumeAttemptId = generateUUID();
+  private resumeStartedAt = Date.now();
+  private resumePhase: ConnectionState = "connecting";
+  private resumeEpoch = resumeGeneration();
+  private resumeObservations: ResumeObservation[] = [];
 
   // Callback when session is established (for storing session data)
-  private onSessionEstablished?: (session: StoredSession) => void;
+  private onSessionEstablished?: (
+    session: StoredSession,
+    kind: SessionEstablishmentKind,
+  ) => void | Promise<void>;
 
   // Callback when connection is lost (for UI state updates)
   private onDisconnect?: (error: Error) => void;
@@ -228,6 +258,7 @@ export class SecureConnection implements Connection {
     password: string,
     callbacks: SecureConnectionCallbacks = {},
   ) {
+    this.resumeCallbacks = callbacks;
     this.wsUrl = wsUrl;
     this.username = username;
     this.password = password;
@@ -382,8 +413,12 @@ export class SecureConnection implements Connection {
 
       if (!this.storedSessionSupportsCurrentResume()) {
         this.connectionState = "failed";
-        reject(new ResumeError("incompatible", RESUME_INCOMPATIBLE_ERROR));
-        this.ws.close();
+        void this.quarantineResume("incompatible").then(() => {
+          reject(
+            this.makeResumeError("incompatible", RESUME_INCOMPATIBLE_ERROR),
+          );
+          this.ws?.close();
+        });
         return;
       }
 
@@ -431,7 +466,7 @@ export class SecureConnection implements Connection {
           }
           this.connectionState = "failed";
           authRejectHandler(
-            new ResumeError(
+            this.makeResumeError(
               "timeout",
               "Session resume timed out without a server response",
             ),
@@ -481,7 +516,84 @@ export class SecureConnection implements Connection {
     return JSON.stringify({ nonce, ciphertext });
   }
 
+  private observeResume(
+    event: ResumeObservation["event"],
+    reason?: ResumeObservation["reason"],
+  ): void {
+    const observation: ResumeObservation = {
+      attemptId: this.resumeAttemptId,
+      mode: this.isRelayConnection ? "relay" : "direct",
+      endpoint: safeResumeEndpoint(
+        this.isRelayConnection
+          ? (this.relayUrl ?? this.storedSession?.wsUrl ?? "")
+          : (this.storedSession?.wsUrl ?? this.wsUrl),
+      ),
+      identity: this.username.slice(0, 256),
+      relayUsername: this.relayUsername?.slice(0, 256),
+      sessionId: this.storedSession?.sessionId.slice(0, 256) ?? "unknown",
+      phase:
+        this.connectionState === "failed"
+          ? this.resumePhase
+          : this.connectionState,
+      event,
+      reason,
+      at: Date.now(),
+      elapsedMs: Date.now() - this.resumeStartedAt,
+      clientVersion: getClientVersion(),
+      protocolVersion: this.storedSession?.resumeProtocolVersion,
+    };
+    if (this.connectionState !== "failed")
+      this.resumePhase = this.connectionState;
+    this.resumeObservations = [...this.resumeObservations, observation].slice(
+      -8,
+    );
+    emitResumeObservation(observation);
+    this.resumeCallbacks.onResumeObservation?.(observation);
+  }
+
+  private makeResumeError(
+    kind: ResumeFailureKind,
+    message: string,
+  ): ResumeError {
+    if (this.resumeObservations.at(-1)?.event !== kind)
+      this.observeResume(kind);
+    return new ResumeError(kind, message);
+  }
+
+  private async quarantineResume(
+    kind: "rejected" | "incompatible",
+    reason: ResumeObservation["reason"] = kind === "incompatible"
+      ? "stored_protocol"
+      : "server_refused",
+  ): Promise<void> {
+    this.observeResume(kind, reason);
+    this.connectionState = this.password ? "connecting" : "failed";
+    if (!this.storedSession || this.resumeCallbacks.diagnosticProbe) return;
+    const scope: ResumeScope = {
+      mode: this.isRelayConnection ? "relay" : "direct",
+      endpoint: this.isRelayConnection
+        ? (this.relayUrl ?? this.storedSession.wsUrl)
+        : this.storedSession.wsUrl,
+      identity: this.storedSession.username,
+      relayUsername: this.isRelayConnection
+        ? (this.relayUsername ?? undefined)
+        : undefined,
+    };
+    await retireRejectedResume(
+      scope,
+      this.storedSession,
+      this.resumeObservations,
+      this.resumeEpoch,
+      this.resumeCallbacks.isAttemptCurrent ?? (() => true),
+    );
+  }
+
   private startResumeAttempt(): string {
+    this.resumeAttemptId = generateUUID();
+    this.resumeStartedAt = Date.now();
+    this.resumeObservations = [];
+    this.observeResume("started");
+    this.resumePhase = "srp_resume_init_sent";
     this.pendingResumeClientNonce = uint8ToBase64(generateNonce());
     this.pendingResumeServerNonce = null;
     return this.pendingResumeClientNonce;
@@ -698,7 +810,7 @@ export class SecureConnection implements Connection {
         if (msg.sessionId !== this.storedSession.sessionId) {
           this.connectionState = "failed";
           reject(
-            new ResumeError(
+            this.makeResumeError(
               "verification",
               "Resume challenge session mismatch",
             ),
@@ -706,6 +818,7 @@ export class SecureConnection implements Connection {
           this.ws?.close();
           return;
         }
+        this.observeResume("challenge");
         this.pendingResumeServerNonce = msg.nonce;
 
         const proof = this.generateResumeProof(
@@ -721,6 +834,7 @@ export class SecureConnection implements Connection {
         };
         this.ws?.send(JSON.stringify(resume));
         this.connectionState = "srp_resume_proof_sent";
+        this.observeResume("proof");
         console.log("[SecureConnection] SRP resume proof sent");
         return;
       }
@@ -733,7 +847,10 @@ export class SecureConnection implements Connection {
         if (msg.sessionId !== this.storedSession.sessionId) {
           this.connectionState = "failed";
           reject(
-            new ResumeError("verification", "Resume response session mismatch"),
+            this.makeResumeError(
+              "verification",
+              "Resume response session mismatch",
+            ),
           );
           this.ws?.close();
           return;
@@ -749,7 +866,7 @@ export class SecureConnection implements Connection {
           console.error("[SecureConnection] Resume server proof failed");
           this.connectionState = "failed";
           reject(
-            new ResumeError(
+            this.makeResumeError(
               "verification",
               "Resume server verification failed",
             ),
@@ -774,7 +891,7 @@ export class SecureConnection implements Connection {
             console.error("[SecureConnection] Resume server proof failed");
             this.connectionState = "failed";
             reject(
-              new ResumeError(
+              this.makeResumeError(
                 "verification",
                 "Resume server verification failed",
               ),
@@ -791,7 +908,7 @@ export class SecureConnection implements Connection {
           );
           this.connectionState = "failed";
           reject(
-            new ResumeError(
+            this.makeResumeError(
               "verification",
               "Resume server verification failed",
             ),
@@ -803,6 +920,7 @@ export class SecureConnection implements Connection {
         this.sessionKey = deriveTransportKey(baseSessionKey, transportNonce);
         this.sessionId = msg.sessionId;
         this.connectionState = "authenticated";
+        this.observeResume("authenticated");
         this.pendingResumeClientNonce = null;
         this.pendingResumeServerNonce = null;
         this.storedSession = {
@@ -815,7 +933,7 @@ export class SecureConnection implements Connection {
           this.ws.onmessage = (event) => this.enqueueInboundMessage(event.data);
         }
 
-        this.onSessionEstablished?.(this.storedSession);
+        await this.onSessionEstablished?.(this.storedSession, "resume");
         this.sendCapabilities();
         this.connectionManager?.markConnected();
         this.onAuthenticated?.();
@@ -824,15 +942,21 @@ export class SecureConnection implements Connection {
       }
 
       if (isSrpSessionInvalid(msg)) {
+        // A plaintext refusal is evidence received, not proof of permanent invalidity.
+        const reason =
+          msg.reason === "expired" || msg.reason === "invalid_proof"
+            ? msg.reason
+            : "unknown";
+        await this.quarantineResume("rejected", reason);
         if (!this.password) {
           console.log(
-            `[SecureConnection] Session resume failed: ${msg.reason} (no password for fallback)`,
+            `[SecureConnection] Session resume failed: ${reason} (no password for fallback)`,
           );
           this.connectionState = "failed";
           reject(
-            new ResumeError(
+            this.makeResumeError(
               "rejected",
-              `Server rejected session resume: ${msg.reason}`,
+              `Server rejected session resume: ${reason}`,
             ),
           );
           this.ws?.close();
@@ -840,7 +964,7 @@ export class SecureConnection implements Connection {
         }
 
         console.log(
-          `[SecureConnection] Session resume failed: ${msg.reason}, falling back to SRP`,
+          `[SecureConnection] Session resume failed: ${reason}, falling back to SRP`,
         );
         this.storedSession = null;
         await this.startFullSrpHandshake(reject);
@@ -848,38 +972,31 @@ export class SecureConnection implements Connection {
       }
 
       if (isSrpError(msg)) {
-        console.error(
-          "[SecureConnection] SRP error during resume:",
-          msg.message,
-        );
+        if (msg.code !== "server_error")
+          await this.quarantineResume("rejected");
+        console.error("[SecureConnection] SRP error during resume");
         this.connectionState = "failed";
         reject(
-          new ResumeError(
+          this.makeResumeError(
             msg.code === "server_error" ? "server" : "rejected",
-            `Resume rejected (${msg.code}): ${msg.message}`,
+            "Server refused session resume",
           ),
         );
         this.ws?.close();
         return;
       }
 
-      console.warn("[SecureConnection] Unexpected message during resume:", msg);
+      console.warn("[SecureConnection] Unexpected message during resume");
       this.connectionState = "failed";
       reject(
-        new ResumeError(
-          "protocol",
-          `Unexpected message during resume: ${msg?.type ?? "unknown"}`,
-        ),
+        this.makeResumeError("protocol", "Unexpected message during resume"),
       );
       this.ws?.close();
-    } catch (err) {
-      console.error("[SecureConnection] Resume response error:", err);
+    } catch {
+      console.error("[SecureConnection] Resume response error");
       this.connectionState = "failed";
       reject(
-        new ResumeError(
-          "protocol",
-          err instanceof Error ? err.message : String(err),
-        ),
+        this.makeResumeError("protocol", "Malformed session resume response"),
       );
       this.ws?.close();
     }
@@ -981,6 +1098,7 @@ export class SecureConnection implements Connection {
       this.connectionState = "connecting";
 
       const ws = new WebSocket(this.wsUrl);
+      this.ws = ws;
       ws.binaryType = "arraybuffer";
 
       let authResolveHandler: () => void = () => {};
@@ -1010,6 +1128,7 @@ export class SecureConnection implements Connection {
           }
 
           if (this.password) {
+            this.observeResume("timeout");
             console.log(
               "[SecureConnection] Session resume timed out, falling back to full SRP",
             );
@@ -1026,7 +1145,7 @@ export class SecureConnection implements Connection {
 
           this.connectionState = "failed";
           authRejectHandler(
-            new ResumeError(
+            this.makeResumeError(
               "timeout",
               "Session resume timed out without a server response",
             ),
@@ -1056,10 +1175,11 @@ export class SecureConnection implements Connection {
               return;
             }
 
+            await this.quarantineResume("incompatible");
             if (!this.password) {
               this.connectionState = "failed";
               authRejectHandler(
-                new ResumeError("incompatible", RESUME_INCOMPATIBLE_ERROR),
+                this.makeResumeError("incompatible", RESUME_INCOMPATIBLE_ERROR),
               );
               ws.close();
               return;
@@ -1357,7 +1477,7 @@ export class SecureConnection implements Connection {
         sessionKey: sessionKeyBase64,
         resumeProtocolVersion: authenticatedResumeProtocolVersion,
       };
-      this.onSessionEstablished?.(this.storedSession);
+      await this.onSessionEstablished?.(this.storedSession, "password");
 
       this.sendCapabilities();
       this.connectionManager?.markConnected();
@@ -1600,7 +1720,7 @@ export class SecureConnection implements Connection {
 
   async fetchStream(
     path: string,
-    init?: { signal?: AbortSignal },
+    init?: { signal?: AbortSignal | null; headers?: HeadersInit },
   ): Promise<Response> {
     return this.protocol.fetchStream(path, init);
   }

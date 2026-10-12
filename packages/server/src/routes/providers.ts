@@ -1,4 +1,5 @@
 import type {
+  ProviderDescriptor,
   ProviderInfo,
   ProviderName,
   ProviderSubscriptionUsage,
@@ -19,9 +20,6 @@ import {
   ProviderLoginService,
 } from "../services/ProviderLoginService.js";
 
-const PROVIDER_INFO_CACHE_TTL_MS = 5 * 60_000;
-const PROVIDER_INFO_NEGATIVE_CACHE_TTL_MS = 15_000;
-const PROVIDER_INFO_CACHE_BYTES = 4 * 1024 * 1024;
 const PROVIDER_USAGE_CACHE_TTL_MS = 60_000;
 
 interface ProviderRouteDeps {
@@ -30,10 +28,6 @@ interface ProviderRouteDeps {
   enabledProviders?: string[];
   /** Provider instances, injectable for route tests. */
   providers?: AgentProvider[];
-  /** Provider info cache TTL in ms. */
-  cacheTtlMs?: number;
-  /** Unavailable-provider cache TTL in ms. */
-  negativeCacheTtlMs?: number;
   /** Provider subscription usage cache TTL in ms. */
   usageCacheTtlMs?: number;
   /** Whether this route belongs to the bundled desktop runtime. */
@@ -45,7 +39,6 @@ interface ProviderRouteDeps {
 }
 
 interface ProviderInfoCacheValue {
-  expiresAt: number;
   catalogCacheKey?: string;
   info: ProviderInfo;
 }
@@ -97,7 +90,10 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
     ProviderName,
     ProviderInfoCacheValue
   >({
-    maxRetainedBytes: PROVIDER_INFO_CACHE_BYTES,
+    // One accepted catalog per registered provider, replaced on explicit refresh
+    // or configuration change. A large catalog must not make every new tab
+    // repeat discovery merely because it exceeded a shared byte budget.
+    maxRetainedBytes: Number.POSITIVE_INFINITY,
     estimateBytes: (value) => Buffer.byteLength(JSON.stringify(value)),
   });
   const providerInfoGenerations = new Map<
@@ -115,9 +111,6 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
     ProviderName,
     Promise<ProviderSubscriptionUsage | null>
   >();
-  const cacheTtlMs = deps.cacheTtlMs ?? PROVIDER_INFO_CACHE_TTL_MS;
-  const negativeCacheTtlMs =
-    deps.negativeCacheTtlMs ?? PROVIDER_INFO_NEGATIVE_CACHE_TTL_MS;
   const usageCacheTtlMs = deps.usageCacheTtlMs ?? PROVIDER_USAGE_CACHE_TTL_MS;
   const getExposedProviders = (): AgentProvider[] => {
     const providers = deps.providers ?? getAllProviders();
@@ -142,8 +135,6 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
         : provider.getAvailableModels(),
     ]);
     return {
-      expiresAt:
-        Date.now() + (authStatus.installed ? cacheTtlMs : negativeCacheTtlMs),
       catalogCacheKey: provider.getModelCatalogCacheKey?.(),
       info: {
         name: provider.name,
@@ -215,11 +206,7 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
       if (!canJoinCurrent) {
         if (!requireForce) {
           const accepted = providerInfoOwner.getAccepted(providerName);
-          if (
-            accepted &&
-            accepted.value.expiresAt > Date.now() &&
-            accepted.value.catalogCacheKey === catalogCacheKey
-          ) {
+          if (accepted && accepted.value.catalogCacheKey === catalogCacheKey) {
             return accepted.value.info;
           }
         }
@@ -336,6 +323,14 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
     );
 
     return c.json({ providers: providerInfos });
+  });
+
+  // Enumeration must not wait for any provider's runtime or account probes.
+  routes.get("/descriptors", (c) => {
+    const providers: ProviderDescriptor[] = getExposedProviders().map(
+      ({ name, displayName }) => ({ name, displayName }),
+    );
+    return c.json({ providers });
   });
 
   // GET /api/providers/:name/subscription-usage - normalized account limits

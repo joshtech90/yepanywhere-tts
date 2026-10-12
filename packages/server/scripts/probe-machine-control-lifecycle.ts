@@ -143,7 +143,6 @@ function createProbeApp(suffix: string) {
     voiceInputEnabled: false,
     getLatestVersion: async () => null,
     authDisabled: true,
-    sqliteMode: "off",
     codexSummaryParserWorkerMode: "off",
   });
 }

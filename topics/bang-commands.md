@@ -156,7 +156,7 @@ project directory:
   search windows retain exact-anchor placement. An empty
   anchor renders before the first item, for empty sessions. User-authored,
   so deletion is allowed once finished (409 while running). Output does not
-  bloat `session-metadata.json`: the object stores the command line, exit
+  bloat session metadata: the object stores the command line, exit
   metadata, and bounded preview tails (4 KiB stdout / 2 KiB stderr); full
   output lands in `{dataDir}/bang-commands/<sessionId>/<objectId>.stdout` /
   `.stderr` (8 MiB cap per stream, truncation flagged), fetched on demand
@@ -299,8 +299,8 @@ demand. The route exists in both the local client and each connected-host
 remote-client scope; links back to source sessions retain the remote host
 prefix, and the page's requests remain bound to that host. It starts from
 bounded previews and keeps at most one entry's full output expanded and
-retained. Reads only the bounded metadata already in `session-metadata.json`
-plus that single on-demand output fetch.
+retained. Reads only the bounded metadata already in session metadata plus that
+single on-demand output fetch.
 
 **Per-entry actions — three small icons.** Each entry knows its source
 session id, bang object id, and project directory (cwd), so it offers,

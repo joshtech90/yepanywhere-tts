@@ -63,6 +63,7 @@ import { useRemoteActivityBusConnection } from "./hooks/useRemoteActivityBusConn
 import { useRemoteBasePath } from "./hooks/useRemoteBasePath";
 import { useVersion } from "./hooks/useVersion";
 import { useClientSummarySourceKey } from "./lib/clientSummaryStore";
+import { initResumeDebugger } from "./lib/resumeDebugger";
 import { initClientLogCollection } from "./lib/diagnostics";
 import {
   getRelayCanonicalRedirectTarget,
@@ -396,6 +397,7 @@ function ApplicationConnectionProvider({ children }: Props) {
 
 export function RemoteApp({ children }: Props) {
   useEffect(() => initClientLogCollection(), []);
+  useEffect(() => initResumeDebugger(), []);
   useSyncNotifyInAppSetting();
 
   return (

@@ -8,7 +8,7 @@ import {
 import { resolveRouterModel, routerAliasTargets } from "@yep-anywhere/shared";
 import type { RouterSelection } from "./RouterPoolSelector";
 import { DraftSyncNotice } from "./DraftSyncNotice";
-import { DRAFT_STORAGE_EVENT } from "../lib/draftSyncStorage";
+import { DRAFT_STORAGE_EVENT, draftStorage } from "../lib/draftSyncStorage";
 import { MachineControlSessionSelection } from "./MachineControlSessionSelection";
 import { useComposerVoiceRef } from "../hooks/useComposerVoiceRef";
 import type { ProjectAppTarget } from "../api/projectApp";
@@ -29,6 +29,8 @@ import templateStyles from "./TemplateProjectForm.module.css";
 import { useProjectTemplateChoices } from "../hooks/useProjectTemplateChoices";
 import {
   DEFAULT_PROVIDER,
+  fromUrlProjectId,
+  isUrlProjectId,
   SERVER_CAPABILITIES,
   serverHasCapability,
   isTurnEffort,
@@ -84,6 +86,7 @@ import {
   useProviderRow,
   useProviders,
 } from "../hooks/useProviders";
+import { useProviderDescriptors } from "../hooks/useProviderDescriptors";
 import {
   getAttachmentUploadLongEdgePx,
   useAttachmentUploadQuality,
@@ -261,7 +264,7 @@ import { useSpeechCaptureSettings } from "../hooks/useSpeechCaptureSettings";
 import { useRecentSpeechAttribution } from "../hooks/useRecentSpeechAttribution";
 import { useProviderSubscriptionUsage } from "../hooks/useProviderSubscriptionUsage";
 import { useActingPrincipal } from "../hooks/useActingPrincipal";
-import { shortenPath } from "../lib/text";
+import { isAbsoluteLikePath, shortenPath } from "../lib/text";
 import { getPermissionModeOptions } from "../lib/permissionModes";
 import type { PermissionMode, Project } from "../types";
 import { AttachmentChip } from "./AttachmentChip";
@@ -340,6 +343,8 @@ export interface NewSessionFormProps {
   projects?: Project[];
   recentProjectIds?: string[];
   projectsLoading?: boolean;
+  /** Display snapshots may be shown, but cannot authorize Start or Queue. */
+  unconfirmedProjectIds?: readonly string[];
   onProjectChange?: (projectId: string | null) => void;
   /** Whether to focus the textarea on mount (default: true) */
   autoFocus?: boolean;
@@ -401,6 +406,7 @@ interface NewSessionOptionSectionProps {
   className: string;
   showCaption: boolean;
   title: string;
+  placeholder?: boolean;
 }
 
 function NewSessionOptionSection({
@@ -409,9 +415,15 @@ function NewSessionOptionSection({
   className,
   showCaption,
   title,
+  placeholder = false,
 }: NewSessionOptionSectionProps) {
   return (
-    <div className={className} title={showCaption ? undefined : caption}>
+    <div
+      className={`${className}${placeholder ? ` ${styles.optionPlaceholder}` : ""}`}
+      title={showCaption ? undefined : caption}
+      aria-hidden={placeholder || undefined}
+      inert={placeholder || undefined}
+    >
       <h3>{title}</h3>
       {children}
       {showCaption && caption && (
@@ -432,6 +444,7 @@ export function NewSessionForm({
   projects = [],
   recentProjectIds = [],
   projectsLoading = false,
+  unconfirmedProjectIds = [],
   onProjectChange,
   autoFocus = true,
   rows = 6,
@@ -582,8 +595,17 @@ export function NewSessionForm({
       projectId: null,
       workstreams: [],
     });
+  const requestedProjectPath = useMemo(() => {
+    if (!projectId || !isUrlProjectId(projectId)) return "";
+    try {
+      const path = fromUrlProjectId(projectId);
+      return isAbsoluteLikePath(path) ? path : "";
+    } catch {
+      return "";
+    }
+  }, [projectId]);
   const [projectInput, setProjectInput] = useState(
-    () => selectedProject?.path ?? "",
+    () => selectedProject?.path ?? requestedProjectPath,
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const projectChooserRef = useRef<HTMLDivElement>(null);
@@ -1148,16 +1170,27 @@ export function NewSessionForm({
     providers,
     loading: providersLoading,
     stale: providersStale,
+    refetch: refetchProviders,
   } = useProviders();
+  const { providers: providerDescriptors } = useProviderDescriptors(
+    serverHasCapability(
+      versionInfo,
+      SERVER_CAPABILITIES.providerDescriptors.name,
+    ),
+  );
   const { usage: subscriptionUsage } = useProviderSubscriptionUsage(
     routerSelection ? null : selectedProvider,
     { bootstrapTier: "supplementary" },
   );
   const {
     settings,
+    displayDefaults,
     isLoading: settingsLoading,
+    error: settingsError,
+    refetch: refetchSettings,
     updateSetting: updateServerSetting,
   } = useServerSettings();
+  const displayDefaultsPending = displayDefaults !== undefined;
   const newSessionDefaultsRef = useRef(settings?.newSessionDefaults);
   useEffect(() => {
     newSessionDefaultsRef.current = settings?.newSessionDefaults;
@@ -1218,14 +1251,20 @@ export function NewSessionForm({
   // Get models and capabilities for the currently selected provider. Its named
   // row wins once available because it is independent of the aggregate's
   // slowest member and can carry stronger freshness than a retained snapshot.
-  const selectedProviderQuery = useProviderRow(selectedProvider, {
-    forceRefreshOnMount: selectedProvider === "claude-gateway",
-  });
+  const selectedProviderQuery = useProviderRow(selectedProvider);
   const aggregateProviderInfo = providers.find(
     (p) => p.name === selectedProvider,
   );
   const selectedProviderInfo =
     selectedProviderQuery.row ?? aggregateProviderInfo;
+  const providerChoices = (providerDescriptors ?? providers).map(
+    (descriptor) => ({
+      ...descriptor,
+      ...(descriptor.name === selectedProvider
+        ? selectedProviderInfo
+        : providers.find((provider) => provider.name === descriptor.name)),
+    }),
+  );
   const routerEnabled =
     serverHasCapability(
       versionInfo,
@@ -1327,27 +1366,39 @@ export function NewSessionForm({
   const selectedRouterPool = routerDiscovery.data?.pools.find(
     (p) => p.id === routerSelection?.poolId,
   );
+  // A picked account always pins with "manual"; otherwise the chosen policy
+  // or the pool default decides. A Manual default with one fitting account
+  // needs no pick.
   const routerAccountId =
-    selectedRouterPool?.policy === "manual"
-      ? compatibleMembers.length === 1
-        ? compatibleMembers[0]?.id
-        : routerSelection?.accountId
-      : undefined;
+    routerSelection?.accountId ||
+    (!routerSelection?.policy &&
+    selectedRouterPool?.policy === "manual" &&
+    compatibleMembers.length === 1
+      ? compatibleMembers[0]?.id
+      : undefined);
+  const routerPolicy = routerAccountId ? "manual" : routerSelection?.policy;
   const routedModel = resolveRouterModel(
     selectedModel,
     accountModels,
     routerAliases,
   );
+  const selectedProviderRuntime = selectedProviderQuery.fresh
+    ? selectedProviderQuery.row
+    : !providersStale
+      ? aggregateProviderInfo
+      : undefined;
   const hasSelectedProviderModel = routerSelection
     ? !!(
         routerEnabled &&
         routedModel &&
         !routerDiscovery.error &&
         compatibleMembers.length &&
-        (selectedRouterPool?.policy !== "manual" ||
-          compatibleMembers.some((a) => a.id === routerAccountId))
+        (routerAccountId
+          ? compatibleMembers.some((a) => a.id === routerAccountId)
+          : (routerPolicy ?? selectedRouterPool?.policy) !== "manual")
       )
-    : selectedProviderCatalogCurrent &&
+    : (!selectedProvider || selectedProviderRuntime?.installed === true) &&
+      selectedProviderCatalogCurrent &&
       hasRequiredProviderModel(
         selectedProvider,
         selectedProviderInfo?.models ?? [],
@@ -1466,7 +1517,7 @@ export function NewSessionForm({
   );
   const normalizedProjectInput = normalizeProjectInput(projectInput);
   const normalizedSelectedProjectPath = normalizeProjectInput(
-    selectedProject?.path ?? "",
+    selectedProject?.path ?? requestedProjectPath,
   );
   const isProjectInputCommittedSelection =
     Boolean(normalizedProjectInput) &&
@@ -1547,8 +1598,14 @@ export function NewSessionForm({
   const newProjectInitializesGit =
     !projectCreationGitChoice || newProjectGitInit;
   const currentProjectSelection = exactProjectMatch ?? selectedProject ?? null;
+  const projectSnapshotPending =
+    currentProjectSelection !== null &&
+    unconfirmedProjectIds.includes(currentProjectSelection.id);
   const projectQueueTargetProjectId =
-    !newProjectPanelShown && normalizedProjectInput && currentProjectSelection
+    !projectSnapshotPending &&
+    !newProjectPanelShown &&
+    normalizedProjectInput &&
+    currentProjectSelection
       ? currentProjectSelection.id
       : null;
   const fileCompletion = useProjectFileCompletion({
@@ -1584,9 +1641,9 @@ export function NewSessionForm({
   // ready to start. The composer does not wait for it: typing starts at once,
   // and starting waits for the project.
   const projectPending =
-    Boolean(projectId) &&
     !newProjectPanelShown &&
-    currentProjectSelection === null;
+    (projectSnapshotPending ||
+      (Boolean(projectId) && currentProjectSelection === null));
   const isDetachedProject =
     !newProjectPanelShown &&
     currentProjectSelection === null &&
@@ -1855,7 +1912,7 @@ export function NewSessionForm({
       );
       const isSelectable = (name: ProviderName) =>
         !catalogKnown || launchableProviderNames.has(name);
-      const savedDefaults = settings?.newSessionDefaults;
+      const savedDefaults = settings?.newSessionDefaults ?? displayDefaults;
       // An explicit caller preference (e.g. "clear" from an existing session)
       // outranks saved new-session defaults.
       const requestedProviderName =
@@ -1953,6 +2010,7 @@ export function NewSessionForm({
     [
       applyLaunchLock,
       settings,
+      displayDefaults,
       supportsSessionSandboxing,
       getLegacyProviderDefaultSeed,
       preferredProvider,
@@ -1963,15 +2021,22 @@ export function NewSessionForm({
     ],
   );
 
-  // Seed provider/model/mode from saved defaults as soon as settings resolve.
+  // Saved display defaults can seed controls while current settings load.
   // Waiting for the provider catalog here would hand an unselected provider's
   // discovery cost to the saved one; see topics/session-defaults.md.
   useEffect(() => {
-    if (hasSeededDefaultsRef.current || settingsLoading) return;
-    hasSeededDefaultsRef.current = true;
+    if (hasSeededDefaultsRef.current || (settingsLoading && !displayDefaults))
+      return;
+    hasSeededDefaultsRef.current = !settingsLoading && !displayDefaultsPending;
     if (hasUserCustomizedDefaultsRef.current) return;
     applyInitialDefaults(providers);
-  }, [applyInitialDefaults, providers, settingsLoading]);
+  }, [
+    applyInitialDefaults,
+    providers,
+    settingsLoading,
+    displayDefaults,
+    displayDefaultsPending,
+  ]);
 
   // Reconcile that seed once the probed catalog and version capabilities land.
   useEffect(() => {
@@ -2013,15 +2078,19 @@ export function NewSessionForm({
     if (lastSyncedProjectIdRef.current === nextProjectId) {
       return;
     }
-    // The form mounts before the named project's record arrives; fill the
-    // project field from that record once it does.
+    // URL identity is display intent; only a server row authorizes launch.
     if (nextProjectId && !selectedProject) {
+      setProjectInput((prev) => prev || requestedProjectPath);
       return;
     }
 
     lastSyncedProjectIdRef.current = nextProjectId;
-    setProjectInput((prev) => prev || (selectedProject?.path ?? ""));
-  }, [projectId, selectedProject]);
+    setProjectInput((prev) =>
+      !prev || prev === requestedProjectPath
+        ? (selectedProject?.path ?? "")
+        : prev,
+    );
+  }, [projectId, requestedProjectPath, selectedProject]);
 
   useEffect(() => {
     if (!isProjectChooserExpanded) return;
@@ -2281,8 +2350,8 @@ export function NewSessionForm({
   // A tab opened on this page was already typeable before the app loaded
   // (lib/prebootComposer), so the page's form takes over that text and caret
   // in this same commit: nothing can be struck between the two fields. The
-  // text was typed without seeing a restored draft, so it follows the draft
-  // as its own paragraph.
+  // saved draft was visible on the local path, so its edited value replaces
+  // that draft. Text typed before remote identity was known follows it.
   const attachComposerTextarea = useCallback(
     (textarea: HTMLTextAreaElement | null) => {
       textareaRef.current = textarea;
@@ -2293,7 +2362,17 @@ export function NewSessionForm({
       autoFocusRef.current = false;
       let selectionStart = textarea.value.length;
       let selectionEnd = selectionStart;
-      if (preboot?.text) {
+      if (preboot?.draftKey) {
+        if (
+          preboot.edited &&
+          preboot.draftKey === draftStorage.physicalKey(newSessionDraftKey)
+        ) {
+          textarea.value = preboot.text;
+          setMessage(preboot.text);
+          selectionStart = preboot.selectionStart;
+          selectionEnd = preboot.selectionEnd;
+        }
+      } else if (preboot?.text) {
         const draft = textarea.value;
         const separator =
           !draft || /\s$/.test(draft) || /^\s/.test(preboot.text) ? "" : "\n\n";
@@ -2307,7 +2386,7 @@ export function NewSessionForm({
       textarea.focus();
       textarea.setSelectionRange(selectionStart, selectionEnd);
     },
-    [setMessage],
+    [newSessionDraftKey, setMessage],
   );
 
   useLayoutEffect(() => {
@@ -2441,7 +2520,12 @@ export function NewSessionForm({
   // once the user has actually customized something — and stays silent to
   // avoid a toast on every click.
   useEffect(() => {
-    if (!hasUserCustomizedDefaultsRef.current || !selectedProvider) return;
+    if (
+      !hasUserCustomizedDefaultsRef.current ||
+      !selectedProvider ||
+      displayDefaultsPending
+    )
+      return;
     const {
       helperSideModel: _legacyHelperSideModel,
       sandboxLevel: _savedSandboxLevel,
@@ -2488,6 +2572,7 @@ export function NewSessionForm({
   }, [
     getLegacyProviderDefaultSeed,
     helperSideModel,
+    displayDefaultsPending,
     mode,
     recapAfterSeconds,
     sandboxLevel,
@@ -2732,6 +2817,7 @@ export function NewSessionForm({
         creatingTemplateProject ||
         templateProjectBusy ||
         isStarting ||
+        displayDefaultsPending ||
         !hasSelectedProviderModel ||
         projectPending
       ) {
@@ -2853,6 +2939,7 @@ export function NewSessionForm({
                 ...(routerSelection.poolId
                   ? {
                       routerPoolId: routerSelection.poolId,
+                      ...(routerPolicy ? { routerPolicy } : {}),
                     }
                   : {}),
               }
@@ -3135,6 +3222,7 @@ export function NewSessionForm({
       routerSelection,
       routedModel,
       routerAccountId,
+      routerPolicy,
       routerThinking,
       clientSummarySourceKey,
       supportsInstalledMachineControl,
@@ -3151,6 +3239,7 @@ export function NewSessionForm({
       helperSideModel,
       hasSelectedProviderModel,
       canCreateDetached,
+      displayDefaultsPending,
       isStarting,
       launch,
       launchLock,
@@ -3215,6 +3304,8 @@ export function NewSessionForm({
       !trimmedMessage ||
       !canQueueAttachments ||
       isStarting ||
+      displayDefaultsPending ||
+      projectPending ||
       !hasSelectedProviderModel
     ) {
       return;
@@ -3778,6 +3869,7 @@ export function NewSessionForm({
     interimTranscript;
   const canStart = Boolean(
     (hasContent || composerMuted) &&
+      !displayDefaultsPending &&
       hasSelectedProviderModel &&
       !projectPending &&
       (!isDetachedProject || canCreateDetached),
@@ -3798,6 +3890,8 @@ export function NewSessionForm({
   useAttachmentNavigationGuard(attachmentNavigationGuardActive);
   const canQueueProjectSession = Boolean(
     allowProjectQueue &&
+      !projectPending &&
+      !displayDefaultsPending &&
       !(machineControlSelected && machineControlEligible) &&
       showProjectQueueAction &&
       (message.trim() || speechPending !== null || interimTranscript) &&
@@ -4342,6 +4436,12 @@ export function NewSessionForm({
           </datalist>
         </div>
 
+        {projectPending && projectSnapshotPending && (
+          <p className="new-session-project-empty" role="status">
+            {t("newSessionProjectRefreshing")}
+          </p>
+        )}
+
         {!launch && !fixedProject && (
           <div className={templateStyles.expansion}>
             <button
@@ -4356,7 +4456,8 @@ export function NewSessionForm({
             </button>
           </div>
         )}
-        {isProjectChooserExpanded && projectPanelRows && !newProjectOpen && (
+        {/* Shown over an open New project too: choosing a project closes it. */}
+        {isProjectChooserExpanded && projectPanelRows && (
           <div
             id="new-session-project-panel"
             className="new-session-project-panel"
@@ -4371,92 +4472,92 @@ export function NewSessionForm({
           </div>
         )}
       </div>
-      {newProjectPanelShown && (
-        <section
-          id="new-session-new-project"
-          className={styles.newProject}
-          aria-label={t("templateNewProject")}
-        >
-          {newProjectOpen ? (
-            <label className={styles.newProjectField}>
-              <span>{t("newProjectEntryLabel")}</span>
-              <input
-                type="text"
-                value={newProjectEntry}
-                onChange={(event) => setNewProjectEntry(event.target.value)}
-                placeholder={t("newProjectEntryPlaceholder")}
-                disabled={isStarting || templateProjectBusy}
-                spellCheck={false}
-                ref={newProjectEntryRef}
-              />
-            </label>
-          ) : null}
-          <p className={styles.newProjectTarget}>
-            {newProjectTarget?.path
-              ? t(
-                  newProjectOpen ? "newProjectCreates" : "newProjectFromSearch",
-                  {
-                    path: shortenPath(newProjectTarget.path),
-                  },
-                )
-              : t("newProjectNeedsName")}
-          </p>
-          <ProjectStartPalette
-            name="new-session-project-start"
-            legend={t("newProjectStartFrom")}
-            disabled={isStarting || templateProjectBusy}
-            choices={[
-              {
-                key: EMPTY_FOLDER_CHOICE,
-                title: t("newProjectEmptyFolder"),
-                description: t("newProjectEmptyFolderHint"),
-              },
-              ...newProjectTemplates.map((template) => ({
-                key: templateChoiceKey(template),
-                title: template.title,
-                description: template.description,
-                icon: template.icon,
-              })),
-            ]}
-            selected={
-              newProjectTemplate
-                ? templateChoiceKey(newProjectTemplate)
-                : EMPTY_FOLDER_CHOICE
-            }
-            onSelect={setNewProjectChoice}
-          />
-          {!newProjectTemplate && (
-            <>
-              <label className={styles.newProjectGit}>
-                <input
-                  type="checkbox"
-                  checked={newProjectInitializesGit}
-                  disabled={!projectCreationGitChoice || isStarting}
-                  onChange={(event) => {
-                    setNewProjectGitInit(event.target.checked);
-                    localStorage.setItem(
-                      UI_KEYS.newProjectGitInit,
-                      String(event.target.checked),
-                    );
-                  }}
-                />
-                {t("newProjectGitInit")}
-              </label>
-              {newProjectTarget?.path && (
-                <p className={styles.newProjectPlan}>
-                  {t(
-                    newProjectInitializesGit
-                      ? "newProjectPlanGit"
-                      : "newProjectPlan",
-                  )}
-                </p>
-              )}
-            </>
-          )}
-        </section>
-      )}
     </div>
   );
+  // A grid row of its own, below both the composer and the project column, so
+  // the palette spreads across the page width instead of stretching the
+  // narrow project column (and never sits under the project list).
+  const newProjectSection = newProjectPanelShown ? (
+    <section
+      id="new-session-new-project"
+      className={styles.newProject}
+      aria-label={t("templateNewProject")}
+    >
+      {newProjectOpen ? (
+        <label className={styles.newProjectField}>
+          <span>{t("newProjectEntryLabel")}</span>
+          <input
+            type="text"
+            value={newProjectEntry}
+            onChange={(event) => setNewProjectEntry(event.target.value)}
+            placeholder={t("newProjectEntryPlaceholder")}
+            disabled={isStarting || templateProjectBusy}
+            spellCheck={false}
+            ref={newProjectEntryRef}
+          />
+        </label>
+      ) : null}
+      <p className={styles.newProjectTarget}>
+        {newProjectTarget?.path
+          ? t(newProjectOpen ? "newProjectCreates" : "newProjectFromSearch", {
+              path: shortenPath(newProjectTarget.path),
+            })
+          : t("newProjectNeedsName")}
+      </p>
+      <ProjectStartPalette
+        name="new-session-project-start"
+        legend={t("newProjectStartFrom")}
+        disabled={isStarting || templateProjectBusy}
+        choices={[
+          {
+            key: EMPTY_FOLDER_CHOICE,
+            title: t("newProjectEmptyFolder"),
+            description: t("newProjectEmptyFolderHint"),
+          },
+          ...newProjectTemplates.map((template) => ({
+            key: templateChoiceKey(template),
+            title: template.title,
+            description: template.description,
+            icon: template.icon,
+          })),
+        ]}
+        selected={
+          newProjectTemplate
+            ? templateChoiceKey(newProjectTemplate)
+            : EMPTY_FOLDER_CHOICE
+        }
+        onSelect={setNewProjectChoice}
+      />
+      {!newProjectTemplate && (
+        <>
+          <label className={styles.newProjectGit}>
+            <input
+              type="checkbox"
+              checked={newProjectInitializesGit}
+              disabled={!projectCreationGitChoice || isStarting}
+              onChange={(event) => {
+                setNewProjectGitInit(event.target.checked);
+                localStorage.setItem(
+                  UI_KEYS.newProjectGitInit,
+                  String(event.target.checked),
+                );
+              }}
+            />
+            {t("newProjectGitInit")}
+          </label>
+          {newProjectTarget?.path && (
+            <p className={styles.newProjectPlan}>
+              {t(
+                newProjectInitializesGit
+                  ? "newProjectPlanGit"
+                  : "newProjectPlan",
+              )}
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  ) : null;
   const workstreamChooser =
     showWorkstreamChooser && selectedWorkstream ? (
       <label className="new-session-workstream-field">
@@ -4490,18 +4591,48 @@ export function NewSessionForm({
       </label>
     ) : null;
 
+  const optionPlaceholder = (
+    className: string,
+    title: string,
+    caption: string | undefined,
+    triggerClassName?: string,
+    triggerContent?: ReactNode,
+  ) => (
+    <NewSessionOptionSection
+      className={className}
+      title={title}
+      caption={caption}
+      showCaption={showOptionCaptions}
+      placeholder
+    >
+      <FilterDropdown
+        label={title}
+        options={[]}
+        selected={[]}
+        onChange={() => {}}
+        fullWidth
+        triggerClassName={triggerClassName}
+        triggerContent={triggerContent}
+      />
+    </NewSessionOptionSection>
+  );
   const providerSection =
-    providers.length > 1 ? (
+    providerChoices.length > 1 ? (
       <NewSessionOptionSection
         className={`new-session-provider-section ${styles.compactProviderSection}`}
         title={sessionDefaultCopy.provider.title}
         caption={sessionDefaultCopy.provider.description}
         showCaption={showOptionCaptions}
       >
-        <div aria-busy={providersStale}>
+        <div
+          aria-busy={
+            providersLoading || providersStale || displayDefaultsPending
+          }
+        >
           <FilterDropdown<ProviderName>
             label={sessionDefaultCopy.provider.title}
-            options={providers.map((provider) => ({
+            triggerClassName={styles.providerTrigger}
+            options={providerChoices.map((provider) => ({
               value: provider.name,
               label: provider.displayName,
               icon: (
@@ -4511,15 +4642,16 @@ export function NewSessionForm({
               ),
               description: [
                 providerDescriptions[provider.name],
-                !provider.installed
+                provider.installed === false
                   ? t("newSessionProviderStatusNotInstalled")
-                  : !provider.authenticated && !provider.enabled
+                  : provider.authenticated === false &&
+                      provider.enabled === false
                     ? t("newSessionProviderStatusAuthenticationNeeded")
                     : null,
               ]
                 .filter(Boolean)
                 .join(" · "),
-              disabled: !provider.installed,
+              disabled: provider.installed === false,
             }))}
             selected={selectedProvider ? [selectedProvider] : []}
             onChange={([provider]) => {
@@ -4536,7 +4668,9 @@ export function NewSessionForm({
                   />
                   <span className={styles.selectedChoiceText}>
                     <span>
-                      {selectedProviderInfo?.displayName ?? selectedProvider}
+                      {providerChoices.find(
+                        (provider) => provider.name === selectedProvider,
+                      )?.displayName ?? selectedProvider}
                     </span>
                     {selectedProviderInfo &&
                       !routerSelection &&
@@ -4553,7 +4687,14 @@ export function NewSessionForm({
           />
         </div>
       </NewSessionOptionSection>
-    ) : null;
+    ) : (
+      optionPlaceholder(
+        `new-session-provider-section ${styles.compactProviderSection}`,
+        sessionDefaultCopy.provider.title,
+        sessionDefaultCopy.provider.description,
+        styles.providerTrigger,
+      )
+    );
   const modelField =
     selectedProvider && modelOptions.length > 0 ? (
       <NewSessionOptionSection
@@ -4588,7 +4729,18 @@ export function NewSessionForm({
           }
         />
       </NewSessionOptionSection>
-    ) : null;
+    ) : (
+      optionPlaceholder(
+        "new-session-model-field",
+        sessionDefaultCopy.model.title,
+        sessionDefaultCopy.model.description,
+        undefined,
+        <span className={styles.selectedChoice}>
+          <ProviderBadge provider={selectedProvider ?? "claude"} />
+          <span>{sessionDefaultCopy.model.title}</span>
+        </span>,
+      )
+    );
   const gatewayCatalogUnavailable =
     selectedProvider === "claude-gateway" &&
     (!selectedProviderQuery.fresh || availableModels.length === 0);
@@ -4656,48 +4808,49 @@ export function NewSessionForm({
               action: t("newSessionModelCatalogRefresh"),
             };
   const catalogNotice = routerCatalogNotice ?? modelCatalogNotice;
-  const modelCatalogStatus = catalogNotice ? (
+  const modelCatalogStatus = (
     <div
       className={
-        catalogNotice.warning ? styles.catalogStatus : styles.catalogStatusMuted
+        catalogNotice?.warning
+          ? styles.catalogStatus
+          : styles.catalogStatusMuted
       }
       role="status"
       aria-live="polite"
       title={routerCatalogNotice ? undefined : modelCatalog?.error}
     >
-      <span>{catalogNotice.message}</span>
+      <span
+        className={styles.catalogMessage}
+        data-sizing-text={t("newSessionGatewayCatalogUnavailable")}
+        title={routerSelection ? undefined : modelCatalog?.error}
+      >
+        <span>{catalogNotice?.message}</span>
+      </span>
       <button
         type="button"
         className={styles.catalogAction}
         disabled={
-          routerCatalogNotice
+          routerSelection
             ? routerCatalogRefresh === "refreshing"
-            : selectedProviderQuery.refreshing
+            : selectedProvider
+              ? selectedProviderQuery.refreshing
+              : providersLoading
         }
         onClick={() =>
-          void (routerCatalogNotice
+          void (routerSelection
             ? refreshRouterCatalog()
-            : selectedProviderQuery.refresh())
+            : selectedProvider
+              ? selectedProviderQuery.refresh()
+              : refetchProviders())
         }
       >
-        {catalogNotice.action}
+        {catalogNotice?.action ?? t("newSessionModelCatalogRefresh")}
       </button>
     </div>
-  ) : null;
-  const gatewayCatalogStatus =
-    gatewayCatalogUnavailable && !modelField ? (
-      <div className="new-session-model-field">
-        <h3>{sessionDefaultCopy.model.title}</h3>
-        {modelCatalogStatus}
-      </div>
-    ) : null;
-  const modelSection =
-    modelField || gatewayCatalogStatus ? (
-      <div className="new-session-model-section">
-        {modelField}
-        {gatewayCatalogStatus ?? modelCatalogStatus}
-      </div>
-    ) : null;
+  );
+  const modelSection = (
+    <div className="new-session-model-section">{modelField}</div>
+  );
   const showThinkingSection = (
     <NewSessionOptionSection
       className="new-session-helper-section new-session-show-thinking-section"
@@ -4833,6 +4986,15 @@ export function NewSessionForm({
       />
     </NewSessionOptionSection>
   ) : null;
+  const effortSlot =
+    effortSection ??
+    (!launchLock.effort
+      ? optionPlaceholder(
+          `new-session-helper-section ${styles.effortSection}`,
+          t("newSessionThinkingEffortTitle"),
+          sessionDefaultCopy.thinking.description,
+        )
+      : null);
   const recapSection = selectedProvider ? (
     <NewSessionOptionSection
       className="new-session-helper-section"
@@ -5114,7 +5276,7 @@ export function NewSessionForm({
     fixedLaunchSection ||
       (showProviderPicker && providerSection) ||
       (showModelPicker && modelSection) ||
-      effortSection,
+      effortSlot,
   );
   const activeAdvancedOptions = [
     effectivePermissionMode !== "default"
@@ -5143,6 +5305,21 @@ export function NewSessionForm({
       : null,
   ].filter((label): label is string => label !== null);
 
+  const displayDefaultsError =
+    displayDefaultsPending && settingsError ? (
+      <div role="alert" className={styles.catalogStatus}>
+        <span>{t("newSessionDefaultsUnavailable")}</span>
+        <button
+          type="button"
+          className={styles.catalogAction}
+          onClick={() => void refetchSettings()}
+          disabled={settingsLoading}
+        >
+          {t("newSessionDefaultsRetry")}
+        </button>
+      </div>
+    ) : null;
+
   // Compact mode: just the input area, no header or mode selector
   if (compact) {
     return (
@@ -5150,6 +5327,7 @@ export function NewSessionForm({
         className="new-session-form new-session-form-compact"
         onKeyDownCapture={handleComposerKeyDown}
       >
+        {displayDefaultsError}
         {inputArea}
       </div>
     );
@@ -5178,6 +5356,8 @@ export function NewSessionForm({
           </p>
         </div>
       )}
+
+      {displayDefaultsError}
 
       <div
         className={`new-session-top-layout ${styles.optionLayout}${
@@ -5214,6 +5394,7 @@ export function NewSessionForm({
             {workstreamChooser}
           </aside>
         )}
+        {newProjectSection}
         {templateChoices?.enabled && !launch && !fixedProject && (
           <div
             className={styles.templateProjectSlot}
@@ -5304,7 +5485,8 @@ export function NewSessionForm({
             {fixedLaunchSection}
             {showProviderPicker && providerSection}
             {showModelPicker && modelSection}
-            {effortSection}
+            {effortSlot}
+            {showModelPicker && modelCatalogStatus}
           </div>
         )}
         <div className={styles.advancedSection}>

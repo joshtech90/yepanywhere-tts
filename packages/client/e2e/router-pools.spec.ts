@@ -137,23 +137,38 @@ test("pool overview, editor and policy selection retain typing under 48-account 
   await expect(selector.getByLabel("Selected route")).toContainText(
     '"poolId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"',
   );
-  await expect(
-    selector.getByRole("button", { name: "Filter by Router account" }),
-  ).toHaveCount(0);
-  await poolTrigger.click();
-  await poolPanel.getByRole("button", { name: /^Hand-picked Codex/ }).click();
+  // An automatic pool offers its default, the router's other policies and
+  // each account; choosing a policy overrides the default for this session.
   const accountTrigger = selector.getByRole("button", {
     name: "Filter by Router account",
     exact: true,
   });
-  await expect(accountTrigger).toContainText("Choose an account");
+  await expect(accountTrigger).toContainText("Round robin");
   await accountTrigger.click();
   const accountPanel = page.getByRole("dialog", {
     name: "Filter by Router account",
   });
+  await expect(accountPanel.getByRole("button").nth(0)).toHaveText(
+    /^Round robin.*Pool default/,
+  );
+  await expect(accountPanel.getByRole("button").nth(2)).toHaveText(
+    /^Weekly pace/,
+  );
+  await expect(accountPanel.getByRole("button")).toHaveCount(3 + 16);
+  await accountPanel.getByRole("button", { name: /^Weekly pace/ }).click();
+  await expect(selector.getByLabel("Selected route")).toContainText(
+    '"policy":"weekly-pace"',
+  );
+  await poolTrigger.click();
+  await poolPanel.getByRole("button", { name: /^Hand-picked Codex/ }).click();
+  await expect(accountTrigger).toContainText("Choose an account");
+  await accountTrigger.click();
   // Every pool account is listed with its reason, both cached windows and
   // the observation state; only catalog facts disable a row.
   await expect(accountPanel.getByRole("button")).toHaveText([
+    /^Round robin/,
+    /^Most remaining/,
+    /^Weekly pace/,
     /Account 1.*Quota exhausted when last checked.*5h 0% left.*Week 45% left.*checked Oct 3/,
     /Account 2.*5h 68% left.*Week 45% left.*from a request Oct 3.*last refresh failed/,
     /Account 3.*Disabled in AAR.*5h 68% left.*Week 45% left.*checked Oct 3/,
@@ -179,7 +194,7 @@ test("pool overview, editor and policy selection retain typing under 48-account 
   const accountSheet = page.getByRole("dialog", {
     name: "Filter by Router account",
   });
-  await expect(accountSheet.getByRole("button")).toHaveCount(4);
+  await expect(accountSheet.getByRole("button")).toHaveCount(7);
   expect(
     await accountSheet
       .getByRole("button", { name: /Account 2/ })

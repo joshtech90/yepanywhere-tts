@@ -9,6 +9,14 @@ import {
   readPersistedServerSettings,
 } from "../../scripts/benchmark-provider-model-route.js";
 import type { ServerSettings } from "../../src/services/ServerSettingsService.js";
+import {
+  loadSqliteDriver,
+  type SqliteDatabase,
+} from "../../src/storage/sqlite.js";
+import {
+  closeTestDiscoveryDatabases,
+  openTestDiscoveryDatabase,
+} from "../utils/session-metadata-database.js";
 
 describe("provider model route benchmark state", () => {
   let dataDir: string;
@@ -17,7 +25,21 @@ describe("provider model route benchmark state", () => {
     dataDir = await mkdtemp(join(tmpdir(), "ya-provider-benchmark-"));
   });
 
+  function markImported(database: SqliteDatabase) {
+    database.exec(
+      "INSERT INTO session_metadata_import (id, imported_at, source) VALUES (1, '2026-10-11T00:00:00.000Z', 'none')",
+    );
+  }
+
+  /** A migrated database whose one-time JSON import has run. */
+  function importedDatabase() {
+    const database = openTestDiscoveryDatabase(dataDir);
+    markImported(database);
+    return database;
+  }
+
   afterEach(async () => {
+    closeTestDiscoveryDatabases();
     await rm(dataDir, { recursive: true });
   });
 
@@ -50,33 +72,36 @@ describe("provider model route benchmark state", () => {
   });
 
   it("rejects missing or malformed metadata records", async () => {
-    const metadataPath = join(dataDir, "session-metadata.json");
-    await writeFile(metadataPath, JSON.stringify({ version: 3 }));
+    loadSqliteDriver()?.open(join(dataDir, "discovery.sqlite")).close();
     await expect(
       persistedMetadataIncludesProvider(dataDir, "claude-ollama"),
     ).rejects.toThrow("metadata is unreadable");
 
-    await writeFile(
-      metadataPath,
-      JSON.stringify({ version: 3, sessions: { broken: 42 } }),
-    );
+    // Migrated, but the server has not yet run the one-time JSON import.
+    const database = openTestDiscoveryDatabase(dataDir);
+    await expect(
+      persistedMetadataIncludesProvider(dataDir, "claude-ollama"),
+    ).rejects.toThrow("metadata is unreadable");
+    markImported(database);
+    await expect(
+      persistedMetadataIncludesProvider(dataDir, "claude-ollama"),
+    ).resolves.toBe(false);
+    database
+      .prepare(
+        "INSERT INTO session_metadata (session_id, metadata) VALUES (?, ?)",
+      )
+      .run("broken", "42");
     await expect(
       persistedMetadataIncludesProvider(dataDir, "claude-ollama"),
     ).rejects.toThrow("metadata is unreadable");
   });
 
   it("recognizes a provider only from valid metadata", async () => {
-    const metadataPath = join(dataDir, "session-metadata.json");
-    await writeFile(
-      metadataPath,
-      JSON.stringify({
-        version: 3,
-        sessions: {
-          claude: { provider: "claude" },
-          ollama: { provider: "claude-ollama" },
-        },
-      }),
+    const insert = importedDatabase().prepare(
+      "INSERT INTO session_metadata (session_id, metadata) VALUES (?, ?)",
     );
+    insert.run("claude", JSON.stringify({ provider: "claude" }));
+    insert.run("ollama", JSON.stringify({ provider: "claude-ollama" }));
 
     await expect(
       persistedMetadataIncludesProvider(dataDir, "claude-ollama"),

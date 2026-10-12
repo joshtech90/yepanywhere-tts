@@ -305,11 +305,10 @@ test("audio memo captures WAV, preserves draft on cancel, and uploads before sen
   await page.goto(`${baseURL}/projects/${projectId}/sessions/mock-session-001`);
   const input = page.locator("[data-composer-input]");
   await expect(input).toBeVisible();
-  // The composer can render before asynchronous backend metadata settles.
-  // Start the take only once the mocked streaming backend is selected.
+  // Stored selection renders before asynchronous streaming capabilities.
   await expect(
     page.getByRole("button", { name: "Start voice input" }),
-  ).toContainText("Test");
+  ).toHaveAttribute("data-speech-streaming", "true");
   await input.focus();
   for (const character of "Listen to this.") {
     const before = await input.inputValue();

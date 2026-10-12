@@ -2,6 +2,7 @@ import { appendFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { SessionMetadataService } from "../../server/src/metadata/SessionMetadataService.js";
+import { DiscoverySqliteService } from "../../server/src/storage/discovery-sqlite.js";
 import { InstallService } from "../../server/src/services/InstallService.js";
 import { e2ePaths, expect, test } from "./fixtures.js";
 import { recordUiCapture } from "./support/ui-capture.js";
@@ -37,7 +38,12 @@ for (const viewport of [
         const install = new InstallService({ dataDir });
         await install.initialize();
         await install.recordSuccessfulProviders(["claude"]);
-        const metadata = new SessionMetadataService({ dataDir });
+        // Seed before the server starts, then release the database to it.
+        const discovery = new DiscoverySqliteService({ dataDir });
+        const metadata = new SessionMetadataService({
+          dataDir,
+          database: discovery.getDatabase(),
+        });
         await metadata.initialize();
         await metadata.setTitle(sessionId, "Review from another session");
         await metadata.recordNonHumanUserTurn(sessionId, {
@@ -45,6 +51,8 @@ for (const viewport of [
           sourceSessionId: "reviewer",
           timestamp: "2026-01-01T00:00:00.000Z",
         });
+        await metadata.flushPendingWrites();
+        discovery.close();
         // Put the target outside the initial tail and exercise history loading.
         const turns = Array.from({ length: 65 }, (_, index) => [
           {

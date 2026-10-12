@@ -9,6 +9,7 @@ import {
 import { saveHost, type SavedHost } from "../../lib/hostStorage";
 import {
   createClientSummaryHostSourceKey,
+  asClientSummarySourceKey,
   resetClientSummaryStoreForTests,
   setCurrentClientSummarySourceKey,
   useClientSummarySourceKey,
@@ -71,6 +72,26 @@ describe("resolveClientSummarySourceKey", () => {
       }),
     ).toBe("local");
   });
+
+  it.each(["relay", "direct"])(
+    "prefers the active %s scope over saved-name lookup",
+    (mode) => {
+      saveHost(relayHost("host-saved", "shared"));
+      saveHost(directHost("direct-saved", "ws://server/api/ws"));
+      const key = asClientSummarySourceKey("remote:temporary-principal");
+      expect(
+        resolveClientSummarySourceKey({
+          pathname: mode === "relay" ? "/-/relay/shared/sessions" : "/sessions",
+          remote: remote({
+            currentHostId: mode === "relay" ? "host-saved" : "direct-saved",
+            currentRelayUsername: mode === "relay" ? "shared" : null,
+            currentDirectUrl: mode === "direct" ? "ws://server/api/ws" : null,
+            activeSourceKey: key,
+          }),
+        }),
+      ).toBe(key);
+    },
+  );
 
   it("uses the requested relay host from a canonical URL immediately", () => {
     saveHost(relayHost("host-macbook", "macbook"));

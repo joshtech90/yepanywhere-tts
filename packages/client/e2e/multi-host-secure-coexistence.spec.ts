@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Page, WebSocket as PlaywrightWebSocket } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 import {
   startMultiHostRelayHarness,
   type MultiHostRelayHarness,
@@ -315,6 +316,188 @@ test.beforeAll(async ({ relayWsURL }) => {
 
 test.afterAll(async () => {
   await harness?.stop();
+});
+
+test("separate host tabs retain scoped credentials through reconnect and restoration", async ({
+  page,
+  context,
+  remoteClientURL,
+  remotePreviewURL,
+}) => {
+  if (!harness) throw new Error("Multi-host harness did not start");
+  const { projectId, sessionId, hosts } = harness;
+  const [alpha, beta] = hosts;
+  if (!alpha || !beta) throw new Error("Two hosts are required");
+  await provisionHarnessHosts(page, remoteClientURL, harness);
+  const fixtureCredentials = await page.evaluate(() =>
+    localStorage.getItem("yep-anywhere-saved-hosts"),
+  );
+  await page.goto(remotePreviewURL);
+  await page.evaluate((saved) => {
+    localStorage.clear();
+    sessionStorage.clear();
+    if (saved) localStorage.setItem("yep-anywhere-saved-hosts", saved);
+  }, fixtureCredentials);
+  const routes = [alpha, beta].map(
+    (host) =>
+      `${remotePreviewURL}/-/relay/${host.username}/projects/${projectId}/sessions/${sessionId}`,
+  );
+  const sockets: import("@playwright/test").WebSocketRoute[] = [];
+  const messages: string[] = [];
+  page.on("console", (message) => messages.push(message.text()));
+  await page.routeWebSocket(harness.relayUrl, (socket) => {
+    sockets.push(socket);
+    socket.connectToServer();
+  });
+  const other = await context.newPage();
+  try {
+    await page.goto(routes[0]!);
+    await expect(page.locator(".sidebar")).toBeVisible();
+    const lifecycle =
+      context.browser()?.browserType().name() === "chromium"
+        ? await context.newCDPSession(page)
+        : undefined;
+    await lifecycle?.send("Page.setWebLifecycleState", { state: "frozen" });
+    try {
+      await other.goto(routes[1]!);
+      await expect(other.locator(".sidebar")).toBeVisible();
+    } finally {
+      await lifecycle?.send("Page.setWebLifecycleState", { state: "active" });
+      await lifecycle?.detach();
+    }
+    const composer = page.locator("textarea[data-composer-input]");
+    const draft = "Draft for Alpha";
+    await expect(composer).toBeVisible();
+    await page.bringToFront();
+    await composer.focus();
+    await page.evaluate(async () => {
+      await document.fonts.ready;
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+    });
+    await composer.evaluate((element) => {
+      const input = element as HTMLTextAreaElement;
+      let started = 0;
+      const samples: Array<{ ms: number; present: boolean }> = [];
+      input.addEventListener("keydown", () => {
+        started = performance.now();
+      });
+      input.addEventListener("input", () => {
+        const expected = input.value;
+        const begin = started;
+        requestAnimationFrame(() => {
+          samples.push({
+            ms: performance.now() - begin,
+            present: input.value.startsWith(expected),
+          });
+          input.dataset.typingSamples = JSON.stringify(samples);
+        });
+      });
+    });
+    const count = messages.filter((message) =>
+      message.includes("Session resumed successfully"),
+    ).length;
+    await sockets
+      .at(-1)!
+      .close({ code: 1012, reason: "Cross-tab reconnect regression" });
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("online"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await composer.pressSequentially(draft, { delay: 25 });
+    await expect
+      .poll(
+        () =>
+          messages.filter((message) =>
+            message.includes("Session resumed successfully"),
+          ).length,
+      )
+      .toBe(count + 1);
+    await expect(composer).toHaveValue(draft);
+    await expect
+      .poll(
+        async () =>
+          JSON.parse(
+            (await composer.getAttribute("data-typing-samples")) ?? "[]",
+          ).length,
+      )
+      .toBe(draft.length);
+    const samples = JSON.parse(
+      (await composer.getAttribute("data-typing-samples")) ?? "[]",
+    ) as Array<{ ms: number; present: boolean }>;
+    expect(
+      samples.every((sample) => sample.present && sample.ms <= 100),
+      JSON.stringify(samples),
+    ).toBe(true);
+    await expect(other.locator("textarea[data-composer-input]")).toBeEmpty();
+    // This assertion fails on the original updater: Alpha's reconnect used
+    // to attach its session to Beta's shared legacy connection record.
+    const ownership = await other.evaluate(() => {
+      const c = JSON.parse(
+        localStorage.getItem("yep-anywhere-remote-credentials") ?? "{}",
+      );
+      return {
+        destination: c.relayUsername,
+        identity: c.username,
+        sessionIdentity: c.session?.username,
+      };
+    });
+    expect(ownership).toEqual({
+      destination: beta.username,
+      identity: beta.username,
+      sessionIdentity: beta.username,
+    });
+    // Also exercise already-corrupted data left by an older cached client.
+    await page.evaluate((alphaUsername) => {
+      const hosts = JSON.parse(
+        localStorage.getItem("yep-anywhere-saved-hosts") ?? "{}",
+      ).hosts;
+      const alphaHost = hosts.find(
+        (h: { relayUsername: string }) => h.relayUsername === alphaUsername,
+      );
+      const legacy = JSON.parse(
+        localStorage.getItem("yep-anywhere-remote-credentials") ?? "{}",
+      );
+      legacy.session = alphaHost.session;
+      localStorage.setItem(
+        "yep-anywhere-remote-credentials",
+        JSON.stringify(legacy),
+      );
+    }, alpha.username);
+    await page.reload();
+    await expect(page.locator(".sidebar")).toBeVisible();
+    await expect(page).toHaveURL(routes[0]!);
+    await other.reload();
+    await expect(other.locator(".sidebar")).toBeVisible();
+    await expect(other).toHaveURL(routes[1]!);
+    for (const [tab, host] of [
+      [page, alpha],
+      [other, beta],
+    ] as const) {
+      await expect(tab.locator(".session-page")).toContainText(
+        host.expectedFixtureText,
+      );
+      await expect(tab.getByTestId("relay-login-form")).toHaveCount(0);
+    }
+    await expect(composer).toHaveValue(draft);
+    await expect(other.locator("textarea[data-composer-input]")).toBeEmpty();
+    if (process.env.YEP_E2E_UI_CAPTURE_DIR) {
+      for (const [name, viewport] of [
+        ["desktop", { width: 1000, height: 600 }],
+        ["phone", { width: 375, height: 812 }],
+      ] as const) {
+        await page.setViewportSize(viewport);
+        await expect(page.locator(".session-page")).toContainText(
+          alpha.expectedFixtureText,
+        );
+        await recordUiCapture(page, `credential-restoration-${name}`, viewport);
+      }
+    }
+  } finally {
+    await other.close();
+    await page.goto("about:blank");
+  }
 });
 
 for (const transportMode of ["legacy", "mux"] as const) {

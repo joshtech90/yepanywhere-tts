@@ -114,6 +114,15 @@
   grid-column: auto;
 }
 
+.optionPlaceholder {
+  visibility: hidden;
+}
+
+/* Authentication state occupies a second line without resizing this control. */
+.providerTrigger {
+  min-block-size: calc(2lh + 2 * var(--space-2) + 2px);
+}
+
 .optionLayout :global(.new-session-provider-slot) {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -151,12 +160,19 @@
   position: relative;
 }
 .newProject {
+  grid-area: newproject;
   display: grid;
   gap: 10px;
-  margin-top: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
   min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border-input);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+/* The row spans the page; a path field that wide would be hard to scan. */
+.newProjectField,
+.newProjectTarget {
+  max-width: 36rem;
 }
 .newProjectField {
   display: grid;
@@ -203,6 +219,7 @@
     grid-template-areas:
       "main"
       "project"
+      "newproject"
       "template"
       "provider"
       "advanced"
@@ -213,6 +230,7 @@
     grid-template-areas:
       "main"
       "project"
+      "newproject"
       "template"
       "advanced"
       "secondary";
@@ -238,6 +256,7 @@
   .optionLayout.optionLayout {
     grid-template-areas:
       "main project"
+      "newproject newproject"
       "template template"
       "provider provider"
       "advanced advanced"
@@ -256,6 +275,7 @@
   .optionLayoutWithoutProvider.optionLayoutWithoutProvider {
     grid-template-areas:
       "main project"
+      "newproject newproject"
       "template template"
       "advanced advanced"
       "secondary secondary";
@@ -373,6 +393,7 @@
 
 .fullPane > :global(.new-session-header),
 .fullPane :global(.new-session-project-slot),
+.fullPane .newProject,
 .fullPane :global(.new-session-provider-slot),
 .fullPane .advancedSection,
 .fullPane .secondaryOptions {
@@ -428,6 +449,7 @@
    failed. */
 .catalogStatus,
 .catalogStatusMuted {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -435,19 +457,37 @@
   font-size: var(--font-size-sm);
   line-height: 1.35;
   color: var(--text-muted);
+  padding: 0.55rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
 }
 
 .catalogStatus {
-  padding: 0.55rem 0.65rem;
-  border: 1px solid
-    color-mix(in srgb, var(--warning-color) 38%, var(--border-color));
-  border-radius: var(--radius-md);
+  border-color: color-mix(
+    in srgb,
+    var(--warning-color) 38%,
+    var(--border-color)
+  );
   background: color-mix(in srgb, var(--warning-color) 8%, var(--bg-code));
 }
 
 .catalogStatusMuted {
-  margin-top: var(--space-1);
   color: var(--text-dimmed);
+}
+
+/* Reserve the notice's wrapping height before its catalog arrives. */
+.catalogMessage {
+  display: grid;
+}
+
+.catalogMessage::before {
+  content: attr(data-sizing-text);
+  visibility: hidden;
+}
+
+.catalogMessage::before,
+.catalogMessage > span {
+  grid-area: 1 / 1;
 }
 
 .catalogAction {
@@ -464,9 +504,7 @@
 }
 
 .catalogStatusMuted .catalogAction {
-  min-height: 0;
-  padding: 0;
-  border: none;
+  border-color: transparent;
   background: none;
   color: inherit;
   font-weight: inherit;

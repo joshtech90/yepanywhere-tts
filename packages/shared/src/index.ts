@@ -8,12 +8,17 @@ export type {
   ArtifactViewerGrant,
   ArtifactTabRequest,
 } from "./artifact-viewer.js";
+export * from "./vhost-oauth.js";
+export * from "./new-session-bootstrap.js";
 export {
   ARTIFACT_SANDBOX,
   ARTIFACT_TAB_PROTOCOL,
   isArtifactTabRequest,
 } from "./artifact-viewer.js";
 export type {
+  RecentSessionsResponse,
+  RecentsChangedEvent,
+  RetainedProjectCollectionState,
   RetainedSessionCollectionState,
   SessionCatalogUpdatedEvent,
 } from "./retained-session-collections.js";
@@ -441,6 +446,7 @@ export type {
   ClaudeProviderName,
   CodexReasoningSummary,
   ProviderName,
+  ProviderDescriptor,
   ProviderInfo,
   ProviderLoginFlow,
   ProviderLoginFlowState,

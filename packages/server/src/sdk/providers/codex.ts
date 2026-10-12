@@ -56,6 +56,7 @@ import {
 } from "../../codex/correlationDebugLogger.js";
 import {
   canonicalizeCodexToolName,
+  codexToolMessageId,
   isCodexBackgroundProcessOutput,
   isCodexInterruptedToolOutput,
   type CodexToolCallContext,
@@ -505,16 +506,22 @@ type CodexTurnErrorText = Pick<TurnError, "message" | "codexErrorInfo"> &
   Partial<Pick<TurnError, "additionalDetails">>;
 
 function codexTurnErrorHttpStatus(error: CodexTurnErrorText): number | null {
+  // Codex 0.162 declares `codexErrorInfo` open to future variants, so a known
+  // variant key no longer narrows its body; read the status defensively.
   const info = error.codexErrorInfo;
-  if (info && typeof info === "object" && "httpConnectionFailed" in info) {
-    return info.httpConnectionFailed.httpStatusCode;
-  }
-  if (
-    info &&
-    typeof info === "object" &&
-    "responseStreamDisconnected" in info
-  ) {
-    return info.responseStreamDisconnected.httpStatusCode;
+  if (info && typeof info === "object") {
+    for (const variant of [
+      "httpConnectionFailed",
+      "responseStreamDisconnected",
+    ]) {
+      if (!(variant in info)) continue;
+      const body = (info as Record<string, unknown>)[variant];
+      const status =
+        body && typeof body === "object"
+          ? (body as { httpStatusCode?: unknown }).httpStatusCode
+          : null;
+      return typeof status === "number" ? status : null;
+    }
   }
   // Codex's error text carries the status even when the structured info
   // does not, for example `unexpected status 403 Forbidden: {...}`.
@@ -2494,11 +2501,17 @@ export class CodexProvider implements AgentProvider {
                   };
                 }
 
+                // Every mutation below is a user-typed /goal. Codex 0.161+
+                // records only `origin: "user"` edits in model history as user
+                // instructions; older app-servers ignore the field.
                 if (goalControl === "clear") {
                   const response =
                     await client.request<ThreadGoalClearResponse>(
                       "thread/goal/clear",
-                      { threadId } satisfies ThreadGoalClearParams,
+                      {
+                        threadId,
+                        origin: "user",
+                      } satisfies ThreadGoalClearParams,
                     );
                   return {
                     handled: true,
@@ -2519,6 +2532,7 @@ export class CodexProvider implements AgentProvider {
                     {
                       threadId,
                       status: requestedStatus,
+                      origin: "user",
                     } satisfies ThreadGoalSetParams,
                   );
                   return {
@@ -2564,7 +2578,10 @@ export class CodexProvider implements AgentProvider {
                 if (current.goal) {
                   await client.request<ThreadGoalClearResponse>(
                     "thread/goal/clear",
-                    { threadId } satisfies ThreadGoalClearParams,
+                    {
+                      threadId,
+                      origin: "user",
+                    } satisfies ThreadGoalClearParams,
                   );
                 }
                 const response = await client.request<ThreadGoalSetResponse>(
@@ -2573,6 +2590,7 @@ export class CodexProvider implements AgentProvider {
                     threadId,
                     objective: goalArgument,
                     status: "active",
+                    origin: "user",
                   } satisfies ThreadGoalSetParams,
                 );
                 return {
@@ -6819,8 +6837,8 @@ export class CodexProvider implements AgentProvider {
   // commandExecution instead carries an inner exec-* id while rollout stores
   // the outer call_* id; the client reconciles that scoped exception via
   // _codexToolCorrelation. See topics/stream-durable-id-dedup.md.
-  private buildItemToolUuid(callId: string): string {
-    return callId;
+  private buildItemToolUuid(callId: string, toolName = ""): string {
+    return codexToolMessageId(callId, toolName);
   }
 
   private buildItemResultUuid(callId: string): string {
@@ -7046,7 +7064,7 @@ export class CodexProvider implements AgentProvider {
           {
             type: "assistant",
             session_id: sessionId,
-            uuid: this.buildItemToolUuid(callId),
+            uuid: this.buildItemToolUuid(callId, rawToolName),
             message: {
               role: "assistant",
               content: [
@@ -7326,7 +7344,10 @@ export class CodexProvider implements AgentProvider {
     // carry correlation metadata for adoption of the outer durable call_* id.
     // Message/reasoning item ids are the provider ids persisted in rollout.
     const uuid = this.isToolBackedThreadItem(item)
-      ? this.buildItemToolUuid(item.id)
+      ? this.buildItemToolUuid(
+          item.id,
+          item.type === "dynamic_tool_call" ? item.tool : "",
+        )
       : item.type === "agent_message" ||
           item.type === "reasoning" ||
           item.type === "function_call_output"

@@ -15,6 +15,7 @@ const mock = vi.hoisted(() => ({
   fetch: vi.fn(),
 }));
 vi.mock("../../../hooks/useVersion", () => ({
+  useRetainedVersionInfo: () => ({ artifactViewer: mock.status }),
   useVersion: () => ({
     version: { artifactViewer: mock.status },
     refetch: async () => {},
@@ -98,7 +99,7 @@ it("sorts full served paths in both directions without changing saved order", as
       <ArtifactSettings />
     </I18nProvider>,
   );
-  const table = within(screen.getByRole("table", { name: "HTTP vhosts" }));
+  const table = within(screen.getByRole("table", { name: "Hosted apps" }));
   const rows = () =>
     table
       .getAllByRole("row")

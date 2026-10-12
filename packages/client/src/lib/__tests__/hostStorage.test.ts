@@ -80,7 +80,7 @@ describe("upsertRelayHost", () => {
       srpUsername: "ygraehl",
     });
 
-    expect(getHostByRelayUsername("ygraehl")?.srpUsernames).toEqual([
+    expect(loadSavedHosts().hosts.map((host) => host.srpUsername)).toEqual([
       "archer",
       "ygraehl",
     ]);

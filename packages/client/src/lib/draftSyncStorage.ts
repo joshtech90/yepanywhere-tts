@@ -18,7 +18,9 @@ import {
   type DraftWriteResult,
 } from "@yep-anywhere/shared";
 import { readDraftEnvelopeValue } from "./draftEnvelope";
+import { accountDraftStorageKey } from "./draftAccountStorage";
 import type { SourceTransport } from "./transport/types";
+import { generateUUID } from "./uuid";
 
 export const DRAFT_STORAGE_EVENT = "yep-draft-storage";
 export const DRAFT_SYNC_STATUS_EVENT = "yep-draft-sync-status";
@@ -50,6 +52,8 @@ interface Entry {
   remote?: DraftRead;
   needsRecovery?: boolean;
   error?: string;
+  /** A rejected request needs changed input, restored access, or explicit retry. */
+  rejectedStatus?: number;
   submissionTask?: Promise<void>;
   waitForSync?: Promise<void>;
   confirmations?: number;
@@ -63,10 +67,7 @@ interface Entry {
  */
 const SIBLING_EDIT_MS = 15_000;
 const FOREGROUND_KEY = "draft-sync-foreground";
-const TAB_ID =
-  typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random()}`;
+const TAB_ID = generateUUID();
 const owners = new Map<string, string>();
 const clients = new Map<string, DraftSyncClient>();
 let currentSource = "local";
@@ -286,9 +287,7 @@ function physical(key: string, address: Address): string {
     address.slot.kind === "handoff" && address.source !== "local"
       ? `draft-source:${encodeURIComponent(address.source)}:${key}`
       : key;
-  return owner == null || owner === ""
-    ? sourceKey
-    : `draft-account:${encodeURIComponent(owner)}:${sourceKey}`;
+  return accountDraftStorageKey(sourceKey, owner);
 }
 function notify(key: string): void {
   for (const listener of listeners.get(key) ?? []) listener();
@@ -330,6 +329,10 @@ function observed(key: string): boolean {
   return false;
 }
 export const draftStorage = {
+  physicalKey(key: string): string {
+    const address = storageAddress(key);
+    return address ? physical(key, address) : key;
+  },
   keys(): string[] {
     const keys = new Set<string>();
     for (let i = 0; i < localStorage.length; i++) {
@@ -630,6 +633,7 @@ export class DraftSyncClient {
       e.remote ||
       e.needsRecovery ||
       e.error ||
+      e.rejectedStatus ||
       !draftPayloadEqual(
         payload(e.address, e.saved.raw),
         e.saved.base?.payload ?? EMPTY_DRAFT,
@@ -657,6 +661,8 @@ export class DraftSyncClient {
     if (!e) return;
     e.saved.raw = raw;
     if (e.error === "local") e.error = undefined;
+    if (e.rejectedStatus && [400, 413, 422].includes(e.rejectedStatus))
+      e.rejectedStatus = undefined;
     // Typing here makes this tab the one that saves the draft.
     e.siblingEditAt = undefined;
     // The text itself is already in browser storage. Rewriting this tab's
@@ -681,7 +687,7 @@ export class DraftSyncClient {
     if (e.remote) status();
   }
   private schedule(e: Entry, delay: number): void {
-    if (this.stopped || e.needsRecovery) return;
+    if (this.stopped || e.needsRecovery || e.rejectedStatus) return;
     if (e.timer) clearTimeout(e.timer);
     if (!e.firstDirty) e.firstDirty = Date.now();
     e.timer = setTimeout(
@@ -732,6 +738,7 @@ export class DraftSyncClient {
       (this.started && !this.identified) ||
       this.transport.status.getSnapshot().state !== "ready" ||
       e.needsRecovery ||
+      e.rejectedStatus ||
       e.saved.submitted ||
       e.submissionTask
     )
@@ -752,8 +759,10 @@ export class DraftSyncClient {
       finishSync = resolve;
     });
     e.firstDirty = 0;
+    let readSucceeded = false;
     try {
       let read = await this.post<DraftRead>("read", { slot: e.address.slot });
+      readSucceeded = true;
       if (this.stopped || e.saved !== saved) return;
       if (e.error === "sync") e.error = undefined;
       if (saved.discard) {
@@ -775,7 +784,7 @@ export class DraftSyncClient {
             slot: e.address.slot,
             baseRevision: read.snapshot.revision,
             ticket: read.ticket,
-            operationId: crypto.randomUUID(),
+            operationId: generateUUID(),
             payload: EMPTY_DRAFT,
           };
           this.persist(e);
@@ -875,7 +884,7 @@ export class DraftSyncClient {
         slot: e.address.slot,
         baseRevision: read.snapshot.revision,
         ticket: read.ticket,
-        operationId: crypto.randomUUID(),
+        operationId: generateUUID(),
         payload: merged,
         recovery: !draftPayloadEqual(local, merged),
       };
@@ -902,8 +911,24 @@ export class DraftSyncClient {
       if (!draftPayloadEqual(payload(e.address, e.saved.raw), merged))
         this.schedule(e, 3000);
       status();
-    } catch {
+    } catch (error) {
       if (!this.stopped && e.saved === saved) {
+        const httpStatus =
+          error instanceof Error && "status" in error
+            ? error.status
+            : undefined;
+        if (
+          typeof httpStatus === "number" &&
+          [400, 403, 404, 413, 422].includes(httpStatus)
+        ) {
+          e.rejectedStatus = httpStatus;
+          // These responses reject the operation before accepting a revision.
+          if (readSucceeded && [400, 413, 422].includes(httpStatus)) {
+            saved.pending = undefined;
+            if (saved.discard) saved.discard.operation = undefined;
+            this.persist(e);
+          }
+        }
         if (e.error !== "local")
           e.error = draftHasContent(payload(e.address, saved.raw))
             ? "sync"
@@ -966,12 +991,14 @@ export class DraftSyncClient {
     }
   }
   retryEntry(e: Entry): void {
+    e.rejectedStatus = undefined;
     if (e.error === "local") this.retryLocal(e);
     else e.error = undefined;
     this.schedule(e, 0);
     status();
   }
   accept(e: Entry): void {
+    e.rejectedStatus = undefined;
     if (e.error === "local") this.retryLocal(e);
     if (e.needsRecovery) {
       if (e.saved.submitted)
@@ -1081,11 +1108,12 @@ export class DraftSyncClient {
     }
   }
   discard(e: Entry): void {
+    e.rejectedStatus = undefined;
     e.saved = {
       raw: e.saved.raw,
       base: e.saved.base,
       discard: {},
-      discardId: crypto.randomUUID(),
+      discardId: generateUUID(),
     };
     e.remote = undefined;
     e.needsRecovery = false;
@@ -1148,7 +1176,7 @@ export class DraftSyncClient {
         slot: e.address.slot,
         baseRevision: read.snapshot.revision,
         ticket: read.ticket,
-        operationId: crypto.randomUUID(),
+        operationId: generateUUID(),
         payload: submitted.payload,
       };
       e.saved.pending = operation;
@@ -1205,7 +1233,7 @@ export class DraftSyncClient {
         slot: e.address.slot,
         baseRevision: read.snapshot.revision,
         ticket: read.ticket,
-        operationId: crypto.randomUUID(),
+        operationId: generateUUID(),
       });
       if (this.stopped || e.saved !== saved) return;
       if (result.outcome === "accepted") e.saved.base = result.snapshot;
@@ -1511,6 +1539,7 @@ export const draftPayloadToStorage = encode;
 // left running would keep syncing the same drafts in this tab beside the new
 // one, with its own base and no storage events between them.
 import.meta.hot?.dispose(() => {
+  // Snapshot teardown owners: stop dispatches status events that can register clients.
   for (const client of [...clients.values()]) client.stop();
   uninstallForegroundClaim();
 });

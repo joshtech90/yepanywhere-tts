@@ -192,6 +192,13 @@ Successful visit/clear/remove mutations update the captured source. A browser
 recent-project shortcut is source-scoped as well; the same encoded path on two
 hosts is not one preference.
 
+A New Session URL already carries its requested project path. The form may
+display that path before project discovery finishes, without inventing a
+project record or session counts. An unchanged requested path remains a
+selection awaiting resolution, not a request to create a new folder. Start
+and Queue still require the resolved server project; an arriving canonical
+path replaces the requested path only when the user has not edited it.
+
 The implementation handoff is
 [`docs/tactical/095-new-session-recent-project-readiness.md`](../docs/tactical/095-new-session-recent-project-readiness.md).
 
@@ -297,6 +304,13 @@ for what the selected page needs to paint, `navigation` for shell counts and
 coverage retained across routes, `supplementary` for diagnostics, enrichment,
 and usage telemetry. A tier starts only once every earlier tier's registered
 work has settled.
+
+The project collection normally serves navigation, but New Session requests it
+in the route tier: both its project selector and its default project selection
+need that collection. A route consumer and the sidebar still share the same
+source/query request; priority does not create a second collection cache or
+fetch. An unrelated pending route request cannot hold this selector's request
+behind the navigation gate.
 
 These properties are load-bearing and easy to lose:
 

@@ -3,9 +3,16 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockGetProviders, mockGetProvider } = vi.hoisted(() => ({
-  mockGetProviders: vi.fn(),
-  mockGetProvider: vi.fn(),
+const { mockGetProviders, mockGetProvider, mockPrimeSettings } = vi.hoisted(
+  () => ({
+    mockGetProviders: vi.fn(),
+    mockGetProvider: vi.fn(),
+    mockPrimeSettings: vi.fn(),
+  }),
+);
+
+vi.mock("../useServerSettings", () => ({
+  primeLocalServerSettings: mockPrimeSettings,
 }));
 
 vi.mock("../../api/client", () => ({
@@ -35,6 +42,7 @@ describe("useProviders", () => {
   beforeEach(async () => {
     mockGetProviders.mockReset();
     mockGetProvider.mockReset();
+    mockPrimeSettings.mockReset();
     localStorage.clear();
     vi.resetModules();
     providersModule = await import("../useProviders");
@@ -43,6 +51,71 @@ describe("useProviders", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it.each([false, true])(
+    "shares an early selected-provider read (resolved=%s)",
+    async (resolved) => {
+      const settings = deferred<{
+        newSessionDefaults: { provider: "claude" };
+      }>();
+      const response = deferred<{
+        provider: {
+          name: "claude";
+          displayName: string;
+          installed: boolean;
+          authenticated: boolean;
+        };
+      }>();
+      const row = {
+        name: "claude" as const,
+        displayName: "Claude",
+        installed: true,
+        authenticated: true,
+      };
+      mockPrimeSettings.mockReturnValue(settings.promise);
+      mockGetProvider.mockReturnValue(response.promise);
+      const priming = providersModule.primeLocalNewSessionProvider(null);
+      expect(mockGetProvider).not.toHaveBeenCalled();
+      settings.resolve({ newSessionDefaults: { provider: "claude" } });
+      await waitFor(() =>
+        expect(mockGetProvider).toHaveBeenCalledExactlyOnceWith("claude", {
+          refresh: false,
+        }),
+      );
+      if (resolved) {
+        response.resolve({ provider: row });
+        await priming;
+      }
+      const hook = renderHook(() => providersModule.useProviderRow("claude"));
+      await act(async () => {
+        response.resolve({ provider: row });
+        await priming;
+      });
+      await waitFor(() => expect(hook.result.current.row).toEqual(row));
+      expect(mockGetProvider).toHaveBeenCalledTimes(1);
+      expect(mockGetProviders).not.toHaveBeenCalled();
+    },
+  );
+
+  it("primes an explicit URL provider before the saved default", async () => {
+    mockPrimeSettings.mockResolvedValue({
+      newSessionDefaults: { provider: "claude" },
+    });
+    mockGetProvider.mockResolvedValue({ provider: { name: "codex" } });
+    await providersModule.primeLocalNewSessionProvider("codex");
+    expect(mockGetProvider).toHaveBeenCalledExactlyOnceWith("codex", {
+      refresh: false,
+    });
+    expect(mockGetProviders).not.toHaveBeenCalled();
+  });
+
+  it("does not start provider discovery when the settings read fails", async () => {
+    mockPrimeSettings.mockRejectedValue(new Error("signed out"));
+    await expect(
+      providersModule.primeLocalNewSessionProvider("claude"),
+    ).rejects.toThrow("signed out");
+    expect(mockGetProvider).not.toHaveBeenCalled();
   });
 
   it("primes the provider catalog before a new-session consumer mounts", async () => {
@@ -284,6 +357,14 @@ describe("useProviders", () => {
     });
     unmount();
 
+    // An old display remains useful; it never substitutes for current server data.
+    for (const key of Object.keys(localStorage).filter((key) =>
+      key.startsWith("ya:providers:"),
+    )) {
+      const snapshot = JSON.parse(localStorage.getItem(key)!);
+      snapshot.savedAt = 0;
+      localStorage.setItem(key, JSON.stringify(snapshot));
+    }
     // A later visit: the module cache is gone, the browser snapshot is not.
     vi.resetModules();
     const reloadedModule = await import("../useProviders");
@@ -413,6 +494,51 @@ describe("useProviders", () => {
     expect(localStorage.getItem(storageKey)).toBeNull();
   });
 
+  it("restores a named row in a sibling tab before the aggregate completes", async () => {
+    const provider = {
+      name: "claude" as const,
+      displayName: "Claude",
+      installed: true,
+      authenticated: true,
+      models: [{ id: "sonnet", name: "Sonnet" }],
+      user: { email: "private@example.com" },
+      loginCommand: "secret-login",
+    };
+    mockGetProviders.mockReturnValue(new Promise(() => {}));
+    mockGetProvider.mockResolvedValueOnce({ provider });
+    const catalog = renderHook(() => providersModule.useProviders());
+    const first = renderHook(() => providersModule.useProviderRow("claude"));
+    await waitFor(() => expect(first.result.current.fresh).toBe(true));
+    expect(catalog.result.current.loading).toBe(true);
+    first.unmount();
+    catalog.unmount();
+
+    for (const key of Object.keys(localStorage).filter((key) =>
+      key.startsWith("ya:provider-row:"),
+    )) {
+      const snapshot = JSON.parse(localStorage.getItem(key)!);
+      snapshot.savedAt = 0;
+      localStorage.setItem(key, JSON.stringify(snapshot));
+    }
+    vi.resetModules();
+    const siblingModule = await import("../useProviders");
+    const pending = deferred<{ provider: typeof provider }>();
+    mockGetProvider.mockReturnValueOnce(pending.promise);
+    const sibling = renderHook(() => siblingModule.useProviderRow("claude"));
+    expect(sibling.result.current.row?.models).toEqual(provider.models);
+    expect(sibling.result.current.row).not.toHaveProperty("user");
+    expect(sibling.result.current.row).not.toHaveProperty("loginCommand");
+    expect(sibling.result.current.fresh).toBe(false);
+    expect(sibling.result.current.refreshing).toBe(true);
+    await waitFor(() => expect(mockGetProvider).toHaveBeenCalledTimes(2));
+    await act(async () => pending.reject(new Error("offline")));
+    expect(sibling.result.current.row?.models).toEqual(provider.models);
+    expect(sibling.result.current.fresh).toBe(false);
+    expect(sibling.result.current.error?.message).toBe("offline");
+    const siblingCatalog = renderHook(() => siblingModule.useProviders());
+    expect(siblingCatalog.result.current.providers).toEqual([]);
+  });
+
   it("resolves the selected provider without waiting for the aggregate", async () => {
     mockGetProviders.mockReturnValueOnce(new Promise(() => {}));
     mockGetProvider.mockResolvedValueOnce({
@@ -437,6 +563,38 @@ describe("useProviders", () => {
     expect(result.current.fresh).toBe(true);
     expect(mockGetProvider).toHaveBeenCalledWith("codex", { refresh: false });
   });
+
+  it.each([
+    ["invalid timestamp", "local", "claude", null],
+    ["other source", "host:other", "claude", Date.now()],
+    ["other provider", "local", "codex", Date.now()],
+  ])(
+    "ignores a named display from %s",
+    async (_label, source, name, savedAt) => {
+      localStorage.setItem(
+        `ya:provider-row:${JSON.stringify([source, name])}`,
+        JSON.stringify({
+          version: 1,
+          savedAt,
+          providers: [
+            {
+              name,
+              displayName: "Saved",
+              installed: true,
+              authenticated: true,
+            },
+          ],
+        }),
+      );
+      mockGetProvider.mockReturnValue(new Promise(() => {}));
+      const selected = renderHook(() =>
+        providersModule.useProviderRow("claude"),
+      );
+      await waitFor(() => expect(mockGetProvider).toHaveBeenCalledTimes(1));
+      expect(selected.result.current.row).toBeNull();
+      expect(selected.result.current.fresh).toBe(false);
+    },
+  );
 
   it("keeps a Gateway display row non-authoritative until its forced named probe succeeds", async () => {
     const aggregateRow = {
@@ -622,6 +780,14 @@ describe("useProviders", () => {
     expect(selected.result.current.row?.models?.[0]?.id).toBe("aggregate-new");
     expect(selected.result.current.fresh).toBe(true);
     expect(mockGetProvider).toHaveBeenCalledTimes(1);
+    cleanup();
+    vi.resetModules();
+    const siblingModule = await import("../useProviders");
+    mockGetProvider.mockReturnValue(new Promise(() => {}));
+    const sibling = renderHook(() => siblingModule.useProviderRow("claude"));
+    await waitFor(() => expect(mockGetProvider).toHaveBeenCalledTimes(2));
+    expect(sibling.result.current.row?.models?.[0]?.id).toBe("aggregate-new");
+    expect(sibling.result.current.fresh).toBe(false);
   });
 
   it("revalidates mounted Gateway authority after a newer aggregate row", async () => {
@@ -724,6 +890,14 @@ describe("useProviders", () => {
 
     expect(selected.result.current.row?.models?.[0]?.id).toBe("named-new");
     expect(selected.result.current.fresh).toBe(true);
+    cleanup();
+    vi.resetModules();
+    const siblingModule = await import("../useProviders");
+    mockGetProvider.mockReturnValue(new Promise(() => {}));
+    const sibling = renderHook(() => siblingModule.useProviderRow("claude"));
+    await waitFor(() => expect(mockGetProvider).toHaveBeenCalledTimes(2));
+    expect(sibling.result.current.row?.models?.[0]?.id).toBe("named-new");
+    expect(sibling.result.current.fresh).toBe(false);
   });
 
   it("keeps a forced named response newer than an older ordinary response", async () => {

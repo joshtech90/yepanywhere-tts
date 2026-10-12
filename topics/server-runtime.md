@@ -23,10 +23,9 @@ Node uses `node:sqlite`; Bun uses `bun:sqlite`. The core adds no native SQLite
 package, installer, compiler requirement or sidecar. The Node experimental
 SQLite warning remains visible: it is an accepted upstream runtime diagnostic,
 not a reason to suppress warnings globally. Runtime eligibility does not imply
-that SQLite successfully opened. SQLite initializes automatically unless
-explicitly disabled with `YEP_SQLITE=off`; feature enablement remains separate.
-`YEP_SQLITE` follows its
-[optional storage policy](optional-sqlite.md); no JSON data migrates here.
+that SQLite successfully opened. SQLite is required: a server that cannot open
+it does not start, under the [storage startup policy](optional-sqlite.md#startup-policy).
+Feature enablement remains separate.
 
 Desktop uses its exact hash-pinned private Bun from `runtime-versions.json`.
 Updating Node or a user-installed Bun does not update Desktop's runtime.

@@ -19,9 +19,9 @@ import {
   useRemoteConnection,
 } from "../contexts/RemoteConnectionContext";
 import {
-  clearHostSession,
   getHostById,
   getHostByRelayUsername,
+  hostForScope,
 } from "../lib/hostStorage";
 import { ConnectedAppContent } from "../RemoteApp";
 import { useI18n } from "../i18n";
@@ -78,6 +78,7 @@ export function RelayConnectionGate() {
     setCurrentHostId,
     currentHostId,
     currentRelayUsername,
+    activeAuthenticationScope,
     isIntentionalDisconnect,
     disconnect,
   } = useRemoteConnection();
@@ -94,18 +95,33 @@ export function RelayConnectionGate() {
     () => `${location.pathname}${location.search}${location.hash}`,
     [location.hash, location.pathname, location.search],
   );
+  const getRouteHost = useCallback(
+    (username: string) => {
+      return activeAuthenticationScope?.mode === "relay" &&
+        activeAuthenticationScope.relayUsername === username
+        ? hostForScope(activeAuthenticationScope)
+        : getHostByRelayUsername(username);
+    },
+    [activeAuthenticationScope],
+  );
   const relayLoginTarget = useMemo(() => {
     const params = new URLSearchParams();
     if (relayUsername) {
       params.set("u", relayUsername);
     }
-    const host = relayUsername ? getHostByRelayUsername(relayUsername) : null;
-    if (host?.relayUrl) {
-      params.set("r", host.relayUrl);
-    }
+    const scope =
+      activeAuthenticationScope?.mode === "relay" &&
+      activeAuthenticationScope.relayUsername === relayUsername
+        ? activeAuthenticationScope
+        : undefined;
+    const host = relayUsername ? getRouteHost(relayUsername) : null;
+    const relayUrl = scope?.endpoint ?? host?.relayUrl;
+    if (relayUrl) params.set("r", relayUrl);
+    if (scope && scope.identity !== relayUsername)
+      params.set("as", scope.identity);
     params.set("returnTo", returnTo);
     return `/login/relay?${params.toString()}`;
-  }, [relayUsername, returnTo]);
+  }, [relayUsername, returnTo, activeAuthenticationScope, getRouteHost]);
   const routeRelayUsernameRef = useRef(relayUsername);
   routeRelayUsernameRef.current = relayUsername;
   const connectionAttemptRef = useRef(0);
@@ -169,9 +185,6 @@ export function RelayConnectionGate() {
             host.relayUsername ?? targetRelayUsername,
             host.relayUrl,
           );
-          if (requiresResumeLogin(autoResumeError.reason)) {
-            clearHostSession(host.id);
-          }
           setError(autoResumeError);
           setState("error");
         });
@@ -210,7 +223,7 @@ export function RelayConnectionGate() {
       // If currentHostId is not set (e.g., after auto-resume from old storage),
       // try to find the host by relay username and set it
       if (!currentHostId) {
-        const hostByUsername = getHostByRelayUsername(relayUsername);
+        const hostByUsername = getRouteHost(relayUsername);
         if (hostByUsername) {
           console.log(
             `[RelayConnectionGate] Connection without hostId, setting to "${hostByUsername.id}" for "${relayUsername}"`,
@@ -256,14 +269,18 @@ export function RelayConnectionGate() {
       return;
     }
 
-    if (autoResumeError && currentRelayUsername === relayUsername) {
+    if (
+      autoResumeError &&
+      autoResumeError.mode === "relay" &&
+      autoResumeError.relayUsername === relayUsername
+    ) {
       setError(autoResumeError);
       setState("error");
       return;
     }
 
     // Look up saved host by relay username
-    const host = getHostByRelayUsername(relayUsername);
+    const host = getRouteHost(relayUsername);
     console.log(
       `[RelayConnectionGate] Looking up host for "${relayUsername}":`,
       host
@@ -303,11 +320,12 @@ export function RelayConnectionGate() {
     disconnect,
     startRelayConnection,
     setCurrentHostId,
+    getRouteHost,
   ]);
 
   const retryConnection = () => {
     const targetRelayUsername = relayUsername ?? "";
-    const host = getHostByRelayUsername(targetRelayUsername);
+    const host = getRouteHost(targetRelayUsername);
     if (host) {
       startRelayConnection(host, targetRelayUsername, true);
     } else {

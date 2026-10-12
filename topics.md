@@ -448,3 +448,7 @@
 - relay-artifact-frame - Scripted HTML artifacts over the encrypted relay through a same-site service-worker content origin.
 
 - unicode-prose-math - Legible Unicode scripts and opt-in typesetting of math written without $ delimiters.
+
+- new-session-tab-boot-latency - Full new-session controls within 500 ms, with current cached state and correct draft restoration.
+
+- ya-owned-session-ids - Required SQLite session metadata, then YA-minted session ids so per-session facts exist before any provider call (plan 150).

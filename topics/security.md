@@ -244,6 +244,26 @@ browser holding the owner's desktop session was the owner again even while a
 limited user was signed in there. Deleting `auth.json` is the deliberate
 reset.
 
+### Diagnostic SRP credential retention
+
+The default-off Development option **Retain rejected SRP sessions for debugging**
+extends the lifetime of locally stored authentication material after received
+refusal or known protocol incompatibility. The retained base key may still be
+valid: a plaintext refusal does not prove permanent invalidity. Retention is
+bounded to 72 hours from first quarantine, one per exact endpoint/mode/server
+name/identity, eight total, and requires Web Locks. Expiry is pruned when the
+origin runs, not a promise of secure timed erasure while closed. Explicit logout,
+host removal, opt-out and debugger forgetting erase it; fresh login may coexist.
+
+The separate archive is never an automatic resume source or a portable backup.
+The opted-in console helper returns metadata and bounded outcomes, never keys,
+and probes with normal server-proof verification and protocol pinning. This adds
+no permissions or authentication bypass. Same-origin script access to stored
+keys is the existing storage risk extended in time. The [SourceTransport contract](source-transport.md#optional-rejected-session-diagnosis)
+owns the storage and probe lifecycle; the [debugging runbook](../docs/development/debugging.md#rejected-srp-resume-credentials)
+owns operation. Server refusal reasons remain local and structured; public
+responses do not disclose validity details.
+
 ### Authentication audit
 
 Every login, logout, password setup or change, authentication enable or

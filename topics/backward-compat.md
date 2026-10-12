@@ -7,6 +7,26 @@ Topic: backward-compat
 
 ## Decisions
 
+2026-10-11 required SQLite and `session-metadata.json` — session metadata moves
+into `discovery.sqlite` (migration 10), imported once from the JSON file, which
+is then left on disk unread and unwritten. Downgrading is not supported: an
+older build reads only the JSON file and would see metadata as of the upgrade.
+SQLite is now required, and a server that cannot open it, including one whose
+data directory is on a network filesystem, exits instead of degrading.
+`YEP_SQLITE` is removed with no alias; the server and desktop launcher ignore
+it. `GET /api/version` keeps its `sqlite` field, now always `ready`. Clients
+keep their `disabled`, `unsupported`, `error` and `networkFilesystem` handling
+for older servers within the compatibility horizon. See
+[built-in SQLite storage](optional-sqlite.md#session-metadata) and
+[plan 150](../docs/tactical/150-ya-owned-session-ids.md).
+
+2026-10-10 Codex async-delivery tool-use message UUIDs — qualify with
+`-tool-call` in live and durable normalization because Codex reuses the call ID
+for a distinct displayed agent message. Preserve the displayed message ID,
+stored question state, tool block IDs and result references. Existing clients
+already merge opaque UUIDs; no new wire field or capability is required.
+Previously loaded colliding snapshots require a fresh transcript load.
+
 2026-09-27 `yep-sidebar-interactions:*` — replaced by
 `yep-sidebar-submissions:*`; the old key is removed, not migrated. It mixed
 session visits with sends, and the two cannot be told apart, so carrying it

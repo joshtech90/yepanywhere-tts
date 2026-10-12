@@ -1,5 +1,5 @@
+import type { Dirent } from "node:fs";
 import {
-  access,
   mkdir,
   readFile,
   readdir,
@@ -9,7 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import {
   DEFAULT_PROVIDER,
   isClaudeProviderName,
@@ -105,6 +105,12 @@ interface ProjectSnapshot {
   timestamp: number;
 }
 
+interface ClaudeProjectDirectory {
+  projectPath: string;
+  sessionCount: number;
+  lastActivity: string | null;
+}
+
 function cloneSessionCountsByProvider(
   counts: Project["sessionCountsByProvider"],
 ): Project["sessionCountsByProvider"] {
@@ -164,6 +170,11 @@ export class ProjectScanner {
   private cacheRevision = 0;
   private cleanRevision = 0;
   private snapshot: ProjectSnapshot | null = null;
+  private claudeDirectories: Map<string, ClaudeProjectDirectory> | null = null;
+  private changedClaudeDirectories = new Set<string>();
+  private claudeDiscoveryEpoch = 0;
+  private claudeDiscovery: Promise<Map<string, ClaudeProjectDirectory>> | null =
+    null;
   private inFlightScan: {
     promise: Promise<ProjectSnapshot>;
     revision: number;
@@ -173,6 +184,13 @@ export class ProjectScanner {
     revision: number;
   } | null = null;
   private snapshotSavePromise: Promise<void> | null = null;
+  private retainedInitialization: Promise<void> | null = null;
+  private retainedRefresh: Promise<void> | null = null;
+  private retainedTimer: ReturnType<typeof setTimeout> | null = null;
+  private retainedNeedsRefresh = true;
+  private retainedRetryAfter = 0;
+  private retainedRefreshError: string | undefined;
+  private eventBus: EventBus | undefined;
   private unsubscribeEventBus: (() => void) | null = null;
   private disposed = false;
 
@@ -202,6 +220,7 @@ export class ProjectScanner {
     this.cacheTtlMs = Math.max(0, options.cacheTtlMs ?? 5000);
     this.projectScanCachePath = options.projectScanCachePath ?? null;
     this.getSandboxSessionDirs = options.getSandboxSessionDirs ?? null;
+    this.eventBus = options.eventBus;
 
     if (options.eventBus) {
       this.unsubscribeEventBus = options.eventBus.subscribe((event) => {
@@ -241,11 +260,170 @@ export class ProjectScanner {
     );
   }
 
+  /** Retained project reads never wait for provider discovery or sandbox counts. */
+  async readRetainedProjects(): Promise<{
+    projects: Project[];
+    complete: boolean;
+    refreshing: boolean;
+    refreshError?: string;
+  }> {
+    await this.initializeRetainedProjects();
+    if (this.disposed) throw new Error("Project scanner is disposed");
+    this.scheduleRetainedRefresh();
+    const sandboxDirs = this.sandboxSessionDirs();
+    const projects = new Map(
+      (this.snapshot?.projects ?? []).map((project) => [
+        getProjectIdentityKey(project.path),
+        this.cloneProject(project, sandboxDirs),
+      ]),
+    );
+    for (const project of projects.values()) delete project.ownerUsername;
+    for (const metadata of Object.values(
+      this.projectMetadataService?.getAllProjects() ?? {},
+    )) {
+      const path = canonicalizeProjectPath(metadata.path);
+      const identity = getProjectIdentityKey(path);
+      // Once discovery has run, registration cannot resurrect an absent directory.
+      if (this.snapshot && !projects.has(identity)) continue;
+      const project =
+        projects.get(identity) ??
+        this.registeredProject(path, metadata.addedAt);
+      project.ownerUsername = metadata.ownerUsername;
+      project.name = this.displayName(project);
+      projects.set(identity, project);
+    }
+    return {
+      projects: [...projects.values()].filter(
+        (project) => !this.isHiddenProjectPath(project.path),
+      ),
+      complete: this.snapshot !== null,
+      refreshing: Boolean(this.retainedRefresh || this.retainedTimer),
+      ...(this.retainedRefreshError
+        ? { refreshError: this.retainedRefreshError }
+        : {}),
+    };
+  }
+
+  private registeredProject(path: string, addedAt: string): Project {
+    return {
+      id: encodeProjectId(path),
+      path,
+      name: getProjectName(path),
+      sessionCount: 0,
+      sessionCountsByProvider: { claude: 0 },
+      sessionDir: join(this.projectsDir, path.replace(/[/\\:]/g, "-")),
+      hasCodexSessions: false,
+      hasGeminiSessions: false,
+      activeOwnedCount: 0,
+      activeExternalCount: 0,
+      lastActivity: addedAt,
+      provider: "claude",
+    };
+  }
+
+  /** Resolve retained directory identity without scanning any provider store. */
+  getRetainedProjectBySessionDirSuffix(dirSuffix: string): Project | null {
+    const project = this.snapshot?.bySessionDirSuffix.get(
+      this.normalizeDirSuffix(dirSuffix),
+    );
+    return project && !this.isHiddenProjectPath(project.path)
+      ? this.cloneProject(project)
+      : null;
+  }
+
+  private initializeRetainedProjects(): Promise<void> {
+    this.retainedInitialization ??= Promise.resolve().then(async () => {
+      if (this.disposed) throw new Error("Project scanner is disposed");
+      if (this.snapshot) return;
+      const snapshot = await this.loadSnapshotFromDisk(Date.now(), true);
+      // A complete read may have published while the saved snapshot was read.
+      if (!this.disposed && !this.snapshot && snapshot) {
+        this.snapshot = snapshot;
+        // Retention is display evidence, never a fresh complete-read cache hit.
+        this.cleanRevision = -1;
+      }
+    });
+    return this.retainedInitialization;
+  }
+
+  private scheduleRetainedRefresh(): void {
+    if (
+      !this.retainedInitialization ||
+      this.disposed ||
+      this.retainedRefresh ||
+      this.retainedTimer ||
+      Date.now() < this.retainedRetryAfter ||
+      (!this.retainedNeedsRefresh && this.cleanRevision === this.cacheRevision)
+    )
+      return;
+    this.retainedTimer = setTimeout(
+      () => {
+        this.retainedTimer = null;
+        void this.refreshRetainedProjects();
+      },
+      this.snapshot ? 300 : 0,
+    );
+    this.retainedTimer.unref?.();
+  }
+
+  /** One finite refresh owns retained project discovery and its notification. */
+  refreshRetainedProjects(): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    if (this.retainedRefresh) return this.retainedRefresh;
+    if (this.retainedTimer) clearTimeout(this.retainedTimer);
+    this.retainedTimer = null;
+    this.retainedNeedsRefresh = false;
+    this.retainedRefreshError = undefined;
+    const previousIds =
+      this.snapshot?.projects.map((project) => project.id) ?? [];
+    this.retainedRefresh = this.initializeRetainedProjects()
+      .then(() => this.getSnapshot(true))
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        if (this.disposed) return;
+        this.retainedNeedsRefresh = true;
+        this.retainedRetryAfter = Date.now() + 5_000;
+        this.retainedRefreshError =
+          error instanceof Error ? error.message : String(error);
+      })
+      .finally(() => {
+        this.retainedRefresh = null;
+        if (this.disposed) return;
+        this.eventBus?.emit({
+          type: "projects-changed",
+          collectionRefresh: true,
+          projectIds: [
+            ...new Set([
+              ...previousIds,
+              ...(this.snapshot?.projects.map((project) => project.id) ?? []),
+            ]),
+          ],
+          timestamp: new Date().toISOString(),
+        });
+        this.scheduleRetainedRefresh();
+      });
+    return this.retainedRefresh;
+  }
+
   /**
    * Mark the project snapshot stale so next read triggers a rescan.
    */
   invalidateCache(): void {
+    this.resetClaudeDiscovery();
+    this.codexScanner?.invalidateCache();
+    this.geminiScanner?.invalidateCache();
+    this.invalidateProjectSnapshot();
+  }
+
+  private resetClaudeDiscovery(): void {
+    this.claudeDiscoveryEpoch += 1;
+    this.claudeDirectories = null;
+    this.changedClaudeDirectories.clear();
+  }
+
+  private invalidateProjectSnapshot(): void {
     this.cacheRevision += 1;
+    this.scheduleRetainedRefresh();
   }
 
   private async getSnapshot(forceRefresh = false): Promise<ProjectSnapshot> {
@@ -271,7 +449,7 @@ export class ProjectScanner {
       scanRevision,
     )
       .then(({ snapshot, shouldPersist }) => {
-        if (this.cacheRevision === scanRevision) {
+        if (!this.disposed && this.cacheRevision === scanRevision) {
           this.snapshot = snapshot;
           this.cleanRevision = scanRevision;
           if (shouldPersist) {
@@ -302,7 +480,9 @@ export class ProjectScanner {
       }
     }
 
-    const projects = await this.scanProjects();
+    const reuseUnchangedProviders = this.cleanRevision !== scanRevision;
+    if (!reuseUnchangedProviders) this.resetClaudeDiscovery();
+    const projects = await this.scanProjects(reuseUnchangedProviders);
     const snapshot = this.buildSnapshot(projects);
     return { snapshot, shouldPersist: true };
   }
@@ -347,6 +527,7 @@ export class ProjectScanner {
 
   private async loadSnapshotFromDisk(
     now: number,
+    allowStale = false,
   ): Promise<ProjectSnapshot | null> {
     if (!this.projectScanCachePath) return null;
 
@@ -357,15 +538,32 @@ export class ProjectScanner {
         return null;
       }
 
-      if (now - parsed.generatedAt > this.cacheTtlMs) {
+      if (!allowStale && now - parsed.generatedAt > this.cacheTtlMs) {
         return null;
       }
 
-      const currentSourceState = await this.getSourceState();
-      if (
-        !this.areSourceStatesCompatible(currentSourceState, parsed.sourceState)
-      ) {
-        return null;
+      if (allowStale) {
+        const source = parsed.sourceState;
+        if (
+          source.projectsDir !== this.projectsDir ||
+          source.codexSessionsDir !== this.codexSessionsDir ||
+          source.geminiSessionsDir !== this.geminiSessionsDir ||
+          source.projectMetadataFilePath !== this.projectMetadataFilePath ||
+          source.workstreamFilePath !== this.workstreamFilePath ||
+          source.enableCodex !== this.enableCodex ||
+          source.enableGemini !== this.enableGemini
+        )
+          return null;
+      } else {
+        const currentSourceState = await this.getSourceState();
+        if (
+          !this.areSourceStatesCompatible(
+            currentSourceState,
+            parsed.sourceState,
+          )
+        ) {
+          return null;
+        }
       }
 
       if (parsed.projects.length === 0) {
@@ -762,12 +960,23 @@ export class ProjectScanner {
       return;
     }
 
-    // Any session file delta can affect project existence/count/lastActivity.
-    this.invalidateCache();
+    if (event.provider === "claude") {
+      const parts = relative(this.projectsDir, event.path).split(sep);
+      const first = parts[0] ?? "";
+      const depth = first.startsWith("-") || /^[a-zA-Z]--/.test(first) ? 1 : 2;
+      if (first === ".." || parts.length <= depth) {
+        this.resetClaudeDiscovery();
+      } else {
+        this.changedClaudeDirectories.add(
+          join(this.projectsDir, ...parts.slice(0, depth)),
+        );
+      }
+    }
+    this.invalidateProjectSnapshot();
     if (event.provider === "codex") {
-      this.codexScanner?.invalidateCache();
+      this.codexScanner?.invalidateCache(event.path);
     } else if (event.provider === "gemini") {
-      this.geminiScanner?.invalidateCache();
+      this.geminiScanner?.invalidateCache(event.path);
     }
   }
 
@@ -781,7 +990,9 @@ export class ProjectScanner {
     }
   }
 
-  private async scanProjects(): Promise<Project[]> {
+  private async scanProjects(
+    reuseUnchangedProviders = false,
+  ): Promise<Project[]> {
     const projects: Project[] = [];
     const seenPaths = new Set<string>();
     const seenIdentityKeys = new Set<string>();
@@ -794,19 +1005,6 @@ export class ProjectScanner {
           getProjectIdentityKey(project.path) ===
           getProjectIdentityKey(projectPath),
       );
-
-    // ~/.claude/projects/ can have two structures:
-    // 1. Projects directly as -home-user-project/
-    // 2. Projects under hostname/ as hostname/-home-user-project/
-    let dirs: string[] = [];
-    try {
-      await access(this.projectsDir);
-      const entries = await readdir(this.projectsDir, { withFileTypes: true });
-      dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-    } catch {
-      // Directory doesn't exist or unreadable — skip Claude project scanning
-      // but continue to Codex/Gemini/metadata merge below
-    }
 
     // Helper to add a Claude project, merging cross-machine duplicates
     const addOrMerge = (
@@ -893,71 +1091,24 @@ export class ProjectScanner {
       }
     };
 
-    for (const dir of dirs) {
-      const dirPath = join(this.projectsDir, dir);
+    // Acquire independent inputs together, but drain both before releasing a
+    // failed refresh and preserve Claude-first merge precedence below.
+    const [claudeResult, codexResult] = await Promise.allSettled([
+      this.readClaudeDirectories(),
+      this.codexScanner?.listProjects({
+        allowStaleSnapshot: reuseUnchangedProviders,
+      }) ?? Promise.resolve([]),
+    ]);
+    if (claudeResult.status === "rejected") throw claudeResult.reason;
+    if (codexResult.status === "rejected") throw codexResult.reason;
 
-      // Check if this is a project directory
-      // On Unix/macOS: /home/user/project → -home-user-project (starts with -)
-      // On Windows: C:\Users\kaa\project → c--Users-kaa-project (drive letter + --)
-      if (dir.startsWith("-") || /^[a-zA-Z]--/.test(dir)) {
-        const info = await this.getProjectDirInfo(dirPath);
-        if (info) {
-          addOrMerge(
-            info.projectPath,
-            dirPath,
-            info.sessionCount,
-            info.lastActivity,
-          );
-        }
-        continue;
-      }
-
-      // Otherwise, treat as hostname directory
-      // Format: ~/.claude/projects/hostname/-project-path/
-      let projectDirNames: string[];
-      try {
-        const subEntries = await readdir(dirPath, { withFileTypes: true });
-        projectDirNames = subEntries
-          .filter((e) => e.isDirectory())
-          .map((e) => e.name);
-      } catch {
-        continue;
-      }
-
-      const projectDirPaths = projectDirNames.map((projectDir) =>
-        join(dirPath, projectDir),
-      );
-      for (
-        let i = 0;
-        i < projectDirPaths.length;
-        i += CLAUDE_PROJECT_SCAN_BATCH_SIZE
-      ) {
-        const batch = projectDirPaths.slice(
-          i,
-          i + CLAUDE_PROJECT_SCAN_BATCH_SIZE,
-        );
-        const batchInfos = await Promise.all(
-          batch.map((projectDirPath) => this.getProjectDirInfo(projectDirPath)),
-        );
-
-        for (let j = 0; j < batchInfos.length; j++) {
-          const info = batchInfos[j];
-          if (!info) continue;
-
-          addOrMerge(
-            info.projectPath,
-            batch[j] ?? "",
-            info.sessionCount,
-            info.lastActivity,
-          );
-        }
-      }
+    for (const [dir, info] of claudeResult.value) {
+      addOrMerge(info.projectPath, dir, info.sessionCount, info.lastActivity);
     }
 
     // Merge Codex projects if enabled
     if (this.codexScanner) {
-      const codexProjects = await this.codexScanner.listProjects();
-      for (const codexProject of codexProjects) {
+      for (const codexProject of codexResult.value) {
         const projectPath = canonicalizeProjectPath(
           this.resolveProjectPathForKnownWorkstream(codexProject.path),
         );
@@ -996,7 +1147,9 @@ export class ProjectScanner {
       // Register known paths for hash resolution before scanning
       await this.geminiScanner.registerKnownPaths(Array.from(seenPaths));
 
-      const geminiProjects = await this.geminiScanner.listProjects();
+      const geminiProjects = await this.geminiScanner.listProjects({
+        allowStaleSnapshot: reuseUnchangedProviders,
+      });
       for (const geminiProject of geminiProjects) {
         const projectPath = canonicalizeProjectPath(
           this.resolveProjectPathForKnownWorkstream(geminiProject.path),
@@ -1051,21 +1204,7 @@ export class ProjectScanner {
 
         seenPaths.add(projectPath);
         seenIdentityKeys.add(getProjectIdentityKey(projectPath));
-        const encodedPath = projectPath.replace(/[/\\:]/g, "-");
-        projects.push({
-          id: encodeProjectId(projectPath),
-          path: projectPath,
-          name: getProjectName(projectPath),
-          sessionCount: 0,
-          sessionCountsByProvider: { claude: 0 },
-          sessionDir: join(this.projectsDir, encodedPath),
-          hasCodexSessions: false,
-          hasGeminiSessions: false,
-          activeOwnedCount: 0,
-          activeExternalCount: 0,
-          lastActivity: metadata.addedAt,
-          provider: "claude",
-        });
+        projects.push(this.registeredProject(projectPath, metadata.addedAt));
       }
     }
 
@@ -1265,22 +1404,108 @@ export class ProjectScanner {
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    if (this.retainedTimer) clearTimeout(this.retainedTimer);
+    this.retainedTimer = null;
     this.unsubscribeEventBus?.();
     this.unsubscribeEventBus = null;
+    await this.retainedRefresh;
+    await Promise.allSettled([
+      this.inFlightScan?.promise,
+      this.claudeDiscovery,
+    ]);
+    this.claudeDirectories = null;
+    this.changedClaudeDirectories.clear();
     this.pendingSnapshotSave = null;
     await this.snapshotSavePromise;
   }
 
-  /**
-   * Get project info from a session directory in a single readdir pass.
-   * Uses directory mtime as a cheap proxy for lastActivity (one stat
-   * on the dir itself instead of stat-ing every session file).
-   */
-  private async getProjectDirInfo(projectDirPath: string): Promise<{
-    projectPath: string;
-    sessionCount: number;
-    lastActivity: string | null;
-  } | null> {
+  /** Reconcile changed Claude directories without rereading unrelated projects. */
+  private async readClaudeDirectories(): Promise<
+    Map<string, ClaudeProjectDirectory>
+  > {
+    if (this.disposed) throw new Error("Project scanner is disposed");
+    if (this.claudeDiscovery) {
+      await this.claudeDiscovery;
+      return this.readClaudeDirectories();
+    }
+    if (this.claudeDirectories && this.changedClaudeDirectories.size === 0) {
+      return this.claudeDirectories;
+    }
+    const epoch = this.claudeDiscoveryEpoch;
+    const accepted = this.claudeDirectories;
+    const changed = [...this.changedClaudeDirectories];
+    this.changedClaudeDirectories.clear();
+    const work = (async () => {
+      const next = new Map(accepted);
+      const directories = accepted
+        ? changed
+        : await this.listClaudeDirectories();
+      for (
+        let i = 0;
+        i < directories.length;
+        i += CLAUDE_PROJECT_SCAN_BATCH_SIZE
+      ) {
+        const batch = directories.slice(i, i + CLAUDE_PROJECT_SCAN_BATCH_SIZE);
+        const rows = await Promise.all(
+          batch.map(async (dir) => ({
+            dir,
+            info: await this.getProjectDirInfo(dir),
+          })),
+        );
+        for (const { dir, info } of rows) {
+          if (info) next.set(dir, info);
+          else next.delete(dir);
+        }
+      }
+      if (!this.disposed && this.claudeDiscoveryEpoch === epoch) {
+        this.claudeDirectories = next;
+      }
+      return next;
+    })();
+    this.claudeDiscovery = work;
+    try {
+      return await work;
+    } catch (error) {
+      if (this.claudeDiscoveryEpoch === epoch) {
+        for (const dir of changed) this.changedClaudeDirectories.add(dir);
+      }
+      throw error;
+    } finally {
+      if (this.claudeDiscovery === work) this.claudeDiscovery = null;
+    }
+  }
+
+  private async listClaudeDirectories(): Promise<string[]> {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(this.projectsDir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const directories: string[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = join(this.projectsDir, entry.name);
+      if (entry.name.startsWith("-") || /^[a-zA-Z]--/.test(entry.name)) {
+        directories.push(dir);
+      } else {
+        try {
+          const children = await readdir(dir, { withFileTypes: true });
+          for (const child of children) {
+            if (child.isDirectory()) directories.push(join(dir, child.name));
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    }
+    return directories;
+  }
+
+  private async getProjectDirInfo(
+    projectDirPath: string,
+  ): Promise<ClaudeProjectDirectory | null> {
     try {
       const entries = await readdir(projectDirPath, { withFileTypes: true });
       const jsonlFiles = entries
@@ -1327,8 +1552,10 @@ export class ProjectScanner {
       }
 
       return null;
-    } catch {
-      return null;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return null;
+      throw error;
     }
   }
 }

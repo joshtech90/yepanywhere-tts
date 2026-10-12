@@ -22,15 +22,19 @@ import {
 import { createApp } from "../setup/create-app.js";
 import { MockClaudeSDK } from "../../src/sdk/mock.js";
 import { ProjectMetadataService } from "../../src/metadata/ProjectMetadataService.js";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { LimitedUsersService } from "../../src/auth/LimitedUsersService.js";
 import { probeSessionSandboxAvailability } from "../../src/session-sandbox.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 let root: string;
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "ya-template-create-"));
 });
 afterEach(async () => {
+  closeTestDiscoveryDatabases();
   await rm(root, { recursive: true });
 });
 
@@ -525,9 +529,9 @@ it("stops an in-flight setup on shutdown and records an interruption", async () 
 
 it("wires the production creation route through project registration and session launch", async () => {
   await source();
-  const sessionMetadataService = new SessionMetadataService({
-    dataDir: join(root, "data"),
-  });
+  const sessionMetadataService = createTestSessionMetadataService(
+    join(root, "data"),
+  );
   await sessionMetadataService.initialize();
   const projectMetadataService = new ProjectMetadataService({
     dataDir: join(root, "data"),

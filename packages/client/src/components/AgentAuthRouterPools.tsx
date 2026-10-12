@@ -8,7 +8,9 @@ import {
 import { api } from "../api/client";
 import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
+import { generateUUID } from "../lib/uuid";
 import styles from "./AgentAuthRouterPools.module.css";
+import { routerPolicyLabel } from "./RouterPoolSelector";
 
 const reasonKeys = {
   eligible: "routerPoolEligible",
@@ -26,11 +28,7 @@ const reasonKeys = {
   "auth-unavailable": "routerPoolAuthUnavailable",
 } as const;
 
-function useOverview(
-  poolId?: string,
-  model?: string,
-  policy?: "manual" | "round-robin" | "most-remaining",
-) {
+function useOverview(poolId?: string, model?: string, policy?: string) {
   const { t } = useI18n();
   const [data, setData] = useState<AgentAuthRouterOverview | null>(null);
   const [error, setError] = useState("");
@@ -83,11 +81,6 @@ export function AgentAuthRouterPools() {
   const [draft, setDraft] = useState<AgentAuthRouterPoolInput | null>(null);
   const { data, error, busy, run } = useOverview(poolId, model);
   const { version } = useVersion();
-  const mostRemaining =
-    serverHasCapability(
-      version,
-      SERVER_CAPABILITIES.agentAuthRouterMostRemaining.name,
-    ) && data?.supportedPolicies?.includes("most-remaining");
   const ownerAware = serverHasCapability(
     version,
     SERVER_CAPABILITIES.agentAuthRouterOwnedPools.name,
@@ -161,11 +154,7 @@ export function AgentAuthRouterPools() {
       </div>
       {pool && (
         <p>
-          {t(
-            pool.policy === "manual"
-              ? "routerPoolManual"
-              : "routerPoolRoundRobin",
-          )}
+          {routerPolicyLabel(data, pool.policy)}
           {model
             ? ` · ${t("routerPoolReadyCount", { count: data?.selection?.decisions.filter((d) => d.reason === "eligible").length ?? 0, total: pool.accountIds.length })}`
             : ""}
@@ -178,7 +167,7 @@ export function AgentAuthRouterPools() {
             disabled={busy || !!draft}
             onClick={() =>
               setDraft({
-                id: crypto.randomUUID(),
+                id: generateUUID(),
                 name: "",
                 provider: "codex",
                 accountIds: [],
@@ -244,19 +233,16 @@ export function AgentAuthRouterPools() {
               onChange={(e) =>
                 setDraft({
                   ...draft,
-                  policy: e.target.value as
-                    | "manual"
-                    | "round-robin"
-                    | "most-remaining",
+                  policy: e.target.value,
                 })
               }
             >
-              <option value="manual">{t("routerPoolManual")}</option>
-              <option value="round-robin">{t("routerPoolRoundRobin")}</option>
-              {mostRemaining && (
-                <option value="most-remaining">
-                  {t("routerPoolMostRemaining")}
-                </option>
+              {(data?.supportedPolicies ?? ["manual", "round-robin"]).map(
+                (id) => (
+                  <option key={id} value={id}>
+                    {routerPolicyLabel(data, id)}
+                  </option>
+                ),
               )}
             </select>
           </label>

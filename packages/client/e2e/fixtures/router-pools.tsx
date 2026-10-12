@@ -26,8 +26,18 @@ api.getVersion = async () =>
   }) as VersionInfo;
 const state: AgentAuthRouterOverview = {
   supportedPolicies: modern
-    ? ["manual", "round-robin", "most-remaining"]
+    ? ["manual", "round-robin", "most-remaining", "weekly-pace"]
     : ["manual", "round-robin"],
+  ...(modern
+    ? {
+        policies: [
+          { id: "manual", label: "Manual" },
+          { id: "round-robin", label: "Round robin" },
+          { id: "most-remaining", label: "Most remaining" },
+          { id: "weekly-pace", label: "Weekly pace" },
+        ],
+      }
+    : {}),
   admissionRefresh: modern,
   ...(ownerManaged ? { canManagePools: false } : {}),
   observedAt: "2026-10-03T08:00:00Z",

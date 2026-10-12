@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import * as fs from "node:fs/promises";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,10 +10,11 @@ import type {
 } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
-
-vi.mock("node:fs/promises", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:fs/promises")>()),
-}));
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+  openTestDiscoveryDatabase,
+} from "../utils/session-metadata-database.js";
 
 function cacheMissRecord(
   id: string,
@@ -57,10 +57,11 @@ describe("SessionMetadataService", () => {
   beforeEach(async () => {
     testDir = join(tmpdir(), `claude-metadata-test-${randomUUID()}`);
     await mkdir(testDir, { recursive: true });
-    service = new SessionMetadataService({ dataDir: testDir });
+    service = createTestSessionMetadataService(testDir);
   });
 
   afterEach(async () => {
+    closeTestDiscoveryDatabases();
     await rm(testDir, { recursive: true, force: true });
   });
 
@@ -75,7 +76,7 @@ describe("SessionMetadataService", () => {
     await service.recordCreationProvenance("session-1", provenance);
     await service.recordCreationProvenance("session-1", { surface: "web" });
 
-    const restored = new SessionMetadataService({ dataDir: testDir });
+    const restored = createTestSessionMetadataService(testDir);
     await restored.initialize();
     expect(restored.getMetadata("session-1")?.creationProvenance).toEqual(
       provenance,
@@ -88,7 +89,7 @@ describe("SessionMetadataService", () => {
     await service.updateMetadata("session-1", { starred: true });
     await service.updateMetadata("session-1", { title: "Renamed" });
 
-    const restored = new SessionMetadataService({ dataDir: testDir });
+    const restored = createTestSessionMetadataService(testDir);
     await restored.initialize();
     expect(restored.getMetadata("session-1")?.createdByUser).toBe("archer");
   });
@@ -104,59 +105,63 @@ describe("SessionMetadataService", () => {
 
   describe("initialization", () => {
     it("retries an unchanged goal after a failed save", async () => {
+      const database = openTestDiscoveryDatabase(testDir);
+      let failNext = false;
+      service = new SessionMetadataService({
+        dataDir: testDir,
+        database: {
+          ...database,
+          transaction: (operation) => {
+            if (failNext) {
+              failNext = false;
+              throw new Error("Simulated write failure");
+            }
+            return database.transaction(operation);
+          },
+        },
+      });
       await service.initialize();
       const goal: SlashCommand = {
         name: "goal",
         description: "Goal",
         providerDetails: { codex: { goalObjective: "Keep working" } },
       };
-      await mkdir(service.getFilePath());
+      failNext = true;
       // The write failure is deliberate; assert its diagnostic as well.
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
         await expect(
           service.observeCommandInventory("session", [goal]),
-        ).rejects.toThrow();
+        ).rejects.toThrow("Simulated write failure");
         expect(error).toHaveBeenCalled();
       } finally {
         error.mockRestore();
       }
-      await rm(service.getFilePath(), { recursive: true });
       await service.observeCommandInventory("session", [goal]);
-      const restored = new SessionMetadataService({ dataDir: testDir });
+      const restored = createTestSessionMetadataService(testDir);
       await restored.initialize();
       expect(restored.getMetadata("session").goalCommand).toEqual(goal);
     });
 
-    it("waits for overlapping goal observations and skips durable duplicates", async () => {
+    it("settles overlapping goal observations and skips durable duplicates", async () => {
+      const database = openTestDiscoveryDatabase(testDir);
+      let transactions = 0;
+      service = new SessionMetadataService({
+        dataDir: testDir,
+        database: {
+          ...database,
+          transaction: (operation) => {
+            transactions++;
+            return database.transaction(operation);
+          },
+        },
+      });
       await service.initialize();
       const goal: SlashCommand = {
         name: "goal",
         description: "Goal",
         providerDetails: { codex: { goalObjective: "Keep working" } },
       };
-      let release!: () => void;
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const write = fs.writeFile;
-      const writes = vi
-        .spyOn(fs, "writeFile")
-        .mockImplementation(async (...args) => {
-          await gate;
-          return write(...args);
-        });
-      let settled = 0;
-      const first = service
-        .observeCommandInventory("session", [goal])
-        .then(() => {
-          settled++;
-        });
-      const second = service
-        .observeCommandInventory("session", [goal])
-        .then(() => {
-          settled++;
-        });
       const receipt: DurableLocalCommandMessage = {
         type: "system",
         subtype: "local_command",
@@ -167,66 +172,28 @@ describe("SessionMetadataService", () => {
         session_id: "session",
         isSynthetic: true,
       };
-      const receiptSave = service
-        .addLocalCommandMessage("session", receipt)
-        .then(() => {
-          settled++;
-        });
-      try {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(writes).toHaveBeenCalledOnce();
-        expect(settled).toBe(0);
-        release();
-        await Promise.all([first, second, receiptSave]);
-        const count = writes.mock.calls.length;
-        await service.observeCommandInventory("session", [goal]);
-        expect(writes).toHaveBeenCalledTimes(count);
-        expect(
-          JSON.parse(await readFile(service.getFilePath(), "utf8")).sessions
-            .session.goalCommand,
-        ).toEqual(goal);
-        expect(
-          JSON.parse(await readFile(service.getFilePath(), "utf8")).sessions
-            .session.localCommandMessages,
-        ).toEqual([receipt]);
-      } finally {
-        release();
-        await Promise.allSettled([first, second, receiptSave]);
-        writes.mockRestore();
-      }
+      await Promise.all([
+        service.observeCommandInventory("session", [goal]),
+        service.observeCommandInventory("session", [goal]),
+        service.addLocalCommandMessage("session", receipt),
+      ]);
+      const count = transactions;
+      await service.observeCommandInventory("session", [goal]);
+      expect(transactions).toBe(count);
+      const restored = createTestSessionMetadataService(testDir);
+      await restored.initialize();
+      expect(restored.getMetadata("session")?.goalCommand).toEqual(goal);
+      expect(restored.getLocalCommandMessages("session")).toEqual([receipt]);
     });
 
-    it("waits for an overlapping helper archive to reach disk", async () => {
+    it("makes an overlapping helper archive durable before it resolves", async () => {
       await service.initialize();
-      let release!: () => void;
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const write = fs.writeFile;
-      const writes = vi
-        .spyOn(fs, "writeFile")
-        .mockImplementationOnce(async (...args) => {
-          await gate;
-          return write(...args);
-        });
       const first = service.setTitle("source", "Work");
-      let archived = false;
-      const archive = service.setArchived("helper", true).then(() => {
-        archived = true;
-      });
-      try {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(archived).toBe(false);
-        release();
-        await archive;
-        const restarted = new SessionMetadataService({ dataDir: testDir });
-        await restarted.initialize();
-        expect(restarted.getMetadata("helper")?.isArchived).toBe(true);
-      } finally {
-        release();
-        await Promise.allSettled([first, archive]);
-        writes.mockRestore();
-      }
+      await service.setArchived("helper", true);
+      const restarted = createTestSessionMetadataService(testDir);
+      await restarted.initialize();
+      expect(restarted.getMetadata("helper")?.isArchived).toBe(true);
+      await first;
     });
 
     it("restores observed goals and clears without inferring from receipts", async () => {
@@ -242,7 +209,7 @@ describe("SessionMetadataService", () => {
         { name: "goal", description: "Unknown state" },
       ]);
       await service.setTitle("session-1", "Work");
-      const restarted = new SessionMetadataService({ dataDir: testDir });
+      const restarted = createTestSessionMetadataService(testDir);
       await restarted.initialize();
       expect(restarted.getMetadata("session-1")?.goalCommand).toEqual(goal);
       const cleared = {
@@ -251,7 +218,7 @@ describe("SessionMetadataService", () => {
         argumentCompletions: [],
       };
       await restarted.observeCommandInventory("session-1", [cleared]);
-      const afterClear = new SessionMetadataService({ dataDir: testDir });
+      const afterClear = createTestSessionMetadataService(testDir);
       await afterClear.initialize();
       expect(afterClear.getMetadata("session-1")?.goalCommand).toEqual(cleared);
     });
@@ -274,7 +241,7 @@ describe("SessionMetadataService", () => {
       await service.addLocalCommandMessage("session-1", receipt);
       await service.addLocalCommandMessage("session-1", receipt);
       await service.setTitle("session-1", "Work");
-      const restarted = new SessionMetadataService({ dataDir: testDir });
+      const restarted = createTestSessionMetadataService(testDir);
       await restarted.initialize();
       expect(restarted.getLocalCommandMessages("session-1")).toEqual([receipt]);
       expect(restarted.getMetadata("session-1").customTitle).toBe("Work");
@@ -285,18 +252,19 @@ describe("SessionMetadataService", () => {
       expect(service.getAllMetadata()).toEqual({});
     });
 
-    it("creates file on first update when file doesn't exist", async () => {
+    it("writes a database row on first update", async () => {
       await service.initialize();
       await service.setTitle("session-1", "My Custom Title");
 
-      const content = await readFile(
-        join(testDir, "session-metadata.json"),
-        "utf-8",
+      const row = openTestDiscoveryDatabase(testDir)
+        .prepare("SELECT metadata FROM session_metadata WHERE session_id = ?")
+        .get<{ metadata: string }>("session-1");
+      expect(JSON.parse(row?.metadata ?? "{}").customTitle).toBe(
+        "My Custom Title",
       );
-      const state = JSON.parse(content);
-      expect(state.version).toBe(3);
-      expect(state.sessions["session-1"]).toBeDefined();
-      expect(state.sessions["session-1"].customTitle).toBe("My Custom Title");
+      await expect(
+        readFile(join(testDir, "session-metadata.json"), "utf-8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
     });
 
     it("loads existing state from JSON file", async () => {
@@ -322,6 +290,49 @@ describe("SessionMetadataService", () => {
       expect(service.getMetadata("session-3")).toEqual({
         customTitle: "Archived One",
         isArchived: true,
+      });
+    });
+
+    it("imports the JSON file once and never reads or writes it again", async () => {
+      const legacyFile = join(testDir, "session-metadata.json");
+      const legacy = JSON.stringify({
+        version: 3,
+        sessions: { "session-1": { customTitle: "Imported" } },
+      });
+      await writeFile(legacyFile, legacy);
+      await service.initialize();
+      await service.setTitle("session-1", "Renamed");
+      expect(await readFile(legacyFile, "utf-8")).toBe(legacy);
+
+      await writeFile(
+        legacyFile,
+        JSON.stringify({
+          version: 3,
+          sessions: { "session-2": { customTitle: "Not imported" } },
+        }),
+      );
+      const restarted = createTestSessionMetadataService(testDir);
+      await restarted.initialize();
+      expect(restarted.getAllMetadata()).toEqual({
+        "session-1": { customTitle: "Renamed" },
+      });
+    });
+
+    it("imports once when two connections initialize together", async () => {
+      await writeFile(
+        join(testDir, "session-metadata.json"),
+        JSON.stringify({
+          version: 3,
+          sessions: { "session-1": { customTitle: "Imported" } },
+        }),
+      );
+      const other = createTestSessionMetadataService(testDir);
+      await Promise.all([service.initialize(), other.initialize()]);
+      expect(service.getAllMetadata()).toEqual({
+        "session-1": { customTitle: "Imported" },
+      });
+      expect(other.getAllMetadata()).toEqual({
+        "session-1": { customTitle: "Imported" },
       });
     });
 
@@ -354,10 +365,12 @@ describe("SessionMetadataService", () => {
         customTitle: "Clone: main session",
         forkedFromSessionId: "source-session",
       });
-      const persisted = JSON.parse(
-        await readFile(join(testDir, "session-metadata.json"), "utf-8"),
-      );
-      expect(persisted.version).toBe(3);
+      const restarted = createTestSessionMetadataService(testDir);
+      await restarted.initialize();
+      expect(restarted.getMetadata("clone")).toEqual({
+        customTitle: "Clone: main session",
+        forkedFromSessionId: "source-session",
+      });
     });
 
     it("migrates display objects and marks interrupted jobs as errors", async () => {
@@ -393,38 +406,50 @@ describe("SessionMetadataService", () => {
           error: "Fork summary interrupted by server restart",
         }),
       ]);
-      const persisted = JSON.parse(
-        await readFile(join(testDir, "session-metadata.json"), "utf-8"),
-      );
-      expect(persisted.version).toBe(3);
+      const restarted = createTestSessionMetadataService(testDir);
+      await restarted.initialize();
+      expect(restarted.getTranscriptDisplayObjects("session-1")).toEqual([
+        expect.objectContaining({ id: "display-1", status: "error" }),
+      ]);
     });
 
-    it("preserves corrupted metadata and refuses to initialize", async () => {
+    it("preserves corrupted metadata, refuses to initialize, and imports it once repaired", async () => {
+      const legacyFile = join(testDir, "session-metadata.json");
+      await writeFile(legacyFile, "not valid json{{{");
+      await expect(service.initialize()).rejects.toThrow(/not valid JSON/);
+      expect(await readFile(legacyFile, "utf8")).toBe("not valid json{{{");
+
       await writeFile(
-        join(testDir, "session-metadata.json"),
-        "not valid json{{{",
+        legacyFile,
+        JSON.stringify({ sessions: { repaired: { isStarred: true } } }),
       );
-      await expect(service.initialize()).rejects.toThrow();
-      expect(await readFile(service.getFilePath(), "utf8")).toBe(
-        "not valid json{{{",
-      );
+      const restarted = createTestSessionMetadataService(testDir);
+      await restarted.initialize();
+      expect(restarted.getMetadata("repaired")).toEqual({ isStarred: true });
     });
 
     it("keeps archived helpers durable when a replacement write is interrupted", async () => {
+      const database = openTestDiscoveryDatabase(testDir);
+      let interrupt = false;
+      service = new SessionMetadataService({
+        dataDir: testDir,
+        database: {
+          ...database,
+          transaction: (operation) =>
+            database.transaction(() => {
+              const result = operation();
+              if (interrupt) throw new Error("Interrupted write");
+              return result;
+            }),
+        },
+      });
       await service.initialize();
       await service.updateMetadata("helper", {
         title: "Recap generator",
         archived: true,
         forkedFromSessionId: "source",
       });
-      const previous = await readFile(service.getFilePath(), "utf8");
-      const write = fs.writeFile;
-      const writes = vi
-        .spyOn(fs, "writeFile")
-        .mockImplementationOnce(async (file) => {
-          await write(file, '{"sessions":{"helper":');
-          throw new Error("Interrupted write");
-        });
+      interrupt = true;
       const diagnostic = vi
         .spyOn(console, "error")
         .mockImplementation(() => {});
@@ -433,13 +458,11 @@ describe("SessionMetadataService", () => {
           "Interrupted write",
         );
         expect(diagnostic).toHaveBeenCalledOnce();
-        expect(await readFile(service.getFilePath(), "utf8")).toBe(previous);
-        const restarted = new SessionMetadataService({ dataDir: testDir });
+        const restarted = createTestSessionMetadataService(testDir);
         await restarted.initialize();
         expect(restarted.getMetadata("helper")?.isArchived).toBe(true);
-        expect(await fs.readdir(testDir)).toEqual(["session-metadata.json"]);
+        expect(restarted.getMetadata("source")).toBeUndefined();
       } finally {
-        writes.mockRestore();
         diagnostic.mockRestore();
       }
     });
@@ -586,7 +609,7 @@ describe("SessionMetadataService", () => {
         effort: "high",
       });
 
-      const reloaded = new SessionMetadataService({ dataDir: testDir });
+      const reloaded = createTestSessionMetadataService(testDir);
       await reloaded.initialize();
       expect(reloaded.getEffectiveLaunchSettings("session-1")).toEqual({
         schemaVersion: 1,
@@ -649,7 +672,7 @@ describe("SessionMetadataService", () => {
       ).resolves.toMatchObject({ revision: 1, requestedModel: "opus" });
       expect(saveSpy).toHaveBeenCalledTimes(2);
 
-      const reloaded = new SessionMetadataService({ dataDir: testDir });
+      const reloaded = createTestSessionMetadataService(testDir);
       await reloaded.initialize();
       expect(reloaded.getEffectiveLaunchSettings("session-1")).toMatchObject({
         revision: 1,
@@ -731,7 +754,7 @@ describe("SessionMetadataService", () => {
       await service.setTitle("session-1", "Persistent Title");
 
       // Create new instance and verify it loads the persisted data
-      const newService = new SessionMetadataService({ dataDir: testDir });
+      const newService = createTestSessionMetadataService(testDir);
       await newService.initialize();
 
       expect(newService.getMetadata("session-1")?.customTitle).toBe(
@@ -774,7 +797,7 @@ describe("SessionMetadataService", () => {
       await service.initialize();
       await service.setArchived("session-1", true);
 
-      const newService = new SessionMetadataService({ dataDir: testDir });
+      const newService = createTestSessionMetadataService(testDir);
       await newService.initialize();
 
       expect(newService.getMetadata("session-1")?.isArchived).toBe(true);
@@ -817,7 +840,7 @@ describe("SessionMetadataService", () => {
       await service.initialize();
       await service.setStarred("session-1", true);
 
-      const newService = new SessionMetadataService({ dataDir: testDir });
+      const newService = createTestSessionMetadataService(testDir);
       await newService.initialize();
 
       expect(newService.getMetadata("session-1")?.isStarred).toBe(true);
@@ -937,7 +960,7 @@ describe("SessionMetadataService", () => {
         autoResumeDisabled: true,
       });
 
-      const reloaded = new SessionMetadataService({ dataDir: testDir });
+      const reloaded = createTestSessionMetadataService(testDir);
       await reloaded.initialize();
       expect(reloaded.getMetadata("session-1")).toEqual({
         autoResumeDisabled: true,
@@ -1019,7 +1042,7 @@ describe("SessionMetadataService", () => {
         promptSuggestionMode: "off",
       });
 
-      const newService = new SessionMetadataService({ dataDir: testDir });
+      const newService = createTestSessionMetadataService(testDir);
       await newService.initialize();
 
       expect(newService.getPromptSuggestionMode("session-1")).toBe("off");
@@ -1053,7 +1076,7 @@ describe("SessionMetadataService", () => {
       await service.initialize();
       await service.updateMetadata("session-1", { recapMode: "fork" });
 
-      const newService = new SessionMetadataService({ dataDir: testDir });
+      const newService = createTestSessionMetadataService(testDir);
       await newService.initialize();
 
       expect(newService.getRecapMode("session-1")).toBe("fork");
@@ -1065,7 +1088,7 @@ describe("SessionMetadataService", () => {
         recapPausedUntilUserTurn: true,
       });
 
-      const newService = new SessionMetadataService({ dataDir: testDir });
+      const newService = createTestSessionMetadataService(testDir);
       await newService.initialize();
 
       expect(newService.getMetadata("session-1")).toEqual({
@@ -1094,7 +1117,7 @@ describe("SessionMetadataService", () => {
         yaRecapSource: "ya-synthetic",
       });
 
-      const newService = new SessionMetadataService({ dataDir: testDir });
+      const newService = createTestSessionMetadataService(testDir);
       await newService.initialize();
 
       expect(newService.getRecapMessages("session-1")).toEqual([
@@ -1159,7 +1182,7 @@ describe("SessionMetadataService", () => {
         automationPausedUntilUserTurn: true,
       });
 
-      const reloaded = new SessionMetadataService({ dataDir: testDir });
+      const reloaded = createTestSessionMetadataService(testDir);
       await reloaded.initialize();
       expect(reloaded.getMetadata("session-1")).toMatchObject({
         syntheticDoneMessages: [message],
@@ -1192,7 +1215,7 @@ describe("SessionMetadataService", () => {
         pendingSyntheticDone: { message, userTurnVersion: 7 },
       });
 
-      const reloaded = new SessionMetadataService({ dataDir: testDir });
+      const reloaded = createTestSessionMetadataService(testDir);
       await reloaded.initialize();
       expect(reloaded.getSyntheticDoneMessages("session-1")).toEqual([]);
       expect(reloaded.getMetadata("session-1")?.pendingSyntheticDone).toEqual({
@@ -1248,7 +1271,7 @@ describe("SessionMetadataService", () => {
       await service.setTitle("session-1", "Title");
       await service.clearSession("session-1");
 
-      const newService = new SessionMetadataService({ dataDir: testDir });
+      const newService = createTestSessionMetadataService(testDir);
       await newService.initialize();
 
       expect(newService.getMetadata("session-1")).toBeUndefined();
@@ -1312,7 +1335,7 @@ describe("SessionMetadataService", () => {
 
       expect(service.getMetadata("session-1")).toEqual({ forksCreated: 2 });
 
-      const restarted = new SessionMetadataService({ dataDir: testDir });
+      const restarted = createTestSessionMetadataService(testDir);
       await restarted.initialize();
       expect(await restarted.nextForkOrdinal("session-1")).toEqual({
         ordinal: 3,
@@ -1447,7 +1470,7 @@ describe("SessionMetadataService", () => {
       ]);
 
       // All should be persisted
-      const newService = new SessionMetadataService({ dataDir: testDir });
+      const newService = createTestSessionMetadataService(testDir);
       await newService.initialize();
 
       expect(newService.getMetadata("session-1")?.customTitle).toBe(
@@ -1462,10 +1485,8 @@ describe("SessionMetadataService", () => {
   });
 
   describe("file path", () => {
-    it("returns the correct file path", async () => {
-      expect(service.getFilePath()).toBe(
-        join(testDir, "session-metadata.json"),
-      );
+    it("reports the database path", async () => {
+      expect(service.getFilePath()).toBe(join(testDir, "discovery.sqlite"));
     });
   });
 
@@ -1516,7 +1537,7 @@ describe("SessionMetadataService", () => {
       await service.initialize();
       await service.setExecutor("session-1", "persistent-executor");
 
-      const newService = new SessionMetadataService({ dataDir: testDir });
+      const newService = createTestSessionMetadataService(testDir);
       await newService.initialize();
 
       expect(newService.getMetadata("session-1")?.executor).toBe(

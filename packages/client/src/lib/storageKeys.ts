@@ -202,8 +202,13 @@ export function getOrCreateBrowserProfileId(): string {
 // Special Keys (not scoped, handle their own structure)
 // ============================================================================
 
-/** Remote connection credentials - stored per wsUrl internally */
+/** Legacy connection mirror; saved-host records own current credentials. */
 export const REMOTE_CREDENTIALS_KEY = "yep-anywhere-remote-credentials";
 
 /** Saved hosts for multi-host remote access */
 export const SAVED_HOSTS_KEY = "yep-anywhere-saved-hosts";
+
+/** Host selection and public credential ownership metadata, never session keys. */
+export const TAB_HOST_KEY = "yep-anywhere-tab-host";
+export const LAST_HOST_KEY = "yep-anywhere-last-host";
+export const TAB_CREDENTIAL_OWNER_KEY = "yep-anywhere-tab-credential-owner";

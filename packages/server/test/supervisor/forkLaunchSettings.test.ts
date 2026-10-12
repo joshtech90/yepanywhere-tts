@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -6,7 +6,7 @@ import type {
   ProviderName,
 } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
+import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { getLogger } from "../../src/logging/logger.js";
 import { MessageQueue } from "../../src/sdk/messageQueue.js";
 import type { AgentProvider } from "../../src/sdk/providers/types.js";
@@ -19,6 +19,10 @@ import {
   type SessionsDeps,
 } from "../../src/routes/sessions.js";
 import { encodeProjectId } from "../../src/projects/paths.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+} from "../utils/session-metadata-database.js";
 
 const source: EffectiveSessionLaunchSettings = {
   schemaVersion: 1,
@@ -37,13 +41,14 @@ describe("fork launch settings", () => {
 
   beforeEach(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "fork-settings-"));
-    metadata = new SessionMetadataService({ dataDir });
+    metadata = createTestSessionMetadataService(dataDir);
     await metadata.initialize();
     await metadata.recordEffectiveLaunchSettings("source", source);
   });
   afterEach(async () => {
     for (const owner of owners.splice(0)) await dispose(owner);
     vi.restoreAllMocks();
+    closeTestDiscoveryDatabases();
     await rm(dataDir, { recursive: true, force: true });
   });
 
@@ -137,7 +142,7 @@ describe("fork launch settings", () => {
         expect(metadata.getMetadata("source")).toEqual(original);
 
         for (let turn = 0; turn < 2; turn++) {
-          const restored = new SessionMetadataService({ dataDir });
+          const restored = createTestSessionMetadataService(dataDir);
           await restored.initialize();
           const resumed = owner(providerName, restored);
           const process = await resumed.supervisor.resumeSession(
@@ -163,6 +168,100 @@ describe("fork launch settings", () => {
       });
     }
   }
+
+  it("checks a routed source's pin before copying and pins the copy after", async () => {
+    await metadata.updateMetadata("source", {
+      routerBinding: {
+        id: "parent-binding",
+        routerId: "router",
+        accountId: "account",
+        provider: "claude",
+      },
+    });
+    const order: string[] = [];
+    const router = {
+      assertInheritable: vi.fn(() => order.push("check")),
+      inheritBinding: vi.fn(async () => {
+        order.push("inherit");
+      }),
+    };
+    const forkSession = vi.fn(async () => {
+      order.push("fork");
+      return { sessionId: "child" };
+    });
+    const supervisor = new Supervisor({
+      provider: { name: "claude", forkSession } as unknown as AgentProvider,
+      sessionMetadataService: metadata,
+      agentAuthRouter: router as never,
+    });
+    owners.push(supervisor);
+    await supervisor.forkSession({
+      sessionId: "source",
+      projectPath: dataDir,
+      providerName: "claude",
+    });
+    expect(order).toEqual(["check", "fork", "inherit"]);
+    expect(router.inheritBinding).toHaveBeenCalledWith("source", "child");
+
+    // A pin that cannot be kept stops the copy before any transcript exists.
+    router.assertInheritable.mockImplementation(() => {
+      throw new Error("lost its router binding");
+    });
+    await expect(
+      supervisor.forkSession({
+        sessionId: "source",
+        projectPath: dataDir,
+        providerName: "claude",
+      }),
+    ).rejects.toThrow("lost its router binding");
+    expect(forkSession).toHaveBeenCalledOnce();
+  });
+
+  it("discards a copy that cannot inherit the routed source's account", async () => {
+    await metadata.updateMetadata("source", {
+      routerBinding: {
+        id: "parent-binding",
+        routerId: "router",
+        accountId: "account",
+        provider: "codex",
+      },
+    });
+    const rollout = join(dataDir, "rollout-child.jsonl");
+    await writeFile(rollout, "{}\n");
+    const supervisor = new Supervisor({
+      provider: {
+        name: "codex",
+        forkSession: vi.fn(async () => ({
+          sessionId: "child",
+          filePath: rollout,
+        })),
+      } as unknown as AgentProvider,
+      sessionMetadataService: metadata,
+      agentAuthRouter: {
+        assertInheritable: () => {},
+        inheritBinding: async () => {
+          throw new Error("metadata write failed");
+        },
+      } as never,
+    });
+    owners.push(supervisor);
+    const error = vi.spyOn(getLogger(), "error").mockImplementation(() => {});
+    await expect(
+      supervisor.forkSession({
+        sessionId: "source",
+        projectPath: dataDir,
+        providerName: "codex",
+      }),
+    ).rejects.toThrow(/could not keep .* so it was discarded/);
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "routed_copy_binding_failed",
+        discarded: true,
+      }),
+      expect.any(String),
+    );
+    await expect(readFile(rollout)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 
   it("replaces only explicit thinking and keeps a frozen source for summary targets", async () => {
     const { supervisor } = owner("claude");

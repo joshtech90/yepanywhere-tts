@@ -44,6 +44,34 @@ function deferred<T>(): {
 }
 
 describe("Providers Routes", () => {
+  it("enumerates exposed identities without starting any provider probes", async () => {
+    const providers = [
+      createProvider(),
+      createProvider({ name: "pi", displayName: "Pi" }),
+    ];
+    const routes = createProvidersRoutes({ providers });
+    const response = await routes.request("/descriptors");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      providers: [
+        { name: "claude", displayName: "Claude" },
+        { name: "pi", displayName: "Pi" },
+      ],
+    });
+    for (const provider of providers) {
+      expect(provider.isInstalled).not.toHaveBeenCalled();
+      expect(provider.getAuthStatus).not.toHaveBeenCalled();
+      expect(provider.getAvailableModels).not.toHaveBeenCalled();
+    }
+    const restricted = createProvidersRoutes({
+      providers,
+      enabledProviders: ["pi"],
+    });
+    expect(await (await restricted.request("/descriptors")).json()).toEqual({
+      providers: [{ name: "pi", displayName: "Pi" }],
+    });
+  });
+
   it("advertises native bounded turn search independently of provider authentication", async () => {
     const routes = createProvidersRoutes({
       providers: [
@@ -117,7 +145,6 @@ describe("Providers Routes", () => {
     const provider = createProvider();
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const first = await routes.request("/");
@@ -129,7 +156,7 @@ describe("Providers Routes", () => {
     expect(provider.getAvailableModels).toHaveBeenCalledTimes(1);
   });
 
-  it("retains unavailable provider rows only for the short negative TTL", async () => {
+  it("retains unavailable provider rows until explicit refresh", async () => {
     const getAuthStatus = vi
       .fn()
       .mockResolvedValueOnce({
@@ -145,14 +172,24 @@ describe("Providers Routes", () => {
     const provider = createProvider({ getAuthStatus });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
-      negativeCacheTtlMs: 100,
     });
 
     const unavailable = await routes.request("/");
     const cached = await routes.request("/");
-    await new Promise((resolve) => setTimeout(resolve, 125));
-    const recovered = await routes.request("/");
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() + 365 * 24 * 60 * 60_000);
+    let later: Response;
+    try {
+      later = await routes.request("/");
+    } finally {
+      clock.mockRestore();
+    }
+    expect(
+      ((await later.json()) as { providers: ProviderInfo[] }).providers[0]
+        ?.installed,
+    ).toBe(false);
+    const recovered = await routes.request("/?refresh=1");
 
     expect(
       ((await unavailable.json()) as { providers: ProviderInfo[] }).providers[0]
@@ -169,6 +206,40 @@ describe("Providers Routes", () => {
     expect(getAuthStatus).toHaveBeenCalledTimes(2);
   });
 
+  it("shares retained results across clients without age or size eviction", async () => {
+    const provider = createProvider({
+      getAvailableModels: vi.fn(async () => [
+        {
+          id: "sonnet",
+          name: "Sonnet",
+          description: "x".repeat(5 * 1024 * 1024),
+        },
+      ]),
+    });
+    const routes = createProvidersRoutes({ providers: [provider] });
+    expect(
+      (await routes.request("/", { headers: { "User-Agent": "first-client" } }))
+        .status,
+    ).toBe(200);
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() + 365 * 24 * 60 * 60_000);
+    try {
+      expect(
+        (
+          await routes.request("/claude", {
+            headers: { "User-Agent": "second-client" },
+          })
+        ).status,
+      ).toBe(200);
+      expect((await routes.request("/")).status).toBe(200);
+      expect(provider.getAuthStatus).toHaveBeenCalledTimes(1);
+      expect(provider.getAvailableModels).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("shares an in-flight scan between concurrent requests", async () => {
     const authStatus = deferred<AuthStatus>();
     const models = deferred<ModelInfo[]>();
@@ -178,7 +249,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const first = routes.request("/");
@@ -208,7 +278,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const cached = await routes.request("/");
@@ -243,7 +312,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const first = (await (await routes.request("/claude")).json()) as {
@@ -289,7 +357,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
       modelInfoService: { ingestModels },
     });
 
@@ -336,7 +403,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const ordinary = routes.request("/claude");
@@ -372,7 +438,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
     await routes.request("/claude");
 
@@ -404,7 +469,6 @@ describe("Providers Routes", () => {
     const provider = createProvider();
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const list = await routes.request("/");
@@ -463,7 +527,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     await routes.request("/");
@@ -494,7 +557,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const response = await routes.request("/");
@@ -520,7 +582,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const response = await routes.request("/");
@@ -544,7 +605,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const response = await routes.request("/");
@@ -568,7 +628,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const response = await routes.request("/");
@@ -594,7 +653,6 @@ describe("Providers Routes", () => {
     });
     const routes = createProvidersRoutes({
       providers: [provider],
-      cacheTtlMs: 60_000,
     });
 
     const response = await routes.request("/");

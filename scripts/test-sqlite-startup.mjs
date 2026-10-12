@@ -10,10 +10,8 @@ import { removeFixtureDirectory } from "./remove-fixture-directory.mjs";
 
 const [expected, packageDir = "dist/npm-package", launchMode] =
   process.argv.slice(2);
-assert.ok(
-  ["ready", "unsupported"].includes(expected),
-  "Pass ready or unsupported",
-);
+// SQLite is required: every supported runtime must provide it.
+assert.equal(expected, "ready", "Pass ready");
 const entry = pathToFileURL(resolve(packageDir, "dist/index.js")).href;
 // Windows provider coordination invokes PowerShell and ACL utilities. Keep
 // their OS configuration while still isolating application/profile state.
@@ -42,11 +40,8 @@ if (process.platform === "win32") {
     "Modules",
   );
 }
-for (const state of [
-  "disabled",
-  expected,
-  ...(expected === "ready" ? ["error"] : []),
-]) {
+// A server whose database cannot open must refuse to start, not degrade.
+for (const state of ["ready", "error"]) {
   const temporary = mkdtempSync(join(tmpdir(), "ya-sqlite-startup-"));
   const dataDir = join(temporary, "data");
   const portFile = join(temporary, "port");
@@ -82,8 +77,6 @@ for (const state of [
         XDG_DATA_HOME: join(temporary, "share"),
         NODE_ENV: "production",
         YEP_DATA_DIR: dataDir,
-        // Normal startup must initialize SQLite without an opt-in variable.
-        ...(state === "disabled" ? { YEP_SQLITE: "off" } : {}),
         // This uses the mock Claude provider. An explicit absent Codex path
         // avoids unrelated global npm/CLI discovery during startup on Windows.
         YEP_DESKTOP_CODEX_CLI_PATH: join(temporary, "codex-not-installed"),
@@ -102,10 +95,12 @@ for (const state of [
   );
   let output = "";
   let exited = false;
+  let exitCode;
   let spawnError;
   const completion = new Promise((resolveExit) => {
-    child.once("exit", () => {
+    child.once("exit", (code) => {
       exited = true;
+      exitCode = code;
     });
     child.once("close", () => {
       resolveExit();
@@ -126,6 +121,19 @@ for (const state of [
     // slower than the SQLite initialization.
     const deadline =
       Date.now() + (process.platform === "win32" ? 120_000 : 30_000);
+    if (state === "error") {
+      const timer = setTimeout(() => child.kill(), deadline - Date.now());
+      await completion;
+      clearTimeout(timer);
+      assert.ok(!spawnError, `Server failed to spawn: ${spawnError}`);
+      assert.notEqual(exitCode, 0, `Server must refuse to start\n${output}`);
+      assert.equal(existsSync(portFile), false, output);
+      assert.match(output, /Cannot open .*discovery\.sqlite/, output);
+      console.log(
+        `SQLite server startup refusal passed (${process.versions.bun ? "Bun" : "Node"})`,
+      );
+      continue;
+    }
     // writeFileSync creates the file before writing its digits. A parent on
     // another process can observe that empty file, especially on Windows.
     const port = await waitForPortFile(portFile, deadline, () => {
@@ -158,7 +166,7 @@ for (const state of [
     );
     assert.equal(response.status, 200, output);
     const version = await response.json();
-    assert.deepEqual(version.sqlite, { state });
+    assert.deepEqual(version.sqlite, { state: "ready" });
     assert.equal(
       existsSync(
         join(temporary, ".yep-anywhere", "provider-installations", "codex-cli"),
@@ -166,10 +174,7 @@ for (const state of [
       false,
       "Claude-only startup must not initialize the excluded Codex installation",
     );
-    assert.equal(
-      version.capabilities.includes("speech-vocabulary"),
-      state === "ready",
-    );
+    assert.ok(version.capabilities.includes("speech-vocabulary"));
     assert.deepEqual(version.serverRuntime, {
       kind: process.versions.bun ? "bun" : "node",
       version: process.versions.bun ?? process.versions.node,
@@ -197,9 +202,6 @@ for (const state of [
     } finally {
       clearTimeout(websocketTimeout);
       socket.close();
-    }
-    if (state === "disabled" || state === "unsupported") {
-      assert.equal(existsSync(join(dataDir, "discovery.sqlite")), false);
     }
     console.log(
       `SQLite server startup passed (${process.versions.bun ? "Bun" : "Node"}, ${state})`,

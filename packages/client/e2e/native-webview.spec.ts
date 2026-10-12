@@ -150,6 +150,8 @@ for (const viewport of [
     await page.goto(
       `${remoteClientURL}/projects/${projectId}/sessions/transcript-specimen-001?nativeOffline`,
     );
+    // Each navigation imports and initializes the local bridge anew.
+    await page.waitForFunction(() => "nativeFixture" in window);
     const skip = page.locator(".onboarding-skip-all");
     if (await skip.isVisible().catch(() => false)) await skip.click();
     const composer = page.locator("textarea[data-composer-input]");
@@ -209,7 +211,12 @@ for (const viewport of [
     await composer.click();
     const text =
       "Native transport keeps every key responsive during incoming updates.";
-    await composer.pressSequentially(text, { delay: 35 });
+    // The 5 s action limit applies to each key, not this 68-key sequence.
+    // CI exhausted the whole-sequence action despite retaining each input.
+    // The unchanged frame measurements below enforce every key within 100 ms.
+    for (const character of text) {
+      await composer.pressSequentially(character, { delay: 35 });
+    }
     await expect(composer).toHaveValue(text);
     await page.evaluate(() =>
       clearInterval(

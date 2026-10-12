@@ -8,6 +8,17 @@
 
 Topic: server-capabilities
 
+`provider-descriptors` (ID 125, transitional, version-implied from 0.9.4)
+adds `GET /api/providers/descriptors`, returning exposed provider names and
+display names without installation, authentication or model probes. The core
+60-day review on 2026-10-09 inspected stable v0.8.0, v0.8.1, v0.9.0, v0.9.1
+and v0.9.2; all lack the route. New clients request it only after the current
+source advertises support. Without support they retain the complete providers
+response and send no descriptor request. New servers preserve that complete
+response for older clients. Existing capabilities keep their meanings.
+Standing maintainer compatibility authorization applies; gate removal remains
+an explicit review after the core support corpus moves forward.
+
 `vhost-file-site-replacement` (permanent ID 109, explicit optional bit) gates
 the file-address replacement checkbox and limited-user file-address access.
 It extends the existing file-address routes with explicit `replace: true` and
@@ -29,12 +40,14 @@ meaning. Standing maintainer compatibility authorization applies. See
 
 ## Most remaining router policy
 
-`agent-auth-router-most-remaining` (permanent optional ID 117) adds negotiated
-`routerPolicy: "most-remaining"`, supported-policy/admission-refresh metadata and
-cached ranking evidence. Both YA support and AAR `most-remaining-v1` are required
-before displaying the option. The optional 2026-10-04 corpus v0.9.0–v0.9.2 lacks
-AAR routes; without the bit, preserve Manual/Round robin and disable unsupported
-pool defaults with upgrade guidance. No existing capability changes meaning.
+`agent-auth-router-most-remaining` (permanent optional ID 117) originally added
+negotiated `routerPolicy: "most-remaining"`. Since 2026-10-11 (still unreleased,
+introduced in 0.9.4) it means the server passes AAR's own `supportedPolicies`
+and English `policies` labels through and accepts any router policy id as a
+per-session `routerPolicy` override, plus admission-refresh metadata and cached
+ranking evidence. The client offers whatever the server reports; a server
+without the bit may refuse an override at launch. The optional 2026-10-04
+corpus v0.9.0–v0.9.2 lacks AAR routes. No released capability changes meaning.
 See [the router contract](agent-auth-router.md#most-remaining-and-admission-refresh).
 
 ## Source Of Truth
@@ -919,7 +932,59 @@ an explicit user refresh always asks for rows, since that is a fidelity request
 rather than a freshness one. Bounded deltas, and the cross-tab/IndexedDB
 persistence in the same plan step, are not built.
 
+### New Session bundle negotiation
+
+The 2026-10-09 core release review checked v0.8.0, v0.8.1, v0.9.0,
+v0.9.1 and v0.9.2. Their existing `GET /api/settings` handlers ignore
+the `bootstrap` parameter and return ordinary JSON. Standing compatibility
+approval applies to negotiation with `bootstrap=new-session-v1` and
+`Accept: text/event-stream`. Only the negotiated event-stream response selects
+the new protocol; ordinary JSON supplies settings and selects existing-route
+fallbacks for the other parts. No new endpoint or version request is needed
+before negotiation, and no existing capability meaning is broadened.
+
+The five-part finite stream and its failure, authorization and publication
+contracts are defined in
+[session catalog observation](session-catalog-observation.md#retained-project-discovery-owner).
+An invalid or interrupted event stream fails its missing parts instead of
+silently replaying the bundle as legacy requests. Both local and authenticated
+hosted New Session startup use this negotiation. Streamed hosted requests use
+the existing optional `stream` request flag and response frames; older servers
+still return ordinary settings JSON. No existing streaming capability is
+broadened: the response content type selects the finite bundle protocol.
+
 ### Retained collection gate
+
+`retained-projects` (permanent ID 124, version-implied from 0.9.4) owns
+`summaryMode=retained` on `GET /api/projects`, its `catalog` status and the
+`collectionRefresh` completion flag on `projects-changed`. The 2026-10-09
+core release review checked v0.8.0, v0.8.1, v0.9.0, v0.9.1 and v0.9.2;
+none provides this contract. Standing compatibility approval applies. Clients
+bind transport to the requested source and use the read preference below
+without awaiting version acquisition. Other retained
+collection capabilities keep their existing meanings. See
+[retained project discovery](session-catalog-observation.md#retained-project-discovery-owner).
+
+`retained-recents` (permanent ID 123, version-implied from 0.9.4) separately
+owns `summaryMode=retained` on `GET /api/recents`, its `visits` and `catalog`
+fields, and `recents-changed`. The 2026-10-09 core release review checked
+v0.8.0, v0.8.1, v0.9.0, v0.9.1 and v0.9.2; none has this contract. The
+maintainer's standing compatibility approval applies. Older servers and older
+clients keep the complete response. The
+existing retained-session-collections capability retains its original meaning.
+See [retained recent visits](session-catalog-observation.md#retained-recent-visits).
+
+For these two existing GET endpoints only, an unknown source version does not
+delay collection acquisition: clients send `summaryMode=retained` as a read
+preference. The reviewed v0.8.0–v0.9.2 handlers ignore that unknown parameter
+and return their ordinary complete response. Clients determine completeness
+from the returned `catalog`; its absence means the legacy complete response.
+Legacy recents also supply visit identities from `recents` when `visits` is
+absent. Sending this preference does not establish capability support or
+authorize any capability-dependent write. Once the source's version is known,
+absent or explicitly denied support omits the parameter, including on later
+revalidation. A first unknown-version request can precede discovery of a
+withdrawal. Session and inbox collection gates remain unchanged.
 
 Approved 2026-09-08. `retained-session-collections` is permanent ID 63,
 version-implied from 0.8.2. The reviewed core-functionality corpus is v0.6.1,
@@ -1004,6 +1069,12 @@ sandbox or device-bridge availability own their own bounded snapshots and
 in-flight coalescing. `fresh=1` remains the explicit path for bypassing the
 applicable caches; a normal capability read must not repeatedly launch Git,
 package-manager, sandbox, bridge, or provider subprocesses.
+
+When acquisition is necessary, build metadata, device-bridge status and sandbox
+preflight start concurrently. The update lookup starts as soon as the current
+version is known, independently of device and sandbox completion. The response
+still waits for all results before encoding capabilities; concurrency must not
+turn incomplete preflight into an advertised capability or skip `fresh=1`.
 
 A source launch also reports `sourceRevision`, taken once at startup: the
 checked-out commit, its committer date, and whether `packages/` had tracked or

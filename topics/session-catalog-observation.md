@@ -107,6 +107,221 @@ These are work-count and lifecycle evidence, not browser latency measurements.
 Viewport prioritization, cross-tab persistence, conditional catalog deltas, and
 other collection consumers remain part of the broader architecture below.
 
+## Retained recent visits
+
+Servers advertising `retained-recents` accept `summaryMode=retained` on
+`GET /api/recents`. This joins the existing durable session catalog; the request
+does not enumerate projects, resolve sessions through provider readers, or
+prune visits that the catalog has not observed. The complete-request path stays
+available for older clients.
+
+The response separates authoritative `visits` (ordered session/project ids and
+visit timestamps) from `recents` enriched with known titles and provider names.
+Unknown titles are omitted. `catalog` carries the same completeness, refresh
+and error state as other retained collections. New Session chooses its recent
+project from visits immediately, independently of title discovery. Both arrays
+carry project ids so limited-user list filtering applies to both; catalog
+errors remain operator-only. Session ids ambiguous within a visited project
+do not supply an enriched row. Working-project metadata and current project
+names overlay retained provider facts.
+
+Every persisted recents mutation publishes a coalesced `recents-changed`
+notification. Mounted client consumers share one bounded source collection and
+revalidate on it and on `session-catalog-updated`, without polling. Request
+transport remains bound to the requested source. The initial read does not
+await version acquisition: an unknown version sends the retained preference,
+which supported older releases ignore. An absent `catalog` means a complete
+response, and absent `visits` uses the returned recents as visit identities.
+Known absent or withdrawn support omits the preference.
+Incomplete enrichment preserves known titles and still-recorded visits, while
+an authoritative empty visit list clears them even during reconciliation.
+The final consumer releases its private in-memory rows and invalidates pending
+work; this is not browser persistence or authority across logins.
+
+## Retained project discovery owner
+
+Servers advertising `retained-projects` accept `summaryMode=retained` on
+`GET /api/projects`. `ProjectScanner.readRetainedProjects` returns the last
+accepted collection without awaiting a transcript scan or current sandbox
+counts. The scanner reuses its existing persisted snapshot across restarts,
+including an expired snapshot, only for the same provider roots, enabled
+providers, metadata store and workstream store. A retained disk read cannot
+certify a later complete read as fresh. Hidden projects are filtered and current
+display names and ownership overlay saved rows. With no saved enumeration,
+registered projects seed an incomplete collection. Once discovery has run, its
+membership takes precedence over registrations, so a deleted registered
+directory cannot reappear from metadata. Newly registered directories join on
+the next refresh without adding request-time filesystem probes.
+
+Server creation starts retained snapshot restoration and one finite discovery
+refresh before any client request. A saved snapshot can serve readers while
+that reconciliation is pending. Subsequent invalidation coalesces into a
+300 ms refresh and one trailing pass when needed.
+Accepted complete reads and retained reads share the scanner's snapshot and
+persistence owner. Failed refreshes preserve it, expose the error and impose a
+five-second admission backoff. A later read or event can retry; there is no
+periodic scan timer. Refresh completion emits `projects-changed` with
+`collectionRefresh: true`. Limited users receive this completion signal even
+when no affected project is accessible, with an empty project-id list; they
+never receive catalog error details. Disposal
+cancels queued work, drains active retained work and prevents its publication.
+
+Client consumers share one source-bound request. Incomplete responses preserve
+known collection members and cannot replace an undiscovered preferred project
+with an arbitrary first row. A complete empty response clears membership.
+With known absent or withdrawn support, clients request the existing complete
+enumeration. While the version is unknown they send the retained preference
+without waiting; supported older releases ignore it and return complete data.
+Response metadata determines completeness, not the requested preference.
+External activity counts resolve directory identity from the retained scanner
+index, avoiding an indirect foreground scan through the session tracker.
+
+The local entrypoint declares New Session's initial settings, version, projects
+and recent-visits reads together, before loading React. Selected-provider
+acquisition follows the accepted settings defaults. Settings routes acquire
+only settings and version. Project and recent query owners are independent of
+mounted hooks; project acquisition overlaps loading its destination store, and
+publication still passes through the query controller's generation check.
+Mounted consumers join those reads and own later event-driven revalidation.
+New Session negotiates a finite route bundle through
+`GET /api/settings?bootstrap=new-session-v1` with `Accept: text/event-stream`.
+The server starts settings, retained projects, retained recent visits and
+version together; the selected provider follows settings, unless the URL
+explicitly requests a provider. Each completed part is sent independently as
+a `bootstrap` event containing `part`, HTTP `status` and JSON `body`. A slow
+version or provider check cannot hold ready project rows. The stream closes
+after all five parts settle; interruption fails missing parts without erasing
+accepted ones. It has no polling or heartbeat loop.
+
+The bundle dispatches only fixed canonical routes under the request's original
+authentication context. Existing services own preparation, caching, visibility
+and refresh; the bundle creates neither a second catalog nor an authorization
+projection. Settings retain their limited-user projection, and projects and
+visits retain their grant filtering. Client publication still uses each query
+owner's source and generation fence. Explicit provider refresh uses its normal
+named endpoint.
+
+Older servers ignore the negotiation and return ordinary settings JSON; the
+client accepts it and obtains the other parts through existing endpoints. See
+[bundle negotiation](server-capabilities.md#new-session-bundle-negotiation).
+The local entrypoint starts the bundle before loading React. Hosted direct and
+relay clients start the same source-bound route owner when their authenticated
+transport attaches, before publishing the connection to mounted consumers.
+Streamed GET requests preserve content-negotiation headers. The relay carries
+this finite bundle incrementally through its existing encrypted response
+stream, with the same byte acknowledgement and cancellation ownership as file
+downloads. Cancelling a quiet stream interrupts its pending body read.
+Transports without streaming retain the existing independent requests.
+Settings declares only settings and version in the same route owner; it does
+not acquire New Session collections or providers.
+
+New Session uses its current collection row as the selected project's server
+record. It does not request selected-project detail while discovery is pending
+or when that row is already present. After a complete collection omits the
+requested project, the existing detail route validates directories without
+sessions; a collection request failure also permits that independent lookup.
+Browser display snapshots remain non-authoritative and cannot enable launch.
+
+Claude discovery retains the unmerged result for each native project directory.
+File events reconcile only their owning directory, including nested agent files,
+then rerun the existing in-memory identity/workstream merge. Creating or removing
+the last session can add or remove a directory contribution; changing its native
+cwd can merge it into another project. Unaffected contributions remain intact.
+Events arriving during acquisition stay pending for the trailing refresh.
+Explicit invalidation and a complete read's age-driven reconciliation rebuild
+the directory inventory; source input retention does not certify a stale full
+project snapshot as fresh. Failed directory reads preserve accepted inputs and
+retain the affected directories for retry. Shutdown drains acquisition.
+
+Gemini discovery retains native session-file metadata. A file event replaces or
+removes only that file's contribution, then project grouping uses the current
+hash-to-cwd map. Concurrent readers share acquisition; events arriving during
+it remain pending, and full invalidation prevents an older scan from publishing
+over the reset. Read failures preserve accepted inputs and pending paths for
+retry. Invalid session JSON retains the existing skip behavior. Complete
+age-driven reconciliation and explicit full invalidation still enumerate the
+store; targeted refresh alone does not remove those paths.
+
+Codex file events likewise reconcile only the affected physical rollout and
+retain the other session contributions. Plain `.jsonl` and compressed
+`.jsonl.zst` siblings share one discovery key, with plain-file precedence.
+Compression, materialization and deletion therefore replace one contribution
+without enumerating unrelated date directories. Concurrent readers share
+acquisition, full invalidation fences publication, and pending file changes
+survive failures or an in-flight scan. Both provider scanners drain every
+admitted file read before releasing a failed acquisition for retry.
+
+An event-driven project refresh reuses unchanged Codex/Gemini inputs even when
+their short request cache has aged out. Pending file changes still reconcile
+before grouping; a provider event never renews another provider by walking its
+store. Explicit project-cache invalidation also invalidates provider inputs,
+and complete-read age reconciliation keeps the existing discovery behavior.
+
+Claude and Codex project inputs are acquired concurrently. Publication waits
+for both acquisitions to settle, including on failure, then merges Claude
+before Codex to preserve identity precedence. Gemini still follows known-path
+registration because its hash resolution depends on those merged paths.
+
+Without any snapshot to display, initial retained discovery is queued for the
+next event-loop turn. The 300 ms debounce applies only when a snapshot already
+exists, coalescing subsequent file-event refreshes without delaying first use.
+
+Project responses retain bounded metadata enrichment: code-name reconciliation
+is in memory and saves only on change; derived captions are cached with input
+stat validation, preserving the [next-read freshness contract](project-captions.md).
+Selected-project detail for an unknown directory still uses complete discovery,
+and standalone complete provider reads retain age-driven enumeration. These
+paths must preserve complete inventory, including old sessions and empty
+registered directories; the startup optimization does not truncate history.
+
+**Design decision:** retain inside the existing project scanner rather than
+constructing another project inventory from session rows. Registered empty
+projects and the existing path/workstream identity rules belong to the scanner;
+session catalog membership alone cannot enumerate them.
+
+### New-tab acceptance
+
+The maintainer's startup target is 3,000 ms to populated project, provider,
+model and effort controls, including recent projects when no project URL or
+browser selection is saved. An empty selector or pre-boot textarea alone is
+insufficient. Settings measures populated controls separately. Parts may arrive
+independently, but reserved geometry must keep controls stable and sequential
+typing must acknowledge each key within 100 ms. Frontend updates remain
+user-initiated; [built client delivery](reload-safe-provider-runtimes.md#built-client-for-everyday-source-checkout-use)
+avoids development-mode module request fan-out.
+
+Final isolated checks at `debb025bb` on 2026-10-10 used the native Claude/Codex
+stores, authenticated Claude discovery, a saved recent project, and fresh
+server/app-data/browser instances without an HTTP discovery warm-up:
+
+| Case | Samples | Full controls from navigation |
+| --- | ---: | ---: |
+| Fresh server and browser, recent project selected | 3 | 1,019–1,742 ms |
+| Returning New Session tabs | 6 | 198–227 ms |
+| Three simultaneous tabs per fresh server | 9 | 1,067–1,166 ms |
+| Fresh server and browser, Settings | 3 | 452–470 ms |
+| Hosted relay tabs, authenticated warmed fixture | 3 | 244–307 ms |
+
+The native New Session checks validated the selected project's membership,
+seven live Claude models, provider-host health and local SQLite. Host load was
+2–3 on sixteen cores with about 98 GB available RAM. Earlier concurrent native
+checks at `6c4ad0710`, under load 25.87, placed all nine tabs within
+1,206–2,601 ms. These observations meet the revised target in the measured
+cases; changing shared-host contention prevents a controlled speedup claim or
+a universal latency guarantee. Hosted fixtures used warmed discovery and login,
+so their numbers do not establish cold native-provider or Internet latency.
+
+Held-response browser checks cover independent bundle arrival, source/principal
+isolation, less than 2 px control movement, and sequential typing below 100 ms.
+The final focused transport/startup run passed thirty cases. The broad browser
+run passed 392, skipped ten and failed ten; two obsolete older-server fixtures
+were corrected and passed focused reruns. Eight remaining failures are tracked
+under [artifact viewer readiness](../gaps/artifact-viewer-edit-mode-readiness.md)
+and [instruction/App browser checks](../gaps/e2e-local-instructions-and-project-app-failures.md).
+The full browser suite is not green. Final quick checks passed without warnings.
+All isolated processes were removed. The live backend was not restarted for
+these measurements; applying backend changes requires its normal restart.
+
 ## Continuous-observer model
 
 Design session discovery as though one YA server remains alive and watches the
@@ -440,6 +655,22 @@ subscriptions, timers, invalidations, or requests. Query responses retain the
 server catalog epoch/generation so later consumers can reuse accepted state or
 conditionally reconcile it.
 
+The local New Session entry primes project and recent collections while route
+modules load, alongside settings. These reads use the same source-bound query
+definitions as the mounted hooks, including version/preference selection,
+generation fencing and snapshot publication. Pending and completed reads are
+shared even for an empty complete collection. This moves acquisition before
+form mounting; it adds no second cache and does not bypass server filtering or
+the confirmed-identity requirement for browser project snapshots.
+
+Once project and visit facts determine New Session's initial project, the form
+renders that selection immediately; replacing the URL with its `projectId`
+is subsequent bookkeeping, not a display dependency. An explicit query project
+or detached selection takes precedence. Stored recent preference, visit order
+and complete-list fallback keep their existing priority, and an incomplete
+collection cannot disprove an undiscovered preference. Cached choices retain
+the confirmation restrictions below.
+
 Browser persistence is an optional accelerator, never a correctness
 precondition. A source/auth-scoped, schema-versioned compact snapshot may live
 in IndexedDB; a small `localStorage`/`BroadcastChannel` notice may advertise the
@@ -452,6 +683,37 @@ unbounded catalog in this layer. Enforce byte/age eviction and revalidate any
 restored snapshot against the server epoch/generation. Cross-tab coordination
 does not remove server-side single-flight: different browsers/devices and lease
 failover can still request the same work concurrently.
+
+### New Session project display snapshot
+
+New Session restores project names, paths, code names and ownership labels
+from a schema-versioned `localStorage` snapshot, with recent project IDs for
+ordering. The key includes the source and confirmed acting username (null for
+the superuser). Identity must first resolve through the current server's
+settings or `/users/me`; a remembered draft owner is not sufficient. Limited
+users' restored rows are filtered through their current project and directory
+grants. No transcript, caption body, live count or launch permission is cached.
+
+The snapshot holds at most 256 projects and 256 KiB of UTF-16 storage, expires
+after 24 hours, and prioritizes the selected project and recent project IDs
+when bounding rows. Oversize
+and expired entries are removed. Storage failure falls back to server reads.
+The shared sidebar maintains accepted complete project rows in open tabs;
+New Session also records accepted recent-project ordering. A storage event
+refreshes another tab's display overlay, without starting another request.
+Project-list consumers subscribe to project state alone, so unrelated session
+activity cannot retrigger project rendering and persistence.
+
+Restored rows remain outside the live summary store: they do not satisfy query
+coverage, freshness or completeness. Partial collections preserve undiscovered
+display choices; a complete collection replaces them, including an empty
+collection. A selected cached row can remain visible while its detail request
+is pending, but cannot hide a later server rejection. The form labels a cached
+selection “Refreshing project…” and permits typing while withholding Start
+and Queue until a current collection or detail response confirms the row.
+Server authorization remains authoritative.
+These client-only display semantics also work with older complete-list APIs;
+they introduce no route or capability requirement.
 
 An explicit `session-metadata-changed` project transition and a full session
 snapshot are authoritative for a known row's working-project membership.

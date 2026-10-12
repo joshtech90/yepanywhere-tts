@@ -79,8 +79,8 @@ describe("issue tracker credentials", () => {
     const dir = dataDir("ya-issue-creds-routes-");
     const settings = new ServerSettingsService({ dataDir: dir });
     await settings.initialize();
-    const db = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
-    const indexer = new IssueIndexer(new IssueStore(db.getDatabase()!), {
+    const db = new DiscoverySqliteService({ dataDir: dir });
+    const indexer = new IssueIndexer(new IssueStore(db.getDatabase()), {
       settings: () =>
         settings.getSetting("issueAssociations") ?? DEFAULT_ISSUE_SETTINGS,
       candidates: async function* () {},
@@ -137,8 +137,8 @@ describe("issue tracker credentials", () => {
     const dir = dataDir("ya-issue-confirm-");
     const settings = new ServerSettingsService({ dataDir: dir });
     await settings.initialize();
-    const db = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
-    const indexer = new IssueIndexer(new IssueStore(db.getDatabase()!), {
+    const db = new DiscoverySqliteService({ dataDir: dir });
+    const indexer = new IssueIndexer(new IssueStore(db.getDatabase()), {
       settings: () =>
         settings.getSetting("issueAssociations") ?? DEFAULT_ISSUE_SETTINGS,
       candidates: async function* () {},

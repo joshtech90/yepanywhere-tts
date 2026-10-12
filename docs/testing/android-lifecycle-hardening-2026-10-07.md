@@ -190,7 +190,7 @@ down by two. The touched-CSS review defers extraction from the large legacy
 SessionPage/NewSessionForm styles; this change does not edit styles.
 
 The harness-only commit's main CI exposed a separate
-[Project App handoff failure](../../gaps/project-app-session-handoff-misses-pane-in-ci.md)
+[Project App handoff failure](https://github.com/kzahel/yepanywhere/blob/72e9428e93bb78e759fadfa98a3c2603ebec24c1/gaps/project-app-session-handoff-misses-pane-in-ci.md)
 and two selection retries. A focused fresh local run passes all three without
 retries; that does not erase the hosted evidence. The five-case page acceptance suite and full native live suite pass on both
 routes. The latter executes 15 direct and 7 relay tests; two host-driven

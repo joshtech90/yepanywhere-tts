@@ -20,6 +20,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { getLogger } from "../logging/logger.js";
 import { decrypt } from "../crypto/nacl-wrapper.js";
 import {
   OWNER_READ_WRITE_FILE_MODE,
@@ -278,6 +279,18 @@ export class RemoteSessionService {
    * Look up a session by ID.
    * @returns The session if found and not expired, null otherwise
    */
+  /** Local diagnostic classification; never sent to the unauthenticated client. */
+  getResumeSessionFailure(
+    sessionId: string,
+  ): "missing_session" | "expired_session" | null {
+    const session = this.state.sessions[sessionId];
+    return !session
+      ? "missing_session"
+      : this.isExpired(session)
+        ? "expired_session"
+        : null;
+  }
+
   getSession(sessionId: string): RemoteSession | null {
     const session = this.state.sessions[sessionId];
     if (!session) return null;
@@ -309,8 +322,21 @@ export class RemoteSessionService {
     proof: string,
     expectedChallenge: string,
   ): Promise<RemoteSession | null> {
+    const refuse = (reason: string) => {
+      getLogger().info(
+        {
+          event: "srp_resume_refused",
+          phase: "proof",
+          sessionId: sessionId.slice(0, 256),
+          reason,
+        },
+        "SRP resume proof refused",
+      );
+      return null;
+    };
+    const failure = this.getResumeSessionFailure(sessionId);
     const session = this.getSession(sessionId);
-    if (!session) return null;
+    if (!session) return refuse(failure ?? "missing_session");
 
     try {
       // Parse the proof (should be JSON with nonce and ciphertext)
@@ -324,7 +350,7 @@ export class RemoteSessionService {
 
       // Decrypt the proof
       const plaintext = decrypt(nonce, ciphertext, sessionKey);
-      if (!plaintext) return null;
+      if (!plaintext) return refuse("invalid_proof");
 
       const proofData = JSON.parse(plaintext) as {
         timestamp: number;
@@ -335,17 +361,17 @@ export class RemoteSessionService {
 
       // Verify the proof is fresh and bound to this resume attempt
       const clockSkewMs = Math.abs(now - proofData.timestamp);
-      if (clockSkewMs > MAX_PROOF_AGE_MS) {
-        console.warn(
-          `[RemoteSessionService] Resume proof rejected due to timestamp skew for session ${sessionId}: ${clockSkewMs}ms`,
-        );
-        return null;
+      if (
+        !Number.isFinite(proofData.timestamp) ||
+        clockSkewMs > MAX_PROOF_AGE_MS
+      ) {
+        return refuse("timestamp_skew");
       }
       if (proofData.sessionId !== sessionId) {
-        return null;
+        return refuse("session_mismatch");
       }
       if (proofData.challenge !== expectedChallenge) {
-        return null;
+        return refuse("challenge_mismatch");
       }
 
       // Update last used time
@@ -354,7 +380,7 @@ export class RemoteSessionService {
 
       return session;
     } catch {
-      return null;
+      return refuse("malformed_proof");
     }
   }
 

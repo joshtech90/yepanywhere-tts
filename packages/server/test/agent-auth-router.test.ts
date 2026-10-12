@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { decideLimitedRoute } from "../src/auth/limitedUserPolicy.js";
 import { createSessionsRoutes } from "../src/routes/sessions.js";
 import { createAgentAuthRouterRoutes } from "../src/routes/agent-auth-router.js";
-import { SessionMetadataService } from "../src/metadata/SessionMetadataService.js";
 import { AgentAuthRouter } from "../src/services/AgentAuthRouter.js";
 import { structuredErrorHandler } from "../src/middleware/error-handler.js";
 import {
@@ -17,15 +16,28 @@ import {
   codexRouterEnvironment,
   claudeRouterEnvironment,
 } from "../src/sdk/providers/router-transport.js";
+import {
+  closeTestDiscoveryDatabases,
+  createTestSessionMetadataService,
+  openTestDiscoveryDatabase,
+} from "./utils/session-metadata-database.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
+  closeTestDiscoveryDatabases();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
+const ROUTER_POLICIES = [
+  { id: "manual", label: "Manual" },
+  { id: "round-robin", label: "Round robin" },
+  { id: "weekly-pace", label: "Weekly pace" },
+];
 async function fixture(
   pools = false,
   ownerManaged = false,
   mostRemaining = false,
+  /** A router that lists and labels its own policies (AAR 2026-10-11). */
+  policyList = false,
 ) {
   const root = await mkdtemp(join(tmpdir(), "yar-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
@@ -70,6 +82,12 @@ async function fixture(
             ...(ownerManaged ? ["router-owned-pools-v1"] : []),
             ...(cliModels ? ["catalog-cli-models-v1"] : []),
           ],
+          ...(policyList
+            ? {
+                supportedPolicies: ROUTER_POLICIES.map((p) => p.id),
+                policies: ROUTER_POLICIES,
+              }
+            : {}),
         }),
       );
     if (revoked) {
@@ -103,6 +121,12 @@ async function fixture(
             : [],
           observedAt: "2026-10-03T08:00:00Z",
           quotaFreshSeconds: 120,
+          ...(policyList
+            ? {
+                supportedPolicies: ROUTER_POLICIES.map((p) => p.id),
+                policies: ROUTER_POLICIES,
+              }
+            : {}),
         }),
       );
     if (req.url === "/v1/disconnect") revoked = true;
@@ -151,7 +175,7 @@ async function fixture(
         server.close(() => resolve());
       }),
   );
-  const metadata = new SessionMetadataService({ dataDir: root });
+  const metadata = createTestSessionMetadataService(root);
   await metadata.initialize();
   const connector = new AgentAuthRouter(root, metadata);
   return {
@@ -167,6 +191,9 @@ async function fixture(
       reason = "no eligible pool account; refresh usage or choose Manual",
     ) => {
       rejectPrepare = reason;
+    },
+    acceptPoolPrepare: () => {
+      rejectPrepare = false;
     },
     loseCommit: () => {
       failCommit = true;
@@ -313,7 +340,7 @@ describe.skipIf(process.platform === "win32")(
         "account",
       );
       await f.metadata.remapSessionId("provisional", "canonical");
-      const freshMetadata = new SessionMetadataService({ dataDir: f.root });
+      const freshMetadata = createTestSessionMetadataService(f.root);
       await freshMetadata.initialize();
       const fresh = new AgentAuthRouter(f.root, freshMetadata);
       const resumed = await fresh.launch("canonical", "codex", "fixture-model");
@@ -324,9 +351,13 @@ describe.skipIf(process.platform === "win32")(
         createHash("sha256").update(first!.token).digest("hex"),
       );
       expect(JSON.stringify(f.connector.summary())).not.toContain(first!.token);
-      expect(
-        await readFile(join(f.root, "session-metadata.json"), "utf8"),
-      ).not.toContain(first!.token);
+      const persistedMetadata = openTestDiscoveryDatabase(f.root)
+        .prepare("SELECT metadata FROM session_metadata")
+        .all<{ metadata: string }>()
+        .map((row) => row.metadata)
+        .join("\n");
+      expect(persistedMetadata).toContain('"accountId":"account"');
+      expect(persistedMetadata).not.toContain(first!.token);
       await expect(
         fresh.launch("canonical", "codex", "fixture-model", "different"),
       ).rejects.toThrow("pin cannot change");
@@ -627,6 +658,119 @@ describe.skipIf(process.platform === "win32")("pool launch recovery", () => {
       restarted.launch("pooled", "codex", "fixture-model"),
     ).rejects.toThrow("cancelled");
   });
+  it("gives a copy its own manual binding for the parent's account", async () => {
+    const f = await fixture(true);
+    await f.connector.connect(f.socketPath);
+    const pool = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const parent = await f.connector.launch(
+      "parent",
+      "codex",
+      "fixture-model",
+      undefined,
+      pool,
+      "round-robin",
+    );
+    f.connector.assertInheritable("parent");
+    await f.connector.inheritBinding("parent", "child");
+    const parentRef = f.metadata.getMetadata("parent")?.routerBinding;
+    const childRef = f.metadata.getMetadata("child")?.routerBinding;
+    expect(childRef).toMatchObject({
+      accountId: "account",
+      poolId: pool,
+      policy: "manual",
+    });
+    expect(childRef?.id).not.toBe(parentRef?.id);
+    // No router call until the child first launches.
+    const preparesBefore = f.requests.filter(
+      (r) => r.path === "/v1/pools/prepare",
+    ).length;
+    expect(preparesBefore).toBe(1);
+
+    const child = await f.connector.launch("child", "codex", "fixture-model");
+    expect(child?.accountId).toBe("account");
+    expect(child?.bindingId).toBe(childRef?.id);
+    expect(child?.token).not.toBe(parent?.token);
+    const childPrepare = f.requests.filter(
+      (r) => r.path === "/v1/pools/prepare",
+    )[1]?.body;
+    expect(childPrepare).toMatchObject({
+      id: childRef?.id,
+      poolId: pool,
+      policy: "manual",
+      accountId: "account",
+    });
+    expect(
+      f.requests.filter(
+        (r) => r.path === "/v1/bindings/commit" && r.body.id === childRef?.id,
+      ),
+    ).toHaveLength(1);
+    // The parent keeps its own pin and token.
+    const resumedParent = await f.connector.launch(
+      "parent",
+      "codex",
+      "fixture-model",
+    );
+    expect(resumedParent?.token).toBe(parent?.token);
+  });
+  it("keeps an inherited binding retryable when the router rejects its first launch", async () => {
+    const f = await fixture(true);
+    await f.connector.connect(f.socketPath);
+    await f.connector.launch(
+      "parent",
+      "codex",
+      "fixture-model",
+      undefined,
+      "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "round-robin",
+    );
+    await f.connector.inheritBinding("parent", "child");
+    const childId = f.metadata.getMetadata("child")?.routerBinding?.id;
+    f.rejectPoolPrepare(
+      "manual account is not eligible; refresh pool overview",
+    );
+    await expect(
+      f.connector.launch("child", "codex", "fixture-model"),
+    ).rejects.toThrow("not eligible");
+    expect(
+      f.requests.some(
+        (r) => r.path === "/v1/bindings/cancel" && r.body.id === childId,
+      ),
+    ).toBe(false);
+    f.acceptPoolPrepare();
+    const retried = await f.connector.launch("child", "codex", "fixture-model");
+    expect(retried?.bindingId).toBe(childId);
+  });
+  it("fails closed without metadata storage", async () => {
+    const f = await fixture(true);
+    const bare = new AgentAuthRouter(f.root);
+    await expect(bare.inheritBinding("parent", "child")).rejects.toThrow(
+      "metadata unavailable",
+    );
+  });
+  it("refuses to copy a pin it cannot keep, leaving the copy unable to launch", async () => {
+    const f = await fixture(true);
+    await f.connector.connect(f.socketPath);
+    await f.connector.launch(
+      "parent",
+      "codex",
+      "fixture-model",
+      undefined,
+      "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "round-robin",
+    );
+    await f.connector.cancel("parent");
+    expect(() => f.connector.assertInheritable("parent")).toThrow(
+      "lost its router binding",
+    );
+    // A copy made anyway is pinned to a binding that does not exist.
+    await expect(f.connector.inheritBinding("parent", "child")).rejects.toThrow(
+      "lost its router binding",
+    );
+    expect(f.metadata.getMetadata("child")?.routerBinding).toBeDefined();
+    await expect(
+      f.connector.launch("child", "codex", "fixture-model"),
+    ).rejects.toThrow("cannot use a different account");
+  });
   it("keeps account and pool labels for recovery while the pin stays the ids", async () => {
     const f = await fixture(true);
     await f.connector.connect(f.socketPath);
@@ -755,39 +899,40 @@ describe.skipIf(process.platform === "win32")("router pool ownership", () => {
 });
 
 describe.skipIf(process.platform === "win32")(
-  "Most remaining negotiation",
+  "router policy pass-through",
   () => {
-    it("refuses older AAR before allocating and keeps legacy policy discovery", async () => {
-      const f = await fixture(true);
-      await f.connector.connect(f.socketPath);
-      expect((await f.connector.overview()).supportedPolicies).toEqual([
-        "manual",
-        "round-robin",
-      ]);
-      await expect(
-        f.connector.launch(
-          "new",
-          "codex",
-          "fixture-model",
-          undefined,
-          "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-          "most-remaining",
-        ),
-      ).rejects.toThrow("Update AAR");
-      expect(f.requests.some((r) => r.path === "/v1/pools/prepare")).toBe(
-        false,
-      );
-      await expect(
-        f.connector.overview({ policy: "most-remaining" }),
-      ).rejects.toThrow("Update AAR");
-    });
-    it("advertises admission refresh and explicitly negotiates new pool selection", async () => {
-      const f = await fixture(true, true, true);
+    it("offers the router's policies and labels and sends any policy it lists", async () => {
+      const f = await fixture(true, true, true, true);
       await f.connector.connect(f.socketPath);
       expect(await f.connector.overview()).toMatchObject({
-        supportedPolicies: ["manual", "round-robin", "most-remaining"],
+        supportedPolicies: ["manual", "round-robin", "weekly-pace"],
+        policies: ROUTER_POLICIES,
         admissionRefresh: true,
       });
+      await f.connector.launch(
+        "new",
+        "codex",
+        "fixture-model",
+        undefined,
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "weekly-pace",
+      );
+      expect(
+        f.requests.find((r) => r.path === "/v1/pools/prepare")?.body,
+      ).toMatchObject({
+        policy: "weekly-pace",
+        supportedPolicies: ["manual", "round-robin", "weekly-pace"],
+      });
+      // The fixture router answers round-robin; its label is kept on the pin.
+      expect(f.metadata.getMetadata("new")?.routerBinding).toMatchObject({
+        policy: "round-robin",
+        policyLabel: "Round robin",
+      });
+    });
+    it("leaves policy decisions to an older router that lists none", async () => {
+      const f = await fixture(true);
+      await f.connector.connect(f.socketPath);
+      expect((await f.connector.overview()).supportedPolicies).toBeUndefined();
       await f.connector.launch(
         "new",
         "codex",
@@ -800,7 +945,7 @@ describe.skipIf(process.platform === "win32")(
         f.requests.find((r) => r.path === "/v1/pools/prepare")?.body,
       ).toMatchObject({
         policy: "most-remaining",
-        supportedPolicies: ["manual", "round-robin", "most-remaining"],
+        supportedPolicies: ["manual", "round-robin"],
       });
     });
   },

@@ -1,5 +1,6 @@
 import { DRAFT_SCHEMA } from "./migrations/008-drafts.js";
 import { DRAFT_CHANGES_SCHEMA } from "./migrations/009-draft-changes.js";
+import { SESSION_METADATA_SCHEMA } from "./migrations/010-session-metadata.js";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { SqliteStatus } from "@yep-anywhere/shared";
@@ -20,14 +21,6 @@ import { ISSUE_CONFIRMATION_SCHEMA } from "./migrations/006-issue-confirmation.j
 
 import { JIRA_PROJECT_SCHEMA } from "./migrations/007-jira-projects.js";
 
-export type SqliteMode = "off" | "auto" | "on";
-
-export function parseSqliteMode(value: string | undefined): SqliteMode {
-  if (value === undefined || value === "auto") return "auto";
-  if (value === "off" || value === "on") return value;
-  throw new Error("YEP_SQLITE must be one of: off, auto, on");
-}
-
 export interface DiscoveryMigration {
   version: number;
   sql: string;
@@ -46,6 +39,7 @@ export const DISCOVERY_MIGRATIONS: readonly DiscoveryMigration[] = [
   { version: 7, sql: JIRA_PROJECT_SCHEMA },
   { version: 8, sql: DRAFT_SCHEMA },
   { version: 9, sql: DRAFT_CHANGES_SCHEMA },
+  { version: 10, sql: SESSION_METADATA_SCHEMA },
 ];
 
 /** Construct fixtures with the actual historical schema, never a parallel SQL copy. */
@@ -109,94 +103,105 @@ export function migrateDiscoveryDatabase(
   });
 }
 
-/** One optional connection per Hono generation, owned below the YA data dir. */
+/**
+ * Thrown when YA's required SQLite database cannot be opened. The server does
+ * not start without it, so the message names what the operator must fix.
+ */
+export class DiscoveryStorageError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "DiscoveryStorageError";
+  }
+}
+
+/**
+ * Open YA's required SQLite database below the data directory, or throw a
+ * {@link DiscoveryStorageError}. There is no degraded mode: session metadata
+ * lives here (topics/optional-sqlite.md).
+ */
+export function openDiscoveryDatabase(options: {
+  dataDir: string;
+  loadDriver?: () => SqliteDriver | undefined;
+  /** Injected by tests; production probes the real data directory. */
+  probeNetworkFilesystem?: (dir: string) => string | undefined;
+}): SqliteDatabase {
+  const path = join(options.dataDir, "discovery.sqlite");
+  const driver = (options.loadDriver ?? loadSqliteDriver)();
+  if (!driver) {
+    throw new DiscoveryStorageError(
+      `Cannot open ${path}: this runtime has no built-in SQLite (node:sqlite or bun:sqlite). Run YA on a supported Node or Bun release.`,
+    );
+  }
+  try {
+    mkdirSync(options.dataDir, { recursive: true });
+  } catch (error) {
+    throw new DiscoveryStorageError(
+      `Cannot create the data directory ${options.dataDir}: ${errorMessage(error)}`,
+      { cause: error },
+    );
+  }
+  // Both adapters are synchronous and SQLite takes an advisory lock per
+  // transaction, so on a share every one of those locks is a network round
+  // trip taken on the event loop. A busy server spends most of each second
+  // in uninterruptible sleep and stops answering requests at all.
+  const network = (options.probeNetworkFilesystem ?? networkFilesystemName)(
+    options.dataDir,
+  );
+  if (network) {
+    throw new DiscoveryStorageError(
+      `Refusing to open ${path}: the data directory is on ${network}, where every SQLite lock is a network round trip that stalls the server. Set YEP_DATA_DIR to a directory on local disk.`,
+    );
+  }
+  let database: SqliteDatabase | undefined;
+  try {
+    database = driver.open(path);
+    // A short, bounded wait also applies while obtaining the migration lock.
+    database.exec("PRAGMA busy_timeout = 250");
+    database.exec("PRAGMA foreign_keys = ON");
+    migrateDiscoveryDatabase(database);
+    return database;
+  } catch (error) {
+    try {
+      database?.close();
+    } catch {
+      // Report the open failure; a failed close of a half-open handle adds nothing.
+    }
+    throw new DiscoveryStorageError(
+      `Cannot open ${path}: ${errorMessage(error)}`,
+      { cause: error },
+    );
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The required database connection for one server, owned below the YA data dir. */
 export class DiscoverySqliteService {
   private database: SqliteDatabase | undefined;
-  private state: SqliteStatus["state"] = "disabled";
-  private networkFilesystem: string | undefined;
-  private readonly onError: ((error: unknown) => void) | undefined;
 
-  constructor(options: {
-    dataDir: string;
-    mode: SqliteMode;
-    loadDriver?: () => SqliteDriver | undefined;
-    onError?: (error: unknown) => void;
-    /** Injected by tests; production probes the real data directory. */
-    probeNetworkFilesystem?: (dir: string) => string | undefined;
-  }) {
-    this.onError = options.onError;
-    if (options.mode === "off") return;
-    try {
-      const driver = (options.loadDriver ?? loadSqliteDriver)();
-      if (!driver) {
-        this.state = "unsupported";
-        return;
-      }
-      mkdirSync(options.dataDir, { recursive: true });
-      // Both adapters are synchronous and SQLite takes an advisory lock per
-      // transaction, so on a share every one of those locks is a network round
-      // trip taken on the event loop. A busy server spends most of each second
-      // in uninterruptible sleep and stops answering requests at all. Losing
-      // the features this database backs is a far smaller harm, so refuse
-      // rather than open. `on` is the escape for a share fast enough to take it.
-      const network =
-        options.mode === "on"
-          ? undefined
-          : (options.probeNetworkFilesystem ?? networkFilesystemName)(
-              options.dataDir,
-            );
-      if (network) {
-        this.state = "error";
-        this.networkFilesystem = network;
-        options.onError?.(
-          new Error(
-            `Refusing to open ${join(options.dataDir, "discovery.sqlite")}: the data directory is on ${network}, where every SQLite lock is a network round trip that stalls the server. Set YEP_DATA_DIR to a directory on local disk, or YEP_SQLITE=on to open it anyway.`,
-          ),
-        );
-        return;
-      }
-      this.database = driver.open(join(options.dataDir, "discovery.sqlite"));
-      // A short, bounded wait also applies while obtaining the migration lock.
-      this.database.exec("PRAGMA busy_timeout = 250");
-      this.database.exec("PRAGMA foreign_keys = ON");
-      migrateDiscoveryDatabase(this.database);
-      this.state = "ready";
-    } catch (error) {
-      this.state = "error";
-      try {
-        this.database?.close();
-      } catch {
-        // Preserve the initialization error; optional teardown must not abort boot.
-      } finally {
-        this.database = undefined;
-        options.onError?.(error);
-      }
-    }
+  /** Throws {@link DiscoveryStorageError} when the database cannot be opened. */
+  constructor(options: Parameters<typeof openDiscoveryDatabase>[0]) {
+    this.database = openDiscoveryDatabase(options);
   }
 
   getStatus(): SqliteStatus {
-    return {
-      state: this.state,
-      ...(this.networkFilesystem
-        ? { networkFilesystem: this.networkFilesystem }
-        : {}),
-    };
+    return { state: this.database ? "ready" : "disabled" };
   }
 
-  /** Consumers must still gate their own feature contract before using this. */
-  getDatabase(): SqliteDatabase | undefined {
+  getDatabase(): SqliteDatabase {
+    if (!this.database) throw new Error("Discovery database is closed");
     return this.database;
   }
 
   close(): void {
+    const database = this.database;
+    this.database = undefined;
     try {
-      this.database?.close();
-      if (this.state === "ready") this.state = "disabled";
+      database?.close();
     } catch (error) {
-      this.state = "error";
-      this.onError?.(error);
-    } finally {
-      this.database = undefined;
+      console.warn("[DiscoverySqlite] Close failed:", error);
     }
   }
 }

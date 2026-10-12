@@ -2,7 +2,9 @@
 /**
  * Removes stale cached external-provider session rows from YA indexes and
  * metadata. This never deletes provider-native session data; it only edits YA
- * cache/metadata files under the configured data directory.
+ * cache files and session metadata in the SQLite database under the configured
+ * data directory. Stop the server first: a running server keeps its own copy of
+ * session metadata and would write it back.
  *
  * Usage:
  *   pnpm tsx scripts/prune-stale-index-entries.ts --dry-run
@@ -12,9 +14,14 @@
  *   pnpm tsx scripts/prune-stale-index-entries.ts --archive-pattern="resume last-session" --dry-run
  */
 
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { homedir } from "node:os";
 import * as path from "node:path";
+import {
+  loadSqliteDriver,
+  type SqliteDatabase,
+} from "../packages/server/src/storage/sqlite.js";
 
 const DEFAULT_DATA_DIR = path.join(homedir(), ".yep-anywhere");
 const EXTERNAL_PROVIDERS = ["grok", "codex", "gemini"] as const;
@@ -46,10 +53,76 @@ interface SessionIndexFile {
   [key: string]: unknown;
 }
 
-interface SessionMetadataFile {
-  sessions?: Record<string, Record<string, unknown>>;
-  version?: unknown;
-  [key: string]: unknown;
+type SessionMetadataRow = Record<string, unknown>;
+
+/**
+ * Session metadata rows as the server last wrote them. This edits rows
+ * directly rather than through the server's startup path, so a dry run never
+ * migrates, imports or rewrites anything.
+ */
+class SessionMetadataRows {
+  readonly rows = new Map<string, SessionMetadataRow>();
+
+  private constructor(private readonly database: SqliteDatabase) {
+    for (const row of database
+      .prepare("SELECT session_id, metadata FROM session_metadata")
+      .all<{ session_id: string; metadata: string }>()) {
+      this.rows.set(row.session_id, JSON.parse(row.metadata));
+    }
+  }
+
+  static open(dataDir: string): SessionMetadataRows | null {
+    const file = path.join(dataDir, "discovery.sqlite");
+    if (!existsSync(file)) return null;
+    const driver = loadSqliteDriver();
+    if (!driver) throw new Error("This runtime has no built-in SQLite");
+    const database = driver.open(file);
+    try {
+      database.exec("PRAGMA busy_timeout = 250");
+      const imported = database
+        .prepare(
+          "SELECT 1 AS imported FROM sqlite_schema WHERE name = 'session_metadata_import'",
+        )
+        .get();
+      if (
+        !imported ||
+        !database.prepare("SELECT 1 FROM session_metadata_import").get()
+      ) {
+        throw new Error(
+          "Session metadata has not been imported into discovery.sqlite yet. Start the upgraded server once, stop it, and rerun.",
+        );
+      }
+      return new SessionMetadataRows(database);
+    } catch (error) {
+      database.close();
+      throw error;
+    }
+  }
+
+  remove(sessionIds: string[]): void {
+    const statement = this.database.prepare(
+      "DELETE FROM session_metadata WHERE session_id = ?",
+    );
+    this.database.transaction(() => {
+      for (const sessionId of sessionIds) statement.run(sessionId);
+    });
+  }
+
+  archive(sessionIds: Iterable<string>): void {
+    const statement = this.database.prepare(
+      "INSERT INTO session_metadata (session_id, metadata) VALUES (?, ?) ON CONFLICT (session_id) DO UPDATE SET metadata = excluded.metadata",
+    );
+    this.database.transaction(() => {
+      for (const sessionId of sessionIds) {
+        const row = { ...this.rows.get(sessionId), isArchived: true };
+        statement.run(sessionId, JSON.stringify(row));
+      }
+    });
+  }
+
+  close(): void {
+    this.database.close();
+  }
 }
 
 interface RemovedRow {
@@ -286,15 +359,12 @@ async function pruneIndexFile(
   return removed.length;
 }
 
-async function pruneMetadata(options: CleanupOptions): Promise<number> {
-  const metaPath = path.join(options.dataDir, "session-metadata.json");
-  const meta = await readJsonFile<SessionMetadataFile>(metaPath);
-  if (!meta || !isRecord(meta.sessions)) {
-    return 0;
-  }
-
+async function pruneMetadata(
+  options: CleanupOptions,
+  metadata: SessionMetadataRows,
+): Promise<number> {
   const removed: string[] = [];
-  for (const [sessionId, row] of Object.entries(meta.sessions)) {
+  for (const [sessionId, row] of metadata.rows) {
     const provider = providerFrom(row.provider);
     if (!providerWanted(provider, options.providers)) {
       continue;
@@ -303,7 +373,6 @@ async function pruneMetadata(options: CleanupOptions): Promise<number> {
       continue;
     }
     removed.push(sessionId);
-    delete meta.sessions[sessionId];
   }
 
   if (removed.length === 0) {
@@ -311,7 +380,7 @@ async function pruneMetadata(options: CleanupOptions): Promise<number> {
   }
 
   console.log(
-    `\nsession-metadata.json: ${removed.length} dead external session record(s)`,
+    `\nsession metadata: ${removed.length} dead external session record(s)`,
   );
   for (const id of removed.slice(0, 3)) {
     console.log(`  - ${id}`);
@@ -320,7 +389,9 @@ async function pruneMetadata(options: CleanupOptions): Promise<number> {
     console.log(`  ... +${removed.length - 3} more`);
   }
 
-  await writeJsonFile(metaPath, meta, options.dryRun);
+  if (!options.dryRun) {
+    metadata.remove(removed);
+  }
   return removed.length;
 }
 
@@ -332,6 +403,7 @@ async function archiveByPattern(
   indexesDir: string,
   options: CleanupOptions,
   patternText: string,
+  metadata: SessionMetadataRows | null,
 ): Promise<number> {
   let pattern: RegExp;
   try {
@@ -378,19 +450,15 @@ async function archiveByPattern(
     // Missing indexes are handled by the main prune pass; no archive matches here.
   }
 
-  const metaPath = path.join(options.dataDir, "session-metadata.json");
-  const existingMeta = await readJsonFile<SessionMetadataFile>(metaPath);
-  if (existingMeta && isRecord(existingMeta.sessions)) {
-    for (const [sessionId, row] of Object.entries(existingMeta.sessions)) {
-      if (!rowProviderAllowed(row, options.providers)) {
-        continue;
-      }
-      if (
-        textMatchesPattern(row.customTitle, pattern) ||
-        textMatchesPattern(row.initialPrompt, pattern)
-      ) {
-        toArchive.add(sessionId);
-      }
+  for (const [sessionId, row] of metadata?.rows ?? []) {
+    if (!rowProviderAllowed(row, options.providers)) {
+      continue;
+    }
+    if (
+      textMatchesPattern(row.customTitle, pattern) ||
+      textMatchesPattern(row.initialPrompt, pattern)
+    ) {
+      toArchive.add(sessionId);
     }
   }
 
@@ -411,22 +479,15 @@ async function archiveByPattern(
     console.log(`  ... +${toArchive.size - 5} more`);
   }
 
-  const meta: SessionMetadataFile = existingMeta ?? {
-    sessions: {},
-    version: 1,
-  };
-  meta.sessions ??= {};
-  for (const sessionId of toArchive) {
-    meta.sessions[sessionId] = {
-      ...meta.sessions[sessionId],
-      isArchived: true,
-    };
-  }
-  await writeJsonFile(metaPath, meta, options.dryRun);
   if (!options.dryRun) {
-    console.log(
-      "  Wrote isArchived=true into session-metadata.json for matches.",
-    );
+    if (!metadata) {
+      console.log(
+        "  No discovery.sqlite in this data directory; nothing archived. Start the server once first.",
+      );
+      return 0;
+    }
+    metadata.archive(toArchive);
+    console.log("  Archived the matching sessions in session metadata.");
   }
   return toArchive.size;
 }
@@ -509,15 +570,27 @@ async function main(): Promise<void> {
     console.log("No indexes directory; nothing to do.");
   }
 
-  total += await pruneMetadata({ dryRun, dataDir, providers });
+  const metadata = SessionMetadataRows.open(dataDir);
+  try {
+    if (metadata) {
+      total += await pruneMetadata({ dryRun, dataDir, providers }, metadata);
+    } else {
+      console.log(
+        "No discovery.sqlite; start the upgraded server once to migrate session metadata.",
+      );
+    }
 
-  const archivePattern = argValue(archiveArg);
-  if (archivePattern) {
-    total += await archiveByPattern(
-      indexesDir,
-      { dryRun, dataDir, providers },
-      archivePattern,
-    );
+    const archivePattern = argValue(archiveArg);
+    if (archivePattern) {
+      total += await archiveByPattern(
+        indexesDir,
+        { dryRun, dataDir, providers },
+        archivePattern,
+        metadata,
+      );
+    }
+  } finally {
+    metadata?.close();
   }
 
   console.log(

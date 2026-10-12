@@ -17,12 +17,7 @@ import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
 import { useRemoteConnection } from "../contexts/RemoteConnectionContext";
 import { signInRequiredState } from "../hooks/useSignInRequiredNotice";
 import { useI18n } from "../i18n";
-import {
-  clearHostSession,
-  loadSavedHosts,
-  removeHost,
-  type SavedHost,
-} from "../lib/hostStorage";
+import { loadSavedHosts, removeHost, type SavedHost } from "../lib/hostStorage";
 import { relayEndpoints } from "../lib/connection/relayEndpoints";
 
 type HostStatus = "online" | "offline" | "checking" | "unknown";
@@ -161,9 +156,8 @@ export function HostPickerPage() {
             : t("hostPickerErrorConnectionFailed");
         const reason = categorizeResumeError(err);
         if (requiresResumeLogin(reason)) {
-          // The server confirmed the saved session is gone, so the only way
-          // forward is the login form; it explains why it appeared.
-          clearHostSession(host.id);
+          // A received refusal requires fresh login under the existing policy.
+          // The transport owns retirement of the exact attempted session.
           navigate(
             host.mode === "relay" ? relayLoginPath(host) : "/login/direct",
             { state: signInRequiredState(reason) },
@@ -181,10 +175,10 @@ export function HostPickerPage() {
 
   // Delete a host
   const handleDeleteHost = useCallback(
-    (hostId: string, e: React.MouseEvent) => {
+    async (hostId: string, e: React.MouseEvent) => {
       e.stopPropagation();
       if (confirm(t("hostPickerRemoveConfirm"))) {
-        removeHost(hostId);
+        await removeHost(hostId);
         setHosts((prev) => prev.filter((h) => h.id !== hostId));
       }
     },
