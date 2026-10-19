@@ -7,6 +7,9 @@
   color: var(--cockpit-text);
   font-size: clamp(0.86rem, 1.3vw, 0.93rem);
   line-height: 1.68;
+  /* A long link or path wraps instead of widening the transcript, which on
+     a phone made the whole conversation pan sideways (Joscha 19.10.2026). */
+  overflow-wrap: anywhere;
 }
 
 .plainText,

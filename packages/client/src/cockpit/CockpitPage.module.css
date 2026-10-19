@@ -70,6 +70,17 @@
   font-family: var(--font-ui);
 }
 
+/* The Cockpit is a fixed app shell; the document itself never scrolls. In
+   the Mac app (WKWebView) a trackpad overscroll outside a scroller
+   rubber-banded the whole page and it could stay shifted down until a
+   restart (Joscha 19.10.2026). Touch screens keep pull-to-refresh. */
+@media (hover: hover) and (pointer: fine) {
+  html:has(.root),
+  body:has(.root) {
+    overscroll-behavior: none;
+  }
+}
+
 /* One slim, quiet scrollbar everywhere in the Cockpit. Chromium draws
    arrow buttons for standard scrollbars on Linux, so it gets the WebKit
    pseudo-elements (which it ignores once scrollbar-color is set); other
