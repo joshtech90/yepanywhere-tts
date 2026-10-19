@@ -78,13 +78,15 @@ export function useCockpitComposer(
   const { t } = useI18n();
   const { providers } = useProviders();
   const [attachmentQuality] = useAttachmentUploadQuality();
+  const sessionProvider = sessionPort.session?.provider;
+  const sessionModel = sessionPort.session?.model;
   const providerCapabilities = useMemo(
     () =>
       resolveSessionProviderCapabilities({
         providers,
-        providerName: sessionPort.session?.provider,
+        providerName: sessionProvider,
       }),
-    [providers, sessionPort.session?.provider],
+    [providers, sessionProvider],
   );
   const actions = deriveCockpitComposerActions({
     processState: sessionPort.processState,
@@ -226,8 +228,8 @@ export function useCockpitComposer(
         sessionId,
         imageProfile: getAttachmentUploadProfile(
           attachmentQuality,
-          providers.find((p) => p.name === sessionPort.session?.provider),
-          sessionPort.session?.model,
+          providers.find((p) => p.name === sessionProvider),
+          sessionModel,
         ),
         signal: controller.signal,
         onProgress: (bytesUploaded, uploadFile) => {
@@ -269,7 +271,16 @@ export function useCockpitComposer(
           }
         });
     },
-    [attachmentQuality, projectId, runtime.transport, sessionId, t],
+    [
+      attachmentQuality,
+      projectId,
+      providers,
+      runtime.transport,
+      sessionId,
+      sessionModel,
+      sessionProvider,
+      t,
+    ],
   );
 
   const attachFiles = useCallback(
