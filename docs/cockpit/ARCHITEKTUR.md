@@ -605,6 +605,19 @@ Ausgangshoehe schaltet auf die Tastaturgeometrie um. Damit bleibt die untere
 Navigation am tatsaechlichen Bildschirmrand, ohne den Composer bei einer echten
 Tastatur zu verdecken.
 
+Das Dokument selbst scrollt nie, auch nicht seitwaerts (19.10.2026):
+
+- Mit Maus oder Trackpad (`hover: hover` und `pointer: fine`) haben `html` und
+  `body` unter dem Cockpit `overscroll-behavior: none`. Ohne das liess WebKit
+  in der Mac-App (WKWebView) die ganze Seite beim Ueberscrollen ausserhalb
+  eines Scrollbereichs federn, und sie blieb um bis zu ~160 px nach unten
+  verschoben haengen, bis die App neu startete. Touchgeraete behalten
+  Pull-to-Refresh.
+- Antworttext im Transcript (Markdown und Klartext) bricht lange Links und
+  Pfade mit `overflow-wrap: anywhere` um. Ein einziger langer Link machte den
+  Transcript am Handy breiter als den Bildschirm, sodass sich der ganze Verlauf
+  seitwaerts schieben liess. Codebloecke und Tabellen scrollen weiterhin in sich.
+
 ### Globale Codex-Update-Anzeige auf Cockpit-Routen
 
 Der bestehende appweite `CodexUpdatePrompt` bleibt fuer alle bisherigen Routen
