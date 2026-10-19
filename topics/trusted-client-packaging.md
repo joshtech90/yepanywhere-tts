@@ -48,9 +48,9 @@ release channel loads a fixed YA HTTPS origin for Play internal or closed
 testing. Neither channel accepts an arbitrary runtime UI URL. Its native host
 is exact-origin and main-frame bound and exposes only declared high-level
 methods. The small control-plane methods are `host.describe`,
-`notifications.status`, and
-the explicitly user-triggered `notifications.requestPermission`; no method
-exports native credentials.
+`notifications.status`, and the explicitly user-triggered
+`notifications.requestPermission` and `notifications.manage`, which opens the
+native Servers screen; no method exports native credentials.
 
 The signed Android package also owns one platform-native launcher identity:
 YA's white Y over the established green gradient. Android 8 and later receive
@@ -170,6 +170,187 @@ and relaunch, and native Switch Host. The Apple device target links separately;
 physical-device, signing and notification delivery remain release acceptance.
 Reproducible commands and packaging limits live in
 [the iOS README](../packages/ios/README.md).
+
+## Chrome Extension Client
+
+The experimental Chrome extension (id `dgeameddpnggdeenoekpiaacfghdodch`,
+[plan 151](../docs/tactical/151-chrome-extension-client.md)) serves the full
+remote client from its own origin and adds a side panel. Other extensions
+cannot inject into or debug its pages, and its storage belongs to it alone.
+
+- **Permissions.** Installed with `sidePanel`, `storage`, `activeTab` and
+  `contextMenus` only, none of which shows an install warning. Host access
+  is optional and granted per site by the user from the side panel or
+  Settings → Browser extension; there are no content scripts, no `tabs`
+  permission and no `externally_connectable` entry.
+- **Site access invitation.** When the current site's access is missing, the
+  side panel shows a compact, neutral **Allow scanning this page** disclosure
+  above its content, even without a recognized issue, a toolbar click, or a
+  connected host. It starts collapsed; the explanatory text, illustration and
+  any site permission button appear only after expansion. The disclosure can
+  be collapsed again, starts collapsed on another tab or site, and stays expanded
+  when a toolbar click reveals the same tab's address. Expanding it does not
+  request permission or scan a page. When Chrome hides the address, the invitation
+  shows an illustration of Chrome's
+  address bar with the green Yep Anywhere icon highlighted, and two steps:
+  click that browser toolbar icon, then allow the named site in the panel and
+  approve Chrome's permission prompt. If the icon is hidden, instructions point
+  to the puzzle-piece Extensions menu and its Yep Anywhere entry. This state
+  offers no permission button and does not call `addHostAccessRequest`: that
+  API can succeed without displaying Chrome's separately gated approval UI.
+  Once the toolbar click makes the HTTP(S) address readable, the same panel
+  replaces the instructions with **Allow {site}…**, requesting that exact origin
+  directly from the button's gesture. This is persistent per-site access, not
+  a one-page scan. Granting access removes the invitation; revocation restores
+  it. Denial or failure leaves it retryable and explains what happened. Known
+  internal/extension pages do not offer access; an unreadable restricted page
+  can show the generic instructions until its address becomes known.
+  Nothing reads page contents, requests broad `tabs` permission, grants YA
+  server authority, or changes the automatic-lookup setting. This always-visible
+  invitation was explicitly authorized by the maintainer on 2026-10-16.
+- **Credentials.** Saved hosts and resume sessions stay in the extension
+  origin's `localStorage` under the existing compare-and-set rules. Extension
+  pages mirror that record into `chrome.storage.local` after each write, for
+  the background worker only; the worker reads it, resumes the saved session
+  on demand, and never writes a credential. Saved logins never enter
+  `chrome.storage.sync`.
+- **Contexts.** The app tab, the side panel and the background worker each
+  connect to a host when they need it and close idle connections; nothing
+  keeps a persistent background page or offscreen document.
+- **Side panel.** Opens from the toolbar button. On a GitHub issue/PR or Jira
+  page it lists, across the active hosts, the sessions that mention that item
+  by exact identity. On a session page, in the extension's own app tab or in
+  the hosted app on `yepanywhere.com` and its subdomains, it lists that
+  session's issues and PRs from the active host whose relay username the
+  route names, and says so when no active host matches; opening one opens
+  the tracker page in a new tab. The app tab publishes its route to
+  `chrome.storage.session` for this, since the panel cannot read its
+  address, and withdraws it when the page goes away. Elsewhere the panel
+  lists sessions needing input, running and recent; each group collapses
+  from its heading, and collapsed groups stay collapsed across panel opens
+  (extension-origin `localStorage`). The top of the panel always has a
+  "+ New session" button, which opens the default host's new-session page
+  in a dedicated popup window. On an issue or PR page it also has "+ New
+  session about this", which opens the same window with the item's address
+  already in the composer and, for GitHub, the project whose name matches
+  the repository selected. There is at most one such window: the buttons
+  bring it forward and show their new-session page in it in place (a plain
+  "+ New session" leaves a new-session page it already shows alone), and
+  opening sessions or the app from the panel never navigates it. It saves
+  its own size and place, opens narrower than the desktop layout so the app
+  shows no sidebar, and Ctrl/⌘-click opens an ordinary app page instead.
+  A session page is looked up whenever its address is readable, regardless
+  of the issue allowlist. A toolbar click makes the clicked page readable
+  once (`activeTab`);
+  automatic lookup and the per-tab badge count need granted site access and
+  respect the optional repository/project allowlist. Opening a session
+  navigates the existing YA tab in place, or opens one.
+- **Opening the app.** The side panel header has an "Open Yep Anywhere"
+  button, and the toolbar button's right-click menu has "Open Yep
+  Anywhere" and "Open Yep Anywhere in a popup window". "Open Yep Anywhere"
+  brings the most recently used YA tab or popup forward without
+  navigating it, or opens a new app page. The popup item always opens a
+  new popup window. When the toolbar button is set to open the app, the
+  menu also offers "Open the side panel", which reads the clicked page
+  once as a toolbar click does. Menu items appear only on the toolbar
+  button, never on web pages.
+- **Popup window.** With Settings → Browser extension → "Open Yep Anywhere
+  as" set to a popup window, every new YA page the toolbar button or the
+  side panel opens is a Chrome popup window (no tabs or address bar) instead
+  of a tab. A popup counts as the existing YA tab for later opens. Each
+  popup saves its size and place when resized or closed, and the next popup
+  opens there, falling back to a default size when Chrome rejects those
+  bounds. The default is a browser tab.
+- **Settings.** Settings → Browser extension appears only on the extension
+  origin and stores its values in `chrome.storage.local`, not on any host.
+- **Known unavailable.** Push notifications, streamed downloads, HTML
+  artifact previews and direct (LAN) hosts. The update path is the store
+  item; until a signed-update policy exists the store account is the trust
+  root.
+- **Publication.** The extension has its own three-part store version in
+  `packages/browser-extension/package.json`, independent of server versions.
+  `scripts/release-extension.sh <version>` bumps it and atomically pushes main
+  and the matching `extension-v<version>` tag after a committed changelog entry.
+  Tagged main-branch releases build, audit and exercise the exact upload ZIP,
+  then submit that artifact for automatic publication after Google's review.
+  A dedicated GitHub environment uses Google workload identity federation and
+  a publisher-linked service account, without stored keys. This deployment
+  principal is separate from YA owner/user/device grants. Trust is restricted
+  to this repository, workflow, environment, main and extension release tags.
+  Publication checks the pinned store id/public key, clean source revision and
+  ZIP checksum. It refuses policy warnings and older versions. A strictly
+  newer accepted candidate cancels an older pending or staged submission,
+  confirms cancellation, then uploads and submits the replacement. Same-version
+  retries recognize an already submitted or published version; an older run
+  cannot cancel a newer submission. Publishing jobs are serialized, and store
+  status is checked again after cancellation to catch approval races. Failed
+  builds leave the previous review intact. Cancellation and replacement are
+  separate API operations: an upload/submission failure after cancellation
+  leaves the old candidate out of review until recovery. The installed public
+  version remains available. Cancellation is attempted once per run; status
+  polling is bounded, and Google's publisher-wide cancellation quota applies.
+  A GitHub release retains the ZIP, checksum, source record
+  and store receipt after submission, without claiming review has completed.
+  Manual `package` dispatch only builds artifacts; `check` on main performs
+  authentication and a read-only store status check. The ZIP preserves the
+  public-key-derived id, contains all scripts locally, and requests only the
+  permissions listed above. Listing/privacy changes still use the dashboard.
+  Store assets, setup and release commands live in
+  [store preparation](../docs/distribution/chrome-extension/README.md).
+
+### Chrome extension development build
+
+`pnpm dev --extension` owns a separate, opt-in extension watcher; standalone
+`pnpm --filter @yep-anywhere/browser-extension dev` uses the same coordinator.
+Both write `packages/browser-extension/dist-dev`, never the release `dist`.
+The manifest uses the existing public key/id and permissions, with the name
+**Yep Anywhere (Dev)**. Consequently dev and store builds of that id cannot be
+installed alongside one another in one Chrome profile; use a separate browser
+profile when keeping the store installation. No YA server capability is needed:
+the build signal is a packaged file and all controls are extension-local.
+
+The coordinator serializes and debounces builds, bounds recursive watches to
+fixed source roots (at most 2,048 directories before acquisition), coalesces
+edits during a build, and publishes only completed generations. A PID/nonce
+lock excludes another owner of the same output. Shutdown releases watches,
+stops the active compiler and removes its own lock. Temporary builds and the
+lock live under ignored `node_modules/.cache/ya-extension-dev`.
+
+Successful publication copies dependency assets before entrypoints and writes
+`dev-build.json` last via rename. Compile failures leave the prior build.
+Hashed assets retain the current and previous successful generations; a panel
+left open across further builds may need a refresh before loading old lazy
+chunks. The signal records a unique generation, build time, canonical manifest
+and worker fingerprint; it has no credentials or server data.
+
+Only development side panels show the footer. While visible, they check their
+own packaged signal every 1.5 seconds with no overlapping fetches; hiding or
+unmounting tears polling down. **Reload extension** is always available, even
+when no update is detected or build metadata is unavailable; it calls
+`runtime.reload()` to reload the whole extension, including its worker and
+manifest. A separate **Reload panel** / **Update panel** control refreshes only
+the page, keeping Chrome's native side panel open. When a detected update
+requires a worker or manifest reload, only the full reload action is offered
+and highlighted. Controls wrap at narrow widths. A one-shot, 30-second window
+snapshot in extension-local storage preserves up to 256 open extension tabs:
+their exact URLs (including session ids, query and fragment), order, active and
+pinned state, and normal/popup window placement. `runtime.getContexts` reads
+only this extension's own top-level pages, without `tabs` permission. Chrome
+closes these pages on a full reload; the replacement worker waits for service
+worker activation before recreating them, so deep session URLs can load through
+its navigation handler without a manual page to wake it. Popup tabs reset by
+Chrome to New Tab are returned to their saved URL in place. A surviving tab with
+a readable unrelated URL is left alone. New-session popups retain their dedicated role.
+The snapshot is consumed before opening anything and ignored when older than
+30 seconds or future-dated, so later starts cannot duplicate or resurrect it.
+Sign-in URL credentials are stripped; draft text, logins and sidebar groups
+continue using their existing storage rather than being copied into this
+snapshot. Transient menus and cursor/selection state are not snapshotted.
+The worker also attempts to reopen the panels in their prior windows. Chrome
+can reject this without a fresh user gesture; the next toolbar click then opens
+the panel even when the usual action is Open app. No extra
+permission, local HTTP build endpoint, auto reload or service-worker keepalive
+is introduced. Production builds omit the signal, controls and worker hooks.
 
 ## Deferred Verification Setup
 

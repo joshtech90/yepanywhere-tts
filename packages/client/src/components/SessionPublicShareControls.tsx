@@ -9,6 +9,7 @@ import styles from "./SessionPublicShareControls.module.css";
 
 interface SessionPublicShareControlsProps {
   enabled: boolean;
+  indicatorVisible?: boolean;
   projectId: string;
   sessionId: string;
   storageState: PublicShareStorageState | undefined;
@@ -32,6 +33,7 @@ interface SessionPublicShareControlsProps {
  */
 export function SessionPublicShareControls({
   enabled,
+  indicatorVisible = true,
   projectId,
   sessionId,
   storageState,
@@ -48,7 +50,7 @@ export function SessionPublicShareControls({
   t,
 }: SessionPublicShareControlsProps) {
   const { status, updateStatus } = usePublicSessionShareStatus({
-    enabled,
+    enabled: enabled && (indicatorVisible || modalOpen),
     projectId,
     sessionId,
     storageState,
@@ -60,7 +62,7 @@ export function SessionPublicShareControls({
 
   return (
     <>
-      {showIndicator && (
+      {indicatorVisible && showIndicator && (
         <ViewerCountIndicator
           className={styles.viewerCount}
           count={
@@ -95,5 +97,37 @@ export function SessionPublicShareControls({
         />
       )}
     </>
+  );
+}
+
+/** Mounted only inside the open overflow menu; no hidden header polling. */
+export function SessionShareMenuLabel({
+  enabled,
+  projectId,
+  sessionId,
+  storageState,
+  t,
+}: Pick<
+  SessionPublicShareControlsProps,
+  "enabled" | "projectId" | "sessionId" | "storageState" | "t"
+>) {
+  const { status } = usePublicSessionShareStatus({
+    enabled,
+    projectId,
+    sessionId,
+    storageState,
+  });
+  return (
+    <span className={styles.menuLabel}>
+      {t("sessionMenuShare")}
+      {status && (
+        <span className={styles.menuCounts}>
+          {t("sessionShareMenuCounts", {
+            viewers: status.activeViewerCount,
+            links: status.activeCount,
+          })}
+        </span>
+      )}
+    </span>
   );
 }

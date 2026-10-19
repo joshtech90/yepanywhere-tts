@@ -7,10 +7,12 @@ import {
   type AppSessionSummary,
   type EffortLevel,
   type ModelInfo,
+  type ProviderSessionDefaults,
   type ThinkingOption,
 } from "@yep-anywhere/shared";
 import { useI18n } from "../i18n";
 import { FilterDropdown } from "./FilterDropdown";
+import styles from "./RouterPoolSelector.module.css";
 export interface RouterSelection {
   sourceKey: string;
   poolId: string;
@@ -19,7 +21,50 @@ export interface RouterSelection {
   /** A policy overriding the pool default; absent means the default. */
   policy?: string;
 }
-import styles from "./RouterPoolSelector.module.css";
+
+export function preferredRouterSelection(
+  defaults: ProviderSessionDefaults,
+  sourceKey: string,
+): RouterSelection | null {
+  return defaults.routerPoolId
+    ? {
+        sourceKey,
+        poolId: defaults.routerPoolId,
+        accountId: defaults.routerAccountId ?? "",
+        ...(defaults.routerPolicy ? { policy: defaults.routerPolicy } : {}),
+      }
+    : null;
+}
+
+/** Restore only currently usable preferences, without changing the saved pick. */
+export function restoreRouterSelection(
+  preference: RouterSelection | null,
+  data: AgentAuthRouterOverview | null,
+  provider: string | null,
+  model: string | null,
+  thinking: ThinkingOption,
+): RouterSelection | null {
+  if (!preference || !data) return null;
+  const pool = data.pools.find(
+    (p) => p.id === preference.poolId && p.provider === provider,
+  );
+  if (!pool) return null;
+  const members = routerPoolMembers(data, pool.id, provider, model, thinking);
+  if (!members.length) return null;
+  if (preference.accountId) {
+    return members.some((a) => a.id === preference.accountId)
+      ? preference
+      : null;
+  }
+  if (
+    preference.policy &&
+    !routerPolicies(data).some((p) => p.id === preference.policy)
+  )
+    return null;
+  return (preference.policy ?? pool.policy) === "manual" && members.length !== 1
+    ? null
+    : preference;
+}
 
 const DIRECT = "";
 

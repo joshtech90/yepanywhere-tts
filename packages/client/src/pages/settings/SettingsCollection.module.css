@@ -58,6 +58,13 @@
   background: var(--bg-hover);
   border-color: var(--border-color);
 }
+/* The whole row expands, so the whole row shows it is one target. */
+.list tr[data-expandable] {
+  cursor: pointer;
+}
+.list tr[data-expandable]:hover > td {
+  background: var(--bg-hover);
+}
 .detail {
   display: grid;
   gap: 12px;

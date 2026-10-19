@@ -7,8 +7,11 @@ import {
   MAX_CLEARLOOP_INACTIVITY_SECONDS,
   MAX_PROJECT_QUEUE_QUIET_SECONDS,
   MIN_CLEARLOOP_INACTIVITY_SECONDS,
+  PATIENT_TOPIC_SHIFT_CAPABILITY,
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   type ProjectQueueReadinessCommand,
+  RENDEZ_PROJECT_STATUS_CAPABILITY,
+  RENDEZ_UPLOADS_CAPABILITY,
   SESSION_REWIND_CAPABILITY,
   clampClearloopInactivitySeconds,
   clampProjectQueueQuietSeconds,
@@ -18,8 +21,14 @@ import {
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
+import {
+  type AttachmentUploadQuality,
+  useAttachmentUploadQuality,
+} from "../../hooks/useAttachmentUploadQuality";
 import { useKeepMobileKeyboardOpenAfterDelivery } from "../../hooks/useKeepMobileKeyboardOpenAfterDelivery";
 import { useQuestionAsideSetting } from "../../hooks/useQuestionAsideSetting";
+import { api } from "../../api/client";
+import { useProjects } from "../../hooks/useProjects";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
@@ -27,6 +36,7 @@ import { serverSupportsBangCommands } from "../../lib/bangCommandAvailability";
 import { serverSupportsProjectQueue } from "../../lib/projectQueueVisibility";
 import { SettingsItem } from "./SettingsItem";
 import { ProjectQueueReadinessSettings } from "./ProjectQueueReadinessSettings";
+import { RendezSettings, type RendezSettingsValue } from "./RendezSettings";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsUndo } from "./SettingsUndoContext";
@@ -68,6 +78,75 @@ function parseClearloopInactivityText(value: string): number | null {
   return clampClearloopInactivitySeconds(seconds) ?? null;
 }
 
+/** 100 is Off, never "compact at full context" (topics/patient-topic-shift.md). */
+const PATIENT_COMPACT_OFF_PERCENT = 100;
+
+function PatientCompactThresholdItem({
+  label,
+  description,
+  storedPercent,
+  onCommit,
+}: {
+  label: string;
+  description: string;
+  storedPercent: number | undefined;
+  onCommit: (percent: number) => void;
+}) {
+  const { t } = useI18n();
+  const stored = storedPercent ?? PATIENT_COMPACT_OFF_PERCENT;
+  const [draft, setDraft] = useState(stored);
+  useEffect(() => {
+    setDraft(stored);
+  }, [stored]);
+  const commit = (percent: number) => {
+    const next = Math.min(
+      PATIENT_COMPACT_OFF_PERCENT,
+      Math.max(1, Math.round(percent) || PATIENT_COMPACT_OFF_PERCENT),
+    );
+    setDraft(next);
+    if (next !== stored) onCommit(next);
+  };
+  const valueHint =
+    draft >= PATIENT_COMPACT_OFF_PERCENT
+      ? t("messageDeliveryPatientCompactOff")
+      : t("messageDeliveryPatientCompactOn", { percent: String(draft) });
+  return (
+    <SettingsItem
+      label={label}
+      description={description}
+      valueText={valueHint}
+      className="model-settings-item"
+    >
+      <span className="output-appearance-slider-row">
+        <CommittedRangeInput
+          min={1}
+          max={PATIENT_COMPACT_OFF_PERCENT}
+          step={1}
+          value={draft}
+          aria-label={label}
+          onDraftChange={setDraft}
+          onCommit={commit}
+        />
+        <span className="output-appearance-number-wrap">
+          <input
+            type="number"
+            className="settings-input-small output-appearance-number"
+            min={1}
+            max={PATIENT_COMPACT_OFF_PERCENT}
+            step={1}
+            value={draft}
+            aria-label={label}
+            onChange={(e) => setDraft(Number(e.target.value))}
+            onBlur={() => commit(draft)}
+          />
+          <span className="output-appearance-unit">%</span>
+        </span>
+      </span>
+      <span className="settings-hint">{valueHint}</span>
+    </SettingsItem>
+  );
+}
+
 interface MessageDeliveryBaseline {
   joinWindowSeconds: number;
   projectQueueQuietSeconds: number;
@@ -79,9 +158,66 @@ interface MessageDeliveryBaseline {
   busyComposerDefaultAction: BusyComposerDefaultAction;
   steerNowDefault: boolean;
   patientQueueDefault: boolean;
+  patientQueueCompactAtPercent: number | undefined;
+  topicShiftCompactAtPercent: number | undefined;
   projectQueueCtrlEnterEnabled: boolean;
   keepMobileKeyboardOpenAfterDelivery: boolean;
   questionAsidesEnabled: boolean;
+  attachmentQuality: AttachmentUploadQuality;
+  rendez: RendezSettingsValue;
+}
+
+const RENDEZ_STATUS_REFRESH_MS = 10_000;
+const RENDEZ_OFF: RendezSettingsValue = { enabled: false, projects: {} };
+
+/** Same default and per-project choices, ignoring burst limits. */
+function sameRendezChoices(
+  a: RendezSettingsValue,
+  b: RendezSettingsValue,
+): boolean {
+  const aKeys = Object.keys(a.projects);
+  return (
+    a.enabled === b.enabled &&
+    aKeys.length === Object.keys(b.projects).length &&
+    aKeys.every((path) => a.projects[path] === b.projects[path])
+  );
+}
+
+/**
+ * Which projects' .rendez observers run, refreshed while the pane is open
+ * and visible; null when the server does not report it.
+ */
+function useRendezWatching(supported: boolean): {
+  watching: ReadonlySet<string> | null;
+  refresh: () => void;
+} {
+  const [watching, setWatching] = useState<ReadonlySet<string> | null>(null);
+  const mountedRef = useRef(true);
+  const refresh = useCallback(() => {
+    if (!supported || document.visibilityState === "hidden") return;
+    void api.getRendezStatus().then(
+      (status) => {
+        if (mountedRef.current) setWatching(new Set(status.watching));
+      },
+      () => {
+        // Status is advisory; rows stay configurable without it.
+      },
+    );
+  }, [supported]);
+  useEffect(() => {
+    mountedRef.current = true;
+    if (!supported) {
+      setWatching(null);
+      return;
+    }
+    refresh();
+    const timer = setInterval(refresh, RENDEZ_STATUS_REFRESH_MS);
+    return () => {
+      mountedRef.current = false;
+      clearInterval(timer);
+    };
+  }, [supported, refresh]);
+  return { watching, refresh };
 }
 
 /**
@@ -99,6 +235,18 @@ export function MessageDeliverySettings() {
     PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   );
   const supportsBangCommands = serverSupportsBangCommands(version);
+  const supportsRendez = serverHasCapability(
+    version,
+    RENDEZ_UPLOADS_CAPABILITY,
+  );
+  const supportsRendezStatus = serverHasCapability(
+    version,
+    RENDEZ_PROJECT_STATUS_CAPABILITY,
+  );
+  const supportsTopicShift = serverHasCapability(
+    version,
+    PATIENT_TOPIC_SHIFT_CAPABILITY,
+  );
   const supportsClearloop = serverHasCapability(
     version,
     SESSION_REWIND_CAPABILITY,
@@ -109,6 +257,8 @@ export function MessageDeliverySettings() {
   } = useKeepMobileKeyboardOpenAfterDelivery();
   const { questionAsidesEnabled, setQuestionAsidesEnabled } =
     useQuestionAsideSetting();
+  const [attachmentQuality, setAttachmentQuality] =
+    useAttachmentUploadQuality();
 
   // null drafts mirror the server value; non-null while the user is editing
   // or a save is in flight, cleared once the server catches up.
@@ -135,6 +285,28 @@ export function MessageDeliverySettings() {
     boolean | null
   >(null);
   const baselineRef = useRef<MessageDeliveryBaseline | null>(null);
+  const [draftRendez, setDraftRendez] = useState<RendezSettingsValue | null>(
+    null,
+  );
+  const shownRendez = draftRendez ?? settings?.rendez ?? RENDEZ_OFF;
+  const { watching: rendezWatching, refresh: refreshRendezWatching } =
+    useRendezWatching(supportsRendez && supportsRendezStatus);
+  const { projects: knownProjects } = useProjects();
+  const saveRendez = useCallback(
+    (next: RendezSettingsValue) => {
+      setDraftRendez(next);
+      void updateSettings({ rendez: next })
+        .catch(() => {
+          // surfaced via the hook's error state
+        })
+        .finally(() => {
+          setDraftRendez(null);
+          // Turning a project off stops its observer.
+          refreshRendezWatching();
+        });
+    },
+    [refreshRendezWatching, updateSettings],
+  );
 
   const serverJoinWindowSeconds = settings?.deferredJoinWindowSeconds ?? 0;
   const serverProjectQueueQuietSeconds =
@@ -180,14 +352,25 @@ export function MessageDeliverySettings() {
           settings.clientDefaults?.steerNowDefault ?? DEFAULT_STEER_NOW_ENABLED,
         patientQueueDefault:
           settings.clientDefaults?.patientQueueDefault ?? false,
+        patientQueueCompactAtPercent:
+          settings.clientDefaults?.patientQueueCompactAtPercent,
+        topicShiftCompactAtPercent:
+          settings.clientDefaults?.topicShiftCompactAtPercent,
         projectQueueCtrlEnterEnabled:
           settings.clientDefaults?.projectQueueCtrlEnterEnabled ??
           DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
         keepMobileKeyboardOpenAfterDelivery,
         questionAsidesEnabled,
+        attachmentQuality,
+        rendez: settings.rendez ?? RENDEZ_OFF,
       };
     }
-  }, [keepMobileKeyboardOpenAfterDelivery, questionAsidesEnabled, settings]);
+  }, [
+    attachmentQuality,
+    keepMobileKeyboardOpenAfterDelivery,
+    questionAsidesEnabled,
+    settings,
+  ]);
 
   const shownJoinWindowText =
     draftJoinWindow ?? String(serverJoinWindowSeconds);
@@ -360,16 +543,24 @@ export function MessageDeliverySettings() {
       shownBusyDefaultAction !== baseline.busyComposerDefaultAction ||
       shownSteerNowDefault !== baseline.steerNowDefault ||
       shownPatientQueueDefault !== baseline.patientQueueDefault ||
+      (supportsTopicShift &&
+        (settings?.clientDefaults?.patientQueueCompactAtPercent !==
+          baseline.patientQueueCompactAtPercent ||
+          settings?.clientDefaults?.topicShiftCompactAtPercent !==
+            baseline.topicShiftCompactAtPercent)) ||
       (supportsProjectQueue &&
         shownProjectQueueCtrlEnter !== baseline.projectQueueCtrlEnterEnabled) ||
       keepMobileKeyboardOpenAfterDelivery !==
         baseline.keepMobileKeyboardOpenAfterDelivery ||
-      questionAsidesEnabled !== baseline.questionAsidesEnabled);
+      questionAsidesEnabled !== baseline.questionAsidesEnabled ||
+      attachmentQuality !== baseline.attachmentQuality ||
+      (supportsRendez && !sameRendezChoices(shownRendez, baseline.rendez)));
 
   const undo = useCallback(async () => {
     const snapshot = baselineRef.current;
     if (!snapshot) return;
     setQuestionAsidesEnabled(snapshot.questionAsidesEnabled);
+    setAttachmentQuality(snapshot.attachmentQuality);
     setDraftJoinWindow(null);
     setDraftProjectQueueQuiet(null);
     setDraftClearloopInactivity(null);
@@ -384,6 +575,15 @@ export function MessageDeliverySettings() {
       snapshot.keepMobileKeyboardOpenAfterDelivery,
     );
     await updateSettings({
+      ...(supportsRendez
+        ? {
+            rendez: {
+              ...settings?.rendez,
+              enabled: snapshot.rendez.enabled,
+              projects: snapshot.rendez.projects,
+            },
+          }
+        : {}),
       deferredJoinWindowSeconds: snapshot.joinWindowSeconds,
       ...(supportsProjectQueue
         ? { projectQueueQuietSeconds: snapshot.projectQueueQuietSeconds }
@@ -403,6 +603,13 @@ export function MessageDeliverySettings() {
         busyComposerDefaultAction: snapshot.busyComposerDefaultAction,
         steerNowDefault: snapshot.steerNowDefault,
         patientQueueDefault: snapshot.patientQueueDefault,
+        ...(supportsTopicShift
+          ? {
+              patientQueueCompactAtPercent:
+                snapshot.patientQueueCompactAtPercent,
+              topicShiftCompactAtPercent: snapshot.topicShiftCompactAtPercent,
+            }
+          : {}),
         ...(supportsProjectQueue
           ? {
               projectQueueCtrlEnterEnabled:
@@ -414,12 +621,16 @@ export function MessageDeliverySettings() {
       // surfaced via the hook's error state
     });
   }, [
+    setAttachmentQuality,
     setKeepMobileKeyboardOpenAfterDelivery,
     setQuestionAsidesEnabled,
     supportsBangCommands,
     supportsClearloop,
     supportsProjectQueue,
     supportsReadinessCheck,
+    supportsRendez,
+    supportsTopicShift,
+    settings?.rendez,
     updateSettings,
   ]);
 
@@ -432,6 +643,59 @@ export function MessageDeliverySettings() {
   return (
     <SettingsSection description={t("messageDeliveryDescription")}>
       <div className="settings-group">
+        {supportsRendez ? (
+          <RendezSettings
+            value={shownRendez}
+            projects={knownProjects}
+            watching={rendezWatching}
+            saving={draftRendez !== null}
+            onChange={saveRendez}
+          />
+        ) : (
+          <SettingsItem
+            label={t("rendezDefaultTitle")}
+            description={t("rendezDefaultDescription")}
+            descriptionLayout="full-width-on-narrow"
+            keywords={["rendez", ".rendez", "rendezvous", "upload", "watch"]}
+          >
+            <span className="settings-hint">{t("rendezUnavailable")}</span>
+          </SettingsItem>
+        )}
+        <SettingsItem
+          label={t("attachmentQualityTitle")}
+          description={t("attachmentQualityDescription")}
+          descriptionLayout="full-width-on-narrow"
+          keywords={[
+            "SD",
+            "HD",
+            "image",
+            "photo",
+            "screenshot",
+            "resize",
+            "compression",
+            "resolution",
+            "upload",
+          ]}
+          valueText={
+            attachmentQuality === "sd"
+              ? t("attachmentQualitySd")
+              : t("attachmentQualityHd")
+          }
+        >
+          <select
+            className="settings-select"
+            aria-label={t("attachmentQualityTitle")}
+            value={attachmentQuality}
+            onChange={(event) =>
+              setAttachmentQuality(
+                event.target.value as AttachmentUploadQuality,
+              )
+            }
+          >
+            <option value="sd">{t("attachmentQualitySd")}</option>
+            <option value="hd">{t("attachmentQualityHd")}</option>
+          </select>
+        </SettingsItem>
         <SettingsItem
           label={t("messageDeliveryJoinWindowTitle")}
           description={t("messageDeliveryJoinWindowDescription")}
@@ -723,6 +987,7 @@ export function MessageDeliverySettings() {
           as="label"
           label={t("messageDeliveryPatientQueueDefaultTitle")}
           description={t("messageDeliveryPatientQueueDefaultDescription")}
+          descriptionLayout="full-width-on-narrow"
         >
           <input
             type="checkbox"
@@ -739,6 +1004,39 @@ export function MessageDeliverySettings() {
             aria-label={t("messageDeliveryPatientQueueDefaultTitle")}
           />
         </SettingsItem>
+
+        {supportsTopicShift && (
+          <>
+            <PatientCompactThresholdItem
+              label={t("messageDeliveryPatientQueueCompactTitle")}
+              description={t("messageDeliveryPatientQueueCompactDescription")}
+              storedPercent={
+                settings?.clientDefaults?.patientQueueCompactAtPercent
+              }
+              onCommit={(percent) => {
+                void updateSettings({
+                  clientDefaults: { patientQueueCompactAtPercent: percent },
+                }).catch(() => {
+                  // surfaced via the hook's error state
+                });
+              }}
+            />
+            <PatientCompactThresholdItem
+              label={t("messageDeliveryTopicShiftCompactTitle")}
+              description={t("messageDeliveryTopicShiftCompactDescription")}
+              storedPercent={
+                settings?.clientDefaults?.topicShiftCompactAtPercent
+              }
+              onCommit={(percent) => {
+                void updateSettings({
+                  clientDefaults: { topicShiftCompactAtPercent: percent },
+                }).catch(() => {
+                  // surfaced via the hook's error state
+                });
+              }}
+            />
+          </>
+        )}
 
         {supportsProjectQueue && (
           <SettingsItem

@@ -66,6 +66,37 @@ describe("UserPromptLinkedText", () => {
     expect(term?.title).toBe("user turn: A human-authored request.");
   });
 
+  it("opens the path at the top and a cited line at that line", () => {
+    render(
+      <SessionMetadataProvider
+        projectId="project-1"
+        projectPath="/repo"
+        sessionId="session-1"
+      >
+        <I18nProvider>
+          <UserPromptLinkedTextContent
+            artifact={artifact()}
+            projectPathLinks={[
+              { filePath: "src/a.ts", text: "src/a.ts" },
+              { filePath: "/repo/b.ts", text: "/repo/b.ts:7:2" },
+            ]}
+            text="Fix src/a.ts:42 and /repo/b.ts:7:2 today"
+          />
+        </I18nProvider>
+      </SessionMetadataProvider>,
+    );
+
+    const line = (name: string) =>
+      new URL(
+        screen.getByRole("link", { name }).getAttribute("href") ?? "",
+        "http://localhost",
+      ).searchParams.get("line");
+    expect(line("src/a.ts")).toBeNull();
+    expect(line(":42")).toBe("42");
+    expect(line("/repo/b.ts")).toBeNull();
+    expect(line(":7:2")).toBe("7");
+  });
+
   it("leaves an unconfirmed path as ordinary text", () => {
     render(
       <I18nProvider>

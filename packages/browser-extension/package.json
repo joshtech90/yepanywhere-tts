@@ -1,0 +1,18 @@
+{
+  "name": "@yep-anywhere/browser-extension",
+  "version": "0.1.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test scripts/publish-store.test.mjs",
+    "build:extension": "pnpm --filter @yep-anywhere/shared build && pnpm --filter @yep-anywhere/client exec vite build --config vite.config.extension.ts && pnpm --filter @yep-anywhere/client exec vite build --config vite.config.extension-worker.ts && node ./scripts/assemble.mjs",
+    "dev": "node ../../scripts/dev-extension.mjs",
+    "assemble": "node ./scripts/assemble.mjs",
+    "package:store": "pnpm build:extension && node ./scripts/package-store.mjs",
+    "check:store": "node ./scripts/package-store.mjs --check",
+    "typecheck:acceptance": "pnpm --filter @yep-anywhere/client exec tsc -p tsconfig.extension-acceptance.json",
+    "acceptance:dev": "pnpm --filter @yep-anywhere/client exec tsx --conditions source scripts/extension-dev-acceptance.mts",
+    "acceptance:site-access": "pnpm --filter @yep-anywhere/client exec tsx --conditions source scripts/extension-site-access-acceptance.mts",
+    "acceptance": "pnpm --filter @yep-anywhere/client exec tsx --conditions source scripts/extension-acceptance.mts"
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "temp": "/var/folders/qw/pzqy9tp52_s5f51778j6j8tr0000gn/T/ya-ext-artifact-live-u1Ona6",
+  "out": "/Users/kgraehl/code/yepanywhere-extension-artifact-spike/research/extension-artifact-spike/results/run-1792153229317",
+  "checks": [
+    {
+      "name": "real-relay-html-assets-and-isolation",
+      "state": {
+        "origin": "null",
+        "api": "undefined",
+        "storage": "SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+        "parent": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"null\" from accessing a cross-origin frame.",
+        "image": 640,
+        "absoluteImage": 640,
+        "cssBackground": "url(\"blob:null/446f12ab-5e97-4452-ad8c-b6562cbb41b3\")",
+        "font": true,
+        "classic": true,
+        "modules": {
+          "label": "static import",
+          "dynamic": "dynamic import",
+          "data": {
+            "notes": 3
+          }
+        },
+        "nativeXHR": "blocked",
+        "fetchDenied": "Error: Error: Outside this viewer's directory"
+      }
+    },
+    {
+      "name": "bounded-followup",
+      "composerDraft": "Explain the peak in this chart."
+    },
+    {
+      "name": "linked-document-navigation",
+      "passed": true
+    },
+    {
+      "name": "concurrent-self-contained-fragment",
+      "passed": true
+    },
+    {
+      "name": "temporary-lan-binding",
+      "status": 200
+    },
+    {
+      "name": "localhost-raw-bytes",
+      "status": 200
+    },
+    {
+      "name": "lan-raw-bytes",
+      "status": 200
+    },
+    {
+      "name": "explicit-worker-stop-and-next-navigation",
+      "passed": true
+    },
+    {
+      "name": "localhost-direct-encrypted-viewer",
+      "passed": true
+    },
+    {
+      "name": "lan-direct-encrypted-viewer",
+      "passed": true
+    },
+    {
+      "name": "teardown-unmounts-sandbox",
+      "passed": true
+    }
+  ],
+  "network": ["http://127.0.0.1:9/api/version"],
+  "errors": [],
+  "timings": {
+    "artifactTyping": {
+      "characters": 35,
+      "maxMs": 7,
+      "dropped": 0
+    },
+    "composerTyping": {
+      "characters": 35,
+      "maxMs": 5,
+      "dropped": 0,
+      "domMutations": 48,
+      "transcriptUpdates": 12
+    }
+  },
+  "expectedCSP": [
+    "Connecting to 'http://127.0.0.1:9/api/version' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "Connecting to 'http://127.0.0.1:9/api/version' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked."
+  ],
+  "noBrowserArtifactHTTP": true
+}

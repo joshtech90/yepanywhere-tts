@@ -513,6 +513,30 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     [],
   );
 
+  // Must run before the follow-up start effect below: settling a finished
+  // capture lets the composer forget its insertion target, so it has to
+  // happen before `onListeningStart` creates the follow-up capture's target.
+  // Effects run in declaration order within one commit.
+  useEffect(() => {
+    const previousKind = previousPendingKindRef.current;
+    if (previousKind === pendingKind) return;
+    const settlement =
+      previousKind !== null && pendingKind === null
+        ? status === "error" || error
+          ? "failed"
+          : "completed"
+        : undefined;
+    previousPendingKindRef.current = pendingKind;
+    if (settlement === "failed") {
+      cancelSpeechFollowUp(speechCaptureOwnerRef.current);
+    }
+    if (settlement) {
+      onPendingSpeechChange?.(pendingKind, settlement);
+    } else {
+      onPendingSpeechChange?.(pendingKind);
+    }
+  }, [error, pendingKind, onPendingSpeechChange, status]);
+
   useEffect(() => {
     if (!followUpSnapshot.active || !followUpEnabled) return;
     const owner = speechCaptureOwnerRef.current;
@@ -563,26 +587,6 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
       reducePlayback ? speechCapturePhase : null,
     );
   }, [reducePlayback, speechCapturePhase]);
-
-  useEffect(() => {
-    const previousKind = previousPendingKindRef.current;
-    if (previousKind === pendingKind) return;
-    const settlement =
-      previousKind !== null && pendingKind === null
-        ? status === "error" || error
-          ? "failed"
-          : "completed"
-        : undefined;
-    previousPendingKindRef.current = pendingKind;
-    if (settlement === "failed") {
-      cancelSpeechFollowUp(speechCaptureOwnerRef.current);
-    }
-    if (settlement) {
-      onPendingSpeechChange?.(pendingKind, settlement);
-    } else {
-      onPendingSpeechChange?.(pendingKind);
-    }
-  }, [error, pendingKind, onPendingSpeechChange, status]);
 
   useEffect(
     () => () => {

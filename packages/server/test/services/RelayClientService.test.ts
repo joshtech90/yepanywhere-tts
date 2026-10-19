@@ -19,6 +19,7 @@ const { MockWebSocket, MockWebSocketInstances } = vi.hoisted(() => {
 
     readyState = MockWebSocket.CONNECTING;
     sentMessages: string[] = [];
+    pings: Buffer[] = [];
     OPEN = MockWebSocket.OPEN;
     private listeners: Map<string, Listener[]> = new Map();
 
@@ -49,6 +50,14 @@ const { MockWebSocket, MockWebSocketInstances } = vi.hoisted(() => {
 
     send(data: string): void {
       this.sentMessages.push(data);
+    }
+
+    ping(data = Buffer.alloc(0)): void {
+      this.pings.push(data);
+    }
+
+    simulatePong(data = this.pings[this.pings.length - 1]): void {
+      this.callListeners("pong", data);
     }
 
     close(): void {
@@ -478,6 +487,86 @@ describe("RelayClientService", () => {
         log.mockRestore();
         warn.mockRestore();
       }
+    });
+  });
+
+  describe("keepalive profiles", () => {
+    async function waiting(profile: "default" | "battery") {
+      service.stop();
+      service = new RelayClientService(profile);
+      service.start({
+        relayUrl: "wss://relay.example.com/ws",
+        username: "testuser",
+        installId: "install-123",
+        onRelayConnection: mockOnRelayConnection,
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      const ws = MockWebSocketInstances.at(-1)!;
+      ws.simulateMessage(JSON.stringify({ type: "server_registered" }));
+      return ws;
+    }
+
+    it.each(["default", "battery"] as const)(
+      "%s retains its distinct recovery after a long clock gap",
+      async (profile) => {
+        const ws = await waiting(profile);
+        await vi.advanceTimersByTimeAsync(30_000);
+        ws.simulatePong();
+        vi.setSystemTime(Date.now() + 75_000);
+        await vi.advanceTimersByTimeAsync(30_000);
+        if (profile === "default") {
+          expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+          expect(ws.pings).toHaveLength(1);
+        } else {
+          expect(ws.pings).toHaveLength(2);
+          ws.simulatePong();
+          await vi.advanceTimersByTimeAsync(5_000);
+          expect(service.getState().status).toBe("waiting");
+          expect(ws.readyState).toBe(MockWebSocket.OPEN);
+        }
+      },
+    );
+
+    it("renews a delayed deadline and refuses a pong from the old probe", async () => {
+      const ws = await waiting("battery");
+      await vi.advanceTimersByTimeAsync(30_000);
+      const oldPing = ws.pings[0];
+      vi.setSystemTime(Date.now() + 75_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(ws.pings).toHaveLength(2);
+      expect(ws.readyState).toBe(MockWebSocket.OPEN);
+      ws.simulatePong(oldPing);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(ws.readyState).toBe(MockWebSocket.OPEN);
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+      expect(MockWebSocketInstances).toHaveLength(2);
+      const replacement = MockWebSocketInstances.at(-1)!;
+      replacement.simulateMessage(
+        JSON.stringify({ type: "server_registered" }),
+      );
+      expect(service.getState().status).toBe("waiting");
+    });
+
+    it("reconnects within six seconds of an unanswered battery probe despite a backward clock change", async () => {
+      const ws = await waiting("battery");
+      await vi.advanceTimersByTimeAsync(30_000);
+      vi.setSystemTime(Date.now() - 75_000);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(ws.readyState).toBe(MockWebSocket.OPEN);
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+      expect(MockWebSocketInstances).toHaveLength(2);
+    });
+
+    it("releases the pending battery deadline when the socket is handed off", async () => {
+      const ws = await waiting("battery");
+      await vi.advanceTimersByTimeAsync(30_000);
+      ws.simulateMessage(JSON.stringify({ type: "srp_hello" }));
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(mockOnRelayConnection).toHaveBeenCalledOnce();
+      expect(ws.readyState).toBe(MockWebSocket.OPEN);
+      expect(MockWebSocketInstances).toHaveLength(2);
     });
   });
 

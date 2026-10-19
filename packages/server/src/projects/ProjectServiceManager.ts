@@ -1,5 +1,12 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, realpath } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  stat,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   projectServiceSchema,
@@ -45,11 +52,52 @@ export interface ProjectServiceUpstream {
   entry: string;
 }
 
+const appDeclarationSchema = z.object({
+  service: projectServiceSchema.optional(),
+  livePreview: projectServiceSchema
+    .refine(
+      (service) => service.where.kind === "process",
+      "Live preview requires a process",
+    )
+    .optional(),
+  kind: z.string().optional(),
+  dir: z.string().optional(),
+  // How a static app's reserved address opens. Top-level, not inside the
+  // strict service schema, so older servers ignore it and keep redirecting.
+  staticAddress: z.enum(["redirect", "frame"]).optional(),
+});
+
+/** How a static app's reserved address opens: redirect to its grant (default) or frame it. */
+export type StaticAddressMode = "redirect" | "frame";
+
 /** Source files are untrusted and bounded; neither discovery nor status executes them. */
 export async function readProjectService(
   projectPath: string,
   mode: "app" | "live-preview" = "app",
 ): Promise<ProjectServiceDeclaration | null> {
+  const value = await readAppDeclaration(projectPath);
+  if (!value) return null;
+  if (mode === "live-preview") return value.livePreview ?? null;
+  // Existing canvas templates have an explicit static output directory.
+  // Adapt that declaration only; never infer executable server commands.
+  if (!value.service && value.kind === "static" && value.dir)
+    return projectServiceSchema.parse({
+      version: 1,
+      where: { kind: "static", root: value.dir, entry: "index.html" },
+      serving: { target: "static-root" },
+    });
+  return value.service ?? null;
+}
+
+export async function readStaticAddressMode(
+  projectPath: string,
+): Promise<StaticAddressMode> {
+  return (await readAppDeclaration(projectPath))?.staticAddress ?? "redirect";
+}
+
+async function readAppDeclaration(
+  projectPath: string,
+): Promise<z.infer<typeof appDeclarationSchema> | null> {
   const root = await realpath(projectPath);
   let file: string;
   try {
@@ -68,29 +116,9 @@ export async function readProjectService(
     const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
     if (bytesRead === bytes.length)
       throw new Error("Service declaration exceeds 64 KiB");
-    const value = z
-      .object({
-        service: projectServiceSchema.optional(),
-        livePreview: projectServiceSchema
-          .refine(
-            (service) => service.where.kind === "process",
-            "Live preview requires a process",
-          )
-          .optional(),
-        kind: z.string().optional(),
-        dir: z.string().optional(),
-      })
-      .parse(JSON.parse(bytes.subarray(0, bytesRead).toString("utf8")));
-    if (mode === "live-preview") return value.livePreview ?? null;
-    // Existing canvas templates have an explicit static output directory.
-    // Adapt that declaration only; never infer executable server commands.
-    if (!value.service && value.kind === "static" && value.dir)
-      return projectServiceSchema.parse({
-        version: 1,
-        where: { kind: "static", root: value.dir, entry: "index.html" },
-        serving: { target: "static-root" },
-      });
-    return value.service ?? null;
+    return appDeclarationSchema.parse(
+      JSON.parse(bytes.subarray(0, bytesRead).toString("utf8")),
+    );
   } finally {
     await handle.close();
   }
@@ -142,8 +170,19 @@ export class ProjectServiceManager {
       const saved = projectServiceRecordSchema.parse(
         JSON.parse(await readFile(this.file(projectId), "utf8")),
       );
-      if (["starting", "running", "stopping"].includes(saved.observed)) {
-        if (saved.owner === "provider-host" && this.owner === "server")
+      // A launch its owner stopped while shutting down still wants to run,
+      // but no host can still be running it.
+      const halted =
+        saved.observed === "stopped" && saved.desired === "running";
+      if (
+        ["starting", "running", "stopping"].includes(saved.observed) ||
+        halted
+      ) {
+        if (
+          !halted &&
+          saved.owner === "provider-host" &&
+          this.owner === "server"
+        )
           return {
             ...saved,
             observed: "failed",
@@ -154,7 +193,7 @@ export class ProjectServiceManager {
           ...saved,
           observed: "stopped",
           error:
-            "Service interrupted by YA restart; start explicitly to launch again",
+            "Service interrupted by YA restart; opening the app starts it again",
         };
       }
       return saved;
@@ -226,7 +265,8 @@ export class ProjectServiceManager {
       if (
         saved?.owner === "provider-host" &&
         this.owner === "server" &&
-        saved.desired === "running"
+        saved.desired === "running" &&
+        saved.observed !== "stopped"
       )
         throw new Error(
           "App belongs to the provider host; enable hosting before starting another app",
@@ -313,7 +353,8 @@ export class ProjectServiceManager {
         if (
           saved.owner === "provider-host" &&
           this.owner === "server" &&
-          saved.desired === "running"
+          saved.desired === "running" &&
+          saved.observed !== "stopped"
         )
           throw new Error("Enable provider hosting to stop its app");
         const stopped = {
@@ -328,22 +369,27 @@ export class ProjectServiceManager {
         return stopped;
       }
       service.record.desired = "stopped";
-      try {
-        await service.process.stop();
-      } finally {
-        await this.save(projectId, service);
-      }
-      this.live.delete(projectId);
+      await this.halt(projectId, service);
       return this.status(projectId);
     });
   }
 
+  private async halt(projectId: string, service: LiveService): Promise<void> {
+    try {
+      await service.process.stop();
+    } finally {
+      await this.save(projectId, service);
+    }
+    this.live.delete(projectId);
+  }
+
+  /** Stops every launch but keeps it desired, so opening it after restart starts it. */
   async close(): Promise<void> {
     this.closed = true;
     await Promise.allSettled(this.operations.values());
     const stopped = await Promise.allSettled(
-      [...this.live.keys()].map((projectId) =>
-        this.stop(projectId, async () => {}),
+      [...this.live.entries()].map(([projectId, service]) =>
+        this.serial(projectId, () => this.halt(projectId, service)),
       ),
     );
     const errors = stopped
@@ -359,6 +405,45 @@ export async function projectServiceStaticEntry(
   declaration: ProjectServiceDeclaration,
 ): Promise<string> {
   return (await projectServiceStaticApp(projectPath, declaration)).entry;
+}
+
+/** Bounds the change-stamp walk; a static root is a built site, not a repo. */
+const STATIC_STAMP_MAX_ENTRIES = 5000;
+
+/**
+ * When a static app's shown content last changed: the newest mtime under its
+ * serving root, so a rebuild that changes only a script or stylesheet counts.
+ * A root that is the project itself is a whole repository, not content shown
+ * by the entry, so only the entry is read there. The walk skips dot entries
+ * and `node_modules`, follows no symlinks, and stops after a bounded number of
+ * entries with the newest time seen so far.
+ */
+export async function projectServiceStaticStamp(
+  projectPath: string,
+  declaration: ProjectServiceDeclaration,
+): Promise<Date> {
+  const { entry, root } = await projectServiceStaticApp(
+    projectPath,
+    declaration,
+  );
+  let newest = (await stat(entry)).mtime;
+  if (root === (await realpath(projectPath))) return newest;
+  let budget = STATIC_STAMP_MAX_ENTRIES;
+  const directories = [root];
+  while (directories.length > 0 && budget > 0) {
+    const directory = directories.pop()!;
+    for (const child of await readdir(directory, { withFileTypes: true })) {
+      if (--budget < 0) break;
+      if (child.name.startsWith(".") || child.name === "node_modules") continue;
+      const path = join(directory, child.name);
+      if (child.isDirectory()) directories.push(path);
+      else if (child.isFile()) {
+        const { mtime } = await stat(path);
+        if (mtime > newest) newest = mtime;
+      }
+    }
+  }
+  return newest;
 }
 
 export async function projectServiceStaticApp(

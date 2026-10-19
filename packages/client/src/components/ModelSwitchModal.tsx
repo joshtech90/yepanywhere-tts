@@ -459,7 +459,10 @@ export function ModelSwitchModal({
   );
 
   return (
-    <Modal title={t("modelSwitchTitle")} onClose={handleDismiss}>
+    <Modal
+      title={t(activeTab === "info" ? "processInfoTitle" : "modelSwitchTitle")}
+      onClose={handleDismiss}
+    >
       <div ref={contentRef} className="model-switch-content">
         {infoPane && (
           <div className="model-switch-tabs" role="tablist">

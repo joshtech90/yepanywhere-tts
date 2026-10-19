@@ -35,9 +35,10 @@
  * - Local ~/.grok/models_cache.json + `grok models` + `~/.grok/bin/grok --help` (model info)
  * Native ACP fork and full /btw remain later phases.
  *
- * Audited through Grok 1.0.4 (2026-08) using the installed binary, a no-token
- * ACP initialize/session/new probe, and matching first-party xai-org/grok-build
- * source (package 1.0.5, SOURCE_REV 7bd63df). ACP `grok agent --no-leader
+ * Audited through Grok 1.0.60 (2026-10) using the installed binary, a no-token
+ * ACP initialize/session/new/session/load probe, and first-party
+ * xai-org/grok-build source (package 1.0.45, SOURCE_REV 559751f, which trails
+ * the binary). ACP `grok agent --no-leader
  * stdio` remains the official embedding path; there is no Grok-specific Node
  * agent SDK.
  */
@@ -112,10 +113,12 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 /**
- * Env vars the `grok` CLI honors for API-key auth. The auth docs state the key
- * "takes precedence over browser credentials", so if either is present in the
- * spawned process's environment, Grok Build silently switches from the user's
- * grok.com subscription to metered pay-as-you-go API billing. We strip them
+ * Env vars the `grok` CLI honors for API-key auth. Older auth docs said the key
+ * "takes precedence over browser credentials"; 1.0.60's docs rank an active
+ * signed-in session first, with the key as a fallback. Either way, a key in
+ * the spawned process's environment can silently switch Grok Build from the
+ * user's grok.com subscription to metered pay-as-you-go API billing (always
+ * on older CLIs, after a login expires on newer ones). We strip them
  * from the child env so YA's own xAI usage (e.g. a Speech-to-Text key, kept
  * under a YA-private name) can never flip the supervised coding agent's
  * billing. Scoped to this new, not-yet-public provider so existing providers
@@ -224,9 +227,10 @@ export function normalizeGrokModels(
     const supportedEffortLevels = reasoningEfforts
       .map((value) => effortLevel(value.value ?? value.id))
       .filter((value): value is EffortLevel => value !== undefined);
-    // Prefer the first advertised default. Grok 4.6 marks both xhigh and high
-    // as default:true; the CLI/ACP default is the first row (xhigh). The
-    // cache's info.reasoning_effort can lag that row.
+    // Prefer the first advertised default. Grok 1.0.4's 4.6 marked both xhigh
+    // and high as default:true, and the CLI/ACP default was the first row;
+    // 1.0.60 marks only high. The cache's info.reasoning_effort can lag the
+    // rows.
     const defaultEffortLevel =
       reasoningEfforts
         .filter((value) => value.default === true)

@@ -9,6 +9,7 @@ interface ConnectResult {
 }
 
 describe("Relay origin policy", () => {
+  const extensionOrigin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
   let relay: RelayServer;
   let relayUrl: string;
   let relayHttpUrl: string;
@@ -19,7 +20,7 @@ describe("Relay origin policy", () => {
       inMemoryDb: true,
       logLevel: "warn",
       disablePrettyPrint: true,
-      allowedOrigins: "https://allowed.example, https://*.yepanywhere.com",
+      allowedOrigins: `https://allowed.example, https://*.yepanywhere.com, ${extensionOrigin}`,
       unauthenticatedConnectionTimeoutMs: 60_000,
     });
     relayUrl = `ws://127.0.0.1:${relay.port}/ws`;
@@ -39,11 +40,11 @@ describe("Relay origin policy", () => {
     await relay?.close();
   });
 
-  function connect(origin?: string): Promise<ConnectResult> {
+  function connect(origin?: string, path = "/ws"): Promise<ConnectResult> {
     return new Promise((resolve) => {
       const headers: Record<string, string> = {};
       if (origin !== undefined) headers.Origin = origin;
-      const ws = new WebSocket(relayUrl, { headers });
+      const ws = new WebSocket(relayUrl.replace(/\/ws$/, path), { headers });
       openConnections.push(ws);
 
       const timeout = setTimeout(() => {
@@ -92,6 +93,43 @@ describe("Relay origin policy", () => {
     expect(result.accepted).toBe(false);
     expect(result.status).toBe(403);
   });
+
+  it.each(["/ws", "/mux"])(
+    "admits the exact extension and rejects other or malformed origins on %s",
+    async (path) => {
+      expect((await connect(extensionOrigin, path)).accepted).toBe(true);
+      for (const origin of [
+        "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba",
+        `${extensionOrigin}/page.html`,
+        "moz-extension://abcdefghijklmnopabcdefghijklmnop",
+        "null",
+      ]) {
+        const result = await connect(origin, path);
+        expect(result.accepted, origin).toBe(false);
+        expect(result.status, origin).toBe(403);
+      }
+    },
+  );
+
+  it.each(["GET", "OPTIONS"])(
+    "applies the same exact extension admission to HTTP %s CORS",
+    async (method) => {
+      for (const origin of [
+        extensionOrigin,
+        "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba",
+        `${extensionOrigin}/page.html`,
+      ]) {
+        const response = await fetch(`${relayHttpUrl}/online/test-user`, {
+          method,
+          headers: { Origin: origin, "Access-Control-Request-Method": "GET" },
+        });
+        expect(response.status).toBe(method === "GET" ? 200 : 204);
+        expect(response.headers.get("access-control-allow-origin")).toBe(
+          origin === extensionOrigin ? extensionOrigin : null,
+        );
+      }
+    },
+  );
 
   it("returns CORS headers for allowed origins", async () => {
     const response = await fetch(`${relayHttpUrl}/online/test-user`, {

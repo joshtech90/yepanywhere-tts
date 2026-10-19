@@ -29,9 +29,6 @@ const WINDOWS_OWNER_QUERY_PATH_ENV = "YEP_OWNER_ONLY_QUERY_PATH";
 const WINDOWS_CURRENT_IDENTITY_COMMAND =
   "$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent(); " +
   "[pscustomobject]@{ principal = $identity.Name; sid = $identity.User.Value } | ConvertTo-Json -Compress";
-const WINDOWS_OBJECT_OWNER_SID_COMMAND =
-  `$acl = Get-Acl -LiteralPath $env:${WINDOWS_OWNER_QUERY_PATH_ENV}; ` +
-  "$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value";
 let windowsCurrentIdentityPromise: Promise<WindowsCurrentIdentity> | undefined;
 
 const WINDOWS_SHARED_PRINCIPALS_TO_REMOVE = [
@@ -267,15 +264,19 @@ async function getWindowsCurrentIdentity(): Promise<WindowsCurrentIdentity> {
   return windowsCurrentIdentityPromise;
 }
 
-async function getWindowsObjectOwnerSid(targetPath: string): Promise<string> {
+async function getWindowsObjectOwnerSid(
+  targetPath: string,
+  kind: OwnerOnlyPathKind,
+): Promise<string> {
+  // Get-Acl's module failed to load in the inherited desktop CI environment
+  // (38301056103). Query the same descriptor through .NET Framework without
+  // depending on PowerShell module discovery.
+  const command =
+    `$acl = [System.IO.${kind === "directory" ? "Directory" : "File"}]::GetAccessControl($env:${WINDOWS_OWNER_QUERY_PATH_ENV}); ` +
+    "$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value";
   const { stdout } = await execFileAsync(
     "powershell.exe",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      WINDOWS_OBJECT_OWNER_SID_COMMAND,
-    ],
+    ["-NoProfile", "-NonInteractive", "-Command", command],
     {
       env: { ...process.env, [WINDOWS_OWNER_QUERY_PATH_ENV]: targetPath },
       windowsHide: true,
@@ -329,7 +330,7 @@ async function enforceWindowsOwnerOnlyPathPermissionsStrict(
   );
   const ownerVerification = verifyWindowsObjectOwner(
     identity.sid,
-    await getWindowsObjectOwnerSid(targetPath),
+    await getWindowsObjectOwnerSid(targetPath, kind),
   );
   if (!ownerVerification.valid) {
     throw new Error(

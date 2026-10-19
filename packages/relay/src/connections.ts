@@ -4,8 +4,10 @@ import {
   type RelayServerCompatibilityMetadata,
   isValidRelayUsername,
 } from "@yep-anywhere/shared";
+import type { Logger } from "pino";
 import type { WebSocket } from "ws";
 import type { UsernameRegistry } from "./registry.js";
+import type { RelayTelemetryRecorder } from "./telemetry.js";
 
 export type RegistrationResult =
   | "registered"
@@ -40,6 +42,42 @@ export interface RelayClientEndpoint {
 interface Pair {
   server: WebSocket;
   client: RelayClientEndpoint;
+  /** Armed until the client forwards its first frame. */
+  firstMessageTimer?: ReturnType<typeof setTimeout>;
+}
+
+export interface ConnectionManagerOptions {
+  /**
+   * Close a pair whose client sends nothing within this window (0 disables).
+   * The server learns of a claim only from the client's first frame, so a
+   * silent client would otherwise leave the server unreachable.
+   */
+  pairFirstMessageTimeoutMs?: number;
+  /** Called after a silent pair is closed. */
+  onSilentPairClosed?: (username: string) => void;
+}
+
+export const SILENT_PAIR_CLOSE_REASON = "No data after pairing";
+
+/** Production wiring: time out silent pairs and record each one. */
+export function silentPairOptions(
+  config: { pairFirstMessageTimeoutMs: number },
+  logger: Logger,
+  telemetry: RelayTelemetryRecorder,
+): ConnectionManagerOptions {
+  return {
+    pairFirstMessageTimeoutMs: config.pairFirstMessageTimeoutMs,
+    onSilentPairClosed: (username) => {
+      telemetry.record({
+        event: "pair_disconnected",
+        username,
+        initiator: "client",
+        closeCode: 1000,
+        closeReason: SILENT_PAIR_CLOSE_REASON,
+      });
+      logger.info({ username }, "Closed pair whose client sent nothing");
+    },
+  };
 }
 
 export interface ActiveRelayServer extends RelayServerCompatibilityMetadata {
@@ -83,9 +121,14 @@ export class ConnectionManager {
   private activeServers = new Map<WebSocket, ActiveRelayServer>();
   /** Registry for username validation */
   private registry: UsernameRegistry;
+  private readonly options: ConnectionManagerOptions;
 
-  constructor(registry: UsernameRegistry) {
+  constructor(
+    registry: UsernameRegistry,
+    options: ConnectionManagerOptions = {},
+  ) {
     this.registry = registry;
+    this.options = options;
   }
 
   /**
@@ -207,6 +250,14 @@ export class ConnectionManager {
     this.pairs.add(pair);
     this.pairLookup.set(serverWs, pair);
     this.pairLookup.set(client.key, pair);
+    const timeoutMs = this.options.pairFirstMessageTimeoutMs ?? 0;
+    if (timeoutMs > 0) {
+      pair.firstMessageTimer = setTimeout(
+        () => this.closeSilentPair(pair, username),
+        timeoutMs,
+      );
+      pair.firstMessageTimer.unref?.();
+    }
 
     // Update last seen for the username
     this.registry.updateLastSeen(username);
@@ -227,6 +278,7 @@ export class ConnectionManager {
     if (!pair) {
       return; // Not paired, ignore
     }
+    if (pair.client.key === source) clearFirstMessageTimer(pair);
 
     try {
       if (pair.server === source) {
@@ -260,6 +312,7 @@ export class ConnectionManager {
     // Check if this was part of a pair
     const pair = this.pairLookup.get(ws);
     if (pair) {
+      clearFirstMessageTimer(pair);
       const serverInfo = this.activeServers.get(pair.server) ?? null;
       this.pairs.delete(pair);
       this.pairLookup.delete(pair.server);
@@ -291,6 +344,7 @@ export class ConnectionManager {
       return { kind: "none" };
     }
 
+    clearFirstMessageTimer(pair);
     this.pairs.delete(pair);
     this.pairLookup.delete(pair.server);
     this.pairLookup.delete(pair.client.key);
@@ -306,6 +360,18 @@ export class ConnectionManager {
       initiator: "client",
       server: serverInfo,
     };
+  }
+
+  /** Release the server so it can register a fresh waiting connection. */
+  private closeSilentPair(pair: Pair, username: string): void {
+    if (!this.pairs.has(pair)) return;
+    this.handleClientEndpointClose(pair.client.key);
+    try {
+      pair.client.close(1000, SILENT_PAIR_CLOSE_REASON);
+    } catch {
+      // Ignore close errors
+    }
+    this.options.onSilentPairClosed?.(username);
   }
 
   /**
@@ -416,6 +482,12 @@ export class ConnectionManager {
       capabilities: summarizeCapabilities(activeServers),
     };
   }
+}
+
+function clearFirstMessageTimer(pair: Pair): void {
+  if (!pair.firstMessageTimer) return;
+  clearTimeout(pair.firstMessageTimer);
+  pair.firstMessageTimer = undefined;
 }
 
 function relayWaitKey(username: string, channel: RelayChannel): string {

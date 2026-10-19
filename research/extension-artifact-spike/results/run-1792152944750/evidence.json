@@ -1,0 +1,73 @@
+{
+  "temp": "/var/folders/qw/pzqy9tp52_s5f51778j6j8tr0000gn/T/ya-ext-artifact-live-dVrwgj",
+  "out": "/Users/kgraehl/code/yepanywhere-extension-artifact-spike/research/extension-artifact-spike/results/run-1792152944750",
+  "checks": [
+    {
+      "name": "real-relay-html-assets-and-isolation",
+      "state": {
+        "origin": "null",
+        "api": "undefined",
+        "storage": "SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+        "parent": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"null\" from accessing a cross-origin frame.",
+        "image": 640,
+        "font": true,
+        "classic": true,
+        "modules": {
+          "label": "static import",
+          "dynamic": "dynamic import",
+          "data": {
+            "notes": 3
+          }
+        },
+        "fetchDenied": "Error: Error: Outside this viewer's directory"
+      }
+    },
+    {
+      "name": "bounded-followup",
+      "composerDraft": "Explain the peak in this chart."
+    },
+    {
+      "name": "linked-document-navigation",
+      "passed": true
+    },
+    {
+      "name": "concurrent-self-contained-fragment",
+      "passed": true
+    },
+    {
+      "name": "localhost-raw-bytes",
+      "status": 200
+    },
+    {
+      "name": "explicit-worker-stop-and-next-navigation",
+      "passed": true
+    },
+    {
+      "name": "localhost-direct-encrypted-viewer",
+      "passed": false,
+      "url": "chrome-extension://dgeameddpnggdeenoekpiaacfghdodch/login/direct",
+      "body": "← Back\nyep\nanywhere\n\nDirect Connection\n\nServer URL\n\nYour server's address (e.g., ws://192.168.1.50:3400/api/ws)\n\nUsername\nPassword\nRemember me\n\nStay logged in on this device\n\nForbidden: Invalid origin\nConnect\n\nRemote access must be enabled in your server's Settings. The username and password are set there."
+    },
+    {
+      "name": "teardown-unmounts-sandbox",
+      "passed": true
+    }
+  ],
+  "network": [],
+  "errors": [],
+  "timings": {
+    "artifactTyping": {
+      "characters": 35,
+      "maxMs": 3,
+      "dropped": 0
+    },
+    "composerTyping": {
+      "characters": 35,
+      "maxMs": 7,
+      "dropped": 0,
+      "domMutations": 48,
+      "transcriptUpdates": 12
+    }
+  },
+  "noBrowserArtifactHTTP": true
+}

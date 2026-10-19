@@ -18,6 +18,35 @@
   vertical-align: middle;
 }
 
+.cluster {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.cluster .inline {
+  visibility: hidden;
+  max-width: 0;
+  margin-left: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.cluster:hover .inline,
+.cluster:focus-within .inline {
+  visibility: visible;
+  max-width: 9rem;
+  margin-left: 0.16rem;
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .cluster .inline {
+    display: none;
+  }
+}
+
 .inlineLink {
   padding: 0.08rem 0.25rem;
   border: 1px solid color-mix(in srgb, currentColor 24%, transparent);

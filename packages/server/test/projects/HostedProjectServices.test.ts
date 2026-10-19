@@ -195,9 +195,10 @@ createServer((_req, res) => res.end(String(process.pid))).listen(Number(process.
         ).status,
       ).toBe(502);
       const saved = new ProjectServiceManager(dataDir, "provider-host");
+      // Either way the app still wants to run, so opening it relaunches it.
       expect(await saved.status("app")).toMatchObject({
         observed: "stopped",
-        desired: termination === "shutdown" ? "stopped" : "running",
+        desired: "running",
       });
       expect(await readFile(join(project, "starts.txt"), "utf8")).toBe(
         "started\nstarted\n",

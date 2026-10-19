@@ -50,8 +50,8 @@
     "build": "pnpm -r build",
     "build:bundle": "tsx scripts/build-bundle.ts",
     "build:stable": "pnpm --filter client build:stable",
-    "typecheck": "pnpm --filter shared build && pnpm -r --filter=!@yep-anywhere/android exec tsc --noEmit && pnpm tools:typecheck && pnpm e2e:typecheck",
-    "test": "node --test packages/mobile-core/scripts/sodium.test.mjs packages/client/e2e/lifecycle-study/network-gate.checks.mjs packages/client/e2e/lifecycle-study/acceptance.checks.mjs && pnpm -r --filter=!@yep-anywhere/android test",
+    "typecheck": "pnpm --filter shared build && pnpm -r --filter=!@yep-anywhere/android --filter=!@yep-anywhere/browser-extension exec tsc --noEmit && pnpm tools:typecheck && pnpm e2e:typecheck",
+    "test": "node --test artifact-host/host.test.mjs packages/mobile-core/scripts/sodium.test.mjs packages/client/e2e/lifecycle-study/network-gate.checks.mjs packages/client/e2e/lifecycle-study/acceptance.checks.mjs packages/android-host/test/profile.test.mjs && pnpm -r --filter=!@yep-anywhere/android test",
     "test:e2e": "pnpm --filter client test:e2e",
     "test:e2e:ui": "pnpm --filter client test:e2e",
     "test:e2e:android": "pnpm --filter client test:e2e:android",
@@ -76,7 +76,7 @@
     "simple-client:check": "node --test scripts/simple-client-schema.test.mjs && node scripts/generate-simple-client.mjs --check"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.6",
+    "@biomejs/biome": "2.5.15",
     "@eslint/css": "^2.0.0",
     "esbuild": "0.27.2",
     "eslint": "^10.12.0",
@@ -93,18 +93,18 @@
   },
   "yepAnywhere": {
     "codexCli": {
-      "expectedVersion": "0.162.1",
-      "compatibleThroughVersion": "0.162.1"
+      "expectedVersion": "0.163.0",
+      "compatibleThroughVersion": "0.163.0"
     },
     "claudeCode": {
-      "compatibleThroughVersion": "2.1.296",
-      "claudeAgentSdkVersion": "0.3.296"
+      "compatibleThroughVersion": "2.1.301",
+      "claudeAgentSdkVersion": "0.3.301"
     },
     "piCli": {
-      "compatibleThroughVersion": "1.1.0"
+      "compatibleThroughVersion": "1.3.0"
     },
     "grokCli": {
-      "compatibleThroughVersion": "1.0.4"
+      "compatibleThroughVersion": "1.0.60"
     }
   },
   "dependencies": {

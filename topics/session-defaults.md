@@ -64,8 +64,11 @@ resolved against that provider's available model metadata.
 
 - **Model** — model ids are provider-local and cannot be shared across providers.
 - **Service tier / speed tier** — provider-visible economics and latency knobs.
-  New Session deliberately does not remember a paid tier; every session starts
-  Standard ([service tier](service-tier.md)).
+  New Session remembers explicit choices on the server per provider; an
+  unconfigured provider starts Standard ([service tier](service-tier.md)).
+- **Router pool, account and policy** — server-owned choices keyed by provider,
+  restored only when currently usable. Choosing Direct clears them. See
+  [router defaults](agent-auth-router.md#new-session-defaults).
 - **Thinking mode** — `off` / `auto` / `on` changes provider work requested.
 - **Effort level** — effort labels are not comparable across providers; `high`
   on one backend is not a portable meaning or cost on another.

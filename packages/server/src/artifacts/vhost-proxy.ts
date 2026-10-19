@@ -47,6 +47,13 @@ export function outgoingHeaders(
   return headers;
 }
 
+const unreachableResponses = new WeakSet<Response>();
+
+/** The proxy reached no upstream, as distinct from an upstream's own 502. */
+export function isUpstreamUnreachable(response: Response): boolean {
+  return unreachableResponses.has(response);
+}
+
 /**
  * Reverse-proxy `request` to loopback `port`, preserving the incoming Host.
  * `clientAddress` is the peer YA answered, which the upstream sees as the last
@@ -107,7 +114,11 @@ export function proxyLoopbackVhost(
       },
     );
     req.on("error", () => {
-      resolve(new Response("Vhost upstream unreachable", { status: 502 }));
+      const response = new Response("Vhost upstream unreachable", {
+        status: 502,
+      });
+      unreachableResponses.add(response);
+      resolve(response);
     });
     if (incoming.method === "GET" || incoming.method === "HEAD") {
       req.end();

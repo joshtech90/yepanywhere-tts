@@ -2,9 +2,9 @@
 
 Topic: agent-auth-router
 
-Status: proposal, 2026-10-05. Not approved; collects the maintainer's requests
-and the follow-ups found while discussing them. See the open questions before
-starting.
+Status: partially implemented, updated 2026-10-13. The maintainer approved
+server-saved UI defaults with silent compatibility; remaining proposal items
+need separate approval. See the current router topic and open questions.
 
 ## Existing evidence and boundaries
 
@@ -28,7 +28,7 @@ Maintainer requests:
   without being told to use one.
 - Understand how YA and AAR share their protocol.
 
-## Current behavior
+## Initial behavior (2026-10-05 audit)
 
 - `RouterPoolSelector.tsx` rendered native `<select>` elements with its own
   CSS while every other option used `NewSessionOptionSection` with
@@ -128,6 +128,12 @@ serve inside their dropdowns, show an inline warning under the model, and give
 the disabled Start a reason. Never change the model or pool automatically.
 
 ### 4 — Remember the last pool
+
+Implemented 2026-10-13 following maintainer approval: server-saved per-provider
+pool/account/policy, silent fallback, no new capability or explanatory notes.
+The current contract is in [router defaults](../../topics/agent-auth-router.md#new-session-defaults).
+API-default work remains deferred. The original proposal below is historical
+where it differs from that contract.
 
 Store `routerPoolId` and `routerAccountId` in
 `newSessionDefaults.providers[provider]` (shared type, `newSessionDefaults.ts`,

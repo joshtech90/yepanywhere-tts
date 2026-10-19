@@ -89,6 +89,19 @@ relay check: it registers a uniquely named disposable server, starts native
 pairing from Android's Main dispatcher, then verifies the bundled WebView,
 streaming, upload and sequential typing. The runner removes its port forwards
 and server afterward. Set `ANDROID_SERIAL` when more than one device is attached.
+For an attached personal phone, set `YA_NATIVE_ISOLATED=1` and
+`ANDROID_HOME` to build a side-by-side `YA Transport Test` package. The runner
+verifies both APK application IDs before installation, refuses to replace an
+existing test package, removes only packages it installed and leaves the primary
+app's profiles untouched. The isolated package claims no launcher/deep-link
+intent filters; instrumentation launches its activities explicitly. Select route
+modes with `YA_NATIVE_LIVE_MODES=direct,mux` and a focused class/method list with
+`YA_NATIVE_LIVE_CLASSES` (comma separated, Android runner `Class#method` syntax).
+An app-data sandbox does not bypass secure keyguard: physical sleep/wake cases
+need manual unlock. Use emulator sleep/fault runs while the handheld is locked, then non-locking
+physical foreground/background cases after manual unlock; do not describe a
+keyguard-blocked run as a product regression or passing lifecycle acceptance.
+
 The WebView probe also checks native tabs, internal/external links, warm launcher
 resume, draft/scroll identity, rotation and cold route restoration. Add
 `YA_NATIVE_NETWORK_LIFECYCLE=1` on an authorized phone to disable both Wi-Fi and
@@ -110,9 +123,10 @@ upload. These captures use the owned fixtures; inspect any local device
 captures before sharing them. Hosted run `37219989321` established that a
 Pixel Launcher ANR dialog was hiding an otherwise connected YA page from
 accessibility. CI compiles its minified probe APKs before starting the emulator,
-then uses the same cleartext-fixture/minification properties for ordinary and
-live instrumentation. This avoids rebuilding/shrinking a different variant
-beside the running emulator. Release network policy remains unchanged.
+then uses the same minification property for ordinary and live
+instrumentation. This avoids rebuilding/shrinking a different variant
+beside the running emulator. Fixtures use loopback through adb reverse, which
+every build's network policy permits; no build opts into broader plain HTTP.
 The UI probes can close that exact
 system-owned Pixel Launcher dialog once per test, on emulators only, and retain
 its evidence. They never dismiss YA ANRs or relax input-readiness/latency gates.

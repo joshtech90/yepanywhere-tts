@@ -1,0 +1,14 @@
+// Side-by-side device qualification. Never use this identity for publication.
+allprojects {
+  plugins.withId('com.android.application') {
+    androidComponents.finalizeDsl { extension ->
+      def testId = rootProject.findProperty('yaTestApplicationId') ?: 'com.yepanywhere.mobile.transporttest'
+      if (!(testId in ['com.yepanywhere.mobile.transporttest', 'com.yepanywhere.mobile.artifacttest'])) {
+        throw new GradleException('Only owned test application IDs are allowed')
+      }
+      extension.defaultConfig.applicationId = testId
+      extension.sourceSets.getByName('debug').manifest.srcFile(
+        new File(rootProject.projectDir, 'scripts/isolated-test-manifest.xml'))
+    }
+  }
+}

@@ -227,4 +227,42 @@ describe("fixed-font file-link hints", () => {
     expect(links[0]?.getAttribute("data-fixed-font-file-path")).toBe(path);
     expect(template.content.textContent).toContain("topics/commits.md");
   });
+
+  it("links a cited line separately from its path", () => {
+    const rendered = renderFixedFontRichContent(
+      "src/a.ts:42:const x\n/repo/b.ts:3-5 changed",
+      {
+        projectId: "project-1",
+        projectPathLinks: [
+          { filePath: "src/a.ts", text: "src/a.ts" },
+          { filePath: "/repo/b.ts", text: "/repo/b.ts:3-5" },
+        ],
+      },
+    );
+    const template = document.createElement("template");
+    template.innerHTML = rendered.html;
+    const links = [
+      ...template.content.querySelectorAll<HTMLAnchorElement>(
+        "a[data-fixed-font-file-path]",
+      ),
+    ].map((link) => [
+      link.textContent,
+      link.dataset.yaLine,
+      link.dataset.yaLineEnd,
+      new URL(
+        link.getAttribute("href") ?? "",
+        "http://localhost",
+      ).searchParams.get("line"),
+    ]);
+
+    expect(links).toEqual([
+      ["src/a.ts", undefined, undefined, null],
+      [":42", "42", undefined, "42"],
+      ["/repo/b.ts", undefined, undefined, null],
+      [":3-5", "3", "5", "3"],
+    ]);
+    expect(template.content.textContent).toBe(
+      "src/a.ts:42:const x\n/repo/b.ts:3-5 changed",
+    );
+  });
 });

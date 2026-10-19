@@ -242,6 +242,45 @@ describe("VoiceInputButton", () => {
     expect(getSpeechFollowUpSnapshot().active).toBe(false);
   });
 
+  it("settles the finished capture before starting its follow-up capture", () => {
+    // A follow-up capture's insertion target must survive the previous
+    // capture's settlement; otherwise its revised finals append instead of
+    // replacing the streamed chunks they revise.
+    speechCaptureState.followUpListenMs = 3_000;
+    versionState.voiceBackends = ["ya-grok"];
+    versionState.voiceBackendCapabilities = {
+      "ya-grok": { streaming: true, smartTurn: true },
+    };
+    speechState.status = "finalizing";
+    const ref = createRef<VoiceInputButtonRef>();
+    const order: string[] = [];
+    const props = {
+      ref,
+      onTranscript: vi.fn(() => "send-dispatched" as const),
+      onListeningStart: () => order.push("start"),
+      onPendingSpeechChange: (kind: string | null) =>
+        order.push(`pending:${kind}`),
+      speechMethod: "ya-grok" as const,
+      smartTurn: {
+        enabled: true,
+        threshold: 0.95,
+        timeoutMs: 3_000,
+        graceMs: 0,
+      },
+    };
+
+    const view = render(<VoiceInputButton {...props} />);
+    order.length = 0;
+    act(() => {
+      ref.current?.continueAfterSpeechSend();
+      speechState.status = "idle";
+      view.rerender(<VoiceInputButton {...props} />);
+    });
+
+    expect(startListening).toHaveBeenCalledOnce();
+    expect(order).toEqual(["pending:null", "start"]);
+  });
+
   it.each(["onInterimResult", "onResult"] as const)(
     "lets speech reported by %s finish after the follow-up deadline",
     (event) => {

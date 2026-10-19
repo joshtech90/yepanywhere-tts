@@ -330,7 +330,10 @@ class SparseProjectPathIndex implements ProjectPathIndex {
     return state === undefined ? undefined : state === "file";
   }
 
-  async findExisting(paths: readonly string[]): Promise<ReadonlySet<string>> {
+  async findExisting(
+    paths: readonly string[],
+    kind: "file" | "directory" = "file",
+  ): Promise<ReadonlySet<string>> {
     const candidates: ParsedCandidate[] = [];
     for (const path of paths) {
       const components = parseRelativeComponents(path);
@@ -375,7 +378,7 @@ class SparseProjectPathIndex implements ProjectPathIndex {
           );
           for (const candidate of group) {
             const name = candidate.components.at(-1);
-            if (name && states.get(name) === "file")
+            if (name && states.get(name) === kind)
               found.add(candidate.original);
           }
         },
@@ -1233,8 +1236,11 @@ class SparseProjectPathIndex implements ProjectPathIndex {
 }
 
 export interface ProjectPathIndex {
-  /** Existing files from one content-resolution batch. */
-  findExisting(paths: readonly string[]): Promise<ReadonlySet<string>>;
+  /** Existing files (or directories) from one content-resolution batch. */
+  findExisting(
+    paths: readonly string[],
+    kind?: "file" | "directory",
+  ): Promise<ReadonlySet<string>>;
   /** Whether this exact project-relative path is a file in the project. */
   has(path: string): Promise<boolean>;
   /**
@@ -1280,9 +1286,12 @@ class ProjectPathIndexHandle implements ProjectPathIndex {
 
   constructor(private readonly entry: RegistryEntry) {}
 
-  findExisting(paths: readonly string[]): Promise<ReadonlySet<string>> {
+  findExisting(
+    paths: readonly string[],
+    kind: "file" | "directory" = "file",
+  ): Promise<ReadonlySet<string>> {
     touchRegistryEntry(this.entry);
-    return this.entry.index.findExisting(paths);
+    return this.entry.index.findExisting(paths, kind);
   }
 
   has(path: string): Promise<boolean> {

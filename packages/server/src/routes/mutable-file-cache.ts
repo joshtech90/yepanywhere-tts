@@ -1,6 +1,6 @@
 import type { Stats } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
-import { Readable } from "node:stream";
+import { openedFileStream } from "../artifacts/openedFileStream.js";
 
 export const MUTABLE_FILE_CACHE_CONTROL = "private, no-cache";
 
@@ -183,9 +183,13 @@ export async function createMutableFileResponse(
         String(selection.end - selection.start + 1),
       );
     }
-    const stream = handle.createReadStream({ autoClose: true, ...range });
+    const stream = openedFileStream(
+      handle,
+      range.start,
+      selection.kind === "range" ? selection.end : size - 1,
+    );
     handle = undefined;
-    return new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, {
+    return new Response(stream, {
       headers: responseHeaders,
       status: selection.kind === "range" ? 206 : 200,
     });

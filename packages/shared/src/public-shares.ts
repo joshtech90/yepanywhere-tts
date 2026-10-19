@@ -13,6 +13,8 @@ export type PublicShareStorageState =
 
 export const PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY =
   "public-share-session-chunks-v1";
+export const PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY =
+  "public-share-live-session-chunks-v1";
 export const PUBLIC_SHARE_MANAGEMENT_FREEZE_CONFIRMATION =
   "freeze-live-public-shares";
 export const PUBLIC_SHARE_TITLE_MAX_LENGTH = 700;

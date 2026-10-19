@@ -2,6 +2,7 @@ export const DEFAULT_RELAY_ALLOWED_ORIGINS = [
   "https://yepanywhere.com",
   "https://*.yepanywhere.com",
   "https://ya.graehl.org",
+  "chrome-extension://dgeameddpnggdeenoekpiaacfghdodch",
 ] as const;
 
 export interface ExactRelayOriginRule {
@@ -112,6 +113,9 @@ function parseWildcardRule(value: string): WildcardRelayOriginRule | null {
 }
 
 function parseRule(value: string): RelayAllowedOriginRule | null {
+  if (isChromeExtensionOrigin(value)) {
+    return { type: "exact", origin: value };
+  }
   const wildcard = parseWildcardRule(value);
   if (wildcard) {
     return wildcard;
@@ -122,6 +126,11 @@ function parseRule(value: string): RelayAllowedOriginRule | null {
     return null;
   }
   return { type: "exact", origin: exact.origin };
+}
+
+function isChromeExtensionOrigin(value: string): boolean {
+  // URL.origin is "null" for this scheme; compare the validated spelling.
+  return /^chrome-extension:\/\/[a-p]{32}$/.test(value);
 }
 
 function ruleKey(rule: RelayAllowedOriginRule): string {
@@ -188,6 +197,12 @@ export function isRelayOriginAllowed(
   }
   if (policy.allowAll) {
     return true;
+  }
+
+  if (isChromeExtensionOrigin(trimmedOrigin)) {
+    return policy.rules.some(
+      (rule) => rule.type === "exact" && rule.origin === trimmedOrigin,
+    );
   }
 
   const parsed = parseHttpOrigin(trimmedOrigin);

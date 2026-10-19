@@ -1,11 +1,129 @@
 # Roadmap
 
-Last updated: 2026-10-08.
+On-device Android hosting is authorized as a separate incubation effort
+(2026-10-17), not a blocker or replacement for the published mobile companion.
+The [Android host contract](../../topics/android-host.md) owns the scaffold,
+shared Alpine runtime, disabled external desktop observers and the remaining
+lifecycle/authentication work. Remote wake is a later experiment. Native setup
+shortcuts and focused shared YA sign-in pages now form the onboarding baseline:
+the user completed both Claude and Codex subscription sign-ins on the Pixel 9.
+Refresh, sign-out and restart persistence remain separate validation work.
+Explicit Open now starts a stopped Android host, waits for authenticated local
+readiness and offers native recovery after process loss. Unattended wake,
+overnight/Doze survival and interrupted-provider resume remain incubation work;
+see the [lifecycle investigation](../testing/android-host-lifecycle-2026-10-18.md).
+Native controls now share explicit lifecycle and applied-mapping state across
+processes, show permission/provider/folder status, and confirm interruption.
+The foreground notification adds lifecycle, private working/attention counts
+and Open/Host controls/confirmed Stop actions. The
+[control-state acceptance](../testing/android-host-controls-2026-10-18.md)
+records verification and its limits; unattended lifecycle and credential-renewal
+qualification remain separate incubation work.
+
+The enabled Android host now has a roughly ten-second remote-interactivity target.
+Its explicit [battery relay profile](../../topics/android-host.md#battery-aware-relay-liveness)
+experiments with probing existing sockets after scheduling gaps while desktop
+defaults retain their existing recovery policy. Unplugged Doze, real suspension
+and public encrypted-session readiness remain qualification work; this does
+not add unattended restart or remote wake.
+Protected debug ADB lifecycle controls now avoid foregrounding the phone UI;
+the [battery/lifecycle evidence](../testing/android-host-battery-profile-2026-10-18.md)
+records physical scheduling-gap results and the remaining demand/sleep limits.
+
+Android 9/API 28 ARM64 is supported for now within the experimental host,
+following the [Moto X4 feasibility test](../testing/android-host-moto-x4-2026-10-18.md).
+Android 11+ remains the routinely tested baseline. Revisit the older support
+floor if it adds upgrade, implementation, testing or release friction; the
+[host contract](../../topics/android-host.md#older-android-support) owns that
+review trigger. The next compatibility step is to integrate the local changes
+into the standard build, which still requires API 30. Unattended lifecycle
+acceptance remains unqualified; existing incubation priorities are unchanged.
+
+The [Android guest user/admin environment](../../topics/android-host.md#guest-user-and-administration)
+now uses `user@ya-phone`, `/home/user` and passwordless guest sudo. Existing
+home paths and private state are preserved. Pixel 7a acceptance covers the
+staged runtime, guest administration and two real local-server launches.
+
+The Android storage spike validated a
+[durable local workspace](../../topics/android-host.md#durable-user-owned-workspace):
+select an ordinary shared folder, explicitly enable optional all-files access,
+and map its verified real path to `/workspace` in Alpine/PRoot. Writes are direct;
+no synchronization or SAF filesystem adapter is needed. A disposable app on the
+explicitly selected Pixel 7a passed both real providers, independent hashes,
+separate permission revocation/repair and reset/reinstall recovery. The
+[spike evidence](../../packages/android-host/workspace-spike/README.md#evidence)
+records filesystem limits and Git compatibility requirements. The experimental
+host now implements [multiple folder shortcuts](../../packages/android-host/docs/workspaces.md),
+optional direct mappings under `/workspaces`, per-root native onboarding/status,
+normal project/provider integration, and explicit `ya saf` CLI operations without
+broad storage permission. Both methods use the same registrations and expose
+separate health. Mapping changes require an explicit host restart; unavailable
+roots fail admission without a private fallback. Internal runtime state stays
+private. Running-session/handle revocation, arbitrary-provider qualification and
+store-policy acceptance remain open. Pixel 7a acceptance passed both real YA
+providers across two roots, SAF without broad permission, independent hashes,
+revocation/repair and fixture reset/reinstall recovery; owned test resources were
+removed afterward. Optional all-files access now also exposes primary shared
+storage at `/sdcard` without selecting a folder. Pixel 9 and Motorola physical
+fixtures passed no-picker access, independent hashes, revocation and app-data
+reset recovery. The Motorola removable exFAT card now uses production
+`/storage/<volume-id>` mappings, with native availability/applied status,
+per-launch authority/identity checks, and restart required after media changes.
+Existing in-flight I/O is not made safe for unplugging.
+
+The [Android host distribution/assistant research](../../topics/android-host.md#distribution-and-optional-phone-automation)
+now records a basic coding host independent of accessibility automation, optional
+developer-enabled MC/ADB control, and dedicated pinned Buddy/Shizuku/Termux
+reviews. Assistant invocation/context is a compelling optional direction, but
+remains research/docs only: no device investigation or implementation spike is
+authorized. This does not change the incubation order or companion release scope.
+
+Last updated: 2026-10-18.
 
 This is Yep Anywhere's canonical product-priority overview. Keep initiative
 status, the next action, and major blockers here; keep implementation steps in
 `docs/tactical/` and durable behavior contracts in `topics/`. Planning stays in
 the repository and does not require epics, ticket numbers, or pull requests.
+
+The first-party hosted artifact viewer is implemented and integrated on main;
+[plan 155](../tactical/155-managed-artifact-viewer.md) records scoped reads,
+managed HTTPS content delivery and compatibility. The fixed Cloudflare host is
+live, and real YA-pane acceptance over the public encrypted relay passes in
+desktop Chrome, Android Chrome on an Android 15 emulator and the attached
+Android 17 phone. Opus 5.5 high-effort review findings are addressed; physical
+native fresh pairing and static fallback pass. YA client/server
+release publication, native app delivery and WebKit qualification remain;
+custom artifact deployments retain precedence.
+
+The maintainer accepted [Android packaged service-worker delivery and secure
+transport hardening](../tactical/156-android-secure-transport-and-artifacts.md).
+Native resume races now have controlled regressions and repairs; direct and
+mux emulator foundation runs pass. Browser login/SRP/relay protection passes
+32 cases, including the repaired startup leading-space handoff. The packaged
+API35/WebView124 app renders a real 143 MiB movie and twenty images over the
+public encrypted relay, with exact ranges, seeking, pause/resume and typing.
+The seeded emulator cut/refusal/stall matrix and eighteen viewer teardowns pass;
+a separate burst verifies twenty image reads during each fault. Three real
+launcher resumes retain the artifact/draft and show one recovery interval each.
+The eight-reader 128 KiB/s diagnostic reproduced a relay circuit queue closure
+in three original runs. A native connection window with retained-tail accounting
+and reader progress reservations repairs that failure; eight-reader acceptance
+passes without relay closure, including on the physical phone. The
+[measured report](../testing/android-artifact-streaming-2026-10-16.md) preserves an
+earlier 103.2 ms frame miss and the narrower coverage of these passes.
+Parent reload recovery now reclaims orphaned preview leases while preserving
+live owners; eighteen actual-app restorations and browser concurrency checks
+pass. Eighteen same-host native-tab round trips also pass with explicit artifact
+reopening and draft/route retention. One forced process loss also recovers saved
+native pairing and fresh artifact access without credential injection. Physical
+source switching and long sleep/radio acceptance remain. The final emulator and
+physical full media/fault/warm/cold/reload matrices pass, along with final
+large-media matrices over the public TLS relay on both. The maintainer approved
+a coordinated beta native/server connection window without an echo negotiation
+or old-Android compatibility layer. The shared 1 MiB body budget includes
+completed/cancelled tails until receipt, with spare credit lent while preserving
+progress for other native readers.
+Nothing in this implementation phase has been published.
 
 ## 1. Publish the desktop and mobile apps with continuous delivery
 
@@ -162,9 +280,12 @@ the viewer/download gap remain the next mobile release work.
   now passes full packaged startup on Linux, macOS and Windows across all four
   Node versions and the pinned Bun runtime, including clean npm installations.
 - [Android CI](../../.github/workflows/android-app-ci.yml) tests and builds
-  application artifacts, including a bundled Release AAB. A dependent internal
-  publishing job requires a manual main dispatch with `publish_internal=true`,
-  then handles versioning, exact-artifact signing and stale-run protection.
+  application artifacts, including a bundled Release AAB. Public Firebase client
+  configuration is tracked, so fresh checkouts and PR builds support push without
+  CI secret injection; an explicit Firebase-disabled build remains available.
+  A dependent internal publishing job requires a manual main dispatch with
+  `publish_internal=true`, then handles versioning, exact-artifact signing and
+  stale-run protection.
   Push/nightly verification does not publish and cancels superseded checks;
   explicit releases finish independently of later pushes. Dedicated Google
   OIDC federation and app-scoped Play testing permissions are verified end to end.
@@ -176,7 +297,7 @@ the viewer/download gap remain the next mobile release work.
 - Both mobile store records have saved initial metadata. Local uploads now
   use platform-managed final signing: Android's upload-signed AAB passes Play
   internal-release validation, and Xcode uploaded the first iOS archive to
-  internal-only TestFlight. Android 0.1.0 is now active for the selected internal
+  internal-only TestFlight. Android 0.1.1 is now active for the selected internal
   testers, with its opt-in page verified. iOS build 1 shows Ready to Test after
   completing encryption compliance with France excluded from availability.
   October 4 fixes Android's UI-initiated public TLS login failure: 0.1.1
@@ -346,6 +467,52 @@ refusal and exact-instance cleanup. Remaining provider/platform cells are listed
 in the owning [topic](../../topics/optional-computer-control.md). This separately
 authorized work does not displace release delivery above.
 
+The maintainer proposed an experimental
+[Chrome extension client](../tactical/151-chrome-extension-client.md) on
+2026-10-13: the full web client served from an extension origin over the
+public relay, starting with a stable store id and a relay origin allowlist
+entry. The store draft id and public key are reserved, and exact extension
+origin admission is deployed on the default public relay with 26 passing
+public upgrade/CORS probes. The client builds as an unpacked extension,
+reaches the relay, survives reloads and is signed in to a real host in the
+maintainer's Chrome. Publication acceptance in a clean Chromium profile now
+covers session/Settings reload, saved-login browser restart and sequential
+typing within 100 ms during relay transcript updates. A side panel listing the sessions that mention the GitHub or Jira item
+in the current tab (exact server lookup across saved hosts), automatic lookup
+with a toolbar badge on user-granted sites, and a Browser extension settings
+pane are implemented and accepted locally and in the maintainer's Chrome.
+A public 0.1.1 listing, actual screenshots, privacy disclosures and an audited
+CI ZIP/draft-release workflow are prepared. [Chrome Extension
+CI](https://github.com/kzahel/yepanywhere/actions/runs/38405189923) passed the
+actual 0.1.1 ZIP and produced its draft release. The exact ZIP, listing, assets,
+privacy disclosures and restricted reviewer access were saved in the Web Store
+and submitted on 2026-10-13. Public distribution covers all regions, with
+automatic publication after approval. On 2026-10-14 the store reports 0.1.1
+as **Published — public**. The 0.1.3 update passed
+[CI](https://github.com/kzahel/yepanywhere/actions/runs/38604832081) and was
+submitted with its new `contextMenus` justification on 2026-10-14. The store
+confirms **Pending review**, with automatic publication after approval.
+Future explicit extension tags now have exact-ZIP acceptance, keyless Google
+API submission and GitHub release receipts. A newer accepted release supersedes
+an older pending submission after confirming cancellation; older runs cannot
+cancel newer submissions. Listing/privacy edits and Google review remain
+outside CI. The release helper follows the existing tagged
+website release pattern. The [live read-only authentication check](https://github.com/kzahel/yepanywhere/actions/runs/38618552980)
+passed on 2026-10-14 and confirmed 0.1.3 remains pending review.
+Opt-in extension development now rebuilds to a separate `dist-dev`, with a
+side-panel update indicator and panel-preserving UI refresh; full worker
+reloads attempt to reopen the panel within Chrome's gesture restrictions
+([plan 154](../tactical/154-extension-development-builds.md)).
+The dev footer always offers **Reload extension** independently of build
+detection, alongside the lighter panel refresh when a full reload is not required.
+Full dev reload also snapshots and recreates the open extension tabs at their
+exact session URLs, preserves tab/window placement, and attempts panel restoration.
+The side panel now offers per-site access above its content even when the
+current address is hidden or no host is connected; Chrome 133+ handles the
+unknown-site request without broader tab permissions. Older Chrome retains
+toolbar guidance ([site access contract](../../topics/trusted-client-packaging.md#chrome-extension-client)).
+This experiment does not displace release delivery.
+
 These remain candidates behind publishing and continuous delivery, not a
 ranked or approved implementation queue. Recheck current code and owning
 documents before defining work.
@@ -362,7 +529,9 @@ The authorized recovery follow-up adds on-demand reachability, disabled-account
 guidance and explicit cancellation/disconnect retry before automatic policies.
 AAR owns the SHA-pinned cross-repository regression suite for both providers.
 Manual/Round robin allocation and a cached quota/eligibility overview are
-implemented. YA respects router-owned pool grants and exposes read-only
+implemented. Since 2026-10-13, New Session remembers pool/account/policy per
+provider on the server, with silent fallback when unavailable or unsupported;
+API-created-session defaults remain deferred. YA respects router-owned pool grants and exposes read-only
 management guidance; legacy routers retain their scoped editor. Advanced
 balancing, clone/helper inheritance, Windows and constrained sandbox support
 remain later work. On 2026-10-03 the maintainer deferred the next
@@ -380,7 +549,7 @@ displace release delivery.
 | Multi-machine experience across the full web and desktop clients | The simple-client demo above now owns the first grouping experiment; broader adoption follows evidence from that work and [source runtimes](../../topics/client-source-runtime-topology.md). |
 | Agent coordination across installed machines | Direction selected 2026-10-03: persistent, target-owned YA sessions over the public relay, with explicit directional peer grants. The [bounded first-slice plan](../tactical/144-relay-peer-session-coordination.md) proposes the same local/remote worker API for Claude and Codex, existing target projects, and durable reconnect. Runtime implementation and peer protocol review remain pending. Hosted identity issuance, SSH provisioning, and same-conversation migration are not prerequisites; this does not displace release delivery. |
 | Authentication and delegated access | [Limited users](../../topics/limited-users.md) delivers local accounts and project grants. [Principals and grants](../../topics/principals-and-grants.md) coordinates the broader proposed invitation/account and issuer boundaries; it does not approve a universal grant protocol. [Session notes and discussion](../../topics/session-notes-and-discussion.md) and [participatory Live Share](../../topics/relay-origin-and-share-gating.sketches.md#participatory-live-share) propose human-only notes/chat, owner-reviewed suggestions, and later explicit session-input grants. These remain later directions, not a newly ranked implementation queue. |
-| Related work across repositories | [Issues & PRs](../../topics/issue-session-associations.md) now has experimental, default-off automatic ticket/URL discovery from viewed sessions and a configurable recent-session window, durable evidence, search and correction controls. Conservative URL/known-prefix matching, durable Jira project learning, and session-grouped browsing are implemented and locally validated. SQLite migrations and compatibility gating are implemented. Multi-server issue grouping enters the simple-client demo above; workstream/branch inference and tracker synchronization remain deferred. |
+| Related work across repositories | [Issues & PRs](../../topics/issue-session-associations.md) now has experimental, default-off automatic ticket/URL discovery from viewed sessions and a configurable recent-session window, durable evidence, search and correction controls. Conservative URL/known-prefix matching, durable Jira project learning, and session-grouped browsing are implemented and locally validated. SQLite migrations and compatibility gating are implemented. Multi-server issue grouping enters the simple-client demo above. GitHub items show their last-read open/draft/merged/closed state, with independent read-only checks, configurable gh/account use, durable merge facts and an expandable extension Merged PRs section ([plan 153](../tactical/153-durable-github-status-and-extension-groups.md)). Refresh remains demand-driven. Workstream/branch inference, Jira status and tracker synchronization remain deferred. |
 | Parallel work within one repository | Follow the [workstreams proposal](../../topics/workstreams.md), which uses ordinary lane clones; do not revive the old automatic-worktree sketch as an approved design. |
 | Scheduling | Follow [yacron](../../topics/yacron.md) and its [open gap](../../gaps/sketches/yacron-scheduler.md); the first management UI remains a design prerequisite. |
 | Agent command runtime | Opt-in [`ya-agent self`](../../topics/agent-self.md) implements ownership and model/effort evidence reporting. Use operator-managed global instructions initially; defer automatic advertisement, private input, broader session access, and scheduling integration. |

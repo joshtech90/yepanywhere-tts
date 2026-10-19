@@ -171,6 +171,7 @@ const {
           "low" | "medium" | "high" | "xhigh" | "max"
         >;
         supportsAutoMode?: boolean;
+        serviceTiers?: Array<{ id: string; name: string }>;
       }>;
     }>,
     loading: false,
@@ -199,6 +200,7 @@ const {
       newSessionDefaults?: {
         provider?: "claude" | "claude-gateway" | "codex" | "opencode";
         model?: string;
+        serviceTier?: string;
         permissionMode?: "default" | "auto" | "bypassPermissions" | "plan";
         recapMode?: "off" | "native" | "side-session" | "fork";
         recapAfterSeconds?: number;
@@ -211,6 +213,10 @@ const {
             "claude" | "claude-gateway" | "codex",
             {
               model?: string;
+              serviceTier?: string;
+              routerPoolId?: string;
+              routerAccountId?: string;
+              routerPolicy?: string;
               thinkingMode?: "off" | "auto" | "on";
               effortLevel?: "low" | "medium" | "high" | "xhigh" | "max";
               helperSideModel?: string;
@@ -1233,6 +1239,153 @@ describe("NewSessionForm", () => {
         "on:medium",
       );
     });
+  });
+
+  it("remembers speed across mounts and clears legacy Fast when Standard is chosen", async () => {
+    providersState.providers[1]!.models![0]!.serviceTiers = [
+      { id: "priority", name: "Fast" },
+    ];
+    serverSettingsState.isLoading = false;
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "codex",
+        serviceTier: "priority",
+        providers: { codex: { model: "gpt-5.4" } },
+      },
+    };
+    const view = render(<NewSessionForm projectId="project-1" />);
+    openAdvancedOptions();
+    expect(selectedDropdownValue("newSessionServiceTierTitle")).toBe(
+      "priority",
+    );
+    fireEvent.click(
+      dropdownOption("newSessionServiceTierTitle", "serviceTierStandardLabel"),
+    );
+    await waitFor(() => expect(mockUpdateSetting).toHaveBeenCalled());
+    const standard = mockUpdateSetting.mock.calls.at(-1)![1];
+    expect(standard.serviceTier).toBeUndefined();
+    expect(standard.providers.codex.serviceTier).toBeUndefined();
+    serverSettingsState.settings = { newSessionDefaults: standard };
+    view.unmount();
+    const next = render(<NewSessionForm projectId="project-1" />);
+    expect(selectedDropdownValue("newSessionServiceTierTitle")).toBe("");
+    fireEvent.click(dropdownOption("newSessionServiceTierTitle", "Fast"));
+    await waitFor(() =>
+      expect(
+        mockUpdateSetting.mock.calls.at(-1)![1].providers.codex.serviceTier,
+      ).toBe("priority"),
+    );
+    serverSettingsState.settings = {
+      newSessionDefaults: mockUpdateSetting.mock.calls.at(-1)![1],
+    };
+    next.unmount();
+    render(<NewSessionForm projectId="project-1" />);
+    expect(selectedDropdownValue("newSessionServiceTierTitle")).toBe(
+      "priority",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+    expect(selectedDropdownValue("newSessionServiceTierTitle")).toBe(
+      "priority",
+    );
+  });
+
+  it("waits for discovery, restores the saved account and saves explicit Direct", async () => {
+    const original = vi.mocked(api.routerSelection).getMockImplementation()!;
+    const data = await original("claude");
+    let resolve!: (value: typeof data) => void;
+    vi.mocked(api.routerSelection).mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    versionState.version = { capabilities: ["agent-auth-router"] };
+    serverSettingsState.isLoading = false;
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        providers: {
+          claude: {
+            model: "opus",
+            thinkingMode: "on",
+            effortLevel: "high",
+            routerPoolId: "work",
+            routerAccountId: "routed-account",
+          },
+        },
+      },
+    };
+    const view = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    openAdvancedOptions();
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "hello" },
+    });
+    expect(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    ).toHaveProperty("disabled", true);
+    await act(async () => resolve(data));
+    expect(selectedDropdownValue("routerPool")).toBe("work");
+    expect(selectedDropdownValue("routerAccount")).toBe("routed-account");
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+    await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+    expect(mockStartSession.mock.calls[0]![2]).toMatchObject({
+      routerPoolId: "work",
+      routerAccountId: "routed-account",
+      routerPolicy: "manual",
+    });
+    view.unmount();
+    const next = render(<NewSessionForm projectId="project-1" />);
+    await waitFor(() =>
+      expect(selectedDropdownValue("routerPool")).toBe("work"),
+    );
+    fireEvent.click(dropdownOption("routerPool", "routerDirect"));
+    await waitFor(() =>
+      expect(
+        mockUpdateSetting.mock.calls.at(-1)![1].providers.claude.routerPoolId,
+      ).toBeUndefined(),
+    );
+    const saved = mockUpdateSetting.mock.calls.at(-1)![1];
+    expect(saved.providers.claude.routerAccountId).toBeUndefined();
+    serverSettingsState.settings = { newSessionDefaults: saved };
+    next.unmount();
+    render(<NewSessionForm projectId="project-1" />);
+    await screen.findByTestId("filter-routerPool");
+    expect(selectedDropdownValue("routerPool")).toBe("");
+  });
+
+  it("retains an unavailable router preference on unrelated edits and restores after refresh", async () => {
+    vi.mocked(api.routerSelection).mockResolvedValueOnce(null);
+    versionState.version = { capabilities: ["agent-auth-router"] };
+    serverSettingsState.isLoading = false;
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        providers: { claude: { model: "opus", routerPoolId: "work" } },
+      },
+    };
+    render(<NewSessionForm projectId="project-1" />);
+    openAdvancedOptions();
+    await waitFor(() => expect(api.routerSelection).toHaveReturned());
+    fireEvent.click(dropdownOption("newSessionModeTitle", "modePlanLabel"));
+    await waitFor(() => expect(mockUpdateSetting).toHaveBeenCalled());
+    expect(
+      mockUpdateSetting.mock.calls.at(-1)![1].providers.claude.routerPoolId,
+    ).toBe("work");
+    await act(async () => {
+      window.dispatchEvent(new Event("router-connection-changed"));
+    });
+    await waitFor(() =>
+      expect(selectedDropdownValue("routerPool")).toBe("work"),
+    );
   });
 
   it("keeps what was typed while a launch seed was still being fetched", async () => {
@@ -3223,12 +3376,40 @@ describe("NewSessionForm", () => {
     });
   });
 
-  it("uses Ctrl+Enter to queue a new session through Project Queue", async () => {
+  it("uses Ctrl+Enter to queue directly despite a restored pool preference", async () => {
     toolbarVisibilityState.projectQueue = true;
     inboxState.active = [
       { sessionId: "session-active", projectId: "project-1" },
     ];
     serverSettingsState.isLoading = false;
+    versionState.version = {
+      capabilities: [PROJECT_QUEUE_CAPABILITY, "agent-auth-router"],
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        providers: { claude: { model: "opus", routerPoolId: "work" } },
+      },
+    };
+    vi.mocked(api.routerSelection).mockResolvedValueOnce({
+      accounts: [
+        {
+          id: "routed-account",
+          provider: "claude",
+          enabled: true,
+          models: [{ id: "opus", name: "Opus 4.8" }],
+        },
+      ],
+      pools: [
+        {
+          id: "work",
+          name: "Work",
+          provider: "claude",
+          accountIds: ["routed-account"],
+          policy: "round-robin",
+        },
+      ],
+    } as never);
 
     render(
       <NewSessionForm
@@ -3239,6 +3420,10 @@ describe("NewSessionForm", () => {
     );
 
     const composer = screen.getByPlaceholderText("newSessionPlaceholder");
+    openAdvancedOptions();
+    await waitFor(() =>
+      expect(selectedDropdownValue("routerPool")).toBe("work"),
+    );
     fireEvent.change(composer, {
       target: { value: "queued project shortcut" },
     });
@@ -3261,6 +3446,9 @@ describe("NewSessionForm", () => {
       }),
     );
     expect(mockStartSession).not.toHaveBeenCalled();
+    expect(
+      mockCreateProjectQueueItem.mock.calls[0]![1].target.routerPoolId,
+    ).toBeUndefined();
   });
 
   it("expands for long-form editing and makes Ctrl+Enter start", async () => {

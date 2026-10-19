@@ -1,0 +1,618 @@
+{
+  "temp": "/var/folders/qw/pzqy9tp52_s5f51778j6j8tr0000gn/T/ya-ext-artifact-probe-vZ5BNp",
+  "cases": [
+    {
+      "war": "none",
+      "kind": "inline",
+      "control": {
+        "ok": true
+      },
+      "report": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "api": "undefined",
+            "done": true
+          }
+        }
+      ],
+      "network": {
+        "cors": {
+          "source": "network",
+          "origin": "null"
+        },
+        "noCors": "TypeError: Failed to fetch"
+      },
+      "events": [
+        {
+          "url": "chrome-extension://mhmgaofgecjaonpkjigdbejihcplhgnd/host.html",
+          "mode": "navigate",
+          "destination": "document",
+          "clientId": "56305018-01ca-4d7d-8442-4abb53b19e2b",
+          "resultingClientId": "97b6b55c-0e68-4819-a3e9-9104f6664e83"
+        },
+        {
+          "url": "chrome-extension://mhmgaofgecjaonpkjigdbejihcplhgnd/host.js",
+          "mode": "no-cors",
+          "destination": "script",
+          "clientId": "97b6b55c-0e68-4819-a3e9-9104f6664e83",
+          "resultingClientId": ""
+        },
+        {
+          "url": "chrome-extension://mhmgaofgecjaonpkjigdbejihcplhgnd/v/control/data.json",
+          "mode": "cors",
+          "destination": "",
+          "clientId": "97b6b55c-0e68-4819-a3e9-9104f6664e83",
+          "resultingClientId": ""
+        },
+        {
+          "url": "chrome-extension://mhmgaofgecjaonpkjigdbejihcplhgnd/sandbox.html",
+          "mode": "navigate",
+          "destination": "iframe",
+          "clientId": "",
+          "resultingClientId": "e55b3fc4-c39a-439b-b821-ca8d857856d7"
+        }
+      ],
+      "errors": [
+        "Access to fetch at 'http://127.0.0.1:52783/no-cors.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED"
+      ]
+    },
+    {
+      "war": "none",
+      "kind": "packaged",
+      "control": {
+        "ok": true
+      },
+      "report": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "extensionAPI": "undefined",
+            "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"null\" from accessing a cross-origin frame.",
+            "storage": "SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+            "serviceWorker": "SecurityError: Failed to read the 'serviceWorker' property from 'Navigator': Service worker is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+            "img": 40,
+            "css": "rgb(1, 2, 3)",
+            "font": 1,
+            "classic": true,
+            "json": {
+              "ok": true
+            },
+            "packaged": {
+              "ok": true
+            },
+            "module": 9,
+            "moduleState": 9,
+            "done": true
+          }
+        }
+      ],
+      "network": {
+        "cors": {
+          "source": "network",
+          "origin": "null"
+        },
+        "noCors": "TypeError: Failed to fetch"
+      },
+      "events": [
+        {
+          "url": "chrome-extension://mhmgaofgecjaonpkjigdbejihcplhgnd/sandbox.html",
+          "mode": "navigate",
+          "destination": "iframe",
+          "clientId": "",
+          "resultingClientId": "aed736cc-706d-4234-b9f2-dce0ca2847ea"
+        }
+      ],
+      "errors": [
+        "Access to fetch at 'http://127.0.0.1:52783/no-cors.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED"
+      ]
+    },
+    {
+      "war": "none",
+      "kind": "virtual",
+      "control": {
+        "ok": true
+      },
+      "report": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "extensionAPI": "undefined",
+            "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"null\" from accessing a cross-origin frame.",
+            "storage": "SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+            "serviceWorker": "SecurityError: Failed to read the 'serviceWorker' property from 'Navigator': Service worker is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+            "img": 0,
+            "css": "rgba(0, 0, 0, 0)",
+            "font": 0,
+            "classic": false,
+            "json": "TypeError: Failed to fetch",
+            "packaged": {
+              "ok": true
+            },
+            "module": "TypeError: Failed to fetch dynamically imported module: chrome-extension://mhmgaofgecjaonpkjigdbejihcplhgnd/v/viewer/app.js",
+            "done": true
+          }
+        }
+      ],
+      "network": {
+        "cors": {
+          "source": "network",
+          "origin": "null"
+        },
+        "noCors": "TypeError: Failed to fetch"
+      },
+      "events": [
+        {
+          "url": "chrome-extension://mhmgaofgecjaonpkjigdbejihcplhgnd/sandbox.html",
+          "mode": "navigate",
+          "destination": "iframe",
+          "clientId": "",
+          "resultingClientId": "906eb9ee-d4e1-46e8-a8f5-90ce23d1cc8f"
+        }
+      ],
+      "errors": [
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Access to fetch at 'http://127.0.0.1:52783/no-cors.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED"
+      ]
+    },
+    {
+      "war": "none",
+      "kind": "web-embed",
+      "embedded": false
+    },
+    {
+      "war": "shell",
+      "kind": "inline",
+      "control": {
+        "ok": true
+      },
+      "report": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "api": "undefined",
+            "done": true
+          }
+        }
+      ],
+      "network": {
+        "cors": {
+          "source": "network",
+          "origin": "null"
+        },
+        "noCors": "TypeError: Failed to fetch"
+      },
+      "events": [
+        {
+          "url": "chrome-extension://chkcfibglonimjcilchjihledimogjkl/host.html",
+          "mode": "navigate",
+          "destination": "document",
+          "clientId": "2077cf52-82ba-4a98-b2f3-8eef774ce0ad",
+          "resultingClientId": "617068ab-5c70-4ea0-b626-d285e5a5c6d9"
+        },
+        {
+          "url": "chrome-extension://chkcfibglonimjcilchjihledimogjkl/host.js",
+          "mode": "no-cors",
+          "destination": "script",
+          "clientId": "617068ab-5c70-4ea0-b626-d285e5a5c6d9",
+          "resultingClientId": ""
+        },
+        {
+          "url": "chrome-extension://chkcfibglonimjcilchjihledimogjkl/v/control/data.json",
+          "mode": "cors",
+          "destination": "",
+          "clientId": "617068ab-5c70-4ea0-b626-d285e5a5c6d9",
+          "resultingClientId": ""
+        },
+        {
+          "url": "chrome-extension://chkcfibglonimjcilchjihledimogjkl/sandbox.html",
+          "mode": "navigate",
+          "destination": "iframe",
+          "clientId": "",
+          "resultingClientId": "ffd91436-a3b4-4435-ade5-68bdd55cf199"
+        }
+      ],
+      "errors": [
+        "Access to fetch at 'http://127.0.0.1:52783/no-cors.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED"
+      ]
+    },
+    {
+      "war": "shell",
+      "kind": "packaged",
+      "control": {
+        "ok": true
+      },
+      "report": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "extensionAPI": "undefined",
+            "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"null\" from accessing a cross-origin frame.",
+            "storage": "SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+            "serviceWorker": "SecurityError: Failed to read the 'serviceWorker' property from 'Navigator': Service worker is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+            "img": 40,
+            "css": "rgb(1, 2, 3)",
+            "font": 1,
+            "classic": true,
+            "json": {
+              "ok": true
+            },
+            "packaged": {
+              "ok": true
+            },
+            "module": 9,
+            "moduleState": 9,
+            "done": true
+          }
+        }
+      ],
+      "network": {
+        "cors": {
+          "source": "network",
+          "origin": "null"
+        },
+        "noCors": "TypeError: Failed to fetch"
+      },
+      "events": [
+        {
+          "url": "chrome-extension://chkcfibglonimjcilchjihledimogjkl/sandbox.html",
+          "mode": "navigate",
+          "destination": "iframe",
+          "clientId": "",
+          "resultingClientId": "7fc65f75-9aa5-4eaa-ab46-7ed3077b8151"
+        }
+      ],
+      "errors": [
+        "Access to fetch at 'http://127.0.0.1:52783/no-cors.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED"
+      ]
+    },
+    {
+      "war": "shell",
+      "kind": "virtual",
+      "control": {
+        "ok": true
+      },
+      "report": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "extensionAPI": "undefined",
+            "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"null\" from accessing a cross-origin frame.",
+            "storage": "SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+            "serviceWorker": "SecurityError: Failed to read the 'serviceWorker' property from 'Navigator': Service worker is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+            "img": 0,
+            "css": "rgba(0, 0, 0, 0)",
+            "font": 0,
+            "classic": false,
+            "json": "TypeError: Failed to fetch",
+            "packaged": {
+              "ok": true
+            },
+            "module": "TypeError: Failed to fetch dynamically imported module: chrome-extension://chkcfibglonimjcilchjihledimogjkl/v/viewer/app.js",
+            "done": true
+          }
+        }
+      ],
+      "network": {
+        "cors": {
+          "source": "network",
+          "origin": "null"
+        },
+        "noCors": "TypeError: Failed to fetch"
+      },
+      "events": [
+        {
+          "url": "chrome-extension://chkcfibglonimjcilchjihledimogjkl/sandbox.html",
+          "mode": "navigate",
+          "destination": "iframe",
+          "clientId": "",
+          "resultingClientId": "00c0dbb5-2fd7-4f5c-bc22-a3a099cbb28d"
+        }
+      ],
+      "errors": [
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Access to fetch at 'http://127.0.0.1:52783/no-cors.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED"
+      ]
+    },
+    {
+      "war": "shell",
+      "kind": "web-embed",
+      "embedded": true,
+      "embeddedReport": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "extensionAPI": "undefined",
+            "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"null\" from accessing a cross-origin frame.",
+            "storage": "SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+            "serviceWorker": "SecurityError: Failed to read the 'serviceWorker' property from 'Navigator': Service worker is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+            "img": 40,
+            "css": "rgb(1, 2, 3)",
+            "font": 1,
+            "classic": true,
+            "json": {
+              "ok": true
+            },
+            "packaged": {
+              "ok": true
+            },
+            "module": 9,
+            "moduleState": 9,
+            "done": true
+          }
+        }
+      ]
+    },
+    {
+      "war": "all",
+      "kind": "inline",
+      "control": {
+        "ok": true
+      },
+      "report": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "api": "undefined",
+            "done": true
+          }
+        }
+      ],
+      "network": {
+        "cors": {
+          "source": "network",
+          "origin": "null"
+        },
+        "noCors": "TypeError: Failed to fetch"
+      },
+      "events": [
+        {
+          "url": "chrome-extension://ddlfccpbdolbljphoakkbjbalkpihhch/host.html",
+          "mode": "navigate",
+          "destination": "document",
+          "clientId": "315817b6-ddf2-4ee5-99bd-cd50d41fe8bb",
+          "resultingClientId": "2da55277-c048-48be-9449-9b7465ea4c8d"
+        },
+        {
+          "url": "chrome-extension://ddlfccpbdolbljphoakkbjbalkpihhch/host.js",
+          "mode": "no-cors",
+          "destination": "script",
+          "clientId": "2da55277-c048-48be-9449-9b7465ea4c8d",
+          "resultingClientId": ""
+        },
+        {
+          "url": "chrome-extension://ddlfccpbdolbljphoakkbjbalkpihhch/v/control/data.json",
+          "mode": "cors",
+          "destination": "",
+          "clientId": "2da55277-c048-48be-9449-9b7465ea4c8d",
+          "resultingClientId": ""
+        },
+        {
+          "url": "chrome-extension://ddlfccpbdolbljphoakkbjbalkpihhch/sandbox.html",
+          "mode": "navigate",
+          "destination": "iframe",
+          "clientId": "",
+          "resultingClientId": "0d646b22-17ce-4246-aedc-ca431f774ef6"
+        }
+      ],
+      "errors": [
+        "Access to fetch at 'http://127.0.0.1:52783/no-cors.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED"
+      ]
+    },
+    {
+      "war": "all",
+      "kind": "packaged",
+      "control": {
+        "ok": true
+      },
+      "report": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "extensionAPI": "undefined",
+            "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"null\" from accessing a cross-origin frame.",
+            "storage": "SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+            "serviceWorker": "SecurityError: Failed to read the 'serviceWorker' property from 'Navigator': Service worker is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+            "img": 40,
+            "css": "rgb(1, 2, 3)",
+            "font": 1,
+            "classic": true,
+            "json": {
+              "ok": true
+            },
+            "packaged": {
+              "ok": true
+            },
+            "module": 9,
+            "moduleState": 9,
+            "done": true
+          }
+        }
+      ],
+      "network": {
+        "cors": {
+          "source": "network",
+          "origin": "null"
+        },
+        "noCors": "TypeError: Failed to fetch"
+      },
+      "events": [
+        {
+          "url": "chrome-extension://ddlfccpbdolbljphoakkbjbalkpihhch/sandbox.html",
+          "mode": "navigate",
+          "destination": "iframe",
+          "clientId": "",
+          "resultingClientId": "1ce45602-3a71-444e-b07f-0610ada89093"
+        }
+      ],
+      "errors": [
+        "Access to fetch at 'http://127.0.0.1:52783/no-cors.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED"
+      ]
+    },
+    {
+      "war": "all",
+      "kind": "virtual",
+      "control": {
+        "ok": true
+      },
+      "report": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "extensionAPI": "undefined",
+            "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"null\" from accessing a cross-origin frame.",
+            "storage": "SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+            "serviceWorker": "SecurityError: Failed to read the 'serviceWorker' property from 'Navigator': Service worker is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+            "img": 0,
+            "css": "rgba(0, 0, 0, 0)",
+            "font": 0,
+            "classic": false,
+            "json": "TypeError: Failed to fetch",
+            "packaged": {
+              "ok": true
+            },
+            "module": "TypeError: Failed to fetch dynamically imported module: chrome-extension://ddlfccpbdolbljphoakkbjbalkpihhch/v/viewer/app.js",
+            "done": true
+          }
+        }
+      ],
+      "network": {
+        "cors": {
+          "source": "network",
+          "origin": "null"
+        },
+        "noCors": "TypeError: Failed to fetch"
+      },
+      "events": [
+        {
+          "url": "chrome-extension://ddlfccpbdolbljphoakkbjbalkpihhch/sandbox.html",
+          "mode": "navigate",
+          "destination": "iframe",
+          "clientId": "",
+          "resultingClientId": "8c422ea6-6519-45d5-b72c-51eff2526d13"
+        }
+      ],
+      "errors": [
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+        "Access to fetch at 'http://127.0.0.1:52783/no-cors.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED"
+      ]
+    },
+    {
+      "war": "all",
+      "kind": "web-embed",
+      "embedded": true,
+      "embeddedReport": [
+        {
+          "origin": "null",
+          "type": "ready"
+        },
+        {
+          "origin": "null",
+          "type": "report",
+          "report": {
+            "origin": "null",
+            "extensionAPI": "undefined",
+            "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"null\" from accessing a cross-origin frame.",
+            "storage": "SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+            "serviceWorker": "SecurityError: Failed to read the 'serviceWorker' property from 'Navigator': Service worker is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+            "img": 40,
+            "css": "rgb(1, 2, 3)",
+            "font": 1,
+            "classic": true,
+            "json": {
+              "ok": true
+            },
+            "packaged": {
+              "ok": true
+            },
+            "module": 9,
+            "moduleState": 9,
+            "done": true
+          }
+        }
+      ]
+    }
+  ],
+  "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/148.0.0.0 Safari/537.36"
+}

@@ -768,7 +768,15 @@ describe("process-generation version facts", () => {
   it("probes the install once no matter how many requests arrive", async () => {
     const { createVersionRoutes, getCurrentVersionInfoComputations } =
       await importVersion();
-    const app = createVersionRoutes();
+    // Keep the real install probe; remote updates and host preflight are
+    // separate concerns. A live update fetch can exhaust its 5 s deadline.
+    const app = createVersionRoutes({
+      getLatestVersion: async () => null,
+      getSessionSandboxAvailability: async () => ({
+        state: "unsupported-platform",
+        platform: "test",
+      }),
+    });
 
     for (let request = 0; request < 20; request += 1) {
       const response = await app.request("/");
@@ -781,7 +789,15 @@ describe("process-generation version facts", () => {
   it("shares one probe across concurrent first requests", async () => {
     const { createVersionRoutes, getCurrentVersionInfoComputations } =
       await importVersion();
-    const app = createVersionRoutes();
+    // Keep the real install probe; remote updates and host preflight are
+    // separate concerns. A live update fetch can exhaust its 5 s deadline.
+    const app = createVersionRoutes({
+      getLatestVersion: async () => null,
+      getSessionSandboxAvailability: async () => ({
+        state: "unsupported-platform",
+        platform: "test",
+      }),
+    });
 
     await Promise.all(Array.from({ length: 10 }, () => app.request("/")));
 
@@ -791,7 +807,15 @@ describe("process-generation version facts", () => {
   it("keeps the version snapshot across an explicit fresh request", async () => {
     const { createVersionRoutes, getCurrentVersionInfoComputations } =
       await importVersion();
-    const app = createVersionRoutes();
+    // Keep the real install probe; remote updates and host preflight are
+    // separate concerns. A live update fetch can exhaust its 5 s deadline.
+    const app = createVersionRoutes({
+      getLatestVersion: async () => null,
+      getSessionSandboxAvailability: async () => ({
+        state: "unsupported-platform",
+        platform: "test",
+      }),
+    });
 
     const first = await (await app.request("/")).json();
     const fresh = await (await app.request("/?fresh=1")).json();

@@ -24,6 +24,7 @@ import {
 import type { ProjectPathIndex } from "../../src/projects/projectPathIndex.js";
 import type { ProjectScanner } from "../../src/projects/scanner.js";
 import type { Project } from "../../src/supervisor/types.js";
+import * as sharedDirectoryWatcher from "../../src/watcher/SharedDirectoryWatcher.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -567,6 +568,15 @@ describe("ProjectGlossarySubscriptionManager", () => {
   });
 
   it("shares one post-observation snapshot barrier across concurrent joiners", async () => {
+    const watch = sharedDirectoryWatcher.watchSharedDirectory;
+    // This race controls observation and poll work explicitly. macOS can
+    // deliver the fixture's earlier GLOSSARY.md creation after watch attachment,
+    // legitimately scheduling a fourth scan unrelated to the join barrier.
+    // Keep real watcher lifetimes, but isolate native events in this case;
+    // the surrounding integration cases exercise filesystem notifications.
+    vi.spyOn(sharedDirectoryWatcher, "watchSharedDirectory").mockImplementation(
+      (path, options) => watch(path, options, () => {}),
+    );
     const olderRefreshStarted = deferred<void>();
     const releaseOlderRefresh = deferred<void>();
     let statCalls = 0;

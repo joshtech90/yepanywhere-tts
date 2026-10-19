@@ -108,8 +108,11 @@ its own composer.
 2. **Adopted in one commit.** The page's `NewSessionForm` takes the text and
    selection in the ref callback that creates its own textarea and focuses
    it there, so no key falls between the two fields. On the local route the
-   field already shows the current account's saved new-session draft. Edits
-   replace that draft once, including an intentional deletion; they are never
+   field already shows the current account's saved new-session draft. Draft
+   hydration cannot overwrite an edit made during ref/layout adoption, even a
+   lone leading space that is intentionally absent from durable draft storage.
+   Switching to a different draft identity still loads that identity's value.
+   Edits replace that draft once, including an intentional deletion; they are never
    appended to it. An untouched snapshot does not overwrite a newer draft
    loaded by the app. A change of account before adoption discards the old
    account's snapshot. On remote paths identity is not known before boot, so

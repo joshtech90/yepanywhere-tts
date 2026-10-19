@@ -242,37 +242,27 @@ describe("NewSessionPage", () => {
     versionState.capabilities = ["project-service"];
     localStorage.setItem(UI_KEYS.sessionRightPane, "true");
     renderPage("/new-session?projectId=project-1");
-    expect(screen.queryByRole("link", { name: "projectAppLabel" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "projectAppLabel" }),
+    ).toBeNull();
   });
 
-  it("offers the App button only after opting into app composing", async () => {
+  it("offers App immediately without waiting for app discovery", () => {
     versionState.capabilities = ["project-service"];
     localStorage.setItem(UI_KEYS.projectAppComposing, "true");
     renderPage("/new-session?projectId=project-1");
     expect(
-      (
-        await screen.findByRole("link", { name: "projectAppLabel" })
-      ).getAttribute("href"),
-    ).toBe("/projects/project-1/app?compose=1");
-    expect(projectAppInfo).toHaveBeenCalledWith("project-1");
-  });
-
-  it("hides the App button for a project without an app", async () => {
-    versionState.capabilities = ["project-service"];
-    localStorage.setItem(UI_KEYS.projectAppComposing, "true");
-    projectAppInfo.mockResolvedValueOnce({
-      declaration: undefined,
-      state: "missing",
-    } as never);
-    renderPage("/new-session?projectId=project-1");
-    await waitFor(() => expect(projectAppInfo).toHaveBeenCalled());
-    expect(screen.queryByRole("link", { name: "projectAppLabel" })).toBeNull();
+      screen.getByRole("button", { name: "projectAppLabel" }),
+    ).toBeTruthy();
+    expect(projectAppInfo).not.toHaveBeenCalled();
   });
 
   it("keeps app composing hidden when the server lacks support", () => {
     localStorage.setItem(UI_KEYS.projectAppComposing, "true");
     renderPage("/new-session?projectId=project-1");
-    expect(screen.queryByRole("link", { name: "projectAppLabel" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "projectAppLabel" }),
+    ).toBeNull();
     expect(projectAppInfo).not.toHaveBeenCalled();
   });
 

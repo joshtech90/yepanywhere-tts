@@ -69,9 +69,10 @@ matches on the class text rather than reading it is still exposed.
 ## The default language affordance
 
 A marked code block names its language on hover and on tap. It adds no visible
-chrome, no badge in the resting state, and no layout change: the existing
-default is not buggy, so the label stays a non-disturbing addition. A block
-with no language, or one whose info string normalizes away, shows nothing.
+badge in the resting state. The label occupies the reserved code-block header
+beside Copy, so revealing it does not cover code or change the block height.
+A block with no language, or one whose info string normalizes away, shows
+nothing.
 
 Three details are load-bearing:
 
@@ -88,15 +89,20 @@ Three details are load-bearing:
 
 ## Copy control
 
-Every fenced block — labeled, `text`, or bare — carries a small copy button in
-its top-right corner that copies the block's content verbatim: exactly the
-fence body, with indentation, blank lines, and entity-decoded characters, and
-nothing added. It is an established first-party convention (claude.ai code
+Every fenced block — labeled, `text`, or bare — carries a copy button in a
+reserved header row above the source that copies the block's content verbatim:
+exactly the fence body, with indentation, blank lines, and entity-decoded
+characters, and nothing added. It is an established first-party convention (claude.ai code
 blocks), so it ships visible under
 [vanilla defaults](vanilla-defaults.md#contract) rather than behind an option,
 revealed the way the language label is: on hover or focus for pointers, and
 always shown without a hover pointer, where it grows to a touch-sized target.
-The language label moves beside it.
+The language label shares that row. Neither control may overlap the source,
+including wrapped first lines on narrow phones. Source text retains the full
+content width below the header; no right-hand control gutter reduces it.
+Keep padding and the gap before source compact; the button's touch target,
+not extra whitespace, determines the mobile header height. Touch targets
+remain at least 44×44 CSS pixels.
 
 It is a real `<button>` inside the `<pre>`, which the label deliberately is
 not, so it is built to leave every copy path untouched: icon-only (no text in
@@ -104,6 +110,47 @@ the block's `textContent` or a plain selection), marked
 `data-markdown-copy-ignore` for Markdown copy, and stripped by the semantic
 HTML clipboard with the rest of the active content. A confirmation state
 lasts about a second after a successful write.
+
+Fenced-code syntax comments must have at least 4.5:1 contrast against the
+code-block background in light, dark, verydark, and both automatic color schemes.
+
+## Fixed-width Unicode grids
+
+`useCodeFenceRenderers` also normalizes grid typography through
+`lib/codeFence/gridFont.ts`. A multiline block with at least four box, block,
+geometric, Braille, or legacy-computing symbols, or an ASCII box border, uses
+the already shipped Fira Mono for the entire block. Its wider cells better
+fit grid art than Iosevka. No new font asset or preference is required.
+
+Other blocks switch when a standalone Unicode punctuation or symbol glyph's
+measured advance differs from one ordinary cell. This detects both browser
+font fallback and double-width symbols supplied by the selected font itself:
+the shipped Iosevka draws `◎●○◯∞∑→` at twice its digit advance.
+
+Iosevka supplies symbols missing from Fira, followed by the browser's
+monospace fallback. After fonts load, any remaining mismatched symbol gets a
+one-cell inline wrapper and proportional scaling. The cell controls advance;
+scaling preserves the glyph's shape. Highlight spans, links, and source text
+remain intact, including verbatim copying. The client enhancement covers
+streamed and historical assistant blocks and rendered Markdown previews.
+
+This is a symbol-grid contract, not a terminal emulator. Chinese, Japanese,
+Korean, fullwidth punctuation, emoji-presentation characters, and multi-codepoint
+graphemes retain natural layout. Authors mixing these with single-cell symbols
+remain responsible for spacing. Inline code and ordinary code without a width
+mismatch retain the chosen output font.
+
+Unicode classifications use a process-wide sparse array of lazily allocated
+256-codepoint byte pages, with cached property flags per codepoint. Font/glyph
+measurements are shared within each mounted renderer and capped at 4096 pairs.
+Output appearance changes invalidate those measurements and rebuild wrappers;
+async results are discarded after source replacement or unmount.
+
+The browser regression uses the real enhancement hook and shipped fonts:
+`pnpm --filter @yep-anywhere/client exec playwright test --config playwright.code-grid.config.ts`.
+It checks symbol/reference row alignment, fallback for an isolated double-width
+circle, verbatim copy, and sequential typing during streamed updates with 100
+additional mounted grids. Captures cover desktop and phone widths.
 
 ## The renderer registry
 

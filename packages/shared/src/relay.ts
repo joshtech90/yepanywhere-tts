@@ -53,7 +53,9 @@ export interface RelayRequest {
    * may still answer with one `response`, and servers that predate streaming
    * ignore the field, so the client must accept either.
    */
-  stream?: boolean;
+  // Native beta peers select the shared connection window directly. Browser
+  // peers keep true and their existing per-response window; no echo handshake.
+  stream?: boolean | "connection";
 }
 
 /** Bytes of body carried by one streamed response chunk, at most. */

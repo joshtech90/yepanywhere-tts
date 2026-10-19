@@ -416,6 +416,10 @@ export const CodexResponseItemEntrySchema = z.object({
   ...CodexPersistedEntryIdentityShape,
   timestamp: z.string(),
   type: z.literal("response_item"),
+  metadata: z
+    .object({ compaction_output: z.boolean().optional() })
+    .passthrough()
+    .optional(),
   payload: CodexResponseItemPayloadSchema,
 });
 

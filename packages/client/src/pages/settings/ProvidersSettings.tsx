@@ -1,4 +1,6 @@
 import { AgentAuthRouterSettings } from "../../components/AgentAuthRouterControls";
+import { Link } from "react-router-dom";
+import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
 import {
   Fragment,
   useCallback,
@@ -1688,6 +1690,7 @@ function LongContextEffortWarningControl({
 }
 
 export function ProvidersSettings() {
+  const signInBasePath = useRemoteBasePath();
   const { t } = useI18n();
   useSettingsPaneTitle(t("providersSectionTitle"));
   const [showClaudeOllamaDeprecation, setShowClaudeOllamaDeprecation] =
@@ -1804,6 +1807,25 @@ export function ProvidersSettings() {
 
   return (
     <SettingsSection description={t("providersSectionDescription")}>
+      <nav
+        className={styles.signInShortcuts}
+        aria-label={t("providerSignInShortcuts")}
+      >
+        {serverProviders
+          .filter(
+            (provider) =>
+              (provider.name === "claude" || provider.name === "codex") &&
+              provider.supportsInAppLogin,
+          )
+          .map((provider) => (
+            <Link
+              key={provider.name}
+              to={`${signInBasePath}/provider-sign-in/${provider.name}`}
+            >
+              {t("providersSignIn", { provider: provider.displayName })}
+            </Link>
+          ))}
+      </nav>
       {serverHasCapability(
         version,
         SERVER_CAPABILITIES.agentAuthRouter.name,

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeferredQueueMessage } from "../api/client";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import {
-  getAttachmentUploadLongEdgePx,
+  getAttachmentUploadProfile,
   useAttachmentUploadQuality,
 } from "../hooks/useAttachmentUploadQuality";
 import {
@@ -224,7 +224,11 @@ export function useCockpitComposer(
         sourceTransport: watchedTransport,
         projectId,
         sessionId,
-        maxLongEdgePx: getAttachmentUploadLongEdgePx(attachmentQuality),
+        imageProfile: getAttachmentUploadProfile(
+          attachmentQuality,
+          providers.find((p) => p.name === sessionPort.session?.provider),
+          sessionPort.session?.model,
+        ),
         signal: controller.signal,
         onProgress: (bytesUploaded, uploadFile) => {
           armStallTimer();

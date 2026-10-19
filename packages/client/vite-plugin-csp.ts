@@ -79,12 +79,13 @@ export function cspPlugin(options: CspPluginOptions = {}): Plugin {
         // default-src: Fallback for unspecified directives
         directives.push("default-src 'self'");
 
-        // script-src: Allow self + inline script hashes
+        // Blob scripts execute explicitly granted browser diagnostics; inline
+        // scripts still require build-time hashes in production.
         // In dev mode, Vite needs 'unsafe-inline' for HMR error overlay
         if (isDev) {
-          directives.push("script-src 'self' 'unsafe-inline'");
+          directives.push("script-src 'self' blob: 'unsafe-inline'");
         } else {
-          const scriptSrc = ["'self'", ...scriptHashes].join(" ");
+          const scriptSrc = ["'self'", "blob:", ...scriptHashes].join(" ");
           directives.push(`script-src ${scriptSrc}`);
         }
 

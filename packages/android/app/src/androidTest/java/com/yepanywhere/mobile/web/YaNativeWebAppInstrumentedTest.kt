@@ -192,7 +192,12 @@ class YaNativeWebAppInstrumentedTest {
             // 120 s allows ~4x the slowest run, including a 30 s failed focus
             // observation. This opt-in device probe has no CI timing baseline.
             await(scenario, "document.querySelector('.attachment-list')?.textContent.includes('native-upload.bin') === true && !document.querySelector('.attachment-list')?.textContent.includes('%')", 120)
-            scenario.onActivity { activity -> android.util.Log.i("YaNativeWebProof", "uploadBytes=$uploadBytes typingMaxMs=$latency metrics=${activity.nativeTransportDiagnostics()}") }
+            scenario.onActivity { activity ->
+                val proof = activity.nativeTransportDiagnostics() ?: org.json.JSONObject()
+                proof.remove("profileId")
+                proof.put("uploadBytes", uploadBytes).put("typingMaxMs", latency)
+                instrumentation.sendStatus(2, android.os.Bundle().apply { putString("yaNativeWebProof", proof.toString()) })
+            }
 
             device.pressBack() // Hide the keyboard before opening native chrome.
             evaluate(scenario, "window.warmDocument = {identity: Math.random()}; window.warmComposerNode = document.querySelector('textarea[data-composer-input]'); window.warmComposer = window.warmComposerNode.value; window.warmScrollNode = document.querySelector('.message-list').parentElement; window.warmScrollTarget = (window.warmScrollNode.scrollHeight - window.warmScrollNode.clientHeight) / 2; window.warmScrollNode.scrollTop = window.warmScrollTarget; true")
@@ -341,8 +346,8 @@ class YaNativeWebAppInstrumentedTest {
         // text. WebView can also expose its name on a text child. Preserve the
         // existing 5 s budget and real user gesture for either representation.
         return checkNotNull(device.wait(Condition<UiDevice, UiObject2?> { current ->
-            current.findObject(By.pkg("com.yepanywhere.mobile").desc(name))
-                ?: current.findObject(By.pkg("com.yepanywhere.mobile").text(name))
+            current.findObject(By.pkg(InstrumentationRegistry.getInstrumentation().targetContext.packageName).desc(name))
+                ?: current.findObject(By.pkg(InstrumentationRegistry.getInstrumentation().targetContext.packageName).text(name))
         }, 5_000)) { "Web link is absent from accessibility: $name" }
     }
 

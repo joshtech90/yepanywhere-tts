@@ -49,3 +49,28 @@ Live confirm is still outstanding — the captured burst is over. Re-check on
 the next Grok 4.6 send-during-thinking episode before deleting this entry.
 
 Found 2026-09-15 while debugging a granted live tab's ~2px follow-mode squirm.
+
+## Claude report, 2026-10-16
+
+Contributing-model: gpt-6-astra
+
+The maintainer reports approximately 1px jiggling at 20Hz in the latest sent
+messages with the Claude provider. The screenshot shows two sent user rows
+above the compact “Cooking...” indicator; no thinking preview is visible.
+Pausing the status-text animation does not stop the jiggling, according to
+the maintainer's follow-up. This weakens the typewriter-text hypothesis;
+it does not pause the dot animation or transcript scroll adjustments.
+Direction, browser zoom, and exact deployed revision remain unknown.
+Similarity to the earlier Grok report does not establish a shared cause.
+
+At `803d82140`, a Chromium probe through the real `MessageList` component
+with two user messages and processing/streaming enabled stayed stationary
+for 392 animation frames (6.5 seconds). A second 392-frame probe with an
+overflowing transcript at CSS zoom 0.8 held `scrollTop` at 430 and indicator
+height at 17.59375px throughout phrase rotation. An isolated current-CSS
+probe also found constant indicator height across typed phrase prefixes at
+CSS zoom 0.67, 0.8, 1, 1.25, and 1.5. These probes do not reproduce live
+provider events, the user's retained history/settings, or browser page zoom.
+No behavior change is justified yet. Next discriminating evidence is a live
+geometry trace of the affected viewport and its scroll writes, through an
+explicit per-tab Remote Browser Debugging grant.

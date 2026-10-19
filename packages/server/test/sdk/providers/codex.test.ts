@@ -46,6 +46,7 @@ import {
   prepareSessionSandbox,
   probeSessionSandboxAvailability,
 } from "../../../src/session-sandbox.js";
+import type { AppServerModel } from "../../../src/sdk/providers/codex-model-catalog.js";
 import {
   codexAgentMessageDeltaFixtures,
   codexContextCompactionFixtures,
@@ -1188,6 +1189,68 @@ describe("CodexProvider app-server lifecycle", () => {
       }),
     ).toBe(false);
   });
+
+  it.each(["daybreak-blue", "daybreak-red"] as const)(
+    "checks model eligibility before requesting %s, including model changes",
+    async (program) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-cyber-eligibility-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-cyber-eligibility",
+        buildFakeCodexFailureAppServer(
+          logPath,
+          "serverOverloaded",
+          0,
+          "turn/start",
+          [
+            {
+              id: "gpt-6-sol",
+              availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
+            },
+            {
+              id: "gpt-6-astra",
+              availableAccessPrograms: { cyber: ["standard"] },
+            },
+          ],
+        ),
+      );
+      const testProvider = new CodexProvider({ codexPath });
+      testProvider.setCyberAccessProgramGetter(() => program);
+      const session = await testProvider.startSession({
+        cwd: tempDir,
+        model: "gpt-6-astra",
+        initialMessage: { text: "first Astra turn" },
+      });
+      try {
+        await consumeCodexTurn(session.iterator);
+        await session.setModel?.("gpt-6-sol");
+        session.queue.push({ text: "Sol turn" });
+        await consumeCodexTurn(session.iterator);
+        await session.setModel?.("gpt-6-astra");
+        session.queue.push({ text: "another Astra turn" });
+        await consumeCodexTurn(session.iterator);
+
+        const requests = readFakeCodexRequests(logPath);
+        const turns = requests.filter(
+          (request) => request.method === "turn/start",
+        );
+        expect(turns).toHaveLength(3);
+        expect(turns.map((turn) => turn.params?.cyberAccessProgram)).toEqual([
+          undefined,
+          program === "daybreak-blue" ? "daybreakBlue" : undefined,
+          undefined,
+        ]);
+        expect(
+          requests.filter((request) => request.method === "turn/interrupt"),
+        ).toHaveLength(0);
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.each(["cyberAccessDenied", "cyberAccessRetrying"] as const)(
     "retries without a refused cyber access program (%s)",
@@ -2428,7 +2491,10 @@ describe("CodexProvider app-server lifecycle", () => {
           for await (const _ of session?.iterator ?? []) {
           }
         })();
-        await waitForFakeCodexRequest(logPath, "turn/start");
+        // CI 37698697131 and 39129536950 reached the shell probe in 9-16ms
+        // but exhausted the 2s waiter before the real source CLI returned.
+        // Budget 3x that observed limit for CLI startup and its HTTP read.
+        await waitForFakeCodexRequest(logPath, "turn/start", 6_000);
         const request = readFakeCodexRequests(logPath).find(
           (record) => record.method === "turn/start",
         );
@@ -2448,6 +2514,9 @@ describe("CodexProvider app-server lifecycle", () => {
         rmSync(tempDir, { recursive: true, force: true });
       }
     },
+    // The failed CI case took 2115ms including startup and cleanup; allow
+    // ~3.8x that observed maximum around the narrower probe waiter above.
+    8_000,
   );
 
   it("sets AGENTCTL_SESSION_ID directly in the app-server env on resume", async () => {
@@ -4008,6 +4077,7 @@ function buildFakeCodexFailureAppServer(
     | "cyberAccessRetrying",
   failuresBeforeSuccess: number,
   failureMethod: "turn/start" | "thread/compact/start" = "turn/start",
+  models: AppServerModel[] = [],
 ): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
@@ -4016,6 +4086,7 @@ const logPath = ${JSON.stringify(logPath)};
 const codexErrorInfo = ${JSON.stringify(codexErrorInfo)};
 const failuresBeforeSuccess = ${JSON.stringify(failuresBeforeSuccess)};
 const failureMethod = ${JSON.stringify(failureMethod)};
+const models = ${JSON.stringify(models)};
 let buffer = "";
 let turnSequence = 0;
 let failureSequence = 0;
@@ -4069,6 +4140,14 @@ function handleMessage(message) {
     case "initialize":
       respond(message.id, { userAgent: "fake-codex-failure" });
       break;
+    case "model/list": {
+      const offset = Number(message.params?.cursor ?? 0);
+      respond(message.id, {
+        data: models.slice(offset, offset + 1),
+        nextCursor: offset + 1 < models.length ? String(offset + 1) : null,
+      });
+      break;
+    }
     case "account/read":
       respond(message.id, {
         account: { type: "chatgpt", email: "second@example.com", planType: "pro" },
@@ -5080,6 +5159,7 @@ function logRequest(message) {
     testTimeline("shell-probe-start");
     record.agentctlSessionId = agentctlSessionIdFromBash();
     if (process.env.AGENT_YA_API_URL) {
+      testTimeline("self-probe-start");
       record.agentSelf = JSON.parse(execFileSync("bash", ["-c", "ya-agent self --json"], { env: process.env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 }));
     }
     testTimeline("shell-probe-complete");

@@ -55,7 +55,11 @@ vi.mock("../hooks/useProviders", () => ({
 
 vi.mock("../hooks/useAttachmentUploadQuality", () => ({
   useAttachmentUploadQuality: () => ["sd", vi.fn()],
-  getAttachmentUploadLongEdgePx: () => 1024,
+  getAttachmentUploadProfile: () => ({
+    maxLongEdge: 1024,
+    maxBytes: 3 * 1024 * 1024,
+    quality: 90,
+  }),
 }));
 
 function sessionPort(

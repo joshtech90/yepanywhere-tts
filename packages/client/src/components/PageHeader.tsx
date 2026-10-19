@@ -59,7 +59,7 @@ export function PageHeader({
   return (
     <header className="session-header">
       <div
-        className={`session-header-inner${hasLeadingControl ? "" : ` ${sessionHeaderStyles.noLeadingControl}`}`}
+        className={`session-header-inner ${sessionHeaderStyles.row}${hasLeadingControl ? "" : ` ${sessionHeaderStyles.noLeadingControl}`}`}
       >
         <div className="session-header-left">
           {showBack && onBack ? (

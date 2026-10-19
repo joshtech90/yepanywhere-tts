@@ -62,6 +62,13 @@ or recreating the view must not retain duplicate or stale safe-area padding.
 The shared web client's safe-area rules remain available to browsers and PWAs;
 Android does not override those rules globally.
 
+The WebView exposes the Android system light/dark preference through
+`prefers-color-scheme`, on initial entry and after a system theme change.
+YA's Auto appearance follows that preference; explicit Light, Dark and Very
+Dark choices remain authoritative. Native toolbar and system-bar colors do
+not determine the web preference. The Android theme's `isLightTheme` value
+follows day/night resources independently of the Compose palette.
+
 Native background work cannot depend on the WebView. The native connection core
 must support Compose and an explicitly enabled foreground activity
 service without allocating a WebView or JavaScript runtime. Native FCM receipt
@@ -286,6 +293,50 @@ existing `subscribe`/`event`/`unsubscribe` protocol, remember their most recent
 event id, and are restored after a successful reconnect. Native inbound and
 per-subscription queues are bounded; a consumer that falls behind loses that
 subscription instead of growing process memory without limit.
+
+Android shells advertising `responseStreams` can deliver GET response headers
+before the body and pull binary chunks through their document bridge. This uses
+the existing encrypted response-stream protocol; native credentials remain
+native. Each authenticated source admits at most eight live response bodies, with
+at most 1 MiB queued per body and 128 KiB per chunk. The actor acknowledges bytes
+only as its reader removes them; JavaScript requests the next native chunk only
+when its Response consumer pulls. Unread media cannot block ordinary requests.
+Bodies never read expire after 15 seconds; an active pull and subsequent
+progress use a 120-second idle budget, including each bridge chunk request. Cancellation,
+backgrounding, lease release and connection replacement stop affected bodies;
+a cut fails the body rather than splicing bytes from a resumed connection.
+Closing one consumer preserves sibling leases and their streams.
+
+Headers, lengths and single-range responses survive the byte path. A server
+declining streaming can return an ordinary response under the existing 32 MiB
+encrypted-message bound; explicit binary downloads retain original bytes even with JSON MIME.
+Ordinary JSON envelopes retain JSON semantics. Shells without the stream signal
+keep their existing buffered API path. Native source-wide admission also waits in a bounded FIFO, so sibling
+documents share the same eight live-body slots. At most eight bodies are
+admitted per document, with a FIFO queue of up to 64
+abortable waiters. Cancellation or consumed EOF returns its slot before native
+object destruction; completed unread buffers keep their slot until consumed or
+cancelled. Teardown aborts queued admissions as well as readers. State and
+ordinary replies precede alternating event and binary-response lanes, so catch-up
+and media both progress within bounded local queues. A malformed stream head or
+length fails and cancels that body; authentication and sequence failures remain
+source-fatal. API-prefix normalization, same-server API redirects, detailed
+errors and one safe pre-header recovery retry match ordinary transport behavior.
+A response cut after headers never restarts its body. Streaming is not automatic
+write replay and does not change file authorization or preview lease budgets.
+
+Credential persistence is serialized per native profile across initial login,
+resume, actor reconnect and retirement. The manager waits for an old actor's
+cancellation restore before reading the stored credential. A temporary cleared
+resume window cannot become a false sign-in requirement, and an old backup
+cannot overwrite a newer verified proof. This keeps invalidation-before-proof
+and durable minimum-version verification intact. A retired profile's barrier
+survives until its outstanding actor cleanup has settled.
+
+Native inbound events keep draining while reconnect security check-in awaits
+network/storage. A newer native phase cancels the previous check-in before it
+can publish readiness; stale transports cannot write connected metadata. This
+does not grant access before security check-in succeeds.
 
 While a lease exists, an unexpected disconnect gets three bounded retries
 after 250 ms, 1 second, and 3 seconds. The manager has no recurring retry or
@@ -899,6 +950,15 @@ verification stays enabled; it must never require relaxing Android's main-thread
 network policy. Live acceptance starts pairing from Main, including an opt-in
 public `wss://` relay run against a disposable server. Plaintext local relay
 acceptance alone does not establish that the shipping TLS login path works.
+
+Debug and Release share one Android network policy: plain HTTP is permitted
+only to loopback (`localhost`, `127.0.0.1`) and to the CA revocation-list
+hosts published by the platform verifier. The verifier's Android revocation
+check downloads CRLs over HTTP, so without those hosts every certificate that
+lacks an OCSP URL, including all current Let's Encrypt certificates, fails as
+revoked and login reports the server unreachable. The build generates the
+policy from the verifier's own list and fails if that list changes shape; no
+build variant or property removes it or broadens plain HTTP.
 
 The iOS shell displays one selected foreground profile while other native owners
 can retain independent source demand. Switch Host and replacement documents

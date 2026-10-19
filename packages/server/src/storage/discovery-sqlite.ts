@@ -1,3 +1,4 @@
+import { ISSUE_STATUS_SCHEMA } from "./migrations/011-issue-status.js";
 import { DRAFT_SCHEMA } from "./migrations/008-drafts.js";
 import { DRAFT_CHANGES_SCHEMA } from "./migrations/009-draft-changes.js";
 import { SESSION_METADATA_SCHEMA } from "./migrations/010-session-metadata.js";
@@ -40,6 +41,7 @@ export const DISCOVERY_MIGRATIONS: readonly DiscoveryMigration[] = [
   { version: 8, sql: DRAFT_SCHEMA },
   { version: 9, sql: DRAFT_CHANGES_SCHEMA },
   { version: 10, sql: SESSION_METADATA_SCHEMA },
+  { version: 11, sql: ISSUE_STATUS_SCHEMA },
 ];
 
 /** Construct fixtures with the actual historical schema, never a parallel SQL copy. */

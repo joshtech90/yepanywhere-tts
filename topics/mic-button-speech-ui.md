@@ -351,7 +351,13 @@ Current streaming command semantics:
 - `send` submits the whole composer.
 - **Follow-up listening** is a browser-local Smart Turn option, default off.
   After a speech-triggered send, a non-zero window actively starts a fresh
-  speech transaction. Speech beginning before the deadline is allowed to
+  speech transaction. That transaction owns its insertion target from its
+  start, so a recognizer revision of its earlier chunks (for example xAI's
+  whole-utterance `speech_final`) replaces them rather than appending a second
+  copy; the previous transaction settles before the follow-up one begins.
+  Recognizer revisions of manually edited dictation are an open design:
+  [sketch](../gaps/sketches/speech-revision-vs-manual-edits.md).
+  Speech beginning before the deadline is allowed to
   finish rather than being cut off by the deadline; another speech send renews
   the window. The coordinator survives the New Session -> active-session
   navigation boundary. With Keep Mic Warm off, YA retains the device only for

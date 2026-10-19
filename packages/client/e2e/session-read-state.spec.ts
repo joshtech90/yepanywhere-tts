@@ -32,6 +32,8 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
     },
   });
   let hasUnread = false;
+  let otherHasUnread = true;
+  const readWrites: string[] = [];
   const row = () => ({
     id: sessionId,
     title: "Completed session",
@@ -42,7 +44,7 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
     ownership: { owner: "none" },
     createdAt: updatedAt,
     updatedAt,
-    messageCount: 2,
+    messageCount: 240,
     hasUnread,
     lastSeenAt: new Date().toISOString(),
   });
@@ -87,7 +89,16 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
             new URL(route.request().url()).searchParams.get(key) === "true",
         )
           ? []
-          : [row()],
+          : [
+              row(),
+              {
+                ...row(),
+                id: "read-state-other",
+                title: "Other session",
+                fullTitle: "Other session",
+                hasUnread: otherHasUnread,
+              },
+            ],
         hasMore: false,
       },
     }),
@@ -119,20 +130,15 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
         json: {
           session: row(),
           ownership: { owner: "none" },
-          messages: [
-            {
-              uuid: "user-1",
-              type: "user",
-              content: "Finish the investigation.",
-              timestamp: updatedAt,
-            },
-            {
-              uuid: "assistant-1",
-              type: "assistant",
-              content: "The work is complete.",
-              timestamp: updatedAt,
-            },
-          ],
+          messages: Array.from({ length: 240 }, (_, i) => ({
+            uuid: `read-history-${i}`,
+            type: i % 2 ? "assistant" : "user",
+            content:
+              i % 2
+                ? `Investigation ${i} is complete.`
+                : `Check requirement ${i}.`,
+            timestamp: updatedAt,
+          })),
         },
       }),
   );
@@ -140,8 +146,19 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
     route.fulfill({ json: { process: null } }),
   );
   await page.route("**/api/sessions/read-state-session/mark-seen", (route) => {
+    readWrites.push(route.request().method());
     setReadState(route.request().method() === "DELETE");
     return route.fulfill({ json: { marked: !hasUnread } });
+  });
+  await page.route("**/api/sessions/read-state-other/mark-seen", (route) => {
+    otherHasUnread = route.request().method() === "DELETE";
+    for (const emit of listeners)
+      emit("session-seen", {
+        type: "session-seen",
+        sessionId: "read-state-other",
+        timestamp: otherHasUnread ? "" : new Date().toISOString(),
+      });
+    return route.fulfill({ json: { marked: !otherHasUnread } });
   });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -152,6 +169,7 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
       { name: "phone", width: 375, height: 812 },
     ]) {
       hasUnread = false;
+      otherHasUnread = true;
       listeners.length = 0;
       await page.setViewportSize(viewport);
       await page.goto(`${origin}/projects/${projectId}/sessions/${sessionId}`);
@@ -159,6 +177,80 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
         timeout: 30_000,
       });
       await expect.poll(() => listeners.length).toBeGreaterThan(0);
+      const transcript = page.locator("main.session-messages");
+      await transcript.focus();
+      await page.keyboard.press("u");
+      await expect.poll(() => hasUnread).toBe(true);
+      // Explicit actions are idempotent; pressing U again must not toggle read.
+      const writesBeforeRepeat = readWrites.length;
+      await page.keyboard.press("u");
+      await expect.poll(() => readWrites.length).toBe(writesBeforeRepeat + 1);
+      await expect.poll(() => readWrites.at(-1)).toBe("DELETE");
+      const writesBeforeTyping = readWrites.length;
+      const composer = page.locator("[data-composer-input]");
+      await composer.focus();
+      await composer.evaluate((node) => {
+        const samples: Array<{
+          expected: string;
+          actual: string;
+          latency: number;
+        }> = [];
+        Object.assign(window, { readStateTypingSamples: samples });
+        let expected = "";
+        let started = 0;
+        node.addEventListener("keydown", (event) => {
+          const key = (event as KeyboardEvent).key;
+          if (key.length !== 1) return;
+          expected += key;
+          started = performance.now();
+        });
+        node.addEventListener("input", () => {
+          samples.push({
+            expected,
+            actual: (node as HTMLTextAreaElement).value,
+            latency: performance.now() - started,
+          });
+        });
+      });
+      let typed = "";
+      for (const character of "review unread runs") {
+        // Shared activity keeps updating while real sequential keys arrive in
+        // a conversation with 240 messages. R/U must remain ordinary text here.
+        setReadState(true);
+        await composer.pressSequentially(character);
+        typed += character;
+        await expect(composer).toHaveValue(typed, { timeout: 100 });
+      }
+      // Browser event timing excludes driver/trace transport and assertion
+      // round trips, which exceeded 100 ms on CI despite prompt DOM input.
+      const samples = await page.evaluate(
+        () =>
+          (
+            window as unknown as {
+              readStateTypingSamples: Array<{
+                expected: string;
+                actual: string;
+                latency: number;
+              }>;
+            }
+          ).readStateTypingSamples,
+      );
+      expect(samples).toHaveLength(typed.length);
+      for (const sample of samples) expect(sample.actual).toBe(sample.expected);
+      const acknowledgementMs = samples.map((sample) => sample.latency);
+      expect(Math.max(...acknowledgementMs)).toBeLessThan(100);
+      console.log(
+        `[read-state ${viewport.name}] ${typed.length} keys, maximum acknowledgement ${Math.max(...acknowledgementMs).toFixed(1)} ms`,
+      );
+      expect(readWrites).toHaveLength(writesBeforeTyping);
+      await composer.fill("");
+      await transcript.focus();
+      // The hook regression controls the debounce clock; this checks real
+      // focus, typing and shared updates without another fixed timer wait.
+      expect(hasUnread).toBe(true);
+      expect(readWrites).toHaveLength(writesBeforeTyping);
+      await page.keyboard.press("r");
+      await expect.poll(() => hasUnread).toBe(false);
       await page
         .getByRole("button", { name: "Open sidebar", exact: true })
         .click();
@@ -169,6 +261,26 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
       await expect(sidebarRow).toBeVisible();
       await expect(sidebarRow).not.toHaveClass(/\bunread\b/);
       setReadState(true);
+      await expect(sidebarRow).toHaveClass(/\bunread\b/);
+      // Focus on another row must target that session without changing the
+      // open conversation's read state, route or keyboard focus.
+      const otherRow = page
+        .locator(".sidebar:visible .session-list-item")
+        .filter({ hasText: "Other session" })
+        .first();
+      const otherLink = otherRow.locator("a").first();
+      await otherLink.focus();
+      await page.keyboard.press("r");
+      await expect(otherRow).not.toHaveClass(/\bunread\b/);
+      await expect(otherLink).toBeFocused();
+      expect(hasUnread).toBe(true);
+      await expect(page).toHaveURL(
+        `${origin}/projects/${projectId}/sessions/${sessionId}`,
+      );
+      await sidebarRow.locator("a").first().focus();
+      await page.keyboard.press("r");
+      await expect(sidebarRow).not.toHaveClass(/\bunread\b/);
+      await page.keyboard.press("u");
       await expect(sidebarRow).toHaveClass(/\bunread\b/);
       await sidebarRow.locator(".session-menu-trigger").click();
       await page
@@ -190,6 +302,9 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
       await expect.poll(() => hasUnread).toBe(false);
       setReadState(true);
       await menu.click();
+      const writesBeforeMenuKey = readWrites.length;
+      await page.keyboard.press("r");
+      expect(readWrites).toHaveLength(writesBeforeMenuKey);
       await expect(
         page.getByRole("button", { name: "Mark as read", exact: true }),
       ).toBeVisible();

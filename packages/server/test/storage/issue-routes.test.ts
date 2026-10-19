@@ -546,3 +546,72 @@ it("asks a tracker only about a reference YA captured in that project", async ()
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+it("looks up one item exactly by any URL a browser shows for it", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "ya-issue-ref-"));
+  const settings = new ServerSettingsService({ dataDir });
+  await settings.initialize();
+  await settings.updateSettings({
+    issueAssociations: { enabled: true, scope: "viewed", recentDays: 7 },
+  });
+  const db = loadSqliteDriver()!.open(":memory:");
+  migrateDiscoveryDatabase(db);
+  const store = new IssueStore(db);
+  const indexer = new IssueIndexer(store, {
+    settings: () => settings.getSetting("issueAssociations")!,
+    candidates: async function* () {},
+    read: async () => null,
+  });
+  const app = createIssueRoutes(indexer, settings, async (_, id) => ({
+    available: true,
+    title: id,
+  }));
+  const lookup = async (ref: string, q = ref) =>
+    (
+      await app.request(
+        `/issues?q=${encodeURIComponent(q)}&ref=${encodeURIComponent(ref)}`,
+      )
+    ).json();
+  try {
+    store.capture(
+      { projectId: "p", sessionId: "s" },
+      {
+        id: "m",
+        text: [
+          "https://github.com/o/r/issues/12",
+          "https://github.com/o/r/pull/123",
+          "https://tomfit.atlassian.net/browse/TF-7",
+        ].join(" "),
+        timestamp: "2026-10-13T00:00:00Z",
+      },
+    );
+    // A substring search for the PR page also finds #123 and misses #12,
+    // which was recorded under its issues/ URL.
+    const keys = (result: { items: { key: string }[] }) =>
+      result.items.map((item) => item.key);
+    const pull = "https://github.com/o/r/pull/12/files";
+    expect(keys(await (await app.request(`/issues?q=${pull}`)).json())).toEqual(
+      ["o/r#123"],
+    );
+    const exact = await lookup(pull);
+    expect(exact.ref).toBe("github:github.com:o/r:12");
+    expect(keys(exact)).toEqual(["o/r#12"]);
+    expect(keys(await lookup("https://github.com/o/r/pull/123"))).toEqual([
+      "o/r#123",
+    ]);
+    expect(
+      keys(
+        await lookup(
+          "https://tomfit.atlassian.net/jira/software/projects/TF/boards/1?selectedIssue=TF-7",
+        ),
+      ),
+    ).toEqual(["TF-7"]);
+    // A page that names no tracker item matches nothing, not the q search.
+    const none = await lookup("https://example.com/", "o/r");
+    expect(none.items).toEqual([]);
+  } finally {
+    await indexer.close();
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

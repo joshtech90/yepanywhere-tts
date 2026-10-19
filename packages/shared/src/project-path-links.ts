@@ -13,6 +13,80 @@ export interface ProjectPathToken {
   text: string;
 }
 
+/** A file position cited after a path: `:29`, `:29-56`, or `:29:7`. */
+export interface CitedFilePosition {
+  /** The citation exactly as written, leading colon included. */
+  text: string;
+  lineNumber: number;
+  lineEnd?: number;
+  columnNumber?: number;
+}
+
+const CITED_POSITION = ":([1-9]\\d*)(?:-([1-9]\\d*)|:([1-9]\\d*))?";
+const LEADING_CITED_POSITION = new RegExp(`^${CITED_POSITION}(?!\\w)`);
+const TRAILING_CITED_POSITION = new RegExp(`${CITED_POSITION}$`);
+
+function toCitedFilePosition(match: RegExpExecArray): CitedFilePosition {
+  const lineNumber = Number(match[1]);
+  const lineEnd = match[2] ? Number(match[2]) : undefined;
+  return {
+    text: match[0],
+    lineNumber,
+    ...(lineEnd !== undefined && lineEnd > lineNumber ? { lineEnd } : {}),
+    ...(match[3] ? { columnNumber: Number(match[3]) } : {}),
+  };
+}
+
+/** The position cited at the very start of `text`, as after `src/a.ts`. */
+export function readLeadingCitedPosition(
+  text: string,
+): CitedFilePosition | null {
+  const match = LEADING_CITED_POSITION.exec(text);
+  return match ? toCitedFilePosition(match) : null;
+}
+
+/** Split `path:42` into the path and the position it cites. */
+export function splitTrailingCitedPosition(
+  token: string,
+): { path: string; position: CitedFilePosition } | null {
+  const match = TRAILING_CITED_POSITION.exec(token);
+  if (!match || match.index === 0) return null;
+  return {
+    path: token.slice(0, match.index),
+    position: toCitedFilePosition(match),
+  };
+}
+
+/**
+ * Where the linked path ends for one confirmed token, and the position cited
+ * right after it. An absolute token carries its own `:42` unless the whole
+ * token is the file; a project-relative token stops at the colon, so its
+ * citation is the text that follows.
+ */
+export function citedProjectPathTokenExtent(
+  text: string,
+  token: ProjectPathToken,
+  filePath: string,
+): { pathEnd: number; end: number; position: CitedFilePosition | null } {
+  if (token.kind === "absolute") {
+    const split = splitTrailingCitedPosition(token.text);
+    if (!split || filePath.endsWith(split.position.text)) {
+      return { pathEnd: token.end, end: token.end, position: null };
+    }
+    return {
+      pathEnd: token.end - split.position.text.length,
+      end: token.end,
+      position: split.position,
+    };
+  }
+  const position = readLeadingCitedPosition(text.slice(token.end));
+  return {
+    pathEnd: token.end,
+    end: token.end + (position?.text.length ?? 0),
+    position,
+  };
+}
+
 /** Characters that can occur in a project-relative path token. */
 const RELATIVE_PATH_TOKEN = /[^\s"'`<>&,:;()[\]{}=|]+/g;
 

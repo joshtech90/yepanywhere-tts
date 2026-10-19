@@ -35,7 +35,7 @@ export const projectAppApi = {
     fetchJSON<ProjectAppAddresses>(`${path(id)}/address`),
   addressAction: (
     id: string,
-    action: "reserve" | "serve" | "release",
+    action: "reserve" | "serve" | "release" | "auto-start",
     body: object,
   ) =>
     fetchJSON<unknown>(`${path(id)}/address/${action}`, {

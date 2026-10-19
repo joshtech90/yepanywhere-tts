@@ -1,20 +1,37 @@
 import type { HostAgentProcessesResponse } from "@yep-anywhere/shared";
 import { Hono } from "hono";
-import { HostAgentProcessService } from "../services/HostAgentProcessService.js";
+import {
+  HostAgentProcessService,
+  type SessionDescriber,
+} from "../services/HostAgentProcessService.js";
+import { readNativeProcessSession } from "../services/providerProcessClassifier.js";
 import type { ServerSettingsService } from "../services/ServerSettingsService.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
 
 export interface HostAgentProcessesRoutesDeps {
+  /** Immutable deployment ceiling, independent of the editable setting. */
+  enabled?: boolean;
   supervisor: Supervisor;
   serverSettingsService: ServerSettingsService;
   service?: HostAgentProcessService;
+  /** Titles and links for external processes correlated to a YA session. */
+  describeSession?: SessionDescriber;
 }
 
 export function createHostAgentProcessesRoutes(
   deps: HostAgentProcessesRoutesDeps,
 ) {
   const routes = new Hono();
-  const service = deps.service ?? new HostAgentProcessService();
+  const service =
+    deps.service ??
+    new HostAgentProcessService(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      readNativeProcessSession,
+      deps.describeSession,
+    );
   deps.serverSettingsService.onSettingsChanged((settings, previousSettings) => {
     if (
       previousSettings.hostProcessObservabilityEnabled &&
@@ -31,6 +48,7 @@ export function createHostAgentProcessesRoutes(
 
   routes.get("/", async (c) => {
     if (
+      deps.enabled === false ||
       !deps.serverSettingsService.getSettings().hostProcessObservabilityEnabled
     ) {
       service.clear();

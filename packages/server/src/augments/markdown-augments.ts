@@ -218,20 +218,21 @@ async function renderMarkdownToHtmlUncached(
     }
   }
 
-  const html = htmlParts.join("\n");
+  const renderedHtml = htmlParts.join("\n");
   const linkedHtml =
     index && projectLinks
-      ? await linkifyProjectPaths(html, {
+      ? await linkifyProjectPaths(renderedHtml, {
           projectId: projectLinks.projectId,
           projectPath: projectLinks.projectPath,
           index,
           pathDiscovery: projectLinks.pathDiscovery,
           gateLookupsByShape: true,
+          mentionedDirectories: !projectLinks.publicShare,
           onUnversionedLookup: markUnversionedLookup,
           knownAbsoluteFilePaths: projectLinks.knownAbsoluteFilePaths,
           resolveAbsoluteFilePaths: projectLinks.resolveAbsoluteFilePaths,
         })
-      : html;
+      : renderedHtml;
   return {
     html: linkedHtml,
     retainedBytes: Buffer.byteLength(key) + Buffer.byteLength(linkedHtml),
@@ -285,16 +286,18 @@ export const __test__ = {
 };
 
 /**
- * Augment text blocks with pre-rendered HTML.
+ * Augment assistant text and retained compact summaries with pre-rendered HTML.
  *
- * Mutates text blocks in assistant messages, adding `_html` field
- * with rendered markdown/syntax-highlighted content.
+ * Adds `_html` to assistant text blocks or to a compact boundary's retained
+ * summary, using the same Markdown and syntax highlighting pipeline.
  *
  * @param messages - Array of messages from session (mutated in place)
  */
 export async function augmentTextBlocks(
   messages: Array<{
     type?: string;
+    subtype?: unknown;
+    compactSummaryText?: unknown;
     message?: { content?: unknown };
     content?: unknown;
   }>,
@@ -302,6 +305,24 @@ export async function augmentTextBlocks(
 ): Promise<void> {
   // Process all messages in parallel
   const messagePromises = messages.map(async (msg) => {
+    // Compaction handoffs are Markdown too, but their chip label and raw
+    // provider metadata must stay outside the prose renderer.
+    if (
+      msg.type === "system" &&
+      msg.subtype === "compact_boundary" &&
+      typeof msg.compactSummaryText === "string" &&
+      msg.compactSummaryText.trim()
+    ) {
+      try {
+        (msg as { _html?: string })._html = await renderMarkdownToHtml(
+          msg.compactSummaryText.trim(),
+          safeMarkdownOptions,
+        );
+      } catch {
+        // Keep the original summary readable if augmentation fails.
+      }
+      return;
+    }
     // Only process assistant messages
     if (msg.type !== "assistant") return;
 

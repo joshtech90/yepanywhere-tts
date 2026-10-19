@@ -1,4 +1,12 @@
-import { type Ref, useEffect, useRef, useState } from "react";
+import {
+  type MouseEventHandler,
+  type ReactNode,
+  type Ref,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { useLongPress } from "../hooks/useLongPress";
 import { useI18n } from "../i18n";
 import { writeClipboardText } from "../lib/clipboard";
 import styles from "./ViewerWindowActions.module.css";
@@ -19,9 +27,16 @@ export function ViewerWindowActions({
   destructiveClose = false,
   closeDisabled = false,
   onReload,
+  reloadState,
+  reloadTitle,
+  onReloadHold,
   copyNotice,
   copyLink = true,
+  copyLinkActive,
+  onCopied,
+  afterCopyLink,
   copyLabel,
+  onCopyLinkContextMenu,
 }: {
   url: string;
   copyUrl?: string;
@@ -29,9 +44,26 @@ export function ViewerWindowActions({
   onMinimize?: () => void;
   /** Refetch the viewed document from disk; viewers never watch files. */
   onReload?: () => void;
+  /**
+   * Content watch for viewers that do watch: `stale` when newer content is
+   * there to load, `armed` to reload once on the next change, `auto` to
+   * reload on every change.
+   */
+  reloadState?: "stale" | "armed" | "auto";
+  /** Hover text explaining `reloadState`; the label stays the action. */
+  reloadTitle?: string;
+  /** Hold or right-click on reload, such as toggling automatic reload. */
+  onReloadHold?: () => void;
   copyNotice?: string;
   copyLink?: boolean;
+  /** Link status: true tints it as live, false greys it; absent is neutral. */
+  copyLinkActive?: boolean;
+  /** After the link reaches the clipboard. */
+  onCopied?: () => void;
+  /** An action that belongs beside the link, such as one that revokes it. */
+  afterCopyLink?: ReactNode;
   copyLabel?: string;
+  onCopyLinkContextMenu?: MouseEventHandler<HTMLAnchorElement>;
   closeRef?: Ref<HTMLButtonElement>;
   className?: string;
   minimizeLabel?: string;
@@ -44,6 +76,7 @@ export function ViewerWindowActions({
   closeDisabled?: boolean;
 }) {
   const { t } = useI18n();
+  const reloadPress = useLongPress(() => onReloadHold?.());
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -74,9 +107,24 @@ export function ViewerWindowActions({
       {onReload && (
         <button
           type="button"
+          className={
+            reloadState === "stale"
+              ? styles.reloadStale
+              : reloadState === "armed"
+                ? styles.reloadArmed
+                : reloadState === "auto"
+                  ? styles.reloadAuto
+                  : undefined
+          }
           aria-label={reloadLabel ?? t("fileViewerReload" as never)}
-          title={reloadLabel ?? t("fileViewerReload" as never)}
-          onClick={onReload}
+          aria-pressed={
+            onReloadHold
+              ? reloadState === "auto" || reloadState === "armed"
+              : undefined
+          }
+          title={reloadTitle ?? reloadLabel ?? t("fileViewerReload" as never)}
+          {...(onReloadHold ? reloadPress.handlers : {})}
+          onClick={reloadPress.click(onReload)}
         >
           <svg
             width="16"
@@ -96,13 +144,14 @@ export function ViewerWindowActions({
       )}
       {copyLink && (
         <a
-          className={copyLabel ? styles.textAction : undefined}
+          className={`${styles.copyLink} ${copyLabel ? styles.textAction : ""} ${copyLinkActive === undefined ? "" : copyLinkActive ? styles.linkActive : styles.linkInactive}`}
           href={absoluteUrl}
           target="_blank"
           rel="noopener noreferrer"
           role="button"
           aria-label={t("fileLinkMenuCopyViewerLink")}
           title={linkTitle}
+          onContextMenu={onCopyLinkContextMenu}
           onKeyDown={(event) => {
             if (event.key === " ") {
               event.preventDefault();
@@ -121,6 +170,7 @@ export function ViewerWindowActions({
               new URL(copyUrl, window.location.href).href,
             ).then((success) => {
               setCopied(success ? "copied" : "failed");
+              if (success) onCopied?.();
               clearTimeout(timer.current);
               timer.current = setTimeout(() => setCopied("idle"), 3000);
             });
@@ -137,6 +187,7 @@ export function ViewerWindowActions({
               )}
         </a>
       )}
+      {afterCopyLink}
       {moveOut && (
         <a
           href={absoluteUrl}

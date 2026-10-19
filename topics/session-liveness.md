@@ -12,6 +12,9 @@ Related topic: [session ownership and shared-transcript writers](session-ownersh
 — who is writing the file, a different axis from whether the turn is progressing.
 Related topic: [reload-safe provider runtimes](reload-safe-provider-runtimes.md)
 — proposed owner continuity across a replaceable development backend.
+Related topic: [provider waits and background work](provider-wait-and-background-work.md)
+— how each provider sleeps, keeps work alive after a turn and wakes itself,
+and why Codex background terminals do not retain a session.
 
 ## Contracts
 

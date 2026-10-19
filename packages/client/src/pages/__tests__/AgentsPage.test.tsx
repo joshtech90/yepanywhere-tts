@@ -25,6 +25,9 @@ const { abortProcess, hostProcessesState, processesState, refetch } =
         provider: "claude" | "codex";
         supervision: "ya" | "external";
         supervisorProcessId?: string;
+        sessionId?: string;
+        projectId?: string;
+        sessionTitle?: string;
         startedAt: string;
         sampledAt: string;
         cpu?: { rootPercent: number; treePercent: number; windowMs: number };
@@ -107,6 +110,8 @@ vi.mock("../../i18n", () => ({
         agentsIdle: "Idle",
         agentsPid: "PID {pid}",
         agentsExternalProcessTitle: "{provider} process",
+        agentsExternalSessionTitle: "{provider} session {id}",
+        agentsSessionTooltip: "Session {id}",
         agentsOutsideYa: "Outside YA",
         agentsMetricsCpuValue: "{percent} CPU",
         agentsMetricsCpuSampling: "Sampling CPU…",
@@ -245,6 +250,53 @@ describe("AgentsPage process kill", () => {
     );
     expect(screen.getByRole("status").textContent).not.toMatch(
       /command|environment/i,
+    );
+  });
+
+  it("titles external rows by their correlated session and links only known ones", () => {
+    const external = {
+      provider: "claude" as const,
+      supervision: "external" as const,
+      startedAt: "2026-07-28T11:30:00.000Z",
+      sampledAt: "2026-07-28T12:00:00.000Z",
+      memory: { rootRssBytes: 1, treeRssBytes: 1, descendantCount: 0 },
+    };
+    hostProcessesState.observations = [
+      {
+        ...external,
+        observationId: "1:1",
+        pid: 1,
+        sessionId: "6ff01135-8ed7-4168-8d2c-39346e6564a8",
+        projectId: "cHJvamVjdA",
+        sessionTitle: "Port rendez to TypeScript",
+      },
+      {
+        ...external,
+        observationId: "2:1",
+        pid: 2,
+        sessionId: "abcdef12-0000-4000-8000-000000000000",
+      },
+    ];
+
+    render(
+      <MemoryRouter>
+        <AgentsPage />
+      </MemoryRouter>,
+    );
+
+    const known = screen.getByRole("link", {
+      name: "Port rendez to TypeScript",
+    });
+    expect(known.getAttribute("href")).toBe(
+      "/projects/cHJvamVjdA/sessions/6ff01135-8ed7-4168-8d2c-39346e6564a8",
+    );
+    expect(known.getAttribute("title")).toBe(
+      "Session 6ff01135-8ed7-4168-8d2c-39346e6564a8",
+    );
+    const unknown = screen.getByText("Claude session abcdef12");
+    expect(unknown.closest("a")).toBeNull();
+    expect(unknown.getAttribute("title")).toBe(
+      "Session abcdef12-0000-4000-8000-000000000000",
     );
   });
 

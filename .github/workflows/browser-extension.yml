@@ -1,0 +1,219 @@
+name: Chrome Extension
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build a package or verify Web Store authentication without changing the store
+        type: choice
+        options: [package, check]
+        default: package
+  push:
+    tags: ['extension-v*']
+  pull_request:
+    paths:
+      - 'packages/browser-extension/**'
+      - 'packages/client/src/extension/**'
+      - 'packages/client/scripts/extension-acceptance.mts'
+      - 'packages/client/scripts/extension-site-access-acceptance.mts'
+      - 'packages/client/vite.config.extension*.ts'
+      - 'docs/distribution/chrome-extension/**'
+      - '.github/workflows/browser-extension.yml'
+      - 'scripts/release-extension.*'
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  package:
+    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'check'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.16.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Check release version
+        id: version
+        run: |
+          version=$(node -p "JSON.parse(require('fs').readFileSync('packages/browser-extension/package.json')).version")
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "extension-v$version" ]]; then
+            echo "Tag must match the extension package version." >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            grep -Fqx "## [$version]" packages/browser-extension/CHANGELOG.md || \
+              grep -Fq "## [$version] - " packages/browser-extension/CHANGELOG.md
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build and audit store ZIP
+        run: pnpm --filter @yep-anywhere/browser-extension package:store
+      - name: Check publishing state transitions and artifact integrity
+        run: pnpm --filter @yep-anywhere/browser-extension test
+      - name: Typecheck the acceptance harness
+        run: pnpm --filter @yep-anywhere/browser-extension typecheck:acceptance
+      - name: Install test Chromium
+        run: pnpm --filter @yep-anywhere/client exec playwright install --with-deps chromium
+      - name: Extract the actual upload candidate
+        run: |
+          python3 -m zipfile -e "packages/browser-extension/release/yep-anywhere-chrome-${{ steps.version.outputs.version }}.zip" /tmp/ya-extension-candidate
+      - name: Accept the exact store manifest
+        env:
+          YA_EXTENSION_DIST: /tmp/ya-extension-candidate
+        run: pnpm --filter @yep-anywhere/browser-extension acceptance --store-assets
+      - name: Check automatic badge with an owned site grant
+        env:
+          YA_EXTENSION_DIST: /tmp/ya-extension-candidate
+        run: pnpm --filter @yep-anywhere/browser-extension acceptance
+      - name: Check site access requests without a readable tab URL
+        env:
+          YA_EXTENSION_DIST: /tmp/ya-extension-candidate
+        run: pnpm --filter @yep-anywhere/browser-extension acceptance:site-access
+      - name: Upload store package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: yep-anywhere-chrome-${{ steps.version.outputs.version }}
+          path: packages/browser-extension/release/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload listing assets and copy
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: chrome-web-store-listing
+          path: docs/distribution/chrome-extension/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Keep acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: chrome-extension-acceptance-${{ github.run_attempt }}
+          path: .artifacts/extension-acceptance/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  publish:
+    name: Submit to Chrome Web Store
+    if: github.repository == 'kzahel/yepanywhere' && startsWith(github.ref, 'refs/tags/extension-v')
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: chrome-web-store
+    concurrency:
+      group: chrome-web-store
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - name: Require a tagged main-branch release
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: yep-anywhere-chrome-*
+          path: store-candidate
+          merge-multiple: true
+      - name: Authenticate without a service-account key
+        id: google
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.CWS_WIF_PROVIDER }}
+          service_account: ${{ vars.CWS_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Upload the verified ZIP and submit for automatic publication after review
+        env:
+          CWS_ACCESS_TOKEN: ${{ steps.google.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+        run: node packages/browser-extension/scripts/publish-store.mjs publish store-candidate store-receipt.json
+      - name: Retain store receipt
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: chrome-web-store-receipt
+          path: store-receipt.json
+          if-no-files-found: ignore
+
+  check-publishing:
+    name: Verify Web Store authentication (read only)
+    if: github.repository == 'kzahel/yepanywhere' && github.event_name == 'workflow_dispatch' && inputs.mode == 'check' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: chrome-web-store
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Authenticate without a service-account key
+        id: google
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.CWS_WIF_PROVIDER }}
+          service_account: ${{ vars.CWS_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Verify the store identity and read publication status
+        env:
+          CWS_ACCESS_TOKEN: ${{ steps.google.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+        run: node packages/browser-extension/scripts/publish-store.mjs check . store-receipt.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: chrome-web-store-status
+          path: store-receipt.json
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/extension-v')
+    needs: [package, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: yep-anywhere-chrome-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: chrome-web-store-receipt
+          path: release
+      - name: Record the submitted store release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cat > /tmp/release-notes.md <<'NOTES'
+          Submitted to the Chrome Web Store for automatic publication after Google approves review. The attached receipt records the API result; a GitHub release does not mean Google has completed review.
+
+          The attached ZIP is the exact audited package accepted by CI. SHA-256, source revision and store submission receipt are attached. Listing and privacy changes still require the Web Store dashboard.
+          NOTES
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --draft=false --latest=false --notes-file /tmp/release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" release/* --verify-tag --latest=false \
+            --title "Yep Anywhere Chrome ${GITHUB_REF_NAME#extension-v}" \
+            --notes-file /tmp/release-notes.md
+          fi

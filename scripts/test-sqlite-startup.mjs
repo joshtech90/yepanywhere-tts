@@ -260,6 +260,16 @@ for (const state of ["ready", "error"]) {
     }, 10_000);
     await completion;
     clearTimeout(killTimer);
-    await removeFixtureDirectory(temporary);
+    // Run 38762851482 passed startup but exhausted the 2.4s Windows
+    // post-close removal window. Allow 4x that observed lower bound here;
+    // ordinary removals return immediately and persistent locks still fail.
+    await removeFixtureDirectory(temporary, { retryTimeoutMs: 9600 }).catch(
+      (error) => {
+        console.error(
+          `Server output before fixture cleanup failed:\n${output}`,
+        );
+        throw error;
+      },
+    );
   }
 }

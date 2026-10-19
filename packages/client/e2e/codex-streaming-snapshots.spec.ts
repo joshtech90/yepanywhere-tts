@@ -141,11 +141,17 @@ for (const viewport of [
     await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
     const list = page.locator(".message-list");
     const badge = page.locator(".provider-badge-button .provider-badge");
-    await expect(badge).toHaveAttribute("aria-label", "gpt-6.1-sol");
-    await expect(badge).toHaveText("Cd So 6.1High");
+    await expect(badge).toHaveAttribute(
+      "aria-label",
+      "gpt-6.1-sol · Effort: High",
+    );
+    await expect(badge).toHaveText(
+      viewport.name === "phone" ? "So 6.1H" : "Cd So 6.1High",
+    );
     await expect(list.getByText(text, { exact: true })).toHaveCount(1);
     await expect(list.locator('[data-render-type="text"]')).toHaveCount(1);
     await expect.poll(() => Boolean(emit)).toBe(true);
+    await expect(page.locator(".session-header-thinking")).toHaveCount(0);
     const composer = page.locator("[data-composer-input]");
     await composer.click();
     let typed = "";

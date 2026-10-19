@@ -1,0 +1,154 @@
+/* The default row and its project table share one card. */
+.card {
+  padding-bottom: var(--space-2);
+  background: var(--bg-code);
+  border-radius: var(--radius-md);
+}
+
+.card > :global(.settings-item) {
+  padding-bottom: var(--space-2);
+  background: none;
+}
+
+.table {
+  width: calc(100% - 2 * var(--space-3));
+  margin: 0 var(--space-3);
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.table th {
+  padding: 0 0 var(--space-1);
+  color: var(--text-dimmed);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  text-align: center;
+}
+
+.table th.nameHead {
+  text-align: left;
+}
+
+.table td {
+  height: 34px;
+  padding: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.choice {
+  width: 3.6rem;
+  text-align: center;
+}
+
+.choice label {
+  display: flex;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.choice input {
+  margin: 0;
+  accent-color: var(--accent-color);
+  cursor: pointer;
+}
+
+.name {
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.name strong {
+  font-weight: 600;
+}
+
+.path {
+  margin-left: var(--space-2);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.watching,
+.waiting {
+  margin-left: var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+.watching {
+  color: var(--success-color);
+}
+
+.waiting {
+  color: var(--warning-color);
+}
+
+.waitingShort {
+  display: none;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0 var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.footerAlone {
+  border-top: 0;
+}
+
+.link {
+  min-height: 32px;
+  padding: 0;
+  color: var(--accent-color);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.link:disabled {
+  color: var(--text-dimmed);
+  cursor: default;
+}
+
+.count {
+  color: var(--text-dimmed);
+  font-size: var(--font-size-xs);
+}
+
+@container (max-width: 30rem) {
+  .path,
+  .waitingLong {
+    display: none;
+  }
+
+  .waitingShort {
+    display: inline;
+  }
+
+  .choice {
+    width: 3.2rem;
+  }
+
+  /* The links keep the first line; the count takes its own. */
+  .count {
+    order: 3;
+    flex-basis: 100%;
+    padding-bottom: var(--space-1);
+  }
+
+  .table td,
+  .choice label {
+    height: 40px;
+  }
+}

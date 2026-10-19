@@ -120,6 +120,17 @@ it("links a file row's path to the file viewer", async () => {
   expect(href.searchParams.get("mode")).toBe("interactive");
 });
 
+it("expands a row from any of its cells but not from its link", () => {
+  const table = renderSettings();
+  const toggle = table.getByRole("button", { name: /^app\b/ });
+  fireEvent.click(table.getByRole("link", { name: /Open app in a new tab/ }));
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(table.getByText(":5173"));
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  fireEvent.click(table.getByText(":5173"));
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+});
+
 it("offers no link for an unsaved row", () => {
   const table = renderSettings();
   fireEvent.click(screen.getByRole("button", { name: "Add vhost" }));

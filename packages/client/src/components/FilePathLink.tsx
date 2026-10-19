@@ -1,4 +1,8 @@
-import { fromUrlProjectId, isUrlProjectId } from "@yep-anywhere/shared";
+import {
+  fromUrlProjectId,
+  isUrlProjectId,
+  type GitFileDiffMode,
+} from "@yep-anywhere/shared";
 import {
   memo,
   useCallback,
@@ -22,6 +26,7 @@ import {
   useQuoteReply,
 } from "../contexts/QuoteReplyContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { useFileVersionControl } from "../hooks/useFileVersionControl";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useTextTooltipAttributes } from "../hooks/useTooltipAppearance";
 import { toBrowserAppHref } from "../lib/appHref";
@@ -63,7 +68,8 @@ import {
 } from "./FileViewer";
 import {
   buildProjectFileViewUrl,
-  FileVersionControlLinks,
+  FileDiffViewLinks,
+  FileDiffLinkCluster,
 } from "./FileDiffViewLinks";
 import {
   FilePathContextMenu,
@@ -86,7 +92,60 @@ import {
 } from "./SessionManagedViewer";
 import styles from "./FilePathLink.module.css";
 
-export { FileVersionControlLinks } from "./FileDiffViewLinks";
+/** Inline projections use the same session host or modal as a file link. */
+export function FileVersionControlLinks({
+  className,
+  filePath,
+  projectId,
+}: {
+  className?: string;
+  filePath: string;
+  projectId: string;
+}) {
+  const availability = useFileVersionControl(
+    projectId,
+    getProjectViewerFilePath(projectId, filePath),
+  );
+  const sessionId = useSessionViewerSessionId();
+  const quoteReply = useQuoteReply();
+  const id = useId();
+  const [diffMode, setDiffMode] = useState<GitFileDiffMode>();
+  const path = availability.relativePath;
+  if (!availability.supported || !path) return null;
+  return (
+    <>
+      <FileDiffViewLinks
+        availability={availability}
+        className={className}
+        projectId={projectId}
+        variant="inline"
+        onSelect={(view) => {
+          if (view === "source") return;
+          if (sessionId) {
+            presentProjectFileViewer({
+              id,
+              sessionId,
+              projectId,
+              filePath: path,
+              diffMode: view,
+              quoteReply,
+            });
+          } else {
+            setDiffMode(view);
+          }
+        }}
+      />
+      {diffMode && (
+        <FileViewerModal
+          projectId={projectId}
+          filePath={path}
+          diffMode={diffMode}
+          onClose={() => setDiffMode(undefined)}
+        />
+      )}
+    </>
+  );
+}
 
 /**
  * Faint copy-to-clipboard affordance rendered after a pathname. Copies the
@@ -185,6 +244,7 @@ export function presentProjectFileViewer({
   lineNumber,
   lineEnd,
   viewMode = "full",
+  diffMode,
   presentation,
   quoteReply,
   source,
@@ -197,6 +257,7 @@ export function presentProjectFileViewer({
   lineNumber?: number;
   lineEnd?: number;
   viewMode?: FileViewerMode;
+  diffMode?: GitFileDiffMode;
   presentation?: FileViewPresentation;
   quoteReply?: ReturnType<typeof useQuoteReply>;
   source?: FileViewerSource;
@@ -211,6 +272,7 @@ export function presentProjectFileViewer({
       lineNumber,
       lineEnd,
       viewMode,
+      diffMode,
     }),
   );
   presentSessionViewer({
@@ -234,6 +296,7 @@ export function presentProjectFileViewer({
         lineNumber={lineNumber}
         lineEnd={lineEnd}
         viewMode={viewMode}
+        diffMode={diffMode}
         initialPresentation={presentation}
         source={source}
         openInNewTabUrl={openInNewTabUrl}
@@ -450,7 +513,7 @@ export const FilePathLink = memo(function FilePathLink({
 
   return (
     <>
-      <span className={styles.linkCluster}>
+      <FileDiffLinkCluster>
         <a
           href={fileViewUrl ?? "#"}
           className="file-path-link"
@@ -466,12 +529,11 @@ export const FilePathLink = memo(function FilePathLink({
         {showCopyButton && <FilePathCopyButton filePath={viewerFilePath} />}
         {publicShareContext === null && showVersionControlLinks && (
           <FileVersionControlLinks
-            className={styles.inlineDiffLinks}
             projectId={projectId}
             filePath={viewerFilePath}
           />
         )}
-      </span>
+      </FileDiffLinkCluster>
       {contextMenu && (
         <FilePathContextMenu
           x={contextMenu.x}
@@ -547,6 +609,7 @@ type FileViewerModalProps = {
   lineNumber?: number;
   lineEnd?: number;
   viewMode?: FileViewerMode;
+  diffMode?: GitFileDiffMode;
   initialPresentation?: FileViewPresentation;
   source?: FileViewerSource;
   openInNewTabUrl?: string | null;
@@ -575,6 +638,7 @@ export function FileViewerModal({
   lineNumber,
   lineEnd,
   viewMode = "full",
+  diffMode,
   initialPresentation,
   source: explicitSource,
   openInNewTabUrl,
@@ -658,6 +722,7 @@ export function FileViewerModal({
                 lineNumber={lineNumber}
                 lineEnd={lineEnd}
                 viewMode={viewMode}
+                diffMode={diffMode}
                 initialPresentation={initialPresentation}
                 source={source}
                 openInNewTabUrl={openInNewTabUrl}
@@ -681,6 +746,7 @@ export function FileViewerModal({
     projectId,
     viewMode,
     initialPresentation,
+    diffMode,
     source,
     openInNewTabUrl,
     quoteReply,
@@ -718,12 +784,14 @@ export function FileViewerModal({
         lineNumber,
         lineEnd,
         viewMode,
+        diffMode,
       }),
     );
   }, [
     managedViewerId,
     publicShareContext,
     rememberedSessionId,
+    diffMode,
     projectId,
     filePath,
     lineNumber,
@@ -748,6 +816,7 @@ export function FileViewerModal({
     lineNumber,
     lineEnd,
     viewMode,
+    diffMode,
   });
   const scrollMemory = useMemo<FileViewerScrollMemory | undefined>(() => {
     if (!reloadedSessionId || managedViewerId === undefined) return undefined;
@@ -779,6 +848,7 @@ export function FileViewerModal({
       lineEnd={lineEnd}
       viewMode={viewMode}
       initialPresentation={initialPresentation}
+      diffMode={diffMode}
       source={source}
       openInNewTabUrl={openInNewTabUrl}
       onClose={close}

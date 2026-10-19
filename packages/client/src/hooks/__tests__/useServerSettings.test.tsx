@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerSettings } from "../../api/client";
+import { ConnectionReconnectingError } from "../../lib/connection/types";
 import { resetClientQueryBootstrapForTests } from "../../lib/clientQueryBootstrap";
 import { resetClientQueryControllerForTests } from "../../lib/clientQueryController";
 import {
@@ -163,6 +164,56 @@ describe("useServerSettings", () => {
       expect(mocks.getServerSettings).toHaveBeenCalledTimes(2);
       expect(hook.result.current.settings).toEqual(settings());
       expect(hook.result.current.error).toBeNull();
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("retains settings through reconnect reads while exposing real read and write failures", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const hook = renderHook(() => useServerSettings());
+      await settle();
+      mocks.getServerSettings.mockRejectedValueOnce(
+        new ConnectionReconnectingError(),
+      );
+      await act(async () => {
+        await hook.result.current.refetch();
+      });
+      expect(hook.result.current.settings).toEqual(settings());
+      expect(hook.result.current.error).toBeNull();
+      expect(logged).not.toHaveBeenCalled();
+
+      mocks.getServerSettings.mockResolvedValueOnce({
+        settings: settings({ publicSharesEnabled: true }),
+      });
+      await act(async () => {
+        mocks.activityBus.emit("reconnect");
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      await settle();
+      expect(hook.result.current.settings?.publicSharesEnabled).toBe(true);
+      expect(hook.result.current.error).toBeNull();
+
+      mocks.getServerSettings.mockRejectedValueOnce(
+        new Error("settings unavailable"),
+      );
+      await act(async () => {
+        await hook.result.current.refetch();
+      });
+      expect(hook.result.current.error).toBe("settings unavailable");
+      expect(logged).toHaveBeenCalledTimes(1);
+      mocks.updateServerSettings.mockRejectedValueOnce(
+        new ConnectionReconnectingError(),
+      );
+      await act(async () => {
+        await expect(
+          hook.result.current.updateSettings({ publicSharesEnabled: false }),
+        ).rejects.toBeInstanceOf(ConnectionReconnectingError);
+      });
+      expect(hook.result.current.error).toBe("Connection reconnecting");
+      expect(logged).toHaveBeenCalledTimes(2);
+      expect(mocks.updateServerSettings).toHaveBeenCalledTimes(1);
     } finally {
       logged.mockRestore();
     }

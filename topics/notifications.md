@@ -57,7 +57,7 @@ decision.
 | Direct browser `Notification` API | No active UI or event path. A future deduplicated low-latency role remains possible. | N/A |
 | Browser Web Push/VAPID | Implemented for any supported desktop or mobile browser profile. The server owns VAPID keys and subscriptions; a push wakes the origin's service worker. | No YA tab is required |
 | Browser service worker | Receives Web Push, renders notifications, handles clicks/dismissal, and already contains focused-window/session suppression logic. It is event-driven and must not own a persistent YA secure connection. | No |
-| Native Android FCM | The broker is deployed. Android now owns notification permission/channel status and a Keystore-backed broker installation whose target follows FID replacement. YA-server subscription storage and user-visible native presentation remain unimplemented. | No WebView is required |
+| Native Android FCM | Implemented: per-server enrollment from the app's Servers screen, server-side subscription storage, generic native presentation and authenticated session taps. See [Android FCM push](android-fcm-push.md). | No WebView is required |
 | Android foreground service | Planned only. It would use the Kotlin native connection core to maintain an explicitly enabled headless summary/activity connection with a persistent status notification. | No visible UI, but a persistent notification is mandatory |
 | Native iOS push | Future adapter through FCM/APNs under the same provider-neutral device-subscription model. | No |
 

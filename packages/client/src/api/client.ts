@@ -1451,6 +1451,12 @@ export const api = {
       method: "POST",
     }),
 
+  deliverDeferredWithoutCompaction: (sessionId: string, tempId: string) =>
+    fetchJSON<{ released: boolean; deferredMessages: DeferredQueueMessage[] }>(
+      `/sessions/${sessionId}/deferred/${encodeURIComponent(tempId)}/deliver-without-compaction`,
+      { method: "POST" },
+    ),
+
   deleteRecoveredQueuedMessage: (sessionId: string, queueId: string) =>
     fetchJSON<{ deleted: boolean; deferredMessages: DeferredQueueMessage[] }>(
       `/sessions/${sessionId}/recovered-queue/${encodeURIComponent(queueId)}`,
@@ -1737,6 +1743,10 @@ export const api = {
       "/settings/instruction-restoration/preview",
       { method: "POST", body: JSON.stringify(settings) },
     ),
+
+  /** Gated by `RENDEZ_PROJECT_STATUS_CAPABILITY`. */
+  getRendezStatus: () =>
+    fetchJSON<{ watching: string[] }>("/settings/rendez/status"),
 
   getHostAwakeStatus: (forceRefresh = false) =>
     fetchJSON<{ status: HostAwakeStatus }>(
@@ -2053,6 +2063,13 @@ export const DEFAULT_FILE_ACCESS: FileAccessSettings = {
 /** Server-wide settings that persist across restarts */
 export interface ServerSettings {
   issueAssociations?: import("@yep-anywhere/shared").IssueSettings;
+  /** Opt-in project upload monitoring; absent means disabled. */
+  rendez?: {
+    enabled: boolean;
+    projects: Record<string, boolean>;
+    windowMs?: number;
+    maxPerWindow?: number;
+  };
   /** Where new YA-owned project state is written. */
   projectDirectoryStorage?: "app-data" | "project";
   /** Whether new live tool-result images receive durable copies. */

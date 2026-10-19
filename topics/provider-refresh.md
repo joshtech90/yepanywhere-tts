@@ -91,7 +91,34 @@ matching upstream release tags when the version changed; the real zero-token
 probe covers the production model-discovery command but intentionally does not
 exercise authenticated assistant events or persisted sessions.
 
-Current refresh, 2026-10-11 (Pi 1.1.0): the installed package's changelog
+Current refresh, 2026-10-16 (Pi 1.3.0): the installed binary passes the
+zero-token RPC contract and the local-server effort-retry integration test
+with `PI_EXECUTABLE` set explicitly to the managed launcher. Compared with
+the installed 1.2.0 release, Pi's RPC mode, agent-core lifecycle events,
+session manager (format v3) and extension API are unchanged; `dist/cli.js`
+remains beside the `dist/bundle/cli.js` bin. Model references are resolved
+afresh and now report an ambiguous bare id, which YA never sends because it
+passes catalog `provider/id` references. Resumed sessions restore their
+active tools, and YA passes no `--tools`. A tool call with malformed JSON
+arguments now persists `arguments: {}` with an optional `argumentsError`,
+which `PiSessionReader` tolerates. No adapter changes are needed; root
+compatibility advances to 1.3.0. No authenticated turn ran, and upstream
+release tags were not compared; the evidence is the installed `dist` diff
+and the package changelog.
+
+Previous refresh, 2026-10-14 (Pi 1.2.0): the installed binary passes the
+zero-token RPC contract and the local-server effort-retry integration test,
+including YA's extension command and the reloaded transcript. The installed
+source retains `agent_settled` and session format v3. The 1.2.0 changelog's
+`before_agent_start` union and startup-busy changes require no change to YA's
+extension, which registers a command rather than that hook. No adapter changes
+are needed; root compatibility advances to 1.2.0. These probes do not establish
+authenticated upstream availability or exercise every provider stream.
+The full workspace check must also select the managed launcher explicitly
+when an inherited `PI_EXECUTABLE` still names the removed global npm install;
+that stale override failed both installed-Pi tests before correction.
+
+Previous refresh, 2026-10-11 (Pi 1.1.0): the installed package's changelog
 from 0.84.2 through 1.1.0 changes no RPC command, response, or lifecycle event
 that YA consumes. The real zero-token check passes with `PI_EXECUTABLE`
 pointed at the 1.1.0 install; without that override it checks whatever
@@ -201,7 +228,40 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible ([provider-version-support](provider-version-support.md)).
 
-Current source refresh, 2026-10-11 (0.162.1):
+Recheck, 2026-10-16: installed Codex is still `0.163.0`, the latest stable
+release (only `0.164.0` alphas are newer), and `pnpm codex:protocol:check`
+reports no drift. Nothing to refresh.
+
+Current source refresh, 2026-10-15 (0.163.0, generated types only):
+
+- Installed Codex is `codex-cli 0.163.0`; the official `rust-v0.163.0` tag
+  resolves to `83086188a`, 232 commits after `rust-v0.162.1`.
+  `expectedVersion` and `compatibleThroughVersion` record `0.163.0`.
+- Regeneration adds `ThreadReadState` and `ThreadUnreadPosition` and changes
+  five subset files, all with new optional fields YA does not read:
+  `output_text` `annotations`/`logprobs`; `encrypted_content`/`status` on
+  message and tool-call response items; `thread/read` `readState`
+  (experimental durable read state); `thread/fork`
+  `experimentalPredictionMode`; tool-output `retain`. The session schema
+  passes unknown fields through, and no YA code reads these names on those
+  items. No adapter change.
+- Cold resume now restores a thread's saved permission profile, but honors
+  explicit caller overrides (upstream `7c9bfb910`, `bf4ca52b6`). YA sends
+  `approvalPolicy` and `sandbox` on every start/resume and the full pair on
+  every `turn/start` ([codex-permission-mode](codex-permission-mode.md)), so
+  its mode stays authoritative.
+- Not consumed: background compaction is behind the opt-in `AsyncCompaction`
+  feature; `cli_daybreak` defaulting on is TUI-only; thread read-state
+  notifications are experimental and unsubscribed.
+- A zero-token `model/list` returns the same eight models as the 0.162.1
+  audit, `gpt-6.1-sol` default at low effort, with every field YA's catalog
+  normalizer reads. Its live refresh failed with an expired token in the
+  throwaway `CODEX_HOME`, so this is the bundled catalog.
+- No 0.163.0 rollout existed yet to validate, and no credentialed smoke ran.
+  The provider and session suites (1,290 tests) pass on the regenerated
+  types.
+
+Previous source refresh, 2026-10-11 (0.162.1):
 
 - Installed Codex is `codex-cli 0.162.1`. The official `rust-v0.162.1` tag
   resolves to `092d3acd6`. `expectedVersion`, `compatibleThroughVersion`, and
@@ -1163,7 +1223,42 @@ Previous-model registry review:
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
 
-Current source refresh, 2026-10-11 (Claude Code 2.1.296 / SDK 0.3.296):
+Current source refresh, 2026-10-16 (Claude Code 2.1.301 / SDK 0.3.301):
+
+- The SDK and its native executable packages advance from 0.3.300 to
+  0.3.301; the bundled Linux executable reports Claude Code 2.1.301. Root
+  runtime and SDK compatibility markers advance together.
+- The declaration diff is additive and unused by YA: alpha
+  `BUILTIN_TOOL_NAMES` and `LEGACY_TOOL_NAME_ALIASES` exports, a per-tool
+  `tools` permission policy for SDK-hosted MCP servers, `addPlugins` on
+  `reloadPlugins()`, and `result_not_for_model` on the `mcp_call` control
+  request. MCP Apps `_meta` validation is documented more precisely.
+- A no-turn SDK handshake with the bundled executable returns the same 13
+  model rows and efforts as 0.3.300. `/goal` and `/loop` remain native. The
+  Claude provider tests (48) pass with the new package.
+- No assistant turn ran, so authenticated generation and 2.1.301 persisted
+  transcripts are not covered. Running provider-host workers keep their
+  loaded SDK until a user-timed restart.
+
+Previous source refresh, 2026-10-14 (Claude Code 2.1.300 / SDK 0.3.300):
+
+- The SDK and its native executable packages advance from 0.3.296 to
+  0.3.300; the bundled Linux executable reports Claude Code 2.1.300. Root
+  runtime and SDK compatibility markers advance together. Updating a separate
+  terminal Claude installation does not update YA's preferred bundled runtime.
+- The public declaration diff adds optional MCP elicitation property ordering
+  and usage-behavior labels, and clarifies queue cancellation and permission
+  interaction semantics. No YA adapter changes are required by these additions.
+- A no-turn SDK handshake with the bundled executable returns the same 13
+  model rows recorded for 0.3.296, including the current aliases. `/goal` and
+  `/loop` remain native. The Claude provider tests pass with the new package.
+- This refresh includes upstream headless/SDK resume and compaction fixes.
+  The control probe sends no assistant prompt; authenticated generation and
+  new 2.1.300 persisted transcripts remain outside this probe's coverage.
+- Existing provider-host workers retain their loaded SDK and executable.
+  Adopt the update through a user-timed worker or provider-host restart.
+
+Previous source refresh, 2026-10-11 (Claude Code 2.1.296 / SDK 0.3.296):
 
 - `@anthropic-ai/claude-agent-sdk` advances from `0.3.293` to `0.3.296`, and its
   bundled executable reports Claude Code `2.1.296`. Root compatibility and SDK
@@ -1798,7 +1893,57 @@ Difference detectors:
 - `@agentclientprotocol/sdk` changes enough to alter `ACPClient` request,
   notification, or permission typings.
 
-Current source refresh, 2026-08-16:
+Current compatibility audit, 2026-10-16 (1.0.60, no adapter change):
+
+- Installed Grok is `grok 1.0.60 (01a8e1c591c0) [stable]`; ACP `initialize`
+  reports agent 1.0.60, protocol 1. Public `xai-org/grok-build` is git
+  `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8`, `SOURCE_REV`
+  `559751fdcec02d413e4c57c8832ab275e4f44980`, crate 1.0.45, which trails
+  the binary by 15 patches. Grok's Rust ACP crate is unchanged at 0.10.4
+  (schema 0.11.4). Local release notes cover only 1.0.53–1.0.60, all
+  terminal UI items.
+- `grok models` and a no-token `session/new` advertise default `grok-4.7`
+  plus `grok-4.7-build-fast`, `grok-4.6` and `grok-4.5`. Every model now
+  defaults to `high` effort; 4.6 no longer defaults to `xhigh`. The cache
+  adds a `context_windows` array YA ignores. `normalizeGrokModels` handles
+  the live listing and cache unchanged.
+- Launch remains `grok agent [--effort] [-m] --no-leader stdio`.
+  `loadSession` is still true and `session/load` with `_meta.noReplay`
+  succeeds (on an empty session). `sessionCapabilities` adds `list` and
+  `close`. `session/new` returns `configOptions` for model and effort, no
+  modes.
+- Slash commands add `bareName`/`qualifiedName` metadata and namespace a
+  colliding name (`user:dream`); workflow commands carry `workflowPath`. The
+  `/` menu builds from them unchanged.
+- New `_x.ai/*` notifications (session setup, model/settings/announcement
+  updates, MCP status, background tasks, memory, subagent progress) stay off
+  standard `session/update`, and ACP SDK 0.12.0 ignores unhandled extension
+  notifications. Wire shapes for `ask_user_question`, `exit_plan_mode` and
+  `interject` are unchanged. New tool kinds (`send_subagent_message`,
+  `init_or_update_app`, `send_feedback`) render as generic rows.
+- New reverse request `x.ai/mcp/elicit` gets YA's unsupported-method error,
+  which Grok turns into a cancelled elicitation, so it fails closed.
+- Local auth docs now rank an active signed-in session above
+  `XAI_API_KEY`; YA keeps scrubbing the key, since an expired login would
+  otherwise fall back to metered billing.
+- The four Grok provider/reader test files (73 tests) pass. Persisted-session
+  sampling predates 1.0.60; no live prompt ran.
+- `@agentclientprotocol/sdk` stays at 0.12.0 (latest 1.9.0). 1.x stops
+  adding/stripping the `_` prefix on extension method names and renames
+  `unstable_resumeSession` (used by the shared ACP client and Gemini), so an
+  upgrade is its own source refresh; Grok 1.0.60 does not need it.
+
+Design candidates, none required: map `x.ai/mcp/elicit` onto YA's pending
+input; decide whether YA should set `GROK_DISABLE_AUTOUPDATER=1`, which the
+official agent SDKs inject into spawned non-leader agents, against
+[provider-installation-updates](provider-installation-updates.md); adopt
+`session/set_config_option` for mid-session model/effort and `session/close`
+for shutdown.
+
+Status: Grok ACP is current through installed 1.0.60, subject to the
+live-prompt coverage gap. Root `compatibleThroughVersion` records `1.0.60`.
+
+Previous source refresh, 2026-08-16:
 
 - Installed Grok is `grok 1.0.4 (d846eb93d9) [stable]`. Public `xai-org/grok-build`
   is git `9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4`, `SOURCE_REV`
@@ -1924,7 +2069,9 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.283` | `0.3.283` | Active Claude provider dependency |
-| `@agentclientprotocol/sdk` | `0.12.0` | `0.24.0` | Active ACP client dependency for Grok/Gemini |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.301` | `0.3.301` | Active Claude provider dependency |
+| `@agentclientprotocol/sdk` | `0.12.0` | `1.9.0` | Active ACP client dependency for Grok/Gemini |
+
+Observed 2026-10-16.
 
 Treat both rows as provider-refresh inputs.

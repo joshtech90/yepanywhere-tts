@@ -173,7 +173,9 @@ try {
   const baseUrl = `http://127.0.0.1:${ready.port}`;
   const health = await fetch(`${baseUrl}/health`);
   if (!health.ok) {
-    throw new Error(`Health check failed with ${health.status}`);
+    throw new Error(
+      `Health check failed with ${health.status}: ${await health.text()}\n${stderr}`,
+    );
   }
   const mint = await fetch(`${baseUrl}/desktop-bootstrap/mint`, {
     method: "POST",

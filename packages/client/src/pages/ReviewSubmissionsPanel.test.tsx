@@ -5,6 +5,7 @@ import type {
   ReviewSubmissionSummary,
 } from "@yep-anywhere/shared";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -204,7 +205,12 @@ describe("ReviewSubmissionsPanel", () => {
   });
 
   it("adds a fresh follow-up to Pending Comments and resolves explicitly", async () => {
-    addReviewFollowUp.mockResolvedValue({ entry: {} });
+    let completeFollowUp!: (value: { entry: object }) => void;
+    addReviewFollowUp.mockReturnValue(
+      new Promise<{ entry: object }>((resolve) => {
+        completeFollowUp = resolve;
+      }),
+    );
     resolveReviewSite.mockResolvedValue({ resolved: true });
     renderPanel();
     await screen.findByText("newer feedback");
@@ -221,6 +227,17 @@ describe("ReviewSubmissionsPanel", () => {
       ),
     );
 
+    const resolveButton = screen.getByRole<HTMLButtonElement>("button", {
+      name: "sourceReviewResolve",
+    });
+    expect(resolveButton.disabled).toBe(true);
+    fireEvent.click(resolveButton);
+    expect(resolveReviewSite).not.toHaveBeenCalled();
+
+    await act(async () => completeFollowUp({ entry: {} }));
+    // API invocation precedes completion and the subsequent detail refresh.
+    // Wait for the visible control to become usable before the next action.
+    await waitFor(() => expect(resolveButton.disabled).toBe(false));
     fireEvent.click(screen.getByText("sourceReviewResolve"));
     await waitFor(() =>
       expect(resolveReviewSite).toHaveBeenCalledWith("proj1", "site-newer"),

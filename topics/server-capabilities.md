@@ -19,6 +19,15 @@ response for older clients. Existing capabilities keep their meanings.
 Standing maintainer compatibility authorization applies; gate removal remains
 an explicit review after the core support corpus moves forward.
 
+`rendez-project-status` (permanent ID 133, version-implied from 0.9.4) adds
+`GET /api/settings/rendez/status`, listing the projects whose `.rendez`
+observer runs, for the per-project rendez table. The optional review on
+2026-10-18 checked stable v0.9.0, v0.9.1 and v0.9.2; none has any rendez code.
+Without the capability the table shows no watching or waiting status and makes
+no status request. ID 131 was renamed from `rendezvous-uploads` to
+`rendez-uploads` before release; its meaning is unchanged. Standing maintainer
+compatibility authorization applies. See [rendez](rendez.md#enable-monitoring).
+
 `vhost-file-site-replacement` (permanent ID 109, explicit optional bit) gates
 the file-address replacement checkbox and limited-user file-address access.
 It extends the existing file-address routes with explicit `replace: true` and
@@ -80,6 +89,24 @@ review checked the approved v0.9.0–v0.9.2 corpus, which lacks project-app
 routes. Without the bit clients hide app/project cleanup controls and show
 update guidance. Existing project deletion retains its meaning. See
 [app inventory](project-service.md#app-address-in-project-settings).
+
+`patient-topic-shift` (permanent ID 132, version-implied from 0.9.4) owns the
+`patientSource` and `compactAboveContextPercent` message metadata, both
+patient compaction thresholds, the `topicShift` toolbar presence key, the
+queue summary's `compactionGate`, and POST
+`/api/sessions/:sessionId/deferred/:tempId/deliver-without-compaction`.
+v0.9.0–v0.9.2 drop unknown metadata; without the capability clients hide the
+action and settings and send ordinary patient items. No existing capability
+changes meaning; the maintainer's standing compatibility approval covers the
+gate. See [patient topic shifts](patient-topic-shift.md#compatibility).
+
+`project-app-auto-start` (permanent ID 130, version-implied from 0.9.4) owns
+the optional `autoStart` field on GET `/api/projects/:projectId/app/address`
+and POST `/api/projects/:projectId/app/address/auto-start`. v0.9.0–v0.9.2
+lack both; without the capability clients hide the auto-start checkbox and
+send no request. No existing capability changes meaning; the maintainer's
+standing compatibility approval covers the gate. See
+[auto-start on visit](project-service.md#auto-start-on-visit).
 
 `process-service-tier-change` (permanent ID 118, version-implied from 0.9.4)
 owns the `serviceTier` request and response field on
@@ -582,6 +609,19 @@ larger responses return 413 with update guidance. A browser without
 `DecompressionStream` takes that same raw-json path on the already-open relay
 WebSocket even when metadata advertises chunks. Existing capability meanings
 and the `#v=2` marker remain unchanged.
+
+`public-share-live-session-chunks-v1` is the live-share counterpart, scoped to
+the same metadata response. It means the server compressed a transient
+snapshot of the current live session for this viewer and serves it through the
+same `session-chunks` route, ordering, cursor, and size rules. The viewer keeps
+the share live and resumes incremental `afterMessageId` polling on the
+one-response route. The name is separate so a viewer that knows only
+`public-share-session-chunks-v1` never loads a live share as frozen. The
+2026-10-15 review covered stable `v0.9.2`, `v0.9.1`, `v0.9.0` (latest two plus
+the preceding 14 days of an optional feature); all lack it. Without the
+capability the viewer uses the one-response raw-json path and makes no chunk
+request, so live sessions over the 8 MiB relay cap still fail against those
+servers. The frozen capability's meaning is unchanged.
 
 ## Capability Lifecycle Classes
 
@@ -1140,6 +1180,18 @@ An older host advertising 70/71 does not receive new readiness requests or
 installed selections without 112. [Computer Control](optional-computer-control.md)
 owns the bounded cleanup and intentional authority change.
 
+## GitHub status controls
+
+`github-status-controls` (permanent optional ID 128) owns independent GitHub
+status enablement, CLI disable/account policy, non-secret account inventory,
+durable merge facts and `DELETE /api/issues/status`. The October 16 optional
+review checked local stable v0.9.1 and v0.9.2; neither provides these controls.
+Without the bit clients retain legacy issue behavior and send no new settings
+or cache-clear requests. Optional merge metadata remains field-presence gated.
+Older-client settings saves preserve omitted new policy values. Existing ID 68
+and remote compatibility levels keep their meaning. The maintainer approved
+this plan in the originating request. See [tracker status](issue-session-associations.md#tracker-status).
+
 ## Experimental issue/session associations
 
 The approved 2026-09-10 optional review used v0.8.0 and v0.8.1 (latest two stable
@@ -1153,6 +1205,12 @@ contract may evolve before release; released changes need the usual review. See
 [issue/session associations](issue-session-associations.md#compatibility-and-migrations)
 for exact routes, fields and source-switch behavior.
 
+The additive `trackerStatus` item field and `statusRefreshing` result flag on
+`GET /api/issues` are self-gated response fields, not a widening of ID 68.
+Every released server lacks them; a current client then shows no state badge
+and sends no new request, and older clients ignore them. The maintainer
+approved this fallback on 2026-10-13 ([tracker status](issue-session-associations.md#tracker-status)).
+
 ## Installed Machine Control compatibility
 
 **Decision (2026-10-02):** Allocate permanent optional capability 112,
@@ -1164,3 +1222,18 @@ The maintainer's resumed end-to-end implementation follows the presented plan
 in [tactical 142](../docs/tactical/142-machine-control-desktop-consumer.md#session-picker-compatibility-decision).
 The bit means the readiness route is mounted on a supported host; installed
 product availability is reported separately and verified again at launch.
+
+### Managed artifact preview compatibility review — 2026-10-16
+
+The maintainer approved autonomous implementation of plan 155, including a new
+capability and preservation of existing custom deployments and old-server
+fallback. The optional-feature corpus is v0.9.2 and v0.9.1; no stable server
+release falls in the preceding 14 days. Both lack the preview lease routes.
+
+`artifact-relay-preview` is a separate permanent, version-implied capability
+introduced in 0.9.4, advertised explicitly by source-ahead builds. It covers
+POST `/api/artifact-previews`, GET `/api/artifact-previews/:id/file`, DELETE
+`/api/artifact-previews/:id`, and session-scoped equivalents. These authenticated
+read-only leases do not depend on a configured artifact listener. Existing
+`artifact-viewer` semantics remain unchanged. Without the new gate the client
+makes no new request and keeps its custom host or scriptless/source fallback.

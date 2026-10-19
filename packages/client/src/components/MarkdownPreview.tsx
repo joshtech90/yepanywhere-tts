@@ -15,6 +15,7 @@ import {
   useCodeFenceRenderers,
 } from "../hooks/useCodeFenceRenderers";
 import { annotateGlossaryHtml } from "../lib/glossary/annotateGlossaryHtml";
+import densityStyles from "./FileViewerDensityControls.module.css";
 
 const FILE_VIEWER_DENSITY_STORAGE_KEY = "yep-anywhere-file-viewer-density-zoom";
 const FILE_VIEWER_DENSITY_MIN = -4;
@@ -203,7 +204,6 @@ interface FileViewerDensityControlsProps {
   canZoomOut: boolean;
   onZoomIn: () => void;
   onZoomOut: () => void;
-  zoom: number;
 }
 
 export function FileViewerDensityControls({
@@ -211,65 +211,43 @@ export function FileViewerDensityControls({
   canZoomOut,
   onZoomIn,
   onZoomOut,
-  zoom,
 }: FileViewerDensityControlsProps) {
   return (
     <div
-      className="file-viewer-density-controls"
+      className={densityStyles.controls}
       role="group"
       aria-label="Source zoom"
     >
       <button
         type="button"
-        className="file-viewer-action"
+        className={`file-viewer-action ${densityStyles.button}`}
         onClick={onZoomOut}
         disabled={!canZoomOut}
         title="Zoom source and preview out"
         aria-label="Zoom source and preview out"
       >
-        <MinusIcon />
+        <span className={densityStyles.operator} aria-hidden="true">
+          −
+        </span>
+        <span className={densityStyles.smallLetter} aria-hidden="true">
+          a
+        </span>
       </button>
-      <span className="file-viewer-density-value" aria-hidden="true">
-        {zoom > 0 ? `+${zoom}` : zoom}
-      </span>
       <button
         type="button"
-        className="file-viewer-action"
+        className={`file-viewer-action ${densityStyles.button}`}
         onClick={onZoomIn}
         disabled={!canZoomIn}
         title="Zoom source and preview in"
         aria-label="Zoom source and preview in"
       >
-        <PlusIcon />
+        <span className={densityStyles.largeLetter} aria-hidden="true">
+          A
+        </span>
+        <span className={densityStyles.operator} aria-hidden="true">
+          +
+        </span>
       </button>
     </div>
-  );
-}
-
-function MinusIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-      <path
-        d="M3 8h10"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-      <path
-        d="M8 3v10M3 8h10"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
   );
 }

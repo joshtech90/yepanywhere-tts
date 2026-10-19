@@ -1,9 +1,16 @@
 import { open, stat } from "node:fs/promises";
 import type { AppSessionSummary } from "@yep-anywhere/shared";
 import { parseCodexSessionEntry } from "@yep-anywhere/shared";
+import {
+  collectQuoteReplies,
+  quoteReplyKey,
+} from "@yep-anywhere/shared/transcript/quoteReplies";
 import { SourceVersionedSingleFlight } from "../lib/sourceVersionedSingleFlight.js";
 import { isCompressedCodexRolloutPath } from "../utils/codexRolloutFiles.js";
-import { isCodexUserMessageEventEntry } from "./codex-user-turn-provenance.js";
+import {
+  codexUserMessageEventText,
+  isCodexUserMessageEventEntry,
+} from "./codex-user-turn-provenance.js";
 import { getCodexAsyncAgentMessageItem } from "./normalization.js";
 import { readCodexSessionMeta } from "./codex-rollout-lineage.js";
 
@@ -59,6 +66,7 @@ export async function readCodexAsyncQuestions(
       if (start > 0) lines.shift();
       const questions: QuestionSummary["questions"] = [];
       const seen = new Set<string>();
+      const replies = new Set<string>();
       let age = 0;
       let omitted = start > 0 || Boolean(meta.payload.history_base);
       for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex--) {
@@ -71,6 +79,10 @@ export async function readCodexAsyncQuestions(
         const entry = parseCodexSessionEntry(line);
         if (!entry) continue;
         if (isCodexUserMessageEventEntry(entry)) {
+          for (const key of collectQuoteReplies(
+            codexUserMessageEventText(entry),
+          ).keys())
+            replies.add(key);
           age += 1;
           if (age >= MAX_TURN_AGE) {
             omitted = false;
@@ -82,6 +94,7 @@ export async function readCodexAsyncQuestions(
         seen.add(message.id);
         for (let index = message.questions.length - 1; index >= 0; index--) {
           const question = message.questions[index]!;
+          if (replies.delete(quoteReplyKey(question.title))) continue;
           questions.push({
             messageId: message.id,
             index,

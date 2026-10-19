@@ -71,6 +71,12 @@ function serializeProviderRetention(
     ...(snapshot.lastUpdatedAt !== undefined
       ? { lastUpdatedAt: isoOrNull(snapshot.lastUpdatedAt) }
       : {}),
+    ...(snapshot.backgroundWork?.length
+      ? { backgroundWork: snapshot.backgroundWork }
+      : {}),
+    ...(snapshot.foregroundWaits?.length
+      ? { foregroundWaits: snapshot.foregroundWaits }
+      : {}),
   };
 }
 
@@ -120,6 +126,16 @@ export function buildSessionLivenessSnapshot({
     for (const reason of providerRetention.reasons) {
       evidence.push(`provider-retention:${reason}`);
     }
+  }
+  if (providerRetention?.backgroundWork?.length) {
+    evidence.push(
+      `provider-background-work:${providerRetention.backgroundWork.length}`,
+    );
+  }
+  if (providerRetention?.foregroundWaits?.length) {
+    evidence.push(
+      `provider-foreground-waits:${providerRetention.foregroundWaits.length}`,
+    );
   }
   if (lastLivenessProbe) {
     evidence.push(`probe:${lastLivenessProbe.status}`);

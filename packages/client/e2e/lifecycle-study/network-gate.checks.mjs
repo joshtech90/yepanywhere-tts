@@ -104,3 +104,72 @@ test("a byte-triggered cut interrupts existing traffic once and permits explicit
     await new Promise((done) => upstream.close(done));
   }
 });
+
+test("download pacing preserves bytes and upload progress; close releases its pending timer", {
+  timeout: 5000,
+}, async () => {
+  const payload = Buffer.from(Array.from({ length: 32768 }, (_, i) => i % 251));
+  const upstream = createServer((socket) => {
+    socket.on("error", () => {});
+    socket.write(payload);
+    socket.once("data", () => upstream.emit("uploaded"));
+  });
+  upstream.listen(0, "127.0.0.1");
+  await once(upstream, "listening");
+  const gate = await createNetworkGate(upstream.address().port);
+  gate.setDownloadRate(65536);
+  let gateClosed = false;
+  const client = createConnection(gate.port, "127.0.0.1");
+  client.on("error", () => {});
+  try {
+    const chunks = [];
+    const complete = new Promise((resolve) => {
+      let bytes = 0;
+      client.on("data", (chunk) => {
+        chunks.push(chunk);
+        bytes += chunk.length;
+        if (bytes === payload.length) resolve();
+      });
+    });
+    const start = performance.now();
+    const uploaded = once(upstream, "uploaded");
+    client.write("upload does not wait for the download");
+    await uploaded;
+    assert(gate.snapshot().downloadBytes < payload.length);
+    await complete;
+    assert.deepEqual(Buffer.concat(chunks), payload);
+    assert(
+      performance.now() - start >= 450,
+      "32 KiB at 64 KiB/s must be paced",
+    );
+    assert.equal(gate.snapshot().pacedStreams, 0);
+
+    // A second connection is deliberately too slow to complete; teardown must
+    // clear the timer and settle the transform without waiting for its delay.
+    gate.setDownloadRate(1);
+    const pending = createConnection(gate.port, "127.0.0.1");
+    pending.on("error", () => {});
+    try {
+      while (gate.snapshot().pacedStreams === 0)
+        await new Promise((done) => setImmediate(done));
+      const resumed = once(pending, "data");
+      gate.setDownloadRate(0);
+      assert((await resumed)[0].length > 0);
+      gate.setDownloadRate(1);
+      const closing = createConnection(gate.port, "127.0.0.1");
+      closing.on("error", () => {});
+      while (gate.snapshot().pacedStreams === 0)
+        await new Promise((done) => setImmediate(done));
+      await gate.close();
+      gateClosed = true;
+      assert.equal(gate.snapshot().pacedStreams, 0);
+      assert.equal(gate.snapshot().sockets, 0);
+    } finally {
+      pending.destroy();
+    }
+  } finally {
+    client.destroy();
+    if (!gateClosed) await gate.close();
+    await new Promise((done) => upstream.close(done));
+  }
+});

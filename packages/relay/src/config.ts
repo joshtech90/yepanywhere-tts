@@ -15,6 +15,7 @@ export interface RelayTelemetryRuntimeConfig {
 }
 
 export const DEFAULT_RELAY_WEBSOCKET_MAX_MESSAGE_BYTES = 100 * 1024 * 1024;
+export const DEFAULT_PAIR_FIRST_MESSAGE_TIMEOUT_MS = 20_000;
 
 export interface RelayConfig {
   /** Port for the relay server (default: 4400) */
@@ -29,6 +30,8 @@ export interface RelayConfig {
   pingIntervalMs: number;
   /** Pong timeout in ms - drop connection if no pong (default: 30000) */
   pongTimeoutMs: number;
+  /** Close a pair whose client sends nothing within this window (0 disables). */
+  pairFirstMessageTimeoutMs: number;
   /** Days of inactivity before username can be reclaimed (default: 90) */
   reclaimDays: number;
   /** Pending unauthenticated WebSocket connections allowed per source IP. */
@@ -99,6 +102,10 @@ export function loadConfig(): RelayConfig {
     dataDir,
     pingIntervalMs: getEnvNumber("RELAY_PING_INTERVAL_MS", 60_000),
     pongTimeoutMs: getEnvNumber("RELAY_PONG_TIMEOUT_MS", 30_000),
+    pairFirstMessageTimeoutMs: getEnvNumber(
+      "RELAY_PAIR_FIRST_MESSAGE_TIMEOUT_MS",
+      DEFAULT_PAIR_FIRST_MESSAGE_TIMEOUT_MS,
+    ),
     reclaimDays: getEnvNumber("RELAY_RECLAIM_DAYS", 90),
     unauthenticatedConnectionLimitPerIp: getEnvNumber(
       "RELAY_UNAUTHENTICATED_CONNECTION_LIMIT_PER_IP",

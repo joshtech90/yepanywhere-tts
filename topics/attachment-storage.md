@@ -10,6 +10,10 @@ Parent contract: [Project Directory Storage](project-directory-storage.md).
 
 Settings surface: [Storage Settings](storage-settings.md).
 
+[rendez uploads](rendez.md) are a separate opt-in intake path. Their
+persisted attachment paths use the authorized local-media route, while normal
+browser uploads retain the storage and narrow upload routes described here.
+
 Status: corrected in current source after `0.7.0`; no stable npm release
 contains the storage-location setting yet. The release history below explains
 the missing-capability warning for older servers.

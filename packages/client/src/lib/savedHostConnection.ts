@@ -10,8 +10,10 @@ import {
   beginHostCredentialAttempt,
   commitHostCredential,
   isHostCredentialAttemptCurrent,
+  type HostCredentialAttempt,
   type SavedHost,
 } from "./hostStorage";
+import type { StoredSession } from "./connection/SecureConnection";
 
 export class MultiHostSignInRequiredError extends Error {
   constructor(message: string) {
@@ -37,11 +39,42 @@ export function isSavedHostSignInRequiredError(error: unknown): boolean {
   );
 }
 
+/**
+ * How a connection claims its host's saved credential and records a refreshed
+ * one. Documents use the saved-host records in `localStorage`; the Chrome
+ * extension's background worker, which has none, supplies its own.
+ */
+export interface SavedHostCredentials {
+  begin(
+    host: SavedHost,
+    session: StoredSession,
+  ): Promise<HostCredentialAttempt>;
+  isCurrent(attempt: HostCredentialAttempt): boolean;
+  commit(
+    attempt: HostCredentialAttempt,
+    session: StoredSession,
+    kind: SessionEstablishmentKind,
+  ): Promise<void>;
+}
+
+export const documentSavedHostCredentials: SavedHostCredentials = {
+  begin: (host, session) =>
+    mutateResumeCredentials(() =>
+      beginHostCredentialAttempt(scopeForHost(host), session),
+    ),
+  isCurrent: isHostCredentialAttemptCurrent,
+  commit: (attempt, session, kind) =>
+    mutateResumeCredentials(() => {
+      commitHostCredential(attempt, session, kind);
+    }),
+};
+
 export async function connectSavedHost(
   host: SavedHost,
   signal: AbortSignal,
   relaySocketFactory?: RelaySocketFactory,
   onDisconnect?: (error: Error) => void,
+  credentials: SavedHostCredentials = documentSavedHostCredentials,
 ): Promise<SecureConnection> {
   signal.throwIfAborted();
   const session = host.session;
@@ -49,22 +82,18 @@ export async function connectSavedHost(
     throw new MultiHostSignInRequiredError("A saved session is required");
   }
 
-  const owner = await mutateResumeCredentials(() => {
-    signal.throwIfAborted();
-    return beginHostCredentialAttempt(scopeForHost(host), session);
-  });
+  signal.throwIfAborted();
+  const owner = await credentials.begin(host, session);
+  signal.throwIfAborted();
 
   const callbacks = {
     onDisconnect,
-    isAttemptCurrent: () =>
-      !signal.aborted && isHostCredentialAttemptCurrent(owner),
-    onSessionEstablished: (
+    isAttemptCurrent: () => !signal.aborted && credentials.isCurrent(owner),
+    onSessionEstablished: async (
       nextSession: typeof session,
       kind: SessionEstablishmentKind,
     ) => {
-      return mutateResumeCredentials(() => {
-        if (!signal.aborted) commitHostCredential(owner, nextSession, kind);
-      });
+      if (!signal.aborted) await credentials.commit(owner, nextSession, kind);
     },
   };
 

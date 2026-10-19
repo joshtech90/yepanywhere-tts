@@ -187,10 +187,15 @@ const KILL_FEEDBACK_TONE_CLASS: Record<
 
 interface ProcessMetricsProps {
   observation: HostAgentProcessObservation;
+  sessionId?: string;
   touchSurfaceRef?: RefObject<HTMLElement | null>;
 }
 
-function ProcessMetrics({ observation, touchSurfaceRef }: ProcessMetricsProps) {
+function ProcessMetrics({
+  observation,
+  sessionId,
+  touchSurfaceRef,
+}: ProcessMetricsProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLSpanElement>(null);
@@ -207,6 +212,9 @@ function ProcessMetrics({ observation, touchSurfaceRef }: ProcessMetricsProps) {
         ? "agentsMetricsManagedYa"
         : "agentsMetricsManagedExternal") as never,
     ),
+    ...(sessionId
+      ? [t("agentsMetricsSession" as never, { id: sessionId })]
+      : []),
     t("agentsMetricsProvider" as never, { provider }),
     t("agentsPid" as never, { pid: observation.pid }),
     t("agentsMetricsStarted" as never, {
@@ -334,7 +342,12 @@ function ProcessCard({
     >
       <div className={styles.cardHeader}>
         <div className={styles.cardTitle}>
-          <span className={styles.cardSessionTitle}>
+          <span
+            className={styles.cardSessionTitle}
+            title={t("agentsSessionTooltip" as never, {
+              id: process.sessionId,
+            })}
+          >
             {process.sessionTitle || t("agentsUntitled" as never)}
           </span>
           {process.clearloop !== undefined && (
@@ -390,12 +403,27 @@ function ProcessCard({
             </span>
           )}
           {!isTerminated && (
-            <span className={styles.cardUptime}>
-              {formatUptime(process.startedAt)}
+            // A hosted provider process outlives YA restarts, so the OS
+            // process age is the age; YA's attach time is secondary.
+            <span
+              className={styles.cardUptime}
+              title={
+                observation
+                  ? t("agentsAgeTooltip" as never, {
+                      started: new Date(observation.startedAt).toLocaleString(),
+                      attached: new Date(process.startedAt).toLocaleString(),
+                    })
+                  : undefined
+              }
+            >
+              {formatUptime(observation?.startedAt ?? process.startedAt)}
             </span>
           )}
           {!isTerminated && observation && (
-            <ProcessMetrics observation={observation} />
+            <ProcessMetrics
+              observation={observation}
+              sessionId={process.sessionId}
+            />
           )}
           {process.contextUsage && (
             <ContextUsageIndicator usage={process.contextUsage} />
@@ -488,12 +516,28 @@ function ProcessCard({
 
 function ExternalProcessCard({
   observation,
+  basePath = "",
 }: {
   observation: HostAgentProcessObservation;
+  basePath?: string;
 }) {
   const { t } = useI18n();
   const provider = getProviderLabel(observation.provider, t);
   const touchSurfaceRef = useRef<HTMLElement>(null);
+  const { sessionId, projectId } = observation;
+  // Only an exact provider record names the session; without one the row
+  // stays a plain process and never guesses a title or link.
+  const title =
+    observation.sessionTitle ??
+    (sessionId
+      ? t("agentsExternalSessionTitle" as never, {
+          provider,
+          id: sessionId.slice(0, 8),
+        })
+      : t("agentsExternalProcessTitle" as never, { provider }));
+  const tooltip = sessionId
+    ? t("agentsSessionTooltip" as never, { id: sessionId })
+    : undefined;
   return (
     <article
       className={cx(styles.card, styles.cardExternal)}
@@ -501,9 +545,19 @@ function ExternalProcessCard({
     >
       <div className={styles.cardHeader}>
         <div className={styles.cardTitle}>
-          <span className={styles.cardSessionTitle}>
-            {t("agentsExternalProcessTitle" as never, { provider })}
-          </span>
+          {sessionId && projectId ? (
+            <Link
+              to={`${basePath}/projects/${projectId}/sessions/${sessionId}`}
+              className={cx(styles.cardSessionTitle, styles.cardSessionLink)}
+              title={tooltip}
+            >
+              {title}
+            </Link>
+          ) : (
+            <span className={styles.cardSessionTitle} title={tooltip}>
+              {title}
+            </span>
+          )}
           <span
             className={cx(
               styles.providerBadge,
@@ -527,6 +581,7 @@ function ExternalProcessCard({
           </span>
           <ProcessMetrics
             observation={observation}
+            sessionId={sessionId}
             touchSurfaceRef={touchSurfaceRef}
           />
         </div>
@@ -712,6 +767,7 @@ export function AgentsPage() {
                         <ExternalProcessCard
                           key={observation.observationId}
                           observation={observation}
+                          basePath={basePath}
                         />
                       ))}
                     </div>

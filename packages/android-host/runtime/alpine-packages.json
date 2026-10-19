@@ -1,0 +1,686 @@
+{
+  "schema": "android-host-alpine/v1",
+  "alpine": "3.24",
+  "arch": "aarch64",
+  "packages": [
+    {
+      "name": "abseil-cpp-base",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-base-20250814.1-r0.apk",
+      "sha256": "907eeccf2f5876d290c745aab7f383d1fc45f2fb5722b818adf6824b290a781a"
+    },
+    {
+      "name": "abseil-cpp-city",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-city-20250814.1-r0.apk",
+      "sha256": "638d0d4f1eb08cf2f689322e5549051f20754bd80169cc2395c17afda6fa7b43"
+    },
+    {
+      "name": "abseil-cpp-cord",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-cord-20250814.1-r0.apk",
+      "sha256": "bdb0a7d42f56eb160a7f0d85ecdab0c17c4afe423d1c92b43c119e2969893db1"
+    },
+    {
+      "name": "abseil-cpp-cord-internal",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-cord-internal-20250814.1-r0.apk",
+      "sha256": "f27eb6bd72536800e40dd79ade4b1d244d7925f829856eecac62e7baf61c2ea3"
+    },
+    {
+      "name": "abseil-cpp-cordz-functions",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-cordz-functions-20250814.1-r0.apk",
+      "sha256": "7508b5d424481fdd13063d752c2cbf13b8da0f4fab2edc2bec2154a0094b85f4"
+    },
+    {
+      "name": "abseil-cpp-cordz-handle",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-cordz-handle-20250814.1-r0.apk",
+      "sha256": "8e5a8773b47b7a39994e266f9df61ebc2b2c2a915777b15dc9c739e7bc08816e"
+    },
+    {
+      "name": "abseil-cpp-cordz-info",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-cordz-info-20250814.1-r0.apk",
+      "sha256": "e9d922e48da5ab43c3c0efd5f389d588651ec067ddbaf842bcb5e986cb3f7d95"
+    },
+    {
+      "name": "abseil-cpp-crc-cord-state",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-crc-cord-state-20250814.1-r0.apk",
+      "sha256": "f7a1212597cedf275da66ecf00f59a722caed8d6f6d71acd8c3d5f0f123c7523"
+    },
+    {
+      "name": "abseil-cpp-crc-internal",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-crc-internal-20250814.1-r0.apk",
+      "sha256": "53e2ff2e9718333687741acd2c828147a2a1114149ef3fdf542e397d1e61008c"
+    },
+    {
+      "name": "abseil-cpp-crc32c",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-crc32c-20250814.1-r0.apk",
+      "sha256": "ceb22d018219ec54ac33bc6b9464fe3cf35995ba18d9e0d3f665edfda19f624e"
+    },
+    {
+      "name": "abseil-cpp-debugging-internal",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-debugging-internal-20250814.1-r0.apk",
+      "sha256": "246737ccdf5713ee199d35cfa725f5945bd5d18df7695278557b442ebd82cfec"
+    },
+    {
+      "name": "abseil-cpp-die-if-null",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-die-if-null-20250814.1-r0.apk",
+      "sha256": "d19e89600a8e6bce4983dab11c3ecbe30f78bf7f3c89305b6d3d2b7ccdec8aed"
+    },
+    {
+      "name": "abseil-cpp-examine-stack",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-examine-stack-20250814.1-r0.apk",
+      "sha256": "debce65b0a124ca6636d590366463b48b3522f3bf1c7dba6d1b647c77ba78948"
+    },
+    {
+      "name": "abseil-cpp-exponential-biased",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-exponential-biased-20250814.1-r0.apk",
+      "sha256": "a8405160502242b9b0d100409f44149384e0c6c885503b332cead940d74b2939"
+    },
+    {
+      "name": "abseil-cpp-hash",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-hash-20250814.1-r0.apk",
+      "sha256": "1a9244bdf65136f54db1383a4c3d2c783f24416d12cd70526f175007b6d5e9ed"
+    },
+    {
+      "name": "abseil-cpp-hashtablez-sampler",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-hashtablez-sampler-20250814.1-r0.apk",
+      "sha256": "8036295744cf4ad70563de67ef39860adf60a1e414f35647548a2594bb854d6f"
+    },
+    {
+      "name": "abseil-cpp-int128",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-int128-20250814.1-r0.apk",
+      "sha256": "8195ac1ea7b7d3b974386f0e90b0c44e1b87a19f6845b992411063eb2acf25e0"
+    },
+    {
+      "name": "abseil-cpp-kernel-timeout-internal",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-kernel-timeout-internal-20250814.1-r0.apk",
+      "sha256": "9bcddd5df3475121e2e1d1c6a8bc24599a4027a9e95c2a51c672c36926f21aed"
+    },
+    {
+      "name": "abseil-cpp-leak-check",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-leak-check-20250814.1-r0.apk",
+      "sha256": "ec6b2eb1f5577b1febc0f06c5443a4410a9e6320af80caf159e7d972d66dae1b"
+    },
+    {
+      "name": "abseil-cpp-log-globals",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-globals-20250814.1-r0.apk",
+      "sha256": "9c5085b07889c2c7462aec11b5ab66349d693a623ee107f31ca9d082dfa061d3"
+    },
+    {
+      "name": "abseil-cpp-log-initialize",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-initialize-20250814.1-r0.apk",
+      "sha256": "86604fffe6e4cb826dcbfee3b567e44836aedcb3274aa439f9e928c9db8fbeca"
+    },
+    {
+      "name": "abseil-cpp-log-internal-check-op",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-internal-check-op-20250814.1-r0.apk",
+      "sha256": "fa6f3fe102610e74f3e14ad0658d4dcf08a89d58021c7038652f29030b8bbe03"
+    },
+    {
+      "name": "abseil-cpp-log-internal-conditions",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-internal-conditions-20250814.1-r0.apk",
+      "sha256": "8fed824dafda7f5f6c48456d3ec7450af261375c72b0526f5b2acd936a0fdca2"
+    },
+    {
+      "name": "abseil-cpp-log-internal-format",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-internal-format-20250814.1-r0.apk",
+      "sha256": "7146cf1c7f927470eaafe6820e92bb09b92253f3cf6b7aefe20962240360c1a8"
+    },
+    {
+      "name": "abseil-cpp-log-internal-globals",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-internal-globals-20250814.1-r0.apk",
+      "sha256": "df2434f2dda8ce68f5ce69b357e44c7801acfd117cbf930f4026ff1f9de9eaf2"
+    },
+    {
+      "name": "abseil-cpp-log-internal-log-sink-set",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-internal-log-sink-set-20250814.1-r0.apk",
+      "sha256": "f9a5a8c03f9c395979df36e75012912b7ab212cdf0308ad8352c2e99bd0a9993"
+    },
+    {
+      "name": "abseil-cpp-log-internal-message",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-internal-message-20250814.1-r0.apk",
+      "sha256": "86b7b7db767cb762e57a36243076e5f18c304d3aeeea7a4e3622e35098d7028f"
+    },
+    {
+      "name": "abseil-cpp-log-internal-nullguard",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-internal-nullguard-20250814.1-r0.apk",
+      "sha256": "ac61a44422af6cfaff2a9046c3ec07603072705cb4a051c4e34403de16f27833"
+    },
+    {
+      "name": "abseil-cpp-log-internal-proto",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-internal-proto-20250814.1-r0.apk",
+      "sha256": "f0091516f33044f311c255d82121fbb14a73a569f3910aa519efab6c0c227426"
+    },
+    {
+      "name": "abseil-cpp-log-internal-structured-proto",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-internal-structured-proto-20250814.1-r0.apk",
+      "sha256": "23775de976bbaae6295a55dd615bd0e8553676596881d574bd7f63f5e76551b2"
+    },
+    {
+      "name": "abseil-cpp-log-sink",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-log-sink-20250814.1-r0.apk",
+      "sha256": "cae6431c7a9c1c13dda48120e0cf5c5d87fa04c35cd7295fd2bfcc867975ec5c"
+    },
+    {
+      "name": "abseil-cpp-malloc-internal",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-malloc-internal-20250814.1-r0.apk",
+      "sha256": "873e3b8c6eafbfd232e550734b0e74fcbcfe0330d8b710325386ea483cb30775"
+    },
+    {
+      "name": "abseil-cpp-raw-hash-set",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-raw-hash-set-20250814.1-r0.apk",
+      "sha256": "be02a34de7170db4ec7d5abcf4ddcd09edc975e85b01adedf70d6d8ae9260f21"
+    },
+    {
+      "name": "abseil-cpp-raw-logging-internal",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-raw-logging-internal-20250814.1-r0.apk",
+      "sha256": "30679288b05533c12cd7ccffe2949d852b6df66ed87505af72a4240652cb87dd"
+    },
+    {
+      "name": "abseil-cpp-spinlock-wait",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-spinlock-wait-20250814.1-r0.apk",
+      "sha256": "5e91ee299b88349bc643d3fb6a922f8838d43d2fef71f252c559a8ea94333da9"
+    },
+    {
+      "name": "abseil-cpp-stacktrace",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-stacktrace-20250814.1-r0.apk",
+      "sha256": "fbb490edbf19b6590e609a4ba613258f07aba83154ce30ad7f555346e80e1877"
+    },
+    {
+      "name": "abseil-cpp-status",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-status-20250814.1-r0.apk",
+      "sha256": "d4c893d9a74ff760c295be81c89f7500eb8f08d571e8a29ab394d3a439589a28"
+    },
+    {
+      "name": "abseil-cpp-statusor",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-statusor-20250814.1-r0.apk",
+      "sha256": "b1ca8098e9dea9246bff2ee545a2bb97831295e6af1a7b3187238afa78c6d480"
+    },
+    {
+      "name": "abseil-cpp-str-format-internal",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-str-format-internal-20250814.1-r0.apk",
+      "sha256": "ff45380c905ce911a1ab0e4f3bdf3afd2bd28de8c800d4de2c5f1d76ffafa873"
+    },
+    {
+      "name": "abseil-cpp-strerror",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-strerror-20250814.1-r0.apk",
+      "sha256": "1474b3f12dbf1fb45455d19ad6b7be7df5685615dcf8bc5910bda8296339df0f"
+    },
+    {
+      "name": "abseil-cpp-strings",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-strings-20250814.1-r0.apk",
+      "sha256": "8ab707d857ba0953413a2ea07195d1d8aac59f65edbe6fb779534b2549409830"
+    },
+    {
+      "name": "abseil-cpp-strings-internal",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-strings-internal-20250814.1-r0.apk",
+      "sha256": "5882652406afe9f91d62473c6a91372532c4f829036bb300239712679001e43f"
+    },
+    {
+      "name": "abseil-cpp-symbolize",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-symbolize-20250814.1-r0.apk",
+      "sha256": "6edf8c0c43d9b937229df801f96f7a8ddade2247ba2be7da8f3b57f6dfe662f4"
+    },
+    {
+      "name": "abseil-cpp-synchronization",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-synchronization-20250814.1-r0.apk",
+      "sha256": "7f49bfc5647aad1969d153dc7ae03022e478a6a0f3f95d0b80ea55c3814406cc"
+    },
+    {
+      "name": "abseil-cpp-throw-delegate",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-throw-delegate-20250814.1-r0.apk",
+      "sha256": "6438bb559fc5920a8475e66790b3c7b12c5def54e5784b5877d5f44c11e62243"
+    },
+    {
+      "name": "abseil-cpp-time",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-time-20250814.1-r0.apk",
+      "sha256": "7ecbac5d4d6b3854fcb9e076b18eb0438776194e5e290cad5a45305244b7c270"
+    },
+    {
+      "name": "abseil-cpp-time-zone",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-time-zone-20250814.1-r0.apk",
+      "sha256": "75f9585f4b66f8cb0d3618e8ada888b16f88d9d3e2d1ce349bbb0f2890b011ff"
+    },
+    {
+      "name": "abseil-cpp-tracing-internal",
+      "version": "20250814.1-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/abseil-cpp-tracing-internal-20250814.1-r0.apk",
+      "sha256": "7fd26ff435dc200b234c27fcb5df3d81cf05b7e3949f2f8e0c0619e172528e52"
+    },
+    {
+      "name": "ada-libs",
+      "version": "3.3.0-r0",
+      "license": "( Apache-2.0 OR MIT ) AND MPL-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/ada-libs-3.3.0-r0.apk",
+      "sha256": "70dd9fe3d2e2153213a93f7a76cef202b2d939839696a7c4d8a4c97cb29cca04"
+    },
+    {
+      "name": "android-tools-adb",
+      "version": "35.0.2-r21",
+      "license": "Apache-2.0 MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/android-tools-adb-35.0.2-r21.apk",
+      "sha256": "259d1c7be074b9b847108eab591bfb51c228ef87f9ecb5b6186fb958d3e3e43f"
+    },
+    {
+      "name": "bash",
+      "version": "5.3.9-r1",
+      "license": "GPL-3.0-or-later",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/bash-5.3.9-r1.apk",
+      "sha256": "95f4f976bdf2f4ca18ff41c32916eb6d7b12a0dae12504d55d04427460d6542f"
+    },
+    {
+      "name": "brotli-libs",
+      "version": "1.2.0-r1",
+      "license": "MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/brotli-libs-1.2.0-r1.apk",
+      "sha256": "e0e7a7892f28326a9f18e09607b1aea72baedda470bc4e3d2b11262b9ae5dda3"
+    },
+    {
+      "name": "busybox",
+      "version": "1.37.0-r31",
+      "license": "GPL-2.0-only",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/busybox-1.37.0-r31.apk",
+      "sha256": "18e3490a6f024004b2b13dd4b54bd50ccd82894938023b2d4eab389a4edcba70"
+    },
+    {
+      "name": "busybox-binsh",
+      "version": "1.37.0-r31",
+      "license": "GPL-2.0-only",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/busybox-binsh-1.37.0-r31.apk",
+      "sha256": "f3a1b2257cfa114ff20de05c665f380695385d589908bfc9af5768f39fef9ef5"
+    },
+    {
+      "name": "c-ares",
+      "version": "1.34.8-r0",
+      "license": "MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/c-ares-1.34.8-r0.apk",
+      "sha256": "689603d300dc56f0b99e313506e4d7b3a3ffb87cec536324f8a306bc218afe67"
+    },
+    {
+      "name": "ca-certificates",
+      "version": "20260909-r0",
+      "license": "MPL-2.0 AND MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/ca-certificates-20260909-r0.apk",
+      "sha256": "66e0a1de0218b95e37d8aa950bb7d608b8d5158793b79b3f980c3156c999603b"
+    },
+    {
+      "name": "ca-certificates-bundle",
+      "version": "20260909-r0",
+      "license": "MPL-2.0 AND MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/ca-certificates-bundle-20260909-r0.apk",
+      "sha256": "81a2c508dcdb3295196e6a8987274e3bc3487f99ad8d18e985f20bb2c336b5e6"
+    },
+    {
+      "name": "curl",
+      "version": "8.22.0-r0",
+      "license": "curl",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/curl-8.22.0-r0.apk",
+      "sha256": "6658a1428fb4422bc280d6315e107774301dce65087f6552c4aad511a251455d"
+    },
+    {
+      "name": "gdbm",
+      "version": "1.26-r0",
+      "license": "GPL-3.0-or-later",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/gdbm-1.26-r0.apk",
+      "sha256": "bad50eb26533e2f58e014fbcd3c1744f2fdb79954af6e3c188ccd059251c7790"
+    },
+    {
+      "name": "git",
+      "version": "2.54.0-r0",
+      "license": "GPL-2.0-only",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/git-2.54.0-r0.apk",
+      "sha256": "ea41e2f837f1f6a8b66e72a5ece0fc75cca44f76f49cf5500d467fc5627d0ab7"
+    },
+    {
+      "name": "icu-data-en",
+      "version": "78.1-r0",
+      "license": "ICU",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/icu-data-en-78.1-r0.apk",
+      "sha256": "3fa1dfb91a081f73c32a46f6ec054196caa37c9fd9569c433ddf6b29415dcf13"
+    },
+    {
+      "name": "icu-libs",
+      "version": "78.1-r0",
+      "license": "ICU",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/icu-libs-78.1-r0.apk",
+      "sha256": "2393882dcf1e3f5be98696665c3468dd0d2a85cd568d50abd232729863df9738"
+    },
+    {
+      "name": "libbz2",
+      "version": "1.0.8-r6",
+      "license": "bzip2-1.0.6",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libbz2-1.0.8-r6.apk",
+      "sha256": "28cb76bb6d11d2a55c3061b5fcb2ab84996412a248b2c9fe52bb710d0a2a84e7"
+    },
+    {
+      "name": "libcrypto3",
+      "version": "3.5.9-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libcrypto3-3.5.9-r0.apk",
+      "sha256": "2676a2b0b6e23ea2edccf3ee982b9842a665d52603d047de3d0a185dc316d983"
+    },
+    {
+      "name": "libcurl",
+      "version": "8.22.0-r0",
+      "license": "curl",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libcurl-8.22.0-r0.apk",
+      "sha256": "cbec830a63888be570c06d20d87c85649aff1db38c3b4dcc17884b14471e39e3"
+    },
+    {
+      "name": "libexpat",
+      "version": "2.8.5-r0",
+      "license": "MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libexpat-2.8.5-r0.apk",
+      "sha256": "568a12a4889a00711d1c80c197a5540ee1cdec26c1c59da38f8342ad69e7eff9"
+    },
+    {
+      "name": "libffi",
+      "version": "3.5.2-r1",
+      "license": "MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libffi-3.5.2-r1.apk",
+      "sha256": "9a67280b0c7c62db658c2d4d32ed1199903bef859c32dd4245e1a7e35c89ab4b"
+    },
+    {
+      "name": "libgcc",
+      "version": "15.2.0-r5",
+      "license": "GPL-2.0-or-later AND LGPL-2.1-or-later",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libgcc-15.2.0-r5.apk",
+      "sha256": "369aaa6e9d099a737bad6dd3e6c2fe7bb1547ca26d22b94ee0411228f709b403"
+    },
+    {
+      "name": "libidn2",
+      "version": "2.3.8-r0",
+      "license": "GPL-2.0-or-later OR LGPL-3.0-or-later",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libidn2-2.3.8-r0.apk",
+      "sha256": "d02ffda4510652f89c5fb89cd2e7ff721afb0c74e7d75476ad60bebe7ac0ae20"
+    },
+    {
+      "name": "libncursesw",
+      "version": "6.6_p20260516-r0",
+      "license": "X11",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libncursesw-6.6_p20260516-r0.apk",
+      "sha256": "51a7aa4b3ec40b144d0801c0544e0a9f62e2a41d04b6067bb5e95786040741c6"
+    },
+    {
+      "name": "libpanelw",
+      "version": "6.6_p20260516-r0",
+      "license": "X11",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libpanelw-6.6_p20260516-r0.apk",
+      "sha256": "a6912c654c821db4f8a801321709205bd482b0e515b862f2d02045e21b73d97d"
+    },
+    {
+      "name": "libprotobuf",
+      "version": "31.1-r1",
+      "license": "BSD-3-Clause",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libprotobuf-31.1-r1.apk",
+      "sha256": "f71e223b3a5af1eb5d6c20b2e68da53af0f6fd28a19331dd52412c618b227ae1"
+    },
+    {
+      "name": "libprotobuf-lite",
+      "version": "31.1-r1",
+      "license": "BSD-3-Clause",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libprotobuf-lite-31.1-r1.apk",
+      "sha256": "ed65bd52fae0a763c64efd4bdb0b8666fadfd1264fef406a955be303c59a1d6d"
+    },
+    {
+      "name": "libprotoc",
+      "version": "31.1-r1",
+      "license": "BSD-3-Clause",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libprotoc-31.1-r1.apk",
+      "sha256": "2553ad129ba3c48f42f774f53d2f7831ac6f799ee18994755d7e49fe689fe332"
+    },
+    {
+      "name": "libpsl",
+      "version": "0.21.5-r3",
+      "license": "MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libpsl-0.21.5-r3.apk",
+      "sha256": "b31e91371425d5f80c1db5cba2a849956b65c802add0b49de844b2ca961aa8da"
+    },
+    {
+      "name": "libssl3",
+      "version": "3.5.9-r0",
+      "license": "Apache-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libssl3-3.5.9-r0.apk",
+      "sha256": "20ac252b276d73f2c69c1d25f84537c7fba81caefc026c6be1094b394af2082e"
+    },
+    {
+      "name": "libstdc++",
+      "version": "15.2.0-r5",
+      "license": "GPL-2.0-or-later AND LGPL-2.1-or-later",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libstdc++-15.2.0-r5.apk",
+      "sha256": "2302e766d4e4926038ec166ecb85837ee884576115236ddb565e3a5fca4a11d7"
+    },
+    {
+      "name": "libunistring",
+      "version": "1.4.2-r0",
+      "license": "GPL-2.0-or-later OR LGPL-3.0-or-later",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/libunistring-1.4.2-r0.apk",
+      "sha256": "58abfcbce2459071c505771a572a79953d6043d72b643ed0d5285ca39cdaf85c"
+    },
+    {
+      "name": "lz4-libs",
+      "version": "1.10.0-r1",
+      "license": "BSD-2-Clause AND GPL-2.0-or-later",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/lz4-libs-1.10.0-r1.apk",
+      "sha256": "af6cbe553adda941e04ac40cf0123455b714d65392472389113e7d6dcebbd8d8"
+    },
+    {
+      "name": "mpdecimal",
+      "version": "4.0.1-r0",
+      "license": "BSD-2-Clause",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/mpdecimal-4.0.1-r0.apk",
+      "sha256": "358959600f99f58deee30ca9089c7f6f0f1bd73cc0021e321a7dbf6f735935c6"
+    },
+    {
+      "name": "musl",
+      "version": "1.2.6-r2",
+      "license": "MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/musl-1.2.6-r2.apk",
+      "sha256": "5e9674b7f41152fe2119093b5cb4c13eaaadb19c2d5422b2d7267913e663ee6e"
+    },
+    {
+      "name": "ncurses-terminfo-base",
+      "version": "6.6_p20260516-r0",
+      "license": "X11",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/ncurses-terminfo-base-6.6_p20260516-r0.apk",
+      "sha256": "e0c546b9461bdce206a90bc720cb69aa4628b5a5b8d908c3e5084e00f28f6a9d"
+    },
+    {
+      "name": "nghttp2-libs",
+      "version": "1.70.0-r0",
+      "license": "MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/nghttp2-libs-1.70.0-r0.apk",
+      "sha256": "7ef451f4dcdc065aa872c2f3c78b9d9bb4348caa5bcc70dee0c9e1fcf8e4c1fd"
+    },
+    {
+      "name": "nodejs",
+      "version": "24.18.1-r0",
+      "license": "MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/nodejs-24.18.1-r0.apk",
+      "sha256": "73bb381ae2387f3e5ee661ee23628bb25e6aba5c7c82b54fd6e869be2edb4071"
+    },
+    {
+      "name": "pcre2",
+      "version": "10.49-r0",
+      "license": "BSD-3-Clause",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/pcre2-10.49-r0.apk",
+      "sha256": "03efd0b29f7f38deb10a9ccb54f56e19683eb7ac27eb1f347e6dbd2e59ea000d"
+    },
+    {
+      "name": "protobuf",
+      "version": "31.1-r1",
+      "license": "BSD-3-Clause",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/protobuf-31.1-r1.apk",
+      "sha256": "f65ceffe9a3eaeb54d5268fb8a3bba29fafb94cea6ff1c6d3ccdfafeb5685523"
+    },
+    {
+      "name": "protoc",
+      "version": "31.1-r1",
+      "license": "BSD-3-Clause",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/protoc-31.1-r1.apk",
+      "sha256": "141a16140148688123fbcf31fd28113c3823fc9b5e757590e6e08ec913a1a0a8"
+    },
+    {
+      "name": "python3",
+      "version": "3.14.8-r0",
+      "license": "PSF-2.0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/python3-3.14.8-r0.apk",
+      "sha256": "fb5cc51e45afd7cc78b3189d8019a554e48c6751f0ccbe1aa551d6d94453db5c"
+    },
+    {
+      "name": "readline",
+      "version": "8.3.3-r1",
+      "license": "GPL-3.0-or-later",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/readline-8.3.3-r1.apk",
+      "sha256": "9f0ae0923c02b0d6aba62e9173542b65396ba3f0efefcbf087ea32f1120e7b34"
+    },
+    {
+      "name": "ripgrep",
+      "version": "15.1.0-r0",
+      "license": "MIT OR Unlicense",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/ripgrep-15.1.0-r0.apk",
+      "sha256": "1bf67cfa4464bc91e1dd1a4f537c40664c473ce92bf16ebba64bc7968d7545eb"
+    },
+    {
+      "name": "simdjson",
+      "version": "4.2.4-r0",
+      "license": "Apache-2.0 OR MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/simdjson-4.2.4-r0.apk",
+      "sha256": "8e35f0644c8157c0d5ccdaaf001e70bb6640777b1b680e714e6a453d178829fd"
+    },
+    {
+      "name": "simdutf",
+      "version": "9.0.0-r0",
+      "license": "Apache-2.0 OR MIT",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/simdutf-9.0.0-r0.apk",
+      "sha256": "336f5dfe8b0f784462cbccb4b58f71c15d64388c784ebca8568c8615b6f3c6b2"
+    },
+    {
+      "name": "sqlite-libs",
+      "version": "3.53.4-r0",
+      "license": "blessing",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/sqlite-libs-3.53.4-r0.apk",
+      "sha256": "b39d8d73c1208838a436f2d481ba605b52a095f8d6ff781556eafc81cd1a13e9"
+    },
+    {
+      "name": "sudo",
+      "version": "1.9.17_p2-r1",
+      "license": "custom ISC",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/sudo-1.9.17_p2-r1.apk",
+      "sha256": "57273b075643357104935eac1519b7da498c25d18d3aacab8e2a3d6f27a3bf1c"
+    },
+    {
+      "name": "xz-libs",
+      "version": "5.8.4-r0",
+      "license": "GPL-2.0-or-later AND 0BSD AND Public-Domain AND LGPL-2.1-or-later",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/xz-libs-5.8.4-r0.apk",
+      "sha256": "9be375832e747afe14f98e400e8b55d8f6fde25e41663090c81600628daab093"
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.2-r1",
+      "license": "Zlib",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/zlib-1.3.2-r1.apk",
+      "sha256": "1f77a542ac6634761b9fe38d8bdca19b154071dcfa25432e73f2bc8a0740a33f"
+    },
+    {
+      "name": "zstd-libs",
+      "version": "1.5.7-r2",
+      "license": "BSD-3-Clause OR GPL-2.0-or-later",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/zstd-libs-1.5.7-r2.apk",
+      "sha256": "2bb5136c89f5b0bbe1554c8915a3b520d5aa63ae2a51d4d821eb81698db5a818"
+    }
+  ]
+}

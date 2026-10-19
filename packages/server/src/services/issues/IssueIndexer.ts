@@ -8,6 +8,7 @@ import type { VisibleMessageText } from "../../sessions/message-text.js";
 import type { Message } from "../../supervisor/types.js";
 import { visibleMessageTextWithSourceId } from "../../sessions/normalization.js";
 import type { AdmittedJob, IssueStore, IssueSource } from "./IssueStore.js";
+import { codeFences } from "./extract.js";
 
 import type { IssueSettings } from "@yep-anywhere/shared";
 export type { IssueSettings } from "@yep-anywhere/shared";
@@ -218,24 +219,29 @@ export class IssueIndexer {
     message: VisibleMessageText,
     signal: AbortSignal,
   ): Promise<void> {
+    // A chunk cannot tell whether it starts inside a code block, so fences are
+    // found once over the whole message and handed to each chunk.
+    const fences = codeFences(message.text);
     for (
       let offset = 0;
       offset < message.text.length;
       offset += CAPTURE_CHUNK
     ) {
       if (signal.aborted) return;
+      const start = Math.max(0, offset - CAPTURE_OVERLAP);
+      const end = offset + CAPTURE_CHUNK + CAPTURE_OVERLAP;
       this.store.capture(
         source,
-        {
-          ...message,
-          text: message.text.slice(
-            Math.max(0, offset - CAPTURE_OVERLAP),
-            offset + CAPTURE_CHUNK + CAPTURE_OVERLAP,
-          ),
-        },
-        Math.max(0, offset - CAPTURE_OVERLAP),
+        { ...message, text: message.text.slice(start, end) },
+        start,
         offset,
         offset + CAPTURE_CHUNK,
+        fences
+          .filter(([a, b]) => a < end && b > start)
+          .map(([a, b]) => [
+            Math.max(a, start) - start,
+            Math.min(b, end) - start,
+          ]),
       );
       await yieldTurn();
     }

@@ -113,7 +113,6 @@ import {
 } from "./FileResourceActions";
 import { useImageResourceActions } from "./ImageResourceActions";
 import viewerStyles from "./FileViewer.module.css";
-import headerStyles from "./ViewerHeader.module.css";
 import {
   combineDensityOffsets,
   FILE_MARKDOWN_PREVIEW_BASE_DENSITY,
@@ -126,7 +125,7 @@ import {
 import { FileViewerModal } from "./FilePathLink";
 import { ViewerSelectAllButton } from "./ViewerSelectAllButton";
 import { ParagraphQuoteRail } from "./ParagraphQuoteRail";
-import { shouldStackFileViewerActions } from "./fileViewerHeaderLayout";
+import { fileViewerWindowControlsFit } from "./fileViewerHeaderLayout";
 import {
   FileViewerEmbeddedMedia,
   getEmbeddedMediaKind,
@@ -732,8 +731,12 @@ export const FileViewer = memo(function FileViewer({
     useState<HTMLDivElement | null>(null);
   const fileHeaderContextRef = useRef<HTMLDivElement>(null);
   const fileHeaderProvenanceRef = useRef<HTMLDivElement>(null);
-  const fileHeaderActionsRef = useRef<HTMLDivElement>(null);
-  const [stackHeaderActions, setStackHeaderActions] = useState(false);
+  const fileHeaderPathMeasureRef = useRef<HTMLSpanElement>(null);
+  // Also state-backed: the window controls remount when they move between
+  // the filename row and the top row, and the observer must follow them.
+  const [fileHeaderWindowElement, setFileHeaderWindowElement] =
+    useState<HTMLDivElement | null>(null);
+  const [windowActionsOnTop, setWindowActionsOnTop] = useState(false);
   const [fileShareAnchor, setFileShareAnchor] = useState<DOMRect | null>(null);
   const loadedSourceRef = useRef<{
     identity: string;
@@ -802,55 +805,42 @@ export const FileViewer = memo(function FileViewer({
     const header = fileHeaderElement;
     const context = fileHeaderContextRef.current;
     const provenance = fileHeaderProvenanceRef.current;
-    const actions = fileHeaderActionsRef.current;
-    if (!header || !context || !provenance || !actions) return;
+    const filename = fileHeaderPathMeasureRef.current;
+    const windows = fileHeaderWindowElement;
+    if (!header || !context || !provenance || !filename || !windows) return;
 
     const measure = () => {
       const headerStyle = getComputedStyle(header);
-      const actionsStyle = getComputedStyle(actions);
       const horizontalPadding =
         Number.parseFloat(headerStyle.paddingLeft) +
         Number.parseFloat(headerStyle.paddingRight);
-      const actionWidths = Array.from(
-        actions.children,
-        (child) => child.getBoundingClientRect().width,
-      ).filter((width) => width > 0);
-      const next = shouldStackFileViewerActions({
-        actionGap: Number.parseFloat(actionsStyle.columnGap) || 0,
-        actionWidths,
+      const next = fileViewerWindowControlsFit({
         availableWidth: header.clientWidth - horizontalPadding,
         contextWidth: context.getBoundingClientRect().width,
-        headerGap: Number.parseFloat(headerStyle.columnGap) || 0,
-        provenanceWidth: provenance.getBoundingClientRect().width,
+        headerGap:
+          Number.parseFloat(
+            getComputedStyle(context.parentElement!).columnGap,
+          ) || 0,
+        filenameWidth: filename.getBoundingClientRect().width,
+        provenanceWidth: provenance.scrollWidth,
+        windowWidth: windows.getBoundingClientRect().width,
       });
-      setStackHeaderActions((current) => (current === next ? current : next));
+      setWindowActionsOnTop((current) => (current === next ? current : next));
     };
 
     const resizeObserver =
       typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver(measure);
-    const observeActionChildren = () => {
-      resizeObserver?.disconnect();
-      resizeObserver?.observe(header);
-      resizeObserver?.observe(context);
-      resizeObserver?.observe(provenance);
-      resizeObserver?.observe(actions);
-      for (const child of actions.children) resizeObserver?.observe(child);
-    };
-    const mutationObserver = new MutationObserver(() => {
-      observeActionChildren();
-      measure();
-    });
-    mutationObserver.observe(actions, { childList: true, subtree: true });
-    observeActionChildren();
+    for (const element of [header, context, provenance, filename, windows]) {
+      resizeObserver?.observe(element);
+    }
     measure();
 
     return () => {
-      mutationObserver.disconnect();
       resizeObserver?.disconnect();
     };
-  }, [fileHeaderElement]);
+  }, [fileHeaderElement, fileHeaderWindowElement]);
   useRegisterQuoteableTextSource(
     fileViewerBodyRef,
     diffActive ? undefined : fileData?.content,
@@ -2027,93 +2017,118 @@ export const FileViewer = memo(function FileViewer({
     </div>
   );
 
+  const windowActions = (
+    <div
+      ref={setFileHeaderWindowElement}
+      className={viewerStyles.windowActions}
+    >
+      <ViewerWindowActions
+        url={absoluteViewerLink}
+        copyLink={false}
+        moveOut={!standalone}
+        onMinimize={onMinimize ? handleMinimize : undefined}
+        onClose={onClose ? handleClose : undefined}
+        minimizeLabel={t("fileViewerMinimize")}
+      />
+    </div>
+  );
+
   // Header with file info and actions
   const header = (
     <div
       ref={setFileHeaderElement}
-      className={`file-viewer-header ${headerStyles.header} ${viewerStyles.header}`}
-      data-actions-below={stackHeaderActions || undefined}
+      className={`file-viewer-header ${viewerStyles.header}`}
+      data-window-actions-top={windowActionsOnTop || undefined}
     >
-      <div ref={fileHeaderContextRef} className={viewerStyles.context}>
-        {headerLeading}
-        {onClose && (
-          <button
-            type="button"
-            className={`file-viewer-action ${viewerStyles.backButton}`}
-            onClick={handleClose}
-            title={t("actionBack")}
-            aria-label={t("actionBack")}
-          >
-            <BackArrowIcon />
-          </button>
-        )}
-      </div>
-      <div
-        className={`file-viewer-info ${headerStyles.identity} ${viewerStyles.info}`}
-      >
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: right-click opens the file action menu; left-click behavior stays on explicit toolbar buttons */}
+      <span className={viewerStyles.measurement} aria-hidden="true">
         <span
-          className="file-viewer-path"
-          title={filePath}
-          onContextMenu={handlePathContextMenu}
+          ref={fileHeaderPathMeasureRef}
+          className={`${viewerStyles.path} ${viewerStyles.pathMeasure}`}
         >
           {displayPath}
         </span>
-        <div
-          ref={fileHeaderProvenanceRef}
-          className={viewerStyles.provenanceRow}
-        >
-          {publicShareContext === null && fileVersionControl.relativePath && (
-            <FileRevisionLink
-              projectId={projectId}
-              path={fileVersionControl.relativePath}
-              origPath={fileVersionControl.worktreeFile?.origPath}
-              dirtyLabel={t("fileRevisionDirty" as never)}
-              uncommittedLabel={t("fileRevisionUncommitted" as never)}
-            />
+      </span>
+      <div className={viewerStyles.identityRow}>
+        <div ref={fileHeaderContextRef} className={viewerStyles.context}>
+          {headerLeading}
+          {onClose && (
+            <button
+              type="button"
+              className={`file-viewer-action ${viewerStyles.backButton}`}
+              onClick={handleClose}
+              title={t("actionBack")}
+              aria-label={t("actionBack")}
+            >
+              <BackArrowIcon />
+            </button>
           )}
-          <span className="file-viewer-meta">
-            {metadata ? formatFileSize(metadata.size) : ""}
-            {!diffActive && metadata?.isText && content !== undefined && (
-              <>
-                {" \u2022 "}
-                {fileData?.contentTruncated
-                  ? `lines ${getContentStartLine(fileData)}-${getContentEndLine(fileData)}${
-                      fileData?.contentTotalLines
-                        ? ` of ${fileData.contentTotalLines}`
-                        : ""
-                    }`
-                  : t("fileViewerLines" as never, {
-                      count: contentLines.length,
-                    })}
-              </>
-            )}
-          </span>
         </div>
+        <div className={`file-viewer-info ${viewerStyles.info}`}>
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: right-click opens the file action menu; left-click behavior stays on explicit toolbar buttons */}
+          <span
+            className={`file-viewer-path ${viewerStyles.path}`}
+            title={filePath}
+            onContextMenu={handlePathContextMenu}
+          >
+            {displayPath}
+          </span>
+          <div
+            ref={fileHeaderProvenanceRef}
+            className={viewerStyles.provenanceRow}
+          >
+            {publicShareContext === null && fileVersionControl.relativePath && (
+              <FileRevisionLink
+                projectId={projectId}
+                path={fileVersionControl.relativePath}
+                origPath={fileVersionControl.worktreeFile?.origPath}
+                dirtyLabel={t("fileRevisionDirty" as never)}
+                uncommittedLabel={t("fileRevisionUncommitted" as never)}
+              />
+            )}
+            <span className="file-viewer-meta">
+              {metadata ? formatFileSize(metadata.size) : ""}
+              {!diffActive && metadata?.isText && content !== undefined && (
+                <>
+                  {" \u2022 "}
+                  {fileData?.contentTruncated
+                    ? `lines ${getContentStartLine(fileData)}-${getContentEndLine(fileData)}${
+                        fileData?.contentTotalLines
+                          ? ` of ${fileData.contentTotalLines}`
+                          : ""
+                      }`
+                    : t("fileViewerLines" as never, {
+                        count: contentLines.length,
+                      })}
+                </>
+              )}
+            </span>
+          </div>
+        </div>
+        {windowActionsOnTop && windowActions}
       </div>
-      <ViewerFindField find={find} />
-      <div
-        ref={fileHeaderActionsRef}
-        className={`file-viewer-actions ${headerStyles.actions} ${viewerStyles.actions}`}
-      >
+      <div className={`file-viewer-actions ${viewerStyles.actions}`}>
+        <ViewerFindField find={find} />
         {publicShareContext === null && (
           <FileDiffViewLinks
             activeView={activeView}
             availability={fileVersionControl}
             onSelect={selectView}
             projectId={projectId}
-            sourceHref={sourceViewerUrl}
             variant="header"
           />
         )}
-        {!diffActive && hasFilePreview && (
+        {(diffActive || hasFilePreview) && (
           <button
             type="button"
             className={`file-viewer-action ${viewerStyles.rawToggle}`}
             aria-label={t("fileViewerRawSource" as never)}
-            aria-pressed={!showPreview}
+            aria-pressed={!diffActive && !showPreview}
             title={t("fileViewerRawSource" as never)}
             onClick={() => {
+              if (diffActive) {
+                selectView("source");
+                return;
+              }
               setInteractivePreviewIdentity(
                 !showPreview && hasHtmlPreview ? viewIdentity : null,
               );
@@ -2171,7 +2186,6 @@ export const FileViewer = memo(function FileViewer({
         )}
         {!diffActive && metadata?.isText && content !== undefined && (
           <FileViewerDensityControls
-            zoom={viewerDensity.zoom}
             canZoomIn={viewerDensity.canZoomIn}
             canZoomOut={viewerDensity.canZoomOut}
             onZoomIn={viewerDensity.zoomIn}
@@ -2259,13 +2273,11 @@ export const FileViewer = memo(function FileViewer({
           {fullscreen ? <ExitFullscreenIcon /> : <FullscreenIcon />}
         </button>
         <ViewerWindowActions
-          className={viewerStyles.windowActions}
           url={absoluteViewerLink}
-          moveOut={!standalone}
-          onMinimize={onMinimize ? handleMinimize : undefined}
-          onClose={onClose ? handleClose : undefined}
-          minimizeLabel={t("fileViewerMinimize")}
+          onCopyLinkContextMenu={handlePathContextMenu}
+          moveOut={false}
         />
+        {!windowActionsOnTop && windowActions}
       </div>
     </div>
   );

@@ -227,6 +227,23 @@
     12px / 16px system-ui,
     sans-serif;
 }
+.limit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.limit input {
+  width: 36px;
+  min-height: 28px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  padding: 2px 4px;
+}
 .ageField {
   position: relative;
   display: grid;
@@ -276,23 +293,6 @@
 .filters .dropdownContainer {
   width: auto;
   min-width: 0;
-}
-.limit {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.limit input {
-  width: 36px;
-  min-height: 28px;
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  color: var(--text-primary);
-  background: var(--bg-secondary);
-  padding: 2px 4px;
 }
 .scope {
   position: relative;

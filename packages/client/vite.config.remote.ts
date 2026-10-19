@@ -93,6 +93,8 @@ export default defineConfig(({ command }) => ({
   define: {
     "import.meta.env.VITE_IS_REMOTE_CLIENT": JSON.stringify(true),
     __APP_VERSION__: JSON.stringify(getGitVersion()),
+    __EXTENSION_DEV_BUILD_ID__: JSON.stringify(""),
+    __EXTENSION_DEV_WORKER_HASH__: JSON.stringify(""),
   },
   // Build configuration for static site
   build: {

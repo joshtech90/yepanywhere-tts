@@ -1,3 +1,5 @@
+import type { ImagePreparationProfile } from "@yep-anywhere/shared";
+
 const RESIZABLE_IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
   "image/jpg",
@@ -5,7 +7,6 @@ const RESIZABLE_IMAGE_MIME_TYPES = new Set([
   "image/webp",
   "image/gif",
 ]);
-const SD_JPEG_QUALITY = 0.9;
 
 function getBaseFileName(fileName: string): string {
   const lastDot = fileName.lastIndexOf(".");
@@ -41,16 +42,16 @@ function getOutputExtension(mimeType: string): string {
 }
 
 function getResizedFileName(fileName: string, outputMimeType: string): string {
-  return `${getBaseFileName(fileName)}-sd.${getOutputExtension(outputMimeType)}`;
+  return `${getBaseFileName(fileName)}-resized.${getOutputExtension(outputMimeType)}`;
 }
 
 async function blobFromCanvas(
   canvas: HTMLCanvasElement,
   mimeType: string,
+  quality: number,
 ): Promise<Blob | null> {
   return await new Promise<Blob | null>((resolve) => {
-    const quality = mimeType === "image/png" ? undefined : SD_JPEG_QUALITY;
-    canvas.toBlob((blob) => resolve(blob), mimeType, quality);
+    canvas.toBlob((blob) => resolve(blob), mimeType, quality / 100);
   });
 }
 
@@ -62,7 +63,7 @@ export interface PreparedImageUpload {
 
 export async function prepareImageUpload(
   file: File,
-  maxLongEdgePx: number,
+  profile: ImagePreparationProfile,
 ): Promise<PreparedImageUpload> {
   if (typeof createImageBitmap !== "function") {
     return { file };
@@ -82,41 +83,45 @@ export async function prepareImageUpload(
       height: bitmap.height,
     };
     const longEdge = Math.max(bitmap.width, bitmap.height);
-    if (!Number.isFinite(longEdge) || longEdge <= maxLongEdgePx) {
+    if (longEdge <= profile.maxLongEdge && file.size <= profile.maxBytes) {
       return { file, ...dimensions };
     }
 
-    const scale = maxLongEdgePx / longEdge;
-    const width = Math.max(1, Math.round(bitmap.width * scale));
-    const height = Math.max(1, Math.round(bitmap.height * scale));
+    let scale = Math.min(1, profile.maxLongEdge / longEdge);
 
     const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
     const ctx = canvas.getContext("2d");
     if (!ctx) {
-      return { file };
+      throw new Error("Image preparation requires a canvas context");
     }
-    // Use the browser's native canvas scaler for the downsample.
-    ctx.drawImage(bitmap, 0, 0, width, height);
-
     const outputMimeType = getOutputMimeType(file.type);
-    const blob = await blobFromCanvas(canvas, outputMimeType);
-    if (!blob) {
-      return { file, ...dimensions };
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const width = Math.max(1, Math.floor(bitmap.width * scale));
+      const height = Math.max(1, Math.floor(bitmap.height * scale));
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(bitmap, 0, 0, width, height);
+      const blob = await blobFromCanvas(
+        canvas,
+        outputMimeType,
+        profile.quality,
+      );
+      if (!blob)
+        throw new Error("Image preparation failed to encode the image");
+      if (blob.size <= profile.maxBytes) {
+        const finalMimeType = blob.type || outputMimeType;
+        return {
+          file: new File([blob], getResizedFileName(file.name, finalMimeType), {
+            type: finalMimeType,
+            lastModified: file.lastModified,
+          }),
+          width,
+          height,
+        };
+      }
+      scale *= 0.8;
     }
-
-    const finalMimeType = blob.type || outputMimeType;
-    return {
-      file: new File([blob], getResizedFileName(file.name, finalMimeType), {
-        type: finalMimeType,
-        lastModified: file.lastModified,
-      }),
-      width,
-      height,
-    };
-  } catch {
-    return { file };
+    throw new Error("Image preparation could not meet the upload size limit");
   } finally {
     bitmap?.close();
   }
@@ -124,7 +129,7 @@ export async function prepareImageUpload(
 
 export async function resizeImageFile(
   file: File,
-  maxLongEdgePx: number,
+  profile: ImagePreparationProfile,
 ): Promise<File> {
-  return (await prepareImageUpload(file, maxLongEdgePx)).file;
+  return (await prepareImageUpload(file, profile)).file;
 }

@@ -165,6 +165,17 @@
   border-left: 3px solid var(--accent-secondary, #6b7280);
 }
 
+.compactBoundaryOutline pre {
+  background: var(--bg-code);
+  color: var(--text-primary);
+}
+
+.compactSummaryMarkdown {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
+}
+
 /*
  * Provider tool output is primary transcript content even when its call is
  * unavailable. Keep its expanded body readable instead of inheriting the
@@ -255,4 +266,25 @@
 
 .contentFilterBlockLabel {
   color: var(--text-muted);
+}
+
+.systemDetails {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding-left: 30px;
+}
+
+.systemDetail {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-primary, #1a1a1a) 55%, transparent);
+  color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.82em;
+  font-style: normal;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

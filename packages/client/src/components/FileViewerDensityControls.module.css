@@ -1,0 +1,31 @@
+.controls {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.controls .button {
+  flex: 0 0 28px;
+  width: 28px;
+}
+
+.operator {
+  color: var(--text-primary);
+  font:
+    600 18px / 1 system-ui,
+    sans-serif;
+}
+
+.smallLetter,
+.largeLetter {
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1;
+}
+
+.smallLetter {
+  font-size: 14px;
+}
+
+.largeLetter {
+  font-size: 18px;
+}

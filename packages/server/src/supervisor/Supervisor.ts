@@ -2035,6 +2035,8 @@ export class Supervisor {
       return;
     }
     if (!crossesCompactThreshold(percent, contextWindow, inputTokens)) return;
+    // A patient compaction gate may have claimed the process meanwhile.
+    if (this.thresholdCompactionInFlight.has(process.id)) return;
 
     this.thresholdCompactionInFlight.add(process.id);
     try {
@@ -2067,7 +2069,129 @@ export class Supervisor {
       );
     } finally {
       this.thresholdCompactionInFlight.delete(process.id);
+      // A gate that came due while this ran was turned away; revisit it.
+      void this.maybeRunPatientCompactionGate(process);
     }
+  }
+
+  /**
+   * Compact-first delivery for a patient item that reached its delivery
+   * boundary with a threshold (topics/patient-topic-shift.md). Usage is read
+   * at this boundary, not at queue time. Unknown or post-compaction usage is
+   * never treated as above threshold. A completed compaction, or a provider
+   * with no compact command, releases the item to deliver once; a failure
+   * keeps it visibly queued until the user chooses what to do.
+   */
+  private async maybeRunPatientCompactionGate(process: Process): Promise<void> {
+    const due = process.dueCompactionGate;
+    if (!due) return;
+    if (this.isAutomationPausedUntilUserTurn(process.sessionId)) return;
+    if (process.state.type !== "idle" || process.queueDepth > 0) return;
+    if (this.thresholdCompactionInFlight.has(process.id)) return;
+    this.thresholdCompactionInFlight.add(process.id);
+    const log = getLogger();
+    try {
+      const inputIntentVersion = process.inputIntentVersion;
+      const inputTokens = await this.readUsageForPatientCompactionGate(process);
+      if (process.dueCompactionGate?.tempId !== due.tempId) return;
+      if (process.state.type !== "idle") return;
+      const contextWindow =
+        process.compactAtContextWindow ?? process.contextWindow;
+      if (!crossesCompactThreshold(due.percent, contextWindow, inputTokens)) {
+        process.setCompactionGate(due.tempId, "cleared");
+        this.deliverAfterPatientCompactionGate(process);
+        return;
+      }
+
+      process.setCompactionGate(due.tempId, "compacting");
+      const attempt = await this.tryResumeCompaction(process, {
+        expectedInputIntentVersion: inputIntentVersion,
+      });
+      log.info(
+        {
+          event: "patient_compaction_gate",
+          sessionId: process.sessionId,
+          processId: process.id,
+          tempId: due.tempId,
+          status: attempt.status,
+          percent: due.percent,
+          inputTokens,
+        },
+        "Patient item compact-first attempt settled",
+      );
+      switch (attempt.status) {
+        case "completed":
+        case "unavailable":
+          process.setCompactionGate(due.tempId, "cleared");
+          this.deliverAfterPatientCompactionGate(process);
+          return;
+        case "skipped":
+          // New input or a turn won the race; the next boundary re-evaluates.
+          process.setCompactionGate(due.tempId, "pending");
+          return;
+        case "failed":
+          process.setCompactionGate(due.tempId, "failed", attempt.reason);
+          return;
+        case "timed-out":
+          process.setCompactionGate(
+            due.tempId,
+            "failed",
+            `compaction did not finish within ${Math.round(attempt.timeoutMs / 1000)}s`,
+          );
+          return;
+      }
+    } catch (error) {
+      process.setCompactionGate(
+        due.tempId,
+        "failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      this.thresholdCompactionInFlight.delete(process.id);
+    }
+  }
+
+  private async readUsageForPatientCompactionGate(
+    process: Process,
+  ): Promise<number | undefined> {
+    // After a compaction, the durable summary still reports the old size
+    // until a turn runs under the rewritten context; that is unknown usage.
+    const compactedAtVersion = this.compactionSettledAtAssistantVersion.get(
+      process.id,
+    );
+    if (
+      compactedAtVersion !== undefined &&
+      process.assistantActivityVersion <= compactedAtVersion
+    ) {
+      return undefined;
+    }
+    try {
+      const summary = await this.onSessionSummary?.(
+        process.sessionId,
+        process.projectId,
+        { contextUsageMode: "manual-compaction" },
+      );
+      return summary?.contextUsage?.inputTokens;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private deliverAfterPatientCompactionGate(process: Process): void {
+    if (process.promoteDeferredAfterCompactionGate()) return;
+    if (process.hasPatientDeferredMessages()) {
+      this.schedulePatientDeferredCheck(process, 250);
+    }
+  }
+
+  /**
+   * The user's explicit choice for an item whose compact-first attempt
+   * failed: deliver it at its ordinary boundary without compacting.
+   */
+  deliverPatientWithoutCompaction(process: Process, tempId: string): boolean {
+    if (!process.setCompactionGate(tempId, "cleared")) return false;
+    this.deliverAfterPatientCompactionGate(process);
+    return true;
   }
 
   private notePostCompactReplay(process: Process): void {
@@ -4810,6 +4934,7 @@ export class Supervisor {
     }
 
     if (!promoted) {
+      void this.maybeRunPatientCompactionGate(process);
       // The remaining entries own a precise one-shot re-check of their own.
       return {
         promoted: false,
@@ -6077,6 +6202,9 @@ export class Supervisor {
             void this.finalizePendingDone(process);
           }
           this.flushPendingForkedRecapRequest(process);
+          // A held topic shift is delivery-bound; let it claim compaction
+          // before speculative threshold compaction does.
+          void this.maybeRunPatientCompactionGate(process);
           void this.maybeCompactAfterIdle(process);
           void this.maybePostCompactReplay(process);
         }
@@ -6602,12 +6730,14 @@ export class Supervisor {
     process: Process | null;
   }): void {
     const process = processHolder.process;
-    process?.handleProviderRetentionChanged();
+    // A snapshot change that leaves `retained` alone (recorded work only,
+    // e.g. a Codex background terminal) refreshes liveness and nothing else.
+    if (!process?.handleProviderRetentionChanged()) return;
     this.emitWorkerActivity();
     // Background work starting/finishing flips an idle session between active
     // and truly idle without a state-change event. Surface that so inbox/sidebar
     // activity indicators update live rather than only on the next refresh.
-    if (process && process.state.type === "idle") {
+    if (process.state.type === "idle") {
       this.emitProcessActivity(process);
       if (!process.isRetainingProviderWork()) {
         void this.finalizePendingDone(process);

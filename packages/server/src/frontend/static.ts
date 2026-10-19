@@ -19,7 +19,7 @@ const APP_CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "base-uri 'self'",
   "object-src 'none'",
-  "script-src 'self' 'unsafe-inline'",
+  "script-src 'self' blob: 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
   // blob: carries the file viewer's font specimens.
   "font-src 'self' data: blob:",

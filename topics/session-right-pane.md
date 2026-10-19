@@ -116,6 +116,11 @@ With the setting off it is a new-window link. V1 has one managed viewer:
 opening another replaces it. Browser-style multi-view tabs and keyboard
 switching are deferred to [the tab sketch](session-right-pane.sketches.md).
 
+App discovery and access failures never render error text in the session
+header or displace its title, including when no app is available. Connection
+failures use the normal connection-status UI; app-access details remain in
+Apps settings, and failures checking an open app appear in its pane.
+
 The sidebar shows a small App chip for sessions with a discovered app in this
 browser. Discovery state is persisted per session/source; no background scan
 of unopened session transcripts is needed. Replay restores link availability,
@@ -146,8 +151,8 @@ sending SIGTERM. It refuses another user's process, YA itself, YA's ancestors,
 or a listener that replaced the observed process. Verification allows up to
 five seconds for SIGTERM cleanup, without holding the UI open. It never
 escalates to SIGKILL. Kill clears the session's known announcements and App
-chip even if signalling fails, with the failure
-shown explicitly. New tool announcements can establish an app again. There is
+chip even if signalling fails, with the failure shown in an error toast after
+the pane closes. New tool announcements can establish an app again. There is
 no app-data deletion. Kill is separately gated by `vhost-app-control`; initial
 host support is Linux with `/usr/bin/lsof` and `/proc`. Other hosts and older
 servers retain App/minimize but show no Kill and make no control requests.

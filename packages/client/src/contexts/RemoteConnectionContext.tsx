@@ -257,6 +257,16 @@ function clearTabHostSelection(): void {
   sessionStorage.removeItem(TAB_HOST_KEY);
 }
 
+/** Attempts rebuild equal scopes; keep one object so dependents see real changes only. */
+function retainScope(
+  current: ResumeScope | null,
+  next: ResumeScope,
+): ResumeScope {
+  return current && resumeScopeKey(current) === resumeScopeKey(next)
+    ? current
+    : next;
+}
+
 interface Props {
   children: ReactNode;
 }
@@ -505,7 +515,10 @@ export function RemoteConnectionProvider({ children }: Props) {
         if (!isCurrentConnectionAttempt(attempt))
           throw new ConnectionAttemptSupersededError();
         const owner = beginHostCredentialAttempt(scope, session);
-        activeScopeRef.current = owner.scope;
+        activeScopeRef.current = retainScope(
+          activeScopeRef.current,
+          owner.scope,
+        );
         setCurrentHostId(owner.hostId);
         const host = getHostById(owner.hostId);
         if (host) rememberHost(host);
@@ -555,11 +568,11 @@ export function RemoteConnectionProvider({ children }: Props) {
       setCurrentRelayUsername(null);
       setCurrentRelayUrl(null);
       setCurrentDirectUrl(wsUrl);
-      activeScopeRef.current = {
+      activeScopeRef.current = retainScope(activeScopeRef.current, {
         mode: "direct",
         endpoint: wsUrl,
         identity: username,
-      };
+      });
 
       try {
         const savedHost = getHostByDirectWsUrl(wsUrl, username);
@@ -658,12 +671,12 @@ export function RemoteConnectionProvider({ children }: Props) {
       setIsIntentionalDisconnect(false);
       setCurrentRelayUsername(relayUsername);
       setCurrentRelayUrl(relayUrl);
-      activeScopeRef.current = {
+      activeScopeRef.current = retainScope(activeScopeRef.current, {
         mode: "relay",
         endpoint: relayUrl,
         relayUsername,
         identity: srpUsername,
-      };
+      });
       setCurrentDirectUrl(null);
       setCurrentHostId(hostForScope(activeScopeRef.current)?.id ?? null);
       onStatusChange?.("connecting_relay");

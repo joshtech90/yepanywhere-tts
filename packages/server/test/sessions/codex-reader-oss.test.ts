@@ -219,6 +219,38 @@ describe("CodexSessionReader - OSS Support", () => {
     expect(first?.asyncQuestions?.questions[0]?.age).toBe(0);
     const full = await reader.getSessionSummary(sessionId, projectId);
     expect(full?.asyncQuestions).toEqual(next?.asyncQuestions);
+    await appendFile(
+      filePath,
+      `${event({ type: "user_message", message: "> Which path?\n\nSecond" })}\n`,
+    );
+    const answered = await reader.getSessionListSummary(sessionId, projectId);
+    expect(answered?.asyncQuestions?.questions).toEqual([]);
+    await appendFile(
+      filePath,
+      `${question.replace("question-source", "repeated-source")}\n`,
+    );
+    const repeated = await reader.getSessionListSummary(sessionId, projectId);
+    expect(repeated?.asyncQuestions?.questions).toEqual([
+      {
+        messageId: "repeated-source",
+        index: 0,
+        title: "Which path?",
+        age: 0,
+      },
+    ]);
+    await appendFile(
+      filePath,
+      `${event({
+        type: "item_completed",
+        item: {
+          type: "UserMessage",
+          id: "modern-reply",
+          content: [{ type: "text", text: "> Which path?\n\nFirst" }],
+        },
+      })}\n`,
+    );
+    const modern = await reader.getSessionListSummary(sessionId, projectId);
+    expect(modern?.asyncQuestions?.questions).toEqual([]);
   });
 
   it("adds question previews to a fresh indexed row without rereading its head", async () => {

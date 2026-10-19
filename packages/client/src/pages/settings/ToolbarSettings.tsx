@@ -5,6 +5,7 @@ import type {
   ToolbarNarrowingPriority,
 } from "@yep-anywhere/shared";
 import {
+  PATIENT_TOPIC_SHIFT_CAPABILITY,
   REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
   SYNTHETIC_DONE_COMMAND_CAPABILITY,
   serverHasCapability,
@@ -103,6 +104,7 @@ const PRIORITY_EDITABLE_CONTROLS = new Set<SessionToolbarVisibilityKey>([
   "contextUsage",
   "btw",
   "steerNow",
+  "topicShift",
   "projectQueue",
   "projectQueueNewSessionShortcut",
 ]);
@@ -262,6 +264,10 @@ export function ToolbarSettings() {
   const supportsSyntheticDone = serverHasCapability(
     version,
     SYNTHETIC_DONE_COMMAND_CAPABILITY,
+  );
+  const supportsTopicShift = serverHasCapability(
+    version,
+    PATIENT_TOPIC_SHIFT_CAPABILITY,
   );
   const supportsProjectQueueNewSessionShortcutSetting =
     serverSupportsProjectQueueNewSessionShortcutSetting(version);
@@ -455,6 +461,16 @@ export function ToolbarSettings() {
       "right",
     ),
   ];
+  if (supportsTopicShift) {
+    toolbarControls.push(
+      controlMeta(
+        "topicShift",
+        t("appearanceToolbarTopicShiftTitle"),
+        t("appearanceToolbarTopicShiftDescription"),
+        "right",
+      ),
+    );
+  }
   if (supportsProjectQueue) {
     toolbarControls.push(
       controlMeta(

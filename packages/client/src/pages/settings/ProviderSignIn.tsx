@@ -27,6 +27,7 @@ export function ProviderSignIn({
   const [flow, setFlow] = useState<ProviderLoginFlow | null>(null);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
 
   const running = flow?.state === "running";
   const flowId = flow?.id;
@@ -39,7 +40,9 @@ export function ProviderSignIn({
       .then(({ flow: current }) => {
         if (!cancelled && current) setFlow(current);
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (!cancelled) setProblem(String(error));
+      });
     return () => {
       cancelled = true;
     };
@@ -60,11 +63,15 @@ export function ProviderSignIn({
             return;
           }
           setFlow(current);
+          setProblem(null);
           if (current.state === "succeeded") onSignedIn();
         })
-        .catch(() => {
+        .catch((error) => {
           // Keep polling; a transient failure should not strand the flow.
-          if (!cancelled) setFlow((previous) => previous && { ...previous });
+          if (!cancelled) {
+            setProblem(String(error));
+            setFlow((previous) => previous && { ...previous });
+          }
         });
     }, POLL_INTERVAL_MS);
     return () => {
@@ -76,9 +83,11 @@ export function ProviderSignIn({
   const run = useCallback(
     async (action: () => Promise<void>) => {
       setBusy(true);
+      setProblem(null);
       try {
         await action();
       } catch (error) {
+        setProblem(error instanceof Error ? error.message : String(error));
         showToast(
           t("providersSignInError", {
             provider: displayName,
@@ -135,6 +144,7 @@ export function ProviderSignIn({
         className={styles.panel}
         data-testid={`provider-sign-in-${provider}`}
       >
+        {problem && <p role="alert">{problem}</p>}
         {flow.url ? (
           <a
             className="settings-button"
@@ -195,6 +205,15 @@ export function ProviderSignIn({
         {flow.codeSubmitted && (
           <p className="settings-hint">{t("providersSignInVerifying")}</p>
         )}
+        {flow.output && (
+          <pre
+            role="region"
+            className={styles.output}
+            aria-label={t("providerSignInOutput")}
+          >
+            {flow.output}
+          </pre>
+        )}
         <div className={styles.row}>
           <button
             type="button"
@@ -211,6 +230,12 @@ export function ProviderSignIn({
 
   return (
     <div className={styles.panel} data-testid={`provider-sign-in-${provider}`}>
+      {problem && <p role="alert">{problem}</p>}
+      {flow?.state === "succeeded" && (
+        <p role="status">
+          {t("providerSignInReady", { provider: displayName })}
+        </p>
+      )}
       {flow && flow.state !== "succeeded" && (
         <>
           <p className="settings-hint">
@@ -235,7 +260,9 @@ export function ProviderSignIn({
           onClick={() => void start()}
           disabled={busy}
         >
-          {t("providersSignIn", { provider: displayName })}
+          {busy
+            ? t("providersSignInStarting")
+            : t("providersSignIn", { provider: displayName })}
         </button>
         {supportsHostTerminal && (
           <button

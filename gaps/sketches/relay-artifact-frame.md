@@ -1,7 +1,8 @@
 # Run scripted HTML artifacts over the encrypted relay, without a tunnel
 
-Status: sketch; the Chrome feasibility spike passed on 2026-10-08. Chrome is
-the only target for now. Contributing-model: opus-5.5.
+Status: managed Chrome implementation completed on 2026-10-16; broader browser
+qualification remains open. The historical spike below passed on 2026-10-08.
+Contributing-model: opus-5.5.
 
 ## Problem
 
@@ -25,6 +26,10 @@ no plaintext hop. Making the scriptless preview load assets is not enough, and
 serving artifact URLs from a service worker on the hosted YA origin was
 rejected: untrusted HTML at a YA-origin URL is only one missing header away
 from reading relay resume state.
+
+Implementation and real-HTTPS acceptance are recorded in [the managed viewer plan](../../docs/tactical/155-managed-artifact-viewer.md).
+The first-party hosted client supplies this out of the box; explicit custom
+artifact deployments retain their behavior.
 
 ## Direction
 
@@ -104,9 +109,9 @@ Consequences:
 
 ## Design constraints
 
-- **Origin.** Use per-artifact labels under a dedicated same-site parent such
-  as `<label>.usercontent.yepanywhere.com`. Derive the label from the server
-  and grant so that artifacts from different hosts never share storage. The
+- **Origin.** Use per-artifact labels under a dedicated same-site parent as
+  `artifact-<32hex>.yepanywhere.com`, using a fresh random label for each viewer
+  to fit ordinary wildcard TLS and keep different viewers from sharing storage. The
   content host must stay static and secret-free.
 - **No cookies.** Same-site content can set cookies scoped to
   `yepanywhere.com` (cookie tossing). The hosted client and relay must
@@ -118,9 +123,9 @@ Consequences:
   `frame-ancestors` naming the hosted YA origins, and have the bootstrap
   accept its `connect` message only from those origins.
 - **Grant enforcement in two places.** The parent answers only paths the
-  artifact grant admits: the directory or linked-site rules in
-  `topics/active-content-security.md`, reusing `GrantStore`. The server
-  re-checks on a grant-scoped relay read, so an artifact can never ask its
+  read-only preview lease admits: the entry directory and descendants, separate
+  from durable `GrantStore` ownership. The server
+  re-checks on a lease-scoped relay read, so an artifact can never ask its
   parent for arbitrary files.
 - **Sandbox.** Frame with `ARTIFACT_SANDBOX` (`allow-scripts
   allow-same-origin allow-downloads`), with no popups or top-level
@@ -129,7 +134,8 @@ Consequences:
   they are on the current artifact origin.
 - **Embedded only.** A standalone tab on the content origin has no YA parent
   to forward reads, and handing it relay credentials would break the model.
-  "Open in new tab" therefore still needs the tunnel or a public share's Play.
+  "Open in new tab" uses the standalone YA viewer route, which supplies a new
+  trusted parent. A copied content URL is not a public share.
 - **Hosted CSP.** The hosted CSP's `frame-src` already admits HTTPS
   (`packages/client/vite-plugin-csp.ts`).
 - **Shared plumbing.** The streaming pull protocol matches
@@ -139,14 +145,33 @@ Consequences:
 
 ## Open
 
-- Hosting the wildcard label host: Cloudflare Pages has no wildcard custom
-  domains, so a Worker route may be needed. Also wildcard TLS and how
-  self-hosted hosted-client origins are configured.
-- Cleanup of per-label worker registrations, which accumulate one per label.
-- Real idle termination and recovery from a network-fallback request.
-- Compatibility: a capability for the grant-scoped relay read and a fallback
-  to scriptless preview on older servers
-  ([hosted compatibility](../../topics/remote-hosted-compatibility.md)).
+- The [2026-10-16 localhost/content-worker follow-up](../../research/content-worker-localhost-spike/README.md)
+  verifies native resource loading over actual encrypted YA relay reads with
+  no artifact network hosting. Chrome treats `localhost` to
+  `usercontent.localhost` as cross-site; nested names under `yep.localhost`
+  pass with third-party cookies blocked. Explicit worker restart, cancellation,
+  concurrent origins, unregister and post-close refusal pass. WebKit's basic
+  rendering passes but a larger fetch after navigation/reload remains an
+  unresolved failure. The report preserves the fixture and exact limits; this
+  is not production file-viewer integration or native mobile acceptance.
+- A separate [extension artifact viewer experiment](../../research/extension-artifact-spike/README.md)
+  on 2026-10-16 opened local HTML and assets inside the real YA UI over the
+  encrypted relay, localhost and LAN, using a packaged sandbox and bounded byte
+  adapter. Sandbox subresource requests bypassed the extension worker, so this
+  did not provide transparent interception. It remains a viable alternative
+  for a declared artifact subset; a corresponding Android adapter is a possible
+  follow-up, not yet tested. The report preserves source, measured support,
+  isolation/lifecycle results and outstanding grant requirements. No delivery
+  architecture is selected by that experiment.
+- The managed Worker is deployed on real wildcard DNS/TLS; actual YA-pane
+  acceptance passes with blocked third-party cookies. Explicit worker restart,
+  cancellation, distinct origins/storage, unregister/post-close refusal, native
+  resource types and bounded fragment helpers are measured in
+  [the host report](../../artifact-host/README.md). Worker-memory registration
+  maps are unnecessary. Old-server and custom-origin fallbacks are covered.
+- Natural browser idle termination, all supported mobile engines/native
+  WebViews, and WebKit's larger-fetch failure still need qualification. New
+  versions must retain the versioned bootstrap/worker protocol for live viewers.
 - Later: carry the read path over a WebRTC data channel to save relay
   bandwidth. The relay already carries WebRTC signaling for device streaming
   (`device_webrtc_offer` and ICE in

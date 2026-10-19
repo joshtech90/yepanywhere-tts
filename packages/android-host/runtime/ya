@@ -1,0 +1,125 @@
+#!/usr/bin/python3
+"""Explicit Android document transfers. No transparent filesystem or sync cache."""
+import argparse
+import json
+import os
+from pathlib import Path
+import socket
+import struct
+import sys
+import tempfile
+
+MAX_BYTES = 64 * 1024 * 1024
+
+
+def receive(stream, count):
+    data = bytearray()
+    while len(data) < count:
+        chunk = stream.recv(count - len(data))
+        if not chunk:
+            raise OSError('Native document bridge disconnected before completing the request')
+        data.extend(chunk)
+    return bytes(data)
+
+
+def request(message, upload=None, download=None):
+    endpoint = os.environ.get('YEP_ANDROID_SAF_SOCKET')
+    if not endpoint:
+        raise OSError('Android SAF bridge unavailable; start the Android local host')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+        stream.settimeout(35)
+        stream.connect('\0' + endpoint)
+        # PRoot emulates getuid(), but /proc records the actual Android app UID.
+        kernel_uid = int(Path('/proc/self/status').read_text().split('Uid:', 1)[1].split()[0])
+        _, peer_uid, _ = struct.unpack('3i', stream.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        if peer_uid != kernel_uid:
+            raise OSError('Native document bridge belongs to another Android UID')
+        header = json.dumps(message).encode()
+        stream.sendall(struct.pack('!I', len(header)) + header)
+        if upload:
+            with open(upload, 'rb') as source:
+                remaining = message['bytes']
+                while remaining:
+                    chunk = source.read(min(65536, remaining))
+                    if not chunk:
+                        raise OSError('Local source changed during upload; external document untouched')
+                    stream.sendall(chunk)
+                    remaining -= len(chunk)
+                if source.read(1):
+                    raise OSError('Local source grew during upload; external document untouched')
+        stream.shutdown(socket.SHUT_WR)
+        size = struct.unpack('!I', receive(stream, 4))[0]
+        if size > 2 * 1024 * 1024:
+            raise OSError('Native response exceeds limit')
+        reply = json.loads(receive(stream, size))
+        if not reply['ok']:
+            raise OSError(reply.get('message', 'Native operation failed'))
+        result = reply['result']
+        if download:
+            remaining = result['bytes']
+            if not 0 <= remaining <= MAX_BYTES:
+                raise OSError('Transfer exceeds limit')
+            while remaining:
+                chunk = receive(stream, min(65536, remaining))
+                download.write(chunk)
+                remaining -= len(chunk)
+            if stream.recv(1):
+                raise OSError('Unexpected bytes after document download')
+        return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='group', required=True)
+    saf = sub.add_parser('saf', help='Explicit operations against saved Android folder shortcuts')
+    commands = saf.add_subparsers(dest='op', required=True)
+    commands.add_parser('roots')
+    for operation in ('ls', 'stat', 'mkdir', 'rm', 'rename', 'get', 'put', 'check'):
+        command = commands.add_parser(operation)
+        command.add_argument('root')
+        if operation not in ('check',):
+            command.add_argument('path', nargs='?' if operation in ('ls', 'stat') else None, default='')
+        if operation == 'rename': command.add_argument('name')
+        if operation == 'rm': command.add_argument('--recursive', action='store_true')
+        if operation in ('get', 'put'): command.add_argument('local', help='Local destination for get; local source for put')
+        if operation in ('get', 'put'): command.add_argument('--replace', action='store_true')
+    args = vars(parser.parse_args()); args.pop('group')
+    operation = args['op']; local = args.pop('local', None)
+    if operation == 'put':
+        size = os.stat(local).st_size
+        if not 0 <= size <= MAX_BYTES: raise OSError('Transfer exceeds 64 MiB limit')
+        args['bytes'] = size
+        result = request(args, upload=local)
+    elif operation == 'get':
+        destination = Path(local)
+        if destination.exists() and not args.get('replace'): raise OSError('Local destination exists; use --replace')
+        temp = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=destination.parent, prefix='.ya-saf-', delete=False) as output:
+                temp = Path(output.name); result = request(args, download=output)
+                output.flush(); os.fsync(output.fileno())
+            if args.get('replace'): os.replace(temp, destination)
+            else:
+                # Exclusive creation works on shared storage, which may reject hardlinks.
+                created = False
+                try:
+                    with destination.open('xb') as output:
+                        created = True
+                        with temp.open('rb') as source:
+                            while chunk := source.read(65536): output.write(chunk)
+                        output.flush(); os.fsync(output.fileno())
+                except BaseException:
+                    if created: destination.unlink(missing_ok=True)
+                    raise
+        finally:
+            if temp: temp.unlink(missing_ok=True)
+    else:
+        result = request(args)
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == '__main__':
+    try: main()
+    except (OSError, ValueError, KeyError) as error:
+        print('ya saf: ' + str(error), file=sys.stderr)
+        sys.exit(1)

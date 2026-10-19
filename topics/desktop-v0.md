@@ -41,10 +41,11 @@ transient runner-level DMG assembly failures. The retry is bounded: a second
 failure remains a failed job and reports whether an app bundle existed without
 the required DMG.
 
-When the bundled server contains Mach-O native modules, signed macOS packaging
-signs each module with the release identity and a secure timestamp before Tauri
-assembles and notarizes the app. CI verifies every nested signature it creates;
-an unsigned nested module must fail packaging rather than reach users.
+When the bundled server contains Mach-O native modules or shared libraries,
+signed macOS packaging signs each `.node` and `.dylib` binary with the release
+identity and a secure timestamp before Tauri assembles and notarizes the app.
+CI verifies every nested signature it creates; an unsigned nested module or
+library must fail packaging rather than reach users.
 
 The hardened macOS Bun sidecar carries only the
 `com.apple.security.cs.allow-jit` runtime exception required by

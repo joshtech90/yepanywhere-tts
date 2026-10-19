@@ -809,8 +809,10 @@ A limited user creates projects only where the superuser said they may.
   gets that commit, from a fallback identity used for the scaffolding commit
   alone. Without that
   flag a missing path is still a 404, so nothing creates a directory by
-  accident. An existing directory is never touched — YA does not run
-  `git init` over somebody's tree. For limited users, creation also makes a
+  accident. An existing empty directory under `create` is initialized the
+  same way, since it is the folder YA would have made; an existing directory
+  with any content is never touched — YA does not run `git init` over
+  somebody's tree. For limited users, creation also makes a
   missing configured root and parent directories below it. Before making
   anything, containment follows the nearest existing ancestors, including
   symlinks; a missing descendant cannot hide an escaping ancestor. Template

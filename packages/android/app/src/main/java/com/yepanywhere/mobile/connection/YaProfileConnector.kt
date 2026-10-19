@@ -5,6 +5,12 @@ import com.yepanywhere.mobile.profiles.YaServerRoute
 import com.yepanywhere.mobile.profiles.YaServerRouteKind
 import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
+import java.io.Closeable
+
+interface YaResponseBody : Closeable {
+    val metadata: JSONObject
+    suspend fun nextChunk(): ByteArray?
+}
 
 interface YaMessageTransport {
     val credential: YaResumeCredential
@@ -12,6 +18,7 @@ interface YaMessageTransport {
     val routeId: String? get() = null
     fun cancelRequest(id: String) {}
     suspend fun directRequest(method: String, path: String, body: JSONObject?): YaApiResponse? = null
+    suspend fun fetchResponse(params: JSONObject): YaResponseBody? = null
     val securityBinding: YaSrpTransportBinding?
         get() = null
 
@@ -63,6 +70,7 @@ data class YaRoutedTransport(
 )
 
 interface YaProfileConnector {
+    suspend fun awaitCredentialSettled(profileId: String) {}
     suspend fun resume(
         profile: YaPairedServerProfile,
         credential: YaResumeCredential,

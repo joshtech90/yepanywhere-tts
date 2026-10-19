@@ -38,6 +38,60 @@ export function openDatabase(
   });
 }
 
+/**
+ * A lazily opened, shared connection that survives the browser closing it.
+ *
+ * The browser may close a connection at any time (storage cleared, backing
+ * store failure, another tab upgrading the database). A cached handle then
+ * fails every later transaction with InvalidStateError until reload, so the
+ * handle is dropped on `close`/`versionchange`, and `run` reopens and retries
+ * once when a transaction hits a connection that is closing but has not yet
+ * reported `close`. `run` callbacks must therefore be safe to repeat.
+ */
+export function sharedDatabase(
+  name: string,
+  version: number,
+  onUpgrade: OnUpgrade,
+): {
+  get: () => Promise<IDBDatabase>;
+  run: <T>(operation: (db: IDBDatabase) => Promise<T>) => Promise<T>;
+} {
+  let current: Promise<IDBDatabase> | null = null;
+  const forget = (opened: Promise<IDBDatabase>) => {
+    if (current === opened) current = null;
+  };
+  const get = () => {
+    if (current) return current;
+    const opened = openDatabase(name, version, onUpgrade).then((db) => {
+      db.onclose = () => forget(opened);
+      db.onversionchange = () => {
+        db.close();
+        forget(opened);
+      };
+      return db;
+    });
+    opened.catch(() => forget(opened));
+    current = opened;
+    return opened;
+  };
+  const run = async <T>(
+    operation: (db: IDBDatabase) => Promise<T>,
+  ): Promise<T> => {
+    const opened = get();
+    try {
+      return await operation(await opened);
+    } catch (error) {
+      if (
+        !(error instanceof DOMException && error.name === "InvalidStateError")
+      )
+        throw error;
+      forget(opened);
+      return operation(await get());
+    }
+  };
+  return { get, run };
+}
+
 export async function putEntry(
   db: IDBDatabase,
   store: string,

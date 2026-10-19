@@ -91,8 +91,9 @@ This neutralizes the `"preinstall": "node setup.mjs"` vector used
 by npm supply-chain attacks. If a newly added dep needs its build script,
 `pnpm install` warns `build scripts that were ignored: <pkg>` and the
 package will be missing its native binary at runtime — vet the script,
-then add the package name to the allowlist. Blocked today, each verified
-a no-op with no performance fallback: `esbuild` (native binary ships via
+then add the package name to the allowlist. Blocked today and listed under
+`ignoredBuiltDependencies` so installs stay quiet, each verified a no-op with
+no performance fallback: `esbuild` (native binary ships via
 `@esbuild/*` optional deps; the postinstall only swaps the bin shim, and
 there is no silent WASM fallback), `@firebase/util` (bakes
 `FIREBASE_WEBAPP_CONFIG` into web-SDK defaults; unset here), `protobufjs`
@@ -167,6 +168,19 @@ everything pending.
   Node floor.
 - Major updates to `pnpm-workspace.yaml` overrides are disabled; see the
   exact `fast-uri` pin above.
+- `vite` updates bump the declared ranges instead of updating only the
+  lockfile. The client and desktop declare different vite majors, and a
+  lockfile-only group update passes both versions to one recursive
+  `pnpm update`, which forces a single version onto both importers and
+  fails `--frozen-lockfile`. Apply the same rule to any other package
+  declared at two majors in the workspace.
+- `@playwright/test` is held below 1.61. From 1.61 the runner loads test
+  files through `module.registerHooks`, and on Node 22.16 through 22.22 and
+  on 23.11 that fails to load CommonJS dependencies such as `sanitize-html`
+  with `request for './Parser.js' is not in cache`, so every e2e shard fails
+  at the supported Node floor. Node 22.23 and 24 load them. Lift the hold
+  when the supported floor moves past the fix. Playwright's
+  `PLAYWRIGHT_FORCE_ASYNC_LOADER` avoids the path but is undocumented.
 - `@anthropic-ai/claude-agent-sdk` and the pixi STT environment update
   only when requested from the dashboard, because they follow the
   [provider refresh](../../topics/provider-refresh.md) audit and the

@@ -83,6 +83,7 @@ jobs:
           test/auth/AuthService.test.ts
           test/auth/credential-state-fail-closed.test.ts
           test/utils/writeFileAtomically.test.ts
+          test/utils/filePermissions.test.ts
           test/utils/syncDirectory.test.ts
           test/services/ServerSettingsService.test.ts
           test/routes/settings.test.ts

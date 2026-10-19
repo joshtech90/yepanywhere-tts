@@ -44,6 +44,15 @@ describe("isPackagedAppOrigin", () => {
     ).toBe(true);
   });
 
+  it("recognizes the Chrome extension origin", () => {
+    expect(
+      isPackagedAppOrigin({
+        hostname: "dgeameddpnggdeenoekpiaacfghdodch",
+        protocol: "chrome-extension:",
+      }),
+    ).toBe(true);
+  });
+
   it("leaves hosted clients eligible for browser service workers", () => {
     expect(
       isPackagedAppOrigin({

@@ -433,6 +433,62 @@ describe("Process", () => {
       }
     });
 
+    it("records unretained provider work without deferring the idle reap", async () => {
+      vi.useFakeTimers();
+      try {
+        const terminal = {
+          id: "exec-1",
+          kind: "shell" as const,
+          label: "python3 -m http.server 8765",
+          source: "codex:item/started",
+        };
+        let providerRetention: ProviderRetentionSnapshot = {
+          retained: false,
+          reasons: [],
+          backgroundWork: [terminal],
+        };
+        const abortFn = vi.fn();
+        const controller = createControllableIterator();
+        const process = new Process(controller.iterator, {
+          projectPath: "/test",
+          projectId: "proj-1" as UrlProjectId,
+          sessionId: "sess-1",
+          provider: "codex",
+          idleTimeoutMs: 100,
+          abortFn,
+          getProviderRetentionFn: () => providerRetention,
+        });
+
+        controller.push({
+          type: "system",
+          subtype: "init",
+          session_id: "sess-1",
+        });
+        controller.push({ type: "result", session_id: "sess-1" });
+        await vi.advanceTimersByTimeAsync(0);
+        // The first change establishes the unretained baseline.
+        expect(process.handleProviderRetentionChanged()).toBe(true);
+
+        expect(process.getLivenessSnapshot()).toMatchObject({
+          derivedStatus: "verified-idle",
+          providerRetention: { retained: false, backgroundWork: [terminal] },
+        });
+        expect(process.getInfo().state).toBe("idle");
+
+        // A Codex background terminal exiting mid-grace changes only the
+        // recorded work, so the original reap deadline stands.
+        await vi.advanceTimersByTimeAsync(60);
+        providerRetention = { retained: false, reasons: [] };
+        expect(process.handleProviderRetentionChanged()).toBe(false);
+        await vi.advanceTimersByTimeAsync(39);
+        expect(abortFn).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(abortFn).toHaveBeenCalledOnce();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("reports retained-idle as in-turn activity in getInfo", async () => {
       vi.useFakeTimers();
       try {

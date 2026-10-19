@@ -105,6 +105,8 @@ provider-history rewrite and not deletion.
   control. Direct expansion or collapse pauses tail-follow and keeps that
   clicked summary at the same viewport position from the first painted frame,
   including at the live edge, even though document height and scrollbar change.
+  Late renderer content or styles keep the same disclosure anchor through
+  subsequent size changes; a new scroll gesture releases that anchor.
   If that offset is
   unreachable, scroll position clamps to the new document bounds.
   New output does not pull the reader away from the disclosed activities;

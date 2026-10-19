@@ -190,10 +190,28 @@ describe("ensureProjectDirectory", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("leaves an existing directory exactly as it is", async () => {
+  it("leaves an existing directory with content exactly as it is", async () => {
+    await fs.writeFile(path.join(dir, "notes.txt"), "");
     const outcome = await ensureProjectDirectory(dir, { create: true });
     expect(outcome).toEqual({ kind: "exists" });
     // No repository was imposed on a tree YA did not make.
+    await expect(fs.stat(path.join(dir, ".git"))).rejects.toThrow();
+  });
+
+  it("initializes an empty folder the user made ahead of time", async () => {
+    const outcome = await ensureProjectDirectory(dir, { create: true });
+    expect(outcome).toEqual({ kind: "exists" });
+    const { stdout: log } = await runGit(dir, ["log", "--format=%s"]);
+    expect(log.trim()).toBe(INITIAL_COMMIT_MESSAGE);
+  });
+
+  it("leaves an empty existing folder alone without create or with Git declined", async () => {
+    expect(await ensureProjectDirectory(dir, { create: false })).toEqual({
+      kind: "exists",
+    });
+    expect(
+      await ensureProjectDirectory(dir, { create: true, initializeGit: false }),
+    ).toEqual({ kind: "exists" });
     await expect(fs.stat(path.join(dir, ".git"))).rejects.toThrow();
   });
 

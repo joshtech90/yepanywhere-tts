@@ -97,12 +97,13 @@ place a contract can fail:
 | APK inspection | Correct bundled/hosted asset contents, package identity, manifest contract, and absence of Tauri/Rust artifacts | Local and CI |
 | Connected smoke | Launcher, relay login, process recreation, App Link, password-manager metadata, and FCM receive with no activity/WebView | Physical device when attached |
 
-The shell migration does not require Firebase credentials in CI. Its
-config-free build is a required, first-class artifact. FCM end-to-end delivery
-remains a physical-device acceptance test using locally provisioned
-configuration; credentials and `google-services.json` stay ignored and out of
-logs, artifacts, screenshots, and repository secrets unless a separate CI
-credential design is explicitly approved.
+The original shell migration kept Firebase client configuration local and
+verified config-free builds. As of 2026-10-14, the public Android client config
+is tracked and used by default in source and CI builds. Firebase-disabled
+builds remain supported through `-PyaFirebaseEnabled=false`; see the current
+[build contract](../../topics/android-fcm-push.md#android-build-configuration).
+Service-account credentials and signing keys remain private. FCM end-to-end
+delivery still requires real-device acceptance and disposable push fixtures.
 
 ## Work Tracker
 

@@ -287,6 +287,63 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   Viewers can decline previews with the Live Command Output setting
   ([stream parity](stream-persisted-render-parity.md)).
 
+## Continuing YA sessions in desktop apps
+
+The [user guide](../site/src/content/docs/sessions-and-approvals.md#continue-in-another-desktop-app)
+owns the handoff steps. These are interoperability observations, not a new YA
+launch policy or an automatic handoff feature.
+
+### Claude Desktop: discovery versus explicit adoption
+
+Verified 2026-10-16 on macOS with Claude Desktop 2.37337.1 and the YA-installed
+Claude Agent SDK 0.3.296 / Claude Code 2.1.296:
+
+- YA-created local Claude sessions persist in the ordinary Claude project
+  transcript directory with `entrypoint: "sdk-ts"`.
+- Desktop's CLI discovery and bulk-import scanners exclude SDK entrypoints
+  (`sdk-ts`, `sdk-py`, `sdk-cli`). Their import count spans projects, even when
+  a particular project is selected. Missing picker entries do not establish
+  that Desktop cannot read the transcript.
+- Explicit adoption through `claude://resume?session=<claude-session-uuid>`
+  succeeds after YA releases the provider process. A disposable Haiku / low
+  effort session created through an isolated YA API profile was imported with
+  its original prompt and response visible. Desktop recorded the same
+  `cliSessionId`, `adoptedFromOtherSurface: true`, and a successful process
+  warm-up. The original transcript's conversation rows retained `sdk-ts`.
+  Sending a subsequent Desktop turn was not part of this verification.
+- An environment override of `CLAUDE_CODE_ENTRYPOINT=cli` on an otherwise
+  identical YA launch persisted `sdk-cli`, which remains excluded. The
+  runtime normalizes `cli` to `sdk-cli` for noninteractive launches.
+- `claude-desktop` is not a discovery workaround: Desktop excludes its own
+  markers from ordinary CLI discovery and applies additional lost-session
+  recovery rules during bulk import. The variable also affects runtime
+  surface and attended-session classification; it is not just a saved label.
+
+Prefer explicit adoption over marker changes or rewriting existing
+transcripts. The UUID in the link is Claude's native session id, not Desktop's
+`local_`-prefixed record id. Both apps must access the same local Claude
+history. Preserve the [single-writer boundary](session-ownership.md): allow the
+turn to finish and terminate the YA provider process before importing. Merely
+closing a YA client or interrupting the turn does not release process ownership.
+
+Anthropic also documents `claude --desktop --resume <session-id>` in
+[Coming from the CLI](https://code.claude.com/docs/en/desktop#coming-from-the-cli).
+The live YA interoperability probe used the resume deep link directly, not
+that CLI wrapper.
+
+### ChatGPT desktop: automatic history import
+
+On 2026-10-16 the maintainer reported that ChatGPT desktop automatically picks
+up YA-created sessions without per-session action. This was a user observation;
+the Claude Desktop experiment did not separately exercise ChatGPT's importer.
+OpenAI's [import documentation](https://learn.chatgpt.com/docs/import), checked
+the same day, confirms that ChatGPT desktop imports local Claude Code history
+and can keep imported work in sync through **Settings → Import → automatic
+updates**. It describes supported recent history, currently the last 30 days,
+rather than promising every historical session or every YA provider. This
+imports chats into ChatGPT and does not establish shared Claude process
+ownership or same-transcript continuation.
+
 ## Transcript Structure: Forest, Connector Rows, Dead Segments
 
 Claude JSONL transcripts are a single-parent branching forest: `parentUuid`

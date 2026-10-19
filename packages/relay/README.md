@@ -22,6 +22,10 @@ Does:
 - Tracks one waiting yep-anywhere server per registered username.
 - Pairs an incoming client with the matching waiting server and
   forwards frames between them, preserving binary vs. text framing.
+- Closes a pair whose client sends nothing within
+  `RELAY_PAIR_FIRST_MESSAGE_TIMEOUT_MS`. The server notices a claim only
+  from the client's first frame, so a silent client would otherwise leave
+  the server unreachable while it still believes it is waiting.
 - Persists username ownership (`username` → `installId`) in SQLite
   with first-come-first-served registration and configurable
   inactivity reclamation.
@@ -120,6 +124,7 @@ impersonate any source IP, defeating the per-IP cap entirely.
 | `RELAY_UNAUTHENTICATED_CONNECTION_TIMEOUT_MS` | `30000` | Time a connection has to send a valid protocol frame before being closed. |
 | `RELAY_PING_INTERVAL_MS` | `60000` | Ping interval for waiting connections (paired connections rely on the encrypted protocol's own keep-alive). |
 | `RELAY_PONG_TIMEOUT_MS` | `30000` | Drop a waiting connection if no pong within this window. |
+| `RELAY_PAIR_FIRST_MESSAGE_TIMEOUT_MS` | `20000` | Close a pair whose client sends no frame within this window, so the server re-registers. `0` disables. |
 | `RELAY_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
 | `RELAY_TELEMETRY_ENABLED` | `true` | Periodic samples + event log under `{dataDir}/telemetry/`. |
 

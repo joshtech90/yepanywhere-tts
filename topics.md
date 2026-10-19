@@ -9,6 +9,7 @@
 - core-service-api - Proposal to expose YA's provider/session runtime as a headless service and extractable core for external scripts and OpenAI-style proxy clients.
 - prompt-suggestions - Next-user-turn suggestion surface and native/simulated split.
 - session-liveness - Provider/session cache state, stale entries, and recovery.
+- provider-wait-and-background-work - Dated Claude/Codex sleep, background-process and wake behavior, YA's current capture, and the proposed normalized record.
 - session-context-actions - Clear, fork, handoff, compaction, and durable
   done/archive/terminate session boundaries.
 - pluggable-speech-recognition - YA server-routed speech backends and browser-native fallback.
@@ -452,3 +453,13 @@
 - new-session-tab-boot-latency - Full new-session controls within 500 ms, with current cached state and correct draft restoration.
 
 - ya-owned-session-ids - Required SQLite session metadata, then YA-minted session ids so per-session facts exist before any provider call (plan 150).
+
+- chrome-extension-client - Full YA web client served from a Chrome extension over the public relay; extension-origin relay allowlist, shared saved hosts, side panel with issue/PR lookup, options (plan 151).
+
+- native-notification-surfacing - Truthful Android notification permission state on server cards, Settings recovery, post-sign-in offer, and native status instead of browser Web Push in the app WebView.
+
+- android-secure-transport - Reliable Android resume, progressive native byte responses and packaged service-worker artifact delivery (plan 156).
+
+- android-host — experimental on-device YA host, shared Alpine payload and lifecycle.
+
+- rendezvous — project file uploads, live-session routing, attachment previews, and held burst overflow.

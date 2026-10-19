@@ -559,8 +559,9 @@ test("viewer icon modes toggle locally and open through Shift and middle clicks"
   await expect(run).toHaveAttribute("aria-pressed", "false");
   for (const control of [edit, run]) {
     const box = await control.boundingBox();
-    expect(box?.width).toBe(36);
-    expect(box?.height).toBe(36);
+    const size = control === edit ? 32 : 36;
+    expect(box?.width).toBe(size);
+    expect(box?.height).toBe(size);
     expect(await control.locator("svg").count()).toBe(1);
     let verifiedModeUrl: string | undefined;
     for (const gesture of ["shift", "middle"]) {

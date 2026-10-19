@@ -9,12 +9,13 @@ object NativeTransportFrames {
     const val MAX_MESSAGE_BYTES = 32 * 1024 * 1024
     const val JSON = 1
     const val UPLOAD = 2
+    const val RESPONSE = 3
 
     data class Frame(val kind: Int, val id: Int, val offset: Int, val total: Int, val data: ByteArray)
     data class Message(val kind: Int, val data: ByteArray)
 
     fun encode(kind: Int, id: Int, offset: Int, total: Int, data: ByteArray): ByteArray {
-        require(kind == JSON || kind == UPLOAD)
+        require(kind == JSON || kind == UPLOAD || kind == RESPONSE)
         require(id > 0 && total in 1..MAX_MESSAGE_BYTES)
         require(offset >= 0 && data.size in 1..CHUNK_BYTES && offset <= total - data.size)
         return ByteBuffer.allocate(HEADER_BYTES + data.size)
@@ -32,7 +33,7 @@ object NativeTransportFrames {
         val total = input.int
         val data = ByteArray(input.remaining()).also(input::get)
         // Reuse the encoder's range validation, without allocating another frame.
-        require(kind == JSON || kind == UPLOAD)
+        require(kind == JSON || kind == UPLOAD || kind == RESPONSE)
         require(id > 0 && total in 1..MAX_MESSAGE_BYTES && offset >= 0 && offset <= total - data.size)
         return Frame(kind, id, offset, total, data)
     }

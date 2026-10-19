@@ -60,12 +60,8 @@ test.describe("File browser", () => {
           controlsBox!.y,
         );
       }
-      if (viewport.width > 375) {
-        await expect(header).not.toHaveAttribute("data-actions-below");
-      } else {
-        // The header mounts after the loading state; measurement must still
-        // attach and move the actions below the context row on a phone.
-        await expect(header).toHaveAttribute("data-actions-below", "true");
+      if (viewport.width === 375) {
+        // The action row must stay compact beneath the wrapped path.
         const controlsBox = await header
           .locator(".file-viewer-actions")
           .boundingBox();

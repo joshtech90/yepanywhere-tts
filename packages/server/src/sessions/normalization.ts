@@ -587,9 +587,18 @@ function convertCodexEntries(
           ? codexUserMessageEventClientId(nextEntry)
           : undefined
         : undefined;
+      const messageIndex = state.messageIndex++;
+      // A completed checkpoint owns the summary and pagination identity. Until
+      // it arrives, keep marked output inspectable as a collapsed boundary.
+      if (
+        isCodexCompactionOutput(entry) &&
+        codexCompactionOutputHasCheckpoint(entries, entryIndex)
+      ) {
+        continue;
+      }
       const msg = convertCodexResponseItem(
         entry,
-        state.messageIndex++,
+        messageIndex,
         state.toolCallContexts,
         state.toolUseMessages,
         state.closedToolResultIds,
@@ -1217,6 +1226,32 @@ function codexDurableResponseItemUuid(
   }
 }
 
+function isCodexCompactionOutput(entry: CodexResponseItemEntry): boolean {
+  return (
+    entry.metadata?.compaction_output === true &&
+    entry.payload.type === "message" &&
+    entry.payload.role === "assistant"
+  );
+}
+
+function codexCompactionOutputHasCheckpoint(
+  entries: readonly CodexSessionEntry[],
+  outputIndex: number,
+): boolean {
+  for (let index = outputIndex + 1; index < entries.length; index++) {
+    const entry = entries[index];
+    if (!entry) continue;
+    if (
+      entry.type === "token_usage_record" ||
+      (entry.type === "event_msg" && entry.payload.type === "token_count")
+    ) {
+      continue;
+    }
+    return entry.type === "compacted" && Boolean(entry.payload.message?.trim());
+  }
+  return false;
+}
+
 function convertCodexResponseItem(
   entry: CodexResponseItemEntry,
   index: number,
@@ -1236,6 +1271,18 @@ function convertCodexResponseItem(
 
   switch (payload.type) {
     case "message":
+      if (isCodexCompactionOutput(entry)) {
+        return {
+          uuid,
+          type: "system",
+          subtype: "compact_boundary",
+          content: "Context compacted",
+          compactSummaryText: payload.content
+            .map((block) => ("text" in block ? block.text : ""))
+            .join(""),
+          timestamp: entry.timestamp,
+        };
+      }
       if (payload.role === "developer") {
         const guidance = codexContentFilterGuidance(payload);
         return guidance === null

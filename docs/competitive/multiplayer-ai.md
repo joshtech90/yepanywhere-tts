@@ -3,6 +3,8 @@
 Research snapshot: **2026-09-30**. This is a product-level competitive review
 of several people collaborating around an agent. It complements the individual
 supervisor reviews in [the competitive index](README.md).
+A [2026-10-17 Happy follow-up](#october-17-follow-up-happy-team-mode) adds
+current evidence for that product; other entries retain the September date.
 
 Evidence comes from official product documentation, release notes, repository
 READMEs/security documents, and YC company profiles. These are documented
@@ -76,6 +78,28 @@ each queued turn. Preserve that distinction when comparing against YA's
 [named-participant proposal](../../gaps/sketches/named-participant-seats.md),
 [provider turn-identity gap](../../gaps/provider-user-turn-durable-identity.md),
 and [unconfirmed-send gap](../../gaps/unconfirmed-send-loss-across-reload.md).
+
+## October 17 follow-up: Happy team mode
+
+Happy documents implemented shared-conversation multiplayer on a self-hosted
+Happy Agent server. Each member has a WorkOS-backed Happy Social identity,
+uses the shared projects/tasks/sessions, and can pair their own phone. The
+agent receives the speaker's name/email when the speaker changes; drafts and
+task-list ordering stay personal. This is more than multi-device viewing.
+
+The grant is broad: everyone sees the shared projects and sessions, there
+are no per-session invites, work spends the server's provider credentials,
+and any member can switch a session to Full access. The docs say a
+remove-member action is not built. Personal API-token sharing is a separate
+single-identity path, not named team participation.
+
+These are documented/source-backed capabilities, not a tested two-user
+deployment or proof of fine-grained guest isolation. The October 16 runtime
+release also adds live collaborative documents, requiring a sufficiently
+current client; it does not establish mobile editor parity.
+[Multiplayer documentation](https://happy.engineering/multiplayer/),
+[runtime release](https://github.com/slopus/happy-agent/releases/tag/v0.4.99),
+[full Happy review](happy.md).
 
 ## First-party and adjacent collaboration
 

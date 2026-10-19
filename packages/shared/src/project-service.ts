@@ -188,4 +188,10 @@ export interface ProjectAppAddresses {
     /** Transferable current-namespace link; advertised by project-app-address-links. */
     url?: string;
   }>;
+  /**
+   * Whether an authorized visit to the served address starts the stopped or
+   * unreachable process app; `paused` is the last failure once repeated
+   * failures stopped it. Advertised by project-app-auto-start.
+   */
+  autoStart?: { enabled: boolean; paused?: string };
 }

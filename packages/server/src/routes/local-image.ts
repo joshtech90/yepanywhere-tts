@@ -14,6 +14,7 @@ import {
 } from "./mutable-file-cache.js";
 import type { SessionPathScopeResolver } from "./session-path-scope.js";
 import { createUntrustedFileResponseHeaders } from "./untrusted-file-response.js";
+import { readRendezOriginal } from "./rendez-original.js";
 
 export interface LocalImageDeps {
   allowedPaths: string[] | (() => string[]);
@@ -72,6 +73,18 @@ export function createLocalImageHandler(deps: LocalImageDeps) {
         return c.json({ error: resolved.error }, resolved.status);
       }
       const { resolvedPath } = resolved.file;
+      if (c.req.query("rendezOriginal") === "1") {
+        const original = await readRendezOriginal(resolvedPath, requestPolicy);
+        if (original) {
+          return new Response(new Uint8Array(original.bytes), {
+            headers: createUntrustedFileResponseHeaders({
+              baseHeaders: { "Cache-Control": "private, no-store" },
+              contentType: original.contentType,
+              filePath: original.path,
+            }),
+          });
+        }
+      }
       const snapshot = await openMutableFileSnapshot(
         resolvedPath,
         deps.openFile,

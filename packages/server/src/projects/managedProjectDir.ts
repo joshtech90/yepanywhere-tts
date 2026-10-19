@@ -51,7 +51,7 @@ export async function ensureManagedProjectDir(
  * duplicate-line guard only matters if the dir was excluded, deleted, and
  * later recreated. Best-effort: all failures are swallowed.
  */
-async function defaultGitExclude(
+export async function defaultGitExclude(
   projectPath: string,
   name: string,
 ): Promise<void> {

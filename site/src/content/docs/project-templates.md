@@ -14,10 +14,11 @@ using its `project-templates` directory. It contains **App canvas**, **Web
 page** and **Storybook**. It is the default library for this system; a separate
 repository or future vendored copy is not required to use its bases.
 
-**Current delivery:** YA's source settings retrieve and validate libraries.
-Creating and preparing projects through YA is still being integrated. Draft
-templates can be inspected but are not approved for project creation. The
-default templates remain draft until their content review is complete.
+**Current delivery:** YA's source settings retrieve and validate libraries,
+and YA creates projects from `ready` templates, including for users granted
+template access. Draft templates can be inspected but are not approved for
+project creation. The three default templates are ready. Retained App access
+and personal workspace scopes are still pending.
 
 ## Add a source in YA
 
@@ -105,11 +106,15 @@ explain what is special about your starter and how an agent should work on it.
 It is combined with the inherited root instructions.
 
 Useful YA-default bases include `software-engineering`, `testing`,
-`typescript`, `web-ui`, `web-app`, `canvas`, `page`, `writing`, `story`, and
-`server`. `web-app` supplies shared web tooling; combine it with `canvas`
-for a drawing app or with `page` for a content-led page. `story` builds on
-`writing`. The server base supplies an optional add-on; inheriting it does
-not mean a backend is already running.
+`typescript`, `web-ui`, `web-app`, `canvas`, `page`, `writing`, `story`,
+`server`, `repo-view`, and `program-view`. `web-app` supplies shared web
+tooling; combine it with `canvas` for a drawing app or with `page` for a
+content-led page. `story` builds on `writing`. The server base supplies an
+optional add-on; inheriting it does not mean a backend is already running.
+`repo-view` vendors a web view of the project's own documents, live or as a
+publishable static site, which becomes the project's app only when enabled;
+`program-view` adds dashboards of the project's programs, papers, handouts
+and agent sessions to that view.
 
 To contribute a reusable base, put its manifest under `bases/<id>/`, use
 `"kind": "base"`, and list the ID in `library.json`'s `bases` array. Bases

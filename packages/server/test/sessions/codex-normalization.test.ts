@@ -2188,6 +2188,96 @@ describe("Codex Normalization", () => {
     });
   });
 
+  it("keeps marked compaction output collapsed across a checkpoint append", () => {
+    const summary =
+      "### Active task\n\nFinish the folder picker and verify it.";
+    const rawOutput = {
+      type: "response_item",
+      timestamp: "2026-10-18T10:58:34.738Z",
+      metadata: { client_authored: false, compaction_output: true },
+      payload: {
+        type: "message",
+        id: "msg-compaction-output",
+        role: "assistant",
+        phase: "final_answer",
+        content: [{ type: "output_text", text: summary }],
+      },
+    };
+    const parse = (raw: unknown): CodexSessionEntry => {
+      const entry = parseCodexSessionEntry(JSON.stringify(raw));
+      if (!entry) throw new Error("Expected valid Codex entry");
+      return entry;
+    };
+    const output = parse(rawOutput);
+    const entries = [output];
+    const partial = normalizeSession(buildLoadedSession(entries));
+    expect(partial.messages).toMatchObject([
+      {
+        uuid: "msg-compaction-output",
+        type: "system",
+        subtype: "compact_boundary",
+        compactSummaryText: summary,
+      },
+    ]);
+    expect(compileTranscriptProjection(partial.messages)).toMatchObject([
+      { type: "system", subtype: "compact_boundary", details: [summary] },
+    ]);
+
+    const checkpointSummary = `Continuation summary:\n\n${summary}`;
+    entries.push(
+      parse({
+        type: "event_msg",
+        timestamp: "2026-10-18T10:58:34.750Z",
+        payload: { type: "token_count", info: null },
+      }),
+      parse({
+        type: "compacted",
+        timestamp: "2026-10-18T10:58:34.754Z",
+        payload: { message: checkpointSummary },
+      }),
+    );
+    const complete = normalizeSession(buildLoadedSession(entries));
+    expect(complete.messages).toHaveLength(1);
+    expect(complete.messages[0]).toMatchObject({
+      uuid: "codex-compacted-1-2026-10-18T10:58:34.754Z",
+      type: "system",
+      subtype: "compact_boundary",
+      compactSummaryText: checkpointSummary,
+    });
+    expect(compileTranscriptProjection(complete.messages)).toMatchObject([
+      {
+        type: "system",
+        subtype: "compact_boundary",
+        details: [checkpointSummary],
+      },
+    ]);
+    // Appending the checkpoint must not mutate the already-published snapshot.
+    expect(partial.messages[0]?.compactSummaryText).toBe(summary);
+
+    const emptyCheckpoint = normalizeSession(
+      buildLoadedSession([
+        output,
+        parse({
+          type: "compacted",
+          timestamp: "2026-10-18T10:58:34.754Z",
+          payload: { message: "" },
+        }),
+      ]),
+    );
+    expect(compileTranscriptProjection(emptyCheckpoint.messages)).toMatchObject(
+      [{ type: "system", subtype: "compact_boundary", details: [summary] }],
+    );
+
+    for (const metadata of [undefined, { compaction_output: false }]) {
+      const ordinary = normalizeSession(
+        buildLoadedSession([parse({ ...rawOutput, metadata })]),
+      );
+      expect(ordinary.messages).toMatchObject([
+        { type: "assistant", message: { content: [{ text: summary }] } },
+      ]);
+    }
+  });
+
   it("attaches a preserved-history preview when Codex compact message is empty", () => {
     const entries: CodexSessionEntry[] = [
       {

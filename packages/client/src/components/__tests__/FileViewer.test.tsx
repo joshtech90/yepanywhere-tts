@@ -173,7 +173,8 @@ describe("FileViewer", () => {
     );
     expect(cumulative.getAttribute("aria-current")).toBe("page");
 
-    fireEvent.click(screen.getByRole("link", { name: "Source" }));
+    expect(screen.queryByRole("link", { name: "Source" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Raw source" }));
     await waitFor(() =>
       expect(source.loadFile).toHaveBeenCalledWith(
         "project-id",
@@ -458,10 +459,14 @@ describe("FileViewer", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
-    fireEvent.click(screen.getByText("vs HEAD"));
+    fireEvent.click(
+      screen.getByRole("link", {
+        name: "View HEAD to working tree diff for notes.md",
+      }),
+    );
     expect(await screen.findByTestId("file-diff-body")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("link", { name: "Source" }));
+    fireEvent.click(screen.getByRole("button", { name: "Raw source" }));
 
     expect(container.querySelector(".shiki-container")).toBeTruthy();
     expect(screen.queryByText("Loading notes.md...")).toBeNull();
@@ -738,7 +743,9 @@ describe("FileViewer", () => {
     selection?.removeAllRanges();
     selection?.addRange(range);
 
-    fireEvent.contextMenu(screen.getByText("src/App.ts"));
+    fireEvent.contextMenu(
+      screen.getByText("src/App.ts", { selector: ".file-viewer-path" }),
+    );
     expect(screen.getByRole("menuitem", { name: "New session" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: "Copy text" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Dismiss file menu" }));

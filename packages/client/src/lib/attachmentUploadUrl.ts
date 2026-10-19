@@ -6,9 +6,13 @@ export function getPersistedAttachmentUploadUrl(
   projectId?: string,
 ): string | null {
   if (!filePath) return null;
+  const localImageUrl =
+    filePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(filePath)
+      ? `/api/local-image?path=${encodeURIComponent(filePath)}`
+      : null;
   const separator = filePath.includes("\\") ? "\\" : "/";
   const parts = filePath.split(/[\\/]/);
-  if (parts.length < 3) return null;
+  if (parts.length < 3) return localImageUrl;
   const filename = parts[parts.length - 1];
   const pathSessionId = parts[parts.length - 2];
   const projectSegment = parts[parts.length - 3];
@@ -18,7 +22,14 @@ export function getPersistedAttachmentUploadUrl(
     !projectSegment ||
     !/^([0-9a-f-]{36})_/i.test(filename)
   )
-    return null;
+    return localImageUrl;
+  if (
+    projectSegment !== ".attachments" &&
+    projectSegment !== "attachments" &&
+    parts[parts.length - 4] !== "uploads"
+  ) {
+    return localImageUrl;
+  }
   if (!projectId) {
     if (projectSegment === ".attachments") {
       const projectPath = parts.slice(0, -3).join(separator);
@@ -31,7 +42,7 @@ export function getPersistedAttachmentUploadUrl(
       const projectPath = parts.slice(0, -4).join(separator);
       if (!projectPath) return null;
       projectId = toUrlProjectId(projectPath);
-    } else if (projectSegment === "attachments") return null;
+    } else if (projectSegment === "attachments") return localImageUrl;
     else projectId = projectSegment;
   }
   return `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(pathSessionId)}/upload/${encodeURIComponent(filename)}`;

@@ -1,0 +1,5 @@
+{
+  "extends": "../../packages/client/tsconfig.json",
+  "include": ["parent.ts", "../../packages/client/src/vite-env.d.ts"],
+  "exclude": ["node_modules"]
+}

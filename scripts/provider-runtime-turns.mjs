@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { publishRendezUserTurn } from "../packages/server/src/services/rendez-activity.mjs";
 
 const ACCEPT_TIMEOUT_MS = 15_000;
 const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
@@ -235,6 +236,25 @@ export class ProviderRuntimeTurnLedger {
         submission.state = "accepted";
         submission.acceptedAt = new Date().toISOString();
         submission.delivery = message.delivery ?? "queued";
+        if (
+          submission.request.message?.metadata?.origin === "user" &&
+          (runtime.harness === "claude" || runtime.harness === "codex")
+        ) {
+          publishRendezUserTurn(
+            {
+              projectPath: runtime.projectPath,
+              harness: runtime.harness,
+              sessionId: runtime.yaSessionId ?? runtime.providerSessionId,
+              providerSessionId: runtime.providerSessionId,
+              receivedAt: Date.parse(submission.acceptedAt),
+            },
+            (error) =>
+              console.error(
+                "[rendez] Latest-session publication failed:",
+                error.message,
+              ),
+          );
+        }
         try {
           this.persistReceipt(submission);
         } catch (error) {

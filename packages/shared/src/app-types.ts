@@ -830,6 +830,16 @@ export type SessionQueuedMessageKind = "deferred" | "patient" | "ya-command";
 export type SessionQueuedMessageStatus = "queued" | "paused-after-restart";
 
 /**
+ * `compacting`: YA started compaction and holds the item until it completes.
+ * `failed`: compaction did not complete; the item stays queued until the user
+ * sends it without compacting, steers it, or cancels it.
+ */
+export interface SessionQueuedCompactionGate {
+  state: "compacting" | "failed";
+  reason?: string;
+}
+
+/**
  * Server-owned queued-message summary for the session UI.
  *
  * Live entries use `tempId` for the existing in-process cancel route. Recovered
@@ -849,6 +859,11 @@ export interface SessionQueuedMessageSummary {
   /** Present on the `clearloop` YA-command entry. */
   clearloop?: SessionQueuedClearloopProgress;
   status?: SessionQueuedMessageStatus;
+  /**
+   * Compact-first progress of a patient item that reached delivery above its
+   * threshold. Absent while it waits or after compaction cleared it.
+   */
+  compactionGate?: SessionQueuedCompactionGate;
   sessionId?: string;
   projectId?: UrlProjectId;
   queuedAt?: string;

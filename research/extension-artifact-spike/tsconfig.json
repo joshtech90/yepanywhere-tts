@@ -1,0 +1,9 @@
+{
+  "extends": "../../packages/client/tsconfig.json",
+  "include": [
+    "ArtifactPreview.tsx",
+    "spike.vite.config.ts",
+    "../../packages/client/src/vite-env.d.ts"
+  ],
+  "exclude": ["node_modules", "demo", "results"]
+}

@@ -786,6 +786,42 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "vhost-oauth-providers",
     introducedIn: "0.9.4",
   },
+  githubStatusControls: {
+    id: 128,
+    direction: "server",
+    name: "github-status-controls",
+    introducedIn: "0.9.4",
+  },
+  artifactRelayPreview: {
+    id: 129,
+    direction: "server",
+    name: "artifact-relay-preview",
+    introducedIn: "0.9.4",
+  },
+  projectAppAutoStart: {
+    id: 130,
+    direction: "server",
+    name: "project-app-auto-start",
+    introducedIn: "0.9.4",
+  },
+  rendezUploads: {
+    id: 131,
+    direction: "server",
+    name: "rendez-uploads",
+    introducedIn: "0.9.4",
+  },
+  patientTopicShift: {
+    id: 132,
+    direction: "server",
+    name: "patient-topic-shift",
+    introducedIn: "0.9.4",
+  },
+  rendezProjectStatus: {
+    id: 133,
+    direction: "server",
+    name: "rendez-project-status",
+    introducedIn: "0.9.4",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

@@ -17,6 +17,49 @@ The inbox groups sessions by attention and activity so a waiting approval does
 not disappear among recent but idle work. Star or archive sessions to keep the
 working set useful.
 
+## Continue in another desktop app
+
+### Claude Desktop
+
+Use an explicit resume link to import a local YA-created Claude Code session
+into Claude Desktop. Its **Import CLI sessions** button and `/resume` picker
+can omit sessions created through the Claude Agent SDK, including YA sessions.
+
+1. Wait for the current response to finish. In the session menu, choose
+   **Copy session id** to copy the full Claude session UUID.
+2. If YA still owns the provider process, choose **Terminate** in that menu.
+   Closing the browser tab or interrupting a turn does not release the process.
+3. On the Mac where the session files live and Claude Desktop is installed,
+   open this link, replacing the placeholder with that UUID:
+
+   ```sh
+   open 'claude://resume?session=YOUR_CLAUDE_SESSION_UUID'
+   ```
+
+Desktop imports the existing conversation even when it was absent from its
+picker. Keep the normal SDK launch settings; no `CLAUDE_CODE_ENTRYPOINT`
+override or transcript editing is needed. Continue from only one app at a time:
+do not send another YA turn while Desktop owns the session.
+
+This route was verified on macOS with Claude Desktop 2.37337.1 and Claude Code
+2.1.296. Recent Claude Code CLIs also expose
+`claude --desktop --resume <session-id>`; see Anthropic's
+[Desktop handoff documentation](https://code.claude.com/docs/en/desktop#coming-from-the-cli).
+
+### ChatGPT desktop
+
+ChatGPT desktop can automatically import YA-created Claude Code sessions from
+local Claude history. With automatic updates configured, no per-session import
+action in YA is needed. If the sessions already appear, you can open them there
+directly.
+
+If they do not appear, check **Settings → Import** and its automatic updates
+setting. OpenAI documents importing supported recent Claude Code history,
+currently chats from the last 30 days; see
+[Import from another agent](https://learn.chatgpt.com/docs/import). This imports
+history into ChatGPT chats; it is separate from Claude Desktop continuing the
+original Claude session.
+
 ## Choose the transcript detail
 
 The full activity transcript preserves the conversation, every tool call, and

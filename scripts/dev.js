@@ -127,6 +127,7 @@ Options:
   --watch              Enable backend auto-reload (tsx watch mode)
   --no-frontend-reload Frontend watches but doesn't HMR
   --built-client       Build and serve cached chunks; refresh source on reload
+  --extension          Watch a development extension in packages/browser-extension/dist-dev
   -h, --help           Show this help message
 `);
   process.exit(0);
@@ -137,6 +138,7 @@ Options:
 const backendWatch = args.includes("--watch");
 const noFrontendReload = args.includes("--no-frontend-reload");
 const builtClient = args.includes("--built-client");
+const extensionDevelopment = args.includes("--extension");
 const providerHostPolicyEnabled = providerHostEnabled();
 
 // Port configuration: PORT + 0 = server, PORT + 1 = maintenance, PORT + 2 = vite
@@ -222,6 +224,7 @@ const wrapperToken = randomBytes(32).toString("base64url");
 let wrapperState = "starting";
 let serverChild = null;
 let clientChild = null;
+let extensionChild = null;
 let clientBuild = null;
 let clientBuildPromise = null;
 const retiredClientBuilds = [];
@@ -834,6 +837,9 @@ async function shutdownWrapper(reason, exitCode = 0) {
     await stopManagedChild(clientChild, "Vite").catch((error) =>
       failures.push(error),
     );
+    await stopManagedChild(extensionChild, "extension development").catch(
+      (error) => failures.push(error),
+    );
     // Join filesystem cleanup after a cancelled build before exiting.
     await clientBuildPromise?.catch(() => {});
     if (clientBuild) {
@@ -1023,6 +1029,22 @@ try {
   await startWrapperControlServer();
   startServer();
   startClient();
+  if (extensionDevelopment) {
+    extensionChild = spawnManaged(
+      process.execPath,
+      [join(rootDir, "scripts/dev-extension.mjs")],
+      { cwd: rootDir, env, stdio: "inherit" },
+    );
+    extensionChild.on("error", (error) =>
+      console.error(`[ExtensionDev] ${errorMessage(error)}`),
+    );
+    extensionChild.on("exit", (code) => {
+      if (wrapperState !== "shutting-down")
+        console.log(
+          `[ExtensionDev] Watcher stopped (${code}); main development server remains running.`,
+        );
+    });
+  }
   wrapperState = "running";
 } catch (error) {
   console.error(`[Startup] ${errorMessage(error)}`);

@@ -58,6 +58,18 @@ copyFileSync(
   join(serverTargetDir, "highlighting/highlight-worker.mjs"),
 );
 
+for (const name of ["rendez-activity.mjs", "rendez-protocol.mjs"]) {
+  copyFileSync(
+    join(serverSourceDir, "services", name),
+    join(serverTargetDir, "services", name),
+  );
+}
+
+copyFileSync(
+  join(serverSourceDir, "services/image-preparation.mjs"),
+  join(serverTargetDir, "services/image-preparation.mjs"),
+);
+
 copyFileSync(
   join(serverSourceDir, "augments/unicode-math-params.bin"),
   join(serverTargetDir, "augments/unicode-math-params.bin"),

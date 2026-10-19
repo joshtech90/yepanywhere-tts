@@ -208,12 +208,29 @@ prints its value directly; an absent API or failed page evaluation exits as an
 error. `events --follow` tails the in-memory event sequence. `eval` admits only
 one pending evaluation per lease and waits for the browser's poll loop to
 execute it. The browser executes the explicitly granted source through a
-short-lived inline script bridge, which works under YA's served-page policy
-without granting the page general `unsafe-eval`/`Function` compilation. It
+short-lived Blob script bridge. Both the build's hash-based HTML policy and
+the server response policy permit `blob:` scripts, without granting the page
+general `unsafe-eval`/`Function` compilation or arbitrary inline execution in
+production. It
 first preserves expression completion values (including promises), then
 accepts statement bodies with `undefined` completion; mutations and thrown
 errors cross the same result bridge. The injected script element and its
-temporary global result slot are removed after each command.
+temporary global result slot are removed after each command; object URLs are
+revoked on load, failure, and timeout. Script loading is asynchronous: the
+statement retry happens only after an expression fails to parse. A blocked
+script reports the policy/load failure rather than claiming a syntax error.
+
+**Blob scripts instead of an inline or eval allowance:** the explicitly
+granted code needs a browser-permitted execution path. Allowing Blob scripts
+retains the production inline-hash and runtime-compilation restrictions. The
+allowance exists in the page policy even with diagnostics inactive; it is not
+a replacement for the lease's two-factor authority checks.
+
+The broker protocol and grant capability are unchanged. A locally served build
+requires the updated server response policy as well as rebuilt client assets;
+an older server that blocks Blob scripts reports a load/policy error. Restart
+the server and reload the tab after updating both. Static hosted clients need
+the rebuilt HTML policy and any host-supplied CSP to permit Blob scripts too.
 
 The server is a memory-only rendezvous. Restarting Hono invalidates every lease.
 An ordinary Hono-owned restart also changes the caller factor; a reload-safe
@@ -332,6 +349,10 @@ weaken or ambiguously redefine the deliberately full-access v1 contract.
 - The copied instruction rejects generic top-level help as a compatible CLI.
 - `browser-debug snapshot` prints the active tab's performance value directly,
   including recent and lease-total main-thread and app-phase aggregates.
+- Expressions, promises, statement mutations and errors work with the actual
+  production HTML policy and server header enforced together. Arbitrary inline
+  scripts and runtime compilation remain blocked. A policy-blocked script and
+  malformed JavaScript have distinct failures, and timeout removes the bridge.
 - The active warning control shows its cheap recent summary without starting a
   second timer or observer.
 - Key-to-frame delays are non-negative, and background time is absent from

@@ -496,3 +496,39 @@ changes, discarding obsolete results. There is no idle polling; quota admission
 still happens when starting a session. Recovery and usage diagnostics remain in
 Settings. Browser tests cover desktop/phone layouts and sequential prompt typing
 during discovery; synthetic AAR integration tests prove the native boundaries.
+
+## New Session defaults
+
+Since 2026-10-13, explicit Pool and Router account selections automatically
+save `routerPoolId`, optional `routerAccountId` and optional `routerPolicy` in
+server-owned `newSessionDefaults.providers[provider]`. Choosing Direct clears
+all three. Preferences belong to the connected YA host and provider, shared
+across its clients. They do not change existing session pins or API-created
+sessions, and no credential is stored in these defaults.
+
+Later visits and provider switches restore the choice after discovery. Initial
+discovery holds immediate Start while a saved pool is being checked; background
+refresh with existing data does not block it. Restoration requires an available
+router control, a granted pool for this provider, a compatible enabled account
+for the selected model/thinking, a compatible explicit account when saved, and
+a supported policy override. A Manual default with several fitting accounts
+and no saved account falls back to Direct. A restored choice silently falls
+back to Direct on missing pools/accounts, incompatible catalogs, unavailable
+policies, disconnection, discovery errors, sandboxed/remote/limited launches
+or specialized fixed launches. The saved preference remains intact. A model
+known only to the router is not sent directly on fallback. Explicit pool picks
+keep the existing launch refusals when they cannot be used.
+
+Project Queue ignores a restored router preference and resolves its launch
+settings against the direct provider catalog; an explicitly picked pool keeps
+the existing unsupported-queue behavior. Template creation uses its own launch
+path and does not submit these routing defaults.
+
+The maintainer explicitly approved silent compatibility without a new
+capability or explanatory note. The existing settings route receives the
+additional fields: updated parsers retain them; older parsers discard unknown
+keys and keep the established non-remembering behavior. Accepted response
+settings remain authoritative for future restoration, while discarded fields
+do not replace a current explicit form selection. Current launch capability
+gates remain unchanged. Release review checked v0.9.0, v0.9.1 and v0.9.2, whose
+provider-default parsers preserve speed and discard the new router fields.

@@ -22,7 +22,7 @@ if (process.platform === "win32") {
       process.execPath,
       [
         "-e",
-        "process.stdin.once('data',()=>setTimeout(()=>process.exit(0),1000));process.stdout.write('ready');setInterval(()=>{},1000);",
+        "process.stdin.once('data',()=>setTimeout(()=>process.exit(0),3000));process.stdout.write('ready');setInterval(()=>{},1000);",
       ],
       { cwd: directory, stdio: ["pipe", "pipe", "inherit"] },
     );
@@ -50,8 +50,9 @@ if (process.platform === "win32") {
       });
       if (release) child.stdin.end("release");
       if (release) {
-        // The real Windows cwd lock outlives the old 600ms retry allowance.
-        await removeFixtureDirectory(directory);
+        // The real Windows cwd lock outlives the startup smoke's former
+        // 2.4-second retry window, without paying that window in the held case.
+        await removeFixtureDirectory(directory, { retryTimeoutMs: 9600 });
         assert.equal(existsSync(directory), false);
       } else {
         await assert.rejects(

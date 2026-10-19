@@ -159,10 +159,16 @@ test("right pane discovers tool apps, resizes, parks and preserves typing", asyn
     });
   });
   let frameLoads = 0;
+  const connectionError =
+    "Server is offline. Make sure your server is running and connected to the relay.";
+  let rejectLinks = true;
   await page.route("**/api/artifacts/vhosts/links", (route) =>
-    route.fulfill({ json: { tokens: { plan: "test-app-bearer" } } }),
+    rejectLinks
+      ? route.fulfill({ status: 503, json: { error: connectionError } })
+      : route.fulfill({ json: { tokens: { plan: "test-app-bearer" } } }),
   );
   let stopRequests = 0;
+  let rejectStop = false;
   let finishStop: (() => void) | undefined;
   let appAlive = true;
   await page.route("**/api/artifacts/vhosts/plan/listener", (route) =>
@@ -173,6 +179,11 @@ test("right pane discovers tool apps, resizes, parks and preserves typing", asyn
       token: "observed-listener",
     });
     stopRequests++;
+    if (rejectStop)
+      return route.fulfill({
+        status: 409,
+        json: { error: "App listener changed before it could be stopped" },
+      });
     await new Promise<void>((resolve) => {
       finishStop = resolve;
     });
@@ -189,11 +200,32 @@ test("right pane discovers tool apps, resizes, parks and preserves typing", asyn
     });
   });
   await page.setViewportSize({ width: 1200, height: 600 });
+  const failedLinks = page.waitForResponse("**/api/artifacts/vhosts/links");
   await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
   const skip = page.getByRole("button", { name: "Skip all" });
   if (await skip.isVisible()) await skip.click();
   const pane = page.getByRole("complementary", { name: "Session pane" });
   const appAction = page.getByRole("button", { name: "App", exact: true });
+  const sessionHeader = page.locator(".session-header");
+  const title = sessionHeader.locator(".session-title-text");
+  await (await failedLinks).finished();
+  await expect(title).toHaveText("Review implementation");
+  // The links request runs even when no app can be resolved. Its transport
+  // failure must not occupy the header's App slot or displace session identity.
+  await expect(sessionHeader.getByRole("alert")).toHaveCount(0);
+  await expect(sessionHeader).not.toContainText(connectionError);
+  await expect(appAction).toHaveCount(0);
+  for (const size of [
+    { width: 1000, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(size);
+    await expect(title).toBeVisible();
+    await recordUiCapture(page, `app-links-failure-${size.width}`);
+  }
+  rejectLinks = false;
+  await page.setViewportSize({ width: 1200, height: 600 });
+  await page.reload();
   await expect(appAction).toBeVisible({ timeout: 30_000 });
   await expect(pane).toHaveCount(0);
   const appLink = page.getByRole("link", {
@@ -416,6 +448,16 @@ test("right pane discovers tool apps, resizes, parks and preserves typing", asyn
   await frame.getByLabel("Review note").fill("Previous launch");
   emit?.({ ...result, uuid: "another-launch" });
   await expect(frame.getByLabel("Review note")).toHaveValue("");
+  rejectStop = true;
+  await pane.getByRole("button", { name: "Kill app and close" }).click();
+  await expect(pane).toHaveCount(0);
+  await expect(page.getByRole("alert")).toContainText(
+    "App listener changed before it could be stopped",
+  );
+  await expect(sessionHeader.getByRole("alert")).toHaveCount(0);
+  await expect(title).toHaveText("Review implementation");
+  emit?.({ ...result, uuid: "launch-after-refused-stop" });
+  await expect(pane).toBeVisible();
   appAlive = false;
   await expect(pane).toHaveCount(0, { timeout: 10_000 });
   await expect(restore).toHaveCount(0);

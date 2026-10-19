@@ -2,7 +2,7 @@
   display: flex;
   align-items: center;
   flex: 0 0 auto;
-  gap: 2px;
+  gap: 0;
 }
 .actions > a,
 .actions > button {
@@ -23,6 +23,41 @@
 .actions > a:hover,
 .actions > button:hover {
   background: var(--bg-hover);
+}
+.actions > .copyLink {
+  border-color: transparent;
+  background: transparent;
+}
+.actions > .copyLink:hover {
+  background: var(--bg-hover);
+}
+/* Newer content is there to load. */
+.actions > .reloadStale {
+  color: var(--accent-contrast, #fff);
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+}
+.actions > .reloadStale:hover {
+  background: var(--accent-color);
+  filter: brightness(1.08);
+}
+/* Waiting to reload once on the next change. */
+.actions > .reloadArmed {
+  color: var(--accent-color);
+  border-style: dashed;
+  border-color: var(--accent-color);
+}
+/* Reloads on every change. */
+.actions > .reloadAuto {
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+  box-shadow: inset 0 0 0 1px var(--accent-color);
+}
+.actions > .linkActive {
+  color: var(--success-color);
+}
+.actions > .linkInactive {
+  color: var(--text-secondary);
 }
 .actions > .destructive {
   color: var(--error-color, #e05252);

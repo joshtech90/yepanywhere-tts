@@ -137,6 +137,26 @@ test("automatically discovers Jira and GitHub references from viewed and recent 
       const share = page.locator(".session-header").getByRole("button", {
         name: /active viewer|Open public share controls/,
       });
+      if (size.width === 375) {
+        await expect(share).toBeHidden();
+        await expect(headerMenu).toBeHidden();
+        await recordUiCapture(page, name.replace("menu", "header"));
+        await page.getByRole("button", { name: "Session options" }).click();
+        await expect(
+          page.getByRole("button", { name: /^Share/ }),
+        ).toBeVisible();
+        await expect(
+          page.getByRole("link", {
+            name: "2 issues and pull requests associated with this session",
+          }),
+        ).toHaveAttribute(
+          "href",
+          `/issues?sessionId=issues-view-one&projectId=${projectId}`,
+        );
+        await recordUiCapture(page, name);
+        await page.keyboard.press("Escape");
+        continue;
+      }
       await expect(share).toBeVisible();
       const shareBox = await share.boundingBox();
       const issueBox = await headerMenu.boundingBox();

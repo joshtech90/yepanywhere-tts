@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, renderHook } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { asClientSummarySourceKey } from "../../lib/clientSummaryStore";
 import { draftTextIsAccountedFor } from "../../lib/draftSendReconcile";
@@ -62,6 +63,27 @@ describe("useDraftPersistence", () => {
   afterEach(() => {
     vi.useRealTimers();
     store.clear();
+  });
+
+  it("keeps a leading space adopted before passive draft hydration", () => {
+    const { result, rerender } = renderHook(
+      ({ draftKey }) => {
+        const draft = useDraftPersistence(draftKey);
+        const setDraft = draft[1];
+        useLayoutEffect(() => {
+          setDraft(" ");
+        }, [setDraft]);
+        return draft;
+      },
+      { initialProps: { draftKey: "early-draft" } },
+    );
+    expect(result.current[0]).toBe(" ");
+    expect(result.current[2].getDraft()).toBe(" ");
+    act(() => result.current[1](result.current[0] + "across startup"));
+    expect(result.current[0]).toBe(" across startup");
+    // A genuinely different draft still hydrates rather than inheriting text.
+    rerender({ draftKey: "other-draft" });
+    expect(result.current[0]).toBe("");
   });
 
   it("persists each draft edit immediately", () => {

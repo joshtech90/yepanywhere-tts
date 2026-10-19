@@ -11,13 +11,11 @@ import com.yepanywhere.mobile.YaNativeRuntime
 import java.io.Closeable
 import android.util.Base64
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -97,16 +95,15 @@ class YaNativeTransportHost private constructor(
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val handle = UUID.randomUUID().toString()
         val receiver = NativeTransportFrames.Receiver()
-        val outbound = Channel<ByteArray>(32)
-        val queuedBytes = AtomicInteger()
         val metrics = NativeTransportMetrics()
+        val outbound = NativeOutboundQueue(metrics::queued)
         @Volatile var session: YaWebTransportSession? = null
         @Volatile var acknowledgement: CompletableDeferred<Unit>? = null
         @Volatile var expectedAck: String? = null
         @Volatile var closed = false
         @Volatile var receiving = false
         private val lifecycleLock = Any()
-        private var sessionGeneration = 0
+        @Volatile private var sessionGeneration = 0
         private val connectivity = view.context.getSystemService(ConnectivityManager::class.java)
         private val networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
@@ -137,8 +134,11 @@ class YaNativeTransportHost private constructor(
                 val lease = manager.acquire()
                 val generation = synchronized(lifecycleLock) { ++sessionGeneration }
                 val acquired = YaWebTransportSession(handle, lease, scope, { value ->
-                    synchronized(lifecycleLock) { if (!closed && generation == sessionGeneration) emit(value) }
-                }, metrics::cancelled) { view.post { if (!closed) switchHost() } }
+                    if (!closed && generation == sessionGeneration) emitSession(value, generation)
+                }, metrics::cancelled, { bytes ->
+                    if (!closed && generation == sessionGeneration) outbound.send(
+                        NativeOutboundQueue.Message(NativeTransportFrames.RESPONSE, bytes, generation))
+                }) { view.post { if (!closed) switchHost() } }
                 try {
                     synchronized(lifecycleLock) {
                         if (closed || !foreground.value.active) { acquired.close(); return@collectLatest }
@@ -152,6 +152,7 @@ class YaNativeTransportHost private constructor(
                             if (generation == sessionGeneration && foreground.value.active) {
                                 emit(JSONObject().put("type", "state").put("phase", state.phase.name)
                                     .put("retryAttempt", state.retryAttempt)
+                                    .put("connectionEpoch", state.connectionEpoch)
                                     .put("recoverable", state.recoverable)
                                     .put("error", state.errorMessage ?: JSONObject.NULL))
                             }
@@ -173,45 +174,50 @@ class YaNativeTransportHost private constructor(
                     val snapshot = checkNotNull(runtime.pairedServers.snapshot(profileId))
                     postText(JSONObject().put("type", "hello").put("protocol", 1).put("handle", handle)
                         .put("profileId", profileId).put("label", snapshot.profile.label)
-                        .put("binary", binary).toString())
+                        .put("binary", binary).put("responseStreams", true).put("stateQuery", true)
+                        .put("packagedArtifactViewerVersion", (view.context.applicationContext as? com.yepanywhere.mobile.YepAnywhereApplication)?.artifactShell?.version ?: 0).toString())
                     scope.launch {
                         try { observeForeground() }
                         catch (error: kotlinx.coroutines.CancellationException) { throw error }
                         catch (_: Throwable) { fail() }
                     }
                     var id = 1
-                    for (bytes in outbound) {
-                        var offset = 0
-                        while (offset < bytes.size) {
-                            val chunk = bytes.copyOfRange(offset, minOf(offset + NativeTransportFrames.CHUNK_BYTES, bytes.size))
-                            val frame = NativeTransportFrames.encode(NativeTransportFrames.JSON, id, offset, bytes.size, chunk)
-                            acknowledgement = CompletableDeferred()
-                            expectedAck = "ack:$handle:$id:${offset + chunk.size}"
-                            val creditStarted = System.nanoTime()
-                            withContext(Dispatchers.Main) {
-                                val drainStarted = System.nanoTime()
-                                if (!closed) {
-                                    if (binary && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)) reply.postMessage(frame)
-                                    else if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-                                        reply.postMessage("frame:" + Base64.encodeToString(frame, Base64.NO_WRAP))
+                    while (true) {
+                        val message = outbound.receive()
+                        try {
+                            if (message.generation != null && message.generation != sessionGeneration) continue
+                            val bytes = message.bytes
+                            var offset = 0
+                            while (offset < bytes.size) {
+                                val chunk = bytes.copyOfRange(offset, minOf(offset + NativeTransportFrames.CHUNK_BYTES, bytes.size))
+                                val frame = NativeTransportFrames.encode(message.kind, id, offset, bytes.size, chunk)
+                                acknowledgement = CompletableDeferred()
+                                expectedAck = "ack:$handle:$id:${offset + chunk.size}"
+                                val creditStarted = System.nanoTime()
+                                withContext(Dispatchers.Main) {
+                                    val drainStarted = System.nanoTime()
+                                    if (!closed) {
+                                        if (binary && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)) reply.postMessage(frame)
+                                        else if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+                                            reply.postMessage("frame:" + Base64.encodeToString(frame, Base64.NO_WRAP))
+                                        }
                                     }
+                                    metrics.mainThread(System.nanoTime() - drainStarted)
+                                    metrics.frame(frame.size)
                                 }
-                                metrics.mainThread(System.nanoTime() - drainStarted)
-                                metrics.frame(frame.size)
+                                while (!checkNotNull(acknowledgement).isCompleted) {
+                                    // No periodic wakeups while the document is hidden.
+                                    foreground.first { it.active }
+                                    val generation = foregroundGeneration
+                                    if (withTimeoutOrNull(30_000) { checkNotNull(acknowledgement).await(); true } == true) break
+                                    // A stopped WebView can defer local delivery.
+                                    check(!foreground.value.active || generation != foregroundGeneration) { "Native frame acknowledgement timed out" }
+                                }
+                                metrics.credit(System.nanoTime() - creditStarted)
+                                offset += chunk.size
                             }
-                            while (!checkNotNull(acknowledgement).isCompleted) {
-                                // No periodic wakeups while the document is hidden.
-                                foreground.first { it.active }
-                                val generation = foregroundGeneration
-                                if (withTimeoutOrNull(30_000) { checkNotNull(acknowledgement).await(); true } == true) break
-                                // A stopped WebView can defer local delivery.
-                                check(!foreground.value.active || generation != foregroundGeneration) { "Native frame acknowledgement timed out" }
-                            }
-                            metrics.credit(System.nanoTime() - creditStarted)
-                            offset += chunk.size
-                        }
-                        queuedBytes.addAndGet(-bytes.size)
-                        id += 1
+                            id += 1
+                        } finally { outbound.delivered(message) }
                     }
                 } catch (_: kotlinx.coroutines.CancellationException) {
                     // The departed document receives no further replies.
@@ -219,15 +225,23 @@ class YaNativeTransportHost private constructor(
             }
         }
 
+        // Lifecycle state is small, synchronous and prioritized. A lease generation
+        // survives coalescing so JS can reattach even if CONNECTING was superseded.
         fun emit(value: JSONObject) {
-            val bytes = value.toString().toByteArray(Charsets.UTF_8)
-            val queued = queuedBytes.addAndGet(bytes.size)
-            metrics.queued(queued)
-            if (bytes.size > NativeTransportFrames.MAX_MESSAGE_BYTES ||
-                queued > 64 * 1024 * 1024 || outbound.trySend(bytes).isFailure) {
-                metrics.overflow()
-                fail()
-            }
+            if (closed) return
+            value.put("leaseGeneration", sessionGeneration)
+            if (value.optString("type") == "state") metrics.state(value.optString("phase"),
+                sessionGeneration, value.optLong("connectionEpoch"), foregroundGeneration)
+            val message = NativeOutboundQueue.Message(NativeTransportFrames.JSON,
+                value.toString().toByteArray(Charsets.UTF_8), sessionGeneration)
+            if (value.optString("type") in setOf("state", "networkAvailable")) outbound.state(message)
+            else scope.launch { outbound.send(message) }
+        }
+
+        private suspend fun emitSession(value: JSONObject, generation: Int) {
+            outbound.send(NativeOutboundQueue.Message(NativeTransportFrames.JSON,
+                value.toString().toByteArray(Charsets.UTF_8), generation),
+                event = value.optString("type") == "event")
         }
 
         fun acknowledge(value: String) {
@@ -241,6 +255,7 @@ class YaNativeTransportHost private constructor(
             val drainStarted = System.nanoTime()
             require(!closed && !receiving)
             val frame = NativeTransportFrames.decode(bytes)
+            require(frame.kind != NativeTransportFrames.RESPONSE)
             val complete = receiver.accept(frame)
             metrics.frame(bytes.size)
             metrics.mainThread(System.nanoTime() - drainStarted)

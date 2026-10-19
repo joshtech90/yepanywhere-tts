@@ -3,6 +3,7 @@ import {
   NativeFrameReceiver,
   type NativeTransportChannel,
 } from "../../nativeTransportBridge";
+import { uuidToBytes } from "@yep-anywhere/shared";
 
 export class NativeTransportFixture {
   readonly commands: Record<string, unknown>[] = [];
@@ -27,6 +28,8 @@ export class NativeTransportFixture {
   constructor(
     readonly binary = true,
     readonly initialPhase = "CONNECTED",
+    readonly responseStreams = false,
+    readonly stateQuery = false,
   ) {
     this.channel = {
       onmessage: null,
@@ -51,6 +54,8 @@ export class NativeTransportFixture {
             profileId: "profile-one",
             label: "Test host",
             binary: this.binary,
+            ...(this.responseStreams ? { responseStreams: true } : {}),
+            ...(this.stateQuery ? { stateQuery: true } : {}),
           }),
         });
         void this.emit({ type: "state", phase: this.initialPhase });
@@ -81,7 +86,10 @@ export class NativeTransportFixture {
     void Promise.resolve()
       .then(() => this.handler(command))
       .then(
-        (value) => this.emit({ type: "reply", id: command.id, result: value }),
+        (value) =>
+          value instanceof Uint8Array
+            ? this.emitBytes(String(command.id), value)
+            : this.emit({ type: "reply", id: command.id, result: value }),
         (error: Error) =>
           this.emit({ type: "reply", id: command.id, error: error.message }),
       );
@@ -89,11 +97,22 @@ export class NativeTransportFixture {
 
   emit(message: Record<string, unknown>): Promise<void> {
     const bytes = new TextEncoder().encode(JSON.stringify(message));
+    return this.emitFrames(bytes, 1);
+  }
+
+  emitBytes(id: string, data: Uint8Array): Promise<void> {
+    const bytes = new Uint8Array(16 + data.byteLength);
+    bytes.set(uuidToBytes(id));
+    bytes.set(data, 16);
+    return this.emitFrames(bytes, 3);
+  }
+
+  private emitFrames(bytes: Uint8Array, kind: number): Promise<void> {
     const task = this.tail.then(async () => {
       const id = this.nextId++;
       for (let offset = 0; offset < bytes.length; offset += 65_536) {
         const frame = encodeNativeFrame(
-          1,
+          kind,
           id,
           offset,
           bytes.length,

@@ -68,6 +68,7 @@ const SESSION_TOOLBAR_PRESENCE_CLIENT_DEFAULT_KEYS = [
   "projectQueue",
   "projectQueueNewSessionShortcut",
   "syntheticDone",
+  "topicShift",
   "composerRecall",
 ] as const satisfies readonly (keyof SessionToolbarPresenceClientDefaults)[];
 const TOOLBAR_CONTROL_PRESENCES = [
@@ -86,6 +87,8 @@ const CLIENT_DEFAULT_KEYS = [
   "sessionToolbarPresence",
   "steerNowDefault",
   "patientQueueDefault",
+  "patientQueueCompactAtPercent",
+  "topicShiftCompactAtPercent",
   "projectQueueCtrlEnterEnabled",
   "compactAtContextPercent",
   "forceYaOrchestratedCompaction",
@@ -292,6 +295,22 @@ function parseProviderSessionDefaults(
     const serviceTier = parseOptionalString(raw.serviceTier, 64);
     if (serviceTier === null) return null;
     if (serviceTier) parsed.serviceTier = serviceTier;
+  }
+  for (const key of [
+    "routerPoolId",
+    "routerAccountId",
+    "routerPolicy",
+  ] as const) {
+    const value = parseOptionalString(
+      raw[key],
+      key === "routerPolicy" ? 64 : 200,
+    );
+    if (value === null) return null;
+    if (value) parsed[key] = value;
+  }
+  if (!parsed.routerPoolId) {
+    delete parsed.routerAccountId;
+    delete parsed.routerPolicy;
   }
   if ("thinkingMode" in raw) {
     if (
@@ -878,6 +897,25 @@ export function parseClientDefaults(
       parsed.patientQueueDefault = raw.patientQueueDefault;
     }
   }
+  for (const key of [
+    "patientQueueCompactAtPercent",
+    "topicShiftCompactAtPercent",
+  ] as const) {
+    if (!(key in raw)) continue;
+    const value = raw[key];
+    if (value === undefined || value === null) {
+      parsed[key] = undefined;
+    } else if (
+      typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      value < 1 ||
+      value > 100
+    ) {
+      return null;
+    } else {
+      parsed[key] = value;
+    }
+  }
   if ("projectQueueCtrlEnterEnabled" in raw) {
     if (
       raw.projectQueueCtrlEnterEnabled === undefined ||
@@ -969,6 +1007,18 @@ export function mergeClientDefaults(
       delete merged.patientQueueDefault;
     } else {
       merged.patientQueueDefault = update.patientQueueDefault;
+    }
+  }
+  for (const key of [
+    "patientQueueCompactAtPercent",
+    "topicShiftCompactAtPercent",
+  ] as const) {
+    if (!(key in update)) continue;
+    const value = update[key];
+    if (value === undefined) {
+      delete merged[key];
+    } else {
+      merged[key] = value;
     }
   }
   if ("projectQueueCtrlEnterEnabled" in update) {

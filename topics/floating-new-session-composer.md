@@ -22,6 +22,9 @@ Related topics: [mic-button-speech-ui](mic-button-speech-ui.md),
   boundary: YA stores the trimmed draft as a source-scoped new-session prefill
   and then navigates to the New Session flow, preserving the current project id
   when the current route carries one.
+- A `prefillToken` in the New Session URL fills the composer when the form
+  mounts, and also when an in-app navigation brings a new token to a form
+  already showing, as the browser extension's new-session window does.
 - The expanded composer's toolbar carries an informational provider+model
   chip (`FloatingComposerModelChip`) resolving the same default seeding the
   New Session form applies (`useDefaultNewSessionModel`). It mounts only

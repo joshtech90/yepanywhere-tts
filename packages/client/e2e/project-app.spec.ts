@@ -14,6 +14,7 @@ import { DiscoverySqliteService } from "../../server/src/storage/discovery-sqlit
 import { LimitedUsersService } from "../../server/src/auth/LimitedUsersService";
 import { AuthService } from "../../server/src/auth/AuthService";
 import { ServerSettingsService } from "../../server/src/services/ServerSettingsService";
+import { ProjectQueueService } from "../../server/src/services/ProjectQueueService";
 import { initFileAccess } from "../../server/src/middleware/file-access";
 import { recordUiCapture } from "./support/ui-capture";
 
@@ -27,6 +28,7 @@ let listener: ReturnType<typeof createServer>;
 let directory: string;
 let base: string;
 let projectId: string;
+let serverAppId: string;
 
 test.beforeAll(async () => {
   // CI36630063508 paid 2.57s of sandbox/version readiness. Setup owns it.
@@ -50,6 +52,33 @@ test.beforeAll(async () => {
   const metadata = new ProjectMetadataService({ dataDir });
   await metadata.initialize();
   await metadata.addProject(projectId, project, "archer");
+  // A process app, for serving that must start it first.
+  const serverApp = join(directory, "server-app");
+  await mkdir(join(serverApp, ".project-template"), { recursive: true });
+  await writeFile(
+    join(serverApp, "server.cjs"),
+    `require("node:http").createServer((_, res) => res.end("server app")).listen(Number(process.env.PORT), "127.0.0.1");`,
+  );
+  await writeFile(
+    join(serverApp, ".project-template/app.json"),
+    JSON.stringify({
+      service: {
+        version: 1,
+        where: { kind: "process", cwd: ".", entry: "/" },
+        start: { argv: [process.execPath, "server.cjs"], portEnv: "PORT" },
+        status: {
+          probe: "http",
+          path: "/",
+          readyStatus: 200,
+          startupTimeoutMs: 20000,
+        },
+        stop: { signal: "SIGTERM", graceMs: 2000 },
+        serving: { target: "sandbox-loopback", protocol: "http" },
+      },
+    }),
+  );
+  serverAppId = toUrlProjectId(serverApp);
+  await metadata.addProject(serverAppId, serverApp, "archer");
   discovery = new DiscoverySqliteService({ dataDir });
   const sessionMetadata = new SessionMetadataService({
     dataDir,
@@ -60,6 +89,8 @@ test.beforeAll(async () => {
   await limitedUsers.initialize();
   const settings = new ServerSettingsService({ dataDir });
   await settings.initialize();
+  const projectQueue = new ProjectQueueService({ dataDir });
+  await projectQueue.initialize();
   const auth = new AuthService({ dataDir });
   await auth.initialize();
   initFileAccess({
@@ -73,6 +104,7 @@ test.beforeAll(async () => {
     sessionMetadataService: sessionMetadata,
     limitedUsersService: limitedUsers,
     serverSettingsService: settings,
+    projectQueueService: projectQueue,
     authService: auth,
     dataDir,
     discoverySqlite: discovery,
@@ -100,21 +132,17 @@ test.beforeAll(async () => {
     port: address.port,
     localOrigin: `http://artifacts.localhost:${address.port}`,
   });
-  await Promise.all([
-    process.platform === "linux"
-      ? (async () => {
-          const response = await fetch(`${base}/api/version`, {
-            signal: AbortSignal.timeout(10_000),
-          });
-          expect(response.ok).toBe(true);
-          const version = await response.json();
-          expect(
-            version.sessionSandboxing,
-            JSON.stringify(version.sessionSandboxing),
-          ).toMatchObject({ state: "available", backend: "bubblewrap" });
-        })()
-      : Promise.resolve(),
-  ]);
+  if (process.platform === "linux") {
+    const response = await fetch(`${base}/api/version`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    expect(response.ok).toBe(true);
+    const version = await response.json();
+    expect(
+      version.sessionSandboxing,
+      JSON.stringify(version.sessionSandboxing),
+    ).toMatchObject({ state: "available", backend: "bubblewrap" });
+  }
 });
 test.afterAll(async () => {
   if (instance) {
@@ -323,6 +351,172 @@ test("app inventory sits below port forwards and manages addresses inline", asyn
   instance.artifactServer.config.vhosts = [];
 });
 
+test("serving a stopped process app starts it first, and a served stopped app warns", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  instance.artifactServer.config.vhostPublicRoot = "apps.example";
+  const warning = /visitors to server-garden\.apps\.example see/;
+  const inventory = page.getByRole("region", {
+    name: "Project apps",
+    exact: true,
+  });
+  const pane = inventory.getByRole("region", {
+    name: "server-app",
+    exact: true,
+  });
+  // Changing width can reflow the settings collection, so each width opens
+  // the row afresh.
+  async function openAt(size: { width: number; height: number }) {
+    await page.setViewportSize(size);
+    await page.goto(`${base}/settings/apps`);
+    await inventory
+      .getByRole("button", { name: "server-app", exact: true })
+      .click();
+    await expect(pane).toBeVisible();
+  }
+  try {
+    await openAt({ width: 1200, height: 600 });
+    await pane
+      .getByRole("textbox", { name: "App name", exact: true })
+      .fill("server-garden");
+    await pane
+      .getByRole("button", { name: "Reserve address", exact: true })
+      .click();
+    await pane
+      .getByRole("button", { name: "Start app and serve here", exact: true })
+      .click();
+    const unserve = pane.getByRole("button", {
+      name: "Stop serving at this address",
+      exact: true,
+    });
+    await expect(unserve).toBeVisible({ timeout: 25_000 });
+    await expect(pane.getByText("App: running")).toBeVisible();
+    await expect(pane.getByText(warning)).toHaveCount(0);
+    await unserve.scrollIntoViewIfNeeded();
+    await recordUiCapture(page, "project-app-start-and-serve-1200");
+
+    await pane.getByRole("button", { name: "Stop app", exact: true }).click();
+    await expect(pane.getByText(warning)).toBeVisible({ timeout: 15_000 });
+    await pane.getByText(warning).scrollIntoViewIfNeeded();
+    await recordUiCapture(page, "project-app-served-stopped-1200");
+
+    // Opted in, an authorized visit to the stopped address starts the app.
+    const autoStart = pane.getByRole("checkbox", {
+      name: /Start the app when a visitor finds it stopped/,
+    });
+    await autoStart.check();
+    await expect(autoStart).toBeChecked();
+    await expect(
+      pane.getByText(/next visit to server-garden\.apps\.example starts it/),
+    ).toBeVisible();
+    await expect(pane.getByText(warning)).toHaveCount(0);
+    await autoStart.scrollIntoViewIfNeeded();
+    await recordUiCapture(page, "project-app-auto-start-1200");
+    const token = instance.artifactServer.vhostAccess.token({
+      name: "server-garden",
+      projectId: serverAppId,
+    });
+    const visit = await instance.artifactServer.dispatchHost(
+      new Request(`http://server-garden.apps.example/?ya_access=${token}`),
+    );
+    expect(visit?.status).toBe(200);
+    expect(await visit!.text()).toBe("server app");
+
+    await openAt({ width: 375, height: 812 });
+    await expect(pane.getByText("App: running")).toBeVisible();
+    await expect(autoStart).toBeChecked();
+    await autoStart.scrollIntoViewIfNeeded();
+    await recordUiCapture(page, "project-app-auto-start-375");
+    await autoStart.uncheck();
+    await expect(autoStart).not.toBeChecked();
+    await pane.getByRole("button", { name: "Stop app", exact: true }).click();
+    await expect(pane.getByText(warning)).toBeVisible({ timeout: 15_000 });
+    await pane.getByText(warning).scrollIntoViewIfNeeded();
+    await recordUiCapture(page, "project-app-served-stopped-375");
+    await pane.getByRole("button", { name: "Start app", exact: true }).click();
+    await expect(pane.getByText("App: running")).toBeVisible({
+      timeout: 25_000,
+    });
+    await expect(pane.getByText(warning)).toHaveCount(0);
+    await unserve.scrollIntoViewIfNeeded();
+    await recordUiCapture(page, "project-app-start-and-serve-375");
+    await pane.getByRole("button", { name: "Stop app", exact: true }).click();
+    await expect(pane.getByText(warning)).toBeVisible({ timeout: 15_000 });
+    page.once("dialog", (dialog) => dialog.accept());
+    await pane
+      .getByRole("button", { name: "Release address", exact: true })
+      .click();
+  } finally {
+    instance.artifactServer.config.vhostPublicRoot = undefined;
+  }
+});
+test("New Session keeps launch options and restores project selection after closing App", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await page.goto(`${base}/new-session?projectId=${projectId}`);
+  await page.evaluate(() => {
+    localStorage.setItem("yep-anywhere-project-app-composing-enabled", "true");
+  });
+  await page.reload();
+  for (const size of [
+    { width: 1200, height: 600 },
+    { width: 1000, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(size);
+    const composer = page.locator("textarea:visible").first();
+    await expect(composer).toBeVisible();
+    await composer.fill("");
+    let typed = "";
+    for (const character of "Keep my launch options") {
+      typed += character;
+      await composer.pressSequentially(character);
+      await expect(composer).toHaveValue(typed, { timeout: 100 });
+    }
+    const form = page.locator(".new-session-form");
+    await form.evaluate((element) => {
+      element.dataset.kept = "yes";
+    });
+    const advanced = page.getByRole("button", {
+      name: "Show advanced options",
+      exact: true,
+    });
+    if (await advanced.isVisible()) await advanced.click();
+    const options = page.locator("[data-new-session-secondary-options]");
+    await expect(options).toBeVisible();
+    const before = await page.locator(".new-session-provider-slot").innerText();
+    const appButton = page.getByRole("button", { name: "App", exact: true });
+    await appButton.click();
+    const app = page.getByRole("region", { name: "Project App" });
+    await expect(app.locator("iframe")).toBeVisible();
+    await expect(
+      page
+        .frameLocator('iframe[title="index.html"]')
+        .getByRole("heading", { name: "Sketch garden" }),
+    ).toBeVisible();
+    if (size.width >= 1100) {
+      await expect(page.locator(".new-session-provider-slot")).toBeVisible();
+      await expect(options).toBeVisible();
+      await expect(composer).toHaveValue(typed);
+    }
+    await recordUiCapture(page, `new-session-app-open-${size.width}`);
+    await app.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(page.locator(".new-session-project-chooser")).toBeVisible();
+    await expect
+      .poll(() => page.locator(".new-session-provider-slot").innerText())
+      .toBe(before);
+    await expect(options).toBeVisible();
+    await expect(
+      page.locator('.new-session-form[data-kept="yes"]'),
+    ).toBeVisible();
+    await expect(composer).toHaveValue(typed);
+    await composer.scrollIntoViewIfNeeded();
+    await recordUiCapture(page, `new-session-app-closed-${size.width}`);
+  }
+});
+
 // Real browser layout, iframe retention and key-by-key acknowledgement cannot
 // be established by the route/component tests of the same API contracts.
 test("project App fills the pane and retains canvas and composer across phone switches", async ({
@@ -527,8 +721,9 @@ test("project App fills the pane and retains canvas and composer across phone sw
     await page.setViewportSize(size);
     await page.goto(`${base}/projects`);
     await page
+      .getByRole("listitem")
+      .filter({ hasText: /\bcanvas\b/ })
       .getByRole("button", { name: "Open project settings" })
-      .first()
       .click();
     const settings = page.getByRole("dialog");
     await expect(

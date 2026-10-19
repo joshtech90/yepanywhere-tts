@@ -8,6 +8,24 @@
  * the sidebar carries its own toggle — the title would otherwise sit 4px from
  * the content column's edge.
  */
+.row {
+  --header-control-size: 36px;
+  --header-row-size: 44px;
+}
+
+.row:global(.session-header-inner) {
+  min-height: var(--header-row-size);
+  padding-block: calc(
+    (var(--header-row-size) - var(--header-control-size)) /
+    2
+  );
+}
+
+.row :global(.sidebar-toggle) {
+  min-width: var(--header-control-size);
+  min-height: var(--header-control-size);
+}
+
 :global(.session-header-inner).noLeadingControl {
   padding-left: 0.75rem;
 }
@@ -53,6 +71,88 @@
 .routerAccount:hover,
 .routerAccount:focus-visible {
   color: var(--text-primary);
+}
+
+.header .left {
+  overflow: visible;
+}
+
+.header .titleRow {
+  min-width: 3rem;
+}
+
+.header .actions {
+  flex-wrap: nowrap;
+}
+
+.header .modelButton {
+  align-items: center;
+  min-height: var(--header-control-size);
+  max-width: 14rem;
+  transform: none;
+}
+
+.header .menuTrigger {
+  min-width: var(--header-control-size);
+  min-height: var(--header-control-size);
+  opacity: 1;
+}
+
+.header .project {
+  max-width: 8.5rem;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.header .project > :global(.project-breadcrumb) {
+  display: block;
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header[data-header-layout="compact"] .project {
+  max-width: 5rem;
+  overflow: hidden;
+}
+
+.header[data-header-layout="narrow"] .project {
+  max-width: 3.5rem;
+  overflow: hidden;
+}
+
+.header[data-header-layout="narrow"] .modelButton {
+  max-width: 8rem;
+}
+
+/* Preserve the mounted inline field if a roomy header shrinks mid-edit. */
+.header[data-inline-rename="true"][data-header-layout="narrow"]
+:global(.session-header-inner),
+.header[data-inline-rename="true"][data-header-layout="narrow"] .left {
+  flex-wrap: wrap;
+}
+
+.header[data-inline-rename="true"][data-header-layout="narrow"] .left,
+.header[data-inline-rename="true"][data-header-layout="narrow"] .titleRow {
+  flex-basis: 100%;
+}
+
+@media (pointer: coarse) {
+  .row {
+    --header-control-size: 44px;
+  }
+}
+
+/* The project App button is a square home icon, level with the session's
+   last-view icon beside it. */
+.projectAppButton {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
 }
 
 @media (width <= 700px) {

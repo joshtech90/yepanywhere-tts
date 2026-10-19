@@ -11,6 +11,39 @@
 }
 .title {
   flex: 1;
+  /* A crowded phone toolbar still leaves the home icon whole. */
+  min-width: 28px;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.title svg {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+/* Reads as the title; the icon and name are one target for the app's home. */
+.home {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.home:hover:not(:disabled) {
+  background: var(--bg-secondary);
+}
+.home:disabled {
+  cursor: default;
+}
+.titleText {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -35,9 +68,20 @@
 .details code {
   overflow-wrap: anywhere;
 }
+.servedStopped {
+  padding: 6px 10px;
+  border-inline-start: 3px solid var(--warning-color);
+  color: var(--warning-color);
+}
 .details label {
   display: block;
   margin-block: 12px;
+}
+/* A wrapped checkbox label continues under its text, not under the box. */
+.details label.checkLabel {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
 }
 .details button {
   margin: 4px;
@@ -48,6 +92,13 @@
   background: var(--bg-secondary);
   color: var(--text-primary);
   cursor: pointer;
+  /* Icon-and-text buttons sit level with plain ones in a row. */
+  vertical-align: middle;
+}
+.details button.iconLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .details input:not([type="checkbox"]) {
   display: block;

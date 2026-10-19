@@ -79,7 +79,30 @@ export function AsyncQuestionsProvider({
 }) {
   const reminderTurns = useQuestionReminderTurns();
   const [questions, setQuestions] = useState<readonly AsyncQuestion[]>([]);
-  const records = useQuestionRecords(storageKey);
+  const savedRecords = useQuestionRecords(storageKey);
+  const records = useMemo(() => {
+    const next = { ...savedRecords };
+    for (const question of questions) {
+      if (question.answer === undefined) continue;
+      next[question.id] = {
+        ...(next[question.id] ?? emptyRecord),
+        answer: question.answer,
+        quoted: false,
+      };
+    }
+    return next;
+  }, [savedRecords, questions]);
+  useEffect(() => {
+    for (const question of questions) {
+      if (question.answer === undefined) continue;
+      const saved = savedRecords[question.id];
+      if (saved?.answer === question.answer && !saved.quoted) continue;
+      updateQuestionRecord(storageKey, question.id, {
+        answer: question.answer,
+        quoted: false,
+      });
+    }
+  }, [storageKey, questions, savedRecords]);
   const recordsRef = useRef(records);
   useEffect(() => {
     const next = { ...records };
@@ -248,6 +271,12 @@ export function AsyncQuestionsProvider({
           return;
         moved = true;
       };
+      // A click into an embedded app (the project App frame) reaches neither
+      // listener above; the page losing focus to it is the visible trace.
+      const noteLeftPage = () => {
+        moved = true;
+      };
+      window.addEventListener("blur", noteLeftPage);
       document.addEventListener("pointerdown", noteMovement, true);
       document.addEventListener("focusin", noteMovement, true);
       document.addEventListener("wheel", noteMovement, {
@@ -272,6 +301,7 @@ export function AsyncQuestionsProvider({
       } finally {
         submitting.current = false;
         setSubmittingId(null);
+        window.removeEventListener("blur", noteLeftPage);
         document.removeEventListener("pointerdown", noteMovement, true);
         document.removeEventListener("focusin", noteMovement, true);
         document.removeEventListener("wheel", noteMovement, true);

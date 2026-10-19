@@ -1,4 +1,5 @@
 import { parseLineColumn } from "./filePathDetection.js";
+import type { GitFileDiffMode } from "./git-status.js";
 
 export type LocalResourceKind =
   | "local-file"
@@ -113,6 +114,45 @@ function parsePathReference(
     lineNumber: explicitLine ?? parsed.line,
     columnNumber: explicitColumn ?? parsed.column,
   };
+}
+
+/** What a `/projects/:id/file` viewer URL can say about one file. */
+export interface ProjectFileViewerTarget {
+  projectId: string;
+  filePath: string;
+  lineNumber?: number;
+  lineEnd?: number;
+  columnNumber?: number;
+  /** A diff view has no line position; it wins over the line fields. */
+  diffMode?: GitFileDiffMode;
+  viewMode?: "full" | "range";
+}
+
+/**
+ * The app-relative project file viewer URL, the inverse of the `project-file`
+ * branch of {@link parseLocalResourceHref}. Callers add any remote base path.
+ */
+export function buildProjectFileViewerHref(
+  target: ProjectFileViewerTarget,
+): string {
+  const params = new URLSearchParams({ path: target.filePath });
+  if (target.diffMode) {
+    params.set("diff", target.diffMode);
+  } else {
+    if (target.lineNumber !== undefined) {
+      params.set("line", String(target.lineNumber));
+    }
+    if (target.lineEnd !== undefined) {
+      params.set("lineEnd", String(target.lineEnd));
+    }
+    if (target.columnNumber !== undefined) {
+      params.set("column", String(target.columnNumber));
+    }
+    if (target.viewMode === "range") {
+      params.set("view", "range");
+    }
+  }
+  return `/projects/${encodeURIComponent(target.projectId)}/file?${params}`;
 }
 
 export function normalizeWindowsDrivePathname(filePath: string): string {

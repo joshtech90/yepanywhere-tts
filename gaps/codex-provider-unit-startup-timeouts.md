@@ -44,3 +44,13 @@ The captured timeline reaches `turn/start` and `shell-probe-start` at 9 ms,
 then records no probe completion before the waiter's deadline; maximum polling
 gap is 15 ms. This localizes this occurrence to the shell-probe completion
 boundary, not child bootstrap. Android lifecycle work did not change this path.
+
+2026-10-18 follow-up: CI `39129536950` repeats that shell-probe occurrence:
+receipt and probe start at 16 ms, no completion within the two-second waiter,
+and a maximum polling gap of 25 ms. The real `ya-agent self` integration case
+now allows six seconds (three times the exhausted waiter), with a separate
+eight-second case budget (3.8 times its observed 2115 ms) for startup and
+cleanup. The fake child also marks entry into the self CLI probe so future
+failures distinguish it from the preceding Bash session-id read. This changes
+only the integration test's
+budget; the earlier general startup failures remain unclassified.

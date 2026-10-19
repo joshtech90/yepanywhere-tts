@@ -25,7 +25,15 @@ normalized text is available. Compressed Codex sources cannot be read by this
 background adapter.
 
 Search uses literal, case-insensitive substrings of stored keys, URLs and titles.
-Pasting a full URL finds its canonical record. Search and evidence pages default
+Pasting a full URL finds its canonical record. An exact lookup, `GET /api/issues?ref=<url>`,
+matches only the item whose canonical identity the URL names, from any URL a
+browser shows for it: GitHub subpaths such as `/files`, either the `issues/`
+or `pull/` path for the same number, and Jira board or backlog URLs carrying
+`selectedIssue`. The response echoes that identity as `ref`. A `ref` that
+names no tracker item matches nothing rather than falling back to `q`.
+Clients send `q` with `ref` and keep only items whose `id` equals the
+identity, so a server that predates `ref` still answers exactly, except for
+an item stored under the other GitHub path. Search and evidence pages default
 to 50 rows and accept at most 100. Project/session filters apply before the limit.
 The browser content scrolls vertically within the app while its page header
 remains visible. Long result lists, pagination controls, and association evidence
@@ -50,7 +58,12 @@ retained as inactive candidates, without creating an issue/session link or
 appearing in search or session counts. **Match unknown ticket keys** is an
 explicit opt-in that exposes these candidates as references with **Issue link
 unknown**. Their issue menu accepts a matching full URL through **Add issue link**. Markdown labels
-supply observed titles; a user can override a resolved item's title. Discovery
+supply observed titles; a user can override a resolved item's title. A label
+that only names the item (`#42`, `repo#42`, `PR #42`, the key) is not a title,
+and neither is the label of a link into part of the item, such as a changed
+file or a comment anchor. Because the first observed title is kept, titles
+saved under the earlier rules are read through the same test; a manual title
+is shown as chosen. Discovery
 itself makes no tracker request and changes no external issue; the only
 outbound requests come from the opt-in confirmation step below.
 
@@ -64,12 +77,20 @@ The session header button carries the count of that session's undismissed
 associations, read from one page of the same search route, so more than a full
 page reads as `100+`. That count also says in advance how many rows the button
 opens: pressing it opens a menu built from the page already read, so the menu
-costs no further request and the session stays on screen. At most twelve
-references are listed, newest page order, with a note naming how many more the
-full list holds and a final row that opens that list filtered to this session.
+costs no further request and the session stays on screen. The menu has a
+**Pull requests** section first, shown whenever the session has any
+association and saying so when none is a PR, then **Issues** for everything
+else. Each section lists its latest mention first, unknown times last. At most
+twelve references are listed; each section keeps six rows and lends the rest to
+the other, so a long ticket list cannot push every PR out of view. A note names
+how many more the full list holds, and a final row opens that list filtered to
+this session. The header first asks without a sort; a server advertising
+**Recently mentioned** is asked in that order from then on, immediately when
+the key-ordered page was full, so the page it reads holds the latest mentions.
 Each row links at its tracker URL when one is known and at the same filtered
 list otherwise, so a left click follows the reference and a middle or
-modifier click opens it in a new tab. Hovering or focusing a row describes it
+modifier click opens it in a new tab. Only the navigating click closes the
+menu, so several references can be opened into tabs in turn. Hovering or focusing a row describes it
 before the click: full title, key, provider, kind, how many sessions mention
 it, whether its tracker context is still unresolved, and where the click
 leads. Because indexing this session's own text starts when the
@@ -127,8 +148,9 @@ transcript reads, durable activity copies or migrations.
 
 Each row keeps its key in the identity line, next to a colored Jira, GitHub
 issue, or GitHub PR badge; unknown GitHub types say GitHub reference. Type icons
-and labels carry the distinction without relying on color. Colors never claim
-open, closed or merged state. A title, when available and distinct from the
+and labels carry the distinction without relying on color. Type colors never
+claim open, closed or merged state; only a [tracker status](#tracker-status)
+badge does, and only when the server reported one. A title, when available and distinct from the
 key, occupies its own line. Session count and the chosen recency basis sit
 below it; number order shows session activity. Unknown times are explicit.
 
@@ -195,7 +217,10 @@ by repository and number and Jira by key against the configured site and
 account email. A confirmed reference gains the tracker's own summary, the first
 title that does not depend on someone having written a Markdown link. A missing
 item is recorded as rejected, and a failed or unauthorized lookup as
-unreachable.
+unreachable. A rejected reference is hidden from search, the session header's
+count and menu, and the Issues page, as a dismissed association is; the
+dismissed filter shows it, and an exact `ref` lookup still finds it. A
+confirmation from any project outranks a rejection.
 
 One question per reference is the whole retry policy, and it lives in the
 schema rather than in a scheduler. `issue_confirmations` takes a pending row
@@ -218,13 +243,30 @@ answers only once a pass has settled its own row. Verdicts are per project, and
 the most decisive one wins across projects: one project confirming a key
 settles it even if another recorded only an outage.
 
-Credentials resolve from a key stored in Settings, then environment variables
+GitHub status checks have their own **Check GitHub issue and PR status**
+control, independent of reference confirmation. When the new setting is absent,
+status checks retain the historical confirmation-enabled policy. Explicit false
+is preserved; changing confirmation in a current client preserves the separate
+status choice. Credential inventory is requested only while confirmation or
+supported GitHub status checks are enabled.
+
+**Allow GitHub CLI credentials** defaults on for enabled lookups. Turning it off
+prevents this integration from invoking `gh`, including account/presence probes.
+**GitHub CLI account for YA** can use the active CLI account or a named signed-in
+account. A named account takes priority over stored/environment tokens and uses
+`gh auth token --hostname github.com --user <account>` with token environment
+overrides removed. An unavailable named account fails without credential
+fallback. YA never switches the global CLI account. Settings names the active
+source and CLI account when known, and never returns a token. The account list
+comes from bounded `gh auth status` execution, keeping only non-secret identity
+fields. No token enters the status database.
+
+Without a named CLI account, credentials resolve from a key stored in Settings, then environment variables
 (`YEP_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`; `YEP_JIRA_API_TOKEN`,
 `JIRA_API_TOKEN`, `ATLASSIAN_API_TOKEN`), then, for GitHub, the signed-in `gh`
 CLI. The settings pane names every source and says whether it is present; no
-route returns a key to a client. The pane requests that inventory only while
-confirmation is on, the only state in which it is shown, so a reader who never
-opts in never causes the sources to be probed. Stored keys are written to
+route returns a key to a client. The pane requests inventory only while a tracker feature is opted in, so a
+reader who never opts in never causes CLI sources to be probed. Stored keys are written to
 `{dataDir}/issue-credentials.json` with owner-only permissions rather than into
 server settings, which the settings route hands to any authenticated client.
 Both credential routes stay reachable while discovery is off, so an
@@ -235,6 +277,52 @@ regardless of the active credential source. They mask newly entered keys and
 request no existing-password autofill or password-manager save/fill handling;
 browser-native password-saving prompts remain under browser control. The
 source inventory, rather than password dots, indicates configured credentials.
+
+## Tracker status
+
+While GitHub status checks and discovery are enabled, viewed GitHub issues
+and PRs on `github.com` acquire the state GitHub last reported: Open, Draft,
+Merged or Closed for PRs; Open or Closed for issues. Badges appear in the session
+header, Issues page and extension session panel. Absent/unknown states show no
+badge. Jira status and Enterprise hosts remain deferred. These operations only
+read GitHub metadata, even when the underlying token has broader permissions.
+
+A `GET /api/issues` read returns cached facts and queues returned items whose
+state is missing or at least five minutes old. Merged facts never automatically
+expire or refresh. A failed lookup retains the last successful state/check time
+and persists a five-minute retry delay. Readers share one server-wide pass,
+with up to 50 items per GraphQL query and at most 200 queued/in-flight items.
+There are no server polling timers or startup GitHub requests.
+
+`issue_tracker_status` in `{dataDir}/discovery.sqlite` holds one row per canonical
+item, shared by every mentioning session: state, successful check time, last
+attempt time, GitHub node id, actual merge date and merge commit SHA. Reads load
+only the requested page; memory retains at most 2,000 entries. The existing
+`IssueStore` owns SQL and batches each response into one transaction. Deleting
+an item removes its status by foreign key. Cache writes cannot recreate deleted
+items or replace a terminal merged fact with an older/nonmerged answer.
+
+Disabling checks stops lookups but keeps cached facts visible. **Clear cached
+status** (`DELETE /api/issues/status`) deletes only tracker facts/retry times,
+including merged facts, and fences in-flight answers so they cannot undo the
+clear. Enabled checks can acquire facts again on a subsequent view. This action
+is available even with discovery disabled. Changing credential/lookup policy
+while a response is in flight prevents that response from being published.
+
+A response carries `statusRefreshing: true` while relevant items are queued or
+in flight. The session header and Issues page keep their bounded follow-ups.
+The extension session panel follows up after 1.5 seconds at most three times,
+coalesces interval/manual requests, and tears down follow-ups on navigation or
+close. Its ordinary visible refresh remains 30 seconds.
+
+The extension groups known merged PRs under **Merged PRs (N)**. Open, draft,
+closed-without-merge and unknown-status items stay in the ordinary list.
+**Browser extension → Collapse merged PRs** is browser-local and defaults off;
+when enabled, each session's merged section starts collapsed. Manual expansion
+survives refreshes and new facts; changing session or the preference resets the
+initial expansion. Expanded rows show merge date and abbreviated commit SHA;
+status tooltips expose the full SHA and check/merge times. Counts describe the
+items returned in the session's existing bounded list.
 
 ## Identity and evidence
 
@@ -247,7 +335,12 @@ path, and the issue index consumes both. Nothing under `sessions/` imports
 `services/issues/extract.ts` recognizes Jira browse URLs and uppercase Jira keys,
 GitHub issue/PR URLs, and repository-qualified `owner/repo#123` references.
 A bare `#123` needs explicit issue/PR wording and exactly one GitHub repository
-URL in the same bounded text window. Arbitrary bare numbers are ignored. Generic
+URL in the same bounded text window. Arbitrary bare numbers are ignored.
+Nothing inside a fenced code block (``` or ~~~, to its closing line or the end
+of the message) is a reference, and a repository URL there gives no context
+to a bare number: such blocks hold sample output, fixtures and logs. Fences
+are found over the whole message, so a chunk read from inside a long block
+knows it is in one. Inline code and indented blocks are still read. Generic
 Jira deployments may have context paths. GitHub Enterprise issue paths are
 recognized on `github.*` hosts; `/pull/N` URLs also identify PRs on other hosts.
 
@@ -400,8 +493,24 @@ preceding 14 days on 2026-09-10. Sparse optional capability
 - `POST /api/issues/confirm`;
 - `PATCH /api/issues/item`, `DELETE /api/issues/item`.
 
+`IssueItem.trackerStatus` and `IssueSearchResult.statusRefreshing` are
+additive, self-gated response fields outside the bit: older servers omit them
+and the client shows no state badge and makes no extra request; older clients
+ignore them. The bit's meaning is unchanged.
+
+Optional capability `github-status-controls` (permanent ID 128) owns the
+independent `githubStatusEnabled` and `githubCli: { enabled, account }` settings,
+non-secret CLI account inventory, durable status cache and cache-clear action.
+The approved October 16 optional corpus is v0.9.1 and v0.9.2 (latest two local
+stable tags; neither has the controls, and no local stable tags fall in the
+preceding 14 days). Without it new clients hide new server-backed controls and
+send no new settings or cache-clear requests. Existing status fields remain
+self-gated and extension grouping works with whatever status a server supplies.
+The original ID 68 is unchanged. Older-client saves preserve omitted new
+settings. No protocol floor or remote compatibility-level change is needed.
+
 The shared settings service persists `issueAssociations: { enabled, scope,
-recentDays }`. The bit requires ready SQLite and the installed indexing owner,
+recentDays, githubStatusEnabled?, githubCli? }`. The bit requires ready SQLite and the installed indexing owner,
 independently of opt-in; data routes also require enablement and ordinary app
 authorization. Without it clients hide all controls and make no issue requests.
 The Issues & PRs sidebar and direct page links open `/issues` locally and in
@@ -418,7 +527,9 @@ review for subsequent changes.
 v2/v3 SQL moved out of the mutable vocabulary schema. Migration 4 adds the domain
 and indexing tables; migration 5 adds resolution/deletion continuations;
 migration 6 adds the one-verdict-per-reference confirmation table; migration 7
-adds durable Jira project mappings and resumable reconciliation. Prefix
+adds durable Jira project mappings and resumable reconciliation. Migration 11 adds
+tracker status with a foreign key to the canonical issue; it starts empty and
+performs no network calls or backfill. Prefix
 fixtures test fresh installation, each historical upgrade, repeat initialization,
 rollback and old-reader refusal. No down migrations, resets, WAL switch or longer
 lock timeout were added. An older binary refusing the newer discovery schema
@@ -430,9 +541,10 @@ untouched. Use a newer binary or explicitly restore a consistent older backup.
 Deferred: branch/worktree inference (including YA Workstreams), Git/commit
 attribution, tracker synchronization, remote snapshots, semantic matching,
 tool-output mining and multi-server aggregation. Credentials are now used, but
-only to ask whether a reference exists: YA writes nothing to a tracker, mirrors
-no tracker state, and makes no request for a reference it has already asked
-about. This feature does not
+to ask whether a reference exists and, for GitHub items someone is looking at,
+what state it is in: YA writes nothing to a tracker, retains status facts durably,
+and asks about a reference again only under the
+[tracker status](#tracker-status) refresh rule. This feature does not
 close the [cold-storage startup gap](../gaps/sqlite-backed-cold-storage-startup.md),
 [commit attribution gap](../gaps/sketches/committed-change-session-attribution.md) or
 [worktree identity gap](../gaps/session-worktree-file-links.md).

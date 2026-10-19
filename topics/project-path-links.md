@@ -40,8 +40,29 @@ direct file probe when it contains at least four characters. A `~/` token is
 expanded against the connected server's home directory, never the browser's;
 the probe and link target use the expanded path while the visible text keeps
 the `~/` spelling. It is never tried as a project-relative path. The whole token is queried, including legal punctuation, so
-an existing prefix is never linked out of a longer filename. It is never added
-to the project index or discovered by a filesystem crawl.
+an existing prefix is never linked out of a longer filename. The one exception
+is a cited position: when the whole token is not a file and it ends in `:N`,
+`:N-M`, or `:N:C`, the path before that suffix is probed too, from the same
+64-candidate budget. A hit is confirmed under the whole visible token, suffix
+included, so clients that match confirmed links by token text need no change.
+It is never added to the project index or discovered by a filesystem crawl.
+
+**A visible cited position is its own link.** Wherever a confirmed file link
+shows `path:N`, `path:N-M`, or `path:N:C`, the client renders two adjacent
+links: the path opens the file at the top, and the `:N…` suffix opens it at
+that position. Both carry the same file target and resource attributes, so
+they share one context menu; only viewing is position-specific. The rule
+covers every surface: server-rendered Markdown (inline code, prose, and local
+file links), user prompts, and command and tool output. A project-relative
+token stops at the colon, so its suffix is the citation text right after the
+link; an absolute token carries its suffix unless the whole token is itself
+the file. The split happens in the client, so transcripts rendered and stored
+before it gain the split without re-rendering. Inline code stays one pill
+holding both links. A link whose label does not end in its cited position,
+such as a Markdown link with its own text, stays one link.
+`readLeadingCitedPosition` and `splitTrailingCitedPosition` in
+`packages/shared/src/project-path-links.ts` are the one citation grammar that
+the server resolver and every client surface share.
 The probe uses the same realpath-resolved allow-set and regular-file check as
 the authenticated file endpoint, and click-time fetching repeats that check.
 At most 64 distinct direct-filesystem candidates are probed for one completed
@@ -441,6 +462,53 @@ the same body cannot be served for each other.
 
 The **Link Recent File Basenames** convenience remains owner-only; a share
 links only what the server confirmed for that body.
+
+## File-link preferences and mentioned directories
+
+Appearance groups three browser preferences: **Link Project Paths** (on),
+**Use Mentioned Directories** (on), and **Link Recent File Basenames** (off).
+The master switch gates both conveniences and automatic content links in
+authenticated sessions. Public-share rendering retains its server-confirmed
+links. The directory option is enabled by default at the maintainer's request.
+
+For completed Markdown prose, the server scans occurrences in source order.
+A verified project-relative directory mention becomes the context for later
+bare filenames throughout that prose body, including later paragraphs. A new
+verified directory replaces it; an unverified mention does not. Context resets
+at the next prose body and never carries between turns. Directory spellings
+must contain a slash or appear in inline code; filename candidates must have a
+path-like extension or appear in inline code. Explicit paths, Markdown links,
+fenced code, and math do not acquire this context.
+
+The joined file must exist. When it does, the client displays and links the
+joined path even if the same basename exists at project root or has a recent
+basename alias. Otherwise ordinary exact-file and recent-alias behavior
+remains. For example, `Use ar/raghda/ ... intake (onboard.py) and scoring
+(score.sh)` displays links for `ar/raghda/onboard.py` and
+`ar/raghda/score.sh` when those files exist.
+
+The server extracts rendered HTML path occurrences once. Exact links and
+directory context consume that same ordered list, then one rewrite emits the
+links and `data-ya-directory-file` annotations. Two identical basenames can
+therefore name different files in one body without a second HTML scan. The
+existing raw-Markdown pre-population remains: it warms the index before the
+synchronous inline-code renderer asks about files. Verification reuses the
+sparse path index, including its revision and retention rules,
+with bounded directory and file probes. Streaming known-only renders do not
+start directory discovery; settled full-body augmentation supplies it. No
+filesystem inventory reaches the client. Old clients ignore the annotation;
+new clients talking to old servers keep ordinary links without making a new
+request. Public shares do not receive these annotations. Completed output stays
+in the existing source-versioned HTML cache, and the client makes no separate
+path-discovery requests. Client decoration applies directory matches first;
+recent full-name aliases only process unresolved occurrences.
+
+Right-clicking or long-pressing the composer formula control opens its existing
+toolbar menu with these three session-view overrides above **Hide**. Each offers
+**Default**, **On**, and **Off**; Default follows the current browser preference.
+Overrides live only in that mounted session view, reset on unmount/reload,
+and do not change browser defaults or another session view. Turning off the
+master disables the two dependent controls without discarding their choices.
 
 ## Recent basename aliases
 

@@ -15,6 +15,12 @@
 # torch==2.12.0 requires it; its sdist-packaging advisory does not affect
 # this runtime env. Non-applicable advisories are dismissed with reasons in
 # docs/development/dependencies.md.
+#
+# Security patch bumps on 2026-10-14 (fsspec 2026.4.0 -> 2026.6.0, urllib3
+# 2.7.0 -> 2.8.0) were checked with a cross-platform uv resolve for
+# linux-64 / Python 3.12, alone and as the requirements/stt-nemo.txt
+# constraint set; NeMo 2.0.0 still resolves with torch 2.12.0 and the pinned
+# Transformers build. They were not installed into the live env.
 accelerate==1.14.0
 annotated-doc==0.0.4
 anyio==4.14.2
@@ -32,7 +38,7 @@ decorator==5.3.1
 faster-whisper==1.2.1
 filelock==3.29.4
 flatbuffers==25.12.19
-fsspec==2026.4.0
+fsspec==2026.6.0
 h11==0.16.0
 hf-xet==1.5.1
 httpcore==1.0.9
@@ -97,5 +103,5 @@ transformers @ git+https://github.com/huggingface/transformers.git@7ff490aca20f5
 triton==3.7.0
 typer==0.25.1
 typing_extensions==4.15.0
-urllib3==2.7.0
+urllib3==2.8.0
 wheel==0.47.0

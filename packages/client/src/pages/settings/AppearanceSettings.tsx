@@ -143,7 +143,10 @@ import { useAcliCommentarySetting } from "../../hooks/useAcliCommentarySetting";
 import { useSelectionActionPreferences } from "../../hooks/useSelectionActionPreferences";
 import { useGlossaryHints } from "../../hooks/useGlossaryHints";
 import { useProjectCodeNamePreferences } from "../../hooks/useProjectCodeNamePreferences";
-import { useRecentProjectPathLinks } from "../../hooks/useRecentProjectPathLinks";
+import {
+  projectPathLinkStores,
+  useGlobalProjectPathLinkSettings,
+} from "../../lib/projectPathLinkPreferences";
 import { useVersion } from "../../hooks/useVersion";
 
 const OUTPUT_INLINE_MATH_SAMPLE = "$E=mc^2$";
@@ -321,8 +324,13 @@ export function AppearanceSettings() {
     setCompactMultiImageGalleries,
     setInlineMediaExpandedByDefault,
   } = useInlineMedia();
-  const { recentProjectPathLinksEnabled, setRecentProjectPathLinksEnabled } =
-    useRecentProjectPathLinks();
+  const {
+    projectPaths,
+    recentBasenames: recentProjectPathLinksEnabled,
+    mentionedDirectories,
+  } = useGlobalProjectPathLinkSettings();
+  const setRecentProjectPathLinksEnabled =
+    projectPathLinkStores.recentBasenames.set;
   const { quoteReplyButtonMode, setQuoteReplyButtonMode } =
     useQuoteReplyButtonMode();
   const {
@@ -433,6 +441,11 @@ export function AppearanceSettings() {
     undoEntry(inlineMediaExpandedByDefault, setInlineMediaExpandedByDefault),
     undoEntry(compactMultiImageGalleries, setCompactMultiImageGalleries),
     undoEntry(recentProjectPathLinksEnabled, setRecentProjectPathLinksEnabled),
+    undoEntry(projectPaths, projectPathLinkStores.projectPaths.set),
+    undoEntry(
+      mentionedDirectories,
+      projectPathLinkStores.mentionedDirectories.set,
+    ),
     undoEntry(quoteReplyButtonMode, setQuoteReplyButtonMode),
     undoEntry(selectionQuoteActionEnabled, setSelectionQuoteActionEnabled),
     undoEntry(
@@ -1240,6 +1253,41 @@ export function AppearanceSettings() {
           </label>
         </SettingsItem>
         <SettingsItem
+          label={t("appearanceProjectPathLinksTitle")}
+          description={t("appearanceProjectPathLinksDescription")}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              aria-label={t("appearanceProjectPathLinksTitle")}
+              checked={projectPaths}
+              onChange={(event) =>
+                projectPathLinkStores.projectPaths.set(event.target.checked)
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceMentionedDirectoriesTitle")}
+          description={t("appearanceMentionedDirectoriesDescription")}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              aria-label={t("appearanceMentionedDirectoriesTitle")}
+              checked={mentionedDirectories}
+              disabled={!projectPaths}
+              onChange={(event) =>
+                projectPathLinkStores.mentionedDirectories.set(
+                  event.target.checked,
+                )
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
           label={t("appearanceRecentProjectPathLinksTitle")}
           description={t("appearanceRecentProjectPathLinksDescription")}
         >
@@ -1247,6 +1295,7 @@ export function AppearanceSettings() {
             <input
               type="checkbox"
               aria-label={t("appearanceRecentProjectPathLinksTitle")}
+              disabled={!projectPaths}
               checked={recentProjectPathLinksEnabled}
               onChange={(event) =>
                 setRecentProjectPathLinksEnabled(event.target.checked)

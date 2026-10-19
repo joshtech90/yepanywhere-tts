@@ -1,0 +1,155 @@
+.page {
+  padding: 24px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  min-height: 100vh;
+}
+
+.page h1 {
+  font-size: 18px;
+  margin: 0 0 8px;
+}
+
+.caption {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0 0 20px;
+}
+
+.viewer {
+  width: min(749px, 100%);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.header {
+  padding: 4px 6px;
+}
+
+.identity {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 0 2px;
+  align-items: start;
+}
+
+.identity > button {
+  width: 24px;
+  height: 24px;
+}
+
+.path {
+  color: var(--link-color);
+  font: 14px / 24px var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  grid-column: 2;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.meta a {
+  color: var(--link-color);
+  font-family: var(--font-mono, monospace);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0;
+  margin-top: 4px;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.button:hover,
+.button[aria-pressed="true"] {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
+.zoom .button {
+  flex-basis: 28px;
+  width: 28px;
+  font-size: 13px;
+}
+
+.window {
+  gap: 0;
+}
+
+.window > a[role="button"] {
+  border-color: transparent;
+  background: transparent;
+}
+
+.operator {
+  color: var(--text-primary);
+  font:
+    600 18px / 1 system-ui,
+    sans-serif;
+}
+
+.smallLetter,
+.largeLetter {
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1;
+}
+
+.smallLetter {
+  font-size: 14px;
+}
+
+.largeLetter {
+  font-size: 18px;
+}
+
+.body {
+  border-top: 1px solid var(--border-color);
+  padding: 20px;
+  background: var(--bg-primary);
+  min-height: 130px;
+}
+
+.body h2 {
+  margin: 0 0 8px;
+  font-size: 1.4em;
+}
+
+.body p {
+  font-size: inherit;
+  color: var(--text-muted);
+}
+
+@media (width <= 600px) {
+  .page {
+    padding: 12px 0;
+  }
+
+  .page > h1,
+  .caption {
+    padding-inline: 12px;
+  }
+}

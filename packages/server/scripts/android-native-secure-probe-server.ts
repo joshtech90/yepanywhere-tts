@@ -99,6 +99,10 @@ const install = new InstallService({ dataDir });
 await install.initialize();
 if (conversationProbe) {
   await mkdir(projectPath, { recursive: true });
+  const streamFile = join(projectPath, "native-stream.bin");
+  await writeFile(streamFile, "");
+  const streamBlock = Buffer.alloc(1024 * 1024, 171);
+  for (let i = 0; i < 40; i++) await appendFile(streamFile, streamBlock);
   await mkdir(nativeDir, { recursive: true });
   await writeFile(
     nativePath,

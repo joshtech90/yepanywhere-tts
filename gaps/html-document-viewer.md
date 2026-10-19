@@ -1,6 +1,7 @@
 # HTML viewing loses fidelity and lacks inline drag/pinch inspection
 
-Status: isolated interactive serving implemented; advanced HTML inspection
+Status: configured isolated serving and managed first-party relay delivery
+implemented; advanced HTML inspection
 and the broader verification matrix remain open. This gap owns richer
 display of HTML documents and their assets, including ordinary linked files
 and [project mockup exports](ui-mockup-export-bundle.md). A special bundle must
@@ -44,12 +45,18 @@ The existing global CSS around these viewers/settings remains coupled to other
 owners (3–56 shared-rule edges), so this change adds only component CSS Modules.
 Contributing-model: 6-Astra
 
-By default, `LocalMediaModal.tsx` and `FileViewer.tsx` still display HTML through
-`packages/client/src/lib/scriptlessHtmlPreview.ts` inside `sandbox=""`.
-The wrapper permits inline CSS and data/blob images, denies scripts and network
-connections, and has no font allowance. Standalone HTML viewing is constrained
-by this document/resource policy; the rich-text fragment sanitizer is a
-different mechanism. Broadening that sanitizer alone cannot fix this path.
+As of 2026-10-16 the qualified first-party hosted Chrome client automatically
+renders entry-directory HTML/assets over the encrypted relay, without an
+artifact tunnel. Native CSS/fonts/images, classic and module scripts, JSON
+fetch, and linked HTML navigation pass in the actual YA pane. This resolves
+the hosted resource-delivery portion of this gap. See the
+[managed delivery contract](../topics/active-content-security.md#managed-first-party-relay-previews)
+and [measured acceptance](../artifact-host/README.md#measured-qualification--2026-10-16).
+Explicit custom artifact origins retain precedence. Older servers and
+unqualified environments retain scriptless/source fallback; WebKit/native
+qualification, advanced gestures, state preservation and viewer-aware Back
+remain open. The scriptless sandbox allows same-origin for trusted find but
+withholds scripts; it must never execute active content on YA's origin.
 
 Reuse [media rendering and routing](../topics/media-rendering-and-routing.md)
 for authorization, transport, file links, and inline media, and the
@@ -107,6 +114,15 @@ fall back to execution on an authenticated YA origin. For hosted relay
 clients without a tunnel, the service-worker content origin in
 [the relay artifact frame sketch](sketches/relay-artifact-frame.md) replaces
 the static broker candidate.
+
+The [2026-10-16 extension viewer experiment](../research/extension-artifact-spike/README.md)
+also demonstrates a bounded byte adapter for ordinary HTML and local assets,
+inside a packaged extension sandbox over the existing encrypted relay. The
+extension worker did not intercept sandbox subresources; the adapter rewrites
+supported resource references instead. It is a viable alternative for a
+declared artifact subset, with server-enforced grants still required. A similar
+Android viewer is an untested possibility. The managed content origin is now the selected first-party hosted path;
+extension/native adapters remain possible alternatives for other environments.
 
 Static and scripted documents are both part of the target. An initial static
 slice or fully inlined adapter must leave unsupported functionality explicit.

@@ -286,7 +286,7 @@ jobs:
         if: matrix.platform == 'windows-latest'
         run: pnpm --dir packages/desktop smoke-runtime
 
-      - name: Sign bundled macOS native modules
+      - name: Sign bundled macOS native binaries
         if: matrix.platform == 'macos-latest' && env.HAS_MACOS_SIGNING == 'true'
         shell: bash
         run: |
@@ -300,8 +300,8 @@ jobs:
               codesign --verify --strict --verbose=2 "$binary"
               signed=$((signed + 1))
             fi
-          done < <(find packages/desktop/src-tauri/resources/server -type f -name '*.node' -print0)
-          echo "Signed and verified $signed bundled Mach-O native module(s)."
+          done < <(find packages/desktop/src-tauri/resources/server -type f \( -name '*.node' -o -name '*.dylib' \) -print0)
+          echo "Signed and verified $signed bundled Mach-O binaries."
 
       # --- Build Tauri app ---
       - name: Build Tauri app

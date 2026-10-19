@@ -5,6 +5,7 @@ import type { FileViewerMode } from "./FileViewer";
 import { FilePathDisplay } from "./ui/FilePathDisplay";
 
 export function SessionFilePathLink({
+  columnNumber,
   displayPath,
   filePath,
   lineEnd,
@@ -14,6 +15,7 @@ export function SessionFilePathLink({
   showCopyButton = true,
   showVersionControlLinks = true,
 }: {
+  columnNumber?: number;
   displayPath?: string;
   filePath: string;
   lineEnd?: number;
@@ -34,6 +36,7 @@ export function SessionFilePathLink({
         projectId={sessionMetadata.projectId}
         filePath={filePath}
         displayText={resolvedDisplayPath}
+        columnNumber={columnNumber}
         lineEnd={lineEnd}
         lineNumber={lineNumber}
         showLineSuffix={showLineSuffix}

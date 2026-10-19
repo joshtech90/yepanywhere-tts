@@ -118,6 +118,20 @@ describe("SessionIssuesLink", () => {
     expect(row.getAttribute("target")).toBeNull();
   });
 
+  it("stays open for new-tab clicks and closes for a navigating one", async () => {
+    state.fetch.mockResolvedValue(result(2));
+    renderLink();
+    await openMenu("2 issues and pull requests associated with this session");
+    // jsdom does not navigate; the menu's own response is what is under test.
+    const row = () => screen.getAllByRole("menuitem")[0]!;
+    row().addEventListener("click", (event) => event.preventDefault());
+    fireEvent.click(row(), { metaKey: true });
+    fireEvent.click(row(), { ctrlKey: true });
+    expect(screen.getByRole("menu")).toBeTruthy();
+    fireEvent.click(row());
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("describes a row before it is clicked", async () => {
     state.fetch.mockResolvedValue({
       items: [item(7, { sessionCount: 3, unresolved: true, kind: "pr" })],
@@ -167,6 +181,51 @@ describe("SessionIssuesLink", () => {
     });
     expect(browse.getAttribute("href")).toBe(
       "/issues?sessionId=s1&projectId=p1",
+    );
+  });
+
+  it("lists pull requests first and keeps them in view past a long ticket list", async () => {
+    const at = (minute: number) =>
+      `2026-10-13T08:${String(minute).padStart(2, "0")}:00.000Z`;
+    state.fetch.mockResolvedValue({
+      items: [
+        ...Array.from({ length: 18 }, (_, index) =>
+          item(index, { lastMentionAt: at(index) }),
+        ),
+        item(90, { kind: "pr", key: "o/r#90", lastMentionAt: at(5) }),
+        item(91, { kind: "pr", key: "o/r#91", lastMentionAt: null }),
+        item(92, { kind: "pr", key: "o/r#92", lastMentionAt: at(30) }),
+      ],
+      coverage: { settings: {}, active: false, error: null, counts: [] },
+      nextOffset: null,
+    });
+    renderLink();
+    await openMenu("21 issues and pull requests associated with this session");
+    const [prs, issues] = screen.getAllByRole("group");
+    expect(prs!.getAttribute("aria-labelledby")).toBe(
+      screen.getByText("Pull requests").id,
+    );
+    const keys = (group: HTMLElement) =>
+      Array.from(group.querySelectorAll('[role="menuitem"]')).map(
+        (row) => row.querySelector("span")?.textContent,
+      );
+    expect(keys(prs!)).toEqual(["o/r#92", "o/r#90", "o/r#91"]);
+    // The tickets fill what the PRs leave, newest mention first.
+    expect(keys(issues!)).toEqual(
+      [17, 16, 15, 14, 13, 12, 11, 10, 9].map((n) => `AUTOTEST-${n}`),
+    );
+    expect(screen.getByText("9 more in the full list")).toBeTruthy();
+  });
+
+  it("asks again in mention order when a key-ordered page is incomplete", async () => {
+    state.fetch.mockResolvedValue({
+      ...result(100, true),
+      supportedSorts: ["activity", "mentioned", "number"],
+    });
+    renderLink();
+    await waitFor(() => expect(state.fetch).toHaveBeenCalledTimes(2));
+    expect(state.fetch).toHaveBeenLastCalledWith(
+      "/issues?sessionId=s1&projectId=p1&limit=100&sort=mentioned",
     );
   });
 
@@ -225,6 +284,53 @@ describe("SessionIssuesLink", () => {
       await act(() => vi.advanceTimersByTimeAsync(2000));
       expect(screen.getByRole("button").textContent).toBe("3");
       expect(state.fetch).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows tracker states once asked for, and re-reads an old list when opened", async () => {
+    vi.useFakeTimers();
+    try {
+      const pr = (state?: "merged") => ({
+        items: [
+          item(1, {
+            kind: "pr",
+            key: "o/r#1",
+            ...(state
+              ? {
+                  trackerStatus: {
+                    state,
+                    checkedAt: new Date(Date.now()).toISOString(),
+                  },
+                }
+              : {}),
+          }),
+        ],
+        coverage: { settings: {}, active: false, error: null, counts: [] },
+        nextOffset: null,
+      });
+      state.fetch.mockResolvedValue({ ...pr(), statusRefreshing: true });
+      renderLink();
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      // The server is asking the tracker, so the header asks again soon.
+      state.fetch.mockResolvedValue(pr("merged"));
+      await act(() => vi.advanceTimersByTimeAsync(1500));
+      expect(state.fetch).toHaveBeenCalledTimes(2);
+      fireEvent.click(screen.getByRole("button"));
+      const row = screen.getAllByRole("menuitem")[0]!;
+      expect(row.textContent).toBe("o/r#1Title 1Merged");
+      expect(row.getAttribute("data-tooltip")).toContain(
+        "Merged on the tracker, checked 0m ago",
+      );
+      // A fresh list opens without a request; an old one is read again.
+      expect(state.fetch).toHaveBeenCalledTimes(2);
+      fireEvent.keyDown(document, { key: "Escape" });
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      const before = state.fetch.mock.calls.length;
+      fireEvent.click(screen.getByRole("button"));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(state.fetch).toHaveBeenCalledTimes(before + 1);
     } finally {
       vi.useRealTimers();
     }

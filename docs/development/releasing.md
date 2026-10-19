@@ -46,6 +46,16 @@ Quick reference:
 scripts/release-website.sh 1.5.3
 ```
 
+## Releasing the Chrome extension
+
+Update and commit `packages/browser-extension/CHANGELOG.md`, then run
+`scripts/release-extension.sh <version>` from a clean `main` checkout. The
+helper bumps the independent extension version and pushes its release tag.
+CI accepts the exact ZIP, submits it through keyless Google authentication,
+and records a GitHub release. Google review remains asynchronous. See
+[Chrome Web Store publication](../distribution/chrome-extension/README.md)
+for setup, read-only verification and listing/privacy requirements.
+
 ## Deploying to Staging
 
 The staging deploy runbook is host-specific and intentionally kept out of this public

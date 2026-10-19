@@ -132,6 +132,8 @@ function saveAttachmentStateToStorage(
   try {
     const previousValue = draftStorage.getItem(key);
     const nextValue = draftStorageValueForAttachments(value, previousValue);
+    // As in `persistSessionDraftEnvelope`: an unchanged value is no edit.
+    if (nextValue === previousValue) return;
     if (nextValue) {
       draftStorage.setItem(key, nextValue);
     } else {
@@ -313,6 +315,16 @@ export function useDraftPersistence(
       updateStoredSessionDraftIndex(previousSessionDraft);
     }
 
+    // A ref/layout handoff can edit before this first passive effect. An
+    // all-whitespace edit is intentionally absent from durable storage, so
+    // reading it back would erase the first typed space. A new draft identity
+    // still hydrates normally; the initial identity was loaded by useState.
+    if (
+      !keyChanged &&
+      !sessionDraftChanged &&
+      composerEditedSinceHydrationRef.current
+    )
+      return;
     keyRef.current = key;
     sessionDraftRef.current = sessionDraft;
     composerEditedSinceHydrationRef.current = false;

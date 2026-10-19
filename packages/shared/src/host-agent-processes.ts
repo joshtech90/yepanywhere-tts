@@ -1,3 +1,4 @@
+import type { UrlProjectId } from "./projectId.js";
 import type { ProviderName } from "./types.js";
 
 export type HostAgentProcessSupervision = "ya" | "external";
@@ -15,6 +16,15 @@ export interface HostAgentProcessObservation {
   supervision: HostAgentProcessSupervision;
   /** Exact join to the existing Supervisor inventory, when YA owns the PID. */
   supervisorProcessId?: string;
+  /**
+   * External roots only: the provider session this process runs, when the
+   * provider's own pid record names it. Absent from older servers.
+   */
+  sessionId?: string;
+  /** Present only when YA's catalog lists that session in a known project. */
+  projectId?: UrlProjectId;
+  /** The session's YA display title, when it has one beyond "Untitled". */
+  sessionTitle?: string;
   startedAt: string;
   sampledAt: string;
   /** Recent root and logical process-tree CPU deltas. */

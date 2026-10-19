@@ -53,6 +53,27 @@ command is not persisted as a user content turn, so suppressing the echo is
 sufficient for the live path. If a provider ever did persist it, that becomes a
 JSONL-classification problem — see Part 2.
 
+### Codex compaction output
+
+Codex may persist a readable compaction handoff as an assistant message with
+top-level `metadata.compaction_output: true`, including `phase: "final_answer"`.
+This is internal compaction output, not an ordinary assistant answer. YA shows
+it through the existing **Context compacted** disclosure, collapsed by default;
+expanding it retains access to the full summary, rendered as Markdown using
+the same safe renderer as assistant prose. Raw provider metadata stays plain
+text. If Markdown augmentation fails, the original summary remains readable.
+The expanded summary uses primary text color; plain-text details and code
+blocks use the theme's code background, remaining readable in both themes.
+
+When the following `compacted` checkpoint supplies the summary, that checkpoint
+owns the single disclosure and its pagination identity. Token accounting between
+the output and checkpoint does not create a second summary. A partial rollout
+read before the checkpoint arrives still exposes the marked output as a
+collapsed disclosure. An empty checkpoint must not discard that readable output.
+Ordinary assistant messages without the marker retain their normal rendering,
+regardless of their phase, headings, or wording. No new client/server capability
+or wire format is required.
+
 ## Part 2 — persisted injected rows
 
 Some injected rows are **real JSONL transcript messages**, not optimistic

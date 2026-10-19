@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import {
+  PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY,
   PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
   PUBLIC_SHARE_SESSION_CHUNK_MAX_BYTES,
   PUBLIC_SHARE_SESSION_COMPRESSED_MAX_BYTES,
@@ -330,6 +331,46 @@ describe("publicShareRelay bounded frozen transport", () => {
       "/public-api/shares/bearer-secret/session-chunks?viewerId=viewer-1234&cursor=opaque-next",
     ]);
     expect(FakeWebSocket.maxOutstandingRequests).toBe(1);
+  });
+
+  it("keeps a chunk-loaded live share live so incremental polling resumes", async () => {
+    const compressed = Uint8Array.from(gzipSync(JSON.stringify(session)));
+    const metadata = metadataFor(compressed.byteLength);
+    metadata.mode = "live";
+    metadata.capabilities = [PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY];
+
+    FakeWebSocket.onRequest = (socket, request) => {
+      socket.respond(
+        request,
+        request.path.includes("/metadata?")
+          ? jsonResponse(metadata)
+          : chunkResponse(compressed, {
+              final: true,
+              index: 0,
+              offset: 0,
+              total: compressed.byteLength,
+            }),
+      );
+    };
+
+    const result = await fetchPublicShareV2ViaRelay({
+      relayUrl: "wss://relay.invalid/ws",
+      relayUsername: "host",
+      secret: "bearer-secret",
+      viewerId: "viewer-1234",
+    });
+
+    expect(result.share.session).toEqual(session);
+    expect(result.share.share).toMatchObject({
+      mode: "live",
+      updatedAt: session.updatedAt,
+    });
+    expect(
+      FakeWebSocket.instances[0]!.requests.map((request) => request.path),
+    ).toEqual([
+      "/public-api/shares/bearer-secret/metadata?viewerId=viewer-1234",
+      "/public-api/shares/bearer-secret/session-chunks?viewerId=viewer-1234",
+    ]);
   });
 
   it("fails promptly when the socket closes between capable chunks", async () => {

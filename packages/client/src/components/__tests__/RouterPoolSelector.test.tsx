@@ -18,6 +18,7 @@ import {
   routerAccountIssue,
   routerBindingChip,
   routerPoolMembers,
+  restoreRouterSelection,
   routedModels,
   tightestRemaining,
 } from "../RouterPoolSelector";
@@ -86,6 +87,38 @@ const POLICIES = [
   { id: "most-remaining", label: "Most remaining" },
   { id: "weekly-pace", label: "Weekly pace" },
 ];
+it("restores only usable pool, account and policy preferences", () => {
+  const data = overview();
+  const preference = {
+    sourceKey: "local",
+    poolId: "work",
+    accountId: "",
+    policy: "weekly-pace",
+  };
+  const restore = (
+    value = preference,
+    snapshot: AgentAuthRouterOverview | null = data,
+    provider = "claude",
+    selectedModel = "opus",
+    thinking: import("@yep-anywhere/shared").ThinkingOption = "on:high",
+  ) =>
+    restoreRouterSelection(value, snapshot, provider, selectedModel, thinking);
+  expect(restore()).toEqual(preference);
+  expect(restore(preference, null)).toBeNull();
+  expect(restore({ ...preference, poolId: "deleted" })).toBeNull();
+  expect(restore(preference, data, "codex")).toBeNull();
+  expect(restore(preference, data, "claude", "unavailable")).toBeNull();
+  expect(restore(preference, data, "claude", "opus", "on:low")).toBeNull();
+  expect(restore({ ...preference, policy: "removed" })).toBeNull();
+  expect(restore({ ...preference, accountId: "deleted" })).toBeNull();
+  const accountId = data.pools[0]!.accountIds[0]!;
+  expect(restore({ ...preference, accountId })).toMatchObject({ accountId });
+  const disabled = structuredClone(data);
+  disabled.accounts.forEach((account) => {
+    account.enabled = false;
+  });
+  expect(restore(preference, disabled)).toBeNull();
+});
 function overview(): AgentAuthRouterOverview {
   return {
     observedAt: "now",
@@ -339,7 +372,7 @@ function Discovery({
 }) {
   const state = useRouterDiscovery(provider, enabled);
   return (
-    <output>
+    <output data-loaded={state.loaded}>
       {state.data?.pools[0]?.name ?? (state.error ? "error" : "empty")}
     </output>
   );
@@ -360,12 +393,18 @@ it("coalesces mount and focus, discards old-provider responses, and refreshes on
   );
   fireEvent.focus(window);
   expect(fixture.selection).toHaveBeenCalledTimes(1);
+  expect(
+    screen
+      .getAllByText("empty")
+      .every((element) => element.dataset.loaded === "false"),
+  ).toBe(true);
   fixture.selection.mockResolvedValue({
     ...overview(),
     pools: [{ ...overview().pools[0]!, name: "Codex" }],
   });
   view.rerender(<Discovery provider="codex" />);
   await screen.findByText("Codex");
+  expect(screen.getByText("Codex").dataset.loaded).toBe("true");
   await act(async () => resolve(overview()));
   expect(screen.queryByText("Work")).toBeNull();
   fireEvent(window, new Event("router-connection-changed"));
@@ -382,6 +421,7 @@ it("does not discover without the overall feature and hides data immediately on 
   view.rerender(<Discovery />);
   expect(screen.queryByText("Work")).toBeNull();
   await screen.findByText("error");
+  expect(screen.getByText("error").dataset.loaded).toBe("true");
 });
 it("derives account reasons from the overview, blocking only on catalog facts", () => {
   const t = ((key: string, params?: Record<string, unknown>) =>

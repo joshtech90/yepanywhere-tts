@@ -2,16 +2,25 @@
    outline row so expansion never couples sibling results. */
 .root {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
 }
 
+/* Typography follows the shared tool summary, like Read and Edit rows: a
+   monospace file link and a smaller muted suffix. */
 .rowHeader {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
   min-height: 20px;
   min-width: 0;
   padding: 2px 4px;
+}
+
+.summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
 }
 
 .filename {
@@ -19,7 +28,8 @@
   padding: 0;
   overflow: hidden;
   color: var(--text-primary, #ccc);
-  font: inherit;
+  font-family: var(--font-mono);
+  font-size: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
   border: none;
@@ -27,12 +37,12 @@
 }
 
 button.filename {
+  color: var(--vscode-textLink-foreground, #3794ff);
   cursor: pointer;
 }
 
 button.filename:hover,
 button.filename:focus-visible {
-  color: var(--link-color, #4ea1f3);
   text-decoration: underline;
 }
 
@@ -40,6 +50,10 @@ button.filename:focus-visible {
 .dimensions {
   flex: 0 0 auto;
   color: var(--text-muted, #888);
+}
+
+.suffix {
+  font-size: 0.85em;
 }
 
 .dimensions {

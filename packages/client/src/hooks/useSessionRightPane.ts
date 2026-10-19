@@ -60,6 +60,8 @@ export function useSessionRightPane(
     projectId?: string;
     /** False for a limited user, whom the operator app-links route refuses. */
     fetchAppLinks?: boolean;
+    /** Stop failures outlive the pane, which closes before the request finishes. */
+    onStopError?: (message: string) => void;
   } = {},
 ) {
   const { sessionRightPaneEnabled } = useSessionRightPaneSetting();
@@ -96,7 +98,6 @@ export function useSessionRightPane(
     saveLatest,
     dismiss: dismissApps,
   } = useSessionApps(key);
-  const [killError, setKillError] = useState<string>();
   const [killing, setKilling] = useState(false);
   const initialized = useRef(new Set<string>());
   const announced = useRef(new Set<string>());
@@ -269,10 +270,6 @@ export function useSessionRightPane(
     [vhostName, selectedUrl],
   );
   const { listener, onFrameLoad } = useVhostListener(listenerTarget, viewerId);
-  // A fresh listener to watch supersedes whatever the last stop attempt reported.
-  useEffect(() => {
-    if (listenerTarget) setKillError(undefined);
-  }, [listenerTarget]);
   useEffect(() => {
     if (owned && !selected) clearSessionViewer(owned.id);
   }, [owned, selected]);
@@ -298,7 +295,6 @@ export function useSessionRightPane(
   const kill = async () => {
     if (!canKill || !selected || killing) return;
     setKilling(true);
-    setKillError(undefined);
     if (!selected.artifactToken)
       dismissApps(current.apps.map((app) => app.announcementId));
     // Dismiss immediately; a pending stop request must not hold the pane open.
@@ -320,7 +316,9 @@ export function useSessionRightPane(
         );
       }
     } catch (error) {
-      setKillError(error instanceof Error ? error.message : String(error));
+      options.onStopError?.(
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       setKilling(false);
     }
@@ -382,8 +380,6 @@ export function useSessionRightPane(
     close: () => (paneViewer ?? owned)?.close(),
     canKill,
     killing,
-    killError,
-    accessError: access.error,
     kill,
   };
 }

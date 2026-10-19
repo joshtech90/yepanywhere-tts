@@ -201,7 +201,10 @@ mappings, and operational indexing/resolution/deletion state. Migration 7 only
 schedules its URL-learning and candidate backfill; bounded post-startup worker
 batches own the conversion.
 Opening the database does not enable that experiment.
-Version 10 adds [session metadata](#session-metadata).
+Version 10 adds [session metadata](#session-metadata). Version 11 adds durable
+GitHub status facts and retry timestamps, keyed to existing issue identities.
+It performs no network access or transcript acquisition; rows fill only when
+viewed with the relevant feature enabled.
 
 One statically registered, consecutive migration sequence owns `user_version`.
 Historical SQL lives in frozen named modules; released migrations are append-only.

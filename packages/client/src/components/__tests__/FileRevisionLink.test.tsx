@@ -1,6 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FileRevisionLink, formatRevisionAge } from "../FileRevisionLink";
+import { I18nProvider } from "../../i18n";
 
 const mocks = vi.hoisted(() => ({
   getGitFileRevision: vi.fn(),
@@ -16,8 +17,10 @@ vi.mock("../../hooks/useRemoteBasePath", () => ({
 }));
 vi.mock("../../hooks/useVersion", () => ({
   useRetainedVersionInfo: () => mocks.version,
+  useVersion: () => ({ version: mocks.version }),
 }));
-vi.mock("../../lib/clientSummaryStore", () => ({
+vi.mock("../../lib/clientSummaryStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/clientSummaryStore")>()),
   useClientSummarySourceKey: () => mocks.sourceKey,
 }));
 describe("FileRevisionLink", () => {
@@ -44,13 +47,15 @@ describe("FileRevisionLink", () => {
     });
 
     render(
-      <FileRevisionLink
-        projectId="project-1"
-        path="src/file.ts"
-        origPath="src/old.ts"
-        dirtyLabel="dirty"
-        uncommittedLabel="uncommitted"
-      />,
+      <I18nProvider>
+        <FileRevisionLink
+          projectId="project-1"
+          path="src/file.ts"
+          origPath="src/old.ts"
+          dirtyLabel="dirty"
+          uncommittedLabel="uncommitted"
+        />
+      </I18nProvider>,
     );
 
     const link = await screen.findByRole("link", { name: "1234567" });
@@ -66,6 +71,14 @@ describe("FileRevisionLink", () => {
       origPath: "src/old.ts",
       rev: undefined,
     });
+    fireEvent.contextMenu(link);
+    await waitFor(() =>
+      expect(mocks.getGitFileRevision).toHaveBeenLastCalledWith("project-1", {
+        path: "src/old.ts",
+        origPath: undefined,
+        rev: "1234567890abcdef",
+      }),
+    );
   });
 
   it("makes no request when the server lacks the capability", async () => {

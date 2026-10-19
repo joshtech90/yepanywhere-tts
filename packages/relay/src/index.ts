@@ -7,7 +7,7 @@ import { cors } from "hono/cors";
 import { WebSocketServer } from "ws";
 import { getClientIp } from "./client-ip.js";
 import { loadConfig } from "./config.js";
-import { ConnectionManager } from "./connections.js";
+import { ConnectionManager, silentPairOptions } from "./connections.js";
 import { createDb } from "./db.js";
 import { createLogger } from "./logger.js";
 import { createMuxHandler } from "./mux-handler.js";
@@ -56,13 +56,16 @@ if (reclaimed > 0) {
   logger.info({ count: reclaimed }, "Reclaimed inactive usernames");
 }
 
-// Create connection manager
-const connectionManager = new ConnectionManager(registry);
 const unauthenticatedLimiter = new UnauthenticatedConnectionLimiter(
   config.unauthenticatedConnectionLimitPerIp,
   config.unauthenticatedConnectionTimeoutMs,
 );
 const telemetry = createRelayTelemetryRecorder(config.telemetry, logger);
+// Create connection manager
+const connectionManager = new ConnectionManager(
+  registry,
+  silentPairOptions(config, logger, telemetry),
+);
 
 // Create Hono app for HTTP endpoints
 const app = new Hono();

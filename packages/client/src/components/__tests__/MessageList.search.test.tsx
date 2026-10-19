@@ -542,8 +542,12 @@ describe("MessageList reverse search", () => {
           container.querySelector(`[data-render-id="${targetId}"]`),
         ).not.toBeNull();
       });
-      expect(scrollTo).toHaveBeenCalledWith({ top: 812, behavior: "auto" });
-      expect(getScrollTop()).toBe(812);
+      // Closing the search commits before its deferred scroll alignment.
+      // Observe the alignment itself rather than only the removed textbox.
+      await waitFor(() => {
+        expect(scrollTo).toHaveBeenCalledWith({ top: 812, behavior: "auto" });
+        expect(getScrollTop()).toBe(812);
+      });
       expect(
         container.querySelectorAll("[data-render-id]").length,
       ).toBeLessThanOrEqual(48);

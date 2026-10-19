@@ -1,6 +1,7 @@
 import type { HttpBindings } from "@hono/node-server";
 import {
   DEFAULT_RELAY_URL,
+  PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_FREEZE_CONFIRMATION,
   PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
   PUBLIC_SHARE_SESSION_CHUNK_MAX_BYTES,
@@ -559,6 +560,92 @@ describe("public share public routes", () => {
     expect(materialize).not.toHaveBeenCalled();
   });
 
+  it("pulls a live share larger than the relay response cap in chunks", async () => {
+    const session = makeSession({
+      messages: [
+        makeUserMessage(randomBytes(400_000).toString("base64")),
+        makeAssistantMessage("x".repeat(LEGACY_PUBLIC_SHARE_RELAY_MAX_BYTES), {
+          uuid: "00000000-0000-4000-8000-000000000002",
+        }),
+      ],
+    });
+    const { secret } = await service.createShare({
+      mode: "live",
+      title: "Large live share",
+      source: { projectId, sessionId: "session-1" },
+    });
+    const publicRoutes = createPublicSharePublicRoutes({
+      publicShareService: service,
+      loadSession: vi.fn(async () => structuredClone(session)),
+      getPublicSharesEnabled: () => true,
+    });
+    const app = new Hono<{ Bindings: HttpBindings }>();
+    app.route("/public-api/shares", publicRoutes);
+    const connState = createConnectionState();
+    let requestCount = 0;
+    const relayGet = async (path: string): Promise<RelayResponse> => {
+      const sent: YepMessage[] = [];
+      requestCount += 1;
+      await handleRequest(
+        {
+          type: "request",
+          id: `live-${requestCount}`,
+          method: "GET",
+          path: `/public-api/shares/${secret}${path}`,
+        },
+        (message) => sent.push(message),
+        { send: () => undefined, close: () => undefined },
+        app,
+        "http://localhost",
+        connState,
+      );
+      expect(sent).toHaveLength(1);
+      return sent[0] as RelayResponse;
+    };
+
+    const metadataResponse = await relayGet("/metadata?viewerId=viewer-live");
+    expect(metadataResponse.status).toBe(200);
+    const metadata = metadataResponse.body as {
+      mode: string;
+      capabilities: string[];
+      sessionChunks: { compressedBytes: number; revisionId: string };
+    };
+    expect(metadata.mode).toBe("live");
+    expect(metadata.capabilities).toEqual([
+      PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY,
+    ]);
+
+    const compressed: Buffer[] = [];
+    let cursor: string | undefined;
+    while (true) {
+      const params = new URLSearchParams({ viewerId: "viewer-live" });
+      if (cursor) params.set("cursor", cursor);
+      const response = await relayGet(`/session-chunks?${params}`);
+      expect(response.status).toBe(200);
+      const body = response.body as { _binary: true; data: string };
+      compressed.push(Buffer.from(body.data, "base64"));
+      expect(response.headers?.["x-yep-public-share-revision"]).toBe(
+        metadata.sessionChunks.revisionId,
+      );
+      if (response.headers?.["x-yep-public-share-final"] === "true") break;
+      cursor = response.headers?.["x-yep-public-share-next-cursor"];
+      expect(cursor).toEqual(expect.any(String));
+    }
+
+    expect(compressed.length).toBeGreaterThan(1);
+    const joined = Buffer.concat(compressed);
+    expect(joined.byteLength).toBe(metadata.sessionChunks.compressedBytes);
+    const pulled = JSON.parse(gunzipSync(joined).toString("utf-8"));
+    expect(pulled.messages).toHaveLength(2);
+    expect(pulled.messages[1].message.content[0].text).toBe(
+      "x".repeat(LEGACY_PUBLIC_SHARE_RELAY_MAX_BYTES),
+    );
+
+    // The final chunk releases the transient snapshot.
+    const replay = await relayGet("/session-chunks?viewerId=viewer-live");
+    expect(replay.status).toBe(409);
+  });
+
   it("selects frozen viewer metadata and ignores inherited snapshot names", async () => {
     const { secret } = await service.createShare({
       mode: "live",
@@ -614,8 +701,10 @@ describe("public share public routes", () => {
       linkedFileMode: viewerMetadata.sessionChunks.linkedFileMode,
     });
     expect(liveMetadataResponse.status).toBe(200);
-    expect(liveMetadata).toMatchObject({ mode: "live" });
-    expect(liveMetadata).not.toHaveProperty("sessionChunks");
+    expect(liveMetadata).toMatchObject({
+      mode: "live",
+      capabilities: [PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY],
+    });
     await expect(viewerResponse.json()).resolves.toMatchObject({
       share: {
         mode: "frozen",

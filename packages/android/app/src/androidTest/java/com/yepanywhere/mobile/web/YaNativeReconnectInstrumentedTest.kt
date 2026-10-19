@@ -358,6 +358,14 @@ class YaNativeReconnectInstrumentedTest {
             val errors = test.evaluate(scenario, "JSON.stringify(window.__syntheticErrors ?? [])")
             assertEquals("Native fabricated responses; native phases=$phases", emptyList<String>(), synthetic)
             assertEquals("Page showed errors the server never sent; native phases=$phases", "\"[]\"", errors)
+            val ui = test.evaluate(scenario, "JSON.stringify(window.__nativeStatusEdges ?? [])")
+            scenario.onActivity { activity ->
+                val proof = activity.nativeTransportDiagnostics() ?: org.json.JSONObject()
+                proof.remove("profileId")
+                proof.put("nativePhases", org.json.JSONArray(phases.map { it.substringBefore(" attempt=") }))
+                proof.put("uiEdges", org.json.JSONArray(org.json.JSONTokener(ui).nextValue() as String))
+                InstrumentationRegistry.getInstrumentation().sendStatus(2, android.os.Bundle().apply { putString("yaNativeRecoveryProof", proof.toString()) })
+            }
         }
     }
 
@@ -503,6 +511,18 @@ class YaNativeReconnectInstrumentedTest {
         evaluate(scenario, """
             (() => {
               window.__syntheticErrors = [];
+              window.__nativeStatusEdges = [];
+              let lastStatus;
+              const sampleStatus = () => {
+                const state = document.querySelector('[data-connection-status]')?.getAttribute('data-connection-status') ?? 'ready';
+                if (state !== lastStatus) {
+                  lastStatus = state;
+                  if (window.__nativeStatusEdges.length === 128) window.__nativeStatusEdges.shift();
+                  window.__nativeStatusEdges.push({atMs:Math.round(performance.now()),state});
+                }
+              };
+              new MutationObserver(sampleStatus).observe(document.body, {subtree:true, childList:true, attributes:true, attributeFilter:['data-connection-status']});
+              sampleStatus();
               const pattern = /Native connection unavailable/;
               const note = (source, text) => {
                 const match = String(text).match(/[^\n]{0,80}Native connection unavailable[^\n]{0,80}/);

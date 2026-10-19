@@ -4,6 +4,7 @@ import { ComposerRecents } from "./ComposerRecents";
 import { useComposerHistoryScope } from "../hooks/useComposerHistoryScope";
 import { NewSessionQueueMark } from "./NewSessionQueueMark";
 import { useComposerVoiceRef } from "../hooks/useComposerVoiceRef";
+import { escapeInterruptDisabledSetting } from "../hooks/useEscapeInterruptDisabled";
 import {
   type ChosenNewSessionQueueTarget,
   type NewSessionQueueTarget,
@@ -24,6 +25,9 @@ import {
   getCanonicalInvocationToken,
   getInvocationCompletionQuery,
   getInvocationNames,
+  normalizePatientCompactPercent,
+  PATIENT_TOPIC_SHIFT_CAPABILITY,
+  serverHasCapability,
   type SessionLivenessSnapshot,
   type SlashCommand,
   type ThinkingMode,
@@ -75,6 +79,7 @@ import {
 } from "../lib/composerTurnRecall";
 import { hasCoarsePointer } from "../lib/deviceDetection";
 import { MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO } from "../lib/mobileKeyboardViewport";
+import { programmaticFocus } from "../lib/programmaticFocus";
 import { focusComposerForSpeechTransition } from "../lib/speechComposerFocus";
 import type {
   SpeechTranscriptionContext,
@@ -884,6 +889,18 @@ export function MessageInput({
   // of promoting at the next end of turn.
   const patientQueueEnabled =
     version?.clientDefaults?.patientQueueDefault ?? false;
+  // Patient items record their entry point and a compact-first threshold
+  // only on servers that honor them; 100% (or unset) is Off.
+  const topicShiftSupported = serverHasCapability(
+    version,
+    PATIENT_TOPIC_SHIFT_CAPABILITY,
+  );
+  const patientQueueCompactPercent = normalizePatientCompactPercent(
+    version?.clientDefaults?.patientQueueCompactAtPercent,
+  );
+  const topicShiftCompactPercent = normalizePatientCompactPercent(
+    version?.clientDefaults?.topicShiftCompactAtPercent,
+  );
   const projectQueueCtrlEnterEnabled =
     version?.clientDefaults?.projectQueueCtrlEnterEnabled ??
     DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED;
@@ -1467,7 +1484,7 @@ export function MessageInput({
       );
       consumeSpeechAttribution();
       if (focusAfterSubmit) {
-        textareaRef.current?.focus();
+        programmaticFocus(textareaRef.current);
       } else {
         textareaRef.current?.blur();
       }
@@ -1528,7 +1545,7 @@ export function MessageInput({
       );
       consumeSpeechAttribution();
       if (focusAfterSubmit) {
-        textareaRef.current?.focus();
+        programmaticFocus(textareaRef.current);
       } else {
         textareaRef.current?.blur();
       }
@@ -1570,7 +1587,7 @@ export function MessageInput({
       }
       onDone();
       if (focusAfterSubmit) {
-        textareaRef.current?.focus();
+        programmaticFocus(textareaRef.current);
       } else {
         textareaRef.current?.blur();
       }
@@ -1696,8 +1713,9 @@ export function MessageInput({
               controls.restoreFromStorage();
             }
           }
+          // The command ran across an await; the user may be in the app now.
           if (focusAfterSubmit) {
-            textareaRef.current?.focus();
+            programmaticFocus(textareaRef.current);
           } else {
             textareaRef.current?.blur();
           }
@@ -1736,8 +1754,9 @@ export function MessageInput({
         onSend(message, metadata);
         consumeSpeechAttribution();
         if (focusAfterSubmit) {
-          // Refocus the textarea so user can continue typing.
-          textareaRef.current?.focus();
+          // Refocus the textarea so user can continue typing, unless a
+          // settled speech delivery finds the user in an embedded app.
+          programmaticFocus(textareaRef.current);
         } else {
           textareaRef.current?.blur();
         }
@@ -1769,6 +1788,7 @@ export function MessageInput({
       submissionSnapshot?: SubmissionCompositionSnapshot,
       preserveComposer = false,
       focusAfterSubmit = true,
+      topicShift = false,
     ) => {
       const override =
         typeof messageOverride === "string" ? messageOverride : undefined;
@@ -1798,10 +1818,25 @@ export function MessageInput({
 
       const hasContent = hasComposerDraftContent(finalText, attachments.length);
       if (hasContent && !disabled && queueHandler) {
+        const patientSource = topicShift
+          ? "topic-shift"
+          : patientQueueEnabled
+            ? "patient-default"
+            : null;
         const metadata = buildSubmissionMetadata(
-          patientQueueEnabled ? "patient" : "deferred",
+          patientSource ? "patient" : "deferred",
           submissionSnapshot,
         );
+        if (patientSource && topicShiftSupported) {
+          const compactPercent =
+            patientSource === "topic-shift"
+              ? topicShiftCompactPercent
+              : patientQueueCompactPercent;
+          metadata.patientSource = patientSource;
+          if (compactPercent !== undefined) {
+            metadata.compactAboveContextPercent = compactPercent;
+          }
+        }
         if (!preserveComposer) {
           controls.clearInput();
           resetCompositionMetadata();
@@ -1819,7 +1854,7 @@ export function MessageInput({
         );
         consumeSpeechAttribution();
         if (focusAfterSubmit) {
-          textareaRef.current?.focus();
+          programmaticFocus(textareaRef.current);
         } else {
           textareaRef.current?.blur();
         }
@@ -1835,6 +1870,9 @@ export function MessageInput({
       effectivePrimaryActionKind,
       handleSyntheticDoneSubmission,
       patientQueueEnabled,
+      topicShiftSupported,
+      topicShiftCompactPercent,
+      patientQueueCompactPercent,
       attachments.length,
       buildSubmissionMetadata,
       consumeSpeechAttribution,
@@ -1891,7 +1929,7 @@ export function MessageInput({
         );
         consumeSpeechAttribution();
         if (focusAfterSubmit) {
-          textareaRef.current?.focus();
+          programmaticFocus(textareaRef.current);
         } else {
           textareaRef.current?.blur();
         }
@@ -2157,6 +2195,11 @@ export function MessageInput({
       void handleSubmit(undefined, "steer", focusAfterSubmit);
     });
   }, [handleSubmit, runComposerPointerDelivery]);
+  const handleTopicShiftPointerDelivery = useCallback(() => {
+    runComposerPointerDelivery((focusAfterSubmit) => {
+      handleQueue(undefined, undefined, false, focusAfterSubmit, true);
+    });
+  }, [handleQueue, runComposerPointerDelivery]);
   const handleProjectQueuePointerDelivery = useCallback(() => {
     runComposerPointerDelivery(handleProjectQueue);
   }, [handleProjectQueue, runComposerPointerDelivery]);
@@ -2914,6 +2957,7 @@ export function MessageInput({
       !e.altKey &&
       isRunning &&
       isThinking &&
+      !escapeInterruptDisabledSetting.read() &&
       onStop
     ) {
       e.preventDefault();
@@ -2932,6 +2976,24 @@ export function MessageInput({
       if (recallLastSubmission()) {
         e.preventDefault();
       }
+      return;
+    }
+
+    // ↓ on an emptied composer undoes the ↑ recall: leave correction mode
+    // rather than leaving its banner to wrap the next fresh message.
+    if (
+      e.key === "ArrowDown" &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      correctionActive &&
+      onCancelCorrection &&
+      !text.trim() &&
+      attachments.length === 0
+    ) {
+      e.preventDefault();
+      onCancelCorrection();
       return;
     }
 
@@ -3672,6 +3734,13 @@ export function MessageInput({
         : undefined,
     hidePrimaryDeliveryActions: newSessionOptionsMode !== null,
     onQueue: onQueue ? handleQueuePointerDelivery : undefined,
+    onTopicShift:
+      onQueue &&
+      topicShiftSupported &&
+      !forkSummaryMode &&
+      !newSessionOptionsMode
+        ? handleTopicShiftPointerDelivery
+        : undefined,
     onProjectQueue:
       onProjectQueue && !forkSummaryMode && !newSessionOptionsMode
         ? handleProjectQueuePointerDelivery

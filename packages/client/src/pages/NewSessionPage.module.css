@@ -1,4 +1,31 @@
-/* A link that reads as the header's App button. */
 .appButton {
-  text-decoration: none;
+  min-height: 36px;
+}
+
+.appButton[aria-pressed="true"] {
+  color: var(--app-yep-green);
+  border-color: var(--app-yep-green);
+}
+
+.workspace {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.formColumn {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+.appColumn {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.formColumn[hidden],
+.appColumn[hidden] {
+  display: none;
 }

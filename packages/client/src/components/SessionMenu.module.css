@@ -48,6 +48,13 @@
   overflow-y: auto;
 }
 
+.shortcut {
+  margin-left: auto;
+  padding-left: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
 .dropdown button {
   display: flex;
   align-items: center;
@@ -75,6 +82,12 @@
 
 .dropdown button:disabled:hover {
   background: transparent;
+}
+
+@media (pointer: coarse) {
+  .dropdown button {
+    min-height: 44px;
+  }
 }
 
 .dropdown button svg {

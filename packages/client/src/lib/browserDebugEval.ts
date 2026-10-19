@@ -18,22 +18,22 @@ function scriptSource(
     mode === "expression"
       ? `await (\n${code}\n)`
       : `await (async () => {\n${code}\n})()`;
-  return `${bridge}.started = true;
-void (async () => {
+  return `void (async () => {
+  const bridge = ${bridge};
+  if (!bridge) return;
+  bridge.started = true;
   try {
-    ${bridge}.resolve(${evaluation});
+    bridge.resolve(${evaluation});
   } catch (error) {
-    ${bridge}.reject(error);
+    bridge.reject(error);
   }
-})();
-//# sourceURL=yep-browser-debug-${mode}.js`;
+})();`;
 }
 
 /**
  * Execute an explicitly granted browser-debug command without `eval` or
- * `Function`. YA's served-page CSP permits inline scripts while deliberately
- * denying runtime compilation, so a short-lived script element is the narrow
- * execution boundary that preserves that policy.
+ * `Function`. Both the built HTML and server CSP permit Blob scripts while
+ * denying runtime compilation and unapproved inline scripts in production.
  */
 export function executeBrowserDebugCode(
   code: string,
@@ -43,18 +43,24 @@ export function executeBrowserDebugCode(
     const bridgeKey = `${BRIDGE_PREFIX}${Date.now()}_${bridgeSequence++}`;
     const debugGlobal = globalThis as unknown as Record<string, unknown>;
     let scriptError: unknown = null;
-    let policyViolation = false;
     let settled = false;
     let deadline: ReturnType<typeof setTimeout> | null = null;
+    let script: HTMLScriptElement | null = null;
+
+    const releaseScript = () => {
+      if (!script) return;
+      script.onload = null;
+      script.onerror = null;
+      script.remove();
+      URL.revokeObjectURL(script.src);
+      script = null;
+    };
 
     const cleanup = () => {
       if (deadline) clearTimeout(deadline);
       deadline = null;
+      releaseScript();
       window.removeEventListener("error", onScriptError);
-      document.removeEventListener(
-        "securitypolicyviolation",
-        onPolicyViolation,
-      );
       delete debugGlobal[bridgeKey];
     };
     const settle = (outcome: "resolve" | "reject", value: unknown) => {
@@ -70,26 +76,46 @@ export function executeBrowserDebugCode(
       reject: (error) => settle("reject", error),
     };
     const onScriptError = (event: ErrorEvent) => {
-      if (bridge.started) return;
+      if (bridge.started || event.filename !== script?.src) return;
       scriptError = event.error ?? new SyntaxError(event.message);
     };
-    const onPolicyViolation = (event: SecurityPolicyViolationEvent) => {
-      if (event.violatedDirective !== "script-src-elem") return;
-      policyViolation = true;
-    };
     const run = (mode: "expression" | "statements") => {
+      if (settled) return;
+      releaseScript();
       bridge.started = false;
       scriptError = null;
-      const script = document.createElement("script");
+      script = document.createElement("script");
       script.dataset.yaBrowserDebugEval = mode;
-      script.textContent = scriptSource(bridgeKey, code, mode);
+      script.src = URL.createObjectURL(
+        new Blob([scriptSource(bridgeKey, code, mode)], {
+          type: "text/javascript",
+        }),
+      );
+      script.onerror = () =>
+        settle(
+          "reject",
+          new Error(
+            "Browser diagnostic script was blocked or could not load. The page's Content Security Policy must allow blob: scripts; update the client and server, then reload this tab.",
+          ),
+        );
+      script.onload = () => {
+        releaseScript();
+        if (bridge.started) return;
+        if (mode === "expression") run("statements");
+        else
+          settle(
+            "reject",
+            scriptError ??
+              new SyntaxError(
+                "Browser diagnostic JavaScript could not be parsed",
+              ),
+          );
+      };
       document.documentElement.append(script);
-      script.remove();
     };
 
     debugGlobal[bridgeKey] = bridge;
     window.addEventListener("error", onScriptError);
-    document.addEventListener("securitypolicyviolation", onPolicyViolation);
     deadline = setTimeout(
       () =>
         settle(
@@ -102,21 +128,5 @@ export function executeBrowserDebugCode(
     );
 
     run("expression");
-    if (bridge.started) return;
-
-    run("statements");
-    if (bridge.started) return;
-
-    settle(
-      "reject",
-      policyViolation
-        ? new Error(
-            "Browser diagnostic evaluation is unavailable under this page's Content Security Policy",
-          )
-        : (scriptError ??
-            new SyntaxError(
-              "Browser diagnostic JavaScript could not be parsed",
-            )),
-    );
   });
 }

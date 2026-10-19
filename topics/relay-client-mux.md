@@ -201,6 +201,11 @@ circuits because another username is offline or invalid.
 
 Closing a circuit closes its claimed server socket, allowing the YA relay
 supervisor to replenish it exactly as after a legacy client disconnect.
+A claim, by circuit or legacy `/ws` socket, must carry a client frame within
+20 seconds (`RELAY_PAIR_FIRST_MESSAGE_TIMEOUT_MS`). The server learns of a
+claim only from that frame, so the relay closes a silent claim and its server
+socket; the server then registers a fresh waiting socket. A circuit closed this
+way receives `mux_closed` and its mux socket stays open.
 Closing the physical mux closes all claimed server sockets. A server-side
 disconnect closes only its circuit and emits `mux_closed`.
 
@@ -269,7 +274,8 @@ must never create an indefinite idle relay resource.
 These limits reduce amplification relative to opening arbitrary logical
 circuits while preserving the expected three-to-five machine use case.
 They do not claim to solve the legacy username-claim denial already possible
-through separate `/ws` sockets.
+through separate `/ws` sockets, although a silent claim now holds a server for
+at most the first-frame timeout.
 
 ## Client Ownership And Fallback
 

@@ -1,0 +1,25 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: #fff;
+}
+/* GitHub's own state hues, fixed with white text so every app theme reads. */
+.open {
+  background: #1a7f37;
+}
+.draft {
+  background: #59636e;
+}
+.merged {
+  background: #8250df;
+}
+.closed {
+  background: #cf222e;
+}

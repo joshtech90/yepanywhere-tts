@@ -80,8 +80,12 @@ export function installModifierChordTracking(): () => void {
     pending: [],
   };
   state = tracked;
-  const onKeyDown = (event: KeyboardEvent) => noteKeyDown(tracked, event);
-  const onKeyUp = (event: KeyboardEvent) => noteKeyUp(tracked, event);
+  // Autofill and password managers dispatch bare key events naming no key;
+  // they are not keypresses, and an absent code would match no-key state.
+  const onKeyDown = (event: KeyboardEvent) =>
+    event.key && noteKeyDown(tracked, event);
+  const onKeyUp = (event: KeyboardEvent) =>
+    event.key && noteKeyUp(tracked, event);
   // Keyups that land in another window never arrive here.
   const onBlur = () => {
     tracked.heldFor = {};

@@ -1,3 +1,4 @@
+import { buildProjectFileViewerHref } from "@yep-anywhere/shared";
 import { type MouseEvent, type ReactNode, useState } from "react";
 import { usePublicShareContext } from "../contexts/PublicShareContext";
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
@@ -39,9 +40,8 @@ export function getProjectImageViewerLink({
   projectRelativePath?: string | null;
 }): string | null {
   if (!projectId || !projectRelativePath) return null;
-  const searchParams = new URLSearchParams({ path: projectRelativePath });
   return toBrowserAppHref(
-    `${basePath}/projects/${projectId}/file?${searchParams}`,
+    `${basePath}${buildProjectFileViewerHref({ projectId, filePath: projectRelativePath })}`,
   );
 }
 

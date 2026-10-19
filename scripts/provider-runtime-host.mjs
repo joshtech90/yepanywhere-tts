@@ -35,6 +35,7 @@ import {
   normalizeProviderSessionOptions,
 } from "./provider-runtime-turns.mjs";
 import { ProviderProjectServices } from "./provider-project-services.mjs";
+import { getProviderImageSizing } from "../packages/server/src/services/image-preparation.mjs";
 
 const HOST_PROTOCOL_VERSION = PROVIDER_HOST_PROTOCOL_VERSION;
 const WORKER_READY_TIMEOUT_MS = 30_000;
@@ -216,6 +217,11 @@ function publicRuntimeEntry(entry) {
     detachedAt: entry.detachedAt,
     reattach: entry.reattach,
     worker: entry.workerMetadata,
+    imagePreparationProfile: getProviderImageSizing(
+      entry.providerName,
+      entry.launchRecipe.options.launchModel ??
+        entry.launchRecipe.options.model,
+    ).profiles.sd,
     acceptsSessionTurns: entry.state !== "closing" && !entry.activeSubmissionId,
   };
 }

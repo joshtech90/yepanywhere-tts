@@ -10,6 +10,7 @@ import com.yepanywhere.mobile.experimental.SimpleClientContract
 import java.io.Closeable
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -18,6 +19,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -50,6 +54,7 @@ data class YaConnectionState(
     val retryAttempt: Int = 0,
     val errorMessage: String? = null,
     val recoverable: Boolean = false,
+    val connectionEpoch: Long = 0,
 )
 
 data class YaApiResponse(
@@ -105,6 +110,10 @@ class YaConnectionLease internal constructor(
         check(!released.get()) { "Connection lease is released" }
         manager.reconnect(id)
     }
+    suspend fun state(): YaConnectionState {
+        check(!released.get()) { "Connection lease is released" }
+        return manager.stateForLease(id)
+    }
 
     suspend fun request(
         method: String,
@@ -114,6 +123,11 @@ class YaConnectionLease internal constructor(
     ): YaApiResponse {
         check(!released.get()) { "Connection lease is released" }
         return manager.request(id, method, path, body, headers)
+    }
+
+    suspend fun fetchResponse(path: String, headers: Map<String, String>): YaResponseBody {
+        check(!released.get()) { "Connection lease is released" }
+        return manager.fetchResponse(id, path, headers)
     }
 
     suspend fun subscribe(
@@ -197,9 +211,48 @@ class YaServerConnectionManager(
     private var connectionJob: Job? = null
     private var connectionGeneration = 0L
     private var connectionReady = CompletableDeferred<Unit>()
+    private var connectedEpoch = 0L
     private val mutableState = MutableStateFlow(YaConnectionState(YaConnectionPhase.IDLE))
 
     val state: StateFlow<YaConnectionState> = mutableState.asStateFlow()
+    private val responseBodies = ConcurrentHashMap<String, OwnedResponseBody>()
+
+    private inner class OwnedResponseBody(val leaseId: String, val id: String, val body: YaResponseBody) : YaResponseBody {
+        private val closed = AtomicBoolean(false)
+        override val metadata get() = body.metadata
+        override suspend fun nextChunk(): ByteArray? {
+            check(!closed.get()) { "Native response closed" }
+            return body.nextChunk()
+        }
+        override fun close() {
+            if (closed.compareAndSet(false, true)) { responseBodies.remove(id, this); body.close() }
+        }
+    }
+
+    internal suspend fun fetchResponse(leaseId: String, path: String, headers: Map<String, String>): YaResponseBody {
+        require(path.startsWith("/") && !path.startsWith("//"))
+        require(headers.keys.none { it.equals("Authorization", ignoreCase = true) })
+        val transport = ensureConnected(leaseId)
+        val params = JSONObject().put("method", "GET")
+            .put("path", if (path.startsWith("/api/")) path else "/api$path")
+            .put("headers", JSONObject(headers.filterKeys { it.lowercase() !in MANAGED_REQUEST_HEADERS } +
+                mapOf("Content-Type" to "application/json", "X-Yep-Anywhere" to "true")))
+        val body = transport.fetchResponse(params) ?: error("Native response streaming unavailable")
+        try {
+            return mutex.withLock {
+                check(leases.containsKey(leaseId) && connection?.transport === transport) { "Native response owner changed" }
+                // Rust owns source-wide admission. Consumed EOF can return its
+                // slot before Kotlin retires the finished wrapper; a second cap
+                // here would reject a legitimate queued range in that interval.
+                val id = UUID.randomUUID().toString()
+                OwnedResponseBody(leaseId, id, body).also { responseBodies[id] = it }
+            }
+        } catch (error: Throwable) { body.close(); throw error }
+    }
+    internal suspend fun stateForLease(leaseId: String): YaConnectionState = mutex.withLock {
+        check(leases.containsKey(leaseId)) { "Connection lease is released" }
+        mutableState.value
+    }
 
     init {
         require(retryDelaysMs.all { it >= 0 })
@@ -398,6 +451,7 @@ class YaServerConnectionManager(
         val subscriptionsToClose = mutex.withLock {
             leases.remove(leaseId)?.toList().orEmpty()
         }
+        responseBodies.values.filter { it.leaseId == leaseId }.forEach { it.close() }
         subscriptionsToClose.forEach { closeSubscription(it) }
         val ownedUploads = mutex.withLock { uploads.values.filter { it.leaseId == leaseId }.map { it.id } }
         ownedUploads.forEach { cancelUpload(leaseId, it) }
@@ -516,6 +570,7 @@ class YaServerConnectionManager(
                 )
                 var routed: YaRoutedTransport? = null
                 try {
+                    connector.awaitCredentialSettled(profileId)
                     val snapshot = repository.snapshot(profileId)
                         ?: throw YaConnectionUnavailableException("Paired server profile was removed")
                     val stored = snapshot.resumeCredential
@@ -533,7 +588,6 @@ class YaServerConnectionManager(
                         connectedAtEpochMs = connectedAt,
                     )
                     installConnection(generation, routed)
-                    restoreSubscriptions(routed.transport)
                     ready.complete(Unit)
                     receiveMessages(generation, routed)
                     throw YaConnectionUnavailableException("Native secure connection ended")
@@ -621,26 +675,37 @@ class YaServerConnectionManager(
             check(connectionGeneration == generation && leases.isNotEmpty()) {
                 "Native connection no longer has an owner"
             }
+            // Replay and publication share one lock. A new subscriber cannot
+            // dispatch in the gap and then be replayed a second time.
+            subscriptions.values.forEach { routed.transport.send(it.subscribeMessage()) }
             connection = routed
             mutableState.value = YaConnectionState(
                 phase = YaConnectionPhase.CONNECTED,
                 routeId = routed.route.id,
+                connectionEpoch = ++connectedEpoch,
             )
         }
     }
 
-    private suspend fun restoreSubscriptions(transport: YaMessageTransport) {
-        mutex.withLock {
-            // A concurrent close must enqueue unsubscribe after restore, never
-            // before a stale snapshot recreates the abandoned wire subscription.
-            subscriptions.values.forEach { transport.send(it.subscribeMessage()) }
-        }
-    }
-
-    private suspend fun receiveMessages(generation: Long, routed: YaRoutedTransport) {
-        while (currentCoroutineContext().isActive) {
-            handleMessage(generation, routed.transport, routed.transport.receive())
-        }
+    private suspend fun receiveMessages(generation: Long, routed: YaRoutedTransport) = coroutineScope {
+        var bookkeeping: Job? = null
+        try {
+            while (currentCoroutineContext().isActive) {
+                val message = routed.transport.receive()
+                if (message.optString("type") == "state") {
+                    // Security check-in can await network/storage. Keep draining
+                    // bounded native queues, but cancel an obsolete check before
+                    // handling the next socket epoch.
+                    bookkeeping?.cancelAndJoin()
+                    bookkeeping = null
+                    if (message.optString("phase") == "CONNECTED") {
+                        bookkeeping = launch { handleMessage(generation, routed.transport, message) }
+                        continue
+                    }
+                }
+                handleMessage(generation, routed.transport, message)
+            }
+        } finally { bookkeeping?.cancelAndJoin() }
     }
 
     private suspend fun handleMessage(
@@ -663,17 +728,23 @@ class YaServerConnectionManager(
                         }
                     }
                     "CONNECTED" -> {
+                        val current = mutex.withLock { connectionGeneration == generation && connection?.transport === transport }
+                        if (!current) return
                         val snapshot = checkNotNull(repository.snapshot(profileId))
                         securityClients?.ensure(snapshot.profile, transport)
-                        val route = snapshot.profile.routes.firstOrNull { it.id == transport.routeId }
-                            ?: connection?.route ?: error("Native route is unavailable")
-                        val stored = checkNotNull(repository.snapshot(profileId)?.resumeCredential)
-                        val connectedAt = maxOf(nowEpochMs(), stored.establishedAtEpochMs)
-                        repository.recordSuccessfulAuthentication(profileId, route.id, stored.copy(credential = transport.credential, lastResumedAtEpochMs = connectedAt), connectedAt)
+                        currentCoroutineContext().ensureActive()
                         mutex.withLock {
                             if (connectionGeneration != generation || connection?.transport !== transport) return
+                            val route = snapshot.profile.routes.firstOrNull { it.id == transport.routeId }
+                                ?: connection?.route ?: error("Native route is unavailable")
+                            // A newer native retry may have opened its persistence
+                            // window before its state event is consumed. It must
+                            // publish its own ready edge after verification.
+                            val stored = repository.snapshot(profileId)?.resumeCredential ?: return
+                            val connectedAt = maxOf(nowEpochMs(), stored.establishedAtEpochMs)
+                            repository.recordSuccessfulAuthentication(profileId, route.id, stored.copy(credential = transport.credential, lastResumedAtEpochMs = connectedAt), connectedAt)
                             connection = YaRoutedTransport(route, transport)
-                            mutableState.value = YaConnectionState(YaConnectionPhase.CONNECTED, routeId = route.id)
+                            mutableState.value = YaConnectionState(YaConnectionPhase.CONNECTED, routeId = route.id, connectionEpoch = ++connectedEpoch)
                         }
                     }
                     "FAILED", "REAUTHENTICATION_REQUIRED" -> throw YaRustTerminalException(YaConnectionPhase.valueOf(message.getString("phase")), message.optBoolean("recoverable"))
@@ -816,6 +887,7 @@ class YaServerConnectionManager(
     }
 
     private fun failPendingLocked(error: Throwable) {
+        responseBodies.values.toList().forEach { it.close() }
         pendingRequests.values.forEach { it.completeExceptionally(error) }
         pendingRequests.clear()
     }

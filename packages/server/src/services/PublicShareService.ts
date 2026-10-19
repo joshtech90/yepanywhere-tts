@@ -2,6 +2,7 @@ import {
   PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH,
   PUBLIC_SHARE_LEGACY_RELAY_BODY_MAX_BYTES,
   PUBLIC_SHARE_SESSION_CHUNK_MAX_BYTES,
+  PUBLIC_SHARE_SESSION_DECOMPRESSED_MAX_BYTES,
   PUBLIC_SHARE_TITLE_MAX_LENGTH,
   isPublicShareSessionTransferSizeWithinLimits,
   type AppSession,
@@ -24,7 +25,13 @@ import {
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import { createLruSet, refreshLruSet } from "../lib/lruCollections.js";
+import {
+  type PublicShareLiveTransfer,
+  PublicShareLiveTransfers,
+} from "./PublicShareLiveTransfers.js";
 import {
   PublicFileShareStore,
   type PublicFileShareGrant,
@@ -56,6 +63,26 @@ const PUBLIC_SHARE_CHUNK_CURSOR_BYTES = 8 + 32;
 export const PUBLIC_SHARE_VIEWER_TELEMETRY_MAX_ENTRIES = 4_096;
 
 export type PublicShareRecord = PublicShareGrant;
+
+const gzipAsync = promisify(gzip);
+
+function liveTransferKey(record: PublicShareRecord, viewerId: string): string {
+  return `${record.secretHash}\0${record.shareStateId}\0${viewerId}`;
+}
+
+function liveTransferMetadata(
+  transfer: PublicShareLiveTransfer,
+): PublicShareSessionChunksMetadata {
+  return {
+    revisionId: transfer.revisionId,
+    integrityWitness: transfer.integrityWitness,
+    compressedBytes: transfer.compressed.byteLength,
+    sessionBytes: transfer.sessionBytes,
+    maxChunkBytes: PUBLIC_SHARE_SESSION_CHUNK_MAX_BYTES,
+    capturedAt: transfer.capturedAt,
+    linkedFileMode: transfer.linkedFileMode,
+  };
+}
 
 interface ViewerTelemetryRecord {
   secretHash: string;
@@ -315,6 +342,7 @@ export class PublicShareService {
   >();
   private readonly viewerTelemetryByRecency =
     createLruSet<ViewerTelemetryRecord>();
+  private readonly liveTransfers = new PublicShareLiveTransfers();
 
   constructor(options: PublicShareServiceOptions) {
     this.store = new PublicShareStore(options.dataDir);
@@ -550,6 +578,104 @@ export class PublicShareService {
       offset: chunk.offset,
       nextOffset: chunk.nextOffset,
       metadata,
+    };
+  }
+
+  /**
+   * Compress one viewer's current live session so a relay viewer can pull it
+   * in bounded chunks instead of one capped response. The snapshot is
+   * transient: the viewer's next metadata request replaces it, the final
+   * chunk releases it, and it expires with viewer presence.
+   */
+  async prepareLiveSessionChunks(
+    record: PublicShareRecord,
+    viewerId: string,
+    loadSessionJson: () => Promise<AsyncIterable<Uint8Array> | null>,
+  ): Promise<PublicShareSessionChunksMetadata | null> {
+    if (
+      record.mode !== "live" ||
+      !PUBLIC_SHARE_VIEWER_ID_REGEX.test(viewerId)
+    ) {
+      return null;
+    }
+    const key = liveTransferKey(record, viewerId);
+    this.liveTransfers.delete(key);
+    const sessionJson = await loadSessionJson();
+    if (!sessionJson) return null;
+    const parts: Uint8Array[] = [];
+    let sessionBytes = 0;
+    for await (const part of sessionJson) {
+      sessionBytes += part.byteLength;
+      if (sessionBytes > PUBLIC_SHARE_SESSION_DECOMPRESSED_MAX_BYTES) {
+        return null;
+      }
+      parts.push(Uint8Array.from(part));
+    }
+    const compressed = await gzipAsync(Buffer.concat(parts));
+    if (
+      !isPublicShareSessionTransferSizeWithinLimits(
+        compressed.byteLength,
+        sessionBytes,
+      )
+    ) {
+      return null;
+    }
+    const transfer = {
+      revisionId: `live-${randomBytes(12).toString("base64url")}`,
+      integrityWitness: createHash("sha256")
+        .update(compressed)
+        .digest("base64url"),
+      capturedAt: new Date().toISOString(),
+      linkedFileMode: record.linkedFileMode ?? "live",
+      compressed,
+      sessionBytes,
+      expiresAt: Date.now() + PUBLIC_SHARE_VIEWER_TTL_MS,
+    };
+    this.liveTransfers.set(key, transfer);
+    return liveTransferMetadata(transfer);
+  }
+
+  getLiveSessionChunk(
+    record: PublicShareRecord,
+    viewerId: string,
+    cursor?: string,
+  ): PublicShareSessionChunk | null {
+    const key = liveTransferKey(record, viewerId);
+    const transfer = this.liveTransfers.get(key);
+    if (!transfer) return null;
+    const offset = cursor
+      ? this.decodeChunkCursor(
+          record,
+          viewerId,
+          transfer.revisionId,
+          transfer.capturedAt,
+          cursor,
+        )
+      : 0;
+    const total = transfer.compressed.byteLength;
+    if (offset >= total) throw new PublicShareChunkCursorError();
+    const nextOffset = Math.min(
+      offset + PUBLIC_SHARE_SESSION_CHUNK_MAX_BYTES,
+      total,
+    );
+    const final = nextOffset === total;
+    if (final) this.liveTransfers.delete(key);
+    return {
+      bytes: Buffer.from(transfer.compressed.subarray(offset, nextOffset)),
+      cursor: final
+        ? null
+        : this.encodeChunkCursor(
+            record,
+            viewerId,
+            transfer.revisionId,
+            transfer.capturedAt,
+            nextOffset,
+          ),
+      final,
+      index: Math.floor(offset / PUBLIC_SHARE_SESSION_CHUNK_MAX_BYTES),
+      offset,
+      nextOffset,
+      metadata: liveTransferMetadata(transfer),
     };
   }
 

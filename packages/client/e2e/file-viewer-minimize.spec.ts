@@ -262,9 +262,8 @@ test("finds within the file viewer after a click in its content", async ({
     await expect(viewer.getByText("beta needle")).toBeVisible();
     await recordUiCapture(page, "file-viewer-find-idle-1200");
     const findBox = page.getByRole("searchbox", { name: "Find in this view" });
-    // This embedded viewer stacks its actions under the path, leaving no
-    // room for an idle field; Ctrl+F shows it anyway.
-    await expect(findBox).toBeHidden();
+    // The dedicated action row has room for the idle field at this width.
+    await expect(findBox).toBeVisible();
     await viewer.getByText("beta needle").click();
     await page.keyboard.press("Control+f");
     await expect(findBox).toBeFocused();
@@ -290,8 +289,10 @@ test("finds within the file viewer after a click in its content", async ({
     ).toBe("needle");
     await recordUiCapture(page, "file-viewer-find-1200");
     await findBox.press("Escape");
-    // Without room, the dismissed field hides again and focus returns home.
-    await expect(findBox).toBeHidden();
+    // Dismissal clears the query and returns focus to the document. The idle
+    // field remains visible while its action row has room.
+    await expect(findBox).toBeVisible();
+    await expect(findBox).toHaveValue("");
     await expect(viewer.locator(".file-viewer-body")).toBeFocused();
   } finally {
     writeFileSync(externalReadmePath, originalReadme);

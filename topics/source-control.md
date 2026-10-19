@@ -823,17 +823,18 @@ match leaves an explicit empty result.
 ### File-viewer projections
 
 Every project file viewer may expose two exact Git projections in its header.
-**vs HEAD** compares the current `HEAD` tree to the live filesystem. **vs
-HEAD^1** is cumulative: it compares the first parent of `HEAD` to the live
-filesystem, so it includes both the current commit and any staged, unstaged,
-or untracked work. It is not the commit-only `HEAD^1`-to-`HEAD` diff. A
-worktree edit that exactly cancels the current commit's change therefore
+**Δ** (HEAD to working tree) compares the current `HEAD` tree to the live
+filesystem. **Δ1** is cumulative: it compares the first parent of `HEAD` to the
+live filesystem, so it includes both the current commit and any staged, unstaged,
+or untracked work. Tooltips and accessible names spell out each comparison.
+It is not the commit-only `HEAD^1`-to-`HEAD` diff. A worktree edit that exactly
+cancels the current commit's change therefore
 removes that path from the cumulative corpus.
 
 A selector exists only when the current Git projection contains the path. With
 the live worktree capability, availability comes from the resident project row;
-older capable servers use the static project manifest. A clean path has no **vs
-HEAD** selector; a root commit has no **vs HEAD^1** selector; a path with neither
+older capable servers use the static project manifest. A clean path has no **Δ**
+selector; a root commit has no **Δ1** selector; a path with neither
 net diff has no selector at all. Selecting one projection sends only its current
 path and, for a rename, its original path; the server performs an exact
 literal-path comparison rather than rebuilding the project-wide manifest.
@@ -844,12 +845,19 @@ Read/Edit turns. Hovering the filename reveals the available projections
 beside it; keyboard focus reveals the same links. Touch relies on the viewer
 header. Each target is a real anchor with a standalone URL, so middle-click,
 modifier-click, and browser context-menu opening work normally.
+Ordinary clicks open the selected projection in the session's managed viewer
+(overlay or right pane), or a modal when there is no session host; they do not
+navigate away from the conversation. Recall after closing or reloading retains
+the selected comparison. A Read row's separate line-range link does not repeat
+the filename's whole-file diff actions. Region-specific diffs are not offered.
 
 Selecting a projection replaces the source body in the existing file viewer.
 While a diff is active, source line and line-range requests are inapplicable:
 the diff URL omits `line`, `lineEnd`, and `view=range`, and the viewer neither
-loads nor highlights that source window. Returning to **Source** restores the
-original source range as fixed-font source, even when Markdown would ordinarily
+loads nor highlights that source window. The **Raw source** (`</>`) button
+returns from a diff; the projection selector has no separate **Source** segment.
+Returning through that button restores the original source range as fixed-font
+source, even when Markdown would ordinarily
 open rendered. An already loaded source stays resident while a projection is
 shown, so returning to it does not fetch or enter Loading again. Diff rendering
 retains full-context, unified/split, Markdown-preview, hunk-navigation, and
@@ -892,9 +900,10 @@ source cannot replace the new source's provenance.
 
 The hash is a regular anchor to Changes with the resolved commit and file
 selected in the default diff view; blame and full context remain opt-in from
-that pane. It therefore preserves modifier-click, middle-click, and browser
-context-menu behavior without paying the blame-history cost on entry. Its
-native tooltip contains the author, absolute author time, and at most 50
+that pane. It preserves modifier-click and middle-click without paying the
+blame-history cost on entry. Right-click opens the shared file resource menu
+for the displayed commit and its historical file path. Its native tooltip
+contains the author, absolute author time, and at most 50
 commit-message lines; when more lines exist it ends with `...`.
 
 The permanent `git-file-revision` capability owns
@@ -914,6 +923,11 @@ alphabetical `remote` listing and branch upstream/push settings do not choose
 this permalink target. Reordering remote sections in Git config is sufficient;
 there is no separate preference setting. HTTPS, Git, SSH, and scp-style
 GitHub remotes are recognized. Other repository hosts are not yet supported.
+
+In the file viewer, right-click the filename, the **Copy viewer link** control,
+or the revision hash to open this menu. The hash targets the displayed commit;
+the filename and copy control resolve the current file revision. Left-clicking
+the copy control still copies the YA viewer URL.
 
 Clean, pushed files use normal menu color. Dirty files remain copyable in
 warning color with **Local edits won’t be included**. An unpushed revision is

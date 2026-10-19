@@ -7,10 +7,12 @@ import { createConnection, type Socket } from "node:net";
 import { getLogger } from "../../logging/logger.js";
 import { getModuleEnv, harvestYaModuleEnv } from "../../yaModuleEnv.js";
 import { setProviderHostDegraded } from "./provider-host-status.js";
+import { normalizeProviderWorkItems } from "@yep-anywhere/shared";
 import type {
   PermissionMode,
   ThinkingConfig,
   EffortLevel,
+  ImagePreparationProfile,
 } from "@yep-anywhere/shared";
 import type { AgentMessageQueue } from "../messageQueue.js";
 import type {
@@ -126,6 +128,8 @@ export interface HostedProviderRuntimeInfo {
   detachedAt?: string;
   reattach: HostedProviderReattachSpec;
   worker: WorkerMetadata;
+  /** Preparation profile for files delivered to this session; inventory only. */
+  imagePreparationProfile?: ImagePreparationProfile;
   acceptsSessionTurns: boolean;
 }
 
@@ -144,10 +148,14 @@ export interface ProviderHostTurnTarget {
 export interface ProviderHostSessionTurnRequest {
   submissionId: string;
   target: ProviderHostTurnTarget;
-  message: Pick<UserMessage, "text" | "mode">;
+  message: Pick<UserMessage, "text" | "mode" | "metadata">;
   /** Omission is normalized to every provider-owned generation option off. */
   sessionOptions?: ProviderSessionOptions;
   timeoutMs?: number;
+  /** Queue behind active work instead of refusing a busy runtime. */
+  eventual?: boolean;
+  /** Never revive an inactive target to accept the turn. */
+  liveOnly?: boolean;
 }
 
 export interface ProviderHostSessionTurnRecord {
@@ -1502,6 +1510,8 @@ function reviveRetention(
     sessionCronCount: value?.sessionCronCount,
     liveTaskCount: value?.liveTaskCount,
     lastUpdatedAt: value?.lastUpdatedAt ? new Date(value.lastUpdatedAt) : null,
+    backgroundWork: normalizeProviderWorkItems(value?.backgroundWork),
+    foregroundWaits: normalizeProviderWorkItems(value?.foregroundWaits),
   };
 }
 

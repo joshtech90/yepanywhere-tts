@@ -4,6 +4,7 @@ import type {
   ToolbarNarrowingPriority,
 } from "@yep-anywhere/shared";
 import {
+  PATIENT_TOPIC_SHIFT_CAPABILITY,
   REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
   SYNTHETIC_DONE_COMMAND_CAPABILITY,
   serverHasCapability,
@@ -50,6 +51,8 @@ export interface SessionToolbarPresence {
   projectQueue: ToolbarControlPresence;
   projectQueueNewSessionShortcut: ToolbarControlPresence;
   syntheticDone: ToolbarControlPresence;
+  /** "Next topic when done": a patient queue send from a busy composer. */
+  topicShift: ToolbarControlPresence;
   /** Opens transcript search, the pointer entry to the search shortcuts. */
   transcriptSearch: ToolbarControlPresence;
   /**
@@ -91,6 +94,7 @@ export const DEFAULT_SESSION_TOOLBAR_PRESENCE: SessionToolbarPresence = {
   projectQueue: "hidden",
   projectQueueNewSessionShortcut: "hidden",
   syntheticDone: "off",
+  topicShift: "hidden",
   transcriptSearch: "first",
   composerRecall: "hidden",
 };
@@ -120,6 +124,7 @@ export const DEFAULT_SESSION_TOOLBAR_PRIORITY: SessionToolbarPriority = {
   projectQueue: "pin",
   projectQueueNewSessionShortcut: "pin",
   syntheticDone: "pin",
+  topicShift: "pin",
   transcriptSearch: "first",
   composerRecall: "pin",
 };
@@ -382,6 +387,9 @@ export function useSessionToolbarPresence() {
       )
         ? presence.syntheticDone
         : "off",
+      topicShift: serverHasCapability(version, PATIENT_TOPIC_SHIFT_CAPABILITY)
+        ? presence.topicShift
+        : "hidden",
       browserDebug: serverHasCapability(
         version,
         REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,

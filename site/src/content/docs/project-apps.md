@@ -50,7 +50,9 @@ reserved until explicitly released; changing the domain does not transfer them.
 
 **Private link required** means the URL contains an access token. Anyone given
 that complete link can use it; it does not mean only the owner can open it.
-Use **Copy viewer link** beside the address to copy the full URL.
+Use **Copy viewer link** beside the address to copy the full URL. While you
+browse a private app, each page you open keeps the token in its address, so
+the address bar always holds a link to the page you are on.
 
 **Public** means the hostname works without an access token. To take a public
 address private, clear Public and choose **Save access**. If the owner's
@@ -104,6 +106,11 @@ retain working files, and a retained reservation alone does not restart an app.
 A configured hostname also needs working DNS and tunnel routing, separately
 from the app's readiness.
 
-Static address opens redirect to an expiring artifact link. Taking the address
-private or releasing it changes access through that address; already issued
-artifact links retain their own expiry and revocation rules.
+Static address opens redirect to an expiring artifact link. To keep the
+app's own address in the location bar instead, add `"staticAddress": "frame"`
+beside `"service"` in `.project-template/app.json`: the address then frames
+the app, and a path after it opens the same path inside the app. Navigation
+inside a framed app does not change the address shown, so copying the address
+does not link to the page you are on; a process app keeps both. Taking the
+address private or releasing it changes access through that address; already
+issued artifact links retain their own expiry and revocation rules.

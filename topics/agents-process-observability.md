@@ -217,8 +217,25 @@ Process discovery and session correlation are separate:
   the whole card a broken session link.
 
 The current `ExternalSessionTracker` may decorate a future exact join, but its
-30-second write window cannot create one. The initial host sampler neither
-reads nor returns cwd.
+30-second write window cannot create one.
+
+Claude Code provides the first exact record: it writes
+`<CLAUDE_CONFIG_DIR>/sessions/<pid>.json` with the session id, cwd and start
+time of each live process. The native classifier reads it for an external
+Claude root and accepts it only when its pid matches and its start time is
+within two seconds of the observed process's, so a reused PID never inherits a
+dead process's session. The record's cwd stays on the server. It locates the
+project, and the observation gains `projectId` and `sessionTitle` only when
+YA's catalog for that known project holds the session, so the client learns
+nothing about directories it does not already list. A recorded session YA does
+not know shows as `Claude session <id prefix>` without a link; other providers
+stay uncorrelated until they offer an exact record. Correlation and the title
+lookup are reused per process identity for a minute, so metric refreshes do not
+repeat session enrichment.
+
+Claude Code also runs its bundled `ugrep` and `rg` by re-executing its own
+binary under those names. The kernel command name then reads `claude`, so the
+classifier trusts the invoked name and does not report them as agents.
 
 ### Continuous inventory extension
 
@@ -259,6 +276,9 @@ interface HostAgentProcessObservation {
   provider: ProviderName;
   supervision: "ya" | "external";
   supervisorProcessId?: string; // exact YA join only
+  sessionId?: string; // external: from the provider's pid record only
+  projectId?: UrlProjectId; // only when YA's catalog holds that session
+  sessionTitle?: string; // its YA display title, beyond "Untitled"
   startedAt: string;
   sampledAt: string;
   cpu?: {
@@ -365,7 +385,14 @@ minimization rule.
 - No row infers provider activity, attention, ownership, or safety from CPU or
   memory.
 - Session links and titles appear only after exact process/session
-  correlation.
+  correlation. Every row names its session id in a tooltip and in its metric
+  details when one is known.
+- A YA row's age is its OS process age when host metrics observe it; a hosted
+  provider process outlives YA restarts, so YA's attach time appears only in
+  the age tooltip.
+- The session fields are optional and absent from older servers, so a newer
+  client shows `<Provider> process` for their external rows as before; no
+  capability gates them.
 - With host process observability enabled, one post-reattach boot snapshot
   exists before Agents first opens; it starts no repeating sampler and opens no
   provider transcript store.

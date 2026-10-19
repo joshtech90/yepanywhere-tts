@@ -140,6 +140,15 @@ the hard bound; overflow returns 413 without broadening the session-chunk
 capability to files. Direct HTTP public-share streams, authenticated relay
 traffic, and unrelated relay routes remain uncapped by this adapter policy.
 
+2026-10-15 live public-share relay transport — `v0.9.0`–`v0.9.2` load a live
+share only through the one-response relay path, so a live session over 8 MiB
+fails with 413. Add the separate scoped metadata capability
+`public-share-live-session-chunks-v1`, served by the existing `session-chunks`
+route from a transient per-viewer snapshot. A separate name, rather than
+broadening `public-share-session-chunks-v1`, keeps already-deployed viewers
+from loading a live share as frozen. Without it the viewer keeps raw-json and
+makes no chunk request.
+
 2026-08-05 public-share grants and compact URLs — preserve every
 legacy 64-byte/86-character bearer secret and display-hint fragment while new
 links use a 16-byte/22-character secret plus a compact protocol marker and

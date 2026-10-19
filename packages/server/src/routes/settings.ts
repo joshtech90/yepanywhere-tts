@@ -48,6 +48,10 @@ import {
   parseSpeechVoiceBackends,
 } from "@yep-anywhere/shared";
 import { Hono, type Context } from "hono";
+import {
+  parseRendezSettings,
+  type RendezWatchStatus,
+} from "../services/RendezWatchService.js";
 import { InstructionPackets } from "../sdk/providers/instruction-packets.js";
 import { PRINCIPAL_VARIABLE, type Principal } from "../auth/principal.js";
 import {
@@ -142,6 +146,8 @@ export interface SettingsRoutesDeps {
   publicShareService?: PublicShareService;
   /** Process-global host-awake policy and status owner. */
   hostAwakeService?: HostAwakeService;
+  /** Which projects' .rendez observers are running. */
+  getRendezStatus?: () => RendezWatchStatus;
 }
 
 /**
@@ -246,6 +252,17 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
     });
   });
 
+  /**
+   * GET /api/settings/rendez/status
+   * Projects whose .rendez observer is running; empty when none is.
+   */
+  app.get("/rendez/status", (c) => {
+    const principal = c.get(PRINCIPAL_VARIABLE);
+    if (principal && principal.kind !== "superuser")
+      return c.json({ error: "Administrator access required" }, 403);
+    return c.json(deps.getRendezStatus?.() ?? { watching: [] });
+  });
+
   app.post("/instruction-restoration/preview", async (c) => {
     const principal = c.get(PRINCIPAL_VARIABLE);
     if (principal && principal.kind !== "superuser")
@@ -321,6 +338,17 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
       const body = await c.req.json<Partial<ServerSettings>>();
 
       const updates: Partial<ServerSettings> = {};
+
+      if ("rendez" in body) {
+        try {
+          updates.rendez = parseRendezSettings(body.rendez);
+        } catch (error) {
+          return c.json(
+            { error: error instanceof Error ? error.message : String(error) },
+            400,
+          );
+        }
+      }
 
       if ("projectDirectoryStorage" in body) {
         if (

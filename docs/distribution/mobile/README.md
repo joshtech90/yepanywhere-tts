@@ -244,9 +244,12 @@ Public tracks and tester membership were unchanged.
 The main-only GitHub `android-internal` environment holds the existing upload
 key as `ANDROID_UPLOAD_KEYSTORE_BASE64`, `ANDROID_UPLOAD_STORE_PASSWORD` and
 `ANDROID_UPLOAD_KEY_PASSWORD`. The signing step checks its public certificate
-fingerprint before signing. The repository secret `ANDROID_GOOGLE_SERVICES_JSON`
-restores the same Firebase build configuration before the verified main build;
-PR builds remain credential-free. No app-signing key is exported from Google.
+fingerprint before signing. All builds use the public Firebase client config
+tracked at `packages/android/app/google-services.json`, including PR builds;
+the `ANDROID_GOOGLE_SERVICES_JSON` secret is no longer required. See
+[Android build configuration](../../../topics/android-fcm-push.md#android-build-configuration)
+for the Firebase-disabled option and alternate distributions. No app-signing key
+is exported from Google.
 
 To release a new internal test version, open **Actions → Android App CI → Run
 workflow**, select **main**, and enable **Publish to Play internal testing after

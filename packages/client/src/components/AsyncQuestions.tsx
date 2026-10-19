@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectPathLinkTarget } from "@yep-anywhere/shared";
 import { usePublicShareContext } from "../contexts/PublicShareContext";
+import { useProjectPathLinkSettings } from "../contexts/ProjectPathLinkSettingsContext";
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useAsyncQuestions } from "../contexts/AsyncQuestionsContext";
@@ -21,6 +22,7 @@ function InlineQuestion({
   const state = useAsyncQuestions()!;
   const { t } = useI18n();
   const sessionMetadata = useOptionalSessionMetadata();
+  const { projectPaths } = useProjectPathLinkSettings();
   const publicShare = usePublicShareContext();
   const basePath = useRemoteBasePath();
   const root = useRef<HTMLDivElement>(null);
@@ -40,7 +42,8 @@ function InlineQuestion({
         projectPath: sessionMetadata?.projectPath ?? undefined,
         basePath,
         publicShare,
-        projectPathLinks,
+        projectPathLinks:
+          projectPaths || publicShare ? projectPathLinks : undefined,
       }).html,
     [
       question.title,
@@ -49,6 +52,7 @@ function InlineQuestion({
       basePath,
       publicShare,
       projectPathLinks,
+      projectPaths,
     ],
   );
   useEffect(() => {

@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getProjectPathIndex } from "../../src/projects/projectPathIndex.js";
 import {
   __test__,
   augmentTextBlocks,
@@ -10,6 +14,8 @@ import {
   highlightWorker,
 } from "../../src/highlighting/highlight-worker-host.js";
 import type { ProjectPathIndex } from "../../src/projects/projectPathIndex.js";
+import { compileTranscriptProjection } from "@yep-anywhere/shared/transcript/compiler";
+import type { Message } from "@yep-anywhere/shared/transcript/message";
 
 afterEach(() => {
   __test__.resetMarkdownHtmlCache();
@@ -17,6 +23,81 @@ afterEach(() => {
 });
 
 describe("assistant markdown augments", () => {
+  it("renders compact summary prose safely and keeps provider metadata separate", async () => {
+    const summary =
+      '### Active task\n\n- Keep **Markdown** readable.\n\n<script>alert("summary")</script>';
+    const message: Message = {
+      uuid: "compact",
+      type: "system",
+      subtype: "compact_boundary",
+      content: "Context compacted",
+      compactSummaryText: summary,
+      compactMetadata: { trigger: "auto" },
+    };
+    const original = compileTranscriptProjection([message]);
+    await augmentTextBlocks([message]);
+    const projected = compileTranscriptProjection([message]);
+    expect(projected).toHaveLength(1);
+    expect(projected[0]).toMatchObject({
+      type: "system",
+      subtype: "compact_boundary",
+      details: [
+        [{ type: "text", text: summary, _html: expect.any(String) }],
+        'compactMetadata:\n{\n  "trigger": "auto"\n}',
+      ],
+    });
+    expect(message._html).toContain("<h3");
+    expect(message._html).toContain("<ul>");
+    expect(message._html).toContain("<strong>Markdown</strong>");
+    expect(message._html).not.toContain("<script>");
+    expect(original[0]).toMatchObject({
+      details: [summary, expect.any(String)],
+    });
+    expect(projected[0]).not.toHaveProperty("detailsOpen", true);
+  });
+
+  it("resolves filenames from preceding directories across a prose body", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ya-mentioned-directories-"));
+    const index = await getProjectPathIndex(root);
+    try {
+      await mkdir(join(root, "ar/raghda"), { recursive: true });
+      await mkdir(join(root, "other"));
+      for (const path of [
+        "README.md",
+        "ar/raghda/README.md",
+        "ar/raghda/onboard.py",
+        "ar/raghda/score.sh",
+        "other/README.md",
+      ]) {
+        await writeFile(join(root, path), "fixture");
+      }
+      const html = await renderMarkdownToHtml(
+        "README.md first. Use `ar/raghda/` as the template; it already has its recording, intake (onboard.py) and scoring (score.sh).\n\nRead `README.md`, then missing/ and README.md. In `other/`, read README.md and ./README.md.\n\n[README.md](https://example.com)\n\n```text\nar/raghda/ README.md\n```",
+        {
+          projectFileLinks: { projectId: "project", projectPath: root, index },
+        },
+      );
+      expect(
+        [...html.matchAll(/data-ya-directory-file="([^"]+)"/g)].map(
+          (match) => match[1],
+        ),
+      ).toEqual([
+        "ar/raghda/onboard.py",
+        "ar/raghda/score.sh",
+        "ar/raghda/README.md",
+        "ar/raghda/README.md",
+        "other/README.md",
+      ]);
+      const next = await renderMarkdownToHtml("README.md", {
+        projectFileLinks: { projectId: "project", projectPath: root, index },
+      });
+      expect(next).not.toContain("data-ya-directory-file");
+    } finally {
+      index.release();
+      await rm(root, { recursive: true });
+    }
+  });
+
   it("retains immutable HTML and joins concurrent duplicate renders", async () => {
     const first = renderMarkdownToHtml("Shared **body**.");
     const second = renderMarkdownToHtml("Shared **body**.");

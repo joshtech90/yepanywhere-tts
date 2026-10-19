@@ -94,6 +94,20 @@ describe("modifierChords", () => {
     expect(ctrlVerdict(press("keydown", " ", "Space", 30))).toEqual([true]);
   });
 
+  it("ignores bare key events that name no key, as autofill sends", () => {
+    const errors: unknown[] = [];
+    const onError = (event: ErrorEvent) => errors.push(event.error);
+    window.addEventListener("error", onError);
+    try {
+      window.dispatchEvent(new Event("keydown"));
+      window.dispatchEvent(new Event("keyup"));
+    } finally {
+      window.removeEventListener("error", onError);
+    }
+    expect(errors).toEqual([]);
+    expect(lastModifiedKey()).toBeNull();
+  });
+
   it("reports modifiers as given for events it did not see", () => {
     const unseen = new KeyboardEvent("keydown", { key: " ", ctrlKey: true });
     expect(ctrlVerdict(unseen)).toEqual([true]);

@@ -3,7 +3,13 @@ import {
   type PromptSuggestionMode,
   normalizeSidebarCategory,
 } from "@yep-anywhere/shared";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
 import { writeClipboardText } from "../lib/clipboard";
@@ -29,6 +35,8 @@ export interface SessionMenuProps {
   onToggleArchive: () => void | Promise<void>;
   onToggleRead?: () => void | Promise<void>;
   onRename: () => void;
+  /** Open Session Info directly, without visiting model configuration. */
+  onShowInfo?: () => void;
   /** Generate and apply a title through the provider helper flow. */
   onGenerateTitle?: () => void | Promise<void>;
   /** Copy the session's initial prompt, when available. */
@@ -77,6 +85,9 @@ export interface SessionMenuProps {
   sharingConfigured?: boolean;
   /** Called to open the public share flow */
   onShare?: () => void | Promise<void>;
+  shareLabel?: ReactNode;
+  additionalItems?: (close: () => void) => ReactNode;
+  triggerClassName?: string;
   /** Additional class for the wrapper */
   className?: string;
   /** Remove the trigger from layout so its caller can overlay it on a row. */
@@ -100,6 +111,7 @@ export function SessionMenu({
   onToggleArchive,
   onToggleRead,
   onRename,
+  onShowInfo,
   onGenerateTitle,
   onCopyPrompt,
   onOpenNewTab,
@@ -121,6 +133,9 @@ export function SessionMenu({
   warningRestoreAvailable = false,
   onRestoreWarnings,
   onShare,
+  shareLabel,
+  additionalItems,
+  triggerClassName,
   useEllipsisIcon = false,
   className = "",
   overlayTrigger = false,
@@ -333,7 +348,29 @@ export function SessionMenu({
     : undefined;
 
   const dropdownContent = (
-    <div ref={dropdownRef} className={styles.dropdown} style={dropdownStyle}>
+    <div
+      ref={dropdownRef}
+      className={styles.dropdown}
+      style={dropdownStyle}
+      data-session-menu-open
+    >
+      {onShowInfo && (
+        <button type="button" onClick={() => handleAction(onShowInfo)}>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v6M12 7h.01" />
+          </svg>
+          {t("sessionInfoShortcut")}
+        </button>
+      )}
       <button type="button" onClick={() => handleAction(onToggleStar)}>
         <svg
           width="14"
@@ -739,9 +776,12 @@ export function SessionMenu({
             <path d="m8.6 13.5 6.8 4" />
             <path d="m15.4 6.5-6.8 4" />
           </svg>
-          {isSharing ? t("sessionMenuSharing") : t("sessionMenuShare")}
+          {isSharing
+            ? t("sessionMenuSharing")
+            : (shareLabel ?? t("sessionMenuShare"))}
         </button>
       )}
+      {additionalItems?.(() => setIsOpen(false))}
       <button type="button" onClick={() => handleAction(onToggleArchive)}>
         <svg
           width="14"
@@ -759,7 +799,13 @@ export function SessionMenu({
         {isArchived ? t("sessionMenuUnarchive") : t("sessionMenuArchive")}
       </button>
       {onToggleRead && (
-        <button type="button" onClick={() => handleAction(onToggleRead)}>
+        <button
+          type="button"
+          onClick={() => handleAction(onToggleRead)}
+          aria-label={
+            hasUnread ? t("sessionMenuMarkRead") : t("sessionMenuMarkUnread")
+          }
+        >
           <svg
             width="14"
             height="14"
@@ -778,6 +824,7 @@ export function SessionMenu({
             )}
           </svg>
           {hasUnread ? t("sessionMenuMarkRead") : t("sessionMenuMarkUnread")}
+          <kbd className={styles.shortcut}>{hasUnread ? "R" : "U"}</kbd>
         </button>
       )}
       {processId && onRestartProvider && (
@@ -878,7 +925,9 @@ export function SessionMenu({
       <button
         ref={triggerRef}
         type="button"
-        className={[styles.trigger, "session-menu-trigger"].join(" ")}
+        className={[styles.trigger, "session-menu-trigger", triggerClassName]
+          .filter(Boolean)
+          .join(" ")}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();

@@ -58,6 +58,17 @@ function createDeps(enabled: boolean) {
 }
 
 describe("host agent process routes", () => {
+  it("never samples when the deployment disables external sessions, even if settings enable inventory", async () => {
+    const deps = createDeps(true);
+    const routes = createHostAgentProcessesRoutes({ ...deps, enabled: false });
+    const response = await routes.request("/");
+    expect(await response.json()).toEqual({
+      enabled: false,
+      supported: true,
+      observations: [],
+    });
+    expect(deps.service.sample).not.toHaveBeenCalled();
+  });
   it("clears samples and returns no observations when disabled", async () => {
     const deps = createDeps(false);
     const routes = createHostAgentProcessesRoutes(deps);

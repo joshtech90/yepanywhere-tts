@@ -3,6 +3,7 @@ import {
   emitResumeObservation,
   type ResumeObservation,
 } from "./resumeDiagnostics";
+import { notifySavedHostsWritten } from "./savedHostsWritten";
 import { SAVED_HOSTS_KEY, UI_KEYS } from "./storageKeys";
 import { generateUUID } from "./uuid";
 
@@ -169,7 +170,10 @@ function removeActive(scope: ResumeScope, sessionId: string): void {
         changed = true;
       }
     }
-    if (changed) localStorage.setItem(SAVED_HOSTS_KEY, JSON.stringify(data));
+    if (changed) {
+      localStorage.setItem(SAVED_HOSTS_KEY, JSON.stringify(data));
+      notifySavedHostsWritten();
+    }
   }
 }
 export async function retireRejectedResume(

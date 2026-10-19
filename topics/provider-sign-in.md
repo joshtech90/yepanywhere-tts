@@ -9,6 +9,21 @@ Topic: provider-sign-in
 
 ## Surfaces
 
+`/provider-sign-in/claude` and `/provider-sign-in/codex` are focused setup
+pages shared by local/desktop YA and remote YA (beneath its host base path).
+They show only the chosen provider and its owner sign-in, with the host identity
+in the header. Navigating the URL does not start or replace a CLI login; the
+visible Sign in button does. Existing `supportsInAppLogin` flags gate the flow
+on older servers; an unavailable host shows a setup explanation. Provider settings
+also place links to these pages before the advanced controls. The experimental
+Android host's native Set up buttons open these same pages.
+
+Starting and polling failures remain visible beside the controls, with an
+immediate pending label while a start request is outstanding. Sanitized CLI
+output remains visible while the flow runs as well as on failure. A failure
+must not require noticing a transient toast or guessing that a tap registered.
+This is a structured official-CLI flow, not an interactive PTY terminal.
+
 When Claude or Codex is installed but not authenticated, its Providers card
 shows three equivalent routes to the same provider-owned login:
 

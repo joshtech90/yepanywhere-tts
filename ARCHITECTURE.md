@@ -45,6 +45,10 @@ alternatives rather than selecting a new runtime contract.
   under `packages/push-broker/`. It stores revocable device-delivery
   capabilities and submits bounded generic notifications through an injected
   provider. It is not part of provider session routing or the encrypted relay.
+- **Experimental Android host**: a separate [host app](topics/android-host.md) under
+  `packages/android-host` instead runs the existing YA server/UI and provider
+  CLIs on the phone. Its Alpine payload is shared with a Linux test harness;
+  Android owns the foreground-service lifecycle. It is not a companion rewrite.
 - **Mobile companions** use native platform shells and notification delivery.
   Android is a first-class Gradle/Kotlin application: native Compose owns
   login, saved hosts and host management; the bundled WebView is the primary

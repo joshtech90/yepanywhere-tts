@@ -78,6 +78,14 @@ function compactProviderDefaults(
   const helperSideModel = nonEmpty(defaults.helperSideModel);
   if (model) compacted.model = model;
   if (serviceTier) compacted.serviceTier = serviceTier;
+  const routerPoolId = nonEmpty(defaults.routerPoolId);
+  if (routerPoolId) {
+    compacted.routerPoolId = routerPoolId;
+    const routerAccountId = nonEmpty(defaults.routerAccountId);
+    const routerPolicy = nonEmpty(defaults.routerPolicy);
+    if (routerAccountId) compacted.routerAccountId = routerAccountId;
+    if (routerPolicy) compacted.routerPolicy = routerPolicy;
+  }
   if (defaults.thinkingMode) compacted.thinkingMode = defaults.thinkingMode;
   if (defaults.effortLevel) compacted.effortLevel = defaults.effortLevel;
   if (helperSideModel) compacted.helperSideModel = helperSideModel;
@@ -101,6 +109,9 @@ export function getProviderSessionDefaults(
       scoped.serviceTier ??
       (legacyMatchesProvider ? defaults?.serviceTier : undefined) ??
       nonEmpty(seed.serviceTier),
+    routerPoolId: scoped.routerPoolId,
+    routerAccountId: scoped.routerAccountId,
+    routerPolicy: scoped.routerPolicy,
     thinkingMode: scoped.thinkingMode ?? seed.thinkingMode ?? undefined,
     effortLevel: scoped.effortLevel ?? seed.effortLevel ?? undefined,
     helperSideModel: scoped.helperSideModel ?? undefined,

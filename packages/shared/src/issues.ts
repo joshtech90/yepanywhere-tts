@@ -12,6 +12,10 @@ export interface IssueSettings {
   jiraKeyBlocklist?: string[];
   /** Recognize unknown bare ticket keys. Absent/false requires URL evidence. */
   aggressiveMatching?: boolean;
+  /** Absent preserves the historical confirmation-enabled status policy. */
+  githubStatusEnabled?: boolean;
+  /** gh is a fallback unless a named account is explicitly selected. */
+  githubCli?: { enabled: boolean; account: string };
 }
 
 /** Issue association settings for an installation that has never saved any. */
@@ -97,12 +101,25 @@ export interface IssueCredentialStatus {
   sources: IssueCredentialSource[];
   /** Name of the source a lookup would use now, or null when none is usable. */
   active: string | null;
+  /** Non-secret CLI account identity, if known. */
+  account?: string;
+  accounts?: string[];
 }
 
 export interface IssueCredentialsResult {
   credentials: IssueCredentialStatus[];
 }
 export type IssueSort = "activity" | "mentioned" | "number";
+
+/** What the tracker last said about an item's state, and when it said it. */
+export interface IssueTrackerStatus {
+  state: "open" | "draft" | "merged" | "closed";
+  /** ISO time of the lookup that produced this state. */
+  checkedAt: string;
+  nodeId?: string;
+  mergedAt?: string;
+  mergeCommitSha?: string;
+}
 
 export interface IssueItem {
   id: string;
@@ -124,6 +141,11 @@ export interface IssueItem {
     /** The tracker's own summary, present only for a confirmed reference. */
     title: string | null;
   };
+  /**
+   * Open, draft, merged or closed, as last read from the tracker. Absent when
+   * the server has none to report, including every server before it was added.
+   */
+  trackerStatus?: IssueTrackerStatus;
 }
 export interface IssueEvidence {
   id: number;
@@ -176,11 +198,107 @@ export interface IssueSearchResult {
   /** Absent on earlier experimental servers; do not offer unsupported sorting. */
   supportedSorts?: IssueSort[];
   sort?: IssueSort | "key";
+  /**
+   * Canonical identity an exact `ref` lookup matched against. Absent when the
+   * server ignored `ref` (earlier servers): the items are then a `q` search,
+   * and a caller wanting one issue keeps only `item.id === identity`.
+   */
+  ref?: string;
   items: IssueItem[];
+  /**
+   * True while a tracker status refresh covering these items is in flight, so
+   * reading again shortly will show fresher states.
+   */
+  statusRefreshing?: boolean;
   coverage: IssueCoverage;
   nextOffset: number | null;
 }
 export interface IssueEvidenceResult {
   evidence: IssueEvidence[];
   nextOffset: number | null;
+}
+
+/** A tracker item named by a URL, in its canonical stored form. */
+export interface IssueUrlReference {
+  key: string;
+  /** Equal to the server's `IssueItem.id` for a resolved item. */
+  identity: string;
+  url: string;
+  provider: "jira" | "github";
+  kind: "issue" | "pr";
+}
+
+/** Canonical form of a GitHub issue/PR or Jira browse URL, or null. */
+export function issueUrl(value: string): IssueUrlReference | null {
+  if (value.length > 4096) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (
+    !["https:", "http:"].includes(url.protocol) ||
+    url.username ||
+    url.password
+  )
+    return null;
+  const host = url.host.toLowerCase();
+  const github = url.pathname.match(
+    /^\/([^/]+)\/([^/]+)\/(issues|pull)\/([1-9]\d*)(?:\/.*)?$/,
+  );
+  if (
+    github &&
+    (url.hostname === "github.com" ||
+      github[3] === "pull" ||
+      url.hostname.startsWith("github."))
+  ) {
+    const repository = `${github[1]}/${github[2]}`.toLowerCase();
+    const number = github[4];
+    const kind = github[3] === "pull" ? "pr" : "issue";
+    return {
+      key: `${repository}#${number}`,
+      identity: `github:${host}:${repository}:${number}`,
+      url: `${url.protocol}//${host}/${repository}/${github[3]}/${number}`,
+      provider: "github",
+      kind,
+    };
+  }
+  const jira = url.pathname.match(
+    /^(.*?)\/browse\/([A-Z][A-Z0-9_]*-[1-9]\d*)\/?$/i,
+  );
+  if (jira) {
+    const key = jira[2]!.toUpperCase();
+    // Jira deployments can use a context path; it participates in tenant identity.
+    const base = `${host}${jira[1]}`;
+    return {
+      key,
+      identity: `jira:${base}:${key}`,
+      url: `${url.protocol}//${base}/browse/${key}`,
+      provider: "jira",
+      kind: "issue",
+    };
+  }
+  return null;
+}
+
+/**
+ * The item a browser tab is showing. Beyond {@link issueUrl}, a Jira board,
+ * backlog or search page names its open issue in `selectedIssue`. Lookup only:
+ * transcript extraction keeps `issueUrl`, so indexed evidence is unchanged.
+ */
+export function issueLookupUrl(value: string): IssueUrlReference | null {
+  const direct = issueUrl(value);
+  if (direct) return direct;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  const selected = url.searchParams.get("selectedIssue");
+  if (!selected || !/^[A-Z][A-Z0-9_]*-[1-9]\d*$/i.test(selected)) return null;
+  // Jira Cloud and Server app paths sit under the site's context path.
+  const context = url.pathname.match(/^(.*?)\/(?:jira|secure|projects)\//);
+  return issueUrl(`${url.origin}${context?.[1] ?? ""}/browse/${selected}`);
 }

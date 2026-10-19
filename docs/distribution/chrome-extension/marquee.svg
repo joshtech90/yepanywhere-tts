@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560" viewBox="0 0 1400 560"><title>Yep Anywhere Chrome extension</title><rect width="1400" height="560" fill="#111b17"/><g font-family="Arial, Helvetica, sans-serif"><svg x="122" y="176" width="208" height="208" viewBox="0 0 120 120">
+  <title>Yep Anywhere</title>
+  <defs>
+    <linearGradient id="iconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22c55e" />
+      <stop offset="100%" stop-color="#16a34a" />
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="120" height="120" rx="26" fill="url(#iconGrad)" />
+  <path d="M 28 35 L 50 62 L 92 20" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M 50 62 L 50 95" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round" />
+</svg><text x="404" y="254" font-size="78" font-weight="700" fill="#fff">Yep Anywhere</text><text x="404" y="330" font-size="34" fill="#b9e6c9">Coding agents, beside your work.</text><text x="404" y="391" font-size="25" fill="#c5cec9">Your servers. Your sessions. Your browser.</text></g></svg>

@@ -35,6 +35,32 @@ Related topics: [recaps](recaps.md), [side-session-config](side-session-config.m
   needs a restart, is unsupported, or remains unknown; it must not silently
   reuse YA's generated-retitle preference as authorization.
 
+## Reading the full title
+
+The compact session header may ellipsize its title, but the complete title
+must remain reachable on touch devices without hovering or entering rename.
+The recent-sessions dropdown pins a **Current session** section above the
+other sessions. Its title stays on one line with ellipsis and can be selected.
+This navigation dropdown has no Copy title button; explicit title copying lives
+in Session Info. Its title is sourced from the open session rather than the
+recent feed, so an old, archived or locally renamed session still shows
+correctly. The current session is not duplicated among navigation links. The
+whole dropdown scrolls within the viewport so the other sessions remain
+reachable.
+
+**Session Info** also starts with the complete, selectable title and a
+**Copy title** action. Copy failure leaves the text available for manual copy.
+The header's `…` menu offers **Session info** near its top at every width.
+It opens the existing Info tab directly and preserves the draft. The composer
+has no Session info shortcut or extra row below its controls.
+Session identity remains readable for stopped or disconnected sessions without
+requiring process-info discovery to succeed.
+
+These title-reading surfaces use the full effective title (including a local
+rename), not the header's display-length limit or a shortened catalog title.
+Their default visibility was explicitly authorized by the maintainer on
+2026-10-18 as a repair to mobile session identity access.
+
 ## Manual Rename Surface
 
 Manual rename stays an inline edit of the title field. It should use all

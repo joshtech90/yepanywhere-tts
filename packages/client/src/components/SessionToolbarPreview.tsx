@@ -265,6 +265,7 @@ export function SessionToolbarPreview() {
             btw: controls.btw,
             send: controls.send,
             projectQueue: controls.projectQueue,
+            topicShift: { onTopicShift: noop, canSend: true },
           }}
         />
       </div>
@@ -325,7 +326,12 @@ export function ToolbarControlPreview({
               }
             : controlKey === "steerNow"
               ? { send: actionContextSend }
-              : {};
+              : controlKey === "topicShift"
+                ? {
+                    topicShift: { onTopicShift: noop, canSend: true },
+                    send: actionContextSend,
+                  }
+                : {};
   const handlePreviewKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!onActivate) return;
     if (event.key !== "Enter" && event.key !== " ") return;

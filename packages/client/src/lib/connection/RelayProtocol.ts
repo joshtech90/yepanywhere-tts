@@ -133,7 +133,7 @@ function getRelayErrorDetail(body: unknown): string | null {
   return null;
 }
 
-function createRelayApiError(
+export function createRelayApiError(
   response: RelayResponse,
 ): Error & { setupRequired?: boolean; status: number } {
   const detail = getRelayErrorDetail(response.body);
@@ -146,18 +146,32 @@ function createRelayApiError(
   if (getRelayHeader(response.headers, "X-Setup-Required") === "true") {
     error.setupRequired = true;
   }
-  return Object.assign(error, refusalFields(response.body));
+  return Object.assign(error, refusalFields(response.body), {
+    headers: new Headers(response.headers),
+  });
 }
 
 /** A Response rebuilt from a relay response's single-message body. */
-function toFetchResponse(response: RelayResponse): Response {
+export function toFetchResponse(
+  response: RelayResponse,
+  binaryDownload = false,
+): Response {
   const headers = new Headers(response.headers);
   let body: BodyInit | null = null;
   if (![204, 205, 304].includes(response.status)) {
     const mediaType =
       headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
     const value = response.body as { _binary?: boolean; data?: string };
-    if (mediaType === "application/json" || mediaType.endsWith("+json")) {
+    if (
+      binaryDownload &&
+      value?._binary === true &&
+      typeof value.data === "string"
+    ) {
+      body = Uint8Array.from(atob(value.data), (char) => char.charCodeAt(0));
+    } else if (
+      mediaType === "application/json" ||
+      mediaType.endsWith("+json")
+    ) {
       // Match the server's JSON classification before considering a binary
       // envelope: those field names may also occur in an ordinary JSON file.
       body = JSON.stringify(response.body);
@@ -174,7 +188,7 @@ const RELAY_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_RELAY_REDIRECTS = 5;
 const RELAY_REDIRECT_ORIGIN = "https://yep-relay.invalid";
 
-function resolveRelayRedirectPath(
+export function resolveRelayRedirectPath(
   currentPath: string,
   location: string | undefined,
 ): string {

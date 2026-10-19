@@ -25,6 +25,7 @@ import { initializeTheme } from "./hooks/useTheme";
 import { initializeTooltipAppearance } from "./hooks/useTooltipAppearance";
 import { initializeUnicodeProseMath } from "./lib/unicodeProseMath";
 import { I18nProvider, useI18n } from "./i18n";
+import { installFontDiagnostics } from "./lib/diagnostics/fontDiagnostics";
 import { installModifierChordTracking } from "./lib/modifierChords";
 import { preloadableComponent } from "./lib/preloadableComponent";
 import "./styles/index.css";
@@ -147,6 +148,11 @@ const SettingsLayout = lazy(() =>
     default: SettingsLayout,
   })),
 );
+const ProviderSignInPage = lazy(() =>
+  import("./pages/ProviderSignInPage").then((m) => ({
+    default: m.ProviderSignInPage,
+  })),
+);
 const WorkstreamsPage = lazy(() =>
   import("./pages/WorkstreamsPage").then(({ WorkstreamsPage }) => ({
     default: WorkstreamsPage,
@@ -265,6 +271,7 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
   initializeFontSize();
   initializeSidebarSpacing();
   initializeOutputAppearance();
+  installFontDiagnostics();
   initializeTabSize();
   initializeContentMaxWidth();
   initializeTooltipAppearance();
@@ -408,6 +415,10 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                     <Route
                       path="/git-status"
                       element={routeModule(<GitStatusPage />)}
+                    />
+                    <Route
+                      path="/provider-sign-in/:provider"
+                      element={routeModule(<ProviderSignInPage />)}
                     />
                     <Route
                       path="/bang-commands"

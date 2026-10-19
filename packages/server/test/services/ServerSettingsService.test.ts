@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_PROJECT_QUEUE_QUIET_SECONDS } from "@yep-anywhere/shared";
+import { parseNewSessionDefaults } from "../../src/routes/settings-parsers.js";
 import {
   ServerSettingsService,
   CommittedSettingsSaveError,
@@ -24,6 +25,54 @@ describe("ServerSettingsService", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  it("round-trips provider speed and router preferences and clearing through disk", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+    const defaults = parseNewSessionDefaults({
+      provider: "codex",
+      providers: {
+        codex: {
+          model: "gpt-5.5",
+          serviceTier: "priority",
+          routerPoolId: "work",
+          routerAccountId: "account-1",
+          routerPolicy: "manual",
+        },
+        claude: {
+          model: "opus",
+          routerPoolId: "personal",
+          routerPolicy: "weekly-pace",
+        },
+      },
+    });
+    expect(defaults).toBeTruthy();
+    await service.updateSettings({ newSessionDefaults: defaults! });
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSetting("newSessionDefaults")).toEqual(defaults);
+    const cleared = parseNewSessionDefaults({
+      ...defaults,
+      providers: {
+        ...defaults!.providers,
+        codex: {
+          model: "gpt-5.5",
+          serviceTier: null,
+          routerPoolId: null,
+          routerAccountId: "orphan",
+          routerPolicy: "manual",
+          futureUnknownField: true,
+        },
+      },
+    });
+    await reloaded.updateSettings({ newSessionDefaults: cleared! });
+    const next = new ServerSettingsService({ dataDir: testDir });
+    await next.initialize();
+    expect(next.getSetting("newSessionDefaults")?.providers).toEqual({
+      codex: { model: "gpt-5.5" },
+      claude: defaults!.providers!.claude,
+    });
   });
 
   it("uses continue as the default heartbeat turn text", async () => {

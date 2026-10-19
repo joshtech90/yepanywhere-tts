@@ -63,3 +63,13 @@ retained stdout/stderr: `/local/graehl/ya-boot/final-deep-browser.{out,err}`.
 Attribution to production code versus fixture/dependency state is unresolved.
 No timeouts or geometry expectations were weakened. Process sweeps were clean.
 Contributing-model: 6-astra.
+
+## Recheck 2026-10-17
+
+The broad 421-case browser run during Android transport qualification passed
+406, skipped ten and failed five. The stopped-process App case at
+`packages/client/e2e/project-app.spec.ts:352` again failed to expose “Stop serving
+at this address.” Its retained UI error says project-write sandboxing requires
+Linux/Bubblewrap on this macOS host. This narrows that attempt's failure; it
+does not settle the other historical instruction/geometry cases. No product
+behavior, assertions or timeouts were changed for this unrelated platform gate.

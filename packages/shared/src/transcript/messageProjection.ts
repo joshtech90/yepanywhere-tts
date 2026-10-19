@@ -259,7 +259,11 @@ function compactBoundaryDetails(msg: Message): Array<string | ContentBlock[]> {
   const summaryText = (msg as { compactSummaryText?: unknown })
     .compactSummaryText;
   if (typeof summaryText === "string" && summaryText.trim()) {
-    details.push(summaryText.trim());
+    details.push(
+      typeof msg._html === "string"
+        ? [{ type: "text", text: summaryText.trim(), _html: msg._html }]
+        : summaryText.trim(),
+    );
   }
   const metadata = compactMetadataDetail(msg);
   if (metadata) {

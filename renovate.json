@@ -81,6 +81,18 @@
       "automerge": true
     },
     {
+      "description": "The client and desktop declare different vite majors. A lockfile-only update passes both target versions to one recursive pnpm update, which forces a single version onto both importers and breaks --frozen-lockfile; bumping the ranges keeps each importer on its own major.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["vite"],
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "Playwright 1.61+ loads test files through module.registerHooks, which fails to load CommonJS dependencies such as sanitize-html on Node 22.16-22.22 and 23.11 ('request for ... is not in cache'). E2E runs at the supported Node floor, so hold the runner until the floor is past the fix (22.23 works).",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["@playwright/test"],
+      "allowedVersions": "<1.61.0"
+    },
+    {
       "description": "Group and automerge non-major GitHub Actions updates and digest pins.",
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],

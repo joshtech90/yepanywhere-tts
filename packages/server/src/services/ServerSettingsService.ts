@@ -79,6 +79,10 @@ import {
 import { reconcileGatewaySettings } from "./gatewayServiceSettings.js";
 import type { FileAccessSettings } from "../middleware/file-access.js";
 import { publishDeferredDeliverySettings } from "../supervisor/deferredDeliverySettings.js";
+import {
+  parseRendezSettings,
+  type RendezSettings,
+} from "./RendezWatchService.js";
 
 export type { FileAccessSettings };
 
@@ -124,6 +128,8 @@ export interface ServerSettings {
   /** Experimental issue discovery; absent means disabled, viewed scope. */
   issueAssociations?: import("@yep-anywhere/shared").IssueSettings;
   artifactViewer?: ArtifactViewerConfig;
+  /** Opt-in project file delivery, independently overridable by project path. */
+  rendez?: RendezSettings;
   /** Where YA writes new project-scoped state. */
   projectDirectoryStorage: ProjectDirectoryStorage;
   /** Whether new live tool-result images receive durable YA-owned copies. */
@@ -520,6 +526,9 @@ function mergeLoadedClientDefaults(
 
 function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
   const normalized = { ...DEFAULT_SERVER_SETTINGS, ...settings };
+  if (settings.rendez !== undefined) {
+    normalized.rendez = parseRendezSettings(settings.rendez);
+  }
   normalized.projectDirectoryStorage =
     settings.projectDirectoryStorage === "project"
       ? "project"

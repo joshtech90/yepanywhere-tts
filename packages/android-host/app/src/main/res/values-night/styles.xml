@@ -1,0 +1,4 @@
+<resources>
+  <style name="HostTheme.Base" parent="android:style/Theme.Material.NoActionBar" />
+  <bool name="webview_is_light_theme">false</bool>
+</resources>

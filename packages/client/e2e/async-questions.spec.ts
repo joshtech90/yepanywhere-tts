@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import type { Message } from "@yep-anywhere/shared/transcript/message";
 import {
   decodeJsonFrame,
   type RemoteClientMessage,
@@ -10,6 +11,7 @@ import {
   startYaServerProcess,
   disposeYaServerProcess,
 } from "./support/ya-server-process";
+import { recordUiCapture } from "./support/ui-capture";
 
 test.use({ serviceWorkers: "block" });
 
@@ -55,7 +57,7 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
       options: ["Check the keyboard behavior", "Inspect the phone layout"],
     },
   ];
-  const messages = [
+  const messages: Message[] = [
     { uuid: "user-start", type: "user", content: "Review this interface." },
     ...Array.from({ length: 18 }, (_, index) => ({
       uuid: `before-${index}`,
@@ -787,6 +789,46 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
       await expect(page.locator("[data-async-question-reply]")).not.toHaveCount(
         0,
       );
+    });
+
+    await test.step("Sent quote replies recover answered cards after storage loss", async () => {
+      messages.push({
+        uuid: "durable-quote-answer",
+        type: "user",
+        content: [
+          {
+            type: "text",
+            text: `> ${questions[0]!.title}\n\nUse the new defaults.`,
+          },
+        ],
+      });
+      await page.evaluate(() => {
+        for (const key of Object.keys(localStorage))
+          if (key.startsWith("yep-async-questions:"))
+            localStorage.removeItem(key);
+      });
+      await page.reload();
+      const answered = page
+        .locator("[data-async-question-reply]")
+        .filter({ hasText: questions[0]!.title });
+      for (const viewport of [
+        { width: 1200, height: 600 },
+        { width: 1000, height: 600 },
+        { width: 375, height: 812 },
+      ]) {
+        await page.setViewportSize(viewport);
+        await expect(answered).toContainText(
+          "Reply sent: Use the new defaults.",
+        );
+        await answered.scrollIntoViewIfNeeded();
+        await expect(
+          answered.getByRole("button", {
+            name: "Wait for it to finish",
+            exact: true,
+          }),
+        ).toBeDisabled();
+        await recordUiCapture(page, `recovered-answer-${viewport.width}`);
+      }
     });
 
     // Plain Markdown from an older server never acquires guessed controls.

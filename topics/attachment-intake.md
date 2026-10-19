@@ -67,7 +67,63 @@ native view's `EditorInfo`; browser JavaScript cannot add those MIME types to a
 textarea. YA therefore does not claim keyboard image insertion as a supported
 web path.
 
+## Image upload quality
+
+**Settings → Message Delivery → Image upload quality** controls future browser
+attachments. Search for SD, HD, image, screenshot, resize, compression or
+resolution. The existing browser-local preference stays SD by default; changes
+also reach already-open composers in other tabs. Pane Undo restores the value
+from when the pane opened. This is separate from server-side `.rendez` watching.
+
+SD preserves up to 2000 px on the long edge where the selected model supports
+it, replacing the former fixed 1024 px cap. HD uses the adapter's upper target.
+Neither enlarges a small image. The current profiles are:
+
+| Session capability | SD | HD | Encoded file budget |
+| --- | --- | --- | --- |
+| Known Claude 4.7+ model, including resolved aliases | 2000 px | 2576 px | 3 MiB |
+| Older or unresolved Claude model | 1568 px | 1568 px | 3 MiB |
+| Codex harness | 2000 px | 2048 px | 4 MiB |
+| Other adapters | 2000 px | 2000 px | 4 MiB |
+
+JPEG/WebP encoding uses quality 90 for SD and 95 for HD when preparation is
+needed. PNG remains lossless. Images within both limits retain their bytes;
+oversized files are resized, then reduced further if necessary to meet the
+byte budget. Decode/encode failure prevents upload and surfaces an error.
+Non-images and unsupported image formats keep the ordinary file path; browsers
+without `createImageBitmap` retain the original-file fallback. Existing staged
+attachments are not reprocessed after a setting or model change. For New
+Session and Project Queue, the model selected when attaching determines the
+profile; a later launch-target change cannot recover discarded detail.
+
+The model may also downscale for its pixel/patch budget. HD does not request
+OpenAI `original` detail: the current Codex path is bounded to 2048 px.
+[OpenAI's image guide](https://developers.openai.com/api/docs/guides/images-vision)
+and the pinned Codex image utility distinguish that path from 6000 px original
+detail. [Claude's vision guide](https://platform.claude.com/docs/en/build-with-claude/vision)
+defines the 1568/2576 px tiers; large histories with more than 20 images may
+require 2000 px or smaller, so SD is the general-purpose default.
+
+`GET /api/providers` and `GET /api/providers/:name` expose optional
+`imageSizing.profiles` on each provider and model. A model profile overrides
+the provider profile; the browser contains no model catalogue. Both values
+come from `services/image-preparation.mjs`, also used by the provider host's
+`imagePreparationProfile` for filesystem delivery (SD using its launch model).
+No extra request is made per attachment.
+
+Compatibility review, 2026-10-18: stable v0.9.1 and v0.9.2 have the existing
+provider queries and optional `imageSizing` guidance, but no profiles. Field
+presence gates the extension; absent profiles use legacy sizing guidance,
+or 2000 px when unavailable, with a 3 MiB preparation budget. No new endpoint,
+request field, or capability meaning is introduced. Standing maintainer
+compatibility approval applies.
+
 ## Design decisions
+
+- **Adapter-owned preparation profiles** (vs. browser model tables or a new
+  per-upload probe): existing provider discovery carries the same policy used
+  by filesystem delivery. The client selects by the current model and resizes
+  before transferring bytes.
 
 - **Independent memo capture with a disposable ASR subscriber** (vs. saving
   the dictation provider's input): transcript toggles must not control the

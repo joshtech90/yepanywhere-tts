@@ -38,6 +38,7 @@ import {
 import { SchemaWarning } from "../../SchemaWarning";
 import { SourceFileHeaderActions } from "../../SourceFileHeaderActions";
 import { FileRevisionLink } from "../../FileRevisionLink";
+import { FileDiffLinkCluster } from "../../FileDiffViewLinks";
 import { FilePathDisplay } from "../../ui/FilePathDisplay";
 import {
   FixedFontMathToggle,
@@ -1392,7 +1393,7 @@ function EditInteractiveSummary({
   if (structuredPatch.length === 0) {
     return (
       <>
-        <span className="source-review-edit-summary">
+        <FileDiffLinkCluster className="source-review-edit-summary">
           <button
             type="button"
             className="file-link-inline"
@@ -1408,7 +1409,7 @@ function EditInteractiveSummary({
             )}
           </button>
           <SourceControlEditLink filePath={filePath} />
-        </span>
+        </FileDiffLinkCluster>
         {showModal && (
           <EditDetailModal
             filePath={filePath}
@@ -1444,7 +1445,7 @@ function EditInteractiveSummary({
 
   return (
     <>
-      <span className="source-review-edit-summary">
+      <FileDiffLinkCluster className="source-review-edit-summary">
         <button
           type="button"
           className="file-link-inline"
@@ -1463,7 +1464,7 @@ function EditInteractiveSummary({
           )}
         </button>
         <SourceControlEditLink filePath={filePath} />
-      </span>
+      </FileDiffLinkCluster>
       {showModal && (
         <EditDetailModal
           filePath={filePath}

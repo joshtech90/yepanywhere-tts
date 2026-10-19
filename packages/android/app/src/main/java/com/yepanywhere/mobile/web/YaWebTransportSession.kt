@@ -7,6 +7,7 @@ import com.yepanywhere.mobile.connection.YaSubscriptionOverflowException
 import com.yepanywhere.mobile.connection.YaConnectionUnavailableException
 import com.yepanywhere.mobile.connection.YaNativeOperationException
 import com.yepanywhere.mobile.connection.YaNativeOperationFailure
+import com.yepanywhere.mobile.connection.YaResponseBody
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.util.UUID
@@ -24,14 +25,16 @@ class YaWebTransportSession(
     val handle: String,
     private val lease: YaConnectionLease,
     private val scope: CoroutineScope,
-    private val emit: (JSONObject) -> Unit,
+    private val emit: suspend (JSONObject) -> Unit,
     private val recordCancellation: () -> Unit = {},
+    private val emitBytes: suspend (ByteArray) -> Unit = {},
     private val switchHost: () -> Unit,
 ) : Closeable {
     private val operations = ConcurrentHashMap<String, Job>()
     private val subscriptions = ConcurrentHashMap<String, YaSubscription>()
     private val subscriptionJobs = ConcurrentHashMap<String, Job>()
     private val uploadIds = ConcurrentHashMap<String, String>()
+    private val responses = ConcurrentHashMap<String, YaResponseBody>()
     @Volatile private var closed = false
     private val ownership = Any()
 
@@ -42,7 +45,11 @@ class YaWebTransportSession(
         val method = command.getString("method")
         val params = command.optJSONObject("params") ?: JSONObject()
         if (method == "cancel") {
-            operations[params.getString("id")]?.let { recordCancellation(); it.cancel() }
+            synchronized(ownership) {
+                val target = params.getString("id")
+                operations[target]?.let { recordCancellation(); it.cancel() }
+                responses.remove(target)?.close()
+            }
             return
         }
         require(operations.size < 32 && !operations.containsKey(id)) { "Native operation limit exceeded" }
@@ -50,6 +57,23 @@ class YaWebTransportSession(
             try {
                 val result = when (method) {
                     "request" -> request(params)
+                    "responseStart" -> startResponse(params, id)
+                    "responseRead" -> {
+                        val responseId = params.getString("responseId")
+                        val response = checkNotNull(responses[responseId]) { "Native response closed" }
+                        try {
+                            val chunk = response.nextChunk()
+                            if (chunk != null) {
+                                val requestId = UUID.fromString(id)
+                                emitBytes(ByteBuffer.allocate(16 + chunk.size).putLong(requestId.mostSignificantBits)
+                                    .putLong(requestId.leastSignificantBits).put(chunk).array())
+                                return@launch
+                            }
+                            responses.remove(responseId, response)
+                            response.close()
+                            JSONObject().put("done", true)
+                        } catch (error: Throwable) { responses.remove(responseId, response); response.close(); throw error }
+                    }
                     "subscribe" -> subscribe(params)
                     "unsubscribe" -> {
                         val localId = params.getString("subscriptionId")
@@ -68,6 +92,8 @@ class YaWebTransportSession(
                         uploadIds.remove(params.getString("uploadId"))?.let { lease.cancelUpload(it) }
                         JSONObject()
                     }
+                    "status" -> lease.state().let { JSONObject().put("phase", it.phase.name)
+                        .put("recoverable", it.recoverable).put("retryAttempt", it.retryAttempt).put("connectionEpoch", it.connectionEpoch) }
                     "reconnect" -> { lease.reconnect(); JSONObject() }
                     "switchHost" -> { switchHost(); JSONObject() }
                     else -> error("Unsupported native source operation")
@@ -133,6 +159,20 @@ class YaWebTransportSession(
         } catch (error: YaApiException) { error.response }
         return JSONObject().put("status", response.status).put("headers", JSONObject(response.headers))
             .put("body", response.body ?: JSONObject.NULL)
+    }
+
+    private suspend fun startResponse(params: JSONObject, id: String): JSONObject {
+        val supplied = params.optJSONObject("headers") ?: JSONObject()
+        val headers = supplied.keys().asSequence().associateWith(supplied::getString)
+        val response = lease.fetchResponse(params.getString("path"), headers)
+        val metadata = response.metadata
+        if (!metadata.optBoolean("streaming")) { response.close(); return metadata }
+        val operation = currentCoroutineContext()[Job]
+        synchronized(ownership) {
+            if (closed || operation?.isActive != true || responses.size >= 8) { response.close(); error("Native response owner unavailable") }
+            responses[id] = response
+        }
+        return JSONObject(metadata.toString()).put("responseId", id)
     }
 
     private suspend fun subscribe(params: JSONObject): JSONObject {
@@ -213,6 +253,8 @@ class YaWebTransportSession(
         subscriptions.clear()
         subscriptionJobs.clear()
         uploadIds.clear()
+        responses.values.forEach(YaResponseBody::close)
+        responses.clear()
         }
         lease.close()
     }

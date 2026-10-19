@@ -108,6 +108,8 @@ export interface SourceTransportCapabilities {
    * this source. Media consumers branch on this, never on transport kind.
    */
   readonly sameOriginUrls: boolean;
+  /** Fixed isolated shell supplied by the native app; never a fetch grant. */
+  readonly packagedArtifactViewerVersion?: 1;
   readonly device?: DeviceSignalingChannel;
   readonly speech?: SpeechChannelFactory;
 }

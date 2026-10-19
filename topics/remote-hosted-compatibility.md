@@ -170,6 +170,13 @@ started, so an older server never receives them. No capability is needed,
 since the fallback is the old behavior and needs no client-side branch on the
 server version. Standing maintainer compatibility authorization applies.
 
+On 2026-10-17 the maintainer approved a coordinated unreleased-native beta
+change: `stream: "connection"` selects the shared body window described in
+[relay transfer size](media-rendering-and-routing.md#relay-transfer-size).
+It does not add a request/response echo negotiation or an old-native support
+layer. Browser requests continue to select `stream: true`; no browser SRP
+authentication, hosted-client compatibility floor or capability meaning changes.
+
 New direct and secure clients advertise `0x05`. A new server sends bounded
 chunks only to those clients; without `0x05`, it preserves the complete-frame
 behavior. The supported core release corpus (`v0.5.2`, `v0.6.0`, `v0.6.1`,

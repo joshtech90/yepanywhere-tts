@@ -88,6 +88,10 @@
 }
 .launcher {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
   font-size: 13px;
   cursor: pointer;
   padding: 8px;

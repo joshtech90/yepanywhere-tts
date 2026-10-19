@@ -78,6 +78,38 @@ describe("RecentSessionsDropdown", () => {
     document.body.replaceChildren();
   });
 
+  it("pins the live title even when archived, missing from the feed, or renamed", () => {
+    const fullTitle = "Complete current session title ".repeat(25);
+    const onNavigate = vi.fn();
+    const renderDropdown = (title: string) => (
+      <MemoryRouter>
+        <RecentSessionsDropdown
+          currentSessionId="session-1"
+          currentSessionTitle={title}
+          isOpen={true}
+          onClose={vi.fn()}
+          onNavigate={onNavigate}
+          triggerRef={triggerRef()}
+        />
+      </MemoryRouter>
+    );
+    const view = render(renderDropdown(fullTitle));
+    expect(screen.getByText(fullTitle.trim())).not.toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+
+    // A stale/archived feed row must neither duplicate nor replace the title
+    // from the open session; opening its text must not navigate away.
+    globalSessionsState.sessions = [
+      session({ id: "session-1", isArchived: true, fullTitle: "Stale title" }),
+      session(),
+    ];
+    view.rerender(renderDropdown("Locally renamed title"));
+    fireEvent.click(screen.getByText("Locally renamed title"));
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(screen.queryByText("Stale title")).toBeNull();
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+  });
+
   it("renders the full title instead of the shortened list title", () => {
     globalSessionsState.sessions = [session()];
 
@@ -85,6 +117,7 @@ describe("RecentSessionsDropdown", () => {
       <MemoryRouter>
         <RecentSessionsDropdown
           currentSessionId="session-1"
+          currentSessionTitle="Current title"
           isOpen={true}
           onClose={vi.fn()}
           onNavigate={vi.fn()}
@@ -108,6 +141,7 @@ describe("RecentSessionsDropdown", () => {
       <MemoryRouter>
         <RecentSessionsDropdown
           currentSessionId="session-1"
+          currentSessionTitle="Current title"
           isOpen={true}
           onClose={vi.fn()}
           onNavigate={vi.fn()}
@@ -139,6 +173,7 @@ describe("RecentSessionsDropdown", () => {
       <MemoryRouter>
         <RecentSessionsDropdown
           currentSessionId="session-1"
+          currentSessionTitle="Current title"
           isOpen={true}
           onClose={vi.fn()}
           onNavigate={vi.fn()}
@@ -168,6 +203,7 @@ describe("RecentSessionsDropdown", () => {
       <MemoryRouter>
         <RecentSessionsDropdown
           currentSessionId="session-1"
+          currentSessionTitle="Current title"
           isOpen={true}
           onClose={vi.fn()}
           onNavigate={vi.fn()}
@@ -195,6 +231,7 @@ describe("RecentSessionsDropdown", () => {
       <MemoryRouter>
         <RecentSessionsDropdown
           currentSessionId="session-1"
+          currentSessionTitle="Current title"
           isOpen={true}
           onClose={vi.fn()}
           onNavigate={vi.fn()}
@@ -221,6 +258,7 @@ describe("RecentSessionsDropdown", () => {
       <MemoryRouter>
         <RecentSessionsDropdown
           currentSessionId="session-1"
+          currentSessionTitle="Current title"
           isOpen={true}
           onClose={vi.fn()}
           onNavigate={vi.fn()}

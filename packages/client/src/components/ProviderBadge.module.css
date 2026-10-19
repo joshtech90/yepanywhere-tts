@@ -1,0 +1,122 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 1px;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  border: 1px solid;
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.dot.thinking {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.effort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.effortDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.effortDot.off {
+  background: var(--text-muted);
+}
+
+.effortDot.auto {
+  background: var(--link-color);
+}
+
+.effortDot.low {
+  background: #2f9e44;
+}
+
+.effortDot.medium {
+  background: #d97706;
+}
+
+.effortDot.high {
+  background: #ea580c;
+}
+
+.effortDot.xhigh {
+  background: #dc2626;
+}
+
+.effortDot.max {
+  background: #991b1b;
+}
+
+.effortLabel {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  opacity: 0.82;
+}
+
+/* On mobile, hide the dot - the label already shows a compact model glyph */
+@media (width <= 600px) {
+  .dot {
+    display: none;
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.condensed {
+  min-width: 0;
+  max-width: 100%;
+  gap: 3px;
+  padding: 2px 5px;
+  white-space: nowrap;
+}
+
+.model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.condensed .effort {
+  flex-shrink: 0;
+  gap: 3px;
+  margin-left: 0;
+  padding-left: 4px;
+}
+
+.condensed .effortDot {
+  display: none;
+}
+
+.condensed .dot.thinking {
+  display: inline-block;
+  flex-shrink: 0;
+}

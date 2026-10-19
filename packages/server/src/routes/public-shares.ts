@@ -2,6 +2,7 @@ import {
   DEFAULT_RELAY_URL,
   PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH,
   PUBLIC_SHARE_MEDIA_ASSET_EXTENSIONS,
+  PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY,
   PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
   type AppSession,
   type CreatePublicSessionShareRequest,
@@ -508,6 +509,20 @@ async function loadLivePublicShareResponse(
   return session
     ? deps.publicShareService.buildLiveResponse(record, session)
     : null;
+}
+
+/** The live session exactly as the one-response live route presents it. */
+async function loadLivePublicShareSessionJson(
+  deps: PublicSharePublicRoutesDeps,
+  record: NonNullable<ReturnType<PublicShareService["getRecordBySecret"]>>,
+): Promise<AsyncIterable<Uint8Array> | null> {
+  const response = await loadLivePublicShareResponse(deps, record);
+  if (!response) return null;
+  await augmentPublicShareMessages(
+    response.session.messages as Message[],
+    record.source.projectId,
+  );
+  return serializeLegacyJsonValue(response.session);
 }
 
 function collectStringValues(value: unknown): string[] {
@@ -1653,12 +1668,24 @@ export function createPublicSharePublicRoutes(
       record,
       viewerId,
     );
-    if (
+    const representationAvailable =
       deps.publicShareService.getSelectedRepresentationAvailability(
         record,
         viewerId,
-      ) === "available"
-    ) {
+      ) === "available";
+    if (representationAvailable && metadata.mode === "live") {
+      const sessionChunks = viewerId
+        ? await deps.publicShareService.prepareLiveSessionChunks(
+            record,
+            viewerId,
+            () => loadLivePublicShareSessionJson(deps, record),
+          )
+        : null;
+      if (sessionChunks) {
+        metadata.capabilities = [PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY];
+        metadata.sessionChunks = sessionChunks;
+      }
+    } else if (representationAvailable) {
       const sessionChunks =
         await deps.publicShareService.getFrozenSessionChunksMetadata(
           record,
@@ -1696,13 +1723,38 @@ export function createPublicSharePublicRoutes(
       return notFound(c);
     }
 
+    const live =
+      record.mode === "live" &&
+      !(
+        viewerId && deps.publicShareService.hasViewerSnapshot(record, viewerId)
+      );
     let chunk: Awaited<ReturnType<PublicShareService["getFrozenSessionChunk"]>>;
     try {
-      chunk = await deps.publicShareService.getFrozenSessionChunk(
-        record,
-        viewerId,
-        c.req.query("cursor"),
-      );
+      if (live) {
+        chunk = viewerId
+          ? deps.publicShareService.getLiveSessionChunk(
+              record,
+              viewerId,
+              c.req.query("cursor"),
+            )
+          : null;
+        if (!chunk) {
+          return c.json(
+            {
+              error:
+                "This live share transfer expired; reload the share to start again",
+              retryable: true,
+            },
+            409,
+          );
+        }
+      } else {
+        chunk = await deps.publicShareService.getFrozenSessionChunk(
+          record,
+          viewerId,
+          c.req.query("cursor"),
+        );
+      }
     } catch (error) {
       if (error instanceof PublicShareChunkCursorError) {
         return c.json(

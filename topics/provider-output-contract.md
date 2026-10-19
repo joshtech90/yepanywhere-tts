@@ -277,6 +277,25 @@ independent. When browser storage is unavailable, the current visit still
 works in memory. Receiving the live and durable copy of one question must not
 create duplicate controls or duplicate replies.
 
+Sent quote replies also establish answered state independently of browser
+records. A later user prompt must quote the complete question title (with
+whitespace folded) and include nonempty reply text after that quote block.
+Partial quotes, quote-only prompts, ordinary later messages, and quotes inside
+code fences do not establish an answer. Each quote resolves only the nearest
+preceding question with that title. The original card shows **Reply sent** with
+the added reply text, superseding the local moved-to-composer label, and the
+recovered answer is saved in client storage without clearing an unsent draft.
+This recovery uses loaded transcript history and fewer than 32 subsequent user
+turns; it never fetches history in the background. Cached answers survive that
+window aging out. Dismissal without a sent quote reply remains local state.
+
+The server's existing bounded recent-question scan excludes questions answered
+by this same quote-reply rule, so unopened-session reminders also recover after
+client storage loss. It compares full titles before clipping previews and
+introduces no new response fields or capability. Older servers may still show
+collection reminders until the new client opens that transcript and saves its
+recovered answers locally.
+
 #### Discovery from Inbox and session navigation
 
 With `session-async-questions`, Inbox rows and sidebar session rows show the

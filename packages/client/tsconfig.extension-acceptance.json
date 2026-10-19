@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": [
+    "scripts/extension-acceptance.mts",
+    "scripts/extension-dev-acceptance.mts",
+    "scripts/extension-site-access-acceptance.mts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

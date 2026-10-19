@@ -1159,6 +1159,7 @@ async function startServer() {
     focusedSessionWatchManager,
     safeRestartService,
   } = createApp({
+    externalSessionsEnabled: config.externalSessionsEnabled,
     getCatalogFamilies: () => installService.getCatalogFamilies(),
     artifacts: config.artifacts,
     provider: mockProvider,

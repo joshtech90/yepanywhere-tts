@@ -21,7 +21,9 @@ restart, and resume does not restore it.
 
 Maintainer decisions:
 
-- New sessions always start Standard; a paid tier is never remembered.
+- Original decision: new sessions always start Standard; a paid tier is never
+  remembered. Superseded 2026-10-13: explicit New Session speed choices now save
+  per provider on the server. See [the current contract](../../topics/service-tier.md).
 - A catalog `defaultServiceTier` is never applied implicitly.
 - Mid-session changes apply live through `thread/settings/update`.
 - A new version-implied capability gates only the mid-session control.
@@ -50,7 +52,8 @@ Register `process-service-tier-change`, version-implied from 0.9.4, owning the
 
 Session Info Speed row (live, then saved tier), model-panel Speed chips gated
 on the capability, and a New Session Advanced Speed selector that resets to
-Standard and hides for router pools.
+Standard when unconfigured and hides for router pools. Since 2026-10-13 it
+restores explicit saved speed choices.
 
 ### 5 — Verification
 

@@ -238,6 +238,49 @@ describe("project path index", () => {
     index.release();
   });
 
+  it("links an absolute path cited with a line suffix, keeping the suffix", async () => {
+    const repo = await createRepo();
+    const index = await getProjectPathIndex(repo);
+    const verify = join(homedir(), "agents/topics/verify.md");
+    const literal = "/tmp/odd.md:12";
+    const resolveAbsoluteFilePaths = vi.fn(
+      async (paths: readonly string[]) =>
+        new Set(
+          paths.filter(
+            (path) =>
+              path === verify ||
+              path === "/tmp/a.ts" ||
+              path === literal ||
+              path === "/tmp/odd.md",
+          ),
+        ),
+    );
+    const options = {
+      projectId: "project-1",
+      projectPath: repo,
+      index,
+      resolveAbsoluteFilePaths,
+    };
+
+    const html = await linkifyProjectPaths(
+      `<p>see ~/agents/topics/verify.md:29-56 and /tmp/a.ts:4:7 and ${literal}</p>`,
+      options,
+    );
+    expect(html).toContain(`path=${encodeURIComponent(verify)}&amp;line=29"`);
+    expect(html).toContain("~/agents/topics/verify.md:29-56</a>");
+    expect(html).toContain("path=%2Ftmp%2Fa.ts&amp;line=4&amp;column=7");
+    // A file really named with the suffix wins over the citation reading.
+    expect(html).toContain(`path=${encodeURIComponent(literal)}"`);
+
+    expect(
+      await resolveProjectPathTextLinks(
+        "read ~/agents/topics/verify.md:29-56",
+        options,
+      ),
+    ).toEqual([{ text: "~/agents/topics/verify.md:29-56", filePath: verify }]);
+    index.release();
+  });
+
   it("does not link an existing prefix of a longer absolute token", async () => {
     const repo = await createRepo();
     const index = await getProjectPathIndex(repo);

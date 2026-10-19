@@ -2,6 +2,8 @@ export const NATIVE_HOST_PROTOCOL = 1 as const;
 export const NATIVE_NOTIFICATION_STATUS_FEATURE = "notifications.status";
 export const NATIVE_NOTIFICATION_PERMISSION_FEATURE =
   "notifications.requestPermission";
+/** Opens the app's own per-server notification controls. */
+export const NATIVE_NOTIFICATION_MANAGE_FEATURE = "notifications.manage";
 const MAX_MESSAGE_BYTES = 16 * 1024;
 const DEFAULT_TIMEOUT_MS = 1_500;
 const DEFAULT_PERMISSION_TIMEOUT_MS = 2 * 60_000;
@@ -110,6 +112,16 @@ export class NativeHostClient {
         this.permissionTimeoutMs,
       ),
     );
+  }
+
+  /** Returns false when this app version has no native notification controls. */
+  async manageNotifications(): Promise<boolean> {
+    const descriptor = await this.describe();
+    if (!descriptor?.features.includes(NATIVE_NOTIFICATION_MANAGE_FEATURE)) {
+      return false;
+    }
+    await this.request(NATIVE_NOTIFICATION_MANAGE_FEATURE);
+    return true;
   }
 
   dispose(): void {
@@ -288,5 +300,12 @@ export const nativeHost = {
     requestPermission(): Promise<NativeNotificationStatus | null> {
       return client?.requestNotificationPermission() ?? Promise.resolve(null);
     },
+    manage(): Promise<boolean> {
+      return client?.manageNotifications() ?? Promise.resolve(false);
+    },
+  },
+  /** True inside the Android or iOS app, whose WebView cannot use browser Web Push. */
+  isAvailable(): boolean {
+    return typeof window !== "undefined" && window.yaNative !== undefined;
   },
 };

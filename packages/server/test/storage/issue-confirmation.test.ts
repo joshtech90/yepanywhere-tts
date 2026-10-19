@@ -99,8 +99,11 @@ describe("tracker confirmation", () => {
       state: "confirmed",
       title: "Repair cancellation",
     });
+    // A rejected reference is hidden like a dismissed one, and shown with them.
+    expect(h.store.list().map((item) => item.key)).toEqual(["owner/repo#42"]);
     expect(
-      h.store.list().find((item) => item.key === "MADEUP-9")?.confirmation,
+      h.store.list("", "", "", true).find((item) => item.key === "MADEUP-9")
+        ?.confirmation,
     ).toEqual({ state: "rejected", title: null });
     await confirmer.close();
     h.db.close();

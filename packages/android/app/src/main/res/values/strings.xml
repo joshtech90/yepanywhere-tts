@@ -64,7 +64,13 @@
     <string name="native_push_enable">Enable notifications</string>
     <string name="native_push_disable">Disable notifications</string>
     <string name="native_push_test">Send test</string>
-    <string name="native_push_failed">Could not update notifications. Check notification permission and your connection, then retry.</string>
+    <string name="native_push_blocked">Android is blocking notifications from Yep Anywhere. Allow them in settings to turn them on for this server.</string>
+    <string name="native_push_enabled_blocked">Notifications are on for this server, but Android is blocking them.</string>
+    <string name="native_push_open_settings">Open notification settings</string>
+    <string name="native_push_offer_title">Turn on notifications?</string>
+    <string name="native_push_offer_body">Get notified when an agent on %1$s needs your approval or input, or finishes. Notifications never include session content.</string>
+    <string name="native_push_offer_decline">Not now</string>
+    <string name="native_push_failed">Could not update notifications. Check your connection, then retry.</string>
     <string name="native_push_update_required">Update this YA server to enable native notifications.</string>
     <string name="push_approval">An agent needs your approval.</string>
     <string name="push_input">An agent needs your input.</string>

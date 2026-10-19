@@ -22,14 +22,27 @@ direction; the interactive fixture is `packages/client/mockups/project-service/`
 
 ## Project App and Settings
 
-The ordinary New Session page shows an **App** button in its header, opening
-the selected project's app beside the composer, only when the browser-local
-**Appearance → Show project app while composing** setting is enabled, the
-server advertises `project-service`, and the selected project declares a
-usable app (the same check as the session's App button). The setting defaults
-off for all principals, independently of the Session right pane setting.
-Project App navigation remains available independently through an explicit App
-entry; server capability alone does not reveal the composing button.
+The ordinary New Session page shows an **App** button in its header when a
+project is selected, the browser-local **Appearance → Show project app while
+composing** setting is enabled, and the server advertises `project-service`.
+The button does not wait for an app-status request. Opening it resolves the
+project's app or latest artifact through the usual viewer; a project with
+neither shows the existing empty state. The setting defaults off for all
+principals, independently of the Session right pane setting. Project App
+navigation remains available independently through an explicit App entry;
+server capability alone does not reveal the composing button.
+
+Opening App keeps the same New Session form mounted: the draft, attachments,
+provider, model, effort, advanced options and their expanded state survive
+opening and closing it. On wide screens the app sits beside the full launch
+form, with only project selection withheld while App is open. Closing App
+restores project selection. On phones the app and complete form alternate;
+Back returns to the form with project selection restored. Starting a session
+from the project App viewer also offers the full launch controls.
+
+**Design decision:** keep the ordinary form mounted and toggle the viewer
+beside it, rather than navigate to a composer-only page and reconstruct launch
+state. App discovery occurs on explicit open rather than delaying navigation.
 
 Projects offers **Open app**, opening the main content pane with the same
 isolated rendering and viewer controls as the session's right App pane. It
@@ -100,12 +113,41 @@ the browser/OS's control; this does not promise their removal.
 
 At turn boundaries the session compares App information and opens the pane
 when a usable app first appears or its update stamp changes. The optional
-`ProjectAppInfo.updatedAt` is the resolved static entry's mtime in ISO format,
-or the process runtime record's update time, including an active runtime whose
-source declaration changed. Unknown stamps are omitted. Older servers without
-the field support first-declaration detection only, not rebuild detection.
+`ProjectAppInfo.updatedAt` is, for a static app, the newest mtime in ISO format
+among the files under its serving root (dot entries and `node_modules`
+skipped, symlinks not followed, at most 5000 entries walked), so a rebuild that
+changes only an asset counts; a serving root that is the project itself
+contributes only the entry. For a process app it is the runtime record's update
+time, including an active runtime whose source declaration changed. Unknown
+stamps are omitted. Older servers without the field support first-declaration
+detection only, not rebuild detection; older servers stamp only the entry.
+
+An open static app reads App information only around work that could change
+its files: every 2 seconds while an agent in the project is mid-turn and for
+20 seconds after it stops (from `process-state-changed`), once when any of
+them stops, and once when the page becomes visible or the window regains
+focus, as after editing in another program. It reads nothing while hidden or
+otherwise idle. An app opened mid-turn is first checked when that turn ends.
+When the stamp differs from the one read as its frame loaded, the reload
+button lights. A click with nothing new reloads and also arms one
+reload for the next change; holding or right-clicking reload toggles reloading
+on every change, remembered per project in the browser.
 The optional stamp is recorded under `project-app-address-links`; clients
 feature-detect the field without requiring a new capability.
+
+YA never takes keyboard focus from an open App without a user action in YA
+itself (user requirement, 2026-10-15). An open App stays mounted across turn
+boundaries: a reading that lacks the declaration, as during an `app.json`
+edit or a service restart, does not close or unmount it. A declaration that
+is really gone takes effect once the user closes the App, which then hides
+the App button. Focus moves YA makes on its own, rather than in a user's own
+click or key, decline while an embedded frame holds focus: refocusing the
+composer after a `!` command or a settled speech delivery, voice start and
+stop, returning from an answered async question or a restored queued
+message, a question jump, and a modal's initial focus. They route through
+`programmaticFocus` (`packages/client/src/lib/programmaticFocus.ts`). Leaving
+the page for the App while an answer sends counts as moving away, so the
+answer does not return focus to the composer.
 
 **New session** creates one session in this project using the user's normal
 provider/model defaults and enforced locks, with the viewed app already open
@@ -196,6 +238,34 @@ Example for a template with an application server:
 | `status` | Process only: YA probes the declared HTTP path through that launch's broker until the exact expected response or startup timeout. Never execute a template-supplied status command. Probe only the owned endpoint; redirects cannot turn this into an arbitrary fetch. |
 | `stop` | Process only: stop the owned process group with SIGTERM, wait `graceMs`, then report stopped or failed-to-stop. No arbitrary kill command, port-owner lookup, unrelated-process signaling or implicit SIGKILL. |
 | `serving` | Static uses `target: "static-root"`; process uses `target: "sandbox-loopback"`, `protocol: "http"`. This names the backend, not a public hostname, bearer, PID or host port. Vhost association lives separately in YA app data. |
+
+Settings offers **Restart app** for a running process app: the client issues
+the ordinary stop, then start in the running mode, so the app rereads
+start-time configuration. There is no separate restart endpoint. A declared
+reload signal that avoids the restart is a
+[sketch](project-service.sketches.md#reload-signal-without-restart-october-15-2026).
+
+### Start on open
+
+Opening a process app in YA (the App view, its Reload, or a pane that opens
+it) starts it when no launch runs and its last state still wants it running:
+never started, interrupted by a YA or provider-host shutdown, or crashed.
+This needs no address, reservation or opt-in, and uses the opener's own
+**Start** authority (a view grant). An explicit **Stop** is respected: the
+app stays stopped and the view shows **Start** until someone presses it. A
+live-preview launch is not restarted this way. The open request waits for
+readiness, then returns the view. (User-directed 2026-10-17: a project app
+should work after a YA restart without a reserved address.)
+
+These starts share the [auto-start](#auto-start-on-visit) loop guard, so a
+crashing app is not relaunched forever: at most one automatic start per
+project every 30 s, an app gone within 60 s of starting counts as a failure,
+and 3 failures in 10 minutes pause automatic starts. A held-back or failed
+open answers 409 with the latest failure's first line (or the pause); a
+manual **Start** clears the guard. Shutting YA down stops each app but keeps
+it desired, so a clean shutdown and an abrupt one both read as interrupted.
+A provider-host record that its host cleanly halted no longer blocks the
+in-process manager from starting or stopping that app.
 
 For process delivery without a wildcard hostname, `serving.basePathEnv` names
 an environment variable through which YA supplies the app's scoped URL prefix.
@@ -317,7 +387,9 @@ manager remains available and stops apps with Hono. Persisted host ownership
 prevents this mode from duplicating or pretending to stop an app that may still
 belong to a live host: enable hosting again to inspect or stop it. Missing owner
 fields in older records mean in-process ownership. After owner loss, persisted
-state reports interruption; automatic relaunch is not implemented.
+state reports interruption; the next open in YA relaunches it
+([start on open](#start-on-open)), as does an opted-in address's next visit
+([auto-start](#auto-start-on-visit)).
 
 Provider hosting supports Linux and macOS Node source launches; Unix-domain
 IPC is not Linux-specific. Project service execution still requires the
@@ -377,8 +449,9 @@ Existing pieces verified in source on 2026-09-28:
   Static artifact paths and YA control endpoints are not app WebSocket targets.
   See [app WebSocket access](active-content-security.md#app-websocket-access).
 
-The separate project runner reuses these sandbox facilities. Viewing never
-starts it. Settings refreshes status on entry and after lifecycle actions;
+The separate project runner reuses these sandbox facilities. Viewing starts
+it only through [start on open](#start-on-open) or a served address's opt-in
+[auto-start](#auto-start-on-visit). Settings refreshes status on entry and after lifecycle actions;
 explicit Reload renews the current target, without background replacement of
 an interacting iframe. A changed declaration is shown alongside the active
 launch; stopping that launch remains possible even if the new file is invalid.
@@ -422,9 +495,28 @@ principal boundary denies both to limited users. Maintainer approval on
 2026-09-29 covers v0.9.0–v0.9.2, which lack the contract: older servers retain
 manual Vhosts and an update note; clients make no inventory request.
 
-Static reserved-address opens redirect to an isolated artifact bearer. Access
-changes apply at the reserved address on the next request; previously issued
-artifact grants retain their independent expiry/revocation lifecycle.
+A private address keeps its link token visible (graehl, 2026-10-15): a GET
+top-level page navigation (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest:
+document`) authorized by the access cookie alone is redirected to the same
+path and query with `ya_access` added, for static and process apps alike, so
+every visited page's address opens the same view when shared. Public
+addresses, frames, subresources, non-GET requests and clients without Fetch
+Metadata are not redirected, and a URL that already carries the token is
+served normally, which ends the redirect.
+
+Static reserved-address opens redirect to an isolated artifact bearer by
+default. A project may set top-level `"staticAddress": "frame"` in
+`.project-template/app.json` (beside `service`, so older servers ignore it and
+redirect) to receive instead a script-free page that frames the bearer: the
+reserved address stays in the location bar, but navigation inside the app
+never shows the app's own URL, so the address cannot be copied as a link to
+the current view (graehl, 2026-10-15: kept as an option for that tradeoff). A
+request path maps to the same relative path under the bearer's root; URL
+normalization removes dot segments first, and any remaining dot segment falls
+back to the entry. The page's CSP admits only its hashed style and frames from
+the artifact origin. Access changes apply at the reserved address on the next
+request; previously issued artifact grants retain their independent
+expiry/revocation lifecycle.
 
 Hide the entire vhost section when server vhost serving is disabled or the
 server lacks the required capability. Retain any previous association in
@@ -448,6 +540,59 @@ unchecked choice where allowed. A reservation grant does not imply publishing
 authority. Keep first-claim-wins persistence and superuser-only release from
 [project templates](project-templates.md#persistent-app-name-reservations).
 
+A served address reaches a process app only while it runs; otherwise visitors
+get “Project app is not serving” (503), unless auto-start is enabled. So
+for a stopped process app the principal may start, the action reads **Start
+app and serve here** and issues the ordinary start, then serve; a failed start
+serves nothing and shows its error. A static app has no process and keeps
+plain **Serve at this address**. While a process app's address is served but
+the app is stopped (after Stop, a crash or a server restart), the address
+shows that visitors see “not serving” until it runs. **Stop serving** leaves
+the app running, since the project's own pane still uses it. (Start on serve
+user-directed 2026-10-15.)
+
+### Auto-start on visit
+
+By default a visit never starts an app. A principal who may serve the address
+can check **Start the app when a visitor finds it stopped or not answering**
+for a process app (user-directed 2026-10-16, revisiting the earlier
+no-lazy-start default as an opt-in). The choice is per project, stored in YA
+app data (`project-app-auto-start.json`, beside rather than inside the
+strictly parsed reservation file, so an older YA still reads its
+reservations), never in `app.json`. With it on, a stopped served address
+reads “the next visit starts it” instead of the not-serving warning.
+
+- **Trigger.** Only a request that passed the address's access check (a
+  private link or public access) on a served reservation. Either the app has
+  no running launch (stopped, failed, or interrupted by a YA restart), or YA
+  reports it running but the proxy's connection is refused. In the second
+  case YA first runs the declared readiness probe twice and restarts only if
+  both fail, so one dropped connection does not kill a busy app. An app
+  that answers with an error page is answering; its HTTP status never
+  triggers a restart.
+- **Waiting.** The visit waits for the start and is then proxied; concurrent
+  visits share one attempt. After 90 s (under a tunnel's 100 s origin
+  timeout) the visitor gets a 503 page that refreshes itself while the start
+  continues. A GET or HEAD that met a dead port is resent to the new launch;
+  any other request gets a 503 with `Retry-After` since its body was used.
+- **Loop guard.** At most one automatic start per project every 30 s. A
+  failed start, or an app unreachable within 60 s of an automatic start,
+  counts as a failure; 3 in 10 minutes pause auto-start and Settings shows the
+  failure's first line. A manual **Start** or re-saving the choice clears the
+  pause. The guard is in memory, so a YA restart also clears it.
+- **Authority.** Changing the choice needs the same authority as **Serve at
+  this address**. Each attempt rechecks that the principal who enabled it
+  still holds it; a revoked limited user's choice starts nothing. Public
+  addresses may opt in: any visitor can then cause a start, bounded by the
+  guard and the one launch per project.
+
+`project-app-auto-start` (permanent ID 130, version-implied from 0.9.4) owns
+the optional `autoStart` field on GET `/api/projects/:projectId/app/address`
+and POST `.../app/address/auto-start`. Older servers lack both; clients hide
+the checkbox and send nothing, and the not-serving warning stays. Standing
+maintainer compatibility approval applies. Relaunching apps when YA starts,
+with no visitor, remains unimplemented.
+
 The limited project owner's current public-app permission is the ceiling for
 public access a limited user chose. Revocation makes such addresses require a
 token again at the next request. The superuser is not capped by it
@@ -470,7 +615,7 @@ URLs and release/copy flags. Without it clients omit new permission fields and
 the URL row; v0.9.0–v0.9.2 lack this contract (approved 2026-09-28).
 
 Release remains superuser-only and rotates the address bearer before freeing the claim. Static
-reservations redirect authorized opens to a contained artifact grant; process
+reservations redirect (or, with `staticAddress: "frame"`, frame) authorized opens to a contained artifact grant; process
 reservations proxy the same sandbox. Previous namespace rows stay visible in
 Settings while vhosts are enabled, and cannot silently be reassigned.
 

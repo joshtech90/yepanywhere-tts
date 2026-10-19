@@ -22,6 +22,39 @@ export type SessionLivenessProbeStatus =
   | "unavailable"
   | "error";
 
+export type ProviderWorkKind =
+  | "shell"
+  | "monitor"
+  | "subagent"
+  | "workflow"
+  | "mcp"
+  | "cron"
+  | "sleep"
+  | "other";
+
+/**
+ * One piece of provider-held work, normalized across providers. See
+ * topics/provider-wait-and-background-work.md for each provider's sources.
+ */
+export interface ProviderWorkItem {
+  /** Provider id: Claude task/cron id, Codex item id. */
+  id: string;
+  kind: ProviderWorkKind;
+  label: string;
+  /** Raw provider type, e.g. Claude `local_bash` or Codex `unifiedExecStartup`. */
+  providerType?: string;
+  command?: string;
+  /** ISO time the provider reported, else when YA first observed it. */
+  startedAt?: string;
+  /** ISO time a sleep is due to end. */
+  until?: string;
+  schedule?: string;
+  recurring?: boolean;
+  parentId?: string;
+  /** Provider evidence the item came from. */
+  source: string;
+}
+
 export interface SessionProviderRetentionSnapshot {
   retained: boolean;
   reasons: string[];
@@ -29,6 +62,78 @@ export interface SessionProviderRetentionSnapshot {
   sessionCronCount?: number;
   liveTaskCount?: number;
   lastUpdatedAt?: string | null;
+  /**
+   * Work that outlives model steps: background processes, subagents and
+   * scheduled wakes. Recorded whether or not it retains the session.
+   */
+  backgroundWork?: ProviderWorkItem[];
+  /** Waits the active turn is blocked on: sleeps, foreground commands. */
+  foregroundWaits?: ProviderWorkItem[];
+}
+
+export const PROVIDER_WORK_ITEM_LIMIT = 64;
+const PROVIDER_WORK_TEXT_LIMIT = 500;
+
+const PROVIDER_WORK_KINDS: ReadonlySet<string> = new Set<ProviderWorkKind>([
+  "shell",
+  "monitor",
+  "subagent",
+  "workflow",
+  "mcp",
+  "cron",
+  "sleep",
+  "other",
+]);
+
+function boundedText(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  return value.length > PROVIDER_WORK_TEXT_LIMIT
+    ? `${value.slice(0, PROVIDER_WORK_TEXT_LIMIT)}…`
+    : value;
+}
+
+/**
+ * Validate and bound work items crossing a process or wire boundary.
+ * Returns undefined when the input is not a list.
+ */
+export function normalizeProviderWorkItems(
+  value: unknown,
+): ProviderWorkItem[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items: ProviderWorkItem[] = [];
+  for (const entry of value) {
+    if (items.length >= PROVIDER_WORK_ITEM_LIMIT) break;
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as Record<string, unknown>;
+    const id = boundedText(raw.id);
+    const source = boundedText(raw.source);
+    if (!id || !source) continue;
+    const kind =
+      typeof raw.kind === "string" && PROVIDER_WORK_KINDS.has(raw.kind)
+        ? (raw.kind as ProviderWorkKind)
+        : "other";
+    const item: ProviderWorkItem = {
+      id,
+      kind,
+      label: boundedText(raw.label) ?? id,
+      source,
+    };
+    const providerType = boundedText(raw.providerType);
+    if (providerType) item.providerType = providerType;
+    const command = boundedText(raw.command);
+    if (command) item.command = command;
+    const startedAt = boundedText(raw.startedAt);
+    if (startedAt) item.startedAt = startedAt;
+    const until = boundedText(raw.until);
+    if (until) item.until = until;
+    const schedule = boundedText(raw.schedule);
+    if (schedule) item.schedule = schedule;
+    if (typeof raw.recurring === "boolean") item.recurring = raw.recurring;
+    const parentId = boundedText(raw.parentId);
+    if (parentId) item.parentId = parentId;
+    items.push(item);
+  }
+  return items;
 }
 
 export type SessionWakeReason =

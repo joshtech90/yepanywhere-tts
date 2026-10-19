@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { api } from "../api/client";
+import { onManualSessionRead } from "../lib/sessionReadActions";
 
 /**
  * Tracks user engagement with a session to determine when to mark it as "seen".
@@ -70,6 +71,60 @@ export function useEngagementTracking(options: UseEngagementTrackingOptions) {
   const mountedRef = useRef(true);
   // Track if this is the first time activityAt became available (initial navigation)
   const isInitialLoadRef = useRef(true);
+  const manualUnreadRef = useRef(false);
+  // Retain only requests that have not settled yet.
+  const inFlightSeenRef = useRef(new Set<Promise<unknown>>());
+  const activityAtRef = useRef(activityAt);
+  const manualReadRevisionRef = useRef(0);
+
+  useEffect(() => {
+    activityAtRef.current = activityAt;
+  }, [activityAt]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    manualUnreadRef.current = false;
+    markedSeenRef.current = null;
+    isInitialLoadRef.current = true;
+    const unsubscribe = onManualSessionRead((id, unread) => {
+      if (id !== sessionId) return;
+      const revision = ++manualReadRevisionRef.current;
+      const previousUnread = manualUnreadRef.current;
+      const previousSeen = markedSeenRef.current;
+      const previousInitialLoad = isInitialLoadRef.current;
+      manualUnreadRef.current = unread;
+      markedSeenRef.current = activityAtRef.current;
+      isInitialLoadRef.current = false;
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      // The automatic request owns its error reporting. A failed read must not
+      // prevent the user's explicit action from reaching the server.
+      return {
+        pending: Promise.allSettled([...inFlightSeenRef.current]),
+        rollback: () => {
+          if (manualReadRevisionRef.current !== revision) return;
+          manualUnreadRef.current = previousUnread;
+          markedSeenRef.current = previousSeen;
+          isInitialLoadRef.current = previousInitialLoad;
+        },
+      };
+    });
+    return () => {
+      unsubscribe();
+      ++manualReadRevisionRef.current;
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [sessionId, enabled]);
+
+  const requestMarkSeen = useCallback(() => {
+    const request = api.markSessionSeen(sessionId, updatedAt ?? undefined);
+    const pending = inFlightSeenRef.current;
+    pending.add(request);
+    void request.then(
+      () => pending.delete(request),
+      () => pending.delete(request),
+    );
+    return request;
+  }, [sessionId, updatedAt]);
 
   // Check if there's content that needs to be marked as seen.
   // This includes:
@@ -93,7 +148,7 @@ export function useEngagementTracking(options: UseEngagementTrackingOptions) {
   // Mark session as seen (debounced)
   // Records updatedAt (file mtime), but triggers based on activityAt
   const markSeen = useCallback(() => {
-    if (!enabled || !mountedRef.current) return;
+    if (!enabled || !mountedRef.current || manualUnreadRef.current) return;
     if (!activityAt || !updatedAt) return;
 
     // Don't re-mark if we've already marked this activity
@@ -112,14 +167,14 @@ export function useEngagementTracking(options: UseEngagementTrackingOptions) {
 
     // Debounce the API call
     debounceTimerRef.current = setTimeout(async () => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || manualUnreadRef.current) return;
       // Re-check hasNewContent in case it changed during debounce,
       // but don't re-check engagement (we already validated it)
 
       try {
         // Record the file's updatedAt, not activityAt
         // This ensures hasUnread() comparisons work correctly
-        await api.markSessionSeen(sessionId, updatedAt);
+        await requestMarkSeen();
         markedSeenRef.current = activityAt;
       } catch (error) {
         console.warn(
@@ -128,7 +183,14 @@ export function useEngagementTracking(options: UseEngagementTrackingOptions) {
         );
       }
     }, DEBOUNCE_MS);
-  }, [enabled, sessionId, activityAt, updatedAt, isEngaged, hasNewContent]);
+  }, [
+    enabled,
+    activityAt,
+    updatedAt,
+    isEngaged,
+    hasNewContent,
+    requestMarkSeen,
+  ]);
 
   // Track user interactions
   useEffect(() => {
@@ -207,11 +269,11 @@ export function useEngagementTracking(options: UseEngagementTrackingOptions) {
       }
 
       debounceTimerRef.current = setTimeout(async () => {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || manualUnreadRef.current) return;
         if (markedSeenRef.current === activityAt) return;
 
         try {
-          await api.markSessionSeen(sessionId, updatedAt);
+          await requestMarkSeen();
           markedSeenRef.current = activityAt;
         } catch (error) {
           console.warn(
@@ -221,7 +283,7 @@ export function useEngagementTracking(options: UseEngagementTrackingOptions) {
         }
       }, DEBOUNCE_MS);
     }
-  }, [enabled, sessionId, activityAt, updatedAt, hasNewContent]);
+  }, [enabled, activityAt, updatedAt, hasNewContent, requestMarkSeen]);
 
   // Cleanup
   useEffect(() => {

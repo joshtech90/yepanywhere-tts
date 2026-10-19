@@ -11,6 +11,7 @@ import {
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decryptBinaryEnvelopeRaw } from "../../src/crypto/index.js";
+import { getLogger } from "../../src/logging/logger.js";
 import {
   type ConnectionState,
   RELAY_BINARY_RESPONSE_MAX_BYTES,
@@ -65,14 +66,14 @@ function setup(body: () => Response, path = "/api/file") {
       closes.push(code);
     },
   };
-  const request = (stream = true) =>
+  const request = (stream: boolean | "connection" = true, id = REQUEST_ID) =>
     handleRequest(
       {
         type: "request",
-        id: REQUEST_ID,
+        id,
         method: "GET",
         path,
-        ...(stream ? { stream: true } : {}),
+        ...(stream ? { stream } : {}),
       },
       createSendFn(ws, state),
       ws,
@@ -109,10 +110,254 @@ function attachmentResponse(bytes: Uint8Array<ArrayBuffer>): Response {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
 describe("streamed relay responses", () => {
+  it("preserves future reader space through tail retirement while lending a lone body multiple chunks", async () => {
+    let calls = 0;
+    const floor = RELAY_RESPONSE_STREAM_CHUNK_BYTES / 2;
+    const { state, received, request } = setup(() => {
+      const index = calls++;
+      if (index !== 1)
+        return attachmentResponse(new Uint8Array(index === 0 ? 1 : 2 * floor));
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          // Non-aligned producer pieces expose reservation loss that full-size
+          // chunks can conceal through rounding at the window boundary.
+          pull(controller) {
+            controller.enqueue(new Uint8Array(floor - 1));
+          },
+        }),
+        { headers: { "Content-Type": "application/octet-stream" } },
+      );
+    });
+    const tailId = "3f1b2a4c-5d6e-4f70-8a9b-000000000000";
+    await request("connection", tailId); // completed, but its byte is not ACKed
+    const large = request("connection");
+    const ids = Array.from(
+      { length: 7 },
+      (_, i) => `3f1b2a4c-5d6e-4f70-8a9b-${String(i + 1).padStart(12, "0")}`,
+    );
+    const small: Promise<void>[] = [];
+    try {
+      await vi.waitFor(() =>
+        expect(chunkBytes(received)).toBe(1 + 9 * (floor - 1)),
+      );
+      // Nine pieces before any ACK: a lone transfer is not stop-and-wait.
+      // Retiring a tiny tail must return its floor to the future-slot pool.
+      handleResponseStreamAck(state, tailId, 1);
+      small.push(...ids.map((id) => request("connection", id)));
+      await vi.waitFor(() =>
+        expect(
+          ids.every((id) =>
+            received.some(
+              (item) => item.kind === "chunk" && item.requestId === id,
+            ),
+          ),
+        ).toBe(true),
+      );
+      for (const id of ids) handleResponseStreamAck(state, id, floor);
+      await Promise.all(small);
+      for (const id of ids)
+        expect(messages(received)).toContainEqual(
+          expect.objectContaining({ type: "response_stream_end", id }),
+        );
+      expect(messages(received)).not.toContainEqual(
+        expect.objectContaining({
+          type: "response_stream_end",
+          id: REQUEST_ID,
+        }),
+      );
+      expect(state.responseStreamBytes).toBeLessThanOrEqual(
+        RELAY_RESPONSE_STREAM_WINDOW_BYTES,
+      );
+    } finally {
+      cleanupConnectionState(state);
+      await Promise.all([large, ...small]);
+    }
+  });
+
+  it("renews completed-tail receipt deadlines only on earned progress", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { state, request, closes } = setup(() =>
+      attachmentResponse(new Uint8Array(3)),
+    );
+    await request("connection");
+    for (let bytes = 1; bytes <= 2; bytes++) {
+      await vi.advanceTimersByTimeAsync(60_000);
+      handleResponseStreamAck(state, REQUEST_ID, bytes);
+    }
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(closes).toEqual([]);
+    handleResponseStreamAck(state, REQUEST_ID, 2);
+    handleResponseStreamAck(state, REQUEST_ID, 4);
+    await vi.advanceTimersByTimeAsync(75_001);
+    expect(closes).toEqual([1008]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps browser stall deadlines independent of sibling progress", async () => {
+    const warning = vi
+      .spyOn(getLogger(), "warn")
+      .mockImplementation(() => undefined);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { state, received, request } = setup(() =>
+      attachmentResponse(
+        new Uint8Array(4 * RELAY_RESPONSE_STREAM_WINDOW_BYTES),
+      ),
+    );
+    const siblingId = "3f1b2a4c-5d6e-4f70-8a9b-000000000001";
+    const first = request();
+    const sibling = request(true, siblingId);
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      handleResponseStreamAck(
+        state,
+        siblingId,
+        RELAY_RESPONSE_STREAM_CHUNK_BYTES,
+      );
+      await vi.advanceTimersByTimeAsync(60_001);
+      await first;
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "The client stopped reading the streamed response",
+        ),
+      );
+      expect(messages(received)).toContainEqual(
+        expect.objectContaining({
+          type: "response_stream_end",
+          id: REQUEST_ID,
+          error: expect.stringContaining("stopped reading"),
+        }),
+      );
+    } finally {
+      cleanupConnectionState(state);
+      await sibling;
+    }
+  });
+
+  it("shares native credit across completed unread bodies and rejects unearned ACKs", async () => {
+    const size = RELAY_RESPONSE_STREAM_CHUNK_BYTES;
+    const { state, received, request } = setup(() =>
+      attachmentResponse(new Uint8Array(size)),
+    );
+    const ids = Array.from(
+      { length: 9 },
+      (_, i) => `3f1b2a4c-5d6e-4f70-8a9b-${String(i).padStart(12, "0")}`,
+    );
+    const running = ids.map((id) => request("connection", id));
+    try {
+      await vi.waitFor(() =>
+        expect(chunkBytes(received)).toBe(RELAY_RESPONSE_STREAM_WINDOW_BYTES),
+      );
+      expect(state.responseStreamBytes).toBe(
+        RELAY_RESPONSE_STREAM_WINDOW_BYTES,
+      );
+      const completed = messages(received).filter(
+        (m) => m.type === "response_stream_end",
+      );
+      expect(completed.length).toBeGreaterThan(0);
+      const completedId = completed[0]!.id;
+      handleResponseStreamAck(state, completedId, size + 1);
+      handleResponseStreamAck(state, completedId, Number.NaN);
+      handleResponseStreamAck(state, completedId, size - 0.5);
+      expect(state.responseStreamBytes).toBe(
+        RELAY_RESPONSE_STREAM_WINDOW_BYTES,
+      );
+      handleResponseStreamAck(state, completedId, size);
+      handleResponseStreamAck(state, completedId, size);
+      await Promise.all(running);
+      expect(chunkBytes(received)).toBe(9 * size);
+      expect(state.responseStreamBytes).toBe(
+        RELAY_RESPONSE_STREAM_WINDOW_BYTES,
+      );
+      for (const id of ids) handleResponseStreamAck(state, id, size);
+      expect(state.responseStreamBytes).toBe(0);
+      expect(state.responseStreams.size).toBe(0);
+    } finally {
+      cleanupConnectionState(state);
+      await Promise.all(running);
+    }
+  });
+
+  it("keeps cancelled tails charged until receipt and preserves browser mode", async () => {
+    const { state, received, request } = setup(() =>
+      attachmentResponse(
+        new Uint8Array(2 * RELAY_RESPONSE_STREAM_WINDOW_BYTES),
+      ),
+    );
+    const ids = Array.from(
+      { length: 8 },
+      (_, i) => `3f1b2a4c-5d6e-4f70-8a9b-${String(i).padStart(12, "0")}`,
+    );
+    const running = ids.map((id) => request("connection", id));
+    try {
+      await vi.waitFor(() =>
+        expect(chunkBytes(received)).toBe(RELAY_RESPONSE_STREAM_WINDOW_BYTES),
+      );
+      const delivered = new Map(
+        ids.map((id) => [
+          id,
+          received.reduce(
+            (sum, item) =>
+              sum +
+              (item.kind === "chunk" && item.requestId === id
+                ? item.data.length
+                : 0),
+            0,
+          ),
+        ]),
+      );
+      for (const id of ids) handleResponseStreamCancel(state, id);
+      await Promise.all(running);
+      expect(state.responseStreamBytes).toBe(
+        RELAY_RESPONSE_STREAM_WINDOW_BYTES,
+      );
+      expect(
+        messages(received).filter((m) => m.type === "response_stream_end"),
+      ).toHaveLength(8);
+      const browser = request(true, REQUEST_ID);
+      running.push(browser);
+      await vi.waitFor(() =>
+        expect(chunkBytes(received)).toBe(
+          2 * RELAY_RESPONSE_STREAM_WINDOW_BYTES,
+        ),
+      );
+      // Browser mode retains its existing independent per-response budget.
+      expect(state.responseStreamBytes).toBe(
+        RELAY_RESPONSE_STREAM_WINDOW_BYTES,
+      );
+      handleResponseStreamCancel(state, REQUEST_ID);
+      await browser;
+      for (const [id, bytes] of delivered)
+        handleResponseStreamAck(state, id, bytes);
+      expect(state.responseStreamBytes).toBe(0);
+      expect(state.responseStreams.size).toBe(0);
+    } finally {
+      cleanupConnectionState(state);
+      await Promise.all(running);
+    }
+  });
+
+  it("closes a native connection instead of freeing unacknowledged completed tails on expiry", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { state, request, closes } = setup(() =>
+      attachmentResponse(new Uint8Array(17)),
+    );
+    await request("connection");
+    expect(state.responseStreamBytes).toBe(17);
+    await vi.advanceTimersByTimeAsync(
+      RELAY_RESPONSE_STREAM_IDLE_TIMEOUT_MS + 15_001,
+    );
+    expect(closes).toEqual([1008]);
+    expect(state.cleanupStarted).toBe(true);
+    expect(state.responseStreamBytes).toBe(0);
+    expect(state.responseStreams.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("delivers a bootstrap part before completion and cancels a quiet producer", async () => {
     let producer!: ReadableStreamDefaultController<Uint8Array>;
     const cancelled = vi.fn();
@@ -295,6 +540,9 @@ describe("streamed relay responses", () => {
   });
 
   it("ends with an error when the client stops consuming", async () => {
+    const warning = vi
+      .spyOn(getLogger(), "warn")
+      .mockImplementation(() => undefined);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const { received, request } = setup(() =>
       attachmentResponse(
@@ -306,6 +554,11 @@ describe("streamed relay responses", () => {
       RELAY_RESPONSE_STREAM_IDLE_TIMEOUT_MS + 1,
     );
     await done;
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "The client stopped reading the streamed response",
+      ),
+    );
     expect(messages(received).at(-1)).toMatchObject({
       type: "response_stream_end",
       error: expect.stringContaining("stopped reading"),

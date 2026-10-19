@@ -1,0 +1,102 @@
+.inline,
+.dialog {
+  min-width: 0;
+  display: flex;
+  gap: var(--space-2);
+}
+
+.inline {
+  flex: 1;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.dialog {
+  flex-direction: column;
+}
+
+:global(.modal):has(.dialog) {
+  width: min(28rem, calc(100dvw - 24px));
+  height: auto;
+  max-height: calc(88dvh - 12px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+:global(.modal-overlay):has(.dialog) {
+  align-items: flex-start;
+  padding: 12dvh 12px 12px;
+}
+
+:global(.modal-content):has(.dialog) {
+  padding: var(--space-3);
+}
+
+.label {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.inline .label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.input {
+  min-width: 0;
+  width: 100%;
+  flex: 1;
+  padding: var(--space-2);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+.inline .input {
+  width: auto;
+  min-width: min(12rem, 100%);
+}
+
+.actions {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.actions button {
+  min-height: 36px;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.dialog .actions button {
+  min-height: 44px;
+}
+
+.error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--error-color);
+  font-size: var(--font-size-sm);
+}

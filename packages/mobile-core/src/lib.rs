@@ -4,7 +4,9 @@ mod android;
 mod crypto;
 mod events;
 mod mux;
+mod response;
 mod runtime;
+pub use response::NativeResponseStream;
 mod session;
 pub use runtime::{NativeRuntime, NativeSourceLease};
 mod wire;
@@ -12,7 +14,7 @@ use serde_json::Value;
 pub use session::{NativeRoute, NativeSecurityBinding, NativeSession, SessionOptions};
 uniffi::setup_scaffolding!();
 
-#[derive(Debug, thiserror::Error, uniffi::Error)]
+#[derive(Clone, Debug, thiserror::Error, uniffi::Error)]
 pub enum CoreError {
     #[error("Invalid or unauthenticated server message")]
     InvalidMessage,

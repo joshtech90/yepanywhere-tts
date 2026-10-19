@@ -1,6 +1,8 @@
 import {
   findProjectPathTokens,
   type ProjectPathLinkTarget,
+  type ProjectPathToken,
+  splitTrailingCitedPosition,
 } from "@yep-anywhere/shared";
 import {
   dirname,
@@ -14,6 +16,7 @@ import {
 import { homedir } from "node:os";
 import type { ProjectPathIndex } from "../projects/projectPathIndex.js";
 import {
+  escapeHtml,
   renderLocalFileLink,
   renderProjectFileViewerLink,
 } from "./safe-markdown.js";
@@ -37,12 +40,6 @@ import {
  */
 const PATH_TOKEN = /[^\s"'`<>&,:;()[\]{}=|]+/g;
 
-/**
- * One absolute token runs from a whitespace boundary to the next whitespace.
- * `~/…` is included and expanded against this server's home directory.
- */
-const ABSOLUTE_PATH_TOKEN = /(?:^|\s)((?:\/(?!\/)|~\/|[A-Za-z]:[\\/])\S+)/g;
-
 /** Trailing punctuation a writer adds that is not part of the path. */
 const TRAILING_NOISE = /[.!?]+$/;
 
@@ -64,6 +61,35 @@ function mayCostAbsoluteLookup(token: string): boolean {
 /** The file an absolute token names: `~/` is this server's home, not the browser's. */
 function absoluteTokenTarget(token: string): string {
   return token.startsWith("~/") ? join(homedir(), token.slice(2)) : token;
+}
+
+interface AbsoluteFileTarget {
+  filePath: string;
+  lineNumber?: number;
+  columnNumber?: number;
+}
+
+/**
+ * Files an absolute token may name, in preference order.
+ *
+ * The whole token comes first, so a file really named `notes.md:12` still
+ * wins. Only when it is not a file does a trailing line suffix count as a
+ * citation of the path before it; the token is never cut anywhere else.
+ */
+function absoluteTokenTargets(token: string): AbsoluteFileTarget[] {
+  const targets: AbsoluteFileTarget[] = [
+    { filePath: absoluteTokenTarget(token) },
+  ];
+  const cited = splitTrailingCitedPosition(token);
+  if (cited && mayCostAbsoluteLookup(cited.path)) {
+    const { lineNumber, columnNumber } = cited.position;
+    targets.push({
+      filePath: absoluteTokenTarget(cited.path),
+      lineNumber,
+      ...(columnNumber !== undefined ? { columnNumber } : {}),
+    });
+  }
+  return targets;
 }
 
 function decodeHtmlText(text: string): string {
@@ -131,50 +157,6 @@ function tagName(tag: string): { closing: boolean; name: string } | null {
   return { closing: match[1] === "/", name: match[2]!.toLowerCase() };
 }
 
-/**
- * Rewrite the text between tags, leaving markup untouched.
- *
- * Highlighted HTML nests spans per token, so a match is only looked for inside
- * one text run: a path split across two spans stays unlinked rather than
- * risking a rewrite that crosses a tag boundary.
- *
- * Text inside an existing `<a>` is left alone. Highlighted source contains no
- * anchors, but rendered turn text does — from Markdown links and from the
- * inline-code file linker — and an anchor nested inside an anchor is not
- * markup any browser can be asked to render.
- */
-function mapHtmlTextRuns(
-  html: string,
-  mapText: (text: string) => string,
-): string {
-  let out = "";
-  let index = 0;
-  let anchorDepth = 0;
-  while (index < html.length) {
-    const tagStart = html.indexOf("<", index);
-    if (tagStart < 0) {
-      out += anchorDepth > 0 ? html.slice(index) : mapText(html.slice(index));
-      break;
-    }
-    const text = html.slice(index, tagStart);
-    out += anchorDepth > 0 ? text : mapText(text);
-    const tagEnd = html.indexOf(">", tagStart);
-    if (tagEnd < 0) {
-      out += html.slice(tagStart);
-      break;
-    }
-    const tag = html.slice(tagStart, tagEnd + 1);
-    out += tag;
-    const parsed = tagName(tag);
-    if (parsed?.name === "a") {
-      if (parsed.closing) anchorDepth = Math.max(0, anchorDepth - 1);
-      else anchorDepth += 1;
-    }
-    index = tagEnd + 1;
-  }
-  return out;
-}
-
 export interface ProjectPathLinkOptions {
   /** Project whose authenticated FileViewer route owns generated links. */
   projectId?: string;
@@ -195,6 +177,8 @@ export interface ProjectPathLinkOptions {
    * one batch groups them by directory anyway.
    */
   gateLookupsByShape?: boolean;
+  /** Add occurrence-specific directory context to authenticated turn prose. */
+  mentionedDirectories?: boolean;
   /** Marks direct filesystem answers that no live watcher versions. */
   onUnversionedLookup?: () => void;
   /** Positive allow-set facts already resolved by an earlier background pass. */
@@ -207,7 +191,7 @@ export interface ProjectPathLinkOptions {
 
 interface ResolvedProjectPathCandidates {
   /** Visible absolute or `~/` token → the existing file it names. */
-  absolute: ReadonlyMap<string, string>;
+  absolute: ReadonlyMap<string, AbsoluteFileTarget>;
   externalRelative: ReadonlyMap<string, string>;
   relative: ReadonlyMap<string, string>;
 }
@@ -327,15 +311,25 @@ async function resolveProjectPathCandidates(
   const absoluteTargets = new Map(
     Array.from(new Set(absoluteCandidates))
       .slice(0, MAX_ABSOLUTE_PATH_PROBES)
-      .map((token) => [token, absoluteTokenTarget(token)] as const),
+      .map((token) => [token, absoluteTokenTargets(token)] as const),
   );
   const cappedAbsoluteCandidates = Array.from(
-    new Set(absoluteTargets.values()),
+    new Set(
+      [...absoluteTargets.values()].flatMap((targets) =>
+        targets.map((target) => target.filePath),
+      ),
+    ),
   );
   const absoluteHits = (
     existing: ReadonlySet<string>,
-  ): ReadonlyMap<string, string> =>
-    new Map([...absoluteTargets].filter(([, target]) => existing.has(target)));
+  ): ReadonlyMap<string, AbsoluteFileTarget> => {
+    const hits = new Map<string, AbsoluteFileTarget>();
+    for (const [token, targets] of absoluteTargets) {
+      const hit = targets.find((target) => existing.has(target.filePath));
+      if (hit) hits.set(token, hit);
+    }
+    return hits;
+  };
   const externalCandidateTargets =
     projectId && (knownAbsoluteFilePaths || resolveAbsoluteFilePaths)
       ? externalRelativeCandidateTargets(
@@ -464,7 +458,7 @@ export async function resolveProjectPathTextLinks(
   for (const token of tokens) {
     const filePath =
       token.kind === "absolute"
-        ? resolved.absolute.get(token.text)
+        ? resolved.absolute.get(token.text)?.filePath
         : (resolved.externalRelative.get(token.text) ??
           resolved.relative.get(token.text));
     if (!filePath || targets.has(token.text)) continue;
@@ -502,72 +496,128 @@ export async function resolveShapedPaths(
   return paths.every((path) => index.knownFile(path) !== undefined);
 }
 
-function collectCandidatePaths(
-  html: string,
-  selfRelativePath: string | undefined,
-): string[] {
-  const candidates = new Set<string>();
-  mapHtmlTextRuns(html, (text) => {
-    PATH_TOKEN.lastIndex = 0;
-    let match: RegExpExecArray | null = PATH_TOKEN.exec(text);
-    while (match !== null) {
-      const trimmed = match[0].replace(TRAILING_NOISE, "");
-      if (
-        trimmed &&
-        !trimmed.startsWith("/") &&
-        !trimmed.startsWith("~/") &&
-        trimmed !== selfRelativePath
-      ) {
-        candidates.add(trimmed);
-      }
-      match = PATH_TOKEN.exec(text);
-    }
-    return text;
-  });
-  return Array.from(candidates);
+interface HtmlPathOccurrence extends ProjectPathToken {
+  /** Existing anchors must never acquire a nested exact-file link. */
+  exact: boolean;
+  /** Only prose, including generated inline-code links, supplies context. */
+  directoryContext: boolean;
+  code: boolean;
 }
 
-function collectAbsoluteCandidatePaths(html: string): string[] {
-  const candidates = new Set<string>();
-  mapHtmlTextRuns(html, (text) => {
-    ABSOLUTE_PATH_TOKEN.lastIndex = 0;
-    let match: RegExpExecArray | null = ABSOLUTE_PATH_TOKEN.exec(text);
-    while (match !== null) {
-      const token = match[1];
-      if (token) candidates.add(decodeHtmlText(token));
-      match = ABSOLUTE_PATH_TOKEN.exec(text);
-    }
-    return text;
-  });
-  return Array.from(candidates);
-}
-
-function linkAbsolutePaths(
+/** Extract once; exact linking and directory resolution consume these offsets. */
+function scanHtmlProjectPaths(
   html: string,
-  projectId: string,
-  existing: ReadonlyMap<string, string>,
-): string {
-  return mapHtmlTextRuns(html, (text) => {
-    ABSOLUTE_PATH_TOKEN.lastIndex = 0;
-    let out = "";
-    let cursor = 0;
-    let match: RegExpExecArray | null = ABSOLUTE_PATH_TOKEN.exec(text);
-    while (match !== null) {
-      const encodedToken = match[1];
-      if (encodedToken) {
-        const token = decodeHtmlText(encodedToken);
-        const target = existing.get(token);
-        if (target) {
-          const start = match.index + match[0].length - encodedToken.length;
-          out += text.slice(cursor, start);
-          out += renderProjectFileViewerLink(projectId, target, token);
-          cursor = start + encodedToken.length;
+  mentionedDirectories: boolean,
+): HtmlPathOccurrence[] {
+  const tokens: HtmlPathOccurrence[] = [];
+  const excluded: string[] = [];
+  let codeDepth = 0;
+  let anchorDepth = 0;
+  for (const match of html.matchAll(/<!--[\s\S]*?-->|<[^>]*>|[^<]+/g)) {
+    const part = match[0];
+    if (part.startsWith("<")) {
+      const tag = tagName(part);
+      if (!tag) continue;
+      if (tag.closing) {
+        if (tag.name === "a") anchorDepth = Math.max(0, anchorDepth - 1);
+        if (excluded.at(-1) === tag.name) excluded.pop();
+        if (tag.name === "code") codeDepth = Math.max(0, codeDepth - 1);
+      } else {
+        if (tag.name === "a") anchorDepth += 1;
+        if (tag.name === "code") codeDepth += 1;
+        const generatedCodeLink =
+          tag.name === "a" &&
+          part.includes('class="fixed-font-file-link"') &&
+          part.includes('data-ya-resource="project-file"');
+        if (
+          ["pre", "script", "style", "textarea", "math", "annotation"].includes(
+            tag.name,
+          ) ||
+          (tag.name === "a" && !generatedCodeLink) ||
+          (tag.name === "span" && /class="[^"]*\bkatex\b/.test(part))
+        ) {
+          excluded.push(tag.name);
+        } else if (excluded.at(-1) === tag.name) {
+          excluded.push(tag.name);
         }
       }
-      match = ABSOLUTE_PATH_TOKEN.exec(text);
+      continue;
     }
-    return cursor === 0 ? text : out + text.slice(cursor);
-  });
+    const directoryContext = mentionedDirectories && excluded.length === 0;
+    if (anchorDepth > 0 && !directoryContext) continue;
+    for (const token of findProjectPathTokens(part)) {
+      tokens.push({
+        ...token,
+        text:
+          token.kind === "absolute" ? decodeHtmlText(token.text) : token.text,
+        start: match.index + token.start,
+        end: match.index + token.end,
+        exact: anchorDepth === 0,
+        directoryContext: directoryContext && token.kind === "relative",
+        code: codeDepth > 0,
+      });
+    }
+  }
+  return tokens;
+}
+
+/** Resolve context from the same occurrences used for exact links. */
+async function resolveMentionedDirectoryFiles(
+  occurrences: readonly HtmlPathOccurrence[],
+  options: ProjectPathLinkOptions,
+): Promise<ReadonlyMap<HtmlPathOccurrence, string>> {
+  const targets = new Map<HtmlPathOccurrence, string>();
+  if (!options.mentionedDirectories || options.pathDiscovery === "known-only")
+    return targets;
+  const tokens = occurrences.filter((token) => token.directoryContext);
+  const directories = [
+    ...new Set(
+      tokens
+        .filter((token) => token.code || token.text.includes("/"))
+        .map((token) => token.text),
+    ),
+  ].slice(0, 64);
+  if (directories.length === 0) return targets;
+  const { index } = options;
+  try {
+    const existingDirectories = await index.findExisting(
+      directories,
+      "directory",
+    );
+    if (directories.some((path) => index.knownFile(path) === undefined)) {
+      options.onUnversionedLookup?.();
+    }
+    if (existingDirectories.size === 0) return targets;
+    let directory: string | undefined;
+    const candidates = new Map<HtmlPathOccurrence, string>();
+    const paths = new Set<string>();
+    for (const token of tokens) {
+      if (existingDirectories.has(token.text)) {
+        directory = token.text;
+      } else if (
+        directory &&
+        !/[\\/]/.test(token.text) &&
+        (token.code || mayCostLookup(token.text))
+      ) {
+        const path = join(directory, token.text);
+        if (!paths.has(path) && paths.size >= 512) continue;
+        paths.add(path);
+        candidates.set(token, path);
+      }
+    }
+    const existingFiles = await index.findExisting([...paths]);
+    if ([...paths].some((path) => index.knownFile(path) === undefined)) {
+      options.onUnversionedLookup?.();
+    }
+    for (const [token, path] of candidates) {
+      if (existingFiles.has(path)) targets.set(token, path);
+    }
+    return targets;
+  } catch {
+    // Filesystem discovery is advisory; preserve the original readable body.
+    options.onUnversionedLookup?.();
+    return targets;
+  }
 }
 
 /**
@@ -577,94 +627,95 @@ function linkAbsolutePaths(
  */
 export async function linkifyProjectPaths(
   html: string,
-  {
-    projectPath,
-    projectId,
-    index,
-    knownAbsoluteFilePaths,
-    pathDiscovery,
-    selfAbsolutePath,
-    selfRelativePath,
-    gateLookupsByShape,
-    onUnversionedLookup,
-    resolveAbsoluteFilePaths,
-  }: ProjectPathLinkOptions,
+  options: ProjectPathLinkOptions,
 ): Promise<string> {
   if (!html) return html;
-
-  const relativeCandidates = collectCandidatePaths(html, selfRelativePath);
+  const {
+    projectPath,
+    projectId,
+    knownAbsoluteFilePaths,
+    selfRelativePath,
+    resolveAbsoluteFilePaths,
+  } = options;
+  const occurrences = scanHtmlProjectPaths(
+    html,
+    options.mentionedDirectories === true,
+  );
+  const relativeCandidates = [
+    ...new Set(
+      occurrences
+        .filter(
+          (token) =>
+            token.exact &&
+            token.kind === "relative" &&
+            token.text !== selfRelativePath,
+        )
+        .map((token) => token.text),
+    ),
+  ];
   const absoluteCandidates =
     projectId && (knownAbsoluteFilePaths || resolveAbsoluteFilePaths)
-      ? collectAbsoluteCandidatePaths(html)
-          .filter(mayCostAbsoluteLookup)
-          .slice(0, MAX_ABSOLUTE_PATH_PROBES)
+      ? [
+          ...new Set(
+            occurrences
+              .filter(
+                (token) =>
+                  token.exact &&
+                  token.kind === "absolute" &&
+                  mayCostAbsoluteLookup(token.text),
+              )
+              .map((token) => token.text),
+          ),
+        ].slice(0, MAX_ABSOLUTE_PATH_PROBES)
       : [];
-  if (relativeCandidates.length === 0 && absoluteCandidates.length === 0) {
+  if (occurrences.length === 0) {
     return html;
   }
 
-  const resolved = await resolveProjectPathCandidates(
-    relativeCandidates,
-    absoluteCandidates,
-    {
-      projectPath,
-      projectId,
-      index,
-      knownAbsoluteFilePaths,
-      pathDiscovery,
-      selfAbsolutePath,
-      selfRelativePath,
-      gateLookupsByShape,
-      onUnversionedLookup,
-      resolveAbsoluteFilePaths,
-    },
-  );
-  if (!resolved) return html;
-
-  const existing = resolved.relative;
-  const existingAbsolute = resolved.absolute;
-  const existingExternalRelative = resolved.externalRelative;
-  let linkedHtml =
-    projectId && existingAbsolute.size > 0
-      ? linkAbsolutePaths(html, projectId, existingAbsolute)
-      : html;
-  if (existing.size === 0 && existingExternalRelative.size === 0) {
-    return linkedHtml;
-  }
-
-  linkedHtml = mapHtmlTextRuns(linkedHtml, (text) => {
-    if (!text) return text;
-    PATH_TOKEN.lastIndex = 0;
-    let out = "";
-    let cursor = 0;
-    let match: RegExpExecArray | null = PATH_TOKEN.exec(text);
-    while (match !== null) {
-      const token = match[0];
-      const trimmed = token.replace(TRAILING_NOISE, "");
-      const externalTarget = trimmed
-        ? existingExternalRelative.get(trimmed)
+  const [resolved, directoryFiles] = await Promise.all([
+    resolveProjectPathCandidates(
+      relativeCandidates,
+      absoluteCandidates,
+      options,
+    ),
+    resolveMentionedDirectoryFiles(occurrences, options),
+  ]);
+  let out = "";
+  let cursor = 0;
+  for (const token of occurrences) {
+    const directoryFile = directoryFiles.get(token);
+    const externalRelativeTarget =
+      token.exact && token.kind === "relative"
+        ? resolved?.externalRelative.get(token.text)
         : undefined;
-      const projectTarget = trimmed ? existing.get(trimmed) : undefined;
-      const renderedLink =
-        trimmed && externalTarget && projectId
-          ? renderProjectFileViewerLink(projectId, externalTarget, trimmed)
-          : trimmed && projectTarget
-            ? renderLocalFileLink(
-                { filePath: resolve(projectPath, projectTarget) },
-                trimmed,
-                { title: trimmed },
-              )
-            : undefined;
-      if (renderedLink) {
-        const start = match.index;
-        out += text.slice(cursor, start);
-        out += renderedLink;
-        out += token.slice(trimmed.length);
-        cursor = start + token.length;
-      }
-      match = PATH_TOKEN.exec(text);
+    const absoluteTarget =
+      token.exact && token.kind === "absolute"
+        ? resolved?.absolute.get(token.text)
+        : externalRelativeTarget
+          ? { filePath: externalRelativeTarget }
+          : undefined;
+    const projectTarget =
+      token.exact && token.kind === "relative"
+        ? resolved?.relative.get(token.text)
+        : undefined;
+    let replacement =
+      absoluteTarget && projectId
+        ? renderProjectFileViewerLink(projectId, absoluteTarget, token.text)
+        : projectTarget
+          ? renderLocalFileLink(
+              { filePath: resolve(projectPath, projectTarget) },
+              html.slice(token.start, token.end),
+              { title: token.text },
+            )
+          : undefined;
+    if (directoryFile) {
+      // Keep the exact-link fallback inside the marker for older clients and
+      // for clients that disable directory context. Emit both in one splice.
+      replacement = `<span data-ya-directory-file="${escapeHtml(directoryFile)}">${replacement ?? html.slice(token.start, token.end)}</span>`;
     }
-    return cursor === 0 ? text : out + text.slice(cursor);
-  });
-  return linkedHtml;
+    if (!replacement) continue;
+    out += html.slice(cursor, token.start) + replacement;
+    cursor = token.end;
+  }
+  return cursor ? out + html.slice(cursor) : html;
 }

@@ -1,6 +1,32 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import {
+  type MouseEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useRef,
+} from "react";
 import { useI18n } from "../../i18n";
 import styles from "./SettingsCollection.module.css";
+
+/**
+ * Props that make a whole table row the click target for its expand toggle.
+ * The row's `aria-expanded` button stays the keyboard and accessibility
+ * control; a click anywhere else in the row does the same thing, except on
+ * the row's own controls and at the end of a text selection.
+ */
+export function expandableRowProps(onToggle: () => void) {
+  return {
+    "data-expandable": "",
+    onClick(event: MouseEvent<HTMLTableRowElement>) {
+      const control = (event.target as Element).closest(
+        "a, button, input, select, textarea, label, summary",
+      );
+      if (control && event.currentTarget.contains(control)) return;
+      if (window.getSelection()?.toString()) return;
+      onToggle();
+    },
+  };
+}
 
 /** A settings table with one selected item's options in a neighboring pane. */
 export function SettingsCollection({

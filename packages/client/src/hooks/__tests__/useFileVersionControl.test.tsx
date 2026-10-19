@@ -15,7 +15,7 @@ import {
 } from "@yep-anywhere/shared";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FileVersionControlLinks } from "../../components/FileDiffViewLinks";
+import { FileVersionControlLinks } from "../../components/FilePathLink";
 import { I18nProvider } from "../../i18n";
 import { resetClientQueryControllerForTests } from "../../lib/clientQueryController";
 import {
@@ -442,7 +442,7 @@ describe("useFileVersionControl", () => {
       .mockImplementation(() => {});
     const rendered = render(<VersionLinksFixture count={3} />);
     await settle();
-    expect(screen.getAllByText("vs HEAD")).toHaveLength(3);
+    expect(screen.getAllByText("Δ")).toHaveLength(3);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_001);
@@ -450,7 +450,7 @@ describe("useFileVersionControl", () => {
     rendered.rerender(<VersionLinksFixture count={6} />);
     await settle();
 
-    expect(screen.getAllByText("vs HEAD")).toHaveLength(6);
+    expect(screen.getAllByText("Δ")).toHaveLength(6);
     expect(consoleError).not.toHaveBeenCalled();
   });
 });

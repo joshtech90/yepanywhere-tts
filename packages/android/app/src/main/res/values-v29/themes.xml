@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.YepAnywhere" parent="Theme.YepAnywhere.Base">
+        <!-- WebView derives prefers-color-scheme from this, independently of Compose. -->
+        <item name="android:isLightTheme">@bool/webview_is_light_theme</item>
+    </style>
+</resources>

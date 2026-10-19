@@ -116,6 +116,10 @@
   min-width: 0;
 }
 
+.vhostRow button {
+  align-self: end;
+}
+
 .vhostRow select {
   min-height: 36px;
   padding: 7px 8px;
@@ -161,16 +165,21 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The domain cell's expand button yields room to the row's link icon. */
-.domainCell {
+/* Row actions sit right of the domain and target, so the cells a click
+   expands stay contiguous. */
+.table th.linksHeader {
+  width: 36px;
+}
+.table th.linksHeader,
+.table td.links {
+  padding-inline: 2px;
+}
+/* One icon wide; the occasional sign-in log button wraps below the link. */
+.linksCell {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 2px;
-  min-width: 0;
-}
-.domainCell > button[aria-expanded] {
-  flex: 1 1 auto;
-  min-width: 0;
 }
 .withLinkIcon {
   display: flex;
@@ -188,8 +197,13 @@
   justify-content: center;
   width: 32px;
   height: 32px;
+  padding: 0;
+  border: 0;
   border-radius: 6px;
   color: var(--text-secondary);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
 }
 .linkIconLabel {
   position: absolute;
@@ -209,6 +223,9 @@
   .linkIcon {
     width: 44px;
     height: 44px;
+  }
+  .table th.linksHeader {
+    width: 48px;
   }
 }
 .target {
@@ -234,7 +251,7 @@
 }
 @container settings-collection (max-width: 560px) {
   .table {
-    --settings-first-column-width: 40%;
+    --settings-first-column-width: 35%;
   }
   .table th:nth-child(2) {
     width: 20%;
@@ -264,10 +281,6 @@
   gap: 8px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-color);
-}
-
-.vhostRow button {
-  align-self: end;
 }
 
 @media (width <= 640px) {

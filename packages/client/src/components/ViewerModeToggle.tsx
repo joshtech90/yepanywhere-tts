@@ -1,6 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import styles from "./ViewerModeToggle.module.css";
+import { PencilIcon } from "./PencilIcon";
 
 export interface ViewerModeSource {
   path?: string;
@@ -50,7 +51,7 @@ export function ViewerModeToggle({
   const href = explicitHref ?? `${basePath}/file-view?${query}`;
   return (
     <a
-      className={styles.toggle}
+      className={`${styles.toggle} ${mode === "edit" ? styles.edit : ""}`}
       href={href}
       role="button"
       aria-label={label}
@@ -84,26 +85,23 @@ export function ViewerModeToggle({
       onContextMenu={onContextMenu}
     >
       <span className={styles.label}>{label}</span>
-      <svg
-        width="18"
-        height="18"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        {mode === "edit" ? (
-          <>
-            <path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" />
-            <path d="M13 20h7" />
-          </>
-        ) : (
+      {mode === "edit" ? (
+        <PencilIcon />
+      ) : (
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
           <path d="m8 5 11 7-11 7z" />
-        )}
-      </svg>
+        </svg>
+      )}
     </a>
   );
 }

@@ -14,7 +14,15 @@ import {
   useNavigate,
   useLocation,
 } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import {
   RemoteConnectionProvider,
   useRemoteConnection,
@@ -344,6 +352,45 @@ describe("remote recovery ownership", () => {
     await flush();
     expect(screen.getByText("attached")).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("makes one route acquisition per failed Retry while the relay stays offline", async () => {
+    // Browsers run credential capture under an asynchronous Web Lock, so the
+    // gate's render and its failure observe different scope captures. That
+    // churn must not start another attempt.
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: {
+        request: (_name: string, fn: () => unknown) =>
+          Promise.resolve().then(fn),
+      },
+    });
+    onTestFinished(() => {
+      delete (navigator as { locks?: unknown }).locks;
+    });
+    vi.mocked(openRelayClientSocket).mockClear();
+    mode = "offline";
+    render(<App />);
+    await flush();
+    expect(openRelayClientSocket).toHaveBeenCalledTimes(1);
+
+    for (const expectedCalls of [2, 3]) {
+      fireEvent.click(screen.getByRole("button", { name: "hostOfflineRetry" }));
+      await flush();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(openRelayClientSocket).toHaveBeenCalledTimes(expectedCalls);
+      expect(
+        screen.getByRole("button", { name: "hostOfflineRetry" }),
+      ).toBeTruthy();
+    }
+
+    mode = "ok";
+    fireEvent.click(screen.getByRole("button", { name: "hostOfflineRetry" }));
+    await flush();
+    expect(screen.getByText("attached")).toBeTruthy();
+    expect(openRelayClientSocket).toHaveBeenCalledTimes(4);
   });
 
   it("sends an explicit rejection to login and does not automatically retry it", async () => {

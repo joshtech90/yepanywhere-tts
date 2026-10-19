@@ -54,7 +54,6 @@ function ProjectAppWorkspace({ projectId }: { projectId: string }) {
             type="button"
             onClick={() => {
               setShowApp(true);
-              if (isWideScreen) setComposing(false);
             }}
           >
             {t("projectAppLabel")}
@@ -64,7 +63,7 @@ function ProjectAppWorkspace({ projectId }: { projectId: string }) {
             selectedProject={project}
             projects={[project]}
             autoFocus={false}
-            compact
+            fixedProject={showApp}
             projectApp={target}
             onVoiceControl={setVoice}
           />
@@ -75,6 +74,7 @@ function ProjectAppWorkspace({ projectId }: { projectId: string }) {
       >
         <ProjectAppViewer
           projectId={projectId}
+          projectName={project?.name}
           onTarget={setTarget}
           voice={voice}
           onSession={begin}

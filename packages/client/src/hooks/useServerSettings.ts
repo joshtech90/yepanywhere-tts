@@ -24,6 +24,7 @@ import {
   useClientSummarySourceKey,
 } from "../lib/clientSummaryStore";
 import { isRemoteClient } from "../lib/connection";
+import { isConnectionReconnectingError } from "../lib/connection/types";
 import { getSourceRuntimeRegistry } from "../lib/sourceRuntime";
 import { useRetainedClientQuery } from "./useRetainedClientQuery";
 
@@ -60,7 +61,9 @@ async function fetchSettingsQuery(context: ClientQueryRequestContext) {
   try {
     return await fetchServerSettingsForSource(context.sourceKey);
   } catch (err) {
-    console.error("[useServerSettings] Failed to fetch settings:", err);
+    if (!isConnectionReconnectingError(err)) {
+      console.error("[useServerSettings] Failed to fetch settings:", err);
+    }
     throw err;
   }
 }
@@ -179,11 +182,15 @@ export function useServerSettings(): UseServerSettingsResult {
     [updateSettings],
   );
 
+  const queryErrorMessage = queryError?.message ?? null;
+
   return {
     settings: snapshot.settings,
     displayDefaults: snapshot.displayDefaults,
     isLoading: loading,
-    error: mutationError ?? (queryError ? queryError.message : null),
+    error:
+      mutationError ??
+      (isConnectionReconnectingError(queryError) ? null : queryErrorMessage),
     updateSettings,
     updateSetting,
     refetch: async () => {

@@ -10,11 +10,14 @@ import android.app.Activity
 import android.os.Bundle
 
 class YepAnywhereApplication : Application() {
+    var artifactShell: com.yepanywhere.mobile.web.PackagedArtifactShell? = null
+        private set
     lateinit var nativeRuntime: YaNativeRuntime
         private set
 
     override fun onCreate() {
         super.onCreate()
+        if (com.yepanywhere.mobile.web.WebClientConfig.fromBuild().bundled) artifactShell = com.yepanywhere.mobile.web.PackagedArtifactShell.install(this)
         nativeRuntime = YaNativeRuntime(this)
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: Activity) { NativePushPresenter.foreground = true }

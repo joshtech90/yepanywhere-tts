@@ -1,0 +1,14 @@
+<resources>
+  <string name="choose_folder">Choose local folder</string>
+  <string name="all_files">All-files access</string>
+  <string name="revoke_folder">Revoke folder grant</string>
+  <string name="read_write_required">The folder requires both read and write permission.</string>
+  <string name="ready">Disposable workspace ready
+%1$s
+Mapped to /workspace by the probe.
+Runtime and credentials remain private.</string>
+  <string name="unavailable">Workspace unavailable
+%1$s
+No private fallback.</string>
+  <string name="persist_failed">Cannot persist fixture status</string>
+</resources>

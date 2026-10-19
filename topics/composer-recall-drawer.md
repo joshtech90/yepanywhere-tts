@@ -19,7 +19,9 @@ the existing Ctrl+R message-list isearch.
 ## Motivation
 
 Plain ArrowUp already recalls your *last* submission into the composer
-(`MessageInput.tsx` `recallLastSubmission`, always on). The useful
+(`MessageInput.tsx` `recallLastSubmission`, always on) and enters
+correction mode; Esc, or ArrowDown once the composer is emptied, leaves
+that mode. The useful
 generalization — browse *all* prior turns, filtered by what you've typed
 so far, and drop one back into the composer to edit/resend — was never
 built (bang-commands.md parks it as "a natural later extension"). Ctrl+R

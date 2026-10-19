@@ -11,5 +11,11 @@ does not establish contention as its cause. Preserve browser diagnostics on
 the next occurrence before choosing a fix. No retry or suppression was added.
 The utility was outside the hosted-vhost OAuth implementation scope.
 
+A second case in the same file failed once in a full `pnpm test` on
+2026-10-14: `revokes a created grant when the interaction fails without
+writing a successful manifest` saw no grant `DELETE` request
+(`artifact-capture.test.ts:297`). Three isolated runs of the file then
+passed. Both failures appear only under the full suite's load.
+
 Found 2026-10-09 while validating hosted-vhost OAuth.
 Contributing-model: 6-Astra

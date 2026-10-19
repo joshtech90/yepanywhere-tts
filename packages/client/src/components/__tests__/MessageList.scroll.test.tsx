@@ -74,6 +74,74 @@ describe("MessageList scroll and follow", () => {
     expect(container.scrollTop).toBe(100);
   });
 
+  it("lets slow upward scrolling inside the bottom slack escape follow", () => {
+    const observers: ResizeObserverCallback[] = [];
+    class CapturingResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        observers.push(callback);
+      }
+      observe() {}
+      disconnect() {}
+    }
+    Object.defineProperty(window, "ResizeObserver", {
+      configurable: true,
+      value: CapturingResizeObserver,
+    });
+    const { container } = render(
+      <MessageList messages={[assistantMessage("assistant-1", "streaming")]} />,
+    );
+    let scrollHeight = 1000;
+    Object.defineProperties(container, {
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { configurable: true, value: 500 },
+      scrollTop: { configurable: true, value: 500, writable: true },
+    });
+    const rectFor = (top: number, height: number): DOMRect =>
+      ({
+        top,
+        bottom: top + height,
+        height,
+        left: 0,
+        right: 400,
+        width: 400,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    container.getBoundingClientRect = () => rectFor(0, 500);
+    const lastLine = container.querySelector(".message-list")
+      ?.lastElementChild as HTMLElement | null;
+    expect(lastLine).toBeTruthy();
+    // The last line ends 16px above the viewport bottom (container padding)
+    // when pinned, so the first few px of an upward scroll keep it visible.
+    (lastLine as HTMLElement).getBoundingClientRect = () =>
+      rectFor(400 + scrollHeight - 500 - container.scrollTop, 84);
+    const grow = (px: number) =>
+      act(() => {
+        scrollHeight += px;
+        for (const callback of observers) {
+          callback([], {} as ResizeObserver);
+        }
+      });
+    grow(100);
+    expect(container.scrollTop).toBe(600);
+
+    // Each slow wheel step moves a few px before streaming growth arrives.
+    for (const step of [1, 2, 3]) {
+      fireEvent.wheel(container, { deltaY: -100 });
+      container.scrollTop -= 5;
+      fireEvent.scroll(container);
+      grow(50);
+      expect(container.scrollTop).toBe(600 - 5 * step);
+    }
+
+    // Returning to the live edge by scrolling down resumes following.
+    container.scrollTop = scrollHeight - 500;
+    fireEvent.scroll(container);
+    grow(50);
+    expect(container.scrollTop).toBe(scrollHeight - 500);
+  });
+
   it("focuses the transcript after a native scrollbar gesture", () => {
     const { container } = render(
       <MessageList
@@ -120,6 +188,25 @@ describe("MessageList scroll and follow", () => {
   });
 
   it("keeps a clicked activity summary fixed while scrolled up", async () => {
+    const observers: {
+      callback: ResizeObserverCallback;
+      targets: Element[];
+    }[] = [];
+    class CapturingResizeObserver {
+      targets: Element[] = [];
+      constructor(callback: ResizeObserverCallback) {
+        observers.push({ callback, targets: this.targets });
+      }
+      observe(target: Element) {
+        this.targets.push(target);
+      }
+      disconnect() {}
+    }
+    Object.defineProperty(window, "ResizeObserver", {
+      configurable: true,
+      value: CapturingResizeObserver,
+    });
+    let lateGrowth = 0;
     setConversationViewPreference(true);
     const { container } = render(
       <MessageList
@@ -132,6 +219,14 @@ describe("MessageList scroll and follow", () => {
         ]}
       />,
     );
+    const resize = () =>
+      act(() => {
+        for (const observer of observers.filter(({ targets }) =>
+          targets.includes(container),
+        )) {
+          observer.callback([], {} as ResizeObserver);
+        }
+      });
     const summary = screen.getByRole("button", {
       name: /activity hidden/,
     });
@@ -150,7 +245,7 @@ describe("MessageList scroll and follow", () => {
         container
           .querySelector(".conversation-activity-summary")
           ?.getAttribute("aria-expanded") === "true"
-          ? 1500
+          ? 1500 + lateGrowth
           : 1200,
     });
     Object.defineProperty(container, "clientHeight", {
@@ -183,7 +278,10 @@ describe("MessageList scroll and follow", () => {
             this.querySelector(".conversation-activity-summary")?.getAttribute(
               "aria-expanded",
             ) === "true";
-          return rectFor((expanded ? 750 : 450) - container.scrollTop, 40);
+          return rectFor(
+            (expanded ? 750 + lateGrowth : 450) - container.scrollTop,
+            40,
+          );
         }
         return rectFor(900 - container.scrollTop, 40);
       });
@@ -207,6 +305,22 @@ describe("MessageList scroll and follow", () => {
         ).toBe(topBefore);
       });
 
+      // Renderer hydration can grow earlier rows after the disclosure commit.
+      lateGrowth = 28;
+      resize();
+      const expandedRow = screen
+        .getByRole("button", { name: /1 activity$/ })
+        .closest<HTMLElement>("[data-render-id]");
+      expect(expandedRow?.getBoundingClientRect().top).toBe(topBefore);
+      // A reader gesture releases that anchor before later renderer growth.
+      fireEvent.wheel(container, { deltaY: -100 });
+      container.scrollTop -= 40;
+      fireEvent.scroll(container);
+      const readerScrollTop = container.scrollTop;
+      lateGrowth += 20;
+      resize();
+      expect(container.scrollTop).toBe(readerScrollTop);
+      const beforeCollapse = expandedRow?.getBoundingClientRect().top;
       fireEvent.click(
         screen.getByRole("button", {
           name: /1 activity$/,
@@ -221,7 +335,7 @@ describe("MessageList scroll and follow", () => {
           collapsedSummary
             .closest<HTMLElement>("[data-render-id]")
             ?.getBoundingClientRect().top,
-        ).toBe(topBefore);
+        ).toBe(beforeCollapse);
       });
     } finally {
       rectSpy.mockRestore();

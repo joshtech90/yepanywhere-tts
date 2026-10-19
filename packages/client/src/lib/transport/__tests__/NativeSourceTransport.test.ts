@@ -4,8 +4,8 @@ import { NativeSourceTransport } from "../NativeSourceTransport";
 import { NativeTransportFixture } from "./nativeTransportFixture";
 
 const transports: NativeSourceTransport[] = [];
-async function setup(binary = true) {
-  const host = new NativeTransportFixture(binary);
+async function setup(binary = true, responseStreams = false) {
+  const host = new NativeTransportFixture(binary, "CONNECTED", responseStreams);
   const transport = new NativeSourceTransport(host.channel);
   transports.push(transport);
   await transport.ready;
@@ -21,6 +21,50 @@ afterEach(() => {
 });
 
 describe("native source transport", () => {
+  it.each([
+    ["CONNECTED", "ready"],
+    ["CONNECTING", "reconnecting"],
+    ["RETRYING", "reconnecting"],
+  ])(
+    "ignores a recovery failure after native reports %s",
+    async (phase, state) => {
+      const { host, transport } = await setup();
+      let fail!: (error: Error) => void;
+      host.handler = () =>
+        new Promise((_, reject) => {
+          fail = reject;
+        });
+      const recovery = transport.reconnect();
+      const rejected = expect(recovery).rejects.toThrow("old recovery");
+      await vi.waitFor(() => expect(host.commands).toHaveLength(1));
+      await host.emit({ type: "state", phase, recoverable: true });
+      const current = transport.status.getSnapshot();
+      fail(new Error("old recovery"));
+      await rejected;
+      expect(transport.status.getSnapshot()).toBe(current);
+      expect(current.state).toBe(state);
+      window.dispatchEvent(new Event("online"));
+      expect(host.commands).toHaveLength(1);
+    },
+  );
+
+  it("does not promote a newer native retry when an earlier recovery succeeds", async () => {
+    const { host, transport } = await setup();
+    let finish!: () => void;
+    host.handler = () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    const recovery = transport.reconnect();
+    await vi.waitFor(() => expect(host.commands).toHaveLength(1));
+    await host.emit({ type: "state", phase: "RETRYING", recoverable: true });
+    finish();
+    await recovery;
+    expect(transport.status.getSnapshot().state).toBe("reconnecting");
+    await host.emit({ type: "state", phase: "CONNECTED", recoverable: false });
+    expect(transport.status.getSnapshot().state).toBe("ready");
+  });
+
   it("keeps Android retry exhaustion recoverable without changing the backstop", async () => {
     const { host, transport } = await setup();
     vi.useFakeTimers();
@@ -256,20 +300,19 @@ describe("native source transport", () => {
         complete = resolve;
       });
     const request = transport.fetch("/projects");
-    const failed = expect(request).rejects.toThrow();
     await vi.waitFor(() => expect(host.commands).toHaveLength(1));
     await host.emit({ type: "state", phase: "SUSPENDED" });
-    await failed;
-    expect(transport.status.getSnapshot().state).toBe("disconnected");
+    expect(transport.status.getSnapshot().state).toBe("reconnecting");
     window.dispatchEvent(new Event("online"));
     window.dispatchEvent(new Event("focus"));
     await expect(transport.reconnect()).rejects.toThrow();
     expect(host.commands).toHaveLength(1);
     complete({ status: 200, body: { stale: true } });
+    host.handler = () => ({ status: 200, body: { recovered: true } });
     await host.emit({ type: "state", phase: "CONNECTING" });
     await host.emit({ type: "state", phase: "CONNECTED" });
+    await expect(request).resolves.toEqual({ recovered: true });
     expect(transport.bridge.descriptor).toBe(descriptor);
-    host.handler = () => ({ status: 200, body: { recovered: true } });
     await expect(transport.fetch("/projects")).resolves.toEqual({
       recovered: true,
     });
@@ -294,56 +337,58 @@ describe("native source transport", () => {
     );
   });
 
-  it.each(["before", "after"])(
-    "keeps Android radio loss recoverable when its contract arrives %s offline",
-    async (order) => {
-      const { host, transport } = await setup();
-      if (order === "before")
-        await host.emit({
-          type: "state",
-          phase: "CONNECTED",
-          recoverable: false,
-        });
-      const online = vi
-        .spyOn(navigator, "onLine", "get")
-        .mockReturnValue(false);
-      window.dispatchEvent(new Event("offline"));
-      if (order === "after")
-        await host.emit({
-          type: "state",
-          phase: "CONNECTED",
-          recoverable: false,
-        });
-      expect(transport.status.getSnapshot().state).toBe("reconnecting");
-      const request = transport.fetch("/projects");
-      const result = expect(request).resolves.toEqual({ ok: true });
-      await Promise.resolve();
-      expect(host.commands).toHaveLength(0);
-      online.mockReturnValue(true);
-      window.dispatchEvent(new Event("online"));
-      await result;
-      expect(host.commands.map((command) => command.method)).toEqual([
-        "reconnect",
-        "request",
-      ]);
-    },
-  );
-
-  it("shows loss immediately and waits for network restoration before recovery", async () => {
+  it("retains recovery demand arriving inside the five-second cooldown", async () => {
     const { host, transport } = await setup();
-    const online = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
-    window.dispatchEvent(new Event("offline"));
-    expect(transport.status.getSnapshot().state).toBe("disconnected");
-    await host.emit({ type: "state", phase: "CONNECTED" });
-    expect(transport.status.getSnapshot().state).toBe("disconnected");
-    window.dispatchEvent(new Event("focus"));
-    expect(host.commands).toHaveLength(0);
-    online.mockReturnValue(true);
-    window.dispatchEvent(new Event("online"));
-    await vi.waitFor(() =>
-      expect(transport.status.getSnapshot().state).toBe("ready"),
+    vi.useFakeTimers();
+    host.handler = () => {
+      throw new Error("network still unavailable");
+    };
+    await expect(transport.reconnect()).rejects.toThrow(
+      "network still unavailable",
     );
+    await vi.advanceTimersByTimeAsync(1000);
+    host.handler = async () => {
+      await host.emit({ type: "state", phase: "CONNECTED" });
+      return {};
+    };
+    window.dispatchEvent(new Event("online"));
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("pointerdown"));
+    await vi.advanceTimersByTimeAsync(3999);
     expect(host.commands).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(host.commands).toHaveLength(2);
+    expect(transport.status.getSnapshot().state).toBe("ready");
+  });
+
+  it("cancels deferred demand while hidden and on disposal", async () => {
+    const { host, transport } = await setup();
+    vi.useFakeTimers();
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    host.handler = () => {
+      throw new Error("offline");
+    };
+    await expect(transport.reconnect()).rejects.toThrow("offline");
+    window.dispatchEvent(new Event("online"));
+    hidden.mockReturnValue(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(host.commands).toHaveLength(1);
+    hidden.mockReturnValue(false);
+    host.handler = () => ({});
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(transport.status.getSnapshot().state).toBe("ready");
+    host.handler = () => {
+      throw new Error("offline again");
+    };
+    await expect(transport.reconnect()).rejects.toThrow("offline again");
+    window.dispatchEvent(new Event("online"));
+    const count = host.commands.length;
+    transport.dispose();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(host.commands).toHaveLength(count);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("pauses exhausted recovery while hidden and stops it on disposal or rejection", async () => {
@@ -473,27 +518,42 @@ describe("native source transport", () => {
     },
   );
 
-  it("preserves redirects, binary media and API error status", async () => {
-    const { host, transport } = await setup();
-    host.handler = (command) => {
-      const path = (command.params as { path: string }).path;
-      if (path === "/api/redirect")
-        return { status: 302, headers: { Location: "/api/media" }, body: null };
-      if (path === "/api/media")
+  it.each([false, true])(
+    "preserves redirects, binary media and API error status (streams=%s)",
+    async (streams) => {
+      const { host, transport } = await setup(true, streams);
+      host.handler = (command) => {
+        const path = (command.params as { path: string }).path;
+        if (path === "/api/redirect")
+          return {
+            status: 302,
+            headers: { Location: "/api/media" },
+            body: null,
+          };
+        if (path === "/api/media")
+          return {
+            status: 200,
+            headers: { "content-type": "image/png" },
+            body: { _binary: true, data: btoa("png") },
+          };
         return {
-          status: 200,
-          headers: { "content-type": "image/png" },
-          body: { _binary: true, data: btoa("png") },
+          status: 403,
+          headers: { "X-Setup-Required": "true" },
+          body: { error: "denied" },
         };
-      return { status: 403, headers: {}, body: { error: "denied" } };
-    };
-    const response = await transport.fetchResponse("/redirect");
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("png");
-    await expect(transport.fetch("/forbidden")).rejects.toMatchObject({
-      status: 403,
-    });
-  });
+      };
+      const response = await transport.fetchResponse("/redirect");
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("png");
+      await expect(transport.fetchResponse("/forbidden")).rejects.toMatchObject(
+        {
+          message: "API error: 403: denied",
+          setupRequired: true,
+          status: 403,
+        },
+      );
+    },
+  );
 
   it("cancels an abandoned native request and ignores its late reply", async () => {
     const { host, transport } = await setup();

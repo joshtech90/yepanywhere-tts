@@ -7,13 +7,16 @@ import com.yepanywhere.mobile.YepAnywhereApplication
 import com.yepanywhere.mobile.profiles.YaServerRemovalCoordinator
 import com.yepanywhere.mobile.profiles.YaServerRemovalOutcome
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import com.yepanywhere.mobile.notifications.NativePushFailure
+import kotlinx.coroutines.withContext
+import com.yepanywhere.mobile.notifications.NotificationFoundation
+import com.yepanywhere.mobile.notifications.NotificationStatusReader
 
 /** Observes saved hosts and connection status without acquiring dashboard leases. */
 class YaHostManagementViewModel(application: Application) : AndroidViewModel(application) {
@@ -27,6 +30,7 @@ class YaHostManagementViewModel(application: Application) : AndroidViewModel(app
     val openProfile = mutableOpenProfile.asSharedFlow()
 
     init {
+        refreshNotifications()
         viewModelScope.launch {
             store.listState.collect { list ->
                 val snapshots = store.snapshots().associateBy { it.profile.id }
@@ -76,7 +80,24 @@ class YaHostManagementViewModel(application: Application) : AndroidViewModel(app
             return@action
         }
         val profile = runtime.pairing.pair(username, username, input.password, route)
-        mutableOpenProfile.emit(profile.id)
+        // Offer notifications once, while the user is still here and Android can show them.
+        if (mutableState.value.deviceNotifications in setOf(YaDeviceNotifications.READY, YaDeviceNotifications.CAN_ASK)) {
+            mutableState.value = mutableState.value.copy(pushOffer = profile.id, pushOfferAccepted = false)
+        } else mutableOpenProfile.emit(profile.id)
+    }
+
+    /** Returns the offered profile so the activity can run the permission and enable flow. */
+    fun acceptPushOffer(): String? {
+        val profileId = mutableState.value.pushOffer ?: return null
+        mutableState.value = mutableState.value.copy(pushOfferAccepted = true)
+        return profileId
+    }
+
+    /** Ends the offer; the new server opens unless enabling failed and its error must stay visible. */
+    fun finishPushOffer(open: Boolean = true) {
+        val profileId = mutableState.value.pushOffer ?: return
+        mutableState.value = mutableState.value.copy(pushOffer = null, pushOfferAccepted = false)
+        if (open) viewModelScope.launch { mutableOpenProfile.emit(profileId) }
     }
 
     fun reauthenticate(profileId: String, password: String) = action {
@@ -97,6 +118,24 @@ class YaHostManagementViewModel(application: Application) : AndroidViewModel(app
     fun forgetAnyway(profileId: String) = action { showRemovalResult(profileId, removal.forgetAnyway(profileId)) }
     fun clearRemovalPrompt() { mutableState.value = mutableState.value.copy(removalPrompt = null) }
     fun clearError() { mutableState.value = mutableState.value.copy(error = null) }
+
+    /**
+     * Android permission and channel settings change outside the app; re-read
+     * them on resume. [enableWhenReady] finishes an enable the user started
+     * before Android asked for, or sent them to Settings for, permission.
+     */
+    fun refreshNotifications(enableWhenReady: String? = null) {
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val status = withContext(Dispatchers.IO) {
+                NotificationStatusReader(app, NotificationFoundation.installationStore(app)).read()
+            }
+            val device = deviceNotifications(status)
+            mutableState.value = mutableState.value.copy(deviceNotifications = device)
+            if (enableWhenReady != null && device == YaDeviceNotifications.READY) setPush(enableWhenReady, true)
+            else if (enableWhenReady != null) finishPushOffer()
+        }
+    }
     fun setPush(profileId: String, enabled: Boolean) = pushAction(profileId) {
         if (enabled) runtime.nativePush.enable(profileId) else runtime.nativePush.disable(profileId)
     }
@@ -105,12 +144,14 @@ class YaHostManagementViewModel(application: Application) : AndroidViewModel(app
         if (mutableState.value.actionInProgress) return
         mutableState.value = mutableState.value.copy(actionInProgress = true, error = null)
         viewModelScope.launch {
+            var failed = false
             try { operation() }
             catch (error: CancellationException) { throw error }
-            catch (error: Exception) { mutableState.value = mutableState.value.copy(error = if ((error as? NativePushFailure)?.reason == "server_update_required") YaNativeUiError.SERVER_UPDATE_REQUIRED else YaNativeUiError.PUSH_FAILED) }
+            catch (error: Exception) { failed = true; mutableState.value = mutableState.value.copy(error = nativePushActionError(error)) }
             finally {
                 val source = mutableState.value.servers[profileId]
                 mutableState.value = mutableState.value.copy(actionInProgress = false, servers = if (source == null) mutableState.value.servers else mutableState.value.servers + (profileId to source.copy(pushEnabled = runtime.nativePush.enabled(profileId))))
+                if (mutableState.value.pushOffer == profileId) finishPushOffer(open = !failed)
             }
         }
     }

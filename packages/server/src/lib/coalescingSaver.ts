@@ -34,14 +34,22 @@ export function createCoalescingSaver(
 ): CoalescingSaver {
   let draining: Promise<void> | null = null;
   let pending = false;
+  // Requests are numbered; `written` is the newest one a finished write
+  // started after, so it holds that request's state. A flush waits for its
+  // own number instead of re-arming the drain while any writer runs, which
+  // let concurrent flushes keep a microtask-fast writer spinning forever.
+  let requested = 0;
+  let written = 0;
 
   const drain = async (): Promise<void> => {
     let failure: unknown;
     let failed = false;
     do {
       pending = false;
+      const covers = requested;
       try {
         await write();
+        written = Math.max(written, covers);
       } catch (error) {
         failure = error;
         failed = true;
@@ -51,6 +59,7 @@ export function createCoalescingSaver(
   };
 
   const save = (): Promise<void> => {
+    requested++;
     if (draining) {
       pending = true;
       return Promise.resolve();
@@ -70,23 +79,18 @@ export function createCoalescingSaver(
   return {
     save,
     async flush(): Promise<void> {
-      let failure: unknown;
-      let failed = false;
-      do {
+      const target = ++requested;
+      while (written < target) {
         let current = draining;
         if (current) {
           pending = true;
         } else {
           current = save();
         }
-        try {
-          await current;
-        } catch (error) {
-          failure = error;
-          failed = true;
-        }
-      } while (draining);
-      if (failed) throw failure;
+        // A rejected drain still ran any follow-up; its failure is the
+        // caller's, as with save().
+        await current;
+      }
     },
     async idle(): Promise<void> {
       while (draining) {

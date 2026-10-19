@@ -83,6 +83,12 @@ describe("hermetic config env setup", () => {
 });
 
 describe("loadConfig codex paths", () => {
+  it("allows self-contained hosts to disable external observation without changing desktop defaults", async () => {
+    const { loadConfig } = await import("../src/config.js");
+    expect(loadConfig().externalSessionsEnabled).toBe(true);
+    vi.stubEnv("YEP_EXTERNAL_SESSIONS", "false");
+    expect(loadConfig().externalSessionsEnabled).toBe(false);
+  });
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();

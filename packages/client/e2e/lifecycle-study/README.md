@@ -21,7 +21,7 @@ pnpm --filter @yep-anywhere/android prepare-frontend
 pnpm --filter @yep-anywhere/client exec playwright install chromium
 cd packages/android
 ./gradlew assembleBundledDebug assembleBundledDebugAndroidTest \
-  -PyaNativeProbeCleartext=true -PyaNativeProbeMinify=true --no-daemon
+  -PyaNativeProbeMinify=true --no-daemon
 ```
 
 Boot an owned API 35 emulator. The study requires `ANDROID_SERIAL=emulator-…`

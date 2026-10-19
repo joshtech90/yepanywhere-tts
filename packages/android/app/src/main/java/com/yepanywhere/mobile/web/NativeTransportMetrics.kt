@@ -11,6 +11,7 @@ class NativeTransportMetrics {
     private var overflows = 0L
     private val creditMicros = Samples()
     private val mainThreadMicros = Samples()
+    private val states = java.util.ArrayDeque<JSONObject>()
 
     @Synchronized fun frame(size: Int) { frames++; bytes += size }
     @Synchronized fun queued(size: Int) { queueHighWater = maxOf(queueHighWater, size) }
@@ -18,9 +19,16 @@ class NativeTransportMetrics {
     @Synchronized fun mainThread(nanos: Long) { mainThreadMicros.add(nanos / 1000) }
     @Synchronized fun cancelled() { cancellations++ }
     @Synchronized fun overflow() { overflows++ }
+    @Synchronized fun state(phase: String, lease: Int, connection: Long, foreground: Int) {
+        if (states.size == 128) states.removeFirst()
+        states.addLast(JSONObject().put("atMs", android.os.SystemClock.elapsedRealtime())
+            .put("phase", phase).put("leaseGeneration", lease).put("connectionEpoch", connection)
+            .put("foregroundGeneration", foreground))
+    }
     @Synchronized fun snapshot(): JSONObject = JSONObject()
         .put("frames", frames).put("bytes", bytes).put("queueHighWaterBytes", queueHighWater)
         .put("cancellations", cancellations).put("overflows", overflows)
+        .put("states", org.json.JSONArray(states.toList()))
         .put("creditMicros", creditMicros.snapshot()).put("mainThreadMicros", mainThreadMicros.snapshot())
 
     private class Samples {

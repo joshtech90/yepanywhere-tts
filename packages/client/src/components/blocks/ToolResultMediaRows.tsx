@@ -98,9 +98,11 @@ function ToolResultMediaRow({
           title={t(REJECTION_KEYS[media.reason])}
         >
           <span className="tool-name">{displayName}</span>
-          <span className={styles.filename}>{filename}</span>
-          <span className={styles.suffix}>
-            ({t("toolResultMediaUnavailable")})
+          <span className={`tool-summary ${styles.summary}`}>
+            <span className={styles.filename}>{filename}</span>
+            <span className={styles.suffix}>
+              ({t("toolResultMediaUnavailable")})
+            </span>
           </span>
         </div>
       </div>
@@ -215,18 +217,22 @@ function StoredToolResultMediaRow({
       />
       <div className={styles.rowHeader}>
         <span className="tool-name">{displayName}</span>
-        <button
-          type="button"
-          className={styles.filename}
-          onClick={openViewer}
-          onContextMenu={imageActions.handleContextMenu}
-        >
-          {filename}
-        </button>
-        <span className={styles.suffix}>
-          ({t(isVideo ? "toolResultMediaVideo" : "toolResultMediaImage")})
+        <span className={`tool-summary ${styles.summary}`}>
+          <button
+            type="button"
+            className={styles.filename}
+            onClick={openViewer}
+            onContextMenu={imageActions.handleContextMenu}
+          >
+            {filename}
+          </button>
+          <span className={styles.suffix}>
+            ({t(isVideo ? "toolResultMediaVideo" : "toolResultMediaImage")})
+          </span>
+          {dimensions && (
+            <span className={styles.dimensions}>{dimensions}</span>
+          )}
         </span>
-        {dimensions && <span className={styles.dimensions}>{dimensions}</span>}
       </div>
 
       {expanded && (

@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { getLogger } from "../logging/logger.js";
 import { isProviderHostDegraded } from "../sdk/providers/provider-host-status.js";
 import {
   APPROVAL_AUDIT_LOG_CAPABILITY,
@@ -329,16 +330,43 @@ async function detectReleaseInstallSource(
   return "release-package";
 }
 
+/**
+ * Every `/api/version` waits on the process-wide install-source probe, so a
+ * stalled `npm root -g` would hold all of them. On Windows the command runs
+ * under cmd.exe, and killing that on exec's timeout can leave npm's node child
+ * holding the output pipe, so exec alone may never settle; the race bounds it.
+ * A timed-out probe reports the release-package fallback, as a failed one does.
+ */
+const NPM_GLOBAL_ROOT_TIMEOUT_MS = 10_000;
+
 async function getNpmGlobalRoot(): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), NPM_GLOBAL_ROOT_TIMEOUT_MS + 1_000);
+  });
   try {
-    const { stdout } = await execAsync("npm root -g", {
-      encoding: "utf-8",
-    });
-    const npmGlobalRoot = stdout.trim();
+    const result = await Promise.race([
+      execAsync("npm root -g", {
+        encoding: "utf-8",
+        timeout: NPM_GLOBAL_ROOT_TIMEOUT_MS,
+        windowsHide: true,
+      }),
+      timedOut,
+    ]);
+    if (!result) {
+      getLogger().warn(
+        { event: "npm_global_root_timeout" },
+        "VERSION: npm root -g did not settle; reporting a release package",
+      );
+      return null;
+    }
+    const npmGlobalRoot = result.stdout.trim();
     if (!npmGlobalRoot) return null;
     return realpathOrResolve(npmGlobalRoot);
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -494,6 +522,7 @@ const BASE_CAPABILITIES: string[] = [
   SERVER_CAPABILITIES.processServiceTierChange.name,
   SERVER_CAPABILITIES.mcpAppViews.name,
   SERVER_CAPABILITIES.projectCreationGitChoice.name,
+  SERVER_CAPABILITIES.projectAppAutoStart.name,
   SERVER_CAPABILITIES.unicodeProseMath.name,
   SERVER_CAPABILITIES.projectFileViewCommand.name,
   SERVER_CAPABILITIES.fileOwnerProject.name,
@@ -580,6 +609,9 @@ const BASE_CAPABILITIES: string[] = [
   SERVER_CAPABILITIES.retainedRecents.name,
   SERVER_CAPABILITIES.retainedProjects.name,
   SERVER_CAPABILITIES.providerDescriptors.name,
+  SERVER_CAPABILITIES.rendezUploads.name,
+  SERVER_CAPABILITIES.patientTopicShift.name,
+  SERVER_CAPABILITIES.rendezProjectStatus.name,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
@@ -710,7 +742,10 @@ function getCapabilitiesForDeviceBridgeState(
 }
 
 export function getServerCapabilities(options?: VersionRouteOptions): string[] {
-  const capabilities: string[] = [...BASE_CAPABILITIES];
+  const capabilities: string[] = [
+    ...BASE_CAPABILITIES,
+    SERVER_CAPABILITIES.artifactRelayPreview.name,
+  ];
   if (options?.getDraftSyncAvailable?.())
     capabilities.push(SERVER_CAPABILITIES.draftSync.name);
   capabilities.push(SERVER_CAPABILITIES.vhostBearerAccess.name);
@@ -734,8 +769,10 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
     capabilities.push(SERVER_CAPABILITIES.experimentalConversation.name);
   if (options?.getSqliteStatus?.().state === "ready") {
     capabilities.push(SERVER_CAPABILITIES.speechVocabulary.name);
-    if (options.getIssueAssociationsAvailable?.())
+    if (options.getIssueAssociationsAvailable?.()) {
       capabilities.push(SERVER_CAPABILITIES.issueSessionAssociations.name);
+      capabilities.push(SERVER_CAPABILITIES.githubStatusControls.name);
+    }
     capabilities.push(SERVER_CAPABILITIES.speechVocabularySessionTerms.name);
   }
   if (options?.getArtifactViewerStatus?.().available)
@@ -814,6 +851,24 @@ export function getServerCompatibilityInfo(
   }));
 }
 
+/**
+ * Readiness checks and clients wait on `/api/version` without seeing which
+ * dependency holds it. Name each one still pending past this threshold so a
+ * stalled request's log identifies the probe.
+ */
+const SLOW_VERSION_PROBE_MS = 5_000;
+
+function warnIfSlow<T>(probe: string, request: Promise<T>): Promise<T> {
+  const timer = setTimeout(() => {
+    getLogger().warn(
+      { event: "version_probe_slow", probe, pendingMs: SLOW_VERSION_PROBE_MS },
+      `VERSION: ${probe} still pending after ${SLOW_VERSION_PROBE_MS} ms`,
+    );
+  }, SLOW_VERSION_PROBE_MS);
+  timer.unref?.();
+  return request.finally(() => clearTimeout(timer));
+}
+
 export function createVersionRoutes(options?: VersionRouteOptions): Hono {
   const routes = new Hono();
 
@@ -829,23 +884,32 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
       sessionSandboxAvailability,
       latest,
     ] = await Promise.all([
-      currentVersionRequest,
-      options?.getDeviceBridgeStatus
-        ? options.getDeviceBridgeStatus({ forceRefresh: fresh })
-        : Promise.resolve<DeviceBridgeStatus>({
-            state: options?.getDeviceBridgeState?.() ?? "unavailable",
-          }),
-      (
-        options?.getSessionSandboxAvailability ??
-        getLocalSessionSandboxAvailability
-      )({ forceRefresh: fresh }),
+      warnIfSlow("currentVersionInfo", currentVersionRequest),
+      warnIfSlow(
+        "deviceBridgeStatus",
+        options?.getDeviceBridgeStatus
+          ? options.getDeviceBridgeStatus({ forceRefresh: fresh })
+          : Promise.resolve<DeviceBridgeStatus>({
+              state: options?.getDeviceBridgeState?.() ?? "unavailable",
+            }),
+      ),
+      warnIfSlow(
+        "sessionSandboxAvailability",
+        (
+          options?.getSessionSandboxAvailability ??
+          getLocalSessionSandboxAvailability
+        )({ forceRefresh: fresh }),
+      ),
       currentVersionRequest.then(({ version }) =>
         options?.desktopRuntime
           ? null
-          : (options?.getLatestVersion ?? getLatestVersion)(
-              version.split("-")[0] || version,
-              options?.installId,
-              { forceRefresh: fresh },
+          : warnIfSlow(
+              "latestVersion",
+              (options?.getLatestVersion ?? getLatestVersion)(
+                version.split("-")[0] || version,
+                options?.installId,
+                { forceRefresh: fresh },
+              ),
             ),
       ),
     ]);

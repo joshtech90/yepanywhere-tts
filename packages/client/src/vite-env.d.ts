@@ -27,3 +27,8 @@ declare const __VITE_DEV_PORT__: number;
 
 /** Main backend server port (injected by Vite define); link target for the wrong-port notice */
 declare const __BACKEND_PORT__: number;
+
+/** Nonempty only in the watched unpacked extension build. */
+declare const __EXTENSION_DEV_BUILD_ID__: string;
+/** Digest stamped into the development worker after bundling. */
+declare const __EXTENSION_DEV_WORKER_HASH__: string;

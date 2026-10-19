@@ -71,10 +71,14 @@ describe("image attachment resizing", () => {
       type: "image/jpeg",
     });
 
-    const resized = await resizeImageFile(file, 2048);
+    const resized = await resizeImageFile(file, {
+      maxLongEdge: 2048,
+      maxBytes: 4 * 1024 * 1024,
+      quality: 90,
+    });
 
     expect(resized).not.toBe(file);
-    expect(resized.name).toBe("disconnect-pull-plate-condition-sd.png");
+    expect(resized.name).toBe("disconnect-pull-plate-condition-resized.png");
     expect(resized.type).toBe("image/png");
   });
 });

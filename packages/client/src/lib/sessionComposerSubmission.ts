@@ -1,4 +1,5 @@
 import type {
+  ImagePreparationProfile,
   ThinkingOption,
   TurnEffort,
   UploadedFile,
@@ -326,7 +327,7 @@ export async function uploadComposerAttachmentFile({
   sourceTransport,
   projectId,
   sessionId,
-  maxLongEdgePx,
+  imageProfile,
   stagedBatchId,
   signal,
   onProgress,
@@ -335,13 +336,13 @@ export async function uploadComposerAttachmentFile({
   sourceTransport: Pick<SourceTransport, "upload" | "uploadStagedAttachment">;
   projectId: string;
   sessionId: string;
-  maxLongEdgePx: number;
+  imageProfile: ImagePreparationProfile;
   stagedBatchId?: string | null;
   signal?: AbortSignal;
   onProgress?: (bytesUploaded: number, uploadFile: File) => void;
 }): Promise<ComposerAttachment> {
   const preparedImage = file.type.startsWith("image/")
-    ? await prepareImageUpload(file, maxLongEdgePx)
+    ? await prepareImageUpload(file, imageProfile)
     : { file };
   const uploadFile = preparedImage.file;
   const uploadOptions: UploadOptions = {

@@ -1,0 +1,140 @@
+{
+  "temp": "/var/folders/qw/pzqy9tp52_s5f51778j6j8tr0000gn/T/ya-content-worker-hmzW3E",
+  "cases": [
+    {
+      "name": "webkit-nested-same-site",
+      "thirdPartyCookiesBlocked": false,
+      "parentOrigin": "http://app.yep.localhost:61396",
+      "contentOrigin": "http://wk.usercontent.yep.localhost:61395",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Safari/605.1.15",
+      "host": {
+        "secure": true,
+        "events": [
+          {
+            "viewerId": "3007b0ef-509e-4238-9ffb-4efced423538",
+            "type": "registered",
+            "secure": true
+          },
+          {
+            "type": "read",
+            "path": "report/index.html"
+          },
+          {
+            "type": "read",
+            "path": "report/style.css"
+          },
+          {
+            "type": "read",
+            "path": "assets/chart.png"
+          },
+          {
+            "type": "read",
+            "path": "report/classic.js"
+          },
+          {
+            "type": "read",
+            "path": "report/app.js"
+          },
+          {
+            "type": "read",
+            "path": "report/more.css"
+          },
+          {
+            "type": "read",
+            "path": "assets/dot.svg"
+          },
+          {
+            "type": "read",
+            "path": "report/lib.js"
+          },
+          {
+            "type": "read",
+            "path": "assets/font.woff2"
+          },
+          {
+            "type": "read",
+            "path": "report/dyn.js"
+          },
+          {
+            "type": "read",
+            "path": "report/data.json"
+          }
+        ]
+      },
+      "bootstrapSite": "cross-site",
+      "artifact": {
+        "secure": true,
+        "origin": "http://wk.usercontent.yep.localhost:61395",
+        "controlled": true,
+        "image": 640,
+        "srcset": "http://wk.usercontent.yep.localhost:61395/v/3007b0ef-509e-4238-9ffb-4efced423538/assets/chart.png",
+        "font": true,
+        "cssImport": "0.5px",
+        "cssBackground": "url(\"http://wk.usercontent.yep.localhost:61395/v/3007b0ef-509e-4238-9ffb-4efced423538/assets/dot.svg\")",
+        "classic": true,
+        "modules": {
+          "label": "static",
+          "dynamic": "computed dynamic",
+          "data": {
+            "notes": 3
+          }
+        },
+        "parentDOM": "SecurityError: Blocked a frame with origin \"http://wk.usercontent.yep.localhost:61395\" from accessing a cross-origin frame. Protocols, domains, and ports must match.",
+        "secret": null
+      },
+      "nativeFetch": {
+        "status": 200,
+        "worker": "1",
+        "body": {
+          "notes": 3
+        }
+      },
+      "artifactTyping": {
+        "characters": 32,
+        "maxMs": 16,
+        "dropped": 0
+      },
+      "hostTyping": {
+        "characters": 25,
+        "maxMs": 3,
+        "dropped": 0
+      },
+      "navigationAndReload": true,
+      "denied": {
+        "outside": "TypeError: Load failed",
+        "wrongViewer": "TypeError: Load failed",
+        "api": "TypeError: Load failed"
+      },
+      "networkArtifactRequests": 0,
+      "outcome": "failed",
+      "error": "Error: frame.evaluate: TypeError: Load failed",
+      "body": "Yep · content worker spike\nViewer ready\n18 reads · 25 KiB · local fixture\nClose viewers\nHost composer",
+      "errors": [
+        "/wk.usercontent.yep.localhost:61395/v/3007b0ef-509e-4238-9ffb-4efced423538/not-granted.json due to access control checks.",
+        "/wk.usercontent.yep.localhost:61395/v/wrong/report/data.json due to access control checks.",
+        "/wk.usercontent.yep.localhost:61395/api/version due to access control checks.",
+        "/wk.usercontent.yep.localhost:61395/v/3007b0ef-509e-4238-9ffb-4efced423538/report/slow.bin due to access control checks."
+      ],
+      "contentNetwork": [
+        {
+          "host": "wk.usercontent.yep.localhost:61395",
+          "path": "/__ya/bootstrap.html",
+          "site": "cross-site",
+          "cookie": false
+        },
+        {
+          "host": "wk.usercontent.yep.localhost:61395",
+          "path": "/__ya/bootstrap.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "wk.usercontent.yep.localhost:61395",
+          "path": "/__ya/worker.js",
+          "site": "same-origin",
+          "cookie": false
+        }
+      ]
+    }
+  ]
+}

@@ -126,6 +126,21 @@ remains visible when dual-action delivery is available. Tooltips must state the
 regular queue and patient queue distinction. See
 [`message-control-steer-queue-btw-later-interrupt.md`](message-control-steer-queue-btw-later-interrupt.md).
 
+### Escape interrupt preference
+
+Right-clicking or long-pressing **Stop** opens **Stop options** with
+**Disable Esc to interrupt**. This browser-local opt-out defaults off, so Esc
+continues to interrupt a running turn from the composer unless explicitly
+disabled. The menu then offers **Enable Esc to interrupt** to restore it.
+The preference applies across sessions, survives reloads, and is included in
+browser-settings transfers; it requires no server support.
+
+Disabling Esc interruption does not disable clicking Stop or Esc's existing
+speech, editing, suggestion, and overlay cancellation actions. The Stop tooltip
+and shortcut guide reflect the active binding. Opening or dismissing the Stop
+menu must never interrupt the turn; touch long-press suppresses the resulting
+click. Keyboard users can open the menu with Shift+F10 on Stop.
+
 ## Remaining work
 
 Relative to the landed surface:

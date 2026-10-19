@@ -9,9 +9,8 @@ import {
   SERVER_CAPABILITIES,
   serverHasCapability,
 } from "@yep-anywhere/shared";
-import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { PageHeader } from "../components/PageHeader";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
@@ -29,10 +28,15 @@ import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { useToastContext } from "../contexts/ToastContext";
 import { useProjectAppComposing } from "../hooks/useProjectAppComposing";
-import { useProjectAppUpdates } from "../hooks/useProjectAppUpdates";
+import type { ProjectAppTarget } from "../api/projectApp";
+import type { VoiceInputButtonRef } from "../components/VoiceInputButton";
 import styles from "./NewSessionPage.module.css";
 
-const ignoreProjectAppUpdate = () => {};
+const ProjectAppViewer = lazy(() =>
+  import("../components/ProjectAppViewer").then((module) => ({
+    default: module.ProjectAppViewer,
+  })),
+);
 
 const RECENT_PROJECT_SESSION_LIMIT = 30;
 const DETACHED_PROJECT_PARAM = "detached";
@@ -57,7 +61,6 @@ function parsePreferredPermissionMode(
 }
 
 export function NewSessionPage() {
-  const basePath = useRemoteBasePath();
   const { t } = useI18n();
   const { showToast } = useToastContext();
   const [incomingShareFiles, setIncomingShareFiles] = useState<readonly File[]>(
@@ -78,6 +81,12 @@ export function NewSessionPage() {
     !requestedProjectId && searchParams.get(DETACHED_PROJECT_PARAM) === "1";
   const { openSidebar, isWideScreen } = useNavigationLayout();
   const { projectAppComposingEnabled } = useProjectAppComposing();
+  const [appWorkspace, setAppWorkspace] = useState<{
+    projectId: string;
+    open: boolean;
+  } | null>(null);
+  const [appTarget, setAppTarget] = useState<ProjectAppTarget>();
+  const [voice, setVoice] = useState<VoiceInputButtonRef | null>(null);
 
   useIncomingShareFiles(setIncomingShareFiles, {
     onError: () => showToast(t("incomingShareAttachmentUnavailable"), "error"),
@@ -158,24 +167,29 @@ export function NewSessionPage() {
       ? cachedProjects.find((candidate) => candidate.id === projectId)
       : null);
 
-  // Offered only for a project that declares a usable app; there is no turn
-  // here to open it after, so updates need no action.
-  const projectHasApp = useProjectAppUpdates(
-    projectId,
+  const appEnabled =
     projectAppComposingEnabled &&
-      serverHasCapability(version, SERVER_CAPABILITIES.projectService.name),
-    false,
-    ignoreProjectAppUpdate,
-  );
-  const projectAppButton = projectHasApp ? (
-    <Link
-      className={`btn-secondary ${styles.appButton}`}
-      to={`${basePath}/projects/${projectId}/app?compose=1`}
-      title={t("projectAppWhileComposing")}
-    >
-      {t("projectAppLabel")}
-    </Link>
-  ) : undefined;
+    serverHasCapability(version, SERVER_CAPABILITIES.projectService.name);
+  const appMounted =
+    appEnabled && !!appWorkspace && appWorkspace.projectId === projectId;
+  const appOpen = appMounted && appWorkspace.open;
+  const closeApp = () =>
+    setAppWorkspace((workspace) => workspace && { ...workspace, open: false });
+  const projectAppButton =
+    appEnabled && projectId ? (
+      <button
+        type="button"
+        className={`btn-secondary ${styles.appButton}`}
+        title={t("projectAppWhileComposing")}
+        aria-pressed={appOpen}
+        onClick={() => {
+          if (appWorkspace?.projectId !== projectId) setAppTarget(undefined);
+          setAppWorkspace({ projectId, open: !appOpen });
+        }}
+      >
+        {t("projectAppLabel")}
+      </button>
+    ) : undefined;
 
   // Update browser tab title (must be called unconditionally before any early returns)
   useDocumentTitle(
@@ -253,10 +267,17 @@ export function NewSessionPage() {
         actions={projectAppButton}
       />
 
-      <main className="page-scroll-container">
-        <div className="page-content-inner new-session-page-shell">
+      <main className={`page-scroll-container ${styles.workspace}`}>
+        <div
+          className={`page-content-inner new-session-page-shell ${styles.formColumn}`}
+          hidden={appOpen && !isWideScreen}
+        >
           <NewSessionForm
+            fixedProject={appOpen}
+            projectApp={appOpen ? appTarget : undefined}
+            onVoiceControl={setVoice}
             incomingShareFiles={incomingShareFiles}
+            prefillToken={searchParams.get("prefillToken")}
             projectId={projectId}
             selectedProject={selectedProject}
             projects={projects}
@@ -273,6 +294,22 @@ export function NewSessionPage() {
             preferredExecutor={preferredExecutor || undefined}
           />
         </div>
+        {appMounted && projectId && (
+          <div className={styles.appColumn} hidden={!appOpen}>
+            <Suspense fallback={null}>
+              <ProjectAppViewer
+                key={projectId}
+                projectId={projectId}
+                projectName={confirmedSelectedProject?.name}
+                onTarget={setAppTarget}
+                voice={voice}
+                onBack={closeApp}
+                onSession={closeApp}
+                onVoice={closeApp}
+              />
+            </Suspense>
+          </div>
+        )}
       </main>
     </MainContent>
   );

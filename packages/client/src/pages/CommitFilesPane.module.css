@@ -65,6 +65,20 @@
 }
 
 @media (width >= 1100px) {
+  .selectedPath {
+    width: calc(
+      100% +
+      var(--source-revision-column-width, 300px) +
+      var(--space-3, 12px) -
+      8px
+    );
+    margin-left: calc(
+      4px -
+      var(--source-revision-column-width, 300px) -
+      var(--space-3, 12px)
+    );
+  }
+
   .desktopColumn {
     display: flex;
     overflow: visible;
@@ -86,19 +100,5 @@
     min-height: 0;
     flex: 1 1 auto;
     overflow-y: auto;
-  }
-
-  .selectedPath {
-    width: calc(
-      100% +
-      var(--source-revision-column-width, 300px) +
-      var(--space-3, 12px) -
-      8px
-    );
-    margin-left: calc(
-      4px -
-      var(--source-revision-column-width, 300px) -
-      var(--space-3, 12px)
-    );
   }
 }

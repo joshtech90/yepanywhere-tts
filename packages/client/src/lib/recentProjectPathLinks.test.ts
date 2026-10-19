@@ -4,7 +4,7 @@ import {
   type ProjectPathLinkTarget,
   toUrlProjectId,
 } from "@yep-anywhere/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Message } from "../types";
 import type {
   RenderItem,
@@ -239,6 +239,97 @@ describe("applyRecentProjectPathLinks", () => {
 });
 
 describe("annotateProjectPathLinksHtml", () => {
+  it("uses occurrence-specific directories over root and recent links, with reversible preferences", () => {
+    const html =
+      '<p><a data-ya-resource="project-file" data-ya-path="README.md" href="/root"><code><span data-ya-directory-file="a/README.md">README.md</span></code></a> and <span data-ya-directory-file="b/README.md"><a data-ya-resource="local-file" href="/root">README.md</a></span> plus <span data-ya-directory-file="b/score.sh">score.sh</span>.</p>';
+    const aliases = [{ text: "README.md", filePath: "recent/README.md" }];
+    const template = document.createElement("template");
+    const setAttribute = vi.spyOn(HTMLAnchorElement.prototype, "setAttribute");
+    template.innerHTML = annotateProjectPathLinksHtml(
+      html,
+      aliases,
+      "project",
+    ).html;
+    const writtenHrefs = setAttribute.mock.calls
+      .filter(([name]) => name === "href")
+      .map(([, value]) => value);
+    setAttribute.mockRestore();
+    // Directory matches must bypass the recent-name fallback entirely, rather
+    // than building an alias and overwriting it in another pass.
+    expect(writtenHrefs.some((href) => href.includes("recent%2F"))).toBe(false);
+    expect(
+      [...template.content.querySelectorAll("a")].map((anchor) => [
+        anchor.textContent,
+        anchor.dataset.yaPath,
+      ]),
+    ).toEqual([
+      ["a/README.md", "a/README.md"],
+      ["b/README.md", "b/README.md"],
+      ["b/score.sh", "b/score.sh"],
+    ]);
+    expect(template.content.querySelector("a a")).toBeNull();
+    const disabled = annotateProjectPathLinksHtml(
+      html,
+      undefined,
+      "project",
+      null,
+      { projectPaths: true, mentionedDirectories: false },
+    );
+    expect(disabled.html).toBe(html);
+    template.innerHTML = annotateProjectPathLinksHtml(
+      html,
+      aliases,
+      "project",
+      null,
+      { projectPaths: false, mentionedDirectories: true },
+    ).html;
+    expect(template.content.querySelector("a")).toBeNull();
+    expect(template.content.textContent).toBe(
+      "README.md and README.md plus score.sh.",
+    );
+  });
+
+  it("splits a visible cited line off server-rendered file links", () => {
+    const html = [
+      '<p><a class="fixed-font-file-link" data-ya-resource="project-file" data-ya-path="src/a.ts" data-ya-line="42" href="/projects/p/file?path=src%2Fa.ts&amp;line=42"><code>src/a.ts:42</code></a>',
+      ' <a data-ya-resource="project-file" data-ya-path="b.md" href="/projects/p/file?path=b.md">b.md</a>:7-9,',
+      ' <a data-ya-resource="project-file" data-ya-path="c.md" data-ya-line="3" href="/projects/p/file?path=c.md&amp;line=3">see c</a>',
+      ' <a data-ya-resource="local-file" data-ya-path="/x/notes.md:12" href="/api/local-file?path=%2Fx%2Fnotes.md%3A12">/x/notes.md:12</a></p>',
+    ].join("");
+    const template = document.createElement("template");
+    template.innerHTML = annotateProjectPathLinksHtml(
+      html,
+      undefined,
+      "p",
+    ).html;
+    const links = [...template.content.querySelectorAll("a")].map((link) => [
+      link.innerHTML,
+      link.dataset.yaLine,
+      link.dataset.yaLineEnd,
+      new URL(
+        link.getAttribute("href") ?? "",
+        "http://localhost",
+      ).searchParams.get("line"),
+    ]);
+
+    expect(links).toEqual([
+      ["src/a.ts", undefined, undefined, null],
+      [":42", "42", undefined, "42"],
+      ["b.md", undefined, undefined, null],
+      [":7-9", "7", "9", "7"],
+      ["see c", "3", undefined, "3"],
+      ["/x/notes.md:12", undefined, undefined, null],
+    ]);
+    // Inline code stays one pill holding both links.
+    expect(template.content.querySelectorAll("code")).toHaveLength(1);
+    expect(template.content.querySelector("code a + a")?.textContent).toBe(
+      ":42",
+    );
+    expect(template.content.textContent).toBe(
+      "src/a.ts:42 b.md:7-9, see c /x/notes.md:12",
+    );
+  });
+
   it("links basename text through the current session project", () => {
     const result = annotateProjectPathLinksHtml(
       "<p>Open <code>settings.json</code>.</p>",

@@ -1,12 +1,15 @@
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
 import { DiscoverySqliteService } from "../../src/storage/discovery-sqlite.js";
 import { IssueStore } from "../../src/services/issues/IssueStore.js";
 import { IssueIndexer } from "../../src/services/issues/IssueIndexer.js";
-import { DEFAULT_ISSUE_SETTINGS } from "@yep-anywhere/shared";
+import {
+  DEFAULT_ISSUE_SETTINGS,
+  type IssueSettings,
+} from "@yep-anywhere/shared";
 import { IssueCredentials } from "../../src/services/issues/credentials.js";
 import { createIssueRoutes } from "../../src/routes/issues.js";
 
@@ -56,6 +59,53 @@ describe("issue tracker credentials", () => {
       token: "env-secret",
       source: "GITHUB_TOKEN",
     });
+  });
+
+  it("never probes gh when disabled and pins a named account without credential fallback", async () => {
+    let policy: IssueSettings = {
+      ...DEFAULT_ISSUE_SETTINGS,
+      githubStatusEnabled: true,
+      githubCli: { enabled: false, account: "work-user" },
+    };
+    const cliToken = vi.fn(
+      async (_account?: string): Promise<string | null> => "cli-secret",
+    );
+    const cliIdentity = vi.fn(async () => ({
+      accounts: ["personal", "work-user"],
+      active: "personal",
+    }));
+    const creds = new IssueCredentials({
+      env: { GITHUB_TOKEN: "env-secret" },
+      settings: () => policy,
+      cliToken,
+      cliIdentity,
+    });
+    expect((await creds.resolve("github"))?.source).toBe("GITHUB_TOKEN");
+    await creds.status();
+    expect(cliToken).not.toHaveBeenCalled();
+    expect(cliIdentity).not.toHaveBeenCalled();
+    policy = { ...policy, githubCli: { enabled: true, account: "work-user" } };
+    expect(await creds.resolve("github")).toEqual({
+      token: "cli-secret",
+      source: "gh auth token (work-user)",
+    });
+    expect(cliToken).toHaveBeenLastCalledWith("work-user");
+    expect((await creds.status())[0]).toMatchObject({
+      active: "gh auth token (work-user)",
+      account: "work-user",
+    });
+    policy = {
+      ...policy,
+      githubCli: { enabled: true, account: "missing-user" },
+    };
+    cliToken.mockResolvedValueOnce(null);
+    expect(await creds.resolve("github")).toBeNull();
+    policy = { ...policy, githubStatusEnabled: false };
+    cliToken.mockClear();
+    cliIdentity.mockClear();
+    await creds.status();
+    expect(cliToken).not.toHaveBeenCalled();
+    expect(cliIdentity).not.toHaveBeenCalled();
   });
 
   it("keeps stored keys out of settings and out of other readers", async () => {
@@ -179,6 +229,31 @@ describe("issue tracker credentials", () => {
           })
         ).status,
       ).toBe(200);
+      expect(
+        (
+          await put({
+            ...base,
+            githubStatusEnabled: false,
+            githubCli: { enabled: false, account: "work-user" },
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await put({
+            ...base,
+            githubCli: { enabled: true, account: "bad user" },
+          })
+        ).status,
+      ).toBe(400);
+      // An old client saves its known fields without dropping the new policy.
+      expect((await put(base)).status).toBe(200);
+      const reloaded = new ServerSettingsService({ dataDir: dir });
+      await reloaded.initialize();
+      expect(reloaded.getSetting("issueAssociations")).toMatchObject({
+        githubStatusEnabled: false,
+        githubCli: { enabled: false, account: "work-user" },
+      });
       const stored = settings.getSetting("issueAssociations");
       expect(stored?.confirmation?.enabled).toBe(true);
       expect(stored?.jiraKeyBlocklist).toEqual(["ISO", "UTF"]);

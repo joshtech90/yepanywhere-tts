@@ -541,7 +541,7 @@
   --shiki-background: transparent;
   --shiki-token-constant: #79b8ff;
   --shiki-token-string: #9ecbff;
-  --shiki-token-comment: #6a737d;
+  --shiki-token-comment: #a0a8b3;
   --shiki-token-keyword: #f97583;
   --shiki-token-parameter: #ffab70;
   --shiki-token-function: #b392f0;
@@ -616,7 +616,7 @@
   --shiki-background: transparent;
   --shiki-token-constant: #79b8ff;
   --shiki-token-string: #9ecbff;
-  --shiki-token-comment: #6a737d;
+  --shiki-token-comment: #a0a8b3;
   --shiki-token-keyword: #f97583;
   --shiki-token-parameter: #ffab70;
   --shiki-token-function: #b392f0;
@@ -696,7 +696,7 @@
   --shiki-background: transparent;
   --shiki-token-constant: #005cc5;
   --shiki-token-string: #032f62;
-  --shiki-token-comment: #6a737d;
+  --shiki-token-comment: #59616b;
   --shiki-token-keyword: #d73a49;
   --shiki-token-parameter: #e36209;
   --shiki-token-function: #6f42c1;
@@ -766,7 +766,7 @@
   --shiki-background: transparent;
   --shiki-token-constant: #79b8ff;
   --shiki-token-string: #9ecbff;
-  --shiki-token-comment: #6a737d;
+  --shiki-token-comment: #a0a8b3;
   --shiki-token-keyword: #f97583;
   --shiki-token-parameter: #ffab70;
   --shiki-token-function: #b392f0;
@@ -839,7 +839,7 @@
     --shiki-background: transparent;
     --shiki-token-constant: #005cc5;
     --shiki-token-string: #032f62;
-    --shiki-token-comment: #6a737d;
+    --shiki-token-comment: #59616b;
     --shiki-token-keyword: #d73a49;
     --shiki-token-parameter: #e36209;
     --shiki-token-function: #6f42c1;
@@ -1907,7 +1907,7 @@ a.sidebar-nav-item {
   border: none;
   padding: 0;
   cursor: pointer;
-  font-size: calc(0.95em - 1pt);
+  font-size: var(--font-size-base);
   font-family: var(--font-ui);
   text-align: left;
 }
@@ -2667,10 +2667,6 @@ a.sidebar-nav-item {
 
   .session-header-left {
     gap: 0.375rem;
-  }
-
-  .session-title {
-    font-size: var(--font-size-base);
   }
 
   .session-messages {
@@ -6896,27 +6892,6 @@ a.sidebar-nav-item {
   transform: rotate(90deg);
 }
 
-.system-message-details {
-  display: grid;
-  gap: 8px;
-  margin-top: 10px;
-  padding-left: 30px;
-}
-
-.system-message-detail {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--bg-primary, #1a1a1a) 55%, transparent);
-  color: var(--text-muted);
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 0.82em;
-  font-style: normal;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
 .system-message-recap {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr);
@@ -10948,19 +10923,6 @@ a.sidebar-nav-item {
   color: var(--text-muted);
 }
 
-/* Provider Badge Component */
-.provider-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px 1px;
-  font-size: var(--font-size-xs);
-  font-weight: 500;
-  border: 1px solid;
-  border-radius: var(--radius-sm);
-  background: transparent;
-}
-
 /* Clickable provider badge button (in session header) */
 .provider-badge-button {
   display: inline-flex;
@@ -10987,75 +10949,6 @@ a.sidebar-nav-item {
 .composer-model-chip-static {
   display: inline-flex;
   align-items: center;
-}
-
-.provider-badge-dot-inline {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.provider-badge-dot-inline.thinking {
-  animation: thinking-pulse 1.5s ease-in-out infinite;
-}
-
-.provider-badge-effort {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 4px;
-  padding-left: 6px;
-  border-left: 1px solid color-mix(in srgb, currentColor 18%, transparent);
-}
-
-.provider-badge-effort-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  flex-shrink: 0;
-}
-
-.provider-badge-effort-dot.tone-off {
-  background: var(--text-muted);
-}
-
-.provider-badge-effort-dot.tone-auto {
-  background: var(--link-color);
-}
-
-.provider-badge-effort-dot.tone-low {
-  background: #2f9e44;
-}
-
-.provider-badge-effort-dot.tone-medium {
-  background: #d97706;
-}
-
-.provider-badge-effort-dot.tone-high {
-  background: #ea580c;
-}
-
-.provider-badge-effort-dot.tone-xhigh {
-  background: #dc2626;
-}
-
-.provider-badge-effort-dot.tone-max {
-  background: #991b1b;
-}
-
-.provider-badge-effort-label {
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.2;
-  opacity: 0.82;
-}
-
-/* On mobile, hide the dot - the label already shows a compact model glyph */
-@media (width <= 600px) {
-  .provider-badge-dot-inline {
-    display: none;
-  }
 }
 
 .provider-badge-dot {
@@ -14970,10 +14863,6 @@ body:has(.session-page)
   gap: var(--space-2);
   flex-wrap: wrap;
   justify-content: flex-end;
-}
-
-.session-header-thinking {
-  flex-shrink: 0;
 }
 
 .session-share-small-button,

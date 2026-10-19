@@ -117,14 +117,6 @@ jobs:
           echo "ORG_GRADLE_PROJECT_yaVersionCode=$((10000 + GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))" >> "$GITHUB_ENV"
           echo "ORG_GRADLE_PROJECT_yaVersionName=0.1.2-ci.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
 
-      - name: Restore Firebase build configuration
-        if: github.repository == 'kzahel/yepanywhere' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        env:
-          FIREBASE_CONFIG: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
-        run: |
-          test -n "$FIREBASE_CONFIG"
-          printf '%s' "$FIREBASE_CONFIG" > packages/android/app/google-services.json
-
       - name: Prepare bundled client assets
         run: pnpm --filter @yep-anywhere/android prepare-frontend
 
@@ -209,14 +201,6 @@ jobs:
           echo "ORG_GRADLE_PROJECT_yaVersionCode=$((10000 + GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))" >> "$GITHUB_ENV"
           echo "ORG_GRADLE_PROJECT_yaVersionName=0.1.2-ci.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
 
-      - name: Restore Firebase build configuration
-        if: github.repository == 'kzahel/yepanywhere' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        env:
-          FIREBASE_CONFIG: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
-        run: |
-          test -n "$FIREBASE_CONFIG"
-          printf '%s' "$FIREBASE_CONFIG" > packages/android/app/google-services.json
-
       - name: Prepare bundled client assets
         run: pnpm --filter @yep-anywhere/android prepare-frontend
 
@@ -228,8 +212,7 @@ jobs:
         working-directory: packages/android
         run: >-
           ./gradlew assembleBundledDebug assembleBundledDebugAndroidTest
-          -PyaNativeProbeCleartext=true -PyaNativeProbeMinify=true
-          --warning-mode all --no-daemon
+          -PyaNativeProbeMinify=true --warning-mode all --no-daemon
 
       - name: Enable KVM
         run: |
@@ -261,9 +244,8 @@ jobs:
             -camera-back none
           script: >-
             cd packages/android && ./gradlew connectedBundledDebugAndroidTest
-            -PyaNativeProbeCleartext=true -PyaNativeProbeMinify=true
-            --warning-mode all --no-daemon && cd ../.. && pnpm --filter
-            @yep-anywhere/android test:live
+            -PyaNativeProbeMinify=true --warning-mode all --no-daemon
+            && cd ../.. && pnpm --filter @yep-anywhere/android test:live
 
       - name: Upload Android instrumentation reports
         if: always()

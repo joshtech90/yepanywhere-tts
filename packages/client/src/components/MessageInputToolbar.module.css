@@ -383,6 +383,12 @@
   overflow-wrap: anywhere;
 }
 
+.renderOptionsPopover {
+  flex-direction: column;
+  inline-size: min(360px, calc(100dvw - 16px));
+  padding: 10px;
+}
+
 .hidePopoverAction {
   min-height: 30px;
   flex: 0 0 auto;

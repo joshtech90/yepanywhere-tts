@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { type FileContentResponse, toUrlProjectId } from "@yep-anywhere/shared";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,11 +105,10 @@ describe("PublicShareFilePage", () => {
     expect(
       screen.queryByRole("link", { name: "Back to public share" }),
     ).toBeNull();
-    expect(screen.queryByAltText("diagram.png")).toBeNull();
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Expand image" }),
-    );
-
+    // Share viewers start with inline media expanded.
+    expect(
+      await screen.findByRole("button", { name: "Collapse image" }),
+    ).toBeTruthy();
     const inlineImage = await screen.findByAltText("diagram.png");
     expect(inlineImage.getAttribute("src")).toBe("blob:embedded-media");
 

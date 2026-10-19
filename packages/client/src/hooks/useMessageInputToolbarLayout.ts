@@ -30,6 +30,7 @@ export const COMPOSER_OVERFLOW_ORDER: readonly SessionToolbarVisibilityKey[] = [
   "contextUsage",
   "btw",
   "steerNow",
+  "topicShift",
   "projectQueueNewSessionShortcut",
   "projectQueue",
   "browserDebug",
@@ -94,6 +95,7 @@ export interface ComposerToolbarOverflowLayoutSignatureInput {
   contextUsage: ComposerToolbarOverflowPriorityInput;
   btw: ComposerToolbarOverflowPriorityInput;
   steerNow: ComposerToolbarOverflowPriorityInput;
+  topicShift: ComposerToolbarOverflowPriorityInput;
   projectQueue: ComposerToolbarOverflowPriorityInput;
   projectQueueNewSessionShortcut: ComposerToolbarOverflowPriorityInput;
   microphone: "live" | "preview" | "off";
@@ -124,6 +126,7 @@ export function getComposerToolbarOverflowLayoutSignature(
     `contextUsage:${input.contextUsage}`,
     `btw:${input.btw}`,
     `steerNow:${input.steerNow}`,
+    `topicShift:${input.topicShift}`,
     `projectQueue:${input.projectQueue}`,
     `projectQueueNewSessionShortcut:${input.projectQueueNewSessionShortcut}`,
     `microphone:${input.microphone}`,

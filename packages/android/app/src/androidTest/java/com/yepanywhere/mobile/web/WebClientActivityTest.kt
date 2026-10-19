@@ -38,6 +38,25 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class WebClientActivityTest {
     @Test
+    fun webColorSchemeMatchesSystemAfterRecreation() {
+        launchClient().use { scenario ->
+            repeat(2) { generation ->
+                var dark = false
+                scenario.onActivity { activity ->
+                    dark = activity.resources.configuration.uiMode and
+                        Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+                }
+                awaitJavaScript(scenario, "document.readyState", "\"complete\"")
+                // Exercise the actual Android theme -> WebView -> CSS boundary.
+                // Compose's system palette alone cannot establish this.
+                awaitJavaScript(scenario, "matchMedia('(prefers-color-scheme: dark)').matches", dark.toString())
+                awaitJavaScript(scenario, "matchMedia('(prefers-color-scheme: light)').matches", (!dark).toString())
+                if (generation == 0) scenario.recreate()
+            }
+        }
+    }
+
+    @Test
     fun darkNativeSystemBarsKeepLightIconsAfterRecreation() {
         ActivityScenario.launch(WebClientActivity::class.java).use { scenario ->
             repeat(2) { generation ->
@@ -102,7 +121,7 @@ class WebClientActivityTest {
                 """
                 JSON.parse(window.__yaNativeTestResponse).result.features.join(",")
                 """.trimIndent(),
-                "\"notifications.status,notifications.requestPermission\"",
+                "\"notifications.status,notifications.requestPermission,notifications.manage\"",
             )
         }
     }

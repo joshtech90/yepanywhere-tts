@@ -60,6 +60,49 @@ measured demand exceeds available width, and on any >1px widening resets to
 is history-free and identical from either direction, so restore is
 reverse-of-removal by construction — form 1 above.
 
+## Session Header Space
+
+Session and shared page headers reserve a 44 CSS pixel single-line row. Their
+sidebar/back, model and overflow controls use 36 pixel mouse targets and 44
+pixel coarse-pointer targets. Vertical row padding fits around those targets
+within the reserved height, rather than increasing the row when actions load
+or pointer type changes. Model pills and icons keep their compact visual size;
+intentional multi-line content, including inline rename, may expand the row.
+Session titles use the base UI font size at every width. Crossing a responsive
+breakpoint changes available text space and controls, never the title's size.
+
+The session header reserves space for the session title and the `…` menu.
+The project breadcrumb stays visible on the same line at every width. It uses
+the assigned short code when enabled and supported, otherwise the project
+name. The label is ellipsized to fit its width budget; the session title yields
+space first. Its accessible label and tooltip retain the full project name,
+and its link still opens the project's sessions. Missing code metadata or an
+older server never hides the project identity.
+The model pill carries the activity indicator at every width; the header does
+not repeat it as a separate thinking icon.
+Its responsive tiers use the header column's width, including space taken by
+the sidebar or a docked pane, and restore controls in the reverse order:
+
+- At 720 CSS pixels and above, Share and Issues retain their header controls.
+- Below 720 pixels, Share and Issues move into the session menu. Their menu
+  entries retain viewer/link and association counts; Issues opens the session's
+  filtered issue list. Hidden controls do not keep polling behind the menu.
+- Below 600 pixels, the model pill keeps model identity with abbreviated effort
+  (`L`, `M`, `H`, `XH`), retains full accessible labels and its configuration
+  action, and carries the activity dot.
+  The project breadcrumb retains up to 3.5rem (5rem in the compact tier,
+  8.5rem in the full tier), independently of session-title length.
+
+Narrow or crowded headers open manual Rename in a compact dialog with a labeled
+input and explicit Save/Cancel actions. Leaving the field or dismissing the
+keyboard never saves the dialog; closing or Android Back cancels. Roomy headers
+retain inline rename. The presentation is chosen on opening and stays stable
+through keyboard resizes and rotation; an inline field wraps rather than
+collapsing when its header narrows. Navigating away dismisses Rename without
+saving. Both editors focus/select in their mounting commit, keep their drafts
+independent of transcript updates, do not
+submit an active IME composition, and retain the field and draft on save failure.
+
 ## Transient Feedback Lifetime
 
 In-page toasts remain click-to-dismiss alerts. Success and informational

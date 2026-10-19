@@ -1,0 +1,43 @@
+Name
+Yep Anywhere
+
+Summary
+Supervise coding agents on your servers and find related sessions beside GitHub issues, pull requests and Jira tickets.
+
+Description
+Keep your coding-agent sessions close to the work you are reviewing.
+
+Yep Anywhere connects Chrome to your own Yep Anywhere servers. Open the complete client in a browser tab, or use the side panel to find sessions related to the GitHub issue, pull request or Jira ticket you are viewing.
+
+• Browse projects and agent conversations from your saved hosts.
+• Follow session output and return to a conversation from the side panel.
+• See sessions that need your attention, running sessions and recent work.
+• Click the toolbar button to look up the current issue or pull request.
+• Enable automatic lookup and a session-count badge for sites you choose.
+• Limit automatic lookup to selected repositories or Jira projects.
+
+Your server runs the coding agents. This extension is a client; it does not supply an AI subscription or run a coding agent inside Chrome. You need a Yep Anywhere server with Remote Access enabled and its login details. Multiple saved hosts are supported.
+
+Authenticated relay traffic is end-to-end encrypted. Saved login credentials stay in the extension's local storage and are not synced through Chrome. Automatic lookup sends the selected issue or ticket URL to your active hosts. Site access is optional and requested per site; no content scripts modify the pages you visit.
+
+This first release is experimental. Push notifications, streamed downloads, HTML artifact previews and direct LAN/Tailscale host connections are not supported in the extension. Use the normal web or native client when you need those features.
+
+Yep Anywhere is open source: https://github.com/kzahel/yepanywhere
+
+Category
+Developer Tools
+
+Language
+English (United States)
+
+Visibility
+Public
+
+Official URL
+https://yepanywhere.com/
+
+Support URL
+https://github.com/kzahel/yepanywhere/issues
+
+Privacy policy URL
+https://github.com/kzahel/yepanywhere/blob/main/docs/distribution/chrome-extension/privacy.md

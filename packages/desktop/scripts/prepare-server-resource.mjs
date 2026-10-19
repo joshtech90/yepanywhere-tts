@@ -139,6 +139,9 @@ function collectDeployedPackages(storeDir) {
 
 function prunePhysicalModules(directory, deployedPackages) {
   if (!existsSync(directory)) return;
+  // Every hoisted node_modules level, including nested ones such as
+  // sharp/node_modules, gets a .bin of CLI links the runtime never uses.
+  removeTree(join(directory, ".bin"));
   for (const packageRoot of packageRoots(directory)) {
     const identity = packageIdentity(packageRoot);
     if (
@@ -256,7 +259,6 @@ try {
   removeTree(moduleWorkspace);
 }
 removeTree(join(modulesDir, ".pnpm"));
-removeTree(join(modulesDir, ".bin"));
 rmSync(join(modulesDir, ".modules.yaml"), { force: true });
 prunePhysicalModules(modulesDir, deployedPackages);
 

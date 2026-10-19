@@ -14,6 +14,8 @@ import {
   getCodeFenceRenderer,
 } from "../lib/codeFence/renderers";
 import { writeClipboardText } from "../lib/clipboard";
+import { createCodeGridNormalizer } from "../lib/codeFence/gridFont";
+import { OUTPUT_APPEARANCE_CHANGE_EVENT } from "./useOutputAppearance";
 import { getResolvedTheme } from "./useTheme";
 import styles from "./useCodeFenceRenderers.module.css";
 
@@ -213,10 +215,18 @@ async function renderBlock(
   mount(pre, markup, key, renderer);
 }
 
-function enhance(root: ParentNode): void {
+function enhance(
+  root: ParentNode,
+  normalizeGrid: (code: HTMLElement) => Promise<void>,
+): void {
   for (const code of root.querySelectorAll<HTMLElement>(ANY_CODE_SELECTOR)) {
     const pre = code.parentElement;
-    if (pre) addCopyButton(pre);
+    if (pre) {
+      addCopyButton(pre);
+      void normalizeGrid(code).catch((error: unknown) =>
+        window.reportError(error),
+      );
+    }
   }
   for (const code of root.querySelectorAll<HTMLElement>(CODE_SELECTOR)) {
     const pre = code.parentElement;
@@ -252,10 +262,11 @@ export function useCodeFenceRenderers(
 
     let scheduled = false;
     let labelTimer: number | undefined;
+    const grid = createCodeGridNormalizer(root.ownerDocument);
 
     const refresh = () => {
       scheduled = false;
-      enhance(root);
+      enhance(root, grid.normalize);
     };
 
     // Streaming augments mutate the container per token, so coalesce to one
@@ -329,9 +340,18 @@ export function useCodeFenceRenderers(
     };
 
     refresh();
+    const appearanceChanged = () => {
+      grid.invalidate();
+      schedule();
+    };
+    window.addEventListener(OUTPUT_APPEARANCE_CHANGE_EVENT, appearanceChanged);
     root.addEventListener("click", onClick);
     const observer = new MutationObserver(schedule);
-    observer.observe(root, { childList: true, subtree: true });
+    observer.observe(root, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
 
     // A rendered diagram carries its own colors, so it has to be redrawn when
     // YA's light/dark appearance changes. The cache key includes appearance,
@@ -348,6 +368,11 @@ export function useCodeFenceRenderers(
 
     return () => {
       observer.disconnect();
+      grid.dispose();
+      window.removeEventListener(
+        OUTPUT_APPEARANCE_CHANGE_EVENT,
+        appearanceChanged,
+      );
       themeObserver.disconnect();
       systemDark?.removeEventListener?.("change", schedule);
       root.removeEventListener("click", onClick);

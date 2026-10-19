@@ -21,19 +21,32 @@ function appStamp(info: AppInfo): string | null {
  * § Project App and Settings), so the user sees what they asked for without
  * finding the App button. Returns whether the project currently declares an
  * app. A server without `updatedAt` still reports a first declaration.
+ *
+ * While `open`, a reading without a declaration does not withdraw it: an
+ * `app.json` mid-edit or a restarting service can read that way, and dropping
+ * it would unmount the open app and take its keyboard focus. A removal takes
+ * effect once the app is closed.
  */
 export function useProjectAppUpdates(
   projectId: string | undefined,
   enabled: boolean,
   turnActive: boolean,
+  open: boolean,
   onUpdated: () => void,
 ): boolean {
   const [declared, setDeclared] = useState<{ projectId: string } | null>(null);
+  // The latest reading's verdict, applied when an open app is closed.
+  const [lastReading, setLastReading] = useState<{
+    projectId: string;
+    declares: boolean;
+  } | null>(null);
   const baseline = useRef<{ projectId: string; stamp: string | null } | null>(
     null,
   );
   const callback = useRef(onUpdated);
   callback.current = onUpdated;
+  const openRef = useRef(open);
+  openRef.current = open;
 
   // Read at entry and whenever a turn starts or ends: the start reading is
   // the baseline an end reading is compared with.
@@ -45,8 +58,14 @@ export function useProjectAppUpdates(
       .then((info) => {
         if (!active) return;
         const stamp = appStamp(info);
-        setDeclared(
-          info.declaration || info.activeDeclaration ? { projectId } : null,
+        const declares = !!(info.declaration || info.activeDeclaration);
+        setLastReading({ projectId, declares });
+        setDeclared((current) =>
+          declares
+            ? { projectId }
+            : openRef.current && current?.projectId === projectId
+              ? current
+              : null,
         );
         const before =
           baseline.current?.projectId === projectId ? baseline.current : null;
@@ -60,6 +79,12 @@ export function useProjectAppUpdates(
       active = false;
     };
   }, [projectId, enabled, turnActive]);
+
+  // Closing applies a withdrawal that arrived while the app was open.
+  useEffect(() => {
+    if (open || lastReading?.declares !== false) return;
+    if (lastReading.projectId === projectId) setDeclared(null);
+  }, [open, lastReading, projectId]);
 
   return enabled && declared?.projectId === projectId;
 }

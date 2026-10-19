@@ -17,7 +17,7 @@ import { useVhostAccess } from "../../hooks/useVhostAccess";
 import { sessionVhostApp } from "../../lib/sessionVhostApps";
 import { writeClipboardText } from "../../lib/clipboard";
 import { ProjectAppInventorySection } from "./ProjectAppInventorySection";
-import { SettingsCollection } from "./SettingsCollection";
+import { expandableRowProps, SettingsCollection } from "./SettingsCollection";
 import { ElidedPath } from "../../components/ui/ElidedPath";
 import { SettingsSortHeader, useSettingsTableSort } from "./SettingsTableSort";
 import { ResourceContextMenu } from "../../components/FileResourceActions";
@@ -905,6 +905,11 @@ function ArtifactSettingsForm({
                       label={t("artifactVhostServes")}
                       {...tableSort}
                     />
+                    <th scope="col" className={styles.linksHeader}>
+                      <span className={styles.linkIconLabel}>
+                        {t("settingsCollectionLinks")}
+                      </span>
+                    </th>
                     {access.supported && (
                       <SettingsSortHeader
                         column="access"
@@ -921,70 +926,38 @@ function ArtifactSettingsForm({
                       row.kind === "files" && savedRow(status, row)
                         ? siteViews[row.name]?.linkedFiles
                         : undefined;
+                    const toggle = () =>
+                      setSelectedId(selectedId === row.id ? null : row.id);
+                    const logHost = `${row.name}.${status.vhostPublicRoot}`;
                     return (
                       <tr
                         key={row.id}
                         className={
                           oauthBlocked(row) ? styles.oauthBlocked : undefined
                         }
+                        {...expandableRowProps(toggle)}
                       >
                         <td>
-                          <div className={styles.domainCell}>
-                            <button
-                              type="button"
-                              aria-expanded={selectedId === row.id}
-                              onClick={() =>
-                                setSelectedId(
-                                  selectedId === row.id ? null : row.id,
-                                )
-                              }
+                          <button
+                            type="button"
+                            aria-expanded={selectedId === row.id}
+                            onClick={toggle}
+                          >
+                            <span aria-hidden="true">
+                              {selectedId === row.id ? "▾" : "▸"}{" "}
+                            </span>
+                            <span
+                              className={styles.domainName}
+                              title={row.name || undefined}
                             >
-                              <span aria-hidden="true">
-                                {selectedId === row.id ? "▾" : "▸"}{" "}
-                              </span>
-                              <span
-                                className={styles.domainName}
-                                title={row.name || undefined}
-                              >
-                                {row.name || t("artifactVhostAdd")}
-                              </span>
-                              {row.name && (
-                                <small className={styles.domainSuffix}>
-                                  .{vhostPublicRoot || "localhost"}
-                                </small>
-                              )}
-                            </button>
-                            {url && (
-                              <LinkIcon
-                                kind="service"
-                                url={url}
-                                label={t("artifactVhostOpenLink", {
-                                  name: row.name,
-                                })}
-                                onCopied={reportCopy}
-                              />
+                              {row.name || t("artifactVhostAdd")}
+                            </span>
+                            {row.name && (
+                              <small className={styles.domainSuffix}>
+                                .{vhostPublicRoot || "localhost"}
+                              </small>
                             )}
-                            {oauth.status?.accessedHosts.includes(
-                              `${row.name}.${status.vhostPublicRoot}`,
-                            ) && (
-                              <button
-                                type="button"
-                                title={t("vhostOauthHostLogs", {
-                                  name: row.name,
-                                })}
-                                aria-label={t("vhostOauthHostLogs", {
-                                  name: row.name,
-                                })}
-                                onClick={() =>
-                                  setLogHost(
-                                    `${row.name}.${status.vhostPublicRoot}`,
-                                  )
-                                }
-                              >
-                                ◷
-                              </button>
-                            )}
-                          </div>
+                          </button>
                         </td>
                         <td>
                           {row.kind === "files" && row.path ? (
@@ -1009,6 +982,35 @@ function ArtifactSettingsForm({
                               )}
                             </small>
                           )}
+                        </td>
+                        <td className={styles.links}>
+                          <div className={styles.linksCell}>
+                            {url && (
+                              <LinkIcon
+                                kind="service"
+                                url={url}
+                                label={t("artifactVhostOpenLink", {
+                                  name: row.name,
+                                })}
+                                onCopied={reportCopy}
+                              />
+                            )}
+                            {oauth.status?.accessedHosts.includes(logHost) && (
+                              <button
+                                type="button"
+                                className={styles.linkIcon}
+                                title={t("vhostOauthHostLogs", {
+                                  name: row.name,
+                                })}
+                                aria-label={t("vhostOauthHostLogs", {
+                                  name: row.name,
+                                })}
+                                onClick={() => setLogHost(logHost)}
+                              >
+                                ◷
+                              </button>
+                            )}
+                          </div>
                         </td>
                         {access.supported && (
                           <td>

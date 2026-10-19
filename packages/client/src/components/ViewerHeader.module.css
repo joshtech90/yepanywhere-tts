@@ -1,9 +1,9 @@
-/* The one header layout shared by every viewer that shows a title — with or
+/* The header layout shared by viewers that show a title — with or
    without a revision/metrics caption line under it — beside a row of icon
-   buttons: the session right pane, the file viewer in all three of its homes,
-   the artifact link viewer, the session detail panel, and the diff pane
+   buttons: the session right pane, the artifact link viewer, the session detail panel, and the diff pane
    toolbar. They reflow identically because they use these classes and add only
-   their own padding, background and typography.
+   their own padding, background and typography. FileViewer owns its measured
+   window-control placement so moving controls never changes its filename row.
 
    The rule is plain greedy wrapping and nothing else. The identity block keeps
    a readable column, the actions take whatever is left, and a button that does

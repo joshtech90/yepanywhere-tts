@@ -48,7 +48,7 @@ afterEach(() => {
 describe("issue reference extraction", () => {
   it("discovers keys and URLs without a registry, preserving repeat occurrences", () => {
     const refs = extractIssueReferences(
-      "ABC-123 then ABC-123 and [Fix the crash](https://github.com/Owner/Repo/pull/42/files?token=secret#diff)",
+      "ABC-123 then ABC-123 and [Fix the crash](https://github.com/Owner/Repo/pull/42?token=secret)",
     );
     expect(refs.map((r) => r.key)).toEqual([
       "owner/repo#42",
@@ -60,6 +60,44 @@ describe("issue reference extraction", () => {
       url: "https://github.com/owner/repo/pull/42",
       kind: "pr",
     });
+  });
+  it("takes no title from a label that only names the item or a part of it", () => {
+    const pr = "https://github.com/Owner/Repo/pull/42";
+    const titles = (label: string, url = pr) =>
+      extractIssueReferences(`[${label}](${url})`)[0]?.title;
+    for (const label of ["#42", "Repo#42", "`owner/repo#42`", "PR #42"])
+      expect(titles(label)).toBeNull();
+    expect(titles("gate.sh:82", `${pr}/files#diff-1R82`)).toBeNull();
+    expect(titles("this comment", `${pr}#issuecomment-7`)).toBeNull();
+    expect(titles("#4200")).toBe("#4200");
+    expect(
+      extractIssueReferences(
+        "[**ABC-1 — Login fails**](https://t.test/browse/ABC-1)",
+      )[0]?.title,
+    ).toBe("**ABC-1 — Login fails**");
+  });
+  it("ignores references inside fenced code blocks", () => {
+    const keys = (text: string) =>
+      extractIssueReferences(text).map((ref) => ref.key);
+    expect(
+      keys(
+        [
+          "Shipped https://github.com/a/b/pull/1 and ABC-1.",
+          "```json",
+          '{"content":"See https://github.com/o/r/pull/12 and XYZ-9"}',
+          "```",
+          "~~~",
+          "```",
+          "https://github.com/o/r/pull/13",
+          "~~~",
+          "Then a/b#2.",
+          "```",
+          "unclosed https://github.com/o/r/pull/14",
+        ].join("\n"),
+      ),
+    ).toEqual(["a/b#1", "ABC-1", "a/b#2"]);
+    // A fenced repository URL does not supply context for a bare number.
+    expect(keys("```\nhttps://github.com/o/r\n```\nsee PR #5")).toEqual([]);
   });
   it("ignores prose that is shaped like a bare Jira key", () => {
     const text =
@@ -280,6 +318,22 @@ describe("durable issue evidence", () => {
     store.delete(item.id);
     expect(store.list()).toHaveLength(1);
   });
+  it("reads a title saved under earlier label rules as absent, unless a user chose it", () => {
+    const { store, service } = fixture();
+    store.capture(
+      { sessionId: "s", projectId: "p" },
+      { id: "m", text: "https://github.com/a/b/pull/7" },
+    );
+    // Version 1 kept `[#7](…)` labels, and the first observed title is kept.
+    service
+      .getDatabase()
+      .prepare("UPDATE external_issues SET title='#7'")
+      .run();
+    const item = store.list()[0]!;
+    expect(item.title).toBeNull();
+    store.title(item.id, "#7");
+    expect(store.list()[0]?.title).toBe("#7");
+  });
   it("unions remapped sessions and preserves the latest decision", () => {
     const { store } = fixture();
     for (const sessionId of ["temp", "saved"])
@@ -297,7 +351,7 @@ describe("durable issue evidence", () => {
 });
 
 describe("append-only discovery migrations", () => {
-  it.each([0, 1, 2, 3, 4, 5, 6, 7])(
+  it.each(Array.from({ length: DISCOVERY_MIGRATIONS.length }, (_, i) => i))(
     "upgrades prefix %i without losing unrelated data",
     (prefix) => {
       const db = loadSqliteDriver()!.open(":memory:");

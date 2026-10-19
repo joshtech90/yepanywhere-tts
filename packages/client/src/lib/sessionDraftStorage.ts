@@ -164,6 +164,9 @@ function persistSessionDraftEnvelope(
     const key = createSessionDraftStorageKey(reference);
     const previousValue = draftStorage.getItem(key);
     const nextValue = update(previousValue);
+    // Rewriting an unchanged value would still reach draft sync as an edit,
+    // which begins a submission when it carries a sent draft's marker.
+    if (nextValue === previousValue) return;
     if (nextValue) {
       draftStorage.setItem(key, nextValue);
     } else {

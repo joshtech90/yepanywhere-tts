@@ -26,6 +26,13 @@ overrides:
 onlyBuiltDependencies:
   - bcrypt
 
+# Vetted no-op build scripts, blocked on purpose. Listing them records that
+# decision, so installs stop warning and `pnpm approve-builds` stays empty.
+ignoredBuiltDependencies:
+  - "@firebase/util"
+  - esbuild
+  - protobufjs
+
 auditConfig:
   ignoreGhsas:
     - GHSA-qwww-vcr4-c8h2

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "327008138211",
+    "project_id": "yep-dev-3fd5a",
+    "storage_bucket": "yep-dev-3fd5a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:327008138211:android:ef3f67f6b7cf964791e6d6",
+        "android_client_info": {
+          "package_name": "com.yepanywhere.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDeLTi1OmdpAEMlzJENXghqtF2h2qljom8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

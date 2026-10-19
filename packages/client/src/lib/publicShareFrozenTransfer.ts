@@ -1,5 +1,6 @@
 import {
   PUBLIC_SHARE_LEGACY_RELAY_FRAME_MAX_BYTES,
+  PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY,
   PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
   PUBLIC_SHARE_SESSION_CHUNK_MAX_BYTES,
   PUBLIC_SHARE_SESSION_MAX_CHUNK_COUNT,
@@ -218,10 +219,16 @@ async function fetchRawPublicShareWithConnectionFallback(
   }
 }
 
-async function fetchFrozenSessionChunks(
+/**
+ * Pull one compressed session in bounded chunks. Frozen shares serve an
+ * immutable revision; live shares serve a transient snapshot of the current
+ * session, after which the viewer polls incremental live updates as before.
+ */
+async function fetchSessionChunks(
   connection: PublicShareRelayConnection,
   options: { secret: string; signal?: AbortSignal; viewerId: string },
   metadata: PublicSessionSharePublicMetadata,
+  mode: "frozen" | "live",
 ): Promise<PublicSessionShareResponse> {
   const { chunks: chunksMetadata, expectedChunkCount } =
     validateSessionChunksMetadata(metadata);
@@ -393,13 +400,18 @@ async function fetchFrozenSessionChunks(
     throw new Error("Share session data is invalid");
   }
   const session: AppSession = parsedSession;
+  const live = mode === "live";
   const response: PublicSessionShareResponse = {
     share: {
-      mode: "frozen",
+      mode,
       title: metadata.title,
       createdAt: metadata.createdAt,
-      updatedAt: metadata.updatedAt,
-      capturedAt: chunksMetadata.capturedAt,
+      updatedAt: live ? session.updatedAt : metadata.updatedAt,
+      ...(live
+        ? metadata.capturedAt
+          ? { capturedAt: metadata.capturedAt }
+          : {}
+        : { capturedAt: chunksMetadata.capturedAt }),
       linkedFileMode: chunksMetadata.linkedFileMode,
       source: {
         projectId: session.projectId,
@@ -443,15 +455,29 @@ export async function fetchPublicShareV2ViaRelay(options: {
       ),
     );
     if (metadata) options.onMetadata?.(metadata);
-    const supportsChunks =
+    const capabilities =
       metadata !== null &&
       typeof globalThis.DecompressionStream === "function" &&
-      Array.isArray(metadata.capabilities) &&
-      metadata.capabilities.includes(PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY);
-    if (supportsChunks) {
+      Array.isArray(metadata.capabilities)
+        ? metadata.capabilities
+        : [];
+    const chunkMode = capabilities.includes(
+      PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
+    )
+      ? "frozen"
+      : capabilities.includes(PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY) &&
+          metadata?.mode === "live"
+        ? "live"
+        : null;
+    if (metadata && chunkMode) {
       return {
         metadata,
-        share: await fetchFrozenSessionChunks(connection, options, metadata),
+        share: await fetchSessionChunks(
+          connection,
+          options,
+          metadata,
+          chunkMode,
+        ),
       };
     }
     const share = await fetchRawPublicShareWithConnectionFallback(

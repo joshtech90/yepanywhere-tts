@@ -12,6 +12,9 @@ export * from "./vhost-oauth.js";
 export * from "./new-session-bootstrap.js";
 export {
   ARTIFACT_SANDBOX,
+  MANAGED_ARTIFACT_MAX_FILE_BYTES,
+  MANAGED_ARTIFACT_MAX_VIEWER_BYTES,
+  MANAGED_ARTIFACT_READ_IDLE_MS,
   ARTIFACT_TAB_PROTOCOL,
   isArtifactTabRequest,
 } from "./artifact-viewer.js";
@@ -406,8 +409,10 @@ export type {
   LocalResourceMediaType,
   LocalResourceRef,
   ParseLocalResourceOptions,
+  ProjectFileViewerTarget,
 } from "./local-resource.js";
 export {
+  buildProjectFileViewerHref,
   normalizeWindowsDrivePathname,
   parseLocalResourceAttributes,
   parseLocalResourceHref,
@@ -451,6 +456,7 @@ export type {
   ProviderLoginFlow,
   ProviderLoginFlowState,
   ProviderImageSizing,
+  ImagePreparationProfile,
   ModelCatalogStatus,
   ModelInfo,
   ModelServiceTier,
@@ -649,6 +655,8 @@ export {
 } from "./git-status.js";
 
 export type {
+  ProviderWorkItem,
+  ProviderWorkKind,
   SessionActiveWorkKind,
   SessionLivenessDerivedStatus,
   SessionLivenessProbeStatus,
@@ -656,6 +664,10 @@ export type {
   SessionProviderRetentionSnapshot,
   SessionWakeReason,
   SessionWakeReasonSnapshot,
+} from "./session-liveness.js";
+export {
+  normalizeProviderWorkItems,
+  PROVIDER_WORK_ITEM_LIMIT,
 } from "./session-liveness.js";
 
 export {
@@ -666,6 +678,7 @@ export {
 export type {
   UserMessageCompositionMetadata,
   NonHumanUserTurn,
+  PatientQueueSource,
   UserMessageDeliveryIntent,
   UserMessageMetadata,
   UserMessageSpeechMetadata,
@@ -678,6 +691,7 @@ export {
   applyPatientQueuePrefix,
   clampPatientPatienceSeconds,
   hasPatientQueuePrefix,
+  normalizePatientCompactPercent,
   stripPatientQueuePrefix,
 } from "./user-message-metadata.js";
 
@@ -903,6 +917,8 @@ export {
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
+  RENDEZ_UPLOADS_CAPABILITY,
+  RENDEZ_PROJECT_STATUS_CAPABILITY,
   ATTACHMENT_ONLY_SESSION_MESSAGES_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
   PROJECT_CAPTIONS_CAPABILITY,
@@ -912,6 +928,7 @@ export {
   SIDEBAR_SESSION_RESUME_CAPABILITY,
   SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
   SYNTHETIC_DONE_COMMAND_CAPABILITY,
+  PATIENT_TOPIC_SHIFT_CAPABILITY,
   SYNTHETIC_TERMINATE_COMMAND_CAPABILITY,
   SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
   PROJECT_DIRECTORY_STORAGE_POLICY_CAPABILITY,
@@ -1108,6 +1125,7 @@ export type {
   SessionMetadataResponse,
   SessionQueuedMessageKind,
   SessionQueuedMessageStatus,
+  SessionQueuedCompactionGate,
   SessionQueuedClearloopProgress,
   SessionQueuedMessageSummary,
   SessionQueuedYaCommand,
@@ -1137,9 +1155,13 @@ export type {
   ToolDisplaySearchAction,
 } from "./tool-display-actions.js";
 export {
+  type CitedFilePosition,
+  citedProjectPathTokenExtent,
   findProjectPathTokens,
   type ProjectPathLinkTarget,
   type ProjectPathToken,
+  readLeadingCitedPosition,
+  splitTrailingCitedPosition,
 } from "./project-path-links.js";
 export type {
   CodexWebRunLine,
@@ -1189,6 +1211,7 @@ export type {
 
 export {
   PUBLIC_SHARE_MANAGEMENT_FREEZE_CONFIRMATION,
+  PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY,
   PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
   PUBLIC_SHARE_TITLE_MAX_LENGTH,
   PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH,
@@ -1651,6 +1674,8 @@ export {
 export {
   DEFAULT_ISSUE_SETTINGS,
   DEFAULT_JIRA_KEY_BLOCKLIST,
+  issueLookupUrl,
+  issueUrl,
 } from "./issues.js";
 export type {
   IssueSettings,
@@ -1661,6 +1686,7 @@ export type {
   IssueCredentialsResult,
   IssueItem,
   IssueSort,
+  IssueTrackerStatus,
   IssueEvidence,
   IssueCoverage,
   IssueSearchResult,
@@ -1668,6 +1694,7 @@ export type {
   IssueSession,
   IssueSessionsResult,
   KnownJiraProject,
+  IssueUrlReference,
 } from "./issues.js";
 
 export {

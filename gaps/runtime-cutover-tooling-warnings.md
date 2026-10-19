@@ -29,3 +29,15 @@ console budget was introduced. SQLite's accepted upstream experimental notice
 remains documented in `topics/server-runtime.md`.
 
 Found 2026-09-08 during server runtime cutover verification.
+
+## Managed artifact validation — 2026-10-16
+
+The current console scan reports 108 ungated chatty call sites (155 informational
+sites), with no new calls in the managed viewer. The same cross-surface cleanup
+constraint above applies. Its public browser acceptance emits no console/page
+errors. The existing artifact-viewer Playwright runner emits Node's
+`[DEP0205] DeprecationWarning: module.register() is deprecated. Use
+module.registerHooks() instead.` during tool startup; all 18 scenarios pass.
+This comes from the current Node/loader toolchain. Replacing that loader across
+the shared E2E infrastructure needs separate runtime compatibility validation;
+no warning filter or dependency churn was added to the artifact feature.

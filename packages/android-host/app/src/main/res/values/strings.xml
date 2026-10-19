@@ -1,0 +1,52 @@
+<resources>
+    <string name="browser_unavailable">No browser is available to open this link.</string>
+  <string name="host_heading">Yep Anywhere Host · Experimental</string>
+  <string name="host_planned">Remote wake is planned. Provider sign-in is available above.</string>
+  <string name="host_status">\n%1$s\n</string>
+  <string name="host_two_lines">%1$s\n%2$s</string>
+  <string name="workspace_saving">Saving…</string>
+  <string name="workspace_pick_count">Pick folder · %1$d/16 saved</string>
+  <string name="host_session_counts">Working: %1$d · Needs attention: %2$d</string>
+  <plurals name="host_attention"><item quantity="one">%1$d session needs attention</item><item quantity="other">%1$d sessions need attention</item></plurals>
+  <plurals name="host_working"><item quantity="one">%1$d session working</item><item quantity="other">%1$d sessions working</item></plurals>
+  <string name="host_connecting">Starting the local host… Your saved sessions will be available when it is ready.</string>
+  <string name="host_retry">Retry</string>
+  <string name="host_controls">Host controls</string>
+  <string name="host_runtime_missing">The local runtime is not installed. Developer provisioning is required. Saved sessions have not been changed.</string>
+  <string name="host_start_failed">The local host could not be opened. Return to Host controls for its status, or try again.</string>
+  <string name="host_not_ready">The local host did not become ready. Your saved sessions remain on disk. Retry, or check Host controls for its status.</string>
+  <string name="host_open_failed">The local host connection was interrupted. Your saved sessions remain on disk. Retry to reconnect.</string>
+  <string name="host_home">Home</string>
+  <string name="host_go_home">Go to host main menu</string>
+  <string name="host_web_title">Yep Anywhere</string>
+  <string name="host_tabs">Tabs</string>
+  <string name="host_tabs_count">Tabs %1$d</string>
+  <string name="host_new_tab">New tab</string>
+  <string name="host_done">Done</string>
+  <string name="host_select_tab">Select tab: %1$s</string>
+  <string name="host_close_tab">Close tab: %1$s</string>
+  <plurals name="host_tab_limit">
+    <item quantity="one">Up to %1$d tab can be open.</item>
+    <item quantity="other">Up to %1$d tabs can be open.</item>
+  </plurals>
+  <string name="host_tab_label">%1$s%2$s</string>
+  <string name="host_open_new_tab">Open in new tab</string>
+  <string name="host_tab_details">%1$s\n%2$s</string>
+  <string name="workspace_pick">Pick folder</string>
+  <string name="workspace_title">Workspace folders</string>
+  <string name="workspace_intro">Save folders for agents. SAF document tools work with individual folder grants. Optional broad storage access exposes primary shared storage at /sdcard, removable volumes at /storage/&lt;volume-id&gt;, and selected direct paths under /workspaces. Runtime, sign-ins and YA data remain private.</string>
+  <string name="workspace_shared">Primary shared storage · /sdcard\n%1$s</string>
+  <string name="workspace_rw_required">Folder needs read and write access</string>
+  <string name="workspace_saved">Saved.</string>
+  <string name="workspace_pending">Folder mappings have pending changes. Restart the host to apply them; existing processes keep their old paths until then.</string>
+  <string name="workspace_empty">No folder shortcuts selected. With all-files access, agents can use /sdcard directly. Private projects remain available.</string>
+  <string name="workspace_row">\n%1$s  →  %2$s</string>
+  <string name="workspace_health">SAF: %1$s\nDirect: %2$s%3$s</string>
+  <string name="workspace_saf_available">available via ya saf</string>
+  <string name="workspace_mapped">mapped for this runtime</string>
+  <string name="workspace_ready">ready; start/restart host to apply</string>
+  <string name="workspace_overlap">\nShares files with: %1$s</string>
+  <string name="workspace_direct">Direct access: %1$s</string>
+  <item name="workspace_name" type="id" />
+  <item name="workspace_pick_action" type="id" />
+</resources>

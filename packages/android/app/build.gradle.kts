@@ -1,5 +1,6 @@
 import java.net.URI
 import java.time.Duration
+import java.util.zip.ZipFile
 import org.gradle.api.tasks.testing.Test
 import org.gradle.api.tasks.testing.logging.TestLogEvent
 
@@ -14,20 +15,18 @@ fun buildConfigString(value: String): String =
 val debugWebClientUrl = providers.gradleProperty("yaWebClientUrl").orNull
     ?.trim()
     ?.takeIf(String::isNotEmpty)
-val nativeProbeCleartext = providers.gradleProperty("yaNativeProbeCleartext").orNull
-    ?.trim()
-    ?.let {
-        require(it == "true" || it == "false") {
-            "yaNativeProbeCleartext must be true or false"
-        }
-        it.toBoolean()
-    }
-    ?: false
+
+// Hosts that every build may reach over plain HTTP, beside the certificate
+// revocation hosts listed by the platform verifier.
+val loopbackHosts = listOf("localhost", "127.0.0.1")
 
 if (debugWebClientUrl != null) {
     val uri = URI(debugWebClientUrl)
     require(uri.scheme == "http" || uri.scheme == "https") {
         "yaWebClientUrl must use http or https"
+    }
+    require(uri.scheme == "https" || uri.host in loopbackHosts) {
+        "yaWebClientUrl must use https or a loopback host (use adb reverse)"
     }
     require(uri.host != null && uri.userInfo == null) {
         "yaWebClientUrl must have a host and no user information"
@@ -37,9 +36,20 @@ if (debugWebClientUrl != null) {
     }
 }
 
-val hasFirebaseConfiguration = file("google-services.json").isFile
+val firebaseEnabled = providers.gradleProperty("yaFirebaseEnabled").orNull
+    ?.trim()
+    ?.let {
+        require(it == "true" || it == "false") {
+            "yaFirebaseEnabled must be true or false"
+        }
+        it.toBoolean()
+    }
+    ?: true
+val hasFirebaseConfiguration = firebaseEnabled && file("google-services.json").isFile
 if (hasFirebaseConfiguration) {
     apply(plugin = "com.google.gms.google-services")
+} else if (!firebaseEnabled) {
+    logger.lifecycle("yaFirebaseEnabled=false; Firebase messaging is disabled")
 } else {
     logger.lifecycle("google-services.json not found; Firebase messaging is disabled")
 }
@@ -84,7 +94,6 @@ android {
             abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
         }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
         buildConfigField(
             "String",
             "DEBUG_WEB_CLIENT_URL",
@@ -114,11 +123,6 @@ android {
             testProguardFiles("test-proguard-rules.pro")
             if (isMinifyEnabled) proguardFiles("probe-proguard-rules.pro")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            manifestPlaceholders["usesCleartextTraffic"] =
-                (
-                    debugWebClientUrl?.startsWith("http://") == true ||
-                        nativeProbeCleartext
-                ).toString()
         }
         release {
             isMinifyEnabled = true
@@ -155,6 +159,7 @@ android {
         getByName("main") {
             java.srcDir(layout.buildDirectory.dir("generated/rustBindings"))
             jniLibs.srcDir(layout.buildDirectory.dir("generated/rustJniLibs"))
+            res.srcDir(layout.buildDirectory.dir("generated/networkSecurityRes"))
         }
         getByName("bundled") {
             assets.srcDir(layout.buildDirectory.dir("generated/webAssets"))
@@ -309,4 +314,34 @@ val prepareRustTransport = tasks.register<Exec>("prepareRustTransport") {
     outputs.dir(layout.buildDirectory.dir("generated/rustJniLibs"))
     outputs.file(layout.buildDirectory.file("generated/rustls-platform-verifier-0.2.0.aar"))
 }
-tasks.named("preBuild") { dependsOn(prepareRustTransport) }
+
+// Android allows one network security config per app. The platform verifier
+// ships one that permits plain HTTP only to CA revocation-list hosts, which its
+// revocation check needs for CRL-only certificates such as Let's Encrypt's.
+// Every build uses that config, extended with loopback for local fixtures.
+val generateNetworkSecurityConfig = tasks.register("generateNetworkSecurityConfig") {
+    dependsOn(prepareRustTransport)
+    val aar = layout.buildDirectory.file("generated/rustls-platform-verifier-0.2.0.aar")
+    val output = layout.buildDirectory.file("generated/networkSecurityRes/xml/network_security_config.xml")
+    val hosts = loopbackHosts
+    inputs.file(aar)
+    inputs.property("loopbackHosts", hosts)
+    outputs.file(output)
+    doLast {
+        val upstream = ZipFile(aar.get().asFile).use { zip ->
+            val entry = checkNotNull(zip.getEntry("res/xml/network_security_config.xml")) {
+                "Platform verifier AAR has no network security config"
+            }
+            zip.getInputStream(entry).readBytes().toString(Charsets.UTF_8)
+        }
+        val base = "<base-config cleartextTrafficPermitted=\"false\" />"
+        check(upstream.contains(base) && upstream.contains(".c.lencr.org<")) {
+            "Platform verifier network security config changed shape"
+        }
+        val loopback = hosts.joinToString("\n", prefix = "\n  <domain-config cleartextTrafficPermitted=\"true\">\n", postfix = "\n  </domain-config>") {
+            "    <domain includeSubdomains=\"false\">$it</domain>"
+        }
+        output.get().asFile.apply { parentFile.mkdirs() }.writeText(upstream.replace(base, base + loopback))
+    }
+}
+tasks.named("preBuild") { dependsOn(prepareRustTransport, generateNetworkSecurityConfig) }

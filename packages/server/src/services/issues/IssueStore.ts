@@ -8,6 +8,7 @@ import type { VisibleMessageText } from "../../sessions/message-text.js";
 import {
   EXTRACTOR_VERSION,
   extractIssueReferences,
+  isReferenceLabel,
   issueUrl,
   issueExcerpt,
 } from "./extract.js";
@@ -19,6 +20,7 @@ import {
   type IssueSort,
   type IssueEvidence,
   type IssueSettings,
+  type IssueTrackerStatus,
 } from "@yep-anywhere/shared";
 export type { IssueItem, IssueEvidence } from "@yep-anywhere/shared";
 export interface IssueSource {
@@ -95,6 +97,74 @@ export class IssueStore {
     private readonly settings: () => IssueSettings = () =>
       DEFAULT_ISSUE_SETTINGS,
   ) {}
+  /** Reads only the requested page; no install-wide cache is loaded. */
+  trackerStatuses(
+    ids: string[],
+  ): Map<string, { status?: IssueTrackerStatus; askedAt: number }> {
+    if (!ids.length) return new Map();
+    return new Map(
+      this.rows(
+        `SELECT * FROM issue_tracker_status WHERE issue_id IN (${ids.map(() => "?").join(",")})`,
+        ...ids,
+      ).map((row) => [
+        String(row.issue_id),
+        {
+          askedAt: Number(row.asked_at),
+          status:
+            row.state && row.checked_at
+              ? {
+                  state: row.state as IssueTrackerStatus["state"],
+                  checkedAt: String(row.checked_at),
+                  ...(row.node_id ? { nodeId: String(row.node_id) } : {}),
+                  ...(row.merged_at ? { mergedAt: String(row.merged_at) } : {}),
+                  ...(row.merge_commit_sha
+                    ? { mergeCommitSha: String(row.merge_commit_sha) }
+                    : {}),
+                }
+              : undefined,
+        },
+      ]),
+    );
+  }
+
+  /** One transaction per API batch. Missing/deleted items cannot be recreated. */
+  saveTrackerStatuses(
+    entries: Array<{
+      id: string;
+      status?: IssueTrackerStatus;
+      askedAt: number;
+    }>,
+  ): void {
+    this.database.transaction(() => {
+      for (const { id, status, askedAt } of entries) {
+        this.run(
+          `INSERT INTO issue_tracker_status
+          (issue_id,state,checked_at,node_id,merged_at,merge_commit_sha,asked_at)
+          SELECT id,?,?,?,?,?,? FROM external_issues WHERE id=?
+          ON CONFLICT(issue_id) DO UPDATE SET
+          state=COALESCE(excluded.state,issue_tracker_status.state),
+          checked_at=COALESCE(excluded.checked_at,issue_tracker_status.checked_at),
+          node_id=COALESCE(excluded.node_id,issue_tracker_status.node_id),
+          merged_at=COALESCE(excluded.merged_at,issue_tracker_status.merged_at),
+          merge_commit_sha=COALESCE(excluded.merge_commit_sha,issue_tracker_status.merge_commit_sha),
+          asked_at=excluded.asked_at
+          WHERE issue_tracker_status.state IS NOT 'merged' AND excluded.asked_at>=issue_tracker_status.asked_at`,
+          status?.state ?? null,
+          status?.checkedAt ?? null,
+          status?.nodeId ?? null,
+          status?.mergedAt ?? null,
+          status?.mergeCommitSha ?? null,
+          askedAt,
+          id,
+        );
+      }
+    });
+  }
+
+  clearTrackerStatuses(): void {
+    this.run("DELETE FROM issue_tracker_status");
+  }
+
   private rows(sql: string, ...values: SqliteValue[]): SqliteRow[] {
     const s = this.database.prepare(sql);
     try {
@@ -495,8 +565,18 @@ export class IssueStore {
     offset = 0,
     ownedStart = offset,
     ownedEnd = Number.POSITIVE_INFINITY,
+    /** Code fences in `message.text` offsets, when it is a slice of a longer message. */
+    fences?: ReadonlyArray<readonly [number, number]>,
   ): void {
-    this.captureText(source, message, offset, ownedStart, ownedEnd);
+    this.captureText(
+      source,
+      message,
+      offset,
+      ownedStart,
+      ownedEnd,
+      undefined,
+      fences,
+    );
   }
   /**
    * Record the reference in a URL a user attached to a session by hand, with
@@ -526,9 +606,10 @@ export class IssueStore {
     ownedEnd: number,
     /** Present for a hand-attached reference; its excerpt is the user's note. */
     manualNote?: string,
+    fences?: ReadonlyArray<readonly [number, number]>,
   ): void {
     const settings = this.settings();
-    const refs = extractIssueReferences(message.text).filter(
+    const refs = extractIssueReferences(message.text, { fences }).filter(
       (ref) =>
         ref.start + offset >= ownedStart && ref.start + offset < ownedEnd,
     );
@@ -720,6 +801,8 @@ export class IssueStore {
     options: {
       sort?: IssueSort | "key";
       sessionActivity?: readonly { sessionId: string; updatedAt: string }[];
+      /** Canonical identity: match exactly this item, ignoring `query`. */
+      identity?: string;
     } = {},
   ): IssueItem[] {
     // Only these fixed clauses enter SQL. Sort the complete filtered aggregate
@@ -748,10 +831,10 @@ export class IssueStore {
       WHERE ${this.visibleEvidence()} AND (?=1 OR (e.suppressed=0 AND COALESCE(l.state,'discovered')!='dismissed'))
       AND (?='' OR COALESCE(j.project_id,e.project_id)=?) AND (?='' OR e.session_id=?)
     ), items AS (
-      SELECT i.id,i.ref_key,COALESCE(i.manual_title,i.title) AS title,i.url,i.provider,i.kind,COUNT(DISTINCT e.session_id) AS count,NULL AS context,MAX(e.activity) AS last_activity,MAX(julianday(e.source_time)) AS last_mention
+      SELECT i.id,i.ref_key,COALESCE(i.manual_title,i.title) AS title,i.url,i.provider,i.kind,COUNT(DISTINCT e.session_id) AS count,NULL AS context,MAX(e.activity) AS last_activity,MAX(julianday(e.source_time)) AS last_mention,i.manual_title IS NOT NULL AS manual
       FROM external_issues i JOIN observations e ON e.issue_id=i.id GROUP BY i.id
       UNION ALL
-      SELECT NULL,ref_key,NULL,NULL,provider,'unknown',COUNT(DISTINCT session_id),current_project,MAX(activity),MAX(julianday(source_time)) FROM observations WHERE link_id IS NULL GROUP BY current_project,provider,ref_key
+      SELECT NULL,ref_key,NULL,NULL,provider,'unknown',COUNT(DISTINCT session_id),current_project,MAX(activity),MAX(julianday(source_time)),0 FROM observations WHERE link_id IS NULL GROUP BY current_project,provider,ref_key
     ), numbered AS (
       SELECT *,CASE WHEN provider='github' THEN instr(ref_key,'#')+1 ELSE instr(ref_key,'-')+1 END AS number_start FROM items
     ) SELECT items.*,
@@ -760,7 +843,11 @@ export class IssueStore {
       (SELECT c.state FROM issue_confirmations c WHERE c.ref_key=items.ref_key
         ORDER BY CASE c.state WHEN 'confirmed' THEN 0 WHEN 'rejected' THEN 1 WHEN 'unreachable' THEN 2 ELSE 3 END LIMIT 1) AS confirm_state,
       (SELECT c.title FROM issue_confirmations c WHERE c.ref_key=items.ref_key AND c.state='confirmed' AND c.title IS NOT NULL LIMIT 1) AS confirm_title
-      FROM numbered items WHERE ref_key LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\' ORDER BY ${order},ref_key,context,id LIMIT ? OFFSET ?`,
+      FROM numbered items WHERE CASE WHEN ?<>'' THEN id=? ELSE ref_key LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\' END
+      -- A reference the tracker says does not exist is hidden like a dismissed
+      -- one; an exact lookup still finds it.
+      AND (?<>'' OR ?=1 OR confirm_state IS NOT 'rejected')
+      ORDER BY ${order},ref_key,context,id LIMIT ? OFFSET ?`,
       JSON.stringify(
         (options.sessionActivity ?? []).map(({ sessionId, updatedAt }) => ({
           sessionId,
@@ -772,9 +859,13 @@ export class IssueStore {
       project,
       session,
       session,
+      options.identity ?? "",
+      options.identity ?? "",
       escaped(query),
       escaped(query),
       escaped(query),
+      options.identity ?? "",
+      dismissed ? 1 : 0,
       limit,
       offset,
     );
@@ -783,7 +874,12 @@ export class IssueStore {
         ? String(row.id)
         : unresolvedId(String(row.context), String(row.ref_key)),
       key: String(row.ref_key),
-      title: row.title as string | null,
+      title:
+        typeof row.title === "string" &&
+        !row.manual &&
+        isReferenceLabel(row.title, String(row.ref_key))
+          ? null
+          : (row.title as string | null),
       url: row.url as string | null,
       provider: String(row.provider),
       kind: String(row.kind),

@@ -14,6 +14,18 @@
   cursor: pointer;
   text-decoration: none;
 }
+.toggle.edit {
+  flex-basis: 32px;
+  width: 32px;
+  height: 32px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+}
+.toggle.edit:not([aria-pressed="true"]):hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
 .toggle[aria-pressed="true"] {
   color: var(--accent-contrast);
   background: var(--primary-color);

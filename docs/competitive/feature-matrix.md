@@ -7,6 +7,13 @@ use them as a current gap list.
 
 ## Newer source reviews
 
+- [Happy — 2026-10-17](happy.md): unified runtime replacing the mobile/CLI-only
+  positioning, implemented human team mode and its authority limits, mobile
+  functions, artifacts/documents, and Android health versus T3 Code.
+- [T3 Code — 2026-10-17 follow-up](t3code.md#october-17-follow-up-android-health-and-adoption):
+  2.0 Android release, adoption signals, and qualified reliability reports;
+  [October 3 remote-environment review](t3code-remote-sessions.md) remains the
+  newer source review for remote execution.
 - [Warp — 2026-10-02](warp.md#feature-comparison-with-yep-anywhere): local CLI
   Remote Control, attention and forks, native transcript handling, cloud and
   self-hosted execution, Factories, sharing authority and hosted data boundaries.
@@ -177,4 +184,4 @@ Features competitors have that we lack:
 
 ## Last Updated
 
-2026-02-03
+Historical tables: 2026-02-03. Review links updated: 2026-10-17.

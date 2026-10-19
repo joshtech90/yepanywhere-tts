@@ -57,7 +57,14 @@ describe("public share attachments", () => {
         </PublicShareProvider>
       </I18nProvider>,
     );
-    expect(fetchPublicShareBlobViaRelay).not.toHaveBeenCalled();
+    // A public viewer has no cached upload preview, so the visible chip reads
+    // its thumbnail through the share without waiting for a click.
+    const chip = screen.getByRole("button", { name: "Open image.png" });
+    await waitFor(() => {
+      expect(chip.querySelector("img")?.getAttribute("src")).toBe(
+        "blob:shared-attachment",
+      );
+    });
     fireEvent.click(screen.getByRole("button", { name: "Open image.png" }));
     await waitFor(() => {
       expect(

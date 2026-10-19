@@ -111,18 +111,29 @@ YA's launch settings are the only record. See [service tier](service-tier.md).
 ## Per-Turn Cyber Access Program
 
 The server-wide **Cyber access program** setting names the access program YA
-requests on every user turn. **Let Codex choose** is the default and omits
-`cyberAccessProgram` from `turn/start` entirely, which is what Codex's own
-terminal client does. The three named selections send `standard`,
-`daybreakBlue`, and `daybreakRed` respectively. `YEP_CODEX_CYBER_ACCESS_PROGRAM`
+requests when the selected model permits it. **Let Codex choose** is the default
+and omits `cyberAccessProgram` from `turn/start` entirely. The three named
+selections send `standard`, `daybreakBlue`, and `daybreakRed` respectively.
+`YEP_CODEX_CYBER_ACCESS_PROGRAM`
 supplies the startup fallback and a saved setting takes precedence.
 
 The field is read per turn and not retained by Codex, so YA sends the current
-selection on each user turn rather than at thread scope. YA-internal helper
-turns, such as the ephemeral recap thread, never send it. Codex forwards the
-program only for ChatGPT-authenticated accounts, and upstream states plainly
-that requesting a program does not grant access, so the control must not be
-described as enabling anything.
+selection on each user turn rather than at thread scope. Before sending an
+explicit selection, YA queries `model/list` through that session's app-server,
+including hidden models and following pagination. If the selected model's
+nonempty `availableAccessPrograms.cyber` list excludes the selection, YA omits
+the field before the first attempt. Thus an account advertising only `standard`
+for GPT-6 Astra never requests Daybreak for Astra, while its eligible models
+still receive the configured Blue or Red selection. Model changes are checked
+on the next turn. YA never substitutes one named program for another.
+
+Missing or empty access-program metadata preserves the existing explicit
+selection and refusal recovery for older Codex catalogs. A failed catalog
+request fails the turn rather than treating the failure as permission. YA uses
+the app-server's catalog caching rather than retaining a second eligibility
+cache. YA-internal helper turns, such as the ephemeral recap thread, never send
+the program. Requesting a program does not grant access; Codex and the backend
+still enforce account, authentication and model eligibility.
 
 Enrollment belongs to the signed-in ChatGPT account and is checked per model.
 The one server-wide selection can therefore reach an account or model that is
@@ -142,15 +153,15 @@ It does not wait for Codex's reconnect budget to expire. YA then reruns the
 turn at once without the program and without resending the user's input.
 The refusal appears as a
 retrying warning, not a turn failure. YA remembers the refusal for that
-account, model and program for as long as the server process runs, so later
-turns in any session under that account send no program and do not fail
-first. The account is identified by the `account/read` type and email and is
-read once per session. If it cannot be read, the refusal applies only to that
+account, model and program for the provider instance's lifetime, so later
+turns handled by that instance send no program and do not fail first. With
+isolated provider workers, this memory is session-local. The account is
+identified by the `account/read` type and email and is read once per session.
+If it cannot be read, the refusal applies only to that
 session. The same 403 on a turn that requested no program is an ordinary
-failure. Knowing enrollment before the first turn would need per-subscription
-flags ([sketch](../gaps/sketches/provider-subscription-switching.md)). `Thread.daybreakEnabled` is a separate
-client-saved metadata flag that no Codex behavior reads; YA neither writes nor
-consumes it.
+failure. `Thread.daybreakEnabled` is a separate client-saved choice used by
+Codex's terminal UI; it does not itself select a turn's access program or grant
+access. YA neither writes nor consumes it.
 
 ## Content-filter blocks
 

@@ -43,10 +43,13 @@ export const UI_KEYS = {
   projectAppComposing: "yep-anywhere-project-app-composing-enabled",
   sessionRightPane: "yep-anywhere-session-right-pane-enabled",
   sessionRightPaneWidth: "yep-anywhere-session-right-pane-width",
+  /** Followed by `:<projectId>`; "1" reloads a static App on every change. */
+  projectAppAutoReload: "yep-anywhere-project-app-auto-reload",
   searchConcurrency: "yep-anywhere-search-concurrency",
   pdfjsRenderer: "yep-anywhere-pdfjs-renderer-enabled",
   unicodeProseMath: "yep-anywhere-unicode-prose-math",
   transcriptMarginNavigation: "yep-anywhere-transcript-margin-navigation",
+  escapeInterruptDisabled: "yep-anywhere-escape-interrupt-disabled",
   composerPromptRail: "yep-anywhere-composer-prompt-rail",
   commitReadWatermarks: "yep-anywhere-commit-read-watermarks",
   sourceControlCleanLanding: "yep-anywhere-source-control-clean-landing",
@@ -135,6 +138,8 @@ export const UI_KEYS = {
   compactMultiImageGalleries:
     "yep-anywhere-compact-multi-image-galleries-enabled",
   recentProjectPathLinks: "yep-anywhere-recent-project-path-links-enabled",
+  projectPathLinks: "yep-anywhere-project-path-links-enabled",
+  mentionedDirectoryLinks: "yep-anywhere-mentioned-directory-links-enabled",
   schemaValidation: "yep-anywhere-schema-validation",
   emulatorMaxFps: "yep-anywhere-emulator-max-fps",
   emulatorMaxWidth: "yep-anywhere-emulator-max-width",

@@ -1,0 +1,156 @@
+{
+  "androidChrome": {
+    "browser": "155.0.8059.79",
+    "publicContentTLS": true,
+    "parent": "https://latest.yepanywhere.com",
+    "temporaryParentBuild": true,
+    "thirdPartyCookiesBlocked": false,
+    "platform": "android-phone-chrome",
+    "checks": [
+      {
+        "name": "native-resources",
+        "image": 640,
+        "classic": true,
+        "modules": {
+          "label": "static",
+          "dynamic": "computed dynamic",
+          "data": {
+            "notes": 3
+          }
+        },
+        "font": 1,
+        "css": "0.5px",
+        "worker": "1",
+        "parent": "denied"
+      },
+      {
+        "name": "dense-byte-exact-and-ranges",
+        "binary": [255, 0, 128, 42],
+        "invalid": "{",
+        "empty": [
+          {
+            "status": 200,
+            "size": 0
+          },
+          {
+            "status": 200,
+            "size": 0
+          }
+        ],
+        "parallelReads": 24,
+        "exactJSON": "{ \"n\": 9007199254740993 }\\n",
+        "rangeReads": 6,
+        "rangeResult": {
+          "status": 206,
+          "contentRange": "bytes 0-3/67108864",
+          "acceptRanges": "bytes",
+          "size": 4
+        }
+      },
+      {
+        "name": "navigation-and-reload",
+        "passed": true
+      },
+      {
+        "name": "worker-restart",
+        "status": 200,
+        "worker": "1",
+        "data": {
+          "notes": 3
+        }
+      },
+      {
+        "name": "artifact-sequential-typing",
+        "characters": 32,
+        "maxMs": 22
+      },
+      {
+        "name": "stream-cancel",
+        "status": 200,
+        "firstBytes": 65536,
+        "nextStatus": 200
+      },
+      {
+        "name": "managed-frame-find",
+        "passed": true
+      },
+      {
+        "name": "fragment-state-theme-followup",
+        "count": 2,
+        "theme": "light",
+        "submitted": false
+      },
+      {
+        "name": "composer-sequential-typing",
+        "characters": 33,
+        "maxMs": 30,
+        "updates": 20,
+        "mutations": 45
+      },
+      {
+        "name": "concurrent-viewer-origins",
+        "passed": true
+      },
+      {
+        "name": "teardown-and-survivor-refusal",
+        "registrations": 0,
+        "afterClose": 503
+      }
+    ],
+    "errors": [],
+    "publicRelay": true,
+    "androidRelease": "17",
+    "androidApi": "37",
+    "webView": "(com.google.android.webview, 154.0.8037.106)",
+    "isolatedBrowserContext": true,
+    "firstPartyCookieProbe": "same network and script cookies accepted at top level",
+    "thirdPartyCookieProbe": "network and script cookies accessible in cross-site iframe",
+    "networkFallback": 404,
+    "passed": true
+  },
+  "bundledDebugAppFallback": {
+    "browser": "154.0.8037.106",
+    "publicContentTLS": false,
+    "parent": "https://appassets.androidplatform.net",
+    "temporaryParentBuild": true,
+    "thirdPartyCookiesBlocked": null,
+    "platform": "android-phone-bundled-app",
+    "checks": [
+      {
+        "name": "native-scriptless-fallback",
+        "parentOrigin": "https://appassets.androidplatform.net",
+        "sandbox": "allow-same-origin",
+        "scriptsExecuted": false,
+        "managedFrame": false,
+        "imageWidth": 0
+      },
+      {
+        "name": "native-fallback-teardown",
+        "passed": true
+      }
+    ],
+    "errors": [
+      "Loading the stylesheet 'https://appassets.androidplatform.net/projects/L3Zhci9mb2xkZXJzL3F3L3B6cXk5dHA1Ml9zNWY1MTc3OGo2ajh0cjAwMDBnbi9UL3lhLW1hbmFnZWQtYXJ0aWZhY3QtY1k3UEpWL2J1bmRsZQ/sessions/style.css' violates the following Content Security Policy directive: \"style-src 'unsafe-inline'\". Note that 'style-src-elem' was not explicitly set, so 'style-src' is used as a fallback. The action has been blocked.",
+      "Loading the image 'https://appassets.androidplatform.net/projects/L3Zhci9mb2xkZXJzL3F3L3B6cXk5dHA1Ml9zNWY1MTc3OGo2ajh0cjAwMDBnbi9UL3lhLW1hbmFnZWQtYXJ0aWZhY3QtY1k3UEpWL2J1bmRsZQ/sessions/assets/chart.png' violates the following Content Security Policy directive: \"img-src data: blob:\". The action has been blocked.",
+      "Blocked script execution in 'about:srcdoc' because the document's frame is sandboxed and the 'allow-scripts' permission is not set.",
+      "Blocked script execution in 'about:srcdoc' because the document's frame is sandboxed and the 'allow-scripts' permission is not set."
+    ],
+    "publicRelay": true,
+    "androidRelease": "17",
+    "androidApi": "37",
+    "webView": "(com.google.android.webview, 154.0.8037.106)",
+    "apkSHA256": "2fffef678f8c9105f9c08586f98c247eae43df44f924fbe6fdc65f5a500ce7ce",
+    "nativeRegistrationPersisted": true,
+    "nativePairingFlow": "fresh UI",
+    "parentBuildDelivery": "bundled debug APK",
+    "expectedPolicyRefusals": 4,
+    "passed": true,
+    "interactiveArtifactsSupported": false,
+    "isolatedTestPackageRemoved": true,
+    "consolePolicyRefusals": {
+      "stylesheet": 1,
+      "image": 1,
+      "sandboxedScript": 2
+    }
+  }
+}

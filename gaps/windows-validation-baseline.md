@@ -67,4 +67,33 @@ Focused Source Control client checks passed 83 tests, and the Git execution and
 status-route checks passed 35. Lint, formatting and typechecking passed; this
 still does not establish a passing Windows aggregate.
 
+2026-10-14 — runtime run
+[38540391834, attempt 1](https://github.com/kzahel/yepanywhere/actions/runs/38540391834/attempts/1)
+at `5c264ac8e` failed only the Windows Node 23.11.0 leg, in the installed-package
+`ready` startup check (`scripts/test-sqlite-startup.mjs:163`, via
+`agent-self-package-smoke.mjs --startup`). The server logged
+`Server running` about 23 seconds after spawn, then every `/api/version`
+request hit its 10-second fetch timeout until the 120-second Windows budget ran
+out, about 90 seconds later. The event loop was not blocked: the 60-second
+resource sample showed a 606 ms maximum loop delay and 8.8% CPU. Attempt 2
+passed. The handler awaits two process-memoized probes that every retry shares,
+so one stalled probe would hold all of them: `getCurrentVersionInfo`, which runs
+an untimed `npm root -g` for installed packages
+(`packages/server/src/routes/version.ts:334`), and session-sandbox
+availability. Which one stalled is not established, and the smoke's 8,000-byte
+output tail drops the earlier log. Startup also spent 20,029 ms in
+`hostAwakeService`, the full Windows helper timeout; see
+[windows-host-awake-probe-timeout-flake.md](windows-host-awake-probe-timeout-flake.md).
+The commit changed only site, sharing-worker and STT lockfiles. No retry or
+timeout change was made.
+Contributing-model: claude-opus-5-5.
+
+Follow-up the same day: `npm root -g` is now bounded at about 10 seconds and
+falls back to the release-package install source, and `/api/version` logs a
+`version_probe_slow` warning naming each dependency still pending after
+5 seconds, so the smoke's output tail identifies a stalled probe on the next
+occurrence. The smoke's readiness budget is unchanged. This does not establish
+the cause; check the next failing log for `version_probe_slow`.
+Contributing-model: claude-opus-5-5.
+
 Found 2026-09-12 while validating Windows directory-sync persistence fixes.

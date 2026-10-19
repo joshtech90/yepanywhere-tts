@@ -14,6 +14,11 @@ and compatibility history.
 
 Settings surface: [Storage Settings](storage-settings.md).
 
+[rendez uploads](rendez.md) have a separate explicit opt-in: enabling a
+project's `.rendez` watcher authorizes that upload destination and its delivered
+snapshots even in app-data mode. It does not change browser attachment storage
+or authorize other project-local YA state.
+
 ## Scope
 
 This topic owns every write YA itself makes inside a selected project root or

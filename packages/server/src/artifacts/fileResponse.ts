@@ -1,6 +1,6 @@
 import type { FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
-import { Readable } from "node:stream";
+import { openedFileStream } from "./openedFileStream.js";
 
 /**
  * The bytes of one opened file as a GET or HEAD response: whole, or the one
@@ -50,8 +50,7 @@ export async function fileBytesResponse(
     await handle.close();
     return new Response(null, { status, headers });
   }
-  const stream = handle.createReadStream({ start, end, autoClose: true });
-  return new Response(Readable.toWeb(stream) as ReadableStream, {
+  return new Response(openedFileStream(handle, start, end), {
     status,
     headers,
   });

@@ -499,7 +499,19 @@ for (const viewport of [
       const count = requests.length;
       const anchor = rows.nth(2).locator("[data-search-previews]");
       await anchor.scrollIntoViewIfNeeded();
-      const before = (await anchor.boundingBox())!.y;
+      await anchor.evaluate((node: HTMLElement) => {
+        node.addEventListener(
+          "click",
+          () => {
+            // Playwright may scroll the limit button into view after the
+            // previews root is visible. Anchor the actual disclosure click.
+            node.dataset.beforeLimitTop = String(
+              node.getBoundingClientRect().top,
+            );
+          },
+          { once: true, capture: true },
+        );
+      });
       await rows
         .nth(2)
         .getByRole("button", {
@@ -507,6 +519,7 @@ for (const viewport of [
           exact: true,
         })
         .click();
+      const before = Number(await anchor.getAttribute("data-before-limit-top"));
       await expect(limit).toHaveValue("2");
       await expect(
         rows.first().getByRole("button", { name: "Match menu" }),

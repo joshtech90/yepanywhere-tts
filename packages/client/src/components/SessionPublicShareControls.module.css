@@ -1,3 +1,14 @@
 .viewerCount {
   flex-shrink: 0;
 }
+
+.menuLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.menuCounts {
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+}

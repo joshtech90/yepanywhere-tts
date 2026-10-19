@@ -294,7 +294,11 @@ describe("session composer submission helpers", () => {
           sourceTransport,
           projectId: "project-a",
           sessionId: "session-a",
-          maxLongEdgePx: 1024,
+          imageProfile: {
+            maxLongEdge: 2000,
+            maxBytes: 4 * 1024 * 1024,
+            quality: 90,
+          },
           onProgress: progress,
         }),
       ).resolves.toMatchObject({ id: "uploaded-a", size: directFile.size });
@@ -305,7 +309,11 @@ describe("session composer submission helpers", () => {
           sourceTransport,
           projectId: "project-a",
           sessionId: "session-a",
-          maxLongEdgePx: 1024,
+          imageProfile: {
+            maxLongEdge: 2000,
+            maxBytes: 4 * 1024 * 1024,
+            quality: 90,
+          },
           stagedBatchId: "batch-a",
           onProgress: progress,
         }),
@@ -337,7 +345,11 @@ describe("session composer submission helpers", () => {
           sourceTransport,
           projectId: "project-a",
           sessionId: "session-a",
-          maxLongEdgePx: 1024,
+          imageProfile: {
+            maxLongEdge: 2000,
+            maxBytes: 4 * 1024 * 1024,
+            quality: 90,
+          },
           stagedBatchId: "batch-a",
         }),
       ).rejects.toThrow("boom");

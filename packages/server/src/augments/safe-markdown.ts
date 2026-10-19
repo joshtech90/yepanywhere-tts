@@ -3,6 +3,7 @@ import { isAbsolute, normalize, posix, win32 } from "node:path";
 import { katex as markdownItKatex } from "@mdit/plugin-katex";
 import katex from "katex";
 import {
+  buildProjectFileViewerHref,
   type LocalResourceMediaType,
   linkifyToHtml,
   normalizeTexForKatex,
@@ -759,20 +760,6 @@ function resolveProjectFileCodeReference(
   return target;
 }
 
-function projectFileViewerHref(
-  projectId: string,
-  target: ProjectFileCodeLink,
-): string {
-  const params = new URLSearchParams({ path: target.relativePath });
-  if (target.lineNumber !== undefined) {
-    params.set("line", String(target.lineNumber));
-  }
-  if (target.columnNumber !== undefined) {
-    params.set("column", String(target.columnNumber));
-  }
-  return `/projects/${encodeURIComponent(projectId)}/file?${params}`;
-}
-
 function renderProjectFileLinkOpen(
   options: ProjectFileLinkOptions,
   target: ProjectFileCodeLink,
@@ -783,7 +770,15 @@ function renderProjectFileLinkOpen(
   } = {},
 ): string {
   const attributes: Array<[string, string]> = [
-    ["href", projectFileViewerHref(options.projectId, target)],
+    [
+      "href",
+      buildProjectFileViewerHref({
+        projectId: options.projectId,
+        filePath: target.relativePath,
+        lineNumber: target.lineNumber,
+        columnNumber: target.columnNumber,
+      }),
+    ],
     ["data-ya-resource", "project-file"],
     ["data-ya-project-id", options.projectId],
     ["data-ya-path", target.relativePath],
@@ -815,16 +810,19 @@ function renderProjectFileLinkOpen(
 /** Render one already-authorized path through the project FileViewer route. */
 export function renderProjectFileViewerLink(
   projectId: string,
-  filePath: string,
+  target: { filePath: string; lineNumber?: number; columnNumber?: number },
   label: string,
 ): string {
+  const { filePath, lineNumber, columnNumber } = target;
   const open = renderProjectFileLinkOpen(
     { projectId, projectPath: "" },
-    { absolutePath: filePath, relativePath: filePath },
     {
-      privateReference: true,
-      title: `${filePath}\nClick to view, or use a browser link gesture to open this file`,
+      absolutePath: filePath,
+      relativePath: filePath,
+      lineNumber,
+      columnNumber,
     },
+    { privateReference: true },
   );
   return `${open}${escapeHtml(label)}</a>`;
 }
@@ -1864,7 +1862,7 @@ export function renderSafeMarkdown(
   }
 }
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")

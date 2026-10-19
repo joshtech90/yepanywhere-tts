@@ -17,10 +17,11 @@ import pino, { type Logger } from "pino";
 import { WebSocketServer } from "ws";
 import { getClientIp, parseTrustedProxies } from "./client-ip.js";
 import {
+  DEFAULT_PAIR_FIRST_MESSAGE_TIMEOUT_MS,
   DEFAULT_RELAY_WEBSOCKET_MAX_MESSAGE_BYTES,
   type RelayConfig,
 } from "./config.js";
-import { ConnectionManager } from "./connections.js";
+import { ConnectionManager, silentPairOptions } from "./connections.js";
 import { createDb, createTestDb } from "./db.js";
 import type { LogLevel } from "./logger.js";
 import { createMuxHandler } from "./mux-handler.js";
@@ -55,6 +56,7 @@ export interface RelayServerOptions {
   pingIntervalMs?: number;
   /** Pong timeout in ms (default: 30000) */
   pongTimeoutMs?: number;
+  pairFirstMessageTimeoutMs?: number;
   /** Days of inactivity before username can be reclaimed (default: 90) */
   reclaimDays?: number;
   /** Disable pretty printing (for tests) */
@@ -145,6 +147,9 @@ export async function createRelayServer(
     dataDir: options.dataDir ?? "",
     pingIntervalMs: options.pingIntervalMs ?? 60_000,
     pongTimeoutMs: options.pongTimeoutMs ?? 30_000,
+    pairFirstMessageTimeoutMs:
+      options.pairFirstMessageTimeoutMs ??
+      DEFAULT_PAIR_FIRST_MESSAGE_TIMEOUT_MS,
     reclaimDays: options.reclaimDays ?? 90,
     unauthenticatedConnectionLimitPerIp:
       options.unauthenticatedConnectionLimitPerIp ??
@@ -223,13 +228,16 @@ export async function createRelayServer(
     logger.info({ count: reclaimed }, "Reclaimed inactive usernames");
   }
 
-  // Create connection manager
-  const connectionManager = new ConnectionManager(registry);
   const unauthenticatedLimiter = new UnauthenticatedConnectionLimiter(
     config.unauthenticatedConnectionLimitPerIp,
     config.unauthenticatedConnectionTimeoutMs,
   );
   const telemetry = createRelayTelemetryRecorder(config.telemetry, logger);
+  // Create connection manager
+  const connectionManager = new ConnectionManager(
+    registry,
+    silentPairOptions(config, logger, telemetry),
+  );
 
   // Create Hono app for HTTP endpoints
   const app = new Hono();

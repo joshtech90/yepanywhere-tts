@@ -14,7 +14,9 @@ import {
 import { toBrowserAppHref } from "../lib/appHref";
 import { sessionCollectionRecordsToGlobalSessionItems } from "../lib/sessionCollectionRecords";
 import { useSessionCollectionQueryRecords } from "../lib/clientSummaryStore";
+import { useI18n } from "../i18n";
 import { ProviderBadge } from "./ProviderBadge";
+import { SessionTitleDetails } from "./SessionTitleDetails";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import styles from "./RecentSessionsDropdown.module.css";
 
@@ -36,8 +38,10 @@ function classNames(...values: (string | false | null | undefined)[]): string {
 }
 
 interface RecentSessionsDropdownProps {
-  /** Current session ID (will be excluded from list) */
+  /** Current session is pinned above the other recent sessions. */
   currentSessionId: string;
+  /** Complete title from the open session, even when absent from the feed. */
+  currentSessionTitle: string;
   /** Whether the dropdown is open */
   isOpen: boolean;
   /** Called when dropdown should close */
@@ -110,6 +114,7 @@ function StatusIndicator({ session }: { session: GlobalSessionItem }) {
 
 export function RecentSessionsDropdown({
   currentSessionId,
+  currentSessionTitle,
   isOpen,
   onClose,
   onNavigate,
@@ -119,6 +124,7 @@ export function RecentSessionsDropdown({
   const dropdownRef = useRef<HTMLDivElement>(null);
   const lastTouchPointerAtRef = useRef(0);
   const navigate = useNavigate();
+  const { t } = useI18n();
 
   // Feed recent sessions across all projects; rows render from the collection.
   const feed = useGlobalSessionsFeed({
@@ -131,7 +137,7 @@ export function RecentSessionsDropdown({
     [sessionRecords],
   );
 
-  // Filter out current session and limit
+  // The current session has its own full-title section; avoid duplicating it.
   const recentSessions = sessions
     .filter((s) => s.id !== currentSessionId && !s.isArchived)
     .slice(0, MAX_RECENT_SESSIONS);
@@ -200,16 +206,25 @@ export function RecentSessionsDropdown({
       top: triggerRect.bottom + 4,
       left,
       width: dropdownWidth,
+      maxHeight: Math.max(0, window.innerHeight - triggerRect.bottom - 12),
     };
   })();
 
   const dropdown = (
     <div ref={dropdownRef} className={styles.dropdown} style={style}>
-      <div className={styles.header}>Recent Sessions</div>
+      <div className={styles.current}>
+        <SessionTitleDetails
+          title={currentSessionTitle}
+          label={t("sessionCurrentSession")}
+          singleLine
+          showCopy={false}
+        />
+      </div>
+      <div className={styles.header}>{t("sessionRecentSessions")}</div>
       {recentSessions.length === 0 ? (
-        <div className={styles.empty}>No other sessions</div>
+        <div className={styles.empty}>{t("sessionNoOtherSessions")}</div>
       ) : (
-        <div className={styles.list}>
+        <div>
           {recentSessions.map((session) => {
             const title = getDisplayTitle(session);
             const titleTooltip = getTitleTooltip(session, title);

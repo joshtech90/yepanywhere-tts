@@ -168,6 +168,7 @@ export class ArtifactServer {
   private readonly store: GrantStore;
   private readonly protectedPaths: readonly (string | undefined)[];
   private deletions: PendingDeletion[] = [];
+  private grantStateDirty = false;
   private sweepTimer?: ReturnType<typeof setInterval>;
   /** Restore runs once; every path that reads grants waits for it. */
   readonly ready: Promise<void>;
@@ -197,7 +198,7 @@ export class ArtifactServer {
       this.vhostAccess.ready,
       this.vhostOauth.ready,
     ]).then(() => {});
-    // Startup restores and saves before any caller awaits readiness, so a
+    // Startup may expire grants and save before any caller awaits readiness, so a
     // failed state write would otherwise reject with no handler attached and
     // take down the process. Report it here; `ready` still rejects for the
     // request paths that await it.
@@ -251,7 +252,6 @@ export class ArtifactServer {
     this.app.get("/a/:token/*", async (c) => {
       const grant = this.grants.get(c.req.param("token"));
       if (!grant || grant.expiresAt <= Date.now()) {
-        if (grant) this.grants.delete(grant.token);
         return c.notFound();
       }
       const prefix = `/a/${grant.token}/`;
@@ -349,15 +349,9 @@ export class ArtifactServer {
    */
   private async restore(): Promise<void> {
     const state = await this.store.load();
-    const now = Date.now();
     this.deletions = state.deletions;
     for (const stored of state.grants) {
-      if (stored.expiresAt > now) {
-        this.grants.set(stored.token, { ...stored, files: new Set() });
-        continue;
-      }
-      if (stored.owned)
-        this.owe(stored.root, stored.ownedFiles ?? [], stored.expiresAt);
+      this.grants.set(stored.token, { ...stored, files: new Set() });
     }
     this.sweepTimer = setInterval(() => void this.sweep(), SWEEP_MS);
     this.sweepTimer.unref?.();
@@ -372,18 +366,26 @@ export class ArtifactServer {
   }
 
   private persist(): Promise<void> {
-    return this.store.save(
-      [...this.grants.values()].map(({ files: _files, ...stored }) => stored),
-      this.deletions,
-    );
+    this.grantStateDirty = false;
+    return this.store
+      .save(
+        [...this.grants.values()].map(({ files: _files, ...stored }) => stored),
+        this.deletions,
+      )
+      .catch((error: unknown) => {
+        // A later sweep must retry failed writes even if no grant expires then.
+        this.grantStateDirty = true;
+        throw error;
+      });
   }
 
-  /** Expire grants, pay the deletions they owe, and save what remains. */
+  /** Expire grants and pay their deletions; unchanged sweeps perform no writes. */
   private async sweep(): Promise<void> {
     const now = Date.now();
     for (const [token, grant] of this.grants) {
       if (grant.expiresAt > now) continue;
       this.grants.delete(token);
+      this.grantStateDirty = true;
       if (grant.owned)
         this.owe(grant.root, grant.ownedFiles ?? [], grant.expiresAt);
     }
@@ -394,8 +396,9 @@ export class ArtifactServer {
       for (const pending of due)
         await GrantStore.deleteFrozen(pending.root, pending.files);
       this.deletions = this.deletions.filter((pending) => pending.dueAt > now);
+      this.grantStateDirty = true;
     }
-    await this.persist();
+    if (this.grantStateDirty) await this.persist();
   }
 
   /** Awaitable sweep for callers that must observe the result. */
@@ -678,6 +681,7 @@ export class ArtifactServer {
         // an owning grant pays its deletion on revocation.
         for (const [token, grant] of this.grants) {
           this.grants.delete(token);
+          this.grantStateDirty = true;
           if (grant.owned)
             this.owe(grant.root, grant.ownedFiles ?? [], Date.now());
         }
@@ -767,9 +771,8 @@ export class ArtifactServer {
         message: "Artifact entry must be an HTML file",
       });
     }
+    await this.sweep();
     const now = Date.now();
-    for (const [token, grant] of this.grants)
-      if (grant.expiresAt <= now) this.grants.delete(token);
     // Project callers supply the canonical, containment-checked root. Resolving
     // symlinks again here could accept a replacement pointing outside it.
     const root = declaredRoot
@@ -894,6 +897,7 @@ export class ArtifactServer {
     for (const [token, grant] of this.grants)
       if (grant.id === id) {
         this.grants.delete(token);
+        this.grantStateDirty = true;
         if (grant.owned)
           this.owe(grant.root, grant.ownedFiles ?? [], Date.now());
       }

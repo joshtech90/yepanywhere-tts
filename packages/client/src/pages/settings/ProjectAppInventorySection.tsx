@@ -10,7 +10,7 @@ import { ProjectAppViewer } from "../../components/ProjectAppViewer";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import styles from "./ProjectAppInventorySection.module.css";
-import { SettingsCollection } from "./SettingsCollection";
+import { expandableRowProps, SettingsCollection } from "./SettingsCollection";
 import { ElidedPath } from "../../components/ui/ElidedPath";
 import { SettingsSortHeader, useSettingsTableSort } from "./SettingsTableSort";
 
@@ -210,11 +210,6 @@ export function ProjectAppInventorySection() {
                 expanded === row.projectId && (
                   <article className={styles.row} key={row.projectId}>
                     {!canDelete && <p>{t("projectAppDeleteUpdate")}</p>}
-                    <div className={styles.heading}>
-                      <span>
-                        {t("projectAppState", { state: row.info.state })}
-                      </span>
-                    </div>
                     <p>
                       {row.owner ?? t("projectAppInventoryAdministrator")} ·{" "}
                       <code>{row.path}</code>
@@ -311,57 +306,64 @@ export function ProjectAppInventorySection() {
                 </tr>
               </thead>
               <tbody>
-                {displayedRows.map((row) => (
-                  <tr key={row.key}>
-                    <td>
-                      {row.project ? (
-                        <button
-                          type="button"
-                          aria-expanded={expanded === row.project.projectId}
-                          onClick={() =>
-                            setExpanded(
-                              expanded === row.project?.projectId
-                                ? undefined
-                                : row.project?.projectId,
-                            )
-                          }
-                        >
-                          <span aria-hidden="true">
-                            {expanded === row.project.projectId
-                              ? "▾"
-                              : "▸"}{" "}
-                          </span>
-                          {row.name}
-                        </button>
-                      ) : (
-                        row.name
-                      )}
-                    </td>
-                    <td>{row.path ? <ElidedPath path={row.path} /> : "—"}</td>
-                    <td>
-                      {row.addresses.map((address) => (
-                        <div key={address.namespace}>
-                          {address.name}.{address.namespace}
-                        </div>
-                      ))}
-                    </td>
-                    <td>
-                      {row.retained ? (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() =>
-                            row.retained && void releaseAddress(row.retained)
-                          }
-                        >
-                          {t("projectAppRelease")}
-                        </button>
-                      ) : (
-                        row.status
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {displayedRows.map((row) => {
+                  const projectId = row.project?.projectId;
+                  const toggle =
+                    projectId === undefined
+                      ? undefined
+                      : () =>
+                          setExpanded(
+                            expanded === projectId ? undefined : projectId,
+                          );
+                  return (
+                    <tr
+                      key={row.key}
+                      {...(toggle && expandableRowProps(toggle))}
+                    >
+                      <td>
+                        {row.project ? (
+                          <button
+                            type="button"
+                            aria-expanded={expanded === row.project.projectId}
+                            onClick={toggle}
+                          >
+                            <span aria-hidden="true">
+                              {expanded === row.project.projectId
+                                ? "▾"
+                                : "▸"}{" "}
+                            </span>
+                            {row.name}
+                          </button>
+                        ) : (
+                          row.name
+                        )}
+                      </td>
+                      <td>{row.path ? <ElidedPath path={row.path} /> : "—"}</td>
+                      <td>
+                        {row.addresses.map((address) => (
+                          <div key={address.namespace}>
+                            {address.name}.{address.namespace}
+                          </div>
+                        ))}
+                      </td>
+                      <td>
+                        {row.retained ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() =>
+                              row.retained && void releaseAddress(row.retained)
+                            }
+                          >
+                            {t("projectAppRelease")}
+                          </button>
+                        ) : (
+                          row.status
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </SettingsCollection>

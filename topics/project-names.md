@@ -64,7 +64,8 @@ Status: **implemented (2026-09-20).**
     adds the project, and starts there; a notice says whether the folder
     was created or already existed. A missing parent is refused rather
     than created (a limited user's own project root is still made on first
-    use). An existing folder is added as it is, never initialized. The
+    use). An existing empty folder gets the same Git initialization; one
+    with any content is added as it is, never initialized. The
     Git choice is remembered in the browser. Servers without
     `project-creation-git-choice` always initialize Git; there the box is
     checked and disabled and no choice is sent.

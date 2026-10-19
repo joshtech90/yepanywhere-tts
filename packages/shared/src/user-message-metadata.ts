@@ -84,6 +84,27 @@ export function stripPatientQueuePrefix(message: string): string {
   return stripped.trim() ? `${leading}${stripped}` : message;
 }
 
+/**
+ * Which entry point created a patient queue item: the explicit "Next topic
+ * when done" action, or an ordinary queue send while the patient queue
+ * default is on. Each source has its own compaction threshold setting.
+ */
+export type PatientQueueSource = "topic-shift" | "patient-default";
+
+/**
+ * Normalize a compact-before-delivery threshold to a whole percent in 1–99.
+ * 100 and above mean Off (not "compact at full context"), so an estimate
+ * above the reported limit can never trigger compaction; anything else that
+ * is not a usable percent is Off too.
+ */
+export function normalizePatientCompactPercent(
+  value: unknown,
+): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const percent = Math.round(value);
+  return percent >= 1 && percent <= 99 ? percent : undefined;
+}
+
 export interface UserMessageCompositionMetadata {
   typingStartedAt?: string;
   typingEndedAt?: string;
@@ -105,6 +126,8 @@ export interface NonHumanUserTurn {
 }
 
 export interface UserMessageMetadata {
+  /** Routing provenance; a provider user role does not imply human input. */
+  origin?: "user" | "coordination" | "rendezvous" | "automation";
   /** Caller-declared cross-session provenance; never a grant of authority. */
   sourceSessionId?: string;
   /** One-turn effort selection, resolved at provider admission. */
@@ -118,6 +141,15 @@ export interface UserMessageMetadata {
    * mutate already queued items.
    */
   patienceSeconds?: number;
+  /** Entry point that created a patient item; absent on older items. */
+  patientSource?: PatientQueueSource;
+  /**
+   * Compact first when context usage at the delivery boundary is at or above
+   * this percent (1–99) of the session's context window. Stamped at queue
+   * time from the source's setting; absent means deliver without YA
+   * compaction. Only meaningful with deliveryIntent "patient".
+   */
+  compactAboveContextPercent?: number;
   /**
    * Steer with the provider's most-urgent lane (Claude `priority: "now"`:
    * abort in-flight sampling, auto-background running tools). Only

@@ -1,4 +1,4 @@
-import { getEntry, openDatabase, putEntryWithKey } from "./diagnostics/idb";
+import { getEntry, putEntryWithKey, sharedDatabase } from "./diagnostics/idb";
 
 export interface ComposerUploadOrigin {
   projectId?: string;
@@ -19,7 +19,9 @@ export interface ComposerHistory {
   uploads: RecentComposerUpload[];
 }
 const empty = (): ComposerHistory => ({ prompts: [], uploads: [] });
-let database: Promise<IDBDatabase> | undefined;
+const database = sharedDatabase("ya-composer-history", 1, (db) => {
+  db.createObjectStore("accounts");
+});
 const mutations = new Map<string, Promise<void>>();
 const listeners = new Map<string, Set<() => void>>();
 
@@ -35,18 +37,13 @@ export function subscribeComposerHistory(
     if (!subscribers.size) listeners.delete(scope);
   };
 }
-function db() {
-  database ??= openDatabase("ya-composer-history", 1, (value) => {
-    value.createObjectStore("accounts");
-  });
-  return database;
-}
 export async function readComposerHistory(
   scope: string,
 ): Promise<ComposerHistory> {
   await mutations.get(scope);
-  return (
-    (await getEntry<ComposerHistory>(await db(), "accounts", scope)) ?? empty()
+  return database.run(
+    async (db) =>
+      (await getEntry<ComposerHistory>(db, "accounts", scope)) ?? empty(),
   );
 }
 function update(
@@ -54,11 +51,12 @@ function update(
   change: (history: ComposerHistory) => void,
 ): Promise<void> {
   const next = (mutations.get(scope) ?? Promise.resolve()).then(async () => {
-    const database = await db();
-    const history =
-      (await getEntry<ComposerHistory>(database, "accounts", scope)) ?? empty();
-    change(history);
-    await putEntryWithKey(database, "accounts", scope, history);
+    await database.run(async (db) => {
+      const history =
+        (await getEntry<ComposerHistory>(db, "accounts", scope)) ?? empty();
+      change(history);
+      await putEntryWithKey(db, "accounts", scope, history);
+    });
     for (const listener of listeners.get(scope) ?? []) listener();
   });
   mutations.set(scope, next);

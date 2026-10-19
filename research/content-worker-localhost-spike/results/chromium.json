@@ -1,0 +1,1513 @@
+{
+  "temp": "/var/folders/qw/pzqy9tp52_s5f51778j6j8tr0000gn/T/ya-content-worker-04JTfW",
+  "cases": [
+    {
+      "name": "localhost-subdomain",
+      "thirdPartyCookiesBlocked": false,
+      "parentOrigin": "http://localhost:61730",
+      "contentOrigin": "http://usercontent.localhost:61729",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/148.0.0.0 Safari/537.36",
+      "host": {
+        "secure": true,
+        "events": [
+          {
+            "viewerId": "cf432a72-5936-47c4-bb39-a36c35fbd90f",
+            "type": "registered",
+            "secure": true,
+            "originAgentCluster": true
+          },
+          {
+            "type": "read",
+            "path": "report/index.html"
+          },
+          {
+            "type": "read",
+            "path": "report/style.css"
+          },
+          {
+            "type": "read",
+            "path": "assets/chart.png"
+          },
+          {
+            "type": "read",
+            "path": "report/classic.js"
+          },
+          {
+            "type": "read",
+            "path": "report/app.js"
+          },
+          {
+            "type": "read",
+            "path": "report/more.css"
+          },
+          {
+            "type": "read",
+            "path": "report/lib.js"
+          },
+          {
+            "type": "read",
+            "path": "report/dyn.js"
+          },
+          {
+            "type": "read",
+            "path": "assets/dot.svg"
+          },
+          {
+            "type": "read",
+            "path": "assets/font.woff2"
+          },
+          {
+            "type": "read",
+            "path": "report/data.json"
+          }
+        ]
+      },
+      "bootstrapSite": "cross-site",
+      "artifact": {
+        "secure": true,
+        "origin": "http://usercontent.localhost:61729",
+        "controlled": true,
+        "image": 640,
+        "srcset": "http://usercontent.localhost:61729/v/cf432a72-5936-47c4-bb39-a36c35fbd90f/assets/chart.png",
+        "font": true,
+        "cssImport": "0.5px",
+        "cssBackground": "url(\"http://usercontent.localhost:61729/v/cf432a72-5936-47c4-bb39-a36c35fbd90f/assets/dot.svg\")",
+        "classic": true,
+        "modules": {
+          "label": "static",
+          "dynamic": "computed dynamic",
+          "data": {
+            "notes": 3
+          }
+        },
+        "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"http://usercontent.localhost:61729\" from accessing a cross-origin frame.",
+        "secret": null
+      },
+      "nativeFetch": {
+        "status": 200,
+        "worker": "1",
+        "body": {
+          "notes": 3
+        }
+      },
+      "artifactTyping": {
+        "characters": 32,
+        "maxMs": 2,
+        "dropped": 0
+      },
+      "hostTyping": {
+        "characters": 25,
+        "maxMs": 10,
+        "dropped": 0
+      },
+      "navigationAndReload": true,
+      "afterWorkerStop": {
+        "status": 200,
+        "worker": "1",
+        "data": {
+          "notes": 3
+        }
+      },
+      "denied": {
+        "outside": 403,
+        "wrongViewer": 503,
+        "api": 404
+      },
+      "networkArtifactRequests": 0,
+      "cancellation": {
+        "firstChunkBytes": 65536
+      },
+      "concurrentOrigins": [
+        "http://usercontent.localhost:61729",
+        "http://second.usercontent.localhost:61729"
+      ],
+      "afterClose": {
+        "status": 503,
+        "registrations": 0
+      },
+      "closed": true,
+      "networkFallback": 404,
+      "expectedDenialErrors": [],
+      "outcome": "passed",
+      "finalHostEvents": [
+        {
+          "viewerId": "cf432a72-5936-47c4-bb39-a36c35fbd90f",
+          "type": "registered",
+          "secure": true,
+          "originAgentCluster": true
+        },
+        {
+          "type": "read",
+          "path": "report/index.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/classic.js"
+        },
+        {
+          "type": "read",
+          "path": "report/app.js"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/lib.js"
+        },
+        {
+          "type": "read",
+          "path": "report/dyn.js"
+        },
+        {
+          "type": "read",
+          "path": "assets/dot.svg"
+        },
+        {
+          "type": "read",
+          "path": "assets/font.woff2"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/slow.bin"
+        },
+        {
+          "type": "stream-cancelled",
+          "path": "report/slow.bin",
+          "bytes": 653180
+        },
+        {
+          "viewerId": "34a96a9d-0f10-4479-bffb-b835d5d5d59f",
+          "type": "registered",
+          "secure": true,
+          "originAgentCluster": true
+        },
+        {
+          "type": "read",
+          "path": "report/index.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/classic.js"
+        },
+        {
+          "type": "read",
+          "path": "report/app.js"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/lib.js"
+        },
+        {
+          "type": "read",
+          "path": "report/dyn.js"
+        },
+        {
+          "type": "read",
+          "path": "assets/dot.svg"
+        },
+        {
+          "type": "read",
+          "path": "assets/font.woff2"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "disposed",
+          "viewerId": "34a96a9d-0f10-4479-bffb-b835d5d5d59f"
+        },
+        {
+          "type": "disposed",
+          "viewerId": "cf432a72-5936-47c4-bb39-a36c35fbd90f"
+        }
+      ],
+      "errors": [],
+      "contentNetwork": [
+        {
+          "host": "usercontent.localhost:61729",
+          "path": "/__ya/bootstrap.html",
+          "site": "cross-site",
+          "cookie": false
+        },
+        {
+          "host": "usercontent.localhost:61729",
+          "path": "/__ya/bootstrap.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "usercontent.localhost:61729",
+          "path": "/__ya/worker.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "usercontent.localhost:61729",
+          "path": "/api/version",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "second.usercontent.localhost:61729",
+          "path": "/__ya/bootstrap.html",
+          "site": "cross-site",
+          "cookie": false
+        },
+        {
+          "host": "second.usercontent.localhost:61729",
+          "path": "/__ya/bootstrap.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "second.usercontent.localhost:61729",
+          "path": "/__ya/worker.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "127.0.0.1:61729",
+          "path": "/v/cf432a72-5936-47c4-bb39-a36c35fbd90f/report/page2.html",
+          "cookie": false
+        }
+      ]
+    },
+    {
+      "name": "localhost-subdomain-blocked",
+      "thirdPartyCookiesBlocked": true,
+      "parentOrigin": "http://localhost:61730",
+      "contentOrigin": "http://usercontent.localhost:61729",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/148.0.0.0 Safari/537.36",
+      "host": {
+        "secure": true,
+        "events": [
+          {
+            "viewerId": "d9612cc1-013f-4c23-8bdb-d43bd3901319",
+            "type": "failed",
+            "secure": true,
+            "error": "NotSupportedError: Failed to register a ServiceWorker for scope ('http://usercontent.localhost:61729/v/') with script ('http://usercontent.localhost:61729/__ya/worker.js'): The user denied permission to use Service Worker."
+          }
+        ]
+      },
+      "bootstrapSite": "cross-site",
+      "outcome": "registration-refused",
+      "finalHostEvents": [
+        {
+          "viewerId": "d9612cc1-013f-4c23-8bdb-d43bd3901319",
+          "type": "failed",
+          "secure": true,
+          "error": "NotSupportedError: Failed to register a ServiceWorker for scope ('http://usercontent.localhost:61729/v/') with script ('http://usercontent.localhost:61729/__ya/worker.js'): The user denied permission to use Service Worker."
+        }
+      ],
+      "errors": [],
+      "contentNetwork": [
+        {
+          "host": "usercontent.localhost:61729",
+          "path": "/__ya/bootstrap.html",
+          "site": "cross-site",
+          "cookie": false
+        },
+        {
+          "host": "usercontent.localhost:61729",
+          "path": "/__ya/bootstrap.js",
+          "site": "same-origin",
+          "cookie": false
+        }
+      ]
+    },
+    {
+      "name": "nested-same-site",
+      "thirdPartyCookiesBlocked": false,
+      "parentOrigin": "http://app.yep.localhost:61730",
+      "contentOrigin": "http://g1.usercontent.yep.localhost:61729",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/148.0.0.0 Safari/537.36",
+      "host": {
+        "secure": true,
+        "events": [
+          {
+            "viewerId": "f08bb61b-3570-4e1a-987c-3183a227743a",
+            "type": "registered",
+            "secure": true,
+            "originAgentCluster": true
+          },
+          {
+            "type": "read",
+            "path": "report/index.html"
+          },
+          {
+            "type": "read",
+            "path": "report/style.css"
+          },
+          {
+            "type": "read",
+            "path": "assets/chart.png"
+          },
+          {
+            "type": "read",
+            "path": "report/classic.js"
+          },
+          {
+            "type": "read",
+            "path": "report/app.js"
+          },
+          {
+            "type": "read",
+            "path": "report/more.css"
+          },
+          {
+            "type": "read",
+            "path": "report/lib.js"
+          },
+          {
+            "type": "read",
+            "path": "assets/dot.svg"
+          },
+          {
+            "type": "read",
+            "path": "assets/font.woff2"
+          },
+          {
+            "type": "read",
+            "path": "report/dyn.js"
+          },
+          {
+            "type": "read",
+            "path": "report/data.json"
+          }
+        ]
+      },
+      "bootstrapSite": "same-site",
+      "artifact": {
+        "secure": true,
+        "origin": "http://g1.usercontent.yep.localhost:61729",
+        "controlled": true,
+        "image": 640,
+        "srcset": "http://g1.usercontent.yep.localhost:61729/v/f08bb61b-3570-4e1a-987c-3183a227743a/assets/chart.png",
+        "font": true,
+        "cssImport": "0.5px",
+        "cssBackground": "url(\"http://g1.usercontent.yep.localhost:61729/v/f08bb61b-3570-4e1a-987c-3183a227743a/assets/dot.svg\")",
+        "classic": true,
+        "modules": {
+          "label": "static",
+          "dynamic": "computed dynamic",
+          "data": {
+            "notes": 3
+          }
+        },
+        "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"http://g1.usercontent.yep.localhost:61729\" from accessing a cross-origin frame.",
+        "secret": null
+      },
+      "nativeFetch": {
+        "status": 200,
+        "worker": "1",
+        "body": {
+          "notes": 3
+        }
+      },
+      "artifactTyping": {
+        "characters": 32,
+        "maxMs": 2,
+        "dropped": 0
+      },
+      "hostTyping": {
+        "characters": 25,
+        "maxMs": 10,
+        "dropped": 0
+      },
+      "navigationAndReload": true,
+      "afterWorkerStop": {
+        "status": 200,
+        "worker": "1",
+        "data": {
+          "notes": 3
+        }
+      },
+      "denied": {
+        "outside": 403,
+        "wrongViewer": 503,
+        "api": 404
+      },
+      "networkArtifactRequests": 0,
+      "cancellation": {
+        "firstChunkBytes": 65536
+      },
+      "concurrentOrigins": [
+        "http://g1.usercontent.yep.localhost:61729",
+        "http://second.g1.usercontent.yep.localhost:61729"
+      ],
+      "afterClose": {
+        "status": 503,
+        "registrations": 0
+      },
+      "closed": true,
+      "networkFallback": 404,
+      "expectedDenialErrors": [],
+      "outcome": "passed",
+      "finalHostEvents": [
+        {
+          "viewerId": "f08bb61b-3570-4e1a-987c-3183a227743a",
+          "type": "registered",
+          "secure": true,
+          "originAgentCluster": true
+        },
+        {
+          "type": "read",
+          "path": "report/index.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/classic.js"
+        },
+        {
+          "type": "read",
+          "path": "report/app.js"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/lib.js"
+        },
+        {
+          "type": "read",
+          "path": "assets/dot.svg"
+        },
+        {
+          "type": "read",
+          "path": "assets/font.woff2"
+        },
+        {
+          "type": "read",
+          "path": "report/dyn.js"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/slow.bin"
+        },
+        {
+          "type": "stream-cancelled",
+          "path": "report/slow.bin",
+          "bytes": 310624
+        },
+        {
+          "viewerId": "be91f234-7e2f-4c2a-93c1-7df993b8915e",
+          "type": "registered",
+          "secure": true,
+          "originAgentCluster": true
+        },
+        {
+          "type": "read",
+          "path": "report/index.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/classic.js"
+        },
+        {
+          "type": "read",
+          "path": "report/app.js"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/lib.js"
+        },
+        {
+          "type": "read",
+          "path": "report/dyn.js"
+        },
+        {
+          "type": "read",
+          "path": "assets/dot.svg"
+        },
+        {
+          "type": "read",
+          "path": "assets/font.woff2"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "disposed",
+          "viewerId": "f08bb61b-3570-4e1a-987c-3183a227743a"
+        },
+        {
+          "type": "disposed",
+          "viewerId": "be91f234-7e2f-4c2a-93c1-7df993b8915e"
+        }
+      ],
+      "errors": [],
+      "contentNetwork": [
+        {
+          "host": "g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.html",
+          "site": "same-site",
+          "cookie": false
+        },
+        {
+          "host": "g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/worker.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "g1.usercontent.yep.localhost:61729",
+          "path": "/api/version",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "second.g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.html",
+          "site": "same-site",
+          "cookie": false
+        },
+        {
+          "host": "second.g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "second.g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/worker.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "127.0.0.1:61729",
+          "path": "/v/f08bb61b-3570-4e1a-987c-3183a227743a/report/page2.html",
+          "cookie": false
+        }
+      ]
+    },
+    {
+      "name": "nested-same-site-blocked",
+      "thirdPartyCookiesBlocked": true,
+      "parentOrigin": "http://app.yep.localhost:61730",
+      "contentOrigin": "http://g1.usercontent.yep.localhost:61729",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/148.0.0.0 Safari/537.36",
+      "host": {
+        "secure": true,
+        "events": [
+          {
+            "viewerId": "dc99e4d4-b98c-4f3a-b762-ddd216e18682",
+            "type": "registered",
+            "secure": true,
+            "originAgentCluster": true
+          },
+          {
+            "type": "read",
+            "path": "report/index.html"
+          },
+          {
+            "type": "read",
+            "path": "report/style.css"
+          },
+          {
+            "type": "read",
+            "path": "assets/chart.png"
+          },
+          {
+            "type": "read",
+            "path": "report/classic.js"
+          },
+          {
+            "type": "read",
+            "path": "report/app.js"
+          },
+          {
+            "type": "read",
+            "path": "report/more.css"
+          },
+          {
+            "type": "read",
+            "path": "report/lib.js"
+          },
+          {
+            "type": "read",
+            "path": "report/dyn.js"
+          },
+          {
+            "type": "read",
+            "path": "assets/dot.svg"
+          },
+          {
+            "type": "read",
+            "path": "assets/font.woff2"
+          },
+          {
+            "type": "read",
+            "path": "report/data.json"
+          }
+        ]
+      },
+      "bootstrapSite": "same-site",
+      "artifact": {
+        "secure": true,
+        "origin": "http://g1.usercontent.yep.localhost:61729",
+        "controlled": true,
+        "image": 640,
+        "srcset": "http://g1.usercontent.yep.localhost:61729/v/dc99e4d4-b98c-4f3a-b762-ddd216e18682/assets/chart.png",
+        "font": true,
+        "cssImport": "0.5px",
+        "cssBackground": "url(\"http://g1.usercontent.yep.localhost:61729/v/dc99e4d4-b98c-4f3a-b762-ddd216e18682/assets/dot.svg\")",
+        "classic": true,
+        "modules": {
+          "label": "static",
+          "dynamic": "computed dynamic",
+          "data": {
+            "notes": 3
+          }
+        },
+        "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"http://g1.usercontent.yep.localhost:61729\" from accessing a cross-origin frame.",
+        "secret": null
+      },
+      "nativeFetch": {
+        "status": 200,
+        "worker": "1",
+        "body": {
+          "notes": 3
+        }
+      },
+      "artifactTyping": {
+        "characters": 32,
+        "maxMs": 2,
+        "dropped": 0
+      },
+      "hostTyping": {
+        "characters": 25,
+        "maxMs": 10,
+        "dropped": 0
+      },
+      "navigationAndReload": true,
+      "afterWorkerStop": {
+        "status": 200,
+        "worker": "1",
+        "data": {
+          "notes": 3
+        }
+      },
+      "denied": {
+        "outside": 403,
+        "wrongViewer": 503,
+        "api": 404
+      },
+      "networkArtifactRequests": 0,
+      "cancellation": {
+        "firstChunkBytes": 65536
+      },
+      "concurrentOrigins": [
+        "http://g1.usercontent.yep.localhost:61729",
+        "http://second.g1.usercontent.yep.localhost:61729"
+      ],
+      "afterClose": {
+        "status": 503,
+        "registrations": 0
+      },
+      "closed": true,
+      "networkFallback": 404,
+      "expectedDenialErrors": [],
+      "outcome": "passed",
+      "finalHostEvents": [
+        {
+          "viewerId": "dc99e4d4-b98c-4f3a-b762-ddd216e18682",
+          "type": "registered",
+          "secure": true,
+          "originAgentCluster": true
+        },
+        {
+          "type": "read",
+          "path": "report/index.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/classic.js"
+        },
+        {
+          "type": "read",
+          "path": "report/app.js"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/lib.js"
+        },
+        {
+          "type": "read",
+          "path": "report/dyn.js"
+        },
+        {
+          "type": "read",
+          "path": "assets/dot.svg"
+        },
+        {
+          "type": "read",
+          "path": "assets/font.woff2"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/slow.bin"
+        },
+        {
+          "type": "stream-cancelled",
+          "path": "report/slow.bin",
+          "bytes": 538856
+        },
+        {
+          "viewerId": "1cff13f5-0d5e-4482-ac87-528074e40813",
+          "type": "registered",
+          "secure": true,
+          "originAgentCluster": true
+        },
+        {
+          "type": "read",
+          "path": "report/index.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/classic.js"
+        },
+        {
+          "type": "read",
+          "path": "report/app.js"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/lib.js"
+        },
+        {
+          "type": "read",
+          "path": "report/dyn.js"
+        },
+        {
+          "type": "read",
+          "path": "assets/dot.svg"
+        },
+        {
+          "type": "read",
+          "path": "assets/font.woff2"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "disposed",
+          "viewerId": "1cff13f5-0d5e-4482-ac87-528074e40813"
+        },
+        {
+          "type": "disposed",
+          "viewerId": "dc99e4d4-b98c-4f3a-b762-ddd216e18682"
+        }
+      ],
+      "errors": [],
+      "contentNetwork": [
+        {
+          "host": "g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.html",
+          "site": "same-site",
+          "cookie": false
+        },
+        {
+          "host": "g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/worker.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "g1.usercontent.yep.localhost:61729",
+          "path": "/api/version",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "second.g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.html",
+          "site": "same-site",
+          "cookie": false
+        },
+        {
+          "host": "second.g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "second.g1.usercontent.yep.localhost:61729",
+          "path": "/__ya/worker.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "127.0.0.1:61729",
+          "path": "/v/dc99e4d4-b98c-4f3a-b762-ddd216e18682/report/page2.html",
+          "cookie": false
+        }
+      ]
+    },
+    {
+      "name": "real-encrypted-relay",
+      "thirdPartyCookiesBlocked": true,
+      "parentOrigin": "http://app.yep.localhost:61730",
+      "contentOrigin": "http://relay.usercontent.yep.localhost:61729",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/148.0.0.0 Safari/537.36",
+      "host": {
+        "secure": true,
+        "authenticated": true,
+        "events": [
+          {
+            "viewerId": "266032ed-e189-4898-946d-3a7740a0611c",
+            "type": "registered",
+            "secure": true,
+            "originAgentCluster": true
+          },
+          {
+            "type": "read",
+            "path": "report/index.html"
+          },
+          {
+            "type": "read",
+            "path": "report/style.css"
+          },
+          {
+            "type": "read",
+            "path": "assets/chart.png"
+          },
+          {
+            "type": "read",
+            "path": "report/classic.js"
+          },
+          {
+            "type": "read",
+            "path": "report/app.js"
+          },
+          {
+            "type": "read",
+            "path": "report/more.css"
+          },
+          {
+            "type": "read",
+            "path": "assets/dot.svg"
+          },
+          {
+            "type": "read",
+            "path": "assets/font.woff2"
+          },
+          {
+            "type": "read",
+            "path": "report/lib.js"
+          },
+          {
+            "type": "read",
+            "path": "report/dyn.js"
+          },
+          {
+            "type": "read",
+            "path": "report/data.json"
+          }
+        ]
+      },
+      "bootstrapSite": "same-site",
+      "artifact": {
+        "secure": true,
+        "origin": "http://relay.usercontent.yep.localhost:61729",
+        "controlled": true,
+        "image": 640,
+        "srcset": "http://relay.usercontent.yep.localhost:61729/v/266032ed-e189-4898-946d-3a7740a0611c/assets/chart.png",
+        "font": true,
+        "cssImport": "0.5px",
+        "cssBackground": "url(\"http://relay.usercontent.yep.localhost:61729/v/266032ed-e189-4898-946d-3a7740a0611c/assets/dot.svg\")",
+        "classic": true,
+        "modules": {
+          "label": "static",
+          "dynamic": "computed dynamic",
+          "data": {
+            "notes": 3
+          }
+        },
+        "parentDOM": "SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin \"http://relay.usercontent.yep.localhost:61729\" from accessing a cross-origin frame.",
+        "secret": null
+      },
+      "nativeFetch": {
+        "status": 200,
+        "worker": "1",
+        "body": {
+          "notes": 3
+        }
+      },
+      "artifactTyping": {
+        "characters": 32,
+        "maxMs": 2,
+        "dropped": 0
+      },
+      "hostTyping": {
+        "characters": 25,
+        "maxMs": 13,
+        "dropped": 0
+      },
+      "navigationAndReload": true,
+      "afterWorkerStop": {
+        "status": 200,
+        "worker": "1",
+        "data": {
+          "notes": 3
+        }
+      },
+      "denied": {
+        "outside": 403,
+        "wrongViewer": 503,
+        "api": 404
+      },
+      "networkArtifactRequests": 0,
+      "cancellation": {
+        "firstChunkBytes": 65536
+      },
+      "concurrentOrigins": [
+        "http://relay.usercontent.yep.localhost:61729",
+        "http://second.relay.usercontent.yep.localhost:61729"
+      ],
+      "afterClose": {
+        "status": 503,
+        "registrations": 0
+      },
+      "closed": true,
+      "networkFallback": 404,
+      "expectedDenialErrors": [],
+      "outcome": "passed",
+      "finalHostEvents": [
+        {
+          "viewerId": "266032ed-e189-4898-946d-3a7740a0611c",
+          "type": "registered",
+          "secure": true,
+          "originAgentCluster": true
+        },
+        {
+          "type": "read",
+          "path": "report/index.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/classic.js"
+        },
+        {
+          "type": "read",
+          "path": "report/app.js"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/dot.svg"
+        },
+        {
+          "type": "read",
+          "path": "assets/font.woff2"
+        },
+        {
+          "type": "read",
+          "path": "report/lib.js"
+        },
+        {
+          "type": "read",
+          "path": "report/dyn.js"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/slow.bin"
+        },
+        {
+          "type": "stream-cancelled",
+          "path": "report/slow.bin",
+          "bytes": 131072
+        },
+        {
+          "viewerId": "4246bbfe-7818-4236-9fcb-0e23c03c1556",
+          "type": "registered",
+          "secure": true,
+          "originAgentCluster": true
+        },
+        {
+          "type": "read",
+          "path": "report/index.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/classic.js"
+        },
+        {
+          "type": "read",
+          "path": "report/app.js"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/lib.js"
+        },
+        {
+          "type": "read",
+          "path": "report/dyn.js"
+        },
+        {
+          "type": "read",
+          "path": "assets/dot.svg"
+        },
+        {
+          "type": "read",
+          "path": "assets/font.woff2"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "read",
+          "path": "report/page2.html"
+        },
+        {
+          "type": "read",
+          "path": "report/style.css"
+        },
+        {
+          "type": "read",
+          "path": "assets/chart.png"
+        },
+        {
+          "type": "read",
+          "path": "report/more.css"
+        },
+        {
+          "type": "read",
+          "path": "report/data.json"
+        },
+        {
+          "type": "disposed",
+          "viewerId": "4246bbfe-7818-4236-9fcb-0e23c03c1556"
+        },
+        {
+          "type": "disposed",
+          "viewerId": "266032ed-e189-4898-946d-3a7740a0611c"
+        }
+      ],
+      "errors": [],
+      "contentNetwork": [
+        {
+          "host": "relay.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.html",
+          "site": "same-site",
+          "cookie": false
+        },
+        {
+          "host": "relay.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "relay.usercontent.yep.localhost:61729",
+          "path": "/__ya/worker.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "relay.usercontent.yep.localhost:61729",
+          "path": "/api/version",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "second.relay.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.html",
+          "site": "same-site",
+          "cookie": false
+        },
+        {
+          "host": "second.relay.usercontent.yep.localhost:61729",
+          "path": "/__ya/bootstrap.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "second.relay.usercontent.yep.localhost:61729",
+          "path": "/__ya/worker.js",
+          "site": "same-origin",
+          "cookie": false
+        },
+        {
+          "host": "127.0.0.1:61729",
+          "path": "/v/266032ed-e189-4898-946d-3a7740a0611c/report/page2.html",
+          "cookie": false
+        }
+      ]
+    }
+  ]
+}

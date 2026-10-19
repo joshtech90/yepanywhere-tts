@@ -106,6 +106,35 @@ limit.
   direct WebSocket connections, and unauthenticated public-share reads keep
   the single `response` message.
 
+Native beta peers select `stream: "connection"` instead of `true`. This is a
+coordinated native/server update without an echo negotiation or old-beta mode.
+All such responses on one authenticated connection share a single 1 MiB body
+window, with FIFO send admission so a large stream cannot repeatedly take
+credit ahead of waiting small streams. Each of the eight native reader slots reserves one
+64 KiB piece of progress space. A stream can borrow unused space beyond that
+floor while preserving the other current/future slots' reservations; a lone
+stream can send 576 KiB before an ACK. This avoids a one-chunk stop-and-wait
+limit while leaving room for other readers when one is paused. A stream blocked
+on these reservations leaves the connection FIFO head and wakes when credit
+or producer lifecycle changes. Browser `true` requests retain the
+per-response window above; their login, framing and stall deadlines are unchanged.
+
+The shared window includes completed and cancelled tails until the client
+acknowledges bytes actually consumed or received and discarded. Native
+cancellation receives an end marker even though the file producer stops.
+Up to 128 started/retained native stream records are allowed per connection,
+plus the native reader slots' eight not-yet-started requests;
+duplicate live/retained IDs are refused. Unknown late starts after a caller
+abandons its response head acquire bounded discard-only records, never a new
+consumer. A native reader's 120-second idle deadline cancels/discards its body;
+a native server sender's wait deadline is 135 seconds without its own progress;
+a completed server tail's receipt deadline is 135 seconds since completion or
+its last advancing ACK. That margin allows native idle discard to settle first.
+If receipt never arrives, the server closes that logical connection rather
+than freeing credit for bytes that might remain in the relay. Source closure
+releases waiters, receipt timers, retained records and producers. These are
+body-byte bounds, not a claim about total process memory or non-body traffic.
+
 Consumers:
 
 - **Downloads** (`useSaveResourceDownload`) on a transport with `fetchStream`
@@ -267,7 +296,8 @@ replay must never traverse pre-modal history.
 The project file metadata/content endpoint includes complete HTML documents
 (`.html` and `.htm`) up to 200 MiB, including embedded assets. The ordinary
 source/preview viewer can display them without enabling an artifact service;
-the existing scriptless sandbox still governs Preview. Source highlighting
+the active-content delivery contract governs Preview, including managed
+  first-party relay delivery when qualified. Source highlighting
 uses at most the first 1 MiB and reports truncation independently of the complete
 preview content. Other text files retain their 1 MiB inline limit and bounded
 line-target windows. Above the HTML limit, metadata and the download remain
@@ -383,7 +413,8 @@ vocabulary even though their authorization routes remain distinct:
   an isearch-style find field in their header. It searches only what that
   viewer shows: rendered source, text, Markdown or diff; the scriptless HTML
   preview, searched directly because it is same-origin; or a running artifact,
-  through the find agent the artifact server appends to framed HTML. After the
+  through the shared find agent added by its artifact server or managed content
+  worker. After the
   reader clicks or focuses inside the viewer's content, Ctrl/Cmd+F opens the
   field instead of the browser's page-wide find, which still owns every other
   part of the page; a proxied live app and PDFs keep the browser's own find.
@@ -919,10 +950,10 @@ project/file-access allow-set without fallback lookup or filesystem guessing.
   call a raw `/api/local-file` URL a Viewer link. A real standalone viewer for
   those files requires a durable server/client coordinate that works across
   direct and relay connections.
-- **Static preview assets** — the scriptless HTML preview denies ambient
-  network loads. Supporting relative images or styles requires the trusted
-  viewer to fetch, bound, and broker those assets; relaxing iframe networking
-  is not the fallback.
+- **Static preview assets** — unqualified scriptless previews still deny ambient
+  network loads. Qualified first-party hosted Chrome uses the
+  [managed relay viewer](active-content-security.md#managed-first-party-relay-previews)
+  for bounded relative assets; other environments retain their fallback.
 - **Both doors share one allow-set** — as of `docs/tactical/018`, the
   project-files route enforces the same file-access allow-set as the media
   doors for absolute/`~` paths (relative paths stay project-scoped). The set is

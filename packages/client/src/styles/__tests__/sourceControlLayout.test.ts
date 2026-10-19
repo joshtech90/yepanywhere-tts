@@ -180,7 +180,7 @@ describe("Source Control workbench layout CSS contract", () => {
     );
     const fallback = getRuleDeclarationsContaining(
       pageCss,
-      ".headerControls.fallbackRow .actionGroup,\n.compatibilityActions .actionGroup",
+      ".compatibilityActions .actionGroup,\n.headerControls.fallbackRow .actionGroup",
       "width",
     );
     const indicator = getRuleDeclarationsContaining(

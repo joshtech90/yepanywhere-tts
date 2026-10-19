@@ -157,3 +157,66 @@ test("signs Claude and Codex in through server-run login flows", async ({
     claude.getByRole("button", { name: "Sign in to Claude" }),
   ).toHaveCount(0);
 });
+
+test("focused sign-in keeps startup failures visible and preserves typing during CLI updates", async ({
+  page,
+  baseURL,
+}) => {
+  let current: ReturnType<typeof flow> | null = null;
+  let starts = 0;
+  let reads = 0;
+  await page.route(
+    (url) => url.pathname === "/api/providers/claude",
+    (route) => route.fulfill({ json: { provider: provider("claude", false) } }),
+  );
+  await page.route(
+    (url) => url.pathname === "/api/providers/claude/login",
+    async (route) => {
+      if (route.request().method() === "POST") {
+        starts++;
+        if (starts === 1)
+          return route.fulfill({
+            status: 503,
+            json: { error: "Network unavailable; retry sign-in" },
+          });
+        current = flow("claude", {
+          output: "Official CLI is preparing authorization",
+        });
+      } else if (current) {
+        reads++;
+        current = { ...current, output: `Official CLI update ${reads}` };
+      }
+      await route.fulfill({ json: { flow: current } });
+    },
+  );
+  await page.setViewportSize({ width: 1000, height: 600 });
+  await page.goto(`${baseURL}/provider-sign-in/claude`);
+  await dismissOnboardingIfVisible(page);
+  const signIn = page.getByRole("button", {
+    name: "Sign in to Claude",
+    exact: true,
+  });
+  await expect(signIn).toBeVisible();
+  expect(starts).toBe(0); // Navigating a link alone never starts/replaces a login.
+  await signIn.click();
+  await expect(
+    page.getByTestId("provider-sign-in-claude").getByRole("alert"),
+  ).toContainText("Network unavailable");
+  await signIn.click();
+  await expect(page.getByLabel("Provider CLI output")).toContainText(
+    "Official CLI",
+  );
+  const input = page.getByRole("textbox", { name: "Authorization code" });
+  let text = "";
+  for (const character of "abc#123") {
+    await input.pressSequentially(character);
+    text += character;
+    await expect(input).toHaveValue(text, { timeout: 100 });
+    if (text.length === 3) await expect.poll(() => reads).toBeGreaterThan(0);
+  }
+  await expect(input).toHaveValue(text);
+  await recordUiCapture(page, "focused-provider-sign-in-desktop");
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(input).toBeVisible();
+  await recordUiCapture(page, "focused-provider-sign-in-phone");
+});

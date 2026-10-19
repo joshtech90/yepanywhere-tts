@@ -126,6 +126,9 @@ export function RelayConnectionGate() {
   routeRelayUsernameRef.current = relayUsername;
   const connectionAttemptRef = useRef(0);
   const pendingRelayUsernameRef = useRef<string | null>(null);
+  // After a failed acquisition only Retry or recovery signals try again;
+  // re-renders from the failure itself must not start another attempt.
+  const failedRelayUsernameRef = useRef<string | null>(null);
 
   const startRelayConnection = useCallback(
     (
@@ -147,6 +150,7 @@ export function RelayConnectionGate() {
       const attempt = connectionAttemptRef.current + 1;
       connectionAttemptRef.current = attempt;
       pendingRelayUsernameRef.current = targetRelayUsername;
+      failedRelayUsernameRef.current = null;
       setState("connecting");
       setError(null);
       setDismissedError(null);
@@ -180,6 +184,7 @@ export function RelayConnectionGate() {
             return;
           }
           pendingRelayUsernameRef.current = null;
+          failedRelayUsernameRef.current = targetRelayUsername;
           const autoResumeError = createAutoResumeError(
             err,
             host.relayUsername ?? targetRelayUsername,
@@ -209,6 +214,7 @@ export function RelayConnectionGate() {
 
     // If already connected, check if it's to the right host
     if (connection) {
+      failedRelayUsernameRef.current = null;
       const currentHost = currentHostId ? getHostById(currentHostId) : null;
       const connectedRelayUsername =
         currentRelayUsername ?? currentHost?.relayUsername;
@@ -308,6 +314,7 @@ export function RelayConnectionGate() {
       return;
     }
 
+    if (failedRelayUsernameRef.current === relayUsername) return;
     startRelayConnection(host, relayUsername);
   }, [
     relayUsername,

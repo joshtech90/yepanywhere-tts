@@ -1,0 +1,84 @@
+{
+  "schema": "ya-phone-build-toolchain/v1",
+  "sdk": [
+    {
+      "name": "platform-36_r02.zip",
+      "url": "https://dl.google.com/android/repository/platform-36_r02.zip",
+      "sha256": "37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e",
+      "files": ["android-36/android.jar", "android-36/data/NOTICE.txt"]
+    },
+    {
+      "name": "build-tools_r36_linux.zip",
+      "url": "https://dl.google.com/android/repository/build-tools_r36_linux.zip",
+      "sha256": "5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b",
+      "files": [
+        "android-16/core-lambda-stubs.jar",
+        "android-16/lib/d8.jar",
+        "android-16/lib/apksigner.jar",
+        "android-16/NOTICE.txt"
+      ]
+    }
+  ],
+  "termux": [
+    {
+      "name": "aapt_16.0.0.4-3_aarch64.deb",
+      "version": "16.0.0.4-3",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/a/aapt/aapt_16.0.0.4-3_aarch64.deb",
+      "sha256": "7d206cf1edb2fb31e6a679e34c5f19e5cdf38ab8f27e3325e0f05e427d26a219"
+    },
+    {
+      "name": "fmt_1:11.2.0-1_aarch64.deb",
+      "version": "1:11.2.0-1",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/f/fmt/fmt_1:11.2.0-1_aarch64.deb",
+      "sha256": "dad595afcb3b1096d725c6772c0c5531764caa5841affba3c533c6298a32ab08"
+    },
+    {
+      "name": "libc++_30_aarch64.deb",
+      "version": "30",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libc/libc++/libc++_30_aarch64.deb",
+      "sha256": "53d0b84a7ba7459024257cb94d5b136fe13ef858567f65a8064b35950799f2ca"
+    },
+    {
+      "name": "libexpat_2.9.0_aarch64.deb",
+      "version": "2.9.0",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libe/libexpat/libexpat_2.9.0_aarch64.deb",
+      "sha256": "f8a104e8227c9c181f6818658a3ee2fa4c107fac94219b068144fc6591086cdb"
+    },
+    {
+      "name": "libpng_1.6.59_aarch64.deb",
+      "version": "1.6.59",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libp/libpng/libpng_1.6.59_aarch64.deb",
+      "sha256": "32d61f0b1a60cf7283aa3a80e288737493df2c6b84c8c749606b77c94a10f2b2"
+    },
+    {
+      "name": "libzopfli_1.0.3-5_aarch64.deb",
+      "version": "1.0.3-5",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libz/libzopfli/libzopfli_1.0.3-5_aarch64.deb",
+      "sha256": "95cd7cb2209fbafb25825f5fcd4f86f021512175608e038b1c3d8d3fa0a4fe40"
+    },
+    {
+      "name": "zlib_1.3.2_aarch64.deb",
+      "version": "1.3.2",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/z/zlib/zlib_1.3.2_aarch64.deb",
+      "sha256": "75e7d0af17fcc3b40004309fdc00a1ddb9ae08346dce5e269902c34ac3966ac9"
+    },
+    {
+      "name": "aapt2_16.0.0.4-3_aarch64.deb",
+      "version": "16.0.0.4-3",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/a/aapt2/aapt2_16.0.0.4-3_aarch64.deb",
+      "sha256": "c498333ee1124076f4cf927edc4fe34603966ac25abf6b7b6d7c8757b233148f"
+    },
+    {
+      "name": "abseil-cpp_20260526.0_aarch64.deb",
+      "version": "20260526.0",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/a/abseil-cpp/abseil-cpp_20260526.0_aarch64.deb",
+      "sha256": "e489fac652cddc39d9436141e627285f1034a545a06fbb19c420514a419ad877"
+    },
+    {
+      "name": "libprotobuf_2:36.2_aarch64.deb",
+      "version": "2:36.2",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libp/libprotobuf/libprotobuf_2:36.2_aarch64.deb",
+      "sha256": "2f79e70af72127b6e9d8e8ea1a8bf261ea5f390914e667049b4f1dbc81f21fb0"
+    }
+  ]
+}

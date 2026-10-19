@@ -3994,23 +3994,11 @@ details[open] .collapsible__icon {
   min-height: 0;
 }
 
-/* Header layout for this and every other viewer header lives in the shared
-   `ViewerHeader.module.css`; only the file viewer's own chrome is here. */
+/* FileViewer.module.css owns header layout; legacy chrome remains here. */
 .file-viewer-header {
   padding: 0.25rem 0.5rem;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
-}
-
-.file-viewer-path {
-  display: -webkit-box;
-  overflow: hidden;
-  font-family: "SF Mono", Monaco, monospace;
-  font-size: var(--font-size-base);
-  color: var(--link-color);
-  word-break: break-all;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .file-viewer-meta {
@@ -4061,24 +4049,6 @@ details[open] .collapsible__icon {
 .file-viewer-action.file-viewer-new-session:hover {
   background: color-mix(in srgb, var(--success-color) 14%, transparent);
   color: var(--success-color);
-}
-
-.file-viewer-density-controls {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.125rem;
-  padding: 0 0.125rem;
-  border-left: 1px solid var(--border-subtle);
-  border-right: 1px solid var(--border-subtle);
-}
-
-.file-viewer-density-value {
-  min-width: 1.5rem;
-  text-align: center;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-  user-select: none;
 }
 
 .file-viewer-body {
@@ -4828,7 +4798,6 @@ pre.code-highlighter-plain code {
 .file-link-inline,
 .file-path-link,
 .file-path,
-.file-viewer-path,
 .file-viewer-code,
 .markdown-preview .markdown-rendered code,
 .markdown-preview .markdown-rendered pre,
@@ -4844,8 +4813,7 @@ pre.code-highlighter-plain {
 .file-content-with-lines,
 .file-link-button,
 .file-link-inline,
-.file-path,
-.file-viewer-path {
+.file-path {
   font-size: var(--fixed-font-size-base);
 }
 

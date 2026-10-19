@@ -6,6 +6,7 @@ import {
   normalizeEffortLevelForProvider,
 } from "../lib/effortLevels";
 import { useI18n } from "../i18n";
+import styles from "./ProviderBadge.module.css";
 
 const PROVIDER_COLORS: Record<ProviderName, string> = {
   claude: "var(--provider-claude)", // Claude orange
@@ -41,6 +42,8 @@ interface ProviderBadgeProps {
   provider: ProviderName;
   /** Show as small dot only (for sidebar) vs full badge (for header) */
   compact?: boolean;
+  /** Keep model identity and abbreviated effort in a narrow session header. */
+  condensed?: boolean;
   /** Model name to display alongside provider (e.g., "opus", "sonnet") */
   model?: string;
   /** Current thinking mode for live process config */
@@ -59,6 +62,7 @@ interface ProviderBadgeProps {
 export function ProviderBadge({
   provider,
   compact = false,
+  condensed = false,
   model,
   thinking,
   effort,
@@ -111,6 +115,23 @@ export function ProviderBadge({
     modelColor && modelColor !== color ? { color: modelColor } : undefined;
 
   const fullTitle = effectiveModel ? displayModelId(effectiveModel) : label;
+  const accessibleTitle = effortLabel
+    ? `${fullTitle} · ${t("providerBadgeEffort", { effort: effortLabel })}`
+    : fullTitle;
+  const shortEffort = effortTone
+    ? {
+        off: "Off",
+        auto: "Auto",
+        low: "L",
+        medium: "M",
+        high: "H",
+        xhigh: "XH",
+        max: "Max",
+      }[effortTone]
+    : null;
+  const condensedModel = modelParts
+    ? modelParts.modelLabel || modelParts.providerGlyph
+    : label;
 
   if (compact) {
     return (
@@ -124,24 +145,35 @@ export function ProviderBadge({
     );
   }
 
-  const dotClass = isThinking
-    ? "provider-badge-dot-inline thinking"
-    : "provider-badge-dot-inline";
+  const dotClass = `${styles.dot} ${isThinking ? styles.thinking : ""}`;
+  const effortToneClass = effortTone
+    ? {
+        off: styles.off,
+        auto: styles.auto,
+        low: styles.low,
+        medium: styles.medium,
+        high: styles.high,
+        xhigh: styles.xhigh,
+        max: styles.max,
+      }[effortTone]
+    : "";
   const dotStyle = isThinking
     ? { backgroundColor: "var(--thinking-color)" }
     : { backgroundColor: color };
 
   return (
     <span
-      className={`provider-badge ${className}`}
+      className={`provider-badge ${styles.badge} ${condensed ? styles.condensed : ""} ${className}`}
       style={{ borderColor: color, color }}
-      title={fullTitle}
+      title={accessibleTitle}
       role="img"
-      aria-label={fullTitle}
+      aria-label={accessibleTitle}
     >
       <span className={dotClass} style={dotStyle} />
-      <span className="provider-badge-label">
-        {modelParts ? (
+      <span className={`provider-badge-label ${styles.model}`}>
+        {condensed ? (
+          <span style={modelColorStyle}>{condensedModel}</span>
+        ) : modelParts ? (
           <>
             {modelParts.providerGlyph}
             {modelParts.subProvider ? ` ${modelParts.subProvider}` : ""}
@@ -157,14 +189,16 @@ export function ProviderBadge({
       </span>
       {effortLabel && effortTone && (
         <span
-          className="provider-badge-effort"
-          title={`Effort: ${effortLabel}`}
+          className={styles.effort}
+          title={t("providerBadgeEffort", { effort: effortLabel })}
         >
           <span
-            className={`provider-badge-effort-dot tone-${effortTone}`}
+            className={`${styles.effortDot} ${effortToneClass}`}
             aria-hidden="true"
           />
-          <span className="provider-badge-effort-label">{effortLabel}</span>
+          <span className={styles.effortLabel}>
+            {condensed ? shortEffort : effortLabel}
+          </span>
         </span>
       )}
     </span>

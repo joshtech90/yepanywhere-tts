@@ -36,9 +36,11 @@ Status: **implemented.**
   prefix collision.
 - With short code names enabled, a session browser title uses `code:title` with
   no brackets or post-colon space, for example `yep:Improve tab titles`.
-  Sidebar project labels use the same code so more of each session title remains
-  visible. The full project name remains available in Projects and wherever
-  disambiguating detail is needed.
+  Sidebar project labels and the session-header breadcrumb use the same code
+  so more of each session title remains visible. The header retains the full
+  name in its accessible label and tooltip; older servers without code names
+  retain the full-name fallback. The full project name remains available in
+  Projects and wherever disambiguating detail is needed.
 - **Pulse Project Code for Tab Activity** is a second browser-local Appearance
   preference and defaults off. Ordinary tab-title activity therefore uses the
   same `(●)` / `(○)` frames on code-name and full-name titles. When both short

@@ -18,7 +18,7 @@
 console.log("[RemoteClient] Loading remote-main.tsx entry point");
 
 import "./lib/developmentPerformanceBootstrap";
-import { Fragment, lazy, StrictMode } from "react";
+import { Fragment, lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 
 // Toggle to disable StrictMode for easier debugging (avoids double renders)
@@ -29,6 +29,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { PrebootComposerRetirement } from "./components/PrebootComposerRetirement";
 import { RouteModule, routeModule } from "./components/RouteModule";
 import { TooltipLayer } from "./components/ui/TooltipLayer";
+import { isExtensionPage } from "./extension/chrome";
 import { initializeContentMaxWidth } from "./hooks/useContentMaxWidth";
 import { initializeFontSize } from "./hooks/useFontSize";
 import { initializeSidebarSpacing } from "./hooks/useSidebarSpacing";
@@ -43,6 +44,7 @@ import {
   type RemoteRouteModuleKey,
 } from "./lib/remoteRoutePreload";
 import { installModifierChordTracking } from "./lib/modifierChords";
+import { installFontDiagnostics } from "./lib/diagnostics/fontDiagnostics";
 import { loadSessionCoreModules } from "./lib/sessionRouteModules";
 import { preloadableComponent } from "./lib/preloadableComponent";
 import "./styles/index.css";
@@ -282,11 +284,22 @@ const SettingsLayout = lazy(() =>
     default: SettingsLayout,
   })),
 );
+const ProviderSignInPage = lazy(() =>
+  import("./pages/ProviderSignInPage").then((m) => ({
+    default: m.ProviderSignInPage,
+  })),
+);
 const WorkstreamsPage = lazy(() =>
   loadWorkstreamsPageModule().then(({ WorkstreamsPage }) => ({
     default: WorkstreamsPage,
   })),
 );
+
+// Only the Chrome extension's app tab mirrors saved hosts and takes
+// navigation from the side panel (docs/tactical/151).
+const ExtensionAppBridge = isExtensionPage()
+  ? lazy(() => import("./extension/AppBridge"))
+  : null;
 
 const initialRemoteModuleLoaders: Record<
   RemoteRouteModuleKey,
@@ -350,6 +363,7 @@ initializeTheme();
 initializeFontSize();
 initializeSidebarSpacing();
 initializeOutputAppearance();
+installFontDiagnostics();
 initializeTabSize();
 initializeContentMaxWidth();
 initializeTooltipAppearance();
@@ -424,6 +438,10 @@ const APP_ROUTES = (
       <Route path="bang-commands" element={routeModule(<BangCommandsPage />)} />
       <Route path="devices" element={routeModule(<EmulatorPage />)} />
       <Route path="devices/:deviceId" element={routeModule(<EmulatorPage />)} />
+      <Route
+        path="provider-sign-in/:provider"
+        element={routeModule(<ProviderSignInPage />)}
+      />
       <Route path="settings" element={routeModule(<SettingsLayout />)} />
       <Route
         path="settings/:category"
@@ -467,6 +485,11 @@ const app = (
     <TooltipLayer />
     <BrowserRouter basename={basename}>
       <PrebootComposerRetirement />
+      {ExtensionAppBridge && (
+        <Suspense fallback={null}>
+          <ExtensionAppBridge />
+        </Suspense>
+      )}
       <I18nProvider>
         <Routes>
           <Route

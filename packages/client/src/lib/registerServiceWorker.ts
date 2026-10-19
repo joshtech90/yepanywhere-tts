@@ -25,6 +25,7 @@ export function isPackagedAppOrigin(location: {
   return (
     location.hostname === "tauri.localhost" ||
     location.protocol === "tauri:" ||
+    location.protocol === "chrome-extension:" ||
     location.hostname === "appassets.androidplatform.net"
   );
 }

@@ -34,12 +34,14 @@ installation still wins before PATH, and explicit `grokPath` remains
 authoritative. This is discovery compatibility, not support for unrelated npm
 Grok packages.
 
-**Default model is `grok-4.6`.** `getAvailableModels()` follows `grok models`
-(`*` / `-` rows) and enriches from `GROK_HOME/models_cache.json`. It does
-not hardcode 4.6, so an older CLI can still advertise 4.5. The
-unreadable-catalog fallback remains `grok-build`. Compact glyphs are
-`Gk 4.6` / `Gk 4.5`. Effort maps to Grok's top-level `--effort`; YA omits
-`-m` for the discovered default.
+**Default model is `grok-4.7`** (Grok 1.0.60), alongside
+`grok-4.7-build-fast`, `grok-4.6` and `grok-4.5`, each defaulting to `high`
+effort. `getAvailableModels()` follows `grok models` (`*` / `-` rows) and
+enriches from `GROK_HOME/models_cache.json`. It hardcodes no model, so an
+older CLI can still advertise 4.6 or 4.5. The unreadable-catalog fallback
+remains `grok-build`. Compact glyphs are `Gk <version>`, for example
+`Gk 4.7`. Effort maps to Grok's `--effort` after `agent`; YA omits `-m` for
+the discovered default.
 
 **`AGENTCTL_SESSION_ID` is published to Grok tool shells.** YA installs
 the same `BASH_ENV` session-id bridge Claude and Codex use. Resume
@@ -87,7 +89,10 @@ ZDR/uploaded-only videos stay non-playable.
 **API-key billing.** Grok Build uses the CLI/browser-login subscription by
 default. YA scrubs ambient `XAI_API_KEY` from the child unless the
 default-off Providers opt-in is on. That opt-in does not reuse
-`YEP_STT_XAI_API_KEY`.
+`YEP_STT_XAI_API_KEY`. Grok's 1.0.60 auth docs rank an active signed-in
+session above the API key, which is only a fallback; the scrub still
+matters because an expired login would otherwise fall back to metered
+billing.
 
 **Subagent nesting.** Grok's documented process knobs are
 `GROK_SUBAGENTS=0` / `--no-subagents` (disable) and a hard nesting cap of
@@ -103,7 +108,7 @@ in YA's environment wins. See [vanilla-defaults](vanilla-defaults.md).
 
 | Grok TUI / ACP affordance | YA surface now | Gap |
 | --- | --- | --- |
-| Model picker 4.6 / 4.5 + effort | Existing new-session model/effort controls | none for catalog |
+| Model picker (4.7 / 4.6 / 4.5) + effort | Existing new-session model/effort controls | none for catalog |
 | File/search/edit/bash/web/todo/ask/plan | Existing renderer names | none |
 | Subagent spawn / bg wait / kill | Spawn rows plus parent-nested child summaries | TUI tasks pane / kill stay out of YA |
 | Image gen/edit | Generic row + image media candidate | none |
@@ -207,6 +212,7 @@ agent-loop reference; compare its package version and `SOURCE_REV`
 against `grok --version` before treating a source finding as evidence
 for the installed patch.
 
-<!-- epistemic status: installed 1.0.4 binary + no-token ACP initialize
-(grok-4.6 default, xhigh) + matching public xai-org/grok-build 1.0.5 source
-as of 2026-08-16; provider remains gated -->
+<!-- epistemic status: installed 1.0.60 binary + no-token ACP
+initialize/session/new/session/load (grok-4.7 default, high) + public
+xai-org/grok-build 1.0.45 source (15 patches behind) as of 2026-10-16; no
+live prompt on 1.0.60; provider remains gated -->

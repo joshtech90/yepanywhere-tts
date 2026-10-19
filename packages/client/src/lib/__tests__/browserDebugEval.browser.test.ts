@@ -1,17 +1,22 @@
 // @vitest-environment node
 
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { chromium, type Browser, type Page } from "@playwright/test";
 import ts from "typescript";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createStaticRoutes } from "../../../../server/src/frontend/static";
+import { cspPlugin } from "../../../vite-plugin-csp";
 
 const evaluatorUrl = new URL("../browserDebugEval.ts", import.meta.url);
 
 let browser: Browser;
 let page: Page;
 let server: Server;
+let distPath: string;
 
 describe("browser debug evaluation under the served-page CSP", () => {
   beforeAll(async () => {
@@ -22,14 +27,17 @@ describe("browser debug evaluation under the served-page CSP", () => {
         target: ts.ScriptTarget.ES2022,
       },
     }).outputText;
-    server = createServer((_request, response) => {
-      response.setHeader(
-        "Content-Security-Policy",
-        "script-src 'self' 'unsafe-inline'",
-      );
-      response.setHeader("Content-Type", "text/html; charset=utf-8");
-      response.end(`<!doctype html>
-        <title>diagnostic target</title>
+    const handler = (
+      cspPlugin().transformIndexHtml as {
+        handler: (html: string, context: { path: string }) => string;
+      }
+    ).handler;
+    distPath = await mkdtemp(join(tmpdir(), "ya-debug-csp-"));
+    await writeFile(
+      join(distPath, "index.html"),
+      handler(
+        `<!doctype html>
+        <html><head><title>diagnostic target</title></head>
         <body><main id="target"></main></body>
         <script>window.exports = {};${compiled}</script>
         <script>
@@ -40,7 +48,15 @@ describe("browser debug evaluation under the served-page CSP", () => {
             document.body.dataset.evalFailure =
               error instanceof Error ? error.name : String(error);
           }
-        </script>`);
+        </script></html>`,
+        { path: "/index.html" },
+      ),
+    );
+    const app = createStaticRoutes({ distPath });
+    server = createServer(async (request, response) => {
+      const result = await app.request(request.url ?? "/");
+      response.writeHead(result.status, Object.fromEntries(result.headers));
+      response.end(Buffer.from(await result.arrayBuffer()));
     });
     await new Promise<void>((resolve) =>
       server.listen(0, "127.0.0.1", resolve),
@@ -56,6 +72,7 @@ describe("browser debug evaluation under the served-page CSP", () => {
     await new Promise<void>((resolve, reject) => {
       server?.close((error) => (error ? reject(error) : resolve()));
     });
+    if (distPath) await rm(distPath, { recursive: true });
   });
 
   async function evaluate(code: string, timeoutMs?: number): Promise<unknown> {
@@ -83,6 +100,15 @@ describe("browser debug evaluation under the served-page CSP", () => {
       .getAttribute("data-eval-failure");
 
     expect(evalFailure).toBe("EvalError");
+    await page.evaluate(() => {
+      const script = document.createElement("script");
+      script.textContent = 'document.body.dataset.inlineRan = "yes"';
+      document.head.append(script);
+      script.remove();
+    });
+    expect(
+      await page.locator("body").getAttribute("data-inline-ran"),
+    ).toBeNull();
     await expect(evaluate("document.title")).resolves.toBe("diagnostic target");
     await expect(
       evaluate("Promise.resolve({ answer: 6 * 7 })"),
@@ -114,5 +140,24 @@ describe("browser debug evaluation under the served-page CSP", () => {
         ).length,
     );
     expect(retainedBridges).toBe(0);
+    expect(
+      await page.locator("script[data-ya-browser-debug-eval]").count(),
+    ).toBe(0);
+  });
+
+  it("reports malformed code and blocked script loading distinctly", async () => {
+    await expect(evaluate("const = ;")).rejects.toThrow("SyntaxError");
+    await page.evaluate(() => {
+      const meta = document.createElement("meta");
+      meta.httpEquiv = "Content-Security-Policy";
+      meta.content = "script-src 'self'";
+      document.head.append(meta);
+    });
+    await expect(evaluate("1+1")).rejects.toThrow(
+      "Content Security Policy must allow blob:",
+    );
+    expect(
+      await page.locator("script[data-ya-browser-debug-eval]").count(),
+    ).toBe(0);
   });
 });

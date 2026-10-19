@@ -8713,6 +8713,29 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     });
   });
 
+  // POST /api/sessions/:sessionId/deferred/:tempId/deliver-without-compaction
+  // - Release a patient item held for compact-first delivery so it delivers at
+  // its ordinary boundary without compacting.
+  routes.post(
+    "/sessions/:sessionId/deferred/:tempId/deliver-without-compaction",
+    async (c) => {
+      const sessionId = c.req.param("sessionId");
+      const tempId = c.req.param("tempId");
+
+      const process = deps.supervisor.getProcessForSession(sessionId);
+      if (!process) {
+        return c.json({ error: "No active process for session" }, 404);
+      }
+      if (!deps.supervisor.deliverPatientWithoutCompaction(process, tempId)) {
+        return c.json({ error: "No compact-first queued message found" }, 404);
+      }
+      return c.json({
+        released: true,
+        deferredMessages: sessionQueueSummaries(deps, sessionId, process),
+      });
+    },
+  );
+
   // PUT /api/sessions/:sessionId/mode - Update permission mode without sending a message
   routes.put("/sessions/:sessionId/mode", async (c) => {
     const sessionId = c.req.param("sessionId");

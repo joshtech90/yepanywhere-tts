@@ -1,3 +1,4 @@
+import { createIssueStatusRoutes } from "./issue-status.js";
 import { Hono, type MiddlewareHandler } from "hono";
 import type {
   IssueSettings,
@@ -8,7 +9,9 @@ import type { ServerSettingsService } from "../services/ServerSettingsService.js
 import type { IssueIndexer } from "../services/issues/IssueIndexer.js";
 import type { IssueCredentials } from "../services/issues/credentials.js";
 import type { IssueConfirmer } from "../services/issues/confirm.js";
+import type { IssueStatusRefresher } from "../services/issues/status.js";
 import { issueUrl } from "../services/issues/extract.js";
+import { issueLookupUrl } from "@yep-anywhere/shared";
 
 /** Rejects a confirmation block rather than storing a half-configured one. */
 function confirmation(
@@ -65,12 +68,32 @@ export function createIssueRoutes(
       createdAt?: string;
     }[]
   > = async () => [],
+  statuses?: IssueStatusRefresher,
 ) {
   const routes = new Hono();
   routes.get("/issues/settings", (c) => c.json(indexer.coverage()));
   routes.put("/issues/settings", async (c) => {
     const body = (await c.req.json().catch(() => null)) as IssueSettings | null;
     const confirm = body ? confirmation(body.confirmation) : null;
+    const cli = body?.githubCli;
+    if (
+      body &&
+      ((body.githubStatusEnabled !== undefined &&
+        typeof body.githubStatusEnabled !== "boolean") ||
+        (cli !== undefined &&
+          (!cli ||
+            typeof cli.enabled !== "boolean" ||
+            typeof cli.account !== "string" ||
+            (cli.account !== "" &&
+              !/^[a-z\d][a-z\d-]{0,38}$/i.test(cli.account)))))
+    )
+      return c.json(
+        {
+          error:
+            "Expected GitHub status boolean and CLI enabled/account settings",
+        },
+        400,
+      );
     const blocked = body ? blocklist(body.jiraKeyBlocklist) : null;
     if (
       !body ||
@@ -93,10 +116,17 @@ export function createIssueRoutes(
       );
     await settings.updateSettings({
       issueAssociations: {
+        ...indexer.settings(),
         enabled: body.enabled,
         scope: body.scope,
         recentDays: body.recentDays,
         aggressiveMatching: body.aggressiveMatching ?? false,
+        ...(body.githubStatusEnabled !== undefined
+          ? { githubStatusEnabled: body.githubStatusEnabled }
+          : {}),
+        ...(cli !== undefined
+          ? { githubCli: { enabled: cli.enabled, account: cli.account } }
+          : {}),
         ...(confirm ? { confirmation: confirm } : {}),
         ...(blocked ? { jiraKeyBlocklist: blocked } : {}),
       },
@@ -136,6 +166,7 @@ export function createIssueRoutes(
     }
     return c.json({ credentials: await credentials.status() });
   });
+  routes.route("/", createIssueStatusRoutes(statuses));
   const requireEnabled: MiddlewareHandler = async (c, next) => {
     if (!indexer.settings().enabled)
       return c.json({ error: "Issue associations are disabled" }, 403);
@@ -161,13 +192,21 @@ export function createIssueRoutes(
     const query = c.req.query("q") ?? "";
     const supportedSorts: IssueSort[] = ["activity", "mentioned", "number"];
     const sort = c.req.query("sort") ?? "key";
+    // An exact lookup names one item by any URL a browser shows for it. A
+    // `ref` that names nothing matches nothing rather than falling back to q.
+    const refValue = c.req.query("ref");
+    const ref =
+      refValue === undefined
+        ? undefined
+        : (issueLookupUrl(refValue)?.identity ?? "unrecognized:");
     if (
       !p ||
       query.length > 4096 ||
+      (refValue?.length ?? 0) > 4096 ||
       (sort !== "key" && !supportedSorts.includes(sort as IssueSort))
     )
       return c.json({ error: "Invalid search or pagination" }, 400);
-    const items = indexer.store.list(
+    const listed = indexer.store.list(
       issueUrl(query)?.url ?? query,
       c.req.query("projectId") ?? "",
       c.req.query("sessionId") ?? "",
@@ -177,12 +216,19 @@ export function createIssueRoutes(
       {
         sort: sort as IssueSort | "key",
         sessionActivity: sort === "key" ? [] : await sessionCatalog(),
+        identity: ref,
       },
     );
+    const { items, refreshing } = statuses?.annotate(listed) ?? {
+      items: listed,
+      refreshing: false,
+    };
     return c.json({
       supportedSorts,
       sort,
+      ...(ref === undefined ? {} : { ref }),
       items,
+      ...(refreshing ? { statusRefreshing: true } : {}),
       coverage: indexer.coverage(),
       nextOffset: items.length === p.size ? p.start + p.size : null,
     });

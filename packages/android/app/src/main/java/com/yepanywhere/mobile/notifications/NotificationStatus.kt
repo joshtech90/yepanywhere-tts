@@ -148,9 +148,11 @@ class NotificationNativeHostOperations(
     private val activity: ComponentActivity,
     private val statusReader: NotificationStatusReader,
     private val launchPermissionRequest: () -> Unit,
+    /** Opens the native Servers screen, which owns per-server notification enrollment. */
+    private val showNotificationManagement: () -> Unit,
     private val now: () -> Long = SystemClock::elapsedRealtime,
 ) : NativeHostOperations {
-    override val features = listOf(STATUS_METHOD, REQUEST_PERMISSION_METHOD)
+    override val features = listOf(STATUS_METHOD, REQUEST_PERMISSION_METHOD, MANAGE_METHOD)
     private var lastUserInteractionAt: Long? = null
     private var pendingPermissionRequest: ((NativeHostOperationResult) -> Unit)? = null
 
@@ -187,6 +189,7 @@ class NotificationNativeHostOperations(
                 NativeHostOperationResult.Success(statusReader.read().toJson()),
             )
             REQUEST_PERMISSION_METHOD -> requestPermission(complete)
+            MANAGE_METHOD -> manage(complete)
             else -> complete(
                 NativeHostOperationResult.Error(
                     "unknown_method",
@@ -194,6 +197,30 @@ class NotificationNativeHostOperations(
                 ),
             )
         }
+    }
+
+    private fun manage(complete: (NativeHostOperationResult) -> Unit) {
+        userActionError("Notification management")?.let { complete(it); return }
+        showNotificationManagement()
+        complete(NativeHostOperationResult.Success(JSONObject()))
+    }
+
+    // Native UI may open only in response to a recent tap in a resumed activity.
+    private fun userActionError(action: String): NativeHostOperationResult.Error? {
+        if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            return NativeHostOperationResult.Error(
+                "activity_not_ready",
+                "$action requires a resumed activity",
+            )
+        }
+        val interactionAt = lastUserInteractionAt
+        if (interactionAt == null || now() - interactionAt > USER_INTERACTION_WINDOW_MS) {
+            return NativeHostOperationResult.Error(
+                "user_action_required",
+                "$action requires recent user interaction",
+            )
+        }
+        return null
     }
 
     private fun requestPermission(complete: (NativeHostOperationResult) -> Unit) {
@@ -205,25 +232,7 @@ class NotificationNativeHostOperations(
             complete(NativeHostOperationResult.Success(current.toJson()))
             return
         }
-        if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
-            complete(
-                NativeHostOperationResult.Error(
-                    "activity_not_ready",
-                    "Notification permission requires a resumed activity",
-                ),
-            )
-            return
-        }
-        val interactionAt = lastUserInteractionAt
-        if (interactionAt == null || now() - interactionAt > USER_INTERACTION_WINDOW_MS) {
-            complete(
-                NativeHostOperationResult.Error(
-                    "user_action_required",
-                    "Notification permission requires recent user interaction",
-                ),
-            )
-            return
-        }
+        userActionError("Notification permission")?.let { complete(it); return }
         if (pendingPermissionRequest != null) {
             complete(
                 NativeHostOperationResult.Error(
@@ -252,6 +261,7 @@ class NotificationNativeHostOperations(
     companion object {
         const val STATUS_METHOD = "notifications.status"
         const val REQUEST_PERMISSION_METHOD = "notifications.requestPermission"
+        const val MANAGE_METHOD = "notifications.manage"
         private const val USER_INTERACTION_WINDOW_MS = 5_000L
     }
 }

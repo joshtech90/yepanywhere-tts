@@ -66,6 +66,10 @@ remain custom in either mode:
   ordinary browser title only when the visible session title is actually
   clipped; a fully visible title has no hover surface. Non-list destinations
   that use the card as a confirmation preview remain custom in either mode.
+  Session-list navigation links suppress the browser context menu in Themed
+  mode so secondary-click does not cover the preview. Ordinary clicks,
+  Shift/Ctrl/Cmd-clicks, and middle-clicks retain their navigation behavior.
+  Native mode retains the browser context menu, as does text inside the card.
   Touch pointer entry and touch-generated compatibility mouse events do not
   open or warm the card. Session-switch links in the Recent Sessions dropdown
   likewise attach their full-title hint only after non-touch pointer entry, so

@@ -1,6 +1,8 @@
 import { useRouterDiscovery } from "../hooks/useRouterDiscovery";
 import {
   RouterPoolSelector,
+  preferredRouterSelection,
+  restoreRouterSelection,
   routedAccounts,
   routedModels,
   routerPoolMembers,
@@ -88,7 +90,7 @@ import {
 } from "../hooks/useProviders";
 import { useProviderDescriptors } from "../hooks/useProviderDescriptors";
 import {
-  getAttachmentUploadLongEdgePx,
+  getAttachmentUploadProfile,
   useAttachmentUploadQuality,
 } from "../hooks/useAttachmentUploadQuality";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
@@ -336,6 +338,8 @@ function unprobedProviderRow(name: ProviderName): ProviderInfo {
 }
 
 export interface NewSessionFormProps {
+  /** Keep this project selected while retaining all launch options. */
+  fixedProject?: boolean;
   projectApp?: ProjectAppTarget;
   onVoiceControl?: (control: VoiceInputButtonRef | null) => void;
   projectId?: string;
@@ -366,6 +370,11 @@ export interface NewSessionFormProps {
   incomingShareFiles?: readonly File[];
   /** Seed the execution host from an existing session. */
   preferredExecutor?: string;
+  /**
+   * The route's `prefillToken`. The form reads the token from the address
+   * itself; a change here makes an already-mounted form read it again.
+   */
+  prefillToken?: string | null;
   /**
    * Reuse the New Session composer and launch controls for a specialized
    * session start such as handoff.
@@ -437,6 +446,7 @@ function NewSessionOptionSection({
 const EMPTY_FOLDER_CHOICE = "empty-folder";
 
 export function NewSessionForm({
+  fixedProject: fixedProjectProp = false,
   projectApp,
   onVoiceControl,
   projectId,
@@ -455,6 +465,7 @@ export function NewSessionForm({
   preferredThinking,
   preferredPermissionMode,
   preferredExecutor,
+  prefillToken: routedPrefillToken,
   incomingShareFiles,
   launch,
 }: NewSessionFormProps) {
@@ -506,15 +517,17 @@ export function NewSessionForm({
   const [selectedProvider, setSelectedProvider] = useState<ProviderName | null>(
     null,
   );
-  const [routerSelection, setRouterSelection] =
+  const [routerPreference, setRouterPreference] =
     useState<RouterSelection | null>(null);
+  const [routerSelectionCustomized, setRouterSelectionCustomized] =
+    useState(false);
   useEffect(() => {
-    setRouterSelection((selection) =>
+    setRouterPreference((selection) =>
       selection?.sourceKey === clientSummarySourceKey ? selection : null,
     );
+    setRouterSelectionCustomized(false);
   }, [clientSummarySourceKey]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  // Paid speed tiers are never remembered: each new session starts Standard.
   const [selectedServiceTier, setSelectedServiceTier] = useState<string | null>(
     null,
   );
@@ -563,6 +576,18 @@ export function NewSessionForm({
     Record<string, { uploaded: number; total: number }>
   >({});
   const [attachmentQuality] = useAttachmentUploadQuality();
+  const {
+    providers,
+    loading: providersLoading,
+    stale: providersStale,
+    refetch: refetchProviders,
+  } = useProviders();
+  const selectedProviderQuery = useProviderRow(selectedProvider);
+  const aggregateProviderInfo = providers.find(
+    (p) => p.name === selectedProvider,
+  );
+  const selectedProviderInfo =
+    selectedProviderQuery.row ?? aggregateProviderInfo;
   const { visibility: toolbarVisibility } = useSessionToolbarPresence();
   const [interimTranscript, setInterimTranscript] = useState("");
   const interimTranscriptRef = useRef(interimTranscript);
@@ -713,7 +738,7 @@ export function NewSessionForm({
   const { showToast } = useToastContext();
   const allowAttachments = launch?.allowAttachments ?? true;
   const allowProjectQueue = launch?.allowProjectQueue ?? true;
-  const fixedProject = launch?.fixedProject ?? false;
+  const fixedProject = launch?.fixedProject ?? fixedProjectProp;
   const composerMuted = launch?.composer === "muted";
   const showProviderAndModel = !(launch?.fixedProviderModel ?? false);
   // A locked field is stated in the fixed-launch caption instead of offered.
@@ -1015,7 +1040,11 @@ export function NewSessionForm({
           const preparedImage = file.type.startsWith("image/")
             ? await prepareImageUpload(
                 file,
-                getAttachmentUploadLongEdgePx(attachmentQuality),
+                getAttachmentUploadProfile(
+                  attachmentQuality,
+                  selectedProviderInfo,
+                  selectedModel,
+                ),
               )
             : { file };
           const uploadFile = preparedImage.file;
@@ -1139,6 +1168,8 @@ export function NewSessionForm({
     },
     [
       attachmentQuality,
+      selectedProviderInfo,
+      selectedModel,
       historyScope,
       sourceTransport,
       projectId,
@@ -1165,22 +1196,11 @@ export function NewSessionForm({
     addPendingFiles(incomingShareFiles);
   }, [addPendingFiles, allowAttachments, incomingShareFiles]);
 
-  // Fetch available providers
-  const {
-    providers,
-    loading: providersLoading,
-    stale: providersStale,
-    refetch: refetchProviders,
-  } = useProviders();
   const { providers: providerDescriptors } = useProviderDescriptors(
     serverHasCapability(
       versionInfo,
       SERVER_CAPABILITIES.providerDescriptors.name,
     ),
-  );
-  const { usage: subscriptionUsage } = useProviderSubscriptionUsage(
-    routerSelection ? null : selectedProvider,
-    { bootstrapTier: "supplementary" },
   );
   const {
     settings,
@@ -1248,15 +1268,6 @@ export function NewSessionForm({
     fork: t("recapAfterSecondsInlineFork"),
   };
 
-  // Get models and capabilities for the currently selected provider. Its named
-  // row wins once available because it is independent of the aggregate's
-  // slowest member and can carry stronger freshness than a retained snapshot.
-  const selectedProviderQuery = useProviderRow(selectedProvider);
-  const aggregateProviderInfo = providers.find(
-    (p) => p.name === selectedProvider,
-  );
-  const selectedProviderInfo =
-    selectedProviderQuery.row ?? aggregateProviderInfo;
   const providerChoices = (providerDescriptors ?? providers).map(
     (descriptor) => ({
       ...descriptor,
@@ -1275,6 +1286,53 @@ export function NewSessionForm({
     effectiveSandboxLevel === "none" &&
     (selectedProvider === "claude" || selectedProvider === "codex");
   const routerDiscovery = useRouterDiscovery(selectedProvider, routerEnabled);
+  const routerThinking: ThinkingOption =
+    selectedThinkingMode === "off"
+      ? "off"
+      : selectedThinkingMode === "auto"
+        ? "auto"
+        : `on:${selectedEffortLevel}`;
+  const currentRouterPreference =
+    routerPreference?.sourceKey === clientSummarySourceKey
+      ? routerPreference
+      : null;
+  const routerSelection = useMemo(
+    () =>
+      routerSelectionCustomized
+        ? currentRouterPreference
+        : routerEnabled && !launch
+          ? restoreRouterSelection(
+              currentRouterPreference,
+              routerDiscovery.error ? null : routerDiscovery.data,
+              selectedProvider,
+              selectedModel,
+              routerThinking,
+            )
+          : null,
+    [
+      routerSelectionCustomized,
+      currentRouterPreference,
+      routerEnabled,
+      launch,
+      routerDiscovery.data,
+      routerDiscovery.error,
+      selectedProvider,
+      selectedModel,
+      routerThinking,
+    ],
+  );
+  const routerRestorePending = Boolean(
+    !routerSelectionCustomized &&
+      currentRouterPreference &&
+      routerEnabled &&
+      !launch &&
+      !routerDiscovery.data &&
+      !routerDiscovery.loaded,
+  );
+  const { usage: subscriptionUsage } = useProviderSubscriptionUsage(
+    routerSelection ? null : selectedProvider,
+    { bootstrapTier: "supplementary" },
+  );
   const routerAccounts = useMemo(
     () =>
       routedAccounts(
@@ -1348,12 +1406,6 @@ export function NewSessionForm({
     (selectedProviderQuery.fresh &&
       !selectedProviderQuery.refreshing &&
       selectedProviderQuery.error === null);
-  const routerThinking: ThinkingOption =
-    selectedThinkingMode === "off"
-      ? "off"
-      : selectedThinkingMode === "auto"
-        ? "auto"
-        : `on:${selectedEffortLevel}`;
   const compatibleMembers = routerSelection?.poolId
     ? routerPoolMembers(
         routerDiscovery.data,
@@ -1371,8 +1423,7 @@ export function NewSessionForm({
   // needs no pick.
   const routerAccountId =
     routerSelection?.accountId ||
-    (!routerSelection?.policy &&
-    selectedRouterPool?.policy === "manual" &&
+    ((routerSelection?.policy ?? selectedRouterPool?.policy) === "manual" &&
     compatibleMembers.length === 1
       ? compatibleMembers[0]?.id
       : undefined);
@@ -1387,23 +1438,32 @@ export function NewSessionForm({
     : !providersStale
       ? aggregateProviderInfo
       : undefined;
-  const hasSelectedProviderModel = routerSelection
-    ? !!(
-        routerEnabled &&
-        routedModel &&
-        !routerDiscovery.error &&
-        compatibleMembers.length &&
-        (routerAccountId
-          ? compatibleMembers.some((a) => a.id === routerAccountId)
-          : (routerPolicy ?? selectedRouterPool?.policy) !== "manual")
-      )
-    : (!selectedProvider || selectedProviderRuntime?.installed === true) &&
-      selectedProviderCatalogCurrent &&
-      hasRequiredProviderModel(
-        selectedProvider,
-        selectedProviderInfo?.models ?? [],
-        selectedModel,
-      );
+  const hasDirectProviderModel =
+    (!selectedProvider || selectedProviderRuntime?.installed === true) &&
+    selectedProviderCatalogCurrent &&
+    (!currentRouterPreference ||
+      !selectedProviderInfo?.models?.length ||
+      selectedProviderInfo.models.some(
+        (model) => model.id === selectedModel,
+      )) &&
+    hasRequiredProviderModel(
+      selectedProvider,
+      selectedProviderInfo?.models ?? [],
+      selectedModel,
+    );
+  const hasSelectedProviderModel =
+    !routerRestorePending &&
+    (routerSelection
+      ? !!(
+          routerEnabled &&
+          routedModel &&
+          !routerDiscovery.error &&
+          compatibleMembers.length &&
+          (routerAccountId
+            ? compatibleMembers.some((a) => a.id === routerAccountId)
+            : (routerPolicy ?? selectedRouterPool?.policy) !== "manual")
+        )
+      : hasDirectProviderModel);
   const helperSelectableModels = useMemo(
     () => [...visibleModels],
     [visibleModels],
@@ -1951,6 +2011,14 @@ export function NewSessionForm({
         getLegacyProviderDefaultSeed(initialProvider.name),
       );
       setSelectedProvider(initialProvider.name);
+      setSelectedServiceTier(initialProviderDefaults.serviceTier ?? null);
+      setRouterPreference(
+        preferredRouterSelection(
+          initialProviderDefaults,
+          clientSummarySourceKey,
+        ),
+      );
+      setRouterSelectionCustomized(false);
       setSelectedModel(
         requestedModelId ??
           getPreferredProviderModelId(
@@ -2009,6 +2077,7 @@ export function NewSessionForm({
     },
     [
       applyLaunchLock,
+      clientSummarySourceKey,
       settings,
       displayDefaults,
       supportsSessionSandboxing,
@@ -2123,7 +2192,6 @@ export function NewSessionForm({
   const handleProviderSelect = (providerName: ProviderName) => {
     hasUserCustomizedDefaultsRef.current = true;
     setSelectedProvider(providerName);
-    setRouterSelection(null);
     const provider = providers.find((p) => p.name === providerName);
     const providerModels = provider?.models ?? [];
     const providerDefaults = getProviderSessionDefaults(
@@ -2131,6 +2199,11 @@ export function NewSessionForm({
       providerName,
       getLegacyProviderDefaultSeed(providerName),
     );
+    setSelectedServiceTier(providerDefaults.serviceTier ?? null);
+    setRouterPreference(
+      preferredRouterSelection(providerDefaults, clientSummarySourceKey),
+    );
+    setRouterSelectionCustomized(false);
     if (provider?.models && provider.models.length > 0) {
       setSelectedModel(
         getPreferredProviderModelId(
@@ -2436,7 +2509,9 @@ export function NewSessionForm({
     setFullPane((current) => !current);
   }, [compact, composerMuted, fullPane]);
 
-  // Check for opt-in new-session prefill on mount.
+  // Check for opt-in new-session prefill on mount, and again when an in-app
+  // navigation brings a new token to an already-mounted form.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the routed token is the trigger; the effect reads window.location.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const token = params.get("prefillToken");
@@ -2459,7 +2534,7 @@ export function NewSessionForm({
       },
     };
     setMessage(record.text);
-  }, [clientSummarySourceKey, setMessage]);
+  }, [clientSummarySourceKey, setMessage, routedPrefillToken]);
 
   const handleProjectInputKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
@@ -2515,7 +2590,8 @@ export function NewSessionForm({
   };
 
   // Auto-persist new-session defaults: any user change to provider / model /
-  // permission / recap / suggestions / helper becomes the default immediately
+  // speed / router / permission / recap / suggestions / helper becomes the
+  // default immediately
   // (no explicit "save as default" step). Skips the initial load — only fires
   // once the user has actually customized something — and stays silent to
   // avoid a toast on every click.
@@ -2528,6 +2604,7 @@ export function NewSessionForm({
       return;
     const {
       helperSideModel: _legacyHelperSideModel,
+      serviceTier: _legacyServiceTier,
       sandboxLevel: _savedSandboxLevel,
       sandboxNetworkFirewall: _savedSandboxNetworkFirewall,
       ...baseDefaults
@@ -2559,6 +2636,10 @@ export function NewSessionForm({
           selectedProvider,
           {
             model: selectedModel ?? undefined,
+            serviceTier: selectedServiceTier ?? undefined,
+            routerPoolId: currentRouterPreference?.poolId,
+            routerAccountId: currentRouterPreference?.accountId || undefined,
+            routerPolicy: currentRouterPreference?.policy,
             thinkingMode: selectedThinkingMode,
             effortLevel: selectedEffortLevel,
             helperSideModel,
@@ -2578,6 +2659,8 @@ export function NewSessionForm({
     sandboxLevel,
     sandboxNetworkFirewall,
     selectedModel,
+    selectedServiceTier,
+    currentRouterPreference,
     selectedEffortLevel,
     selectedProvider,
     selectedPromptSuggestionMode,
@@ -2682,7 +2765,11 @@ export function NewSessionForm({
           const preparedImage = pendingFile.file.type.startsWith("image/")
             ? await prepareImageUpload(
                 pendingFile.file,
-                getAttachmentUploadLongEdgePx(attachmentQuality),
+                getAttachmentUploadProfile(
+                  attachmentQuality,
+                  selectedProviderInfo,
+                  selectedModel,
+                ),
               )
             : { file: pendingFile.file };
           const uploadFile = preparedImage.file;
@@ -2748,7 +2835,14 @@ export function NewSessionForm({
       );
       return [...uploadedFiles, ...materializedFiles];
     },
-    [attachmentQuality, sourceTransport, showToast, t],
+    [
+      attachmentQuality,
+      selectedProviderInfo,
+      selectedModel,
+      sourceTransport,
+      showToast,
+      t,
+    ],
   );
 
   const deferSpeechDelivery = useCallback(
@@ -3273,7 +3367,7 @@ export function NewSessionForm({
   );
 
   const handleQueueProjectSession = async (messageOverride?: unknown) => {
-    if (routerSelection) {
+    if (routerSelection && routerSelectionCustomized) {
       showToast(t("routerQueueUnsupported"), "error");
       return;
     }
@@ -3306,7 +3400,7 @@ export function NewSessionForm({
       isStarting ||
       displayDefaultsPending ||
       projectPending ||
-      !hasSelectedProviderModel
+      !hasDirectProviderModel
     ) {
       return;
     }
@@ -3336,10 +3430,30 @@ export function NewSessionForm({
       }
 
       const sessionMode = effectivePermissionMode;
-      const thinking = toThinkingOption(
-        effectiveThinkingMode,
-        effectiveEffortLevel,
+      // Queue does not support routing. A restored preference is only for
+      // immediate creation; resolve this launch against the direct catalog.
+      const directModel = selectedProviderInfo?.models?.find(
+        (model) => model.id === selectedModel,
       );
+      const directEffortOptions = getEffortLevelOptions({
+        provider: selectedProviderInfo,
+        model: directModel,
+        translate: t,
+      });
+      const thinking = toThinkingOption(
+        resolveSupportedThinkingMode(
+          selectedThinkingMode,
+          getThinkingModeOptions({
+            provider: selectedProviderInfo,
+            model: directModel,
+            effortOptions: directEffortOptions,
+          }),
+        ),
+        resolveSupportedEffortLevel(selectedEffortLevel, directEffortOptions),
+      );
+      const directServiceTier = selectableServiceTiers(
+        directModel?.serviceTiers,
+      ).find((tier) => tier.id === selectedServiceTier)?.id;
       const showThinking = getShowThinkingSetting();
 
       const response = await api.createProjectQueueItem(resolvedProjectId, {
@@ -3347,9 +3461,7 @@ export function NewSessionForm({
           type: "new-session",
           mode: sessionMode,
           model: selectedModel ?? undefined,
-          ...(effectiveServiceTier
-            ? { serviceTier: effectiveServiceTier }
-            : {}),
+          ...(directServiceTier ? { serviceTier: directServiceTier } : {}),
           thinking,
           showThinking,
           provider: selectedProvider ?? undefined,
@@ -3897,7 +4009,7 @@ export function NewSessionForm({
       (message.trim() || speechPending !== null || interimTranscript) &&
       pendingFilesReadyForProjectQueue &&
       hasProjectQueueTargetProject &&
-      hasSelectedProviderModel,
+      hasDirectProviderModel,
   );
   const projectQueueNewSessionTitle =
     machineControlSelected && machineControlEligible
@@ -4896,7 +5008,10 @@ export function NewSessionForm({
             })),
           ]}
           selected={[effectiveServiceTier ?? ""]}
-          onChange={([value]) => setSelectedServiceTier(value || null)}
+          onChange={([value]) => {
+            hasUserCustomizedDefaultsRef.current = true;
+            setSelectedServiceTier(value || null);
+          }}
           multiSelect={false}
           fullWidth
           triggerClassName={styles.leftAlignedTrigger}
@@ -5567,7 +5682,11 @@ export function NewSessionForm({
                     ? routerSelection
                     : null
                 }
-                onChange={setRouterSelection}
+                onChange={(selection) => {
+                  hasUserCustomizedDefaultsRef.current = true;
+                  setRouterSelectionCustomized(true);
+                  setRouterPreference(selection);
+                }}
                 disabled={isStarting}
                 showCaption={showOptionCaptions}
               />

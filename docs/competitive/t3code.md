@@ -5,6 +5,9 @@ For the current remote-execution analysis, read
 reviewed against freshly fetched upstream source on 2026-10-03. The broader
 comparison below remains a 2026-09-04 snapshot; its absence claims about forks,
 external-session import and scheduling are historical, not current findings.
+The [October 17 follow-up](#october-17-follow-up-android-health-and-adoption)
+updates Android distribution, adoption, and reported reliability. It does not
+refresh every architecture or YA comparison in the September source review.
 
 - **GitHub:** [pingdotgg/t3code](https://github.com/pingdotgg/t3code)
 - **Website:** [t3.codes](https://t3.codes)
@@ -17,7 +20,73 @@ external-session import and scheduling are historical, not current findings.
 - **Repository scale as of 2026-09-04:** 21,689 stars, 5,285 forks, 520 open
   issues; 1,008 test/spec files in the non-vendored tree
 
+## October 17 follow-up: Android health and adoption
+
+Checked **2026-10-17** against current official listings, GitHub metadata,
+release notes, and issue discussions. This is a public-evidence follow-up,
+not a new full source audit or a hands-on Android comparison.
+
+- T3's Android listing shows **10,000+ cumulative downloads**, last updated
+  October 15. Its US-requested aggregate metadata reports approximately
+  **4.33/5 from 40 ratings**; regional/device displays can differ.
+- The current Android release is **2.0**, with a rebuilt orchestrator, native
+  pull-request guided reviews, redesigned navigation, and HTML/MCP apps in
+  threads. A matching desktop/server update is required.
+- GitHub records **28,056 stars, 7,508 forks, 1,473 open issues, and 1,461
+  open PRs**. Issues exclude PRs and cover all platforms; they are not an
+  Android defect count. Repository activity continued on October 17.
+- The website claims **over 500,000 developers** across the product, without
+  identifying Android users, retention, or monthly active users.
+
+Sources: [Google Play](https://play.google.com/store/apps/details?id=com.t3tools.t3code&hl=en&gl=US),
+[repository](https://github.com/pingdotgg/t3code), [website](https://t3.codes/).
+The [Happy review's dated comparison](happy.md#android-adoption-and-project-health-versus-t3-code)
+owns the paired Android/GitHub figures and counting method. Happy is also in
+the 10,000+ Play download bracket, with a much deeper rating history; neither
+product publishes a directly comparable active-Android-user count here.
+
+### Reliability evidence and limits
+
+[Issue #19278](https://github.com/pingdotgg/t3code/issues/19278) includes
+several device/build reports of Android becoming unresponsive when opening,
+loading, or navigating running threads, including a Play Store 2.0.0 build.
+Reports mention frozen controls/timers while desktop continues progressing.
+Maintainer triage initially requested more information; later comments add
+device details and a recording. The proposed repair,
+[PR #19292](https://github.com/pingdotgg/t3code/pull/19292), was still open
+and unmerged at review time. This is evidence of a consequential reported
+failure, not an independently verified root cause or a shipped fix.
+
+[Issue #18688](https://github.com/pingdotgg/t3code/issues/18688) reports
+unusable pending-question UI on Android 1.4.0. Maintainer triage says the
+composer replacement is intentional and requests screenshots/current-build
+reproduction for the rendering complaint. Keep that qualification rather
+than counting the entire description as a confirmed current regression.
+
+The new orchestrator/mobile release and active triage show ongoing investment,
+but also substantial change. Open/closed issue totals do not measure failure
+rates: reports can be duplicates, and automated triage can close missing-info
+reports without fixing a defect. This review has no crash/ANR telemetry,
+retention data, or side-by-side physical-device acceptance.
+
+### Comparison with Happy
+
+T3 has the larger public development ecosystem and a broader integrated
+files/terminal/Git/PR workflow. Happy's newer product owns a multi-model
+runtime with persistent bots and shared human conversations on a team server;
+its original mobile client remains actively developed. Happy also has a much
+larger Android rating sample. See [Happy's current review](happy.md) for
+source/release distinctions and team authority limits.
+
+Treat T3 as the broader development-workbench competitor and Happy as an
+established mobile competitor expanding into orchestration and collaboration.
+Neither the star counts nor the issue sample establishes a winner on Android
+reliability. These findings leave [YA's roadmap](../roadmap/README.md) unchanged.
+
 ## Bottom line
+
+**Historical source review, 2026-09-04.** The remaining sections retain that
+source snapshot and their explicitly dated follow-ups.
 
 T3 Code is one of YepAnywhere's closest and most serious competitors. It has
 already shipped the broad product that many agent supervisors describe as a

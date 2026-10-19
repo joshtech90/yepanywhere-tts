@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { normalizeProviderWorkItems } from "@yep-anywhere/shared";
 import type { AgentMessageQueue } from "../messageQueue.js";
 import type {
   ProviderActivitySnapshot,
@@ -1033,6 +1034,8 @@ function reviveRetention(
     sessionCronCount: value?.sessionCronCount,
     liveTaskCount: value?.liveTaskCount,
     lastUpdatedAt: value?.lastUpdatedAt ? new Date(value.lastUpdatedAt) : null,
+    backgroundWork: normalizeProviderWorkItems(value?.backgroundWork),
+    foregroundWaits: normalizeProviderWorkItems(value?.foregroundWaits),
   };
 }
 

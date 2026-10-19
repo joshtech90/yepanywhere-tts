@@ -14,10 +14,11 @@ import {
 } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import {
-  getAttachmentUploadLongEdgePx,
+  getAttachmentUploadProfile,
   useAttachmentUploadQuality,
 } from "../hooks/useAttachmentUploadQuality";
 import { useI18n } from "../i18n";
+import { useProviderRow } from "../hooks/useProviders";
 import { makeAttachmentFileNamesUnique } from "../lib/attachmentFileNames";
 import { useAttachmentNavigationGuard } from "../lib/attachmentNavigationGuard";
 import { deleteDraftAttachmentRef } from "../lib/draftAttachmentStaging";
@@ -65,6 +66,7 @@ export function ProjectQueueAttachmentEditor({
   const { t } = useI18n();
   const sourceTransport = useCurrentSourceRuntime().transport;
   const [attachmentQuality] = useAttachmentUploadQuality();
+  const { row: providerInfo } = useProviderRow(item.target.provider);
   const [text, setText] = useState(item.message.text);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => [
     ...(item.message.attachments ?? []),
@@ -164,7 +166,11 @@ export function ProjectQueueAttachmentEditor({
           sourceTransport,
           projectId: item.projectId,
           sessionId: item.id,
-          maxLongEdgePx: getAttachmentUploadLongEdgePx(attachmentQuality),
+          imageProfile: getAttachmentUploadProfile(
+            attachmentQuality,
+            providerInfo,
+            item.target.model,
+          ),
           stagedBatchId: batchId,
           onProgress: (bytesUploaded, uploadFile) => {
             const percent =
@@ -218,7 +224,15 @@ export function ProjectQueueAttachmentEditor({
           });
       }
     },
-    [attachmentQuality, deleteNewDraftRef, item, sourceTransport, t, uploading],
+    [
+      attachmentQuality,
+      providerInfo,
+      deleteNewDraftRef,
+      item,
+      sourceTransport,
+      t,
+      uploading,
+    ],
   );
 
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {

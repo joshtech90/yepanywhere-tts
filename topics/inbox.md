@@ -191,6 +191,29 @@ timestamp means explicitly unread; a nonempty timestamp means read. Session
 menus and list rows follow the current shared state without retaining a local
 toggle that can mask a later server update.
 
+### Read/unread keyboard actions
+
+Unmodified **r** marks read and **u** marks unread. These explicit actions are
+always available, authorized by the maintainer on 2026-10-18 for the frequent
+session-triage workflow. They act on the keyboard-focused session row, or the
+active conversation when focus is in its header/transcript or on the page body.
+They keep the current route and focus, confirm the result briefly, and share
+the existing menu actions and server-owned state. Menus show the relevant key.
+
+Typing in inputs, editable content, search, dialogs, menus, and embedded viewers
+must not change read state. Modified keys, IME composition and held-key repeats
+do not trigger these actions. A focused row takes precedence over the open
+conversation, including when the two name different sessions.
+
+An explicit unread action cancels queued automatic reads and waits for any
+automatic read already sent before writing unread. That mounted conversation
+keeps its manual unread intent through later interaction and streamed content,
+until an explicit read or a fresh visit restores normal engagement tracking.
+Server events still determine the visible state; this hold never masks a later
+read from another client. Rapid explicit actions are written in invocation order.
+A failed explicit write reports an error and restores prior engagement tracking
+unless a newer explicit action has superseded it.
+
 Unread means YA believes the session changed after the user's last seen
 marker. It is not limited to "an idle assistant produced output and now needs
 a user response"; that narrower state belongs in `needsAttention` only when

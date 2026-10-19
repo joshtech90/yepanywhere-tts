@@ -154,6 +154,8 @@ export interface ModelInfo {
   supportsAutoMode?: boolean;
   /** Provider-reported input modalities, e.g. text/image. */
   inputModalities?: string[];
+  /** Adapter image preparation for this model, overriding provider guidance. */
+  imageSizing?: ProviderImageSizing;
   /** Provider-reported personality support. */
   supportsPersonality?: boolean;
   /** Provider-reported opt-in service tiers, e.g. faster paid processing. */
@@ -183,6 +185,14 @@ export interface ProviderImageSizing {
   maxUsefulLongEdgePx: number;
   /** Optional note about model-family caveats or detail behavior. */
   note?: string;
+  /** Absent on older servers; quality is JPEG/WebP encoding percent. */
+  profiles?: Record<"sd" | "hd", ImagePreparationProfile>;
+}
+
+export interface ImagePreparationProfile {
+  maxLongEdge: number;
+  maxBytes: number;
+  quality: number;
 }
 
 export const RECAP_MODES = ["off", "side-session", "fork", "native"] as const;
@@ -714,6 +724,12 @@ export interface ProviderSessionDefaults {
   model?: string;
   /** Provider-visible service tier. undefined means provider/default behavior. */
   serviceTier?: string;
+  /** Preferred router pool for this provider; absent means Direct. */
+  routerPoolId?: string;
+  /** Explicit account within the preferred pool. */
+  routerAccountId?: string;
+  /** Policy override; absent uses the pool's current default. */
+  routerPolicy?: string;
   /** Provider-work thinking mode for new sessions on this provider. */
   thinkingMode?: ThinkingMode;
   /** Provider-local effort level for new sessions on this provider. */
@@ -799,6 +815,7 @@ export interface SessionToolbarPresenceClientDefaults {
   projectQueue?: ToolbarControlPresence;
   projectQueueNewSessionShortcut?: ToolbarControlPresence;
   syntheticDone?: ToolbarControlPresence;
+  topicShift?: ToolbarControlPresence;
   composerRecall?: ToolbarControlPresence;
 }
 
@@ -843,6 +860,17 @@ export interface ClientDefaults {
    * (`deferred`).
    */
   patientQueueDefault?: boolean;
+  /**
+   * Compact-before-delivery threshold for patient items created by the
+   * patient queue default, as a percent of the context window. 100 or absent
+   * is Off, which is also what existing patient-default users keep.
+   */
+  patientQueueCompactAtPercent?: number;
+  /**
+   * Compact-before-delivery threshold for items created by the explicit
+   * "Next topic when done" action. 100 or absent is Off.
+   */
+  topicShiftCompactAtPercent?: number;
   /**
    * When true, Ctrl+Enter uses Project Queue whenever the Project Queue
    * affordance is available. Off leaves Ctrl+Enter bound to the regular

@@ -1,7 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildOwnerOnlyIcaclsArgs,
   buildWindowsSetOwnerIcaclsArgs,
@@ -15,9 +17,71 @@ import {
 let testDir: string | null = null;
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   if (testDir) await fs.rm(testDir, { recursive: true, force: true });
   testDir = null;
 });
+
+describe.skipIf(process.platform !== "win32")(
+  "strict Windows owner-only permissions",
+  () => {
+    it("verifies files and directories when the PowerShell Security module cannot load", async () => {
+      testDir = await fs.mkdtemp(path.join(os.tmpdir(), "permissions-test-"));
+      const modules = path.join(testDir, "modules");
+      const shadow = path.join(modules, "Microsoft.PowerShell.Security");
+      await fs.mkdir(shadow, { recursive: true });
+      await fs.writeFile(
+        path.join(shadow, "Microsoft.PowerShell.Security.psd1"),
+        "@{ ModuleVersion = '99.0'; RootModule = 'broken.psm1'; FunctionsToExport = @('Get-Acl'); CmdletsToExport = @() }",
+      );
+      await fs.writeFile(
+        path.join(shadow, "broken.psm1"),
+        "throw 'Security module unavailable for this process'; function Get-Acl {}",
+      );
+      vi.stubEnv(
+        "PSModulePath",
+        [modules, process.env.PSModulePath]
+          .filter(Boolean)
+          .join(path.delimiter),
+      );
+      const run = promisify(execFile);
+      // Establish the real failing boundary before exercising its replacement.
+      await expect(
+        run(
+          "powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-Command", "Get-Acl ."],
+          { windowsHide: true },
+        ),
+      ).rejects.toThrow();
+      const { stdout: identity } = await run(
+        "whoami",
+        ["/user", "/fo", "csv", "/nh"],
+        { windowsHide: true },
+      );
+      const owner = /"([^"]+)","(S-[\d-]+)"/i.exec(identity);
+      expect(owner).not.toBeNull();
+      const directory = path.join(testDir, "private");
+      const file = path.join(directory, "control.json");
+      await fs.mkdir(directory);
+      await fs.writeFile(file, "{}");
+      for (const [target, kind] of [
+        [directory, "directory"],
+        [file, "file"],
+      ] as const) {
+        await enforceOwnerOnlyPathPermissionsStrict(target, kind);
+        const { stdout: acl } = await run("icacls", [target], {
+          windowsHide: true,
+        });
+        expect(verifyWindowsOwnerOnlyAcl(acl, target, owner![1]!)).toEqual({
+          valid: true,
+        });
+      }
+      expect(await fs.readFile(file, "utf8")).toBe("{}");
+      // Failed Windows smoke 38301056103 spent 7s reaching one owner query;
+      // allow ~4x that observation for both path kinds and the native oracle.
+    }, 30_000);
+  },
+);
 
 describe("buildOwnerOnlyIcaclsArgs", () => {
   it("builds a non-inherited owner-only ACL command", () => {

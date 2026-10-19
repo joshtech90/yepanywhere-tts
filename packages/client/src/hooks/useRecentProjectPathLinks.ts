@@ -1,21 +1,16 @@
-import { useSyncExternalStore } from "react";
-import { createLocalStorageBoolean } from "../lib/localStorageValue";
-import { UI_KEYS } from "../lib/storageKeys";
+import { useProjectPathLinkSettings } from "../contexts/ProjectPathLinkSettingsContext";
+import { projectPathLinkStores } from "../lib/projectPathLinkPreferences";
 
-const store = createLocalStorageBoolean(UI_KEYS.recentProjectPathLinks, false);
+const store = projectPathLinkStores.recentBasenames;
 
 export const getRecentProjectPathLinksPreference = store.read;
 export const setRecentProjectPathLinksPreference = store.set;
 export const subscribeRecentProjectPathLinksPreference = store.subscribe;
 
 export function useRecentProjectPathLinks() {
-  const recentProjectPathLinksEnabled = useSyncExternalStore(
-    store.subscribe,
-    store.read,
-    store.read,
-  );
+  const { projectPaths, recentBasenames } = useProjectPathLinkSettings();
   return {
-    recentProjectPathLinksEnabled,
+    recentProjectPathLinksEnabled: projectPaths && recentBasenames,
     setRecentProjectPathLinksEnabled: store.set,
   };
 }

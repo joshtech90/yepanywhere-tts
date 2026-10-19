@@ -1,4 +1,7 @@
 import {
+  buildProjectFileViewerHref,
+  type CitedFilePosition,
+  citedProjectPathTokenExtent,
   containsLinkifiableUrl,
   findProjectPathTokens,
   normalizeTexForKatex,
@@ -23,6 +26,8 @@ import {
   usePublicShareContext,
 } from "../../contexts/PublicShareContext";
 import { useGlossaryArtifact } from "../../contexts/GlossaryContext";
+import { useProjectPathLinkSettings } from "../../contexts/ProjectPathLinkSettingsContext";
+import { annotateProjectPathLinksHtml } from "../../lib/projectPathLinks";
 import {
   type RenderMode,
   useRenderModeToggle,
@@ -214,7 +219,7 @@ function renderMarkdownFileLink(
   const fileUrl =
     rawUrl ??
     toBrowserAppHref(
-      `${options.basePath ?? ""}/projects/${encodeURIComponent(options.projectId)}/file?path=${encodeURIComponent(filePath)}`,
+      `${options.basePath ?? ""}${buildProjectFileViewerHref({ projectId: options.projectId, filePath })}`,
     );
   // normalizeProjectPath strips the leading / from absolute paths; restore it
   // so makeDisplayPath can apply project-relative or ~/… shortening.
@@ -261,28 +266,68 @@ function renderConfirmedProjectPathText(
   let html = "";
   let cursor = 0;
   for (const match of matches) {
+    if (match.start < cursor) continue;
     const filePath = targets.get(match.text)!;
-    const shareUrl = options.publicShare
-      ? buildPublicShareFileHref(options.publicShare, { filePath })
-      : null;
-    if (options.publicShare && !shareUrl) {
+    const { pathEnd, end, position } = citedProjectPathTokenExtent(
+      text,
+      match,
+      filePath,
+    );
+    const pathLink = renderConfirmedFileLink(
+      options.projectId,
+      filePath,
+      text.slice(match.start, pathEnd),
+      options,
+    );
+    if (!pathLink) {
       // Outside the share's project, so the share cannot serve it: plain text.
-      html += renderUrlText(text.slice(cursor, match.end), options);
-      cursor = match.end;
+      html += renderUrlText(text.slice(cursor, end), options);
+      cursor = end;
       continue;
     }
     html += renderUrlText(text.slice(cursor, match.start), options);
-    const fileUrl =
-      shareUrl ??
-      toBrowserAppHref(
-        `${options.basePath ?? ""}/projects/${encodeURIComponent(options.projectId)}/file?path=${encodeURIComponent(filePath)}`,
-      );
-    const titlePath = makeDisplayPath(filePath, options.projectPath);
-    html += `<a class="fixed-font-file-link" href="${escapeHtmlAttribute(fileUrl)}" data-fixed-font-file-path="${escapeHtmlAttribute(filePath)}" data-tooltip="${escapeHtmlAttribute(titlePath)}">${escapeHtml(match.text)}</a>`;
-    cursor = match.end;
+    html += pathLink;
+    if (position) {
+      html +=
+        renderConfirmedFileLink(
+          options.projectId,
+          filePath,
+          position.text,
+          options,
+          position,
+        ) ?? escapeHtml(position.text);
+    }
+    cursor = end;
   }
   html += renderUrlText(text.slice(cursor), options);
   return { html, changed: true };
+}
+
+/** One confirmed file link; with a position, the `:42` that opens at it. */
+function renderConfirmedFileLink(
+  projectId: string,
+  filePath: string,
+  label: string,
+  options: RenderOptions,
+  position?: CitedFilePosition,
+): string | null {
+  const coordinates = {
+    filePath,
+    lineNumber: position?.lineNumber,
+    lineEnd: position?.lineEnd,
+    columnNumber: position?.columnNumber,
+  };
+  const fileUrl = options.publicShare
+    ? buildPublicShareFileHref(options.publicShare, coordinates)
+    : toBrowserAppHref(
+        `${options.basePath ?? ""}${buildProjectFileViewerHref({ projectId, ...coordinates })}`,
+      );
+  if (!fileUrl) return null;
+  const titlePath = `${makeDisplayPath(filePath, options.projectPath)}${position?.text ?? ""}`;
+  const positionAttributes = position
+    ? ` data-ya-line="${position.lineNumber}"${position.lineEnd ? ` data-ya-line-end="${position.lineEnd}"` : ""}`
+    : "";
+  return `<a class="fixed-font-file-link" href="${escapeHtmlAttribute(fileUrl)}" data-fixed-font-file-path="${escapeHtmlAttribute(filePath)}"${positionAttributes} data-tooltip="${escapeHtmlAttribute(titlePath)}">${escapeHtml(label)}</a>`;
 }
 
 function renderKatexHtml(tex: string, displayMode: boolean): string {
@@ -1100,10 +1145,13 @@ export function FixedFontMathToggle({
   const publicShare = usePublicShareContext();
   const basePath = useRemoteBasePath();
   const tooltipMode = useTooltipMode();
+  const { projectPaths, mentionedDirectories } = useProjectPathLinkSettings();
   const glossary = useGlossaryArtifact(baseFilePath);
   const [viewerLink, setViewerLink] = useState<{
     filePath: string;
     href: string | null;
+    lineNumber?: number;
+    lineEnd?: number;
   } | null>(null);
   const copySourceRef = useRef<HTMLDivElement | null>(null);
   const quoteSourceText = useMemo(
@@ -1153,14 +1201,29 @@ export function FixedFontMathToggle({
   const { btnRef: toggleBtnRef, handleClick: handleToggleClick } =
     useScrollPreservingToggle(showRendered, toggleLocalMode);
   const presentedHtml = useMemo(() => {
-    const tooltipHtml = applyRenderedTooltipMode(rendered.html, tooltipMode);
+    const linkedHtml = annotateProjectPathLinksHtml(
+      rendered.html,
+      undefined,
+      sessionMetadata?.projectId,
+      publicShare,
+      { projectPaths, mentionedDirectories },
+    ).html;
+    const tooltipHtml = applyRenderedTooltipMode(linkedHtml, tooltipMode);
     return annotateGlossaryHtml(
       tooltipHtml,
       glossary.state === "ready" && glossary.result?.status === "ready"
         ? glossary.result.artifact
         : undefined,
     ).html;
-  }, [glossary, rendered.html, tooltipMode]);
+  }, [
+    glossary,
+    rendered.html,
+    tooltipMode,
+    projectPaths,
+    mentionedDirectories,
+    sessionMetadata?.projectId,
+    publicShare,
+  ]);
 
   useEffect(() => {
     const element = copySourceRef.current;
@@ -1197,6 +1260,8 @@ export function FixedFontMathToggle({
       setViewerLink({
         filePath: link.dataset.fixedFontFilePath ?? "",
         href: link.getAttribute("href"),
+        lineNumber: Number(link.dataset.yaLine) || undefined,
+        lineEnd: Number(link.dataset.yaLineEnd) || undefined,
       });
     },
     [],
@@ -1256,6 +1321,8 @@ export function FixedFontMathToggle({
         <FileViewerModal
           projectId={viewerProjectId}
           filePath={viewerLink.filePath}
+          lineNumber={viewerLink.lineNumber}
+          lineEnd={viewerLink.lineEnd}
           source={publicShareFileViewerSource}
           openInNewTabUrl={viewerLink.href}
           onClose={() => setViewerLink(null)}

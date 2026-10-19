@@ -1,4 +1,6 @@
 import { AttachmentButton } from "./AttachmentButton";
+import { useSourceContextMenu } from "./SourceContextMenu";
+import { useEscapeInterruptDisabled } from "../hooks/useEscapeInterruptDisabled";
 import type {
   ModelInfo,
   ProviderRuntimeStatus,
@@ -140,6 +142,7 @@ import { SpeechControlMenu } from "./SpeechControlMenu";
 import { SpeechWaveform } from "./SpeechWaveform";
 import { ThinkingControlsPanel, ThinkingIcon } from "./ThinkingControls";
 import { RenderModeGlyph } from "./ui/RenderModeGlyph";
+import { SessionPathLinkOptions } from "./SessionPathLinkOptions";
 import { SessionViewerToolbarController } from "./SessionViewerToolbarController";
 import {
   VoiceInputButton,
@@ -342,6 +345,8 @@ export interface MessageInputToolbarProps {
   onProjectQueueNewSession?: () => void;
   /** Right-click/long-press on the new-session action: choose its target. */
   onProjectQueueNewSessionOptions?: () => void;
+  /** Queue the draft as this session's next topic once the agent is done. */
+  onTopicShift?: () => void;
   onSendOptions?: () => void;
   /** Steer the current turn. Used as the alternate action when Enter queues. */
   onSteer?: () => void;
@@ -721,9 +726,13 @@ interface ToolbarProjectQueueControl {
   newSessionTooltip?: string;
 }
 
+interface ToolbarTopicShiftControl {
+  onTopicShift: () => void;
+  canSend?: boolean;
+}
+
 interface ToolbarStopControl {
   onStop: () => void;
-  title: string;
 }
 
 interface ToolbarDoneControl {
@@ -746,6 +755,7 @@ interface ToolbarActionsControl {
   btw?: ToolbarBtwControl | null;
   stop?: ToolbarStopControl | null;
   projectQueue?: ToolbarProjectQueueControl | null;
+  topicShift?: ToolbarTopicShiftControl | null;
   send?: ToolbarSendControl | null;
 }
 
@@ -1051,7 +1061,7 @@ function ToolbarHidePopover({
   return createPortal(
     <div
       ref={popoverRef}
-      className={toolbarModuleStyles.hidePopover}
+      className={`${toolbarModuleStyles.hidePopover}${state.key === "renderMode" ? ` ${toolbarModuleStyles.renderOptionsPopover}` : ""}`}
       role="dialog"
       aria-label={t("toolbarHideControlMenuAria")}
       style={
@@ -1063,6 +1073,7 @@ function ToolbarHidePopover({
       <span className={toolbarModuleStyles.hidePopoverTooltip}>
         {state.tooltip}
       </span>
+      {state.key === "renderMode" && <SessionPathLinkOptions />}
       <button
         ref={hideButtonRef}
         type="button"
@@ -1345,6 +1356,13 @@ export function MessageInputToolbarView({
   actionsControl,
   hidePrimaryDeliveryActions = false,
 }: MessageInputToolbarViewProps) {
+  const { escapeInterruptDisabled, setEscapeInterruptDisabled } =
+    useEscapeInterruptDisabled();
+  const stopMenu = useSourceContextMenu(t, {
+    menu: t("toolbarStopOptions"),
+    dismiss: t("toolbarDismissStopOptions"),
+    touchTargets: true,
+  });
   const asyncQuestions = useAsyncQuestions();
   const hasAsyncQuestions =
     (asyncQuestions?.questions.length ?? 0) > 0 &&
@@ -1461,6 +1479,11 @@ export function MessageInputToolbarView({
   );
   const showProjectQueueButton =
     showCurrentSessionProjectQueueButton || showNewSessionProjectQueueButton;
+  const showTopicShiftButton = !!(
+    visibility.topicShift &&
+    actionsControl.topicShift &&
+    actionsControl.send
+  );
   const selectedSpeechMethod = speechControl?.selectedMethod ?? null;
   const queueControl = actionsControl.send?.queue;
   const canToggleSteerNow = !!(
@@ -1469,7 +1492,10 @@ export function MessageInputToolbarView({
     actionsControl.send.onToggleSteerNow
   );
   const showActionsControl =
-    showProjectQueueButton || showSendButton || canToggleSteerNow;
+    showProjectQueueButton ||
+    showTopicShiftButton ||
+    showSendButton ||
+    canToggleSteerNow;
   const renderStatusAges = (
     className: string,
     ref?: RefObject<HTMLDivElement | null>,
@@ -1684,6 +1710,34 @@ export function MessageInputToolbarView({
       </label>
     );
   };
+  const renderTopicShiftButton = (menu = false) => {
+    const topicShift = actionsControl.topicShift;
+    if (
+      !showTopicShiftButton ||
+      !topicShift ||
+      (menu && !isPriorityCollapsible("topicShift"))
+    ) {
+      return null;
+    }
+    return (
+      <button
+        type="button"
+        {...toolbarControlMarker("topicShift")}
+        onClick={topicShift.onTopicShift}
+        disabled={actionsControl.disabled || topicShift.canSend === false}
+        className={(menu ? menuTierClass : inlineTierClass)(
+          "topicShift",
+          "send-button",
+          "patient-queue-action",
+        )}
+        aria-label={t("toolbarTopicShiftLabel")}
+        title={t("toolbarTopicShiftTooltip")}
+        role={menu ? "menuitem" : undefined}
+      >
+        <DeliveryGlyph className="send-icon">↷</DeliveryGlyph>
+      </button>
+    );
+  };
   const renderProjectQueueButtons = (menu = false) => {
     if (
       !showProjectQueueButton ||
@@ -1828,6 +1882,7 @@ export function MessageInputToolbarView({
       isPriorityCollapsible("contextUsage")) ||
     (visibility.btw && actionsControl.btw && isPriorityCollapsible("btw")) ||
     (canToggleSteerNow && isPriorityCollapsible("steerNow")) ||
+    (showTopicShiftButton && isPriorityCollapsible("topicShift")) ||
     (showCurrentSessionProjectQueueButton &&
       actionsControl.send &&
       isPriorityCollapsible("projectQueue")) ||
@@ -1886,6 +1941,7 @@ export function MessageInputToolbarView({
     btw:
       visibility.btw && actionsControl.btw ? effectivePriority("btw") : "off",
     steerNow: canToggleSteerNow ? effectivePriority("steerNow") : "off",
+    topicShift: showTopicShiftButton ? effectivePriority("topicShift") : "off",
     projectQueue:
       showCurrentSessionProjectQueueButton && actionsControl.send
         ? effectivePriority("projectQueue")
@@ -2586,6 +2642,7 @@ export function MessageInputToolbarView({
                   renderSteerNowToggle(
                     menuTierClass("steerNow", "steer-now-toggle"),
                   )}
+                {renderTopicShiftButton(true)}
                 {renderProjectQueueButtons(true)}
               </div>
               <AsyncQuestionsButton overflow />
@@ -2854,7 +2911,13 @@ export function MessageInputToolbarView({
                       <span className="session-shortcuts-keys">
                         <kbd>Esc</kbd>
                       </span>
-                      <span>{t("toolbarShortcutStopAgentCancelOverlay")}</span>
+                      <span>
+                        {t(
+                          escapeInterruptDisabled
+                            ? "toolbarShortcutCancelOverlay"
+                            : "toolbarShortcutStopAgentCancelOverlay",
+                        )}
+                      </span>
                     </div>
                     <div className="session-shortcuts-row">
                       <span className="session-shortcuts-keys">
@@ -2930,10 +2993,24 @@ export function MessageInputToolbarView({
         {showStopButton && actionsControl.stop && (
           <button
             type="button"
-            onClick={actionsControl.stop.onStop}
+            {...stopMenu.targetProps(
+              [
+                {
+                  label: t(
+                    escapeInterruptDisabled
+                      ? "toolbarEnableEscInterrupt"
+                      : "toolbarDisableEscInterrupt",
+                  ),
+                  onSelect: () =>
+                    setEscapeInterruptDisabled(!escapeInterruptDisabled),
+                },
+              ],
+              actionsControl.stop.onStop,
+            )}
             className="stop-button"
             aria-label={t("toolbarStop")}
-            title={actionsControl.stop.title}
+            aria-haspopup="menu"
+            title={`${t("toolbarStop")}${escapeInterruptDisabled ? "" : " (Esc)"} — ${t("toolbarStopOptionsHint")}`}
           >
             <span className="stop-icon" />
           </button>
@@ -3052,6 +3129,7 @@ export function MessageInputToolbarView({
                 )}
               </button>
             )}
+            {renderTopicShiftButton()}
             {renderProjectQueueButtons()}
             {showSendButton && (
               <button
@@ -3104,6 +3182,7 @@ export function MessageInputToolbarView({
           </>
         ) : null}
       </div>
+      {stopMenu.menu}
       {hidePopover && onHideControl && (
         <ToolbarHidePopover
           state={hidePopover}
@@ -3173,6 +3252,7 @@ export function MessageInputToolbar({
   onProjectQueue,
   onProjectQueueNewSession,
   onProjectQueueNewSessionOptions,
+  onTopicShift,
   onSendOptions,
   onSteer,
   primaryActionKind,
@@ -3574,7 +3654,6 @@ export function MessageInputToolbar({
           ? t("toolbarQueuePrimaryActionLabel")
           : t("toolbarQueueLabel")
         : t("toolbarSend");
-  const stopTitle = `${t("toolbarStop")} (Esc)`;
   const showStopButton = !!(isRunning && onStop && isThinking && !canSend);
   const showSendButton = !!(onSend && (!showStopButton || canSend));
   const serverVoiceEnabled =
@@ -4076,7 +4155,6 @@ export function MessageInputToolbar({
         stop: showStopButton
           ? {
               onStop: onStop!,
-              title: stopTitle,
             }
           : null,
         send: showSendButton
@@ -4106,6 +4184,7 @@ export function MessageInputToolbar({
               alternate: sendAlternate,
             }
           : null,
+        topicShift: onTopicShift ? { onTopicShift, canSend } : null,
         projectQueue:
           supportsProjectQueue && (onProjectQueue || onProjectQueueNewSession)
             ? {

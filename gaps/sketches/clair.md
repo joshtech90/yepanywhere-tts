@@ -1,6 +1,10 @@
 # Clair: session awareness across shared and isolated checkouts
 
 Status: ideas-only candidate presently; implementation not authorized.
+Neither Clair nor its closest maintained relative, Confer, has visible
+traction (2026-10-18), so neither is an adoption candidate. See
+[Clair versus Confer](#clair-versus-confer) for the contrast, the downsides
+their shared Git-bus elements carry, and the fork-or-search disposition.
 
 The user places Clair in the ideas-only category given its small adoption
 signal and lack of recent pushes. GitHub metadata checked 2026-09-26 reports
@@ -193,6 +197,90 @@ not the video or transcript. This is evidence of the public pointer remaining
 unchanged, not evidence that development continued. A private/employer-owned
 successor remains possible; the search supplies no affirmative evidence for it.
 
+## Clair versus Confer
+
+Rechecked 2026-10-18 through the GitHub API. Clair: 7 stars, no forks, last
+push 2026-07-09, **no license file**. Confer: 1 star, no forks, created
+2026-07-14, release `v0.8.42` on 2026-10-09, last commit 2026-10-12 (443
+commits, one author), dual MIT/Apache-2.0. Confer's description below is from
+its [DESIGN.md](https://github.com/codeshrew/confer/blob/e5ded50bfdfc00cf8858a9bae7a671eaafb5ddb3/DESIGN.md)
+at `e5ded50`, not from running it.
+
+| Dimension | Clair | Confer |
+| --- | --- | --- |
+| Question it answers | Awareness: who is working where, with what intent, and where work may collide. | Messaging plus a task board: request → claim → done (Contract Net over a shared blackboard). |
+| Where records live | In the project's own repository: orphan branches under `refs/heads/clair/...`. | A separate hub repository (local bare or private remote); agents work in their own clones. |
+| Record shape | One `log.jsonl` appended per commit (prototype); presence register plus expiring events (post-reset draft). | One Markdown file per message, one commit each; role cards; a signed heartbeat on `refs/presence/<role>`. |
+| Identity and trust | Self-asserted display identity. | Signed commits, TOFU-pinned keys with first-sight confirmation, local-only trust tiers; peer bodies fenced as untrusted data. |
+| Liveness | None in the prototype; presence is a draft. | Heartbeat age classifies up, idle or down. |
+| Delivery | Claude hooks and an MCP server (removed from `main`). | `watch`/`poll`; Claude and Grok reactive adapters, Codex polling. |
+| Interface contract | Not specified. | Versioned NDJSON `--json`, exit-code kinds, stdout carries only the payload. |
+| State | Reset to a skeleton; the working prototype exists only in history. | Released and maintained, pre-1.0. |
+
+Confer is the stronger engineering artifact: a maintained release line, a
+trust model, and a separate hub that keeps coordination out of the code
+repository. Clair contributes the awareness model YA cares about: intent,
+observed paths, and overlap notices rather than messages and tasks.
+
+### Downsides of the elements they share
+
+Both store coordination as Git objects reached through refs outside code
+history and exchange it by fetch and push. Those elements carry costs that
+neither project measures:
+
+- **Reactivity.** Nothing notifies a reader; delivery is fetch or poll
+  latency. Confer's design names this as Git's one weakness and adds a watch
+  layer. Notice still reaches an agent only at a turn boundary.
+- **Growth and erasure.** Append-only histories never shrink without a
+  rewrite and garbage collection. A TTL is reader expiry, not deletion, and
+  clones, forks and mirrors keep copies of everything ever pushed, including
+  any prompt or summary text that leaked a secret. Clair's log stored prompts.
+- **Ref sprawl and side effects.** Branch refs (Clair) clutter branch lists
+  and can trigger CI or branch-protection rules on push. Refs outside
+  `refs/heads/` (Confer presence, Clair's draft) avoid that, but are not
+  fetched by default, are invisible in host UIs, and some hosts or Gerrit
+  configurations reject arbitrary ref namespaces. The records are then hard
+  to audit by eye.
+- **Write contention.** Writers to one shared tip pay
+  non-fast-forward fetch and retry loops. Per-writer files or refs avoid
+  content conflicts, not contention on a shared branch tip.
+- **Coarse access control.** Repository read access is full awareness
+  access, and coordination writes need push rights. Nothing scopes
+  visibility per human or project role, which the team-repository targets
+  above require.
+- **Advisory only.** Neither excludes concurrent writers. Neither can
+  attribute edits in a shared dirty worktree, where YA's
+  `agentctl` claims and dirty-file editor attribution do the real work.
+- **Timestamp liveness.** Heartbeat age conflates idle, crashed and
+  partitioned writers, depends on clock agreement, and costs a push per
+  beat.
+- **Untrusted peer text in agent context.** Every received record is a
+  prompt-injection surface. Confer fences and screens it; Clair's prototype
+  did not.
+- **Bus factor.** Both are single-author projects with pre-1.0 formats.
+
+### Disposition: hard fork or keep looking
+
+- **No Clair fork.** With no license, Clair's code cannot be copied or
+  forked; only its ideas are usable. Its prototype also predates the
+  awareness model it was reset to build.
+- **Confer is forkable but not yet worth it.** MIT/Apache-2.0 permits a hard
+  fork that pins formats and drops the task-board and trust layers YA would
+  not use. Do that only if a local comparison shows YA needs a Git transport
+  at all; until then, port the ideas (signed presence, local-only trust,
+  versioned NDJSON events) into YA's own state.
+- **Search for more proven Git-native designs first.**
+  [git-bug](https://github.com/git-bug/git-bug) (issues as Git objects under
+  custom refs; about 10.8k stars and pushed today, but GPL-3.0, which YA's
+  MIT code cannot absorb) and
+  [git-appraise](https://github.com/google/git-appraise) (code review stored
+  in `git notes`; about 5.3k stars, Apache-2.0, last push 2023-08) show
+  how years-old projects handle sync, merge of concurrent records and ref
+  layout. Both answer a different question than awareness, so treat them as
+  evidence about the transport's downsides above, not as candidates.
+  Gerrit's `refs/meta/*` and `refs/changes/*` are the long-running production
+  example.
+
 ## Assessment of replacing the registry
 
 The useful idea is selective, session-aware disclosure of relevant work.
@@ -345,4 +433,7 @@ still a separate workstreams prerequisite.
 Opened 2026-09-26 from the user-requested Clair investigation.
 Scope expanded by user direction on 2026-09-26 to team repositories and
 multiple YA servers/human users, including same-server collaboration.
+Contrast with Confer, shared-element downsides and fork/search disposition
+added 2026-10-18 by user direction, given neither project's traction.
 Contributing-model: gpt-6-astra
+Contributing-model: opus-5-5

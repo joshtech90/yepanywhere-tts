@@ -1,5 +1,7 @@
 import {
   DEFAULT_JIRA_KEY_BLOCKLIST,
+  SERVER_CAPABILITIES,
+  serverHasCapability,
   type IssueCoverage,
   type KnownJiraProject,
   type IssueCredentialStatus,
@@ -8,6 +10,7 @@ import {
 } from "@yep-anywhere/shared";
 import { useEffect, useRef, useState } from "react";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
+import { useVersion } from "../../hooks/useVersion";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useI18n } from "../../i18n";
 import { SettingsItem } from "./SettingsItem";
@@ -223,14 +226,28 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
   const [credentials, setCredentials] = useState<IssueCredentialStatus[]>();
   const [saving, setSaving] = useState("");
   const confirmation = settings.confirmation ?? NO_CONFIRMATION;
+  const { version } = useVersion();
+  const supported = serverHasCapability(
+    version,
+    SERVER_CAPABILITIES.githubStatusControls.name,
+  );
+  const statusEnabled = settings.githubStatusEnabled ?? confirmation.enabled;
+  const cli = settings.githubCli ?? { enabled: true, account: "" };
+  const github = credentials?.find((x) => x.provider === "github");
+  const [actionError, setActionError] = useState("");
   const update = (next: Partial<typeof confirmation>) =>
-    void save({ ...settings, confirmation: { ...confirmation, ...next } });
+    void save({
+      ...settings,
+      ...(supported ? { githubStatusEnabled: statusEnabled } : {}),
+      confirmation: { ...confirmation, ...next },
+    });
   // The inventory probes environment variables and the gh CLI; ask only once
   // the reader has opted in, the only state in which it is shown.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: CLI policy changes invalidate the server's credential inventory even when lookup enablement stays unchanged.
   useEffect(() => {
     let disposed = false;
     setCredentials(undefined);
-    if (!confirmation.enabled) return;
+    if (!confirmation.enabled && !(supported && statusEnabled)) return;
     transport
       .fetch<IssueCredentialsResult>("/issues/credentials")
       .then((result) => {
@@ -242,21 +259,132 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
     return () => {
       disposed = true;
     };
-  }, [transport, confirmation.enabled]);
+  }, [
+    transport,
+    confirmation.enabled,
+    supported,
+    statusEnabled,
+    cli.enabled,
+    cli.account,
+  ]);
   const storeKey = async (provider: string, key: string) => {
     setSaving(provider);
+    setActionError("");
     try {
       const result = await transport.fetch<IssueCredentialsResult>(
         "/issues/credentials",
         { method: "PUT", body: JSON.stringify({ provider, key }) },
       );
       setCredentials(result.credentials);
+    } catch {
+      setActionError(t("issuesSaveError"));
     } finally {
       setSaving("");
     }
   };
   return (
     <>
+      {supported && (
+        <>
+          <SettingsItem
+            as="label"
+            id="issue-github-status"
+            label={t("issuesGithubStatusEnable")}
+            description={t("issuesGithubStatusHelp")}
+          >
+            <span className={`toggle-switch ${styles.toggle}`}>
+              <input
+                type="checkbox"
+                aria-label={t("issuesGithubStatusEnable")}
+                checked={statusEnabled}
+                disabled={busy}
+                onChange={(e) =>
+                  void save({
+                    ...settings,
+                    githubStatusEnabled: e.target.checked,
+                  })
+                }
+              />
+              <span className="toggle-slider" />
+            </span>
+          </SettingsItem>
+          <SettingsItem
+            as="label"
+            id="issue-github-cli"
+            label={t("issuesGithubCliEnable")}
+            description={t("issuesGithubCliHelp")}
+          >
+            <span className={`toggle-switch ${styles.toggle}`}>
+              <input
+                type="checkbox"
+                aria-label={t("issuesGithubCliEnable")}
+                checked={cli.enabled}
+                disabled={busy}
+                onChange={(e) =>
+                  void save({
+                    ...settings,
+                    githubCli: { ...cli, enabled: e.target.checked },
+                  })
+                }
+              />
+              <span className="toggle-slider" />
+            </span>
+          </SettingsItem>
+          <SettingsItem
+            id="issue-github-account"
+            className={styles.scopeRow}
+            label={t("issuesGithubAccount")}
+            description={t("issuesGithubAccountHelp")}
+          >
+            <select
+              className={styles.control}
+              aria-label={t("issuesGithubAccount")}
+              value={cli.account}
+              disabled={busy || !cli.enabled}
+              onChange={(e) =>
+                void save({
+                  ...settings,
+                  githubCli: { ...cli, account: e.target.value },
+                })
+              }
+            >
+              <option value="">{t("issuesGithubActiveAccount")}</option>
+              {[
+                ...new Set([
+                  ...(github?.accounts ?? []),
+                  ...(cli.account ? [cli.account] : []),
+                ]),
+              ].map((account) => (
+                <option key={account} value={account}>
+                  {account}
+                </option>
+              ))}
+            </select>
+          </SettingsItem>
+          <SettingsItem
+            id="issue-github-cache"
+            className={styles.scopeRow}
+            label={t("issuesGithubCache")}
+            description={t("issuesGithubCacheHelp")}
+          >
+            <button
+              type="button"
+              className={styles.action}
+              disabled={busy || !!saving}
+              onClick={() => {
+                setSaving("cache");
+                setActionError("");
+                void transport
+                  .fetch("/issues/status", { method: "DELETE" })
+                  .catch(() => setActionError(t("issuesSaveError")))
+                  .finally(() => setSaving(""));
+              }}
+            >
+              {t("issuesGithubCacheClear")}
+            </button>
+          </SettingsItem>
+        </>
+      )}
       <SettingsItem
         as="label"
         id="issue-confirm-enabled"
@@ -303,16 +431,23 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
               onBlur={(e) => update({ jiraEmail: e.target.value.trim() })}
             />
           </SettingsItem>
-          {credentials?.map((credential) => (
-            <CredentialControl
-              key={credential.provider}
-              credential={credential}
-              busy={saving === credential.provider}
-              store={storeKey}
-            />
-          ))}
         </>
       )}
+      {credentials
+        ?.filter((credential) =>
+          credential.provider === "github"
+            ? confirmation.enabled || (supported && statusEnabled)
+            : confirmation.enabled,
+        )
+        .map((credential) => (
+          <CredentialControl
+            key={credential.provider}
+            credential={credential}
+            busy={saving === credential.provider}
+            store={storeKey}
+          />
+        ))}
+      {actionError && <p role="alert">{actionError}</p>}
     </>
   );
 }
@@ -341,6 +476,9 @@ function CredentialControl({
           ? t("issuesCredentialActive", { source: credential.active })
           : t("issuesCredentialMissing")}
       </p>
+      {credential.active?.startsWith("gh auth token") && credential.account && (
+        <p>{t("issuesGithubUsingAccount", { account: credential.account })}</p>
+      )}
       <ul>
         {credential.sources.map((source) => (
           <li key={source.name}>

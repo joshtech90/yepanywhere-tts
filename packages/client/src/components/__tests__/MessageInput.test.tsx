@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import {
   DEFAULT_STEER_NOW_ENABLED,
+  PATIENT_TOPIC_SHIFT_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
   VOICE_INPUT_CAPABILITY,
   type ClientDefaults,
@@ -236,6 +237,7 @@ const toolbarVisibilityOverrides = vi.hoisted(() => ({
     sessionStatus: true,
     projectQueue: true,
     projectQueueNewSessionShortcut: true,
+    topicShift: true,
     composerRecall: true,
   },
 }));
@@ -677,6 +679,7 @@ const toolbarVisibility: MessageInputToolbarViewProps["visibility"] = {
   btw: false,
   nudge: false,
   syntheticDone: false,
+  topicShift: false,
   sessionStatus: false,
   projectQueue: false,
   projectQueueNewSessionShortcut: false,
@@ -1953,6 +1956,29 @@ describe("MessageInput", () => {
     expect(onCancelCorrection).toHaveBeenCalledOnce();
     expect(textarea.value).toBe("");
     expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("cancels correction with ArrowDown only once the composer is empty", () => {
+    const onCancelCorrection = vi.fn();
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        draftKey="correction-arrow-down-test"
+        supportsPermissionMode={false}
+        supportsThinkingToggle={false}
+        correctionActive
+        onCancelCorrection={onCancelCorrection}
+      />,
+    );
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "edited text" } });
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(onCancelCorrection).not.toHaveBeenCalled();
+
+    fireEvent.change(textarea, { target: { value: "" } });
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(onCancelCorrection).toHaveBeenCalledOnce();
   });
 
   describe("composer recall drawer", () => {
@@ -4203,6 +4229,39 @@ describe("MessageInput", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("can unbind Escape through Stop without disabling click or overlay cancellation", () => {
+    const onStop = vi.fn();
+    const props = { isRunning: true, isThinking: true, onStop };
+    let textarea = renderMessageInput(undefined, props);
+    fireEvent.contextMenu(screen.getByLabelText("toolbarStop"));
+    expect(onStop).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "toolbarDisableEscInterrupt" }),
+    );
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(onStop).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("toolbarStop").title).not.toContain("(Esc)");
+
+    cleanup();
+    textarea = renderMessageInput(undefined, props);
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(onStop).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText("toolbarStop"));
+    expect(onStop).toHaveBeenCalledTimes(1);
+
+    fireEvent.contextMenu(screen.getByLabelText("toolbarStop"));
+    fireEvent.keyDown(screen.getByRole("menuitem"), { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onStop).toHaveBeenCalledTimes(1);
+
+    fireEvent.contextMenu(screen.getByLabelText("toolbarStop"));
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "toolbarEnableEscInterrupt" }),
+    );
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(onStop).toHaveBeenCalledTimes(2);
+  });
+
   it("stops active voice capture with Escape before stopping the current turn", () => {
     voiceButtonState.isListening = true;
     const onStop = vi.fn();
@@ -5259,6 +5318,45 @@ describe("MessageInput", () => {
     fireEvent.click(screen.getByLabelText("toolbarQueueLabel"));
 
     expectSubmission(onQueue, "claude patient queue", "patient");
+  });
+
+  it("stamps each patient entry point with its own compaction threshold", () => {
+    versionState.version = {
+      ...versionState.version,
+      capabilities: [
+        ...(versionState.version?.capabilities ?? []),
+        PATIENT_TOPIC_SHIFT_CAPABILITY,
+      ],
+      clientDefaults: {
+        patientQueueDefault: true,
+        patientQueueCompactAtPercent: 100,
+        topicShiftCompactAtPercent: 60,
+      },
+    };
+    const onQueue = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      { onQueue },
+    );
+
+    fireEvent.change(textarea, { target: { value: "new topic" } });
+    fireEvent.click(screen.getByLabelText("toolbarTopicShiftLabel"));
+    expectSubmission(onQueue, "new topic", "patient");
+    expect(onQueue.mock.calls.at(-1)?.[1]).toMatchObject({
+      patientSource: "topic-shift",
+      compactAboveContextPercent: 60,
+    });
+
+    // 100% is Off for the patient default: no threshold is sent at all.
+    fireEvent.change(textarea, { target: { value: "follow-up" } });
+    fireEvent.click(screen.getByLabelText("toolbarQueueLabel"));
+    expectSubmission(onQueue, "follow-up", "patient");
+    expect(onQueue.mock.calls.at(-1)?.[1]).toMatchObject({
+      patientSource: "patient-default",
+    });
+    expect(onQueue.mock.calls.at(-1)?.[1]).not.toHaveProperty(
+      "compactAboveContextPercent",
+    );
   });
 
   it("uses Ctrl+Enter for Project Queue when that action is visible", () => {
@@ -6427,6 +6525,7 @@ describe("MessageInput", () => {
       contextUsage: "pin",
       btw: "pin",
       steerNow: "pin",
+      topicShift: "off",
       projectQueue: "pin",
       projectQueueNewSessionShortcut: "off",
       microphone: "live",

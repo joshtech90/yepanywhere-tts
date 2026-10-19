@@ -1,4 +1,5 @@
 import { IssueTypeBadge } from "./IssueTypeBadge";
+import { TrackerStatusBadge } from "../components/TrackerStatusBadge";
 import { formatBriefAge } from "../lib/sessionAge";
 import type {
   IssueItem,
@@ -78,6 +79,8 @@ function IssueBrowser() {
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Tracker states arrive shortly after the read that asked for them.
+    let statusRechecks = 0;
     const load = async () => {
       try {
         const next = await transport.fetch<IssueSearchResult>(
@@ -96,6 +99,8 @@ function IssueBrowser() {
               : previous;
           });
           if (next.coverage.active) timer = setTimeout(load, 750);
+          else if (next.statusRefreshing && statusRechecks++ < 3)
+            timer = setTimeout(load, 1500);
         }
       } catch {
         if (!disposed) setError(t("issuesLoadError"));
@@ -334,6 +339,7 @@ function IssueBrowser() {
                   <span className={styles.itemTitle}>
                     <strong>{item.key}</strong>
                     <IssueTypeBadge item={item} />
+                    <TrackerStatusBadge item={item} />
                   </span>
                   {item.title && item.title !== item.key && (
                     <span className={styles.itemSummary}>{item.title}</span>

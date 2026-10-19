@@ -196,6 +196,14 @@ Consequences:
   explicit Follow transfers ownership and cancels further restore retries.
 - The collapse/tidy trigger is a UX choice; jitter-safety is a separate,
   always-required property.
+- A reader release (upward wheel, touch, key, scrollbar press or upward
+  displacement from the follow write) records the lowest `scrollTop` reached
+  since. Bottom geometry re-acquires follow only after the reader scrolls back
+  down past that low point; any bottom write clears it, and navigation or
+  selection stops leave plain bottom geometry in charge. The last line stays
+  visible for the container's bottom padding plus tolerance, so without this a
+  slow wheel step's first smooth-scroll frames re-acquired follow and the next
+  streaming re-pin cancelled the step — only a burst of notches escaped.
 - Reader intent cancels pending follow release frames as well as smooth-scroll
   timers, follow-up writes and forced catch-up timers. An old frame cannot
   re-enable Follow after a wheel gesture, held transcript press or search

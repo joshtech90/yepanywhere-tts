@@ -196,3 +196,58 @@ describe("HostAgentProcessService", () => {
     ]);
   });
 });
+
+describe("HostAgentProcessService session correlation", () => {
+  it("names external roots' sessions from the provider record, enriching once per process", async () => {
+    let now = Date.parse("2026-07-28T12:00:10.000Z");
+    const startedAtMs = Date.parse("2026-07-28T11:00:00.000Z");
+    const snapshot = (pid: number, provider: "claude" | "codex") => ({
+      pid,
+      parentPid: 1,
+      startedAtMs,
+      cpuTimeMs: 0,
+      rssBytes: 1,
+      provider,
+    });
+    const readNativeSession = vi.fn(async (_provider: string, pid: number) =>
+      pid === 200
+        ? { sessionId: "external-session", projectPath: "/work/project" }
+        : undefined,
+    );
+    const describeSession = vi.fn(async () => ({
+      projectId: "cHJvamVjdA" as ProcessInfo["projectId"],
+      sessionTitle: "Port rendez",
+    }));
+    const service = new HostAgentProcessService(
+      async () => [snapshot(100, "codex"), snapshot(200, "claude")],
+      "linux",
+      () => now,
+      async () => new Map(),
+      readNativeSession,
+      describeSession,
+    );
+
+    const first = await service.sample([ownedProcess(100)]);
+    now += 5_000;
+    const second = await service.sample([ownedProcess(100)]);
+
+    for (const response of [first, second]) {
+      const byPid = new Map(response.observations.map((o) => [o.pid, o]));
+      expect(byPid.get(200)).toMatchObject({
+        supervision: "external",
+        sessionId: "external-session",
+        projectId: "cHJvamVjdA",
+        sessionTitle: "Port rendez",
+      });
+      expect(byPid.get(100)?.sessionId).toBeUndefined();
+    }
+    // Owned rows are already joined; only the external root is looked up,
+    // and the title lookup is not repeated on a metrics refresh.
+    expect(readNativeSession).toHaveBeenCalledOnce();
+    expect(describeSession).toHaveBeenCalledWith(
+      "external-session",
+      "/work/project",
+    );
+    expect(describeSession).toHaveBeenCalledOnce();
+  });
+});

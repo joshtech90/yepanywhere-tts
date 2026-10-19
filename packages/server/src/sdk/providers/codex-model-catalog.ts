@@ -3,6 +3,7 @@ import {
   CODEX_GPT56_CONTEXT_WINDOW,
   type ModelInfo,
 } from "@yep-anywhere/shared";
+import type { CyberAccessProgram } from "./codex-protocol/generated/v2/CyberAccessProgram.js";
 
 export const CODEX_CLI_GPT55_MIN_VERSION = "0.124.0";
 export const CODEX_CLI_GPT56_MIN_VERSION = "0.144.0";
@@ -264,6 +265,7 @@ export const LEGACY_FALLBACK_CODEX_MODELS: ModelInfo[] = [
 
 export interface AppServerModel {
   id: string;
+  availableAccessPrograms?: { cyber: CyberAccessProgram[] } | null;
   model?: string;
   displayName?: string;
   description?: string;

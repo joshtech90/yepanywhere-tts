@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { isExtensionPage } from "../extension/chrome";
 import { toBrowserAssetHref } from "../lib/appHref";
 import { browserDeviceName } from "../lib/browserTab";
 import {
@@ -59,9 +60,11 @@ export function usePushNotifications() {
     ((permission: NotificationPermission) => void) | null
   >(null);
 
-  // Check browser API support (separate from server-side enablement)
+  // Check browser API support (separate from server-side enablement). The
+  // Chrome extension ships no web service worker, so push is unavailable.
   const hasBrowserSupport =
     typeof window !== "undefined" &&
+    !isExtensionPage() &&
     "serviceWorker" in navigator &&
     "PushManager" in window &&
     "Notification" in window;

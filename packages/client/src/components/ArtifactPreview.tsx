@@ -1,14 +1,16 @@
 import {
   ARTIFACT_SANDBOX,
+  serverHasCapability,
+  SERVER_CAPABILITIES,
   type LocalResourceRef,
-  parseLocalResourceAttributes,
   type UrlProjectId,
 } from "@yep-anywhere/shared";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { ResourceContextMenu } from "./FileResourceActions";
 import { useSessionAppAnnouncer } from "./SessionAppLinks";
 import { ViewerModeToggle } from "./ViewerModeToggle";
+import { useScriptlessPreviewLinks } from "../hooks/useScriptlessPreviewLinks";
 import { useArtifactGrant } from "../hooks/useArtifactGrant";
 import { useArtifactTabHandoff } from "../hooks/useArtifactTabHandoff";
 import { usePublicFileSharesCreatable } from "../hooks/usePublicFileSharesCreatable";
@@ -18,9 +20,14 @@ import { reuseOrCreatePublicFileShareUrl } from "../lib/publicFileShareLink";
 import { publicSharePlayUrlFromFileShareUrl } from "../lib/publicSharePlay";
 import { createScriptlessHtmlPreviewDocument } from "../lib/scriptlessHtmlPreview";
 import type { ViewerFindSource } from "../lib/viewerFind";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import { usePublicShareContext } from "../contexts/PublicShareContext";
+import { useRetainedVersionInfo } from "../hooks/useVersion";
+import { MANAGED_ARTIFACT_PARENTS } from "../lib/managedArtifactViewer";
+import { ManagedArtifactPreview } from "./ManagedArtifactPreview";
 import styles from "./ArtifactPreview.module.css";
 
-interface Props {
+export interface ArtifactPreviewProps {
   html: string;
   path: string;
   projectId?: string;
@@ -57,7 +64,42 @@ interface Props {
  */
 export const SCRIPTLESS_PREVIEW_SANDBOX = "allow-same-origin";
 
-export function ArtifactPreview(props: Props) {
+export function ArtifactPreview(props: ArtifactPreviewProps) {
+  const runtime = useCurrentSourceRuntime();
+  // Native capabilities arrive with hello. A retained cached version must not
+  // leave the pane on its initial fallback after that source becomes ready.
+  const statusStore = useMemo(
+    () => ({
+      subscribe: (listener: () => void) =>
+        runtime.transport.status.subscribe(listener),
+      getSnapshot: () =>
+        runtime.transport.capabilities.packagedArtifactViewerVersion ?? 0,
+    }),
+    [runtime.transport],
+  );
+  const packagedViewerVersion = useSyncExternalStore(
+    statusStore.subscribe,
+    statusStore.getSnapshot,
+    statusStore.getSnapshot,
+  );
+  const version = useRetainedVersionInfo(runtime.sourceKey);
+  const share = usePublicShareContext();
+  const managed =
+    share === null &&
+    (MANAGED_ARTIFACT_PARENTS.has(location.origin) ||
+      (location.origin === "https://appassets.androidplatform.net" &&
+        packagedViewerVersion === 1)) &&
+    /Chrome|Chromium|Edg\//.test(navigator.userAgent) &&
+    !version?.artifactViewer?.publicOrigin &&
+    serverHasCapability(version, SERVER_CAPABILITIES.artifactRelayPreview.name);
+  return managed ? (
+    <ManagedArtifactPreview {...props} />
+  ) : (
+    <ConfiguredArtifactPreview {...props} />
+  );
+}
+
+function ConfiguredArtifactPreview(props: ArtifactPreviewProps) {
   const { t } = useI18n();
   const [attempt, setAttempt] = useState(props.autoStart ? 1 : 0);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -82,38 +124,7 @@ export function ArtifactPreview(props: Props) {
     onFindSource?.(frame ? { kind: running ? "agent" : "frame", frame } : null);
   }, [frame, running, onFindSource]);
   useEffect(() => () => onFindSource?.(null), [onFindSource]);
-  const { onLocalResourceLink } = props;
-  useEffect(() => {
-    if (!frame || running || !onLocalResourceLink) return;
-    // The same-origin preview lets the viewer listen inside it; the frame's
-    // elements belong to its own realm, so no `instanceof` checks.
-    const onClick = (event: MouseEvent) => {
-      if (event.defaultPrevented || event.button !== 0) return;
-      const anchor = (event.target as Element | null)?.closest?.(
-        "a[data-ya-resource], area[data-ya-resource]",
-      ) as HTMLAnchorElement | null | undefined;
-      if (!anchor) return;
-      const resource = parseLocalResourceAttributes({
-        "data-ya-resource": anchor.getAttribute("data-ya-resource"),
-        "data-ya-path": anchor.getAttribute("data-ya-path"),
-      });
-      if (!resource) return;
-      event.preventDefault();
-      onLocalResourceLink(resource, anchor);
-    };
-    let listening: Document | null = null;
-    const listen = () => {
-      listening?.removeEventListener("click", onClick);
-      listening = frame.contentDocument;
-      listening?.addEventListener("click", onClick);
-    };
-    listen();
-    frame.addEventListener("load", listen);
-    return () => {
-      frame.removeEventListener("load", listen);
-      listening?.removeEventListener("click", onClick);
-    };
-  }, [frame, running, onLocalResourceLink]);
+  useScriptlessPreviewLinks(frame, running, props.onLocalResourceLink);
   useEffect(() => {
     if (grant) announceApp(grant.url, props.title);
   }, [grant, props.title, announceApp]);

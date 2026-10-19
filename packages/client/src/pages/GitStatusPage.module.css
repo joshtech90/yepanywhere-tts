@@ -51,8 +51,8 @@
   order: 1;
 }
 
-.headerControls.fallbackRow .actionGroup,
-.compatibilityActions .actionGroup {
+.compatibilityActions .actionGroup,
+.headerControls.fallbackRow .actionGroup {
   width: 100%;
 }
 

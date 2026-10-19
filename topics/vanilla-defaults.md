@@ -78,6 +78,20 @@ Maintainer has authorized the exact exception.
 
 ## Known Exceptions
 
+The **session read/unread shortcuts** ([inbox](inbox.md#readunread-keyboard-actions))
+are always available, authorized on 2026-10-18 after the maintainer requested
+single-key session triage. Unmodified `r` and `u` explicitly set read state for
+the focused session; they leave typing, menus, dialogs and viewers alone. Their
+only visible addition is a key hint beside the existing menu action.
+
+The **managed first-party artifact viewer** is enabled by capability for the
+first-party hosted client, authorized 2026-10-16. Opening agent-generated HTML
+with its local assets is an expected file-viewing action; users need no domain
+or tunnel setup. It uses isolated content origins and the existing encrypted
+connection, preserves explicit custom deployments, and falls back on older
+servers. See [active-content security](active-content-security.md#managed-first-party-relay-previews).
+
+
 The New Session **model-list provenance line**
 ([session-defaults](session-defaults.md#provider-catalog-readiness)) shows by
 default under the model picker, authorized by graehl on 2026-10-06 after

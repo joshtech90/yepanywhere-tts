@@ -1,10 +1,9 @@
 # Service tier
 
 > Codex offers paid speed tiers (Fast is `priority`, Ultra Fast is
-> `ultrafast`) beside the standard tier. YA starts every new session at
-> Standard, lets the user opt in from New Session → Advanced or switch live
-> from the model panel, and always shows the tier in Session Info so a session
-> cannot run Fast without the user knowing.
+> `ultrafast`) beside the standard tier. YA starts unconfigured new sessions at
+> Standard, remembers explicit New Session speed choices per provider, and
+> supports live changes from the model panel. Session Info always shows the tier.
 
 Topic: service-tier
 
@@ -21,10 +20,18 @@ Availability is per account and per model: on 2026-10-06 the maintainer's
 ChatGPT account offered only `priority` on the Fast-capable models and no
 `ultrafast`. YA lists exactly what the catalog offers.
 
-YA never applies a catalog `defaultServiceTier` implicitly, and New Session
-never remembers a paid tier. Standard is the only tier a user can end up on
-without choosing it. Saved new-session defaults may still carry a
-`serviceTier` from older clients; the form ignores it.
+YA never applies a catalog `defaultServiceTier` implicitly. New Session saves
+explicit speed choices in server-owned `newSessionDefaults.providers[provider]`
+and restores them on later visits and provider switches. An unconfigured
+provider starts Standard. Choosing Standard clears both the provider-scoped
+tier and the legacy top-level tier. An unavailable saved tier is retained as a
+preference while that launch uses Standard; a router-pool launch sends no tier.
+Changing speed in a running session does not change new-session defaults.
+
+This replaces the 2026-10-06 never-remember decision, authorized by the
+maintainer on 2026-10-13. No new control, reminder or persistence capability is
+added. Released v0.9.0–v0.9.2 already preserve the scoped `serviceTier` field;
+older clients may still ignore it when seeding their form.
 
 ## Wire behavior
 

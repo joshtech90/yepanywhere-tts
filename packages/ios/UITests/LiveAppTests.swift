@@ -121,6 +121,11 @@ final class LiveAppTests: XCTestCase {
     // Use the current WebKit element frame, as with the project/session links.
     // On iOS 18 the default tap after relaunch left the drawer closed.
     sidebarOpener.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+    // AX existence/hittability can precede WebKit's painted drawer. The QA
+    // marker requires its Switch Host button to win DOM hit testing for two
+    // frames; all host-picker and draft/input assertions stay unchanged.
+    XCTAssertTrue(
+      app.staticTexts["QA host switch ready"].waitForExistence(timeout: 5), app.debugDescription)
     capture(app, "ios-host-sidebar")
     let switchHost = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Switch host'"))
       .firstMatch

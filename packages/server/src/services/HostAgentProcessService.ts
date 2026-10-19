@@ -6,9 +6,34 @@ import type {
   ProviderName,
 } from "@yep-anywhere/shared";
 import type { ProcessInfo } from "../supervisor/types.js";
-import { classifyProviderProcess } from "./providerProcessClassifier.js";
+import {
+  classifyProviderProcess,
+  type NativeProcessSession,
+  readNativeProcessSession,
+} from "./providerProcessClassifier.js";
 
 const SNAPSHOT_CACHE_MS = 1_000;
+const SESSION_CORRELATION_TTL_MS = 60_000;
+
+type SessionCorrelation = Pick<
+  HostAgentProcessObservation,
+  "sessionId" | "projectId" | "sessionTitle"
+>;
+type NativeSessionReader = (
+  provider: ProviderName,
+  pid: number,
+  startedAtMs: number,
+) => Promise<NativeProcessSession | undefined>;
+/**
+ * Describe a session YA's catalog knows, from its exact native id and the
+ * provider-recorded project path; undefined when YA does not know it.
+ */
+export type SessionDescriber = (
+  sessionId: string,
+  projectPath: string,
+) => Promise<
+  Pick<SessionCorrelation, "projectId" | "sessionTitle"> | undefined
+>;
 const PS_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 
 /**
@@ -251,6 +276,10 @@ function collectTree(
 
 export class HostAgentProcessService {
   private readonly previousCpuByIdentity = new Map<string, PreviousCpuSample>();
+  private readonly sessionByIdentity = new Map<
+    string,
+    { at: number; result: Promise<SessionCorrelation> }
+  >();
   private cachedResponse: CachedResponse | null = null;
   private generation = 0;
   private readonly inFlightByKey = new Map<string, InFlightSample>();
@@ -260,6 +289,8 @@ export class HostAgentProcessService {
     private readonly platform: NodeJS.Platform = process.platform,
     private readonly now: () => number = Date.now,
     private readonly readCpuTimes: HostCpuTimeReader = readLinuxCpuTimes,
+    private readonly readNativeSession: NativeSessionReader = readNativeProcessSession,
+    private readonly describeSession?: SessionDescriber,
   ) {}
 
   isSupported(): boolean {
@@ -269,6 +300,7 @@ export class HostAgentProcessService {
   clear(): void {
     this.generation += 1;
     this.previousCpuByIdentity.clear();
+    this.sessionByIdentity.clear();
     this.cachedResponse = null;
     this.inFlightByKey.clear();
   }
@@ -490,6 +522,8 @@ export class HostAgentProcessService {
       }
     }
 
+    await this.correlateExternalSessions(observations, generation, sampledAtMs);
+
     observations.sort((left, right) => {
       if (left.supervision !== right.supervision) {
         return left.supervision === "ya" ? -1 : 1;
@@ -514,5 +548,56 @@ export class HostAgentProcessService {
       };
     }
     return response;
+  }
+
+  /**
+   * Join external roots to their provider session through the provider's pid
+   * record, which is exact; cwd or timing alone never makes a join. The
+   * result, including YA's title lookup, is reused per process identity for
+   * a minute so metric refreshes do not repeat session enrichment.
+   */
+  private async correlateExternalSessions(
+    observations: HostAgentProcessObservation[],
+    generation: number,
+    sampledAtMs: number,
+  ): Promise<void> {
+    const current = new Set<string>();
+    await Promise.all(
+      observations.map(async (observation) => {
+        if (observation.supervision !== "external") return;
+        current.add(observation.observationId);
+        let cached = this.sessionByIdentity.get(observation.observationId);
+        if (!cached || sampledAtMs - cached.at >= SESSION_CORRELATION_TTL_MS) {
+          cached = { at: sampledAtMs, result: this.correlate(observation) };
+          this.sessionByIdentity.set(observation.observationId, cached);
+        }
+        Object.assign(observation, await cached.result);
+      }),
+    );
+    if (generation !== this.generation) return;
+    for (const identity of this.sessionByIdentity.keys()) {
+      if (!current.has(identity)) this.sessionByIdentity.delete(identity);
+    }
+  }
+
+  private async correlate(
+    observation: HostAgentProcessObservation,
+  ): Promise<SessionCorrelation> {
+    const native = await this.readNativeSession(
+      observation.provider,
+      observation.pid,
+      Date.parse(observation.startedAt),
+    );
+    if (!native) return {};
+    try {
+      const described = await this.describeSession?.(
+        native.sessionId,
+        native.projectPath,
+      );
+      return { sessionId: native.sessionId, ...described };
+    } catch {
+      // A failed title lookup still leaves the exact session id.
+      return { sessionId: native.sessionId };
+    }
   }
 }

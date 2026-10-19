@@ -1,0 +1,82 @@
+{
+  "browser": "148.0.7778.96",
+  "publicContentTLS": true,
+  "parent": "https://latest.yepanywhere.com",
+  "temporaryParentBuild": true,
+  "thirdPartyCookiesBlocked": true,
+  "checks": [
+    {
+      "name": "native-resources",
+      "image": 640,
+      "classic": true,
+      "modules": {
+        "label": "static",
+        "dynamic": "computed dynamic",
+        "data": {
+          "notes": 3
+        }
+      },
+      "font": 1,
+      "css": "0.5px",
+      "worker": "1",
+      "parent": "denied"
+    },
+    {
+      "name": "navigation-and-reload",
+      "passed": true
+    },
+    {
+      "name": "worker-restart",
+      "status": 200,
+      "worker": "1",
+      "data": {
+        "notes": 3
+      }
+    },
+    {
+      "name": "artifact-sequential-typing",
+      "characters": 32,
+      "maxMs": 4
+    },
+    {
+      "name": "stream-cancel",
+      "status": 200,
+      "firstBytes": 65536,
+      "nextStatus": 200
+    },
+    {
+      "name": "managed-frame-find",
+      "passed": true
+    },
+    {
+      "name": "fragment-state-theme-followup",
+      "count": 2,
+      "theme": "light",
+      "submitted": false
+    },
+    {
+      "name": "composer-sequential-typing",
+      "characters": 33,
+      "maxMs": 6,
+      "updates": 12,
+      "mutations": 38
+    },
+    {
+      "name": "concurrent-viewer-origins",
+      "passed": true
+    },
+    {
+      "name": "teardown-and-survivor-refusal",
+      "registrations": 0,
+      "afterClose": 503
+    }
+  ],
+  "errors": [],
+  "publicRelay": true,
+  "server": {
+    "artifactListener": false,
+    "artifactRelayPreview": true
+  },
+  "networkFallback": 404,
+  "passed": true
+}

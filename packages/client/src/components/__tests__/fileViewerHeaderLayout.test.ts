@@ -1,32 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { shouldStackFileViewerActions } from "../fileViewerHeaderLayout";
+import { fileViewerWindowControlsFit } from "../fileViewerHeaderLayout";
 
-describe("shouldStackFileViewerActions", () => {
-  const actionWidths = [36, 36, 36, 36, 36, 36, 36, 36];
+describe("fileViewerWindowControlsFit", () => {
+  const widths = {
+    availableWidth: 404,
+    contextWidth: 24,
+    headerGap: 2,
+    filenameWidth: 280,
+    provenanceWidth: 150,
+    windowWidth: 96,
+  };
 
-  it("shares the context row when that removes a row", () => {
+  it("uses spare title width only when the complete filename fits", () => {
+    expect(fileViewerWindowControlsFit(widths)).toBe(true);
     expect(
-      shouldStackFileViewerActions({
-        actionGap: 2,
-        actionWidths,
-        availableWidth: 840,
-        contextWidth: 36,
-        headerGap: 8,
-        provenanceWidth: 150,
-      }),
+      fileViewerWindowControlsFit({ ...widths, availableWidth: 403 }),
     ).toBe(false);
   });
 
-  it("takes the soft break when sharing would not save vertical space", () => {
+  it("also preserves the revision/stats row even with a short filename", () => {
     expect(
-      shouldStackFileViewerActions({
-        actionGap: 2,
-        actionWidths,
-        availableWidth: 351,
-        contextWidth: 36,
-        headerGap: 8,
-        provenanceWidth: 150,
+      fileViewerWindowControlsFit({
+        ...widths,
+        filenameWidth: 30,
+        provenanceWidth: 281,
       }),
-    ).toBe(true);
+    ).toBe(false);
+    expect(fileViewerWindowControlsFit({ ...widths, windowWidth: 0 })).toBe(
+      false,
+    );
   });
 });

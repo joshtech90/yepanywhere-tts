@@ -22,6 +22,10 @@ individual YA variables remain in [ya-env-vars.md](ya-env-vars.md).
 - Treat `process.env` as ambient input, not a stable default. A developer shell,
   package runner, service manager, or parent agent may contribute variables
   that are absent in CI or a production service.
+- Windows private-storage checks must verify the current account's object
+  owner and exclusive ACL even when an inherited PowerShell module path names
+  modules incompatible with Windows PowerShell. Such a module must not make
+  ordinary packaged-server startup fail or bypass either permission check.
 - Normalize legacy YA aliases once at startup. Canonical values win, aliases
   are removed, and downstream code should observe only canonical names.
 - Consume-and-strip YA-private module variables before launching providers.

@@ -1,6 +1,9 @@
-import type { GitFileDiffMode } from "@yep-anywhere/shared";
-import type { MouseEvent } from "react";
-import { useFileVersionControl } from "../hooks/useFileVersionControl";
+import {
+  buildProjectFileViewerHref,
+  type GitFileDiffMode,
+} from "@yep-anywhere/shared";
+import type { MouseEvent, ReactNode } from "react";
+import type { useFileVersionControl } from "../hooks/useFileVersionControl";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
@@ -8,6 +11,19 @@ import type { FileViewerMode } from "./FileViewer";
 import styles from "./FileDiffViewLinks.module.css";
 
 export type FileViewSelection = "source" | GitFileDiffMode;
+
+/** Filename and optional actions share one hover/focus target. */
+export function FileDiffLinkCluster({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <span className={`${styles.cluster} ${className ?? ""}`}>{children}</span>
+  );
+}
 
 export function buildProjectFileViewUrl({
   basePath = "",
@@ -26,48 +42,14 @@ export function buildProjectFileViewUrl({
   projectId: string;
   viewMode?: FileViewerMode;
 }): string {
-  const params = new URLSearchParams({ path: filePath });
-  if (diffMode) {
-    params.set("diff", diffMode);
-  } else {
-    if (lineNumber !== undefined) {
-      params.set("line", String(lineNumber));
-    }
-    if (lineEnd !== undefined) {
-      params.set("lineEnd", String(lineEnd));
-    }
-    if (viewMode === "range") {
-      params.set("view", "range");
-    }
-  }
-  return `${basePath}/projects/${projectId}/file?${params.toString()}`;
-}
-
-export function FileVersionControlLinks({
-  className,
-  filePath,
-  projectId,
-}: {
-  className?: string;
-  filePath: string;
-  projectId: string;
-}) {
-  const availability = useFileVersionControl(projectId, filePath);
-  if (
-    !availability.supported ||
-    !availability.relativePath ||
-    (!availability.worktreeFile && !availability.cumulativeFile)
-  ) {
-    return null;
-  }
-  return (
-    <FileDiffViewLinks
-      availability={availability}
-      className={className}
-      projectId={projectId}
-      variant="inline"
-    />
-  );
+  return `${basePath}${buildProjectFileViewerHref({
+    diffMode,
+    filePath,
+    lineEnd,
+    lineNumber,
+    projectId,
+    viewMode,
+  })}`;
 }
 
 export function FileDiffViewLinks({
@@ -76,7 +58,6 @@ export function FileDiffViewLinks({
   className,
   onSelect,
   projectId,
-  sourceHref,
   variant,
 }: {
   activeView?: FileViewSelection;
@@ -84,7 +65,6 @@ export function FileDiffViewLinks({
   className?: string;
   onSelect?: (view: FileViewSelection) => void;
   projectId: string;
-  sourceHref?: string;
   variant: "header" | "inline";
 }) {
   const { t } = useI18n();
@@ -145,16 +125,6 @@ export function FileDiffViewLinks({
       role="group"
       aria-label={t("fileDiffViews" as never)}
     >
-      {variant === "header" && sourceHref && (
-        <a
-          className={linkClass("source")}
-          href={sourceHref}
-          aria-current={activeView === "source" ? "page" : undefined}
-          onClick={handleClick("source")}
-        >
-          {t("fileViewerSource" as never)}
-        </a>
-      )}
       {availability.worktreeFile && (
         <a
           className={linkClass("worktree")}

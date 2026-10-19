@@ -5,7 +5,7 @@ import {
   THUMBNAIL_MAX_ASPECT_RATIO,
   planThumbnail,
 } from "@yep-anywhere/shared";
-import { getEntry, openDatabase, putEntryWithKey } from "./diagnostics/idb";
+import { getEntry, putEntryWithKey, sharedDatabase } from "./diagnostics/idb";
 
 const DB_NAME = "yep-anywhere-attachment-previews";
 const DB_VERSION = 3;
@@ -63,7 +63,6 @@ function aliasTo(attachmentId: string): CachedAttachmentAlias {
   return { aliasFor: attachmentId, totalBytes: 0, lastAccessedAt: Date.now() };
 }
 
-let dbPromise: Promise<IDBDatabase> | null = null;
 /** Uploads whose bytes are in hand but not yet stored. Never grows past those. */
 const memoryPreviews = new Map<string, CachedAttachmentPreview>();
 
@@ -99,26 +98,21 @@ function migrateInlineBlobs(tx: IDBTransaction): void {
   };
 }
 
-function getDatabase(): Promise<IDBDatabase> {
-  if (!dbPromise) {
-    dbPromise = openDatabase(DB_NAME, DB_VERSION, (db, tx) => {
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        const store = db.createObjectStore(STORE_NAME);
-        store.createIndex("byLastAccessedAt", "lastAccessedAt");
-      } else {
-        const store = tx.objectStore(STORE_NAME);
-        if (!store.indexNames.contains("byLastAccessedAt")) {
-          store.createIndex("byLastAccessedAt", "lastAccessedAt");
-        }
-      }
-      if (!db.objectStoreNames.contains(BLOB_STORE_NAME)) {
-        db.createObjectStore(BLOB_STORE_NAME);
-        migrateInlineBlobs(tx);
-      }
-    });
+const getDatabase = sharedDatabase(DB_NAME, DB_VERSION, (db, tx) => {
+  if (!db.objectStoreNames.contains(STORE_NAME)) {
+    const store = db.createObjectStore(STORE_NAME);
+    store.createIndex("byLastAccessedAt", "lastAccessedAt");
+  } else {
+    const store = tx.objectStore(STORE_NAME);
+    if (!store.indexNames.contains("byLastAccessedAt")) {
+      store.createIndex("byLastAccessedAt", "lastAccessedAt");
+    }
   }
-  return dbPromise;
-}
+  if (!db.objectStoreNames.contains(BLOB_STORE_NAME)) {
+    db.createObjectStore(BLOB_STORE_NAME);
+    migrateInlineBlobs(tx);
+  }
+}).get;
 
 function completion(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {

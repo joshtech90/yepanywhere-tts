@@ -7,6 +7,7 @@ import type {
   ClaudeSteerBackgroundBashSettings,
   CodexAsyncUserInputQuestion,
   PermissionMode,
+  ProviderWorkItem,
   SlashCommand,
   SessionLivenessProbeStatus,
   ToolDisplayAction,
@@ -198,6 +199,9 @@ export interface ProviderRetentionSnapshot {
   sessionCronCount?: number;
   liveTaskCount?: number;
   lastUpdatedAt?: Date | null;
+  /** Recorded independently of `retained`; Codex work never retains. */
+  backgroundWork?: ProviderWorkItem[];
+  foregroundWaits?: ProviderWorkItem[];
 }
 
 export interface StartSessionOptions {

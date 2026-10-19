@@ -8,11 +8,38 @@ import type {
   ProjectServices,
   ProjectServiceUpstream,
 } from "../projects/ProjectServiceManager.js";
+import type {
+  AutoStartCause,
+  ProjectAppAutoStart,
+} from "../projects/ProjectAppAutoStart.js";
 import type { ArtifactServer } from "./ArtifactServer.js";
 import type { ArtifactConfig } from "./config.js";
+import {
+  projectAppFramePage,
+  staticAppFrameSource,
+} from "./ProjectAppFramePage.js";
 import { APP_ACCESS_QUERY, type AppAccessTarget } from "./VhostAccess.js";
 import { configuredVhostNames, hostnameFromHostHeader } from "./vhosts.js";
-import { proxyLoopbackVhost } from "./vhost-proxy.js";
+import { isUpstreamUnreachable, proxyLoopbackVhost } from "./vhost-proxy.js";
+
+/** Below a tunnel's own origin timeout (Cloudflare's is 100 s). */
+export const AUTO_START_VISIT_WAIT_MS = 90_000;
+
+const STILL_STARTING = Symbol("still starting");
+
+function stillStarting(): Response {
+  // The start continues; a navigation retries on its own shortly.
+  return new Response(
+    '<!doctype html><meta http-equiv="refresh" content="5"><title>Starting</title><p>Project app is starting; this page retries shortly.</p>',
+    {
+      status: 503,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Retry-After": "5",
+      },
+    },
+  );
+}
 
 function appEntry(upstream: ProjectServiceUpstream): string {
   return upstream.basePath
@@ -27,12 +54,15 @@ export class ProjectAppDelivery {
     private readonly artifacts: ArtifactServer,
     private readonly services: ProjectServices,
     private readonly store: ProjectAppStore,
-    private readonly staticApp?: (
-      projectId: string,
-    ) => Promise<{ entry: string; root: string } | null>,
+    private readonly staticApp?: (projectId: string) => Promise<{
+      entry: string;
+      root: string;
+      address?: "redirect" | "frame";
+    } | null>,
     private readonly publicAllowed?: (
       reservation: ProjectAppReservation,
     ) => Promise<boolean>,
+    private readonly autoStart?: Pick<ProjectAppAutoStart, "recover">,
   ) {
     this.ready = this.refreshHosts();
     void this.ready.catch((error: unknown) =>
@@ -239,6 +269,59 @@ export class ProjectAppDelivery {
     return response;
   }
 
+  /**
+   * Keep a private app's link token in the address bar (graehl, 2026-10-15):
+   * a top-level page navigation authorized only by the access cookie is
+   * redirected to the same URL with `ya_access`, so every visited page shows
+   * a link that opens the same view. Public addresses, frames, subresources,
+   * non-GET requests and clients without Fetch Metadata are left alone; the
+   * token in the redirected URL ends the redirect.
+   */
+  private revealAccessToken(
+    request: Request,
+    target: AppAccessTarget,
+  ): Response | null {
+    if (("public" in target && target.public) || request.method !== "GET")
+      return null;
+    if (
+      request.headers.get("sec-fetch-mode") !== "navigate" ||
+      request.headers.get("sec-fetch-dest") !== "document"
+    )
+      return null;
+    const url = new URL(request.url);
+    if (url.searchParams.has(APP_ACCESS_QUERY)) return null;
+    url.searchParams.set(
+      APP_ACCESS_QUERY,
+      this.artifacts.vhostAccess.token(target),
+    );
+    return new Response(null, {
+      status: 302,
+      headers: { Location: `${url.pathname}${url.search}` },
+    });
+  }
+
+  /** A visit waits for the start only so long; the start itself continues. */
+  private async recoverWithin(
+    projectId: string,
+    cause: AutoStartCause,
+    current: ProjectServiceUpstream | null,
+  ): Promise<ProjectServiceUpstream | null | typeof STILL_STARTING> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        this.autoStart!.recover(projectId, cause, current),
+        new Promise<typeof STILL_STARTING>((done) => {
+          timer = setTimeout(
+            () => done(STILL_STARTING),
+            AUTO_START_VISIT_WAIT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async dispatchHostResponse(
     request: Request,
     clientAddress?: string,
@@ -304,6 +387,8 @@ export class ProjectAppDelivery {
     }
     const authorized = this.artifacts.vhostAccess.authorize(request, target);
     if (!authorized) return new Response("App link required", { status: 401 });
+    const revealed = this.revealAccessToken(request, target);
+    if (revealed) return revealed;
     if (!upstream && reservation?.serving && this.staticApp) {
       const app = await this.staticApp(reservation.projectId);
       if (app) {
@@ -314,6 +399,17 @@ export class ProjectAppDelivery {
           false,
           app.root,
         );
+        // Opt-in `staticAddress: "frame"` keeps the reserved address in the
+        // location bar, but navigation inside the app then never shows its
+        // own URL; the default redirect shows the grant's URL instead.
+        if (app.address === "frame")
+          return projectAppFramePage({
+            src: staticAppFrameSource(
+              grant.url,
+              new URL(authorized.request.url).pathname,
+            ),
+            cookie: authorized.cookie,
+          });
         return new Response(null, {
           status: 302,
           headers: {
@@ -324,6 +420,17 @@ export class ProjectAppDelivery {
           },
         });
       }
+    }
+    // Only a served reservation opts into starting its app on a visit.
+    const recover =
+      reservation?.serving && this.autoStart
+        ? (cause: AutoStartCause, current: ProjectServiceUpstream | null) =>
+            this.recoverWithin(reservation.projectId, cause, current)
+        : undefined;
+    if (!upstream && recover) {
+      const started = await recover("not-running", null);
+      if (started === STILL_STARTING) return stillStarting();
+      upstream = started;
     }
     if (!upstream)
       return new Response("Project app is not serving", { status: 503 });
@@ -341,6 +448,26 @@ export class ProjectAppDelivery {
         clientAddress,
         upstream.brokerSocket,
       );
+      if (recover && isUpstreamUnreachable(response)) {
+        const restarted = await recover("unreachable", upstream);
+        if (restarted === STILL_STARTING) return stillStarting();
+        // A bodiless request can be sent again; any other was consumed.
+        if (
+          restarted &&
+          ["GET", "HEAD"].includes(authorized.request.method.toUpperCase())
+        )
+          response = await proxy(
+            authorized.request,
+            restarted.port,
+            clientAddress,
+            restarted.brokerSocket,
+          );
+        else if (restarted)
+          response = new Response("Project app restarted; retry the request", {
+            status: 503,
+            headers: { "Retry-After": "1" },
+          });
+      }
     }
     if (authorized.cookie)
       response.headers.append("Set-Cookie", authorized.cookie);

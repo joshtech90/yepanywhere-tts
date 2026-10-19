@@ -1,5 +1,10 @@
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import { getMessageId } from "@yep-anywhere/shared/transcript/message";
+import {
+  collectQuoteReplies,
+  quoteReplyKey,
+} from "@yep-anywhere/shared/transcript/quoteReplies";
+import { contentBlocksText } from "@yep-anywhere/shared/transcript/slashCommandBodies";
 
 export interface AsyncQuestion {
   id: string;
@@ -9,6 +14,7 @@ export interface AsyncQuestion {
   title: string;
   options: readonly string[];
   age: number;
+  answer?: string;
 }
 
 export type QuestionReminderStage = "recent" | "quiet" | "retired";
@@ -40,9 +46,17 @@ export function collectAsyncQuestions(
   const questions: AsyncQuestion[] = [];
   const seen = new Set<string>();
   const turns = new Set<string>();
+  const replies = new Map<string, string>();
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]!;
-    if (item.type === "user_prompt") turns.add(item.id);
+    if (item.type === "user_prompt") {
+      turns.add(item.id);
+      if (turns.size < 32)
+        for (const [key, answer] of collectQuoteReplies(
+          contentBlocksText(item.content),
+        ))
+          if (!replies.has(key)) replies.set(key, answer);
+    }
     if (item.type !== "text") continue;
     for (const message of item.sourceMessages) {
       const messageId = getMessageId(message);
@@ -54,6 +68,9 @@ export function collectAsyncQuestions(
         const id = JSON.stringify([messageId, index]);
         if (seen.has(id)) continue;
         seen.add(id);
+        const key = quoteReplyKey(question.title);
+        const answer = turns.size < 32 ? replies.get(key) : undefined;
+        replies.delete(key);
         questions.push({
           id,
           messageId,
@@ -62,6 +79,7 @@ export function collectAsyncQuestions(
           title: question.title,
           options: question.options ?? [],
           age: turns.size,
+          ...(answer === undefined ? {} : { answer }),
         });
       }
     }

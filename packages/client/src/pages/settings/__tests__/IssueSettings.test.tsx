@@ -14,6 +14,7 @@ import { IssueSettings } from "../IssueSettings";
 
 const state = vi.hoisted(() => ({
   fetch: vi.fn(),
+  githubControls: false,
 }));
 const runtime = { sourceKey: "localhost", transport: { fetch: state.fetch } };
 vi.mock("../../../contexts/SourceRuntimeContext", () => ({
@@ -23,7 +24,10 @@ vi.mock("../../../hooks/useVersion", () => ({
   useVersion: () => ({
     version: {
       current: "0.9.0",
-      capabilities: ["issue-session-associations-v1"],
+      capabilities: [
+        "issue-session-associations-v1",
+        ...(state.githubControls ? ["github-status-controls"] : []),
+      ],
     },
   }),
 }));
@@ -95,8 +99,57 @@ async function renderPane(settings: Record<string, unknown> = {}) {
 }
 
 describe("IssueSettings tracker confirmation", () => {
-  beforeEach(() => state.fetch.mockReset());
+  beforeEach(() => {
+    state.fetch.mockReset();
+    state.githubControls = false;
+  });
   afterEach(cleanup);
+
+  it("gates new credential policy controls and sends no unsupported fields to an old server", async () => {
+    await renderPane();
+    expect(
+      screen.queryByLabelText("Check GitHub issue and PR status"),
+    ).toBeNull();
+    expect(screen.queryByLabelText("Allow GitHub CLI credentials")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Clear cached status" }),
+    ).toBeNull();
+    await act(async () =>
+      fireEvent.click(screen.getByLabelText("Match unknown ticket keys")),
+    );
+    const body = JSON.parse(
+      state.fetch.mock.calls.find((call) => call[1]?.method === "PUT")![1].body,
+    );
+    expect(body).not.toHaveProperty("githubCli");
+    expect(body).not.toHaveProperty("githubStatusEnabled");
+  });
+
+  it("lets GitHub status use credentials independently of tracker confirmation", async () => {
+    state.githubControls = true;
+    await renderPane({
+      githubStatusEnabled: true,
+      githubCli: { enabled: false, account: "" },
+    });
+    const toggle = await screen.findByLabelText<HTMLInputElement>(
+      "Allow GitHub CLI credentials",
+    );
+    expect(toggle.checked).toBe(false);
+    await screen.findByText("Using GITHUB_TOKEN.");
+    expect(
+      screen.getByRole<HTMLInputElement>("checkbox", {
+        name: /Confirm new references/,
+      }).checked,
+    ).toBe(false);
+    await act(async () => fireEvent.click(toggle));
+    expect(state.fetch).toHaveBeenCalledWith(
+      "/issues/settings",
+      expect.objectContaining({
+        body: expect.stringContaining(
+          '"githubCli":{"enabled":true,"account":""}',
+        ),
+      }),
+    );
+  });
 
   it("requires known projects by default and exposes aggressive matching as an explicit setting", async () => {
     await renderPane();
@@ -154,7 +207,7 @@ describe("IssueSettings tracker confirmation", () => {
     expect(github.textContent).toContain("gh auth token: present");
     const jira = screen.getByRole("group", { name: "Jira credential" });
     expect(jira.textContent).toContain(
-      "No credential found, so references stay unconfirmed.",
+      "No credential found. Tracker lookups are unavailable.",
     );
   });
 

@@ -3,6 +3,7 @@ node_modules/
 .pixi/
 
 # Build outputs
+packages/browser-extension/dist-dev/
 dist/
 build/
 *.tsbuildinfo

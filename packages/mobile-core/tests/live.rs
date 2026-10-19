@@ -42,6 +42,50 @@ async fn unchanged_server_login_resume_requests_and_teardown() {
     let response: serde_json::Value = serde_json::from_str(&response).unwrap();
     assert_eq!(response["status"], 200);
     assert!(!response["body"]["projects"].as_array().unwrap().is_empty());
+    let project = response["body"]["projects"][0]["id"].as_str().unwrap();
+    let file_path =
+        format!("/api/projects/{project}/files/raw?path=native-stream.bin&download=true");
+    let body = session
+        .fetch_response(serde_json::json!({"method":"GET","path":file_path}).to_string())
+        .await
+        .unwrap();
+    let head: serde_json::Value = serde_json::from_str(&body.metadata()).unwrap();
+    assert_eq!(head["streaming"], true, "{head}");
+    assert_eq!(head["length"], 40 * 1024 * 1024);
+    // A slow body must not monopolize authenticated control requests.
+    assert!(
+        session
+            .dispatch(
+                "request".into(),
+                r#"{"method":"GET","path":"/api/projects"}"#.into()
+            )
+            .await
+            .unwrap()
+            .contains("200")
+    );
+    let mut received = 0;
+    while let Some(chunk) = body.next_chunk().await.unwrap() {
+        assert!(chunk.len() <= 128 * 1024 && chunk.iter().all(|n| *n == 171));
+        received += chunk.len();
+    }
+    assert_eq!(received, 40 * 1024 * 1024);
+    drop(body);
+    let body = session
+        .fetch_response(
+            serde_json::json!({"method":"GET","path":file_path,"headers":{"Range":"bytes=-17"}})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+    let head: serde_json::Value = serde_json::from_str(&body.metadata()).unwrap();
+    assert_eq!(head["status"], 206);
+    assert_eq!(
+        head["headers"]["content-range"],
+        "bytes 41943023-41943039/41943040"
+    );
+    assert_eq!(body.next_chunk().await.unwrap().unwrap(), vec![171; 17]);
+    assert!(body.next_chunk().await.unwrap().is_none());
+    drop(body);
     session
         .dispatch(
             "subscribe".into(),
@@ -332,7 +376,26 @@ async fn profile_leases_scope_resources_and_preserve_sibling_demand() {
     chunk.extend_from_slice(b"ab");
     assert!(sibling.upload_chunk(chunk.clone()).await.is_err());
     alpha.upload_chunk(chunk).await.unwrap();
+    let projects: serde_json::Value = serde_json::from_str(
+        &alpha
+            .dispatch(
+                "request".into(),
+                r#"{"method":"GET","path":"/api/projects"}"#.into(),
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let project = projects["body"]["projects"][0]["id"].as_str().unwrap();
+    let request = serde_json::json!({"method":"GET","path":format!("/api/projects/{project}/files/raw?path=native-stream.bin&download=true")}).to_string();
+    let departed = alpha.fetch_response(request.clone()).await.unwrap();
+    let survivor = sibling.fetch_response(request).await.unwrap();
     alpha.release();
+    assert!(departed.next_chunk().await.is_err());
+    assert!(!survivor.next_chunk().await.unwrap().unwrap().is_empty());
+    survivor.cancel();
+    drop(survivor);
+    drop(departed);
     assert!(alpha.credential_data().is_err());
     assert!(
         sibling

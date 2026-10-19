@@ -124,3 +124,8 @@ export interface ArtifactViewerGrant {
    */
   reused?: boolean;
 }
+
+/** Managed preview grants bound delivered bytes, including repeated media seeks. */
+export const MANAGED_ARTIFACT_MAX_FILE_BYTES = 256 * 1024 * 1024;
+export const MANAGED_ARTIFACT_MAX_VIEWER_BYTES = 1024 * 1024 * 1024;
+export const MANAGED_ARTIFACT_READ_IDLE_MS = 120_000;

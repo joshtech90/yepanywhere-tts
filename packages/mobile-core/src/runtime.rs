@@ -448,6 +448,13 @@ impl NativeSourceLease {
         }
         result
     }
+    pub async fn fetch_response(&self, params: String) -> Result<Arc<crate::NativeResponseStream>> {
+        self.open()?;
+        self.source
+            .session
+            .fetch_response_owned(params, self.owner.cancel.clone())
+            .await
+    }
     pub async fn upload_chunk(&self, mut payload: Vec<u8>) -> Result<()> {
         self.open()?;
         check(payload.len() >= 24 && payload.len() <= 65536 + 24)?;
@@ -500,6 +507,7 @@ impl NativeSourceLease {
 
 struct Slot {
     source: tokio::sync::Mutex<Weak<Source>>,
+    credential_gate: Arc<tokio::sync::Mutex<()>>,
     cancel: CancellationToken,
 }
 #[derive(uniffi::Object)]
@@ -535,8 +543,8 @@ impl NativeRuntime {
         }
     }
     pub fn retire_profile(&self, profile_id: String) {
-        if let Ok(mut slots) = self.slots.lock()
-            && let Some(slot) = slots.remove(&profile_id)
+        if let Ok(slots) = self.slots.lock()
+            && let Some(slot) = slots.get(&profile_id)
         {
             slot.cancel.cancel();
             if let Ok(source) = slot.source.try_lock()
@@ -544,6 +552,15 @@ impl NativeRuntime {
             {
                 source.shutdown();
             }
+        }
+    }
+    /// Wait for an old actor's cancellation restore before reading native storage.
+    pub async fn settle_credential(&self, profile_id: String) -> Result<()> {
+        let slot = self.slot(&profile_id)?;
+        tokio::select! {
+            biased;
+            _ = slot.cancel.cancelled() => Err(Error::Closed),
+            guard = slot.credential_gate.lock() => { drop(guard); Ok(()) }
         }
     }
     pub async fn login(
@@ -569,7 +586,7 @@ impl NativeRuntime {
             relay_target: route.relay_target,
             username,
         };
-        let session = tokio::select! { _ = slot.cancel.cancelled() => return Err(Error::Closed), result = crate::session::login(options, password, Some(storage)) => result? };
+        let session = tokio::select! { _ = slot.cancel.cancelled() => return Err(Error::Closed), result = crate::session::login_gated(options, password, Some(storage), slot.credential_gate.clone()) => result? };
         let source = Source::start(session, route.route_id, slot.cancel.child_token());
         let lease = source.lease()?;
         *held = Arc::downgrade(&source);
@@ -607,7 +624,7 @@ impl NativeRuntime {
             )?;
             return source.lease();
         }
-        let session = tokio::select! { _ = slot.cancel.cancelled() => return Err(Error::Closed), result = crate::session::resume_routes(routes, username, &credential, storage) => result? };
+        let session = tokio::select! { _ = slot.cancel.cancelled() => return Err(Error::Closed), result = crate::session::resume_routes_gated(routes, username, &credential, storage, slot.credential_gate.clone()) => result? };
         let source = Source::start(session, String::new(), slot.cancel.child_token());
         let lease = source.lease()?;
         *held = Arc::downgrade(&source);
@@ -623,6 +640,7 @@ impl NativeRuntime {
         let mut slots = self.slots.lock().map_err(|_| Error::Closed)?;
         slots.retain(|_, slot| {
             Arc::strong_count(slot) > 1
+                || Arc::strong_count(&slot.credential_gate) > 1
                 || slot.source.try_lock().map_or(true, |source| {
                     source
                         .upgrade()
@@ -632,11 +650,20 @@ impl NativeRuntime {
         if !slots.contains_key(id) && slots.len() >= 64 {
             return Err(Error::Overflow);
         }
+        if let Some(old) = slots.get(id).filter(|slot| slot.cancel.is_cancelled()) {
+            let next = Arc::new(Slot {
+                source: tokio::sync::Mutex::new(Weak::new()),
+                credential_gate: old.credential_gate.clone(),
+                cancel: self.cancel.child_token(),
+            });
+            slots.insert(id.into(), next);
+        }
         Ok(slots
             .entry(id.into())
             .or_insert_with(|| {
                 Arc::new(Slot {
                     source: tokio::sync::Mutex::new(Weak::new()),
+                    credential_gate: Arc::new(tokio::sync::Mutex::new(())),
                     cancel: self.cancel.child_token(),
                 })
             })
@@ -779,5 +806,165 @@ mod tests {
         runtime.shutdown();
         assert!(next.cancel.is_cancelled());
         assert!(runtime.slot("next").is_err());
+    }
+}
+
+#[cfg(test)]
+mod credential_race_tests {
+    use super::*;
+    use crate::session::tests::{fixture_credential_data, peer};
+    use std::sync::{Condvar, atomic::AtomicUsize};
+    use tokio::time::{Duration, timeout};
+    struct Storage {
+        saved: Mutex<Option<Vec<u8>>>,
+        begins: AtomicUsize,
+        events: tokio::sync::mpsc::UnboundedSender<&'static str>,
+        gate: (Mutex<bool>, Condvar),
+        log: Mutex<Vec<String>>,
+    }
+    impl Storage {
+        fn release(&self) {
+            *self.gate.0.lock().unwrap() = true;
+            self.gate.1.notify_all();
+        }
+    }
+    struct Release(Arc<Storage>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+    impl CredentialPersistence for Storage {
+        fn begin_resume(&self) -> bool {
+            *self.saved.lock().unwrap() = None;
+            self.log.lock().unwrap().push("begin".into());
+            if self.begins.fetch_add(1, Ordering::AcqRel) == 1 {
+                self.events.send("reconnecting").unwrap();
+            }
+            true
+        }
+        fn persist(&self, value: Vec<u8>) -> bool {
+            let version =
+                serde_json::from_slice::<Value>(&value).unwrap()["resume_protocol_version"]
+                    .as_u64()
+                    .unwrap();
+            if self.begins.load(Ordering::Acquire) == 2 && version == 3 {
+                self.events.send("restoring").unwrap();
+                let mut open = self.gate.0.lock().unwrap();
+                while !*open {
+                    open = self.gate.1.wait(open).unwrap();
+                }
+            }
+            self.log.lock().unwrap().push(format!("persist:{version}"));
+            *self.saved.lock().unwrap() = Some(value);
+            true
+        }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_actor_credential_restoration_precedes_snapshot_and_new_proof() {
+        for retire in [false, true] {
+            let (events, mut observed) = tokio::sync::mpsc::unbounded_channel();
+            let storage = Arc::new(Storage {
+                saved: Mutex::new(Some(fixture_credential_data())),
+                begins: AtomicUsize::new(0),
+                events,
+                gate: (Mutex::new(false), Condvar::new()),
+                log: Mutex::new(Vec::new()),
+            });
+            let _release = Release(storage.clone());
+            let runtime = NativeRuntime::new();
+            let (first, first_peer) = peer(3, "reconnect-stall").await;
+            let route = |endpoint| NativeRoute {
+                route_id: "direct".into(),
+                endpoint,
+                relay_target: None,
+            };
+            let lease = runtime
+                .acquire(
+                    "profile".into(),
+                    vec![route(first.endpoint)],
+                    first.username.clone(),
+                    fixture_credential_data(),
+                    storage.clone(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                lease
+                    .dispatch(
+                        "request".into(),
+                        json!({"method":"GET","path":"/drop-for-resume"}).to_string()
+                    )
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                timeout(Duration::from_secs(3), observed.recv())
+                    .await
+                    .unwrap(),
+                Some("reconnecting")
+            );
+            assert!(storage.saved.lock().unwrap().is_none());
+            lease.release();
+            assert_eq!(
+                timeout(Duration::from_secs(3), observed.recv())
+                    .await
+                    .unwrap(),
+                Some("restoring")
+            );
+            if retire {
+                runtime.retire_profile("profile".into());
+            }
+            let _other = runtime.slot("other").unwrap();
+            let settle = runtime.settle_credential("profile".into());
+            tokio::pin!(settle);
+            assert!(
+                futures_util::poll!(&mut settle).is_pending(),
+                "snapshot must wait for old restoration"
+            );
+            let (next, next_peer) = peer(5, "").await;
+            let acquire = runtime.acquire(
+                "profile".into(),
+                vec![route(next.endpoint)],
+                first.username,
+                fixture_credential_data(),
+                storage.clone(),
+            );
+            tokio::pin!(acquire);
+            assert!(
+                futures_util::poll!(&mut acquire).is_pending(),
+                "new proof must wait for old restoration"
+            );
+            storage.release();
+            timeout(Duration::from_secs(3), settle)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(storage.saved.lock().unwrap().is_some());
+            let new = timeout(Duration::from_secs(3), acquire)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(storage.saved.lock().unwrap().as_ref().unwrap())
+                    .unwrap()["resume_protocol_version"],
+                5
+            );
+            assert_eq!(
+                &*storage.log.lock().unwrap(),
+                &[
+                    "begin",
+                    "persist:3",
+                    "begin",
+                    "persist:3",
+                    "begin",
+                    "persist:5"
+                ]
+            );
+            new.release();
+            runtime.shutdown();
+            first_peer.abort();
+            next_peer.abort();
+        }
     }
 }

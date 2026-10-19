@@ -928,15 +928,71 @@ export async function seedDefaultProfile(directory: string) {
     sourceControlQmdProjectPath.replace(/[/\\:]/g, "-"),
   );
   mkdirSync(sourceControlQmdSessionDir, { recursive: true });
+  // A ranged Read of the dirty file exercises in-session diff shortcuts.
+  const sourceControlQmdReportPath = join(
+    sourceControlQmdProjectPath,
+    "report.qmd",
+  );
   writeFileSync(
     join(sourceControlQmdSessionDir, "source-control-qmd-001.jsonl"),
-    JSON.stringify({
-      type: "user",
-      cwd: sourceControlQmdProjectPath,
-      message: { role: "user", content: "Inspect the Quarto report" },
-      timestamp: "2026-01-04T00:00:01.000Z",
-      uuid: "source-control-qmd-user-1",
-    }),
+    [
+      {
+        type: "user",
+        cwd: sourceControlQmdProjectPath,
+        message: { role: "user", content: "Inspect the Quarto report" },
+        timestamp: "2026-01-04T00:00:01.000Z",
+        uuid: "source-control-qmd-user-1",
+      },
+      {
+        type: "assistant",
+        uuid: "source-control-qmd-read-use",
+        parentUuid: "source-control-qmd-user-1",
+        timestamp: "2026-01-04T00:00:02.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "source-control-qmd-read",
+              name: "Read",
+              input: {
+                file_path: sourceControlQmdReportPath,
+                offset: 2,
+                limit: 2,
+              },
+            },
+          ],
+        },
+      },
+      {
+        type: "user",
+        uuid: "source-control-qmd-read-result",
+        parentUuid: "source-control-qmd-read-use",
+        timestamp: "2026-01-04T00:00:03.000Z",
+        toolUseResult: {
+          type: "text",
+          file: {
+            filePath: sourceControlQmdReportPath,
+            content: "title: Updated report\n---",
+            startLine: 2,
+            numLines: 2,
+            totalLines: 8,
+          },
+        },
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "source-control-qmd-read",
+              content: "2→title: Updated report\n3→---",
+            },
+          ],
+        },
+      },
+    ]
+      .map((message) => JSON.stringify(message))
+      .join("\n"),
   );
   console.log(
     `[E2E] Created Quarto Source Control fixture at ${sourceControlQmdProjectPath}`,

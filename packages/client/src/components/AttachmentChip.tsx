@@ -2,6 +2,7 @@ import { planThumbnail } from "@yep-anywhere/shared";
 import { getPersistedAttachmentUploadUrl } from "../lib/attachmentUploadUrl";
 export { getPersistedAttachmentUploadUrl } from "../lib/attachmentUploadUrl";
 import {
+  type RefObject,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -96,10 +97,36 @@ export function getAttachmentIdFromPersistedPath(
   return match?.[1] ?? null;
 }
 
+/** Latches true once the element comes within a screen of the viewport. */
+function useNearViewport(
+  ref: RefObject<HTMLElement | null>,
+  enabled: boolean,
+): boolean {
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (!enabled || near || !element) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setNear(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) setNear(true);
+      },
+      { rootMargin: "100% 0px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [enabled, near, ref]);
+  return near;
+}
+
 function useCachedAttachmentImage(
   attachmentId: string,
   path: string | undefined,
   remotePreviewEnabled: boolean,
+  originalEnabled: boolean,
   previewUrl?: string,
   projectId?: string,
 ): {
@@ -246,10 +273,18 @@ function useCachedAttachmentImage(
     remotePreviewEnabled && remoteEnabled && !previewUrl,
     fetchSharedBlob,
   );
+  const original = useRemoteImage(
+    !publicShare &&
+      remotePath?.startsWith("/api/local-image?") &&
+      path?.replaceAll("\\", "/").includes("/.rendez/delivered/")
+      ? `${remotePath}&rendezOriginal=1`
+      : null,
+    originalEnabled,
+  );
 
   return {
     previewUrl: previewUrl ?? cachePreviewUrl ?? remote.url,
-    fullUrl: previewUrl ?? cacheFullUrl ?? remote.url,
+    fullUrl: previewUrl ?? cacheFullUrl ?? original.url ?? remote.url,
     previewWidth: cachePreviewWidth,
     previewHeight: cachePreviewHeight,
     loading: loading || remote.loading,
@@ -311,6 +346,16 @@ function ImageAttachmentChip({
   const hoverImageRef = useRef<HTMLImageElement>(null);
   const derivedAttachmentId = getAttachmentIdFromPersistedPath(path);
   const cacheKey = attachmentId ?? derivedAttachmentId ?? path ?? originalName;
+  // External uploads and public viewers have no uploader-cached thumbnail.
+  const publicShare = usePublicShareContext();
+  const externalAttachment = getPersistedAttachmentUploadUrl(
+    path,
+    routeProjectId,
+  )?.startsWith("/api/local-image?");
+  const nearViewport = useNearViewport(
+    chipButtonRef,
+    Boolean(publicShare || externalAttachment),
+  );
   const {
     previewUrl: imagePreviewUrl,
     fullUrl,
@@ -321,7 +366,8 @@ function ImageAttachmentChip({
   } = useCachedAttachmentImage(
     cacheKey,
     path,
-    showModal || showHoverPreview,
+    showModal || showHoverPreview || nearViewport,
+    showModal,
     previewUrl,
     routeProjectId,
   );

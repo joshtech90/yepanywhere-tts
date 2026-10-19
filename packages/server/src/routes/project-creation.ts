@@ -184,8 +184,9 @@ export type ProjectDirectoryOutcome =
  * Make a project directory that does not exist yet: create it, `git init`,
  * and leave one empty commit so the project has a root revision to diff
  * against from its very first change, unless the caller declines Git. An
- * existing directory is left exactly as it is — YA never runs `git init` over
- * somebody's tree.
+ * existing empty directory under `create` is initialized the same way; any
+ * other existing directory is left exactly as it is — YA never runs
+ * `git init` over somebody's tree.
  */
 export async function ensureProjectDirectory(
   projectPath: string,
@@ -205,6 +206,16 @@ export async function ensureProjectDirectory(
         status: 400,
         error: "Path exists and is not a directory",
       };
+    }
+    // An empty folder the user made ahead of time is the folder YA would have
+    // made, so it gets the same repository; any content means it is somebody's
+    // tree and stays exactly as it is.
+    if (
+      options.create &&
+      options.initializeGit !== false &&
+      (await fs.readdir(projectPath)).length === 0
+    ) {
+      return initializeNewProjectGit(projectPath, { kind: "exists" });
     }
     return { kind: "exists" };
   }
@@ -274,6 +285,13 @@ export async function ensureProjectDirectory(
   }
 
   if (options.initializeGit === false) return { kind: "created" };
+  return initializeNewProjectGit(projectPath, { kind: "created" });
+}
+
+async function initializeNewProjectGit(
+  projectPath: string,
+  success: ProjectDirectoryOutcome,
+): Promise<ProjectDirectoryOutcome> {
   try {
     await initializeProjectGit(projectPath);
   } catch (error) {
@@ -282,11 +300,10 @@ export async function ensureProjectDirectory(
     return {
       kind: "error",
       status: 500,
-      error: `Created ${projectPath} but could not initialize Git: ${
+      error: `Prepared ${projectPath} but could not initialize Git: ${
         (error as Error).message
       }`,
     };
   }
-
-  return { kind: "created" };
+  return success;
 }

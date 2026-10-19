@@ -244,12 +244,21 @@ export interface ConnectionState extends WsTransportAuthState {
   cleanupStarted: boolean;
   /** Streamed response bodies in flight, by request id. */
   responseStreams: Map<string, RelayResponseStreamState>;
+  /** Unacknowledged bytes across native connection-window streams, including tails. */
+  responseStreamBytes: number;
+  responseStreamWaiters: RelayResponseStreamState[];
+  responseStreamBorrowers: Set<RelayResponseStreamState>;
 }
 
 /** A streamed response body's position in the client's send window. */
 export interface RelayResponseStreamState {
   /** Total body bytes the client reports having consumed. */
   ackedBytes: number;
+  sentBytes: number;
+  connectionWindow: boolean;
+  ended: boolean;
+  receiptTimer: ReturnType<typeof setTimeout> | null;
+  receiptExpired: () => void;
   /** Set when the client cancels or the connection closes. */
   cancelled: boolean;
   /** Resumes a sender waiting for the window to open. */
@@ -514,6 +523,9 @@ export function createConnectionState(options?: {
     preauthPublicShareRequest: null,
     cleanupStarted: false,
     responseStreams: new Map(),
+    responseStreamBytes: 0,
+    responseStreamWaiters: [],
+    responseStreamBorrowers: new Set(),
   };
 }
 
@@ -524,9 +536,13 @@ export function cleanupConnectionState(connState: ConnectionState): void {
   connState.preauthPublicShareRequest = null;
   activeRequest?.controller.abort();
   for (const stream of connState.responseStreams.values()) {
+    if (stream.receiptTimer) clearTimeout(stream.receiptTimer);
     cancelResponseStream(stream);
   }
   connState.responseStreams.clear();
+  connState.responseStreamBytes = 0;
+  connState.responseStreamWaiters.length = 0;
+  connState.responseStreamBorrowers.clear();
   cleanupSrpConnectionState(connState);
 }
 
@@ -544,10 +560,27 @@ export function handleResponseStreamAck(
   bytes: unknown,
 ): void {
   const stream = connState.responseStreams.get(id);
-  if (!stream || typeof bytes !== "number" || !Number.isFinite(bytes)) return;
-  if (bytes <= stream.ackedBytes) return;
+  if (!stream || !Number.isSafeInteger(bytes)) return;
+  if (
+    typeof bytes !== "number" ||
+    bytes <= stream.ackedBytes ||
+    bytes > stream.sentBytes
+  )
+    return;
+  if (stream.connectionWindow)
+    connState.responseStreamBytes -= bytes - stream.ackedBytes;
   stream.ackedBytes = bytes;
-  stream.wake?.();
+  if (stream.connectionWindow) {
+    if (stream.ended) {
+      if (stream.receiptTimer) clearTimeout(stream.receiptTimer);
+      if (bytes === stream.sentBytes) connState.responseStreams.delete(id);
+      else armResponseReceiptDeadline(stream);
+    }
+    wakeNativeResponseStreams(connState);
+    stream.wake?.();
+  } else {
+    stream.wake?.();
+  }
 }
 
 /** Stops a streamed body the client no longer wants. */
@@ -556,7 +589,10 @@ export function handleResponseStreamCancel(
   id: string,
 ): void {
   const stream = connState.responseStreams.get(id);
-  if (stream) cancelResponseStream(stream);
+  if (stream) {
+    cancelResponseStream(stream);
+    if (stream.connectionWindow) wakeNativeResponseStreams(connState);
+  }
 }
 
 function sendBinaryMessage(
@@ -913,6 +949,8 @@ function relayedResponseHeaders(response: Response): Record<string, string> {
     if (
       normalizedKey.startsWith("x-") ||
       normalizedKey === "content-type" ||
+      normalizedKey === "content-range" ||
+      normalizedKey === "accept-ranges" ||
       normalizedKey === "etag" ||
       normalizedKey === "location" ||
       normalizedKey === "server-timing"
@@ -930,32 +968,110 @@ class ResponseStreamStalledError extends Error {
   }
 }
 
+function armResponseReceiptDeadline(stream: RelayResponseStreamState): void {
+  // Let native's own idle discard/ACK finish before closing an abandoned source.
+  stream.receiptTimer = setTimeout(
+    stream.receiptExpired,
+    RELAY_RESPONSE_STREAM_IDLE_TIMEOUT_MS + 15_000,
+  );
+}
+
+function wakeNativeResponseStreams(connState: ConnectionState): void {
+  connState.responseStreamWaiters[0]?.wake?.();
+  for (const stream of connState.responseStreamBorrowers) stream.wake?.();
+}
+
+// The native source admits eight readers. Reserve one 64 KiB bridge-sized
+// piece for every other current or future slot; lend the rest to active reads.
+// Retained tails also cover their slot's floor until receipt transfers that
+// reservation back to the future-slot pool; ending must not lend it away.
+function nativeResponseReservation(
+  connState: ConnectionState,
+  current: RelayResponseStreamState,
+): number {
+  let count = 0;
+  let reserved = 0;
+  const floor = RELAY_RESPONSE_STREAM_CHUNK_BYTES / 2;
+  for (const stream of connState.responseStreams.values()) {
+    if (!stream.connectionWindow) continue;
+    count++;
+    if (stream !== current)
+      reserved += Math.max(0, floor - (stream.sentBytes - stream.ackedBytes));
+  }
+  return reserved + Math.max(0, 8 - count) * floor;
+}
+
 /**
  * Waits until `sentBytes` fits the client's window. Returns false when the
  * stream was cancelled; throws when the client makes no progress in time.
  */
 async function waitForResponseStreamWindow(
+  connState: ConnectionState,
   stream: RelayResponseStreamState,
-  sentBytes: number,
+  bytes: number,
 ): Promise<boolean> {
-  while (
-    !stream.cancelled &&
-    sentBytes - stream.ackedBytes > RELAY_RESPONSE_STREAM_WINDOW_BYTES
-  ) {
-    const acked = stream.ackedBytes;
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, RELAY_RESPONSE_STREAM_IDLE_TIMEOUT_MS);
-      stream.wake = () => {
-        clearTimeout(timer);
-        resolve();
-      };
-    });
-    stream.wake = null;
-    if (!stream.cancelled && stream.ackedBytes === acked) {
-      throw new ResponseStreamStalledError();
+  const idleBudget =
+    RELAY_RESPONSE_STREAM_IDLE_TIMEOUT_MS +
+    (stream.connectionWindow ? 15_000 : 0);
+  let deadline = Date.now() + idleBudget;
+  const waiters = connState.responseStreamWaiters;
+  const removeWaiter = () => {
+    const index = waiters.indexOf(stream);
+    if (index >= 0) waiters.splice(index, 1);
+    waiters[0]?.wake?.();
+  };
+  try {
+    while (!stream.cancelled) {
+      const blocked =
+        (stream.connectionWindow
+          ? connState.responseStreamBytes
+          : stream.sentBytes - stream.ackedBytes) +
+          bytes >
+        RELAY_RESPONSE_STREAM_WINDOW_BYTES;
+      const bodyBlocked =
+        stream.connectionWindow &&
+        connState.responseStreamBytes +
+          bytes +
+          nativeResponseReservation(connState, stream) >
+          RELAY_RESPONSE_STREAM_WINDOW_BYTES;
+      const behindPeer =
+        stream.connectionWindow && waiters.length > 0 && waiters[0] !== stream;
+      if (!blocked && !bodyBlocked && !behindPeer) {
+        stream.sentBytes += bytes;
+        if (stream.connectionWindow) connState.responseStreamBytes += bytes;
+        return true;
+      }
+      // A reader withholding its own credit cannot sit at the connection FIFO
+      // head and block peers that still have per-body capacity.
+      if (bodyBlocked && waiters.includes(stream)) removeWaiter();
+      if (bodyBlocked) connState.responseStreamBorrowers.add(stream);
+      else connState.responseStreamBorrowers.delete(stream);
+      if (stream.connectionWindow && !bodyBlocked && !waiters.includes(stream))
+        waiters.push(stream);
+      const acked = stream.ackedBytes;
+      const timedOut = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(
+          () => resolve(true),
+          Math.max(0, deadline - Date.now()),
+        );
+        stream.wake = () => {
+          clearTimeout(timer);
+          resolve(false);
+        };
+      });
+      stream.wake = null;
+      if (stream.ackedBytes > acked) deadline = Date.now() + idleBudget;
+      if (!stream.cancelled && timedOut) {
+        throw new ResponseStreamStalledError();
+      }
+    }
+    return false;
+  } finally {
+    if (stream.connectionWindow) {
+      connState.responseStreamBorrowers.delete(stream);
+      removeWaiter();
     }
   }
-  return !stream.cancelled;
 }
 
 /**
@@ -974,11 +1090,42 @@ async function streamRelayResponse(
   sendChunk: (requestId: string, bytes: Uint8Array) => boolean,
   connState: ConnectionState,
   frameMode: RequestResponseFrameMode,
+  connectionWindow: boolean,
+  ws: WSAdapter,
 ): Promise<void> {
   const declaredLength = response.headers.get("Content-Length");
   const reader = body.getReader();
+  if (
+    connState.responseStreams.has(id) ||
+    (connectionWindow && connState.responseStreams.size >= 128)
+  ) {
+    await reader.cancel();
+    reader.releaseLock();
+    send(
+      {
+        type: "response",
+        id,
+        status: 503,
+        body: {
+          error: connState.responseStreams.has(id)
+            ? "Duplicate response stream ID"
+            : "Too many retained response streams",
+        },
+      },
+      frameMode,
+    );
+    return;
+  }
   const stream: RelayResponseStreamState = {
     ackedBytes: 0,
+    sentBytes: 0,
+    connectionWindow,
+    ended: false,
+    receiptTimer: null,
+    receiptExpired: () => {
+      cleanupConnectionState(connState);
+      ws.close(1008, "Response receipt deadline exceeded");
+    },
     cancelled: false,
     wake: null,
     cancelRead: () => reader.cancel(),
@@ -998,6 +1145,9 @@ async function streamRelayResponse(
   );
 
   let sentBytes = 0;
+  const chunkBytes = connectionWindow
+    ? RELAY_RESPONSE_STREAM_CHUNK_BYTES / 2
+    : RELAY_RESPONSE_STREAM_CHUNK_BYTES;
   let completed = false;
   let error: string | undefined;
   try {
@@ -1007,19 +1157,13 @@ async function streamRelayResponse(
         completed = true;
         break;
       }
-      for (
-        let offset = 0;
-        offset < value.byteLength;
-        offset += RELAY_RESPONSE_STREAM_CHUNK_BYTES
-      ) {
-        const piece = value.subarray(
-          offset,
-          offset + RELAY_RESPONSE_STREAM_CHUNK_BYTES,
-        );
+      for (let offset = 0; offset < value.byteLength; offset += chunkBytes) {
+        const piece = value.subarray(offset, offset + chunkBytes);
         if (
           !(await waitForResponseStreamWindow(
+            connState,
             stream,
-            sentBytes + piece.byteLength,
+            piece.byteLength,
           ))
         ) {
           break reading;
@@ -1040,12 +1184,24 @@ async function streamRelayResponse(
       `[WS Relay] Streamed response stopped: bytes=${sentBytes}, reason=${err instanceof Error ? err.message : String(err)}`,
     );
   } finally {
-    connState.responseStreams.delete(id);
+    stream.ended = true;
+    if (connectionWindow) wakeNativeResponseStreams(connState);
+    if (
+      !connectionWindow ||
+      stream.ackedBytes === stream.sentBytes ||
+      connState.cleanupStarted
+    ) {
+      connState.responseStreams.delete(id);
+    } else {
+      // Completed/cancelled data may still be queued in the relay. Only receipt
+      // releases its credit; expiry closes the connection rather than guessing.
+      armResponseReceiptDeadline(stream);
+    }
     if (!completed) await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 
-  if (!stream.cancelled) {
+  if (!connState.cleanupStarted && (!stream.cancelled || connectionWindow)) {
     send(
       { type: "response_stream_end", id, ...(error ? { error } : {}) },
       frameMode,
@@ -1214,7 +1370,7 @@ export async function handleRequest(
       url.searchParams.get("bootstrap") === NEW_SESSION_BOOTSTRAP &&
       contentType.startsWith("text/event-stream");
     const streamedBody =
-      request.stream === true &&
+      (request.stream === true || request.stream === "connection") &&
       responseFrameMode.kind === "srp_encrypted" &&
       !isPreauthPublicShareRequest &&
       response.ok &&
@@ -1232,6 +1388,8 @@ export async function handleRequest(
         send.sendResponseChunk,
         connState,
         responseFrameMode,
+        request.stream === "connection",
+        ws,
       );
       await runAfterResponseTasks();
       return;

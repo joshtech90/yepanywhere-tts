@@ -12,6 +12,15 @@ import uniffi.ya_mobile_core.NativeSecurityBinding
 import uniffi.ya_mobile_core.CoreException
 
 class YaRustTransportTest {
+    @Test fun eventConsumerLagIsRecoverableAndNeverAProofFailure() = runBlocking {
+        val session = FakeSession().also { it.eventFailure = CoreException.Overflow() }
+        val transport = YaRustMessageTransport(session, true) {}
+        try {
+            val failure = withTimeout(2_000) { runCatching { transport.receive() }.exceptionOrNull() }
+            assertTrue(failure is YaRustTerminalException)
+            assertTrue((failure as YaRustTerminalException).recoverable)
+        } finally { transport.closeAndAwait() }
+    }
     @Test fun subscriptionSetupFailuresKeepTheirNativeCodes() = runBlocking {
         val failures = listOf(
             CoreException.Unavailable() to "CONNECTION_UNAVAILABLE",
@@ -157,6 +166,7 @@ class YaRustTransportTest {
         var dispatchGate: CompletableDeferred<Unit>? = null
         var holdUploads = false
         var failure: CoreException? = null
+        var eventFailure: CoreException? = null
         var response = "{\"status\":200,\"headers\":{},\"body\":{}}"
         val uploadStarted = CompletableDeferred<Unit>()
         override fun release() { releases.incrementAndGet(); closed = true }
@@ -164,7 +174,8 @@ class YaRustTransportTest {
         override fun routeId() = "fixture-route"
         override fun credentialData() = YaRustCredential.encode(YaResumeCredential("fixture-owner", "fixture-session", ByteArray(32), 3))
         override fun securityBinding() = NativeSecurityBinding("fixture-session", "fixture-nonce")
-        override suspend fun nextEvent() = events.receive()
+        override suspend fun fetchResponse(params: String): uniffi.ya_mobile_core.NativeResponseStream = error("Not used by buffered request fixtures")
+        override suspend fun nextEvent(): String { eventFailure?.let { throw it }; return events.receive() }
         override suspend fun uploadChunk(payload: ByteArray) {
             if (holdUploads) { uploadStarted.complete(Unit); awaitCancellation() }
         }

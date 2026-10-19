@@ -35,6 +35,22 @@
   font-variant-numeric: tabular-nums;
 }
 
+.menuEntry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  text-decoration: none;
+}
+
+.menuEntry:hover,
+.menuEntry:focus-visible {
+  background: var(--bg-hover);
+}
+
 /* Sits above the sidebar and the session header, like the neighboring menus. */
 .menu {
   z-index: 10000;
@@ -73,6 +89,11 @@
   outline-offset: -2px;
 }
 
+/* A tight phone row gives up title width, never the glyph's. */
+.item > svg {
+  flex-shrink: 0;
+}
+
 /* The key identifies the row; the title fills whatever width is left. */
 .itemKey {
   flex-shrink: 0;
@@ -86,11 +107,27 @@
   white-space: nowrap;
 }
 
+/* The state sits at the row's end, where a glance down the menu finds it. */
+.itemStatus {
+  margin-left: auto;
+}
+
 .browse {
   margin-top: 4px;
   border-top: 1px solid var(--border-color);
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
   color: var(--text-secondary);
+}
+
+/* Section headings label their rows without competing with them. */
+.section {
+  margin: 0;
+  padding: 8px 8px 2px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .empty,

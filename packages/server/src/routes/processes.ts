@@ -48,6 +48,74 @@ export interface ProcessesDeps {
   }) => Promise<ResumeExemptionResult>;
 }
 
+type SessionTitleDeps = Pick<
+  ProcessesDeps,
+  "sessionIndexService" | "sessionMetadataService"
+>;
+
+/**
+ * A session's display title (custom title, then transcript title), or
+ * undefined when it would only be "Untitled".
+ */
+async function sessionDisplayTitle(
+  deps: SessionTitleDeps,
+  sessionDir: string,
+  projectId: UrlProjectId,
+  sessionId: string,
+  reader: ISessionReader,
+  summaryTitle: string | null | undefined,
+): Promise<string | undefined> {
+  let title = summaryTitle ?? null;
+  if (!title && deps.sessionIndexService) {
+    title = await deps.sessionIndexService.getSessionTitle(
+      sessionDir,
+      projectId,
+      sessionId,
+      reader,
+    );
+  }
+  const displayTitle = getSessionDisplayTitle({
+    customTitle:
+      deps.sessionMetadataService?.getMetadata(sessionId)?.customTitle,
+    title,
+  });
+  return displayTitle === "Untitled" ? undefined : displayTitle;
+}
+
+/**
+ * Describe a session found in a known project's catalog. Returns undefined
+ * when the project is unknown or its catalog lacks the session, so a caller
+ * holding an exact native id never links to a session YA cannot open.
+ */
+export async function describeCatalogSession(
+  deps: SessionTitleDeps & Pick<ProcessesDeps, "scanner" | "readerFactory">,
+  projectId: UrlProjectId,
+  sessionId: string,
+): Promise<{ projectId: UrlProjectId; sessionTitle?: string } | undefined> {
+  const project = await deps.scanner.getProject(projectId);
+  if (!project) return undefined;
+  const reader = deps.readerFactory(project);
+  const summary =
+    (deps.sessionIndexService
+      ? await deps.sessionIndexService.getSessionSummaryWithCache(
+          project.sessionDir,
+          projectId,
+          sessionId,
+          reader,
+        )
+      : null) ?? (await reader.getSessionSummary(sessionId, projectId));
+  if (!summary) return undefined;
+  const sessionTitle = await sessionDisplayTitle(
+    deps,
+    project.sessionDir,
+    projectId,
+    sessionId,
+    reader,
+    summary.title,
+  );
+  return { projectId, ...(sessionTitle ? { sessionTitle } : {}) };
+}
+
 /**
  * Enrich process info with session title, model, and context usage.
  * Uses cache when available. Checks custom title from metadata service first.
@@ -84,33 +152,23 @@ async function enrichProcessInfo(
         process.projectId as UrlProjectId,
       ));
 
-    let title = summary?.title ?? null;
-    if (!title && deps.sessionIndexService) {
-      title = await deps.sessionIndexService.getSessionTitle(
-        sessionDir,
-        process.projectId as UrlProjectId,
-        process.sessionId,
-        reader,
-      );
-    }
-
-    // Get custom title and provider from persisted metadata if available.
-    // This lets the agents view recover when a stale in-memory process
-    // provider disagrees with the durable session provider.
+    // Get provider from persisted metadata if available. This lets the
+    // agents view recover when a stale in-memory process provider disagrees
+    // with the durable session provider.
     const metadata = deps.sessionMetadataService?.getMetadata(
       process.sessionId,
     );
 
-    // Use getSessionDisplayTitle to compute final title (customTitle > title > "Untitled")
-    const displayTitle = getSessionDisplayTitle({
-      customTitle: metadata?.customTitle,
-      title,
-    });
-
     const enriched = { ...process };
-
-    // Only set sessionTitle if we have something meaningful (not "Untitled")
-    if (displayTitle !== "Untitled") {
+    const displayTitle = await sessionDisplayTitle(
+      deps,
+      sessionDir,
+      process.projectId as UrlProjectId,
+      process.sessionId,
+      reader,
+      summary?.title,
+    );
+    if (displayTitle) {
       enriched.sessionTitle = displayTitle;
     }
 

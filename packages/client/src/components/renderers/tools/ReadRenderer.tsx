@@ -175,6 +175,7 @@ function ReadRangeLink({
       showLineSuffix={false}
       viewMode="range"
       showCopyButton={false}
+      showVersionControlLinks={false}
     />
   );
 }

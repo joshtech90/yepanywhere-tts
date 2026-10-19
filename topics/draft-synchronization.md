@@ -111,6 +111,18 @@ storage handler, appending the whole draft again on each keystroke until storage
 filled and the browser stalled (observed 2026-09-30). Metadata that an earlier
 build stored as a pending sibling merge is discarded on load.
 
+The same holds for the composer above the sync layer. Rehydrating attachment
+chips after a storage change restates the stored attachment state, and
+restating unchanged refs is no write: the stored value, timestamp included,
+stays as it was, and an unchanged value never reaches draft sync as an edit.
+Hydration used to store a fresh timestamp each time, so two tabs of one session
+echoed each change back and forth. After a send with an attachment, every echo
+carried the stored recovery copy back into both composers, and the echo
+counted as an edit in the other tab, which began a submission for a send it
+never made. The sender's clear was skipped, and the delivered text and its
+chip stayed in the composer (reported 2026-10-13; reproduced in
+`packages/client/e2e/session-attachment-send-draft.spec.ts`).
+
 One tab saves a shared draft: the one being typed in. A tab that receives a
 sibling's keystrokes for a draft leaves its saves to that sibling until fifteen
 seconds after the last one, then takes over, so a sibling closed before saving

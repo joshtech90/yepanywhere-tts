@@ -76,6 +76,7 @@ import {
   getLatestMessageTimestampMs,
   MESSAGE_STALE_THRESHOLD_MS,
 } from "../lib/messageAge";
+import { programmaticFocus } from "../lib/programmaticFocus";
 import type { ActiveToolApproval } from "@yep-anywhere/shared/transcript/types";
 import {
   SESSION_ISEARCH_OPEN_EVENT,
@@ -849,6 +850,8 @@ interface Props {
   onCancelUnconfirmedUserMessage?: (tempId: string) => void;
   /** Steer a patient queued message, and earlier patient entries, into the session now */
   onSteerDeferred?: (tempId: string) => void;
+  /** Release a patient item whose compact-first attempt failed. */
+  onDeliverDeferredWithoutCompaction?: (tempId: string) => void;
   /** Callback to resume a restart-paused recovered queue entry */
   onResumeRecoveredDeferred?: (queueId: string) => void;
   /** Steer a restart-paused recovered entry, and earlier patient entries, into the session now */
@@ -1533,6 +1536,7 @@ export const MessageList = memo(function MessageList({
   onEditDeferred,
   onCancelUnconfirmedUserMessage,
   onSteerDeferred,
+  onDeliverDeferredWithoutCompaction,
   onResumeRecoveredDeferred,
   onSteerRecoveredDeferred,
   onDeleteRecoveredDeferred,
@@ -1691,7 +1695,13 @@ export const MessageList = memo(function MessageList({
     useRef<SessionRouteScrollSnapshot | null>(null);
   const isProgrammaticScrollRef = useRef(false);
   const lastHeightRef = useRef(0);
+  const disclosureHeightChangeRestoreRef = useRef<(() => void) | null>(null);
   const lastFollowScrollTopRef = useRef(0);
+  // Lowest scrollTop since the reader released follow, or null when follow was
+  // last engaged. Bottom geometry re-acquires follow only after the reader moves
+  // back down from it, so a slow upward scroll that is still inside the bottom
+  // slack accumulates instead of being re-pinned one step at a time.
+  const readerReleaseLowScrollTopRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
   // A primary-button press on transcript content that interrupted follow,
   // with where it started, so a plain click can resume following.
@@ -1892,6 +1902,7 @@ export const MessageList = memo(function MessageList({
   // Scroll to bottom, marking it as programmatic so scroll handler ignores it
   const scrollToBottom = useCallback(
     (container: HTMLElement, behavior: ScrollBehavior = "auto") => {
+      disclosureHeightChangeRestoreRef.current = null;
       isProgrammaticScrollRef.current = true;
       clearProgrammaticScrollRelease();
       const top = Math.max(0, container.scrollHeight - container.clientHeight);
@@ -1902,6 +1913,7 @@ export const MessageList = memo(function MessageList({
       }
       lastHeightRef.current = container.scrollHeight;
       lastFollowScrollTopRef.current = top;
+      readerReleaseLowScrollTopRef.current = null;
       setIsScrolledToBottom(true);
       reportFollowingBottom(true);
       scrollPositionTimestampMsRef.current = null;
@@ -1985,6 +1997,7 @@ export const MessageList = memo(function MessageList({
 
   const stopFollowingForUserScroll = useCallback(
     (container: HTMLElement | null | undefined) => {
+      disclosureHeightChangeRestoreRef.current = null;
       pendingInitialScrollRestoreRef.current = null;
       shouldAutoScrollRef.current = false;
       thinkingDeltaFollowAllowedRef.current = false;
@@ -1992,6 +2005,7 @@ export const MessageList = memo(function MessageList({
       clearProgrammaticScrollRelease();
       clearFollowUpScrollTimer();
       clearForcedCurrentScrollTimers();
+      readerReleaseLowScrollTopRef.current = null;
       if (container) {
         lastHeightRef.current = container.scrollHeight;
       }
@@ -2004,6 +2018,16 @@ export const MessageList = memo(function MessageList({
       clearForcedCurrentScrollTimers,
       reportFollowingBottom,
     ],
+  );
+
+  // Navigation and selection stops leave bottom geometry free to re-acquire
+  // follow; an upward scroll gesture must first be undone by moving back down.
+  const stopFollowingForUpwardScroll = useCallback(
+    (container: HTMLElement) => {
+      stopFollowingForUserScroll(container);
+      readerReleaseLowScrollTopRef.current = container.scrollTop;
+    },
+    [stopFollowingForUserScroll],
   );
 
   const forceScrollToCurrent = useCallback(
@@ -3153,8 +3177,13 @@ export const MessageList = memo(function MessageList({
 
   const pendingHeightChangeRestoreRef = useRef<(() => void) | null>(null);
   const heightChangeRestoreFramesRef = useRef(new Set<{ id: number }>());
+  useLayoutEffect(() => {
+    void conversationViewStateKey;
+    disclosureHeightChangeRestoreRef.current = null;
+  }, [conversationViewStateKey]);
   useLayoutEffect(
     () => () => {
+      disclosureHeightChangeRestoreRef.current = null;
       pendingHeightChangeRestoreRef.current = null;
       for (const frame of heightChangeRestoreFramesRef.current) {
         cancelAnimationFrame(frame.id);
@@ -3177,6 +3206,7 @@ export const MessageList = memo(function MessageList({
     ) => {
       const messageList = containerRef.current;
       const scrollContainer = messageList?.parentElement;
+      disclosureHeightChangeRestoreRef.current = null;
       if (!messageList || !scrollContainer) {
         mutate();
         return;
@@ -3230,6 +3260,9 @@ export const MessageList = memo(function MessageList({
         }
 
         if (!restoredFromAnchor) {
+          if (forcePreferredAnchor) {
+            disclosureHeightChangeRestoreRef.current = null;
+          }
           const heightDelta =
             nextScrollContainer.scrollHeight - scrollHeightBefore;
           nextScrollContainer.scrollTop = Math.max(
@@ -3245,6 +3278,9 @@ export const MessageList = memo(function MessageList({
       if (forcePreferredAnchor) {
         // Explicit disclosure keeps the clicked row fixed before paint.
         pendingHeightChangeRestoreRef.current = restore;
+        // Lazy renderer content/styles can grow after this React commit.
+        // Keep the same anchor through those resizes until reader intent wins.
+        disclosureHeightChangeRestoreRef.current = restore;
       } else {
         // Mode/window changes also rebuild the retained transcript window;
         // let that projection settle before restoring its visible anchor.
@@ -3576,11 +3612,13 @@ export const MessageList = memo(function MessageList({
           0,
           currentContainer.scrollTop + rowRect.top - scrollRect.top - offset,
         );
+        // Question jumps run from frames and layout retries, not a key or
+        // click, so they leave an embedded app's focus alone.
         if (Math.abs(nextTop - currentContainer.scrollTop) < 1) {
           if (questionId)
-            row
-              .querySelector<HTMLTextAreaElement>("textarea")
-              ?.focus({ preventScroll: true });
+            programmaticFocus(row.querySelector("textarea"), {
+              preventScroll: true,
+            });
           return true;
         }
         if (withMotionCue) {
@@ -3594,9 +3632,9 @@ export const MessageList = memo(function MessageList({
           currentContainer.scrollTop = nextTop;
         }
         if (questionId)
-          row
-            .querySelector<HTMLTextAreaElement>("textarea")
-            ?.focus({ preventScroll: true });
+          programmaticFocus(row.querySelector("textarea"), {
+            preventScroll: true,
+          });
         return true;
       };
 
@@ -4310,7 +4348,7 @@ export const MessageList = memo(function MessageList({
         container.scrollTop <
           lastFollowScrollTopRef.current - FOLLOW_BOTTOM_TOLERANCE_PX;
       if (movedUpFromFollowWrite) {
-        stopFollowingForUserScroll(container);
+        stopFollowingForUpwardScroll(container);
       } else if (!atBottom) {
         scrollToBottom(container);
       } else {
@@ -4324,23 +4362,37 @@ export const MessageList = memo(function MessageList({
       return;
     }
 
-    shouldAutoScrollRef.current = atBottom;
-    thinkingDeltaFollowAllowedRef.current = atBottom;
-    if (atBottom) {
+    // After a reader release, bottom geometry alone is not a return: a smooth
+    // wheel step's first frames, or a slow drag, can still show the last line.
+    const releaseLow = readerReleaseLowScrollTopRef.current;
+    let returnedDown = true;
+    if (releaseLow !== null) {
+      readerReleaseLowScrollTopRef.current = Math.min(
+        releaseLow,
+        container.scrollTop,
+      );
+      returnedDown =
+        container.scrollTop > releaseLow + FOLLOW_BOTTOM_TOLERANCE_PX;
+    }
+    const follow = atBottom && returnedDown;
+    shouldAutoScrollRef.current = follow;
+    thinkingDeltaFollowAllowedRef.current = follow;
+    if (follow) {
+      readerReleaseLowScrollTopRef.current = null;
       lastFollowScrollTopRef.current = container.scrollTop;
       setNewOutputBelowVisible(false);
     } else {
       clearForcedCurrentScrollTimers();
     }
-    setIsScrolledToBottom(atBottom);
-    reportFollowingBottom(atBottom);
+    setIsScrolledToBottom(follow);
+    reportFollowingBottom(follow);
     scheduleSettledScrollState();
   }, [
     clearForcedCurrentScrollTimers,
     reportFollowingBottom,
     scheduleSettledScrollState,
     scrollToBottom,
-    stopFollowingForUserScroll,
+    stopFollowingForUpwardScroll,
   ]);
 
   // Attach scroll listener to parent container
@@ -4370,12 +4422,16 @@ export const MessageList = memo(function MessageList({
     if (!content || !container) return;
 
     const handleWheel = (event: WheelEvent) => {
+      if (!isInteractiveScrollTarget(event.target)) {
+        disclosureHeightChangeRestoreRef.current = null;
+      }
       if (event.deltaY < 0 && !isInteractiveScrollTarget(event.target)) {
-        stopFollowingForUserScroll(container);
+        stopFollowingForUpwardScroll(container);
       }
     };
 
     const handleTouchStart = (event: TouchEvent) => {
+      disclosureHeightChangeRestoreRef.current = null;
       touchStartYRef.current = event.touches[0]?.clientY ?? null;
     };
 
@@ -4388,7 +4444,7 @@ export const MessageList = memo(function MessageList({
         currentY - startY > TOUCH_SCROLL_CANCEL_THRESHOLD_PX &&
         !isInteractiveScrollTarget(event.target)
       ) {
-        stopFollowingForUserScroll(container);
+        stopFollowingForUpwardScroll(container);
       }
     };
 
@@ -4397,6 +4453,7 @@ export const MessageList = memo(function MessageList({
     };
 
     const handlePointerDown = (event: PointerEvent) => {
+      disclosureHeightChangeRestoreRef.current = null;
       followPressRef.current = null;
       if (event.button !== 0 || isInteractiveScrollTarget(event.target)) {
         return;
@@ -4418,7 +4475,7 @@ export const MessageList = memo(function MessageList({
       }
       const rect = container.getBoundingClientRect();
       if (event.clientX >= rect.right - scrollbarWidth) {
-        stopFollowingForUserScroll(container);
+        stopFollowingForUpwardScroll(container);
         // Native scrollbar focus differs across browser/platform pairs. Make
         // the explicit transcript gesture own subsequent native page keys
         // instead of leaving them attached to the composer or document body.
@@ -4465,12 +4522,25 @@ export const MessageList = memo(function MessageList({
         return;
       }
       if (
+        [
+          "ArrowUp",
+          "ArrowDown",
+          "PageUp",
+          "PageDown",
+          "Home",
+          "End",
+          " ",
+        ].includes(event.key)
+      ) {
+        disclosureHeightChangeRestoreRef.current = null;
+      }
+      if (
         event.key === "ArrowUp" ||
         event.key === "PageUp" ||
         event.key === "Home" ||
         (event.key === " " && event.shiftKey)
       ) {
-        stopFollowingForUserScroll(container);
+        stopFollowingForUpwardScroll(container);
       }
       if (
         !event.repeat &&
@@ -4520,7 +4590,12 @@ export const MessageList = memo(function MessageList({
         keyboardOlderLoadFrameRef.current = null;
       }
     };
-  }, [inert, scrollToBottom, stopFollowingForUserScroll]);
+  }, [
+    inert,
+    scrollToBottom,
+    stopFollowingForUpwardScroll,
+    stopFollowingForUserScroll,
+  ]);
   useTranscriptDragSelection(containerRef, isInteractiveScrollTarget, inert);
 
   // Follow both content changes and space reserved by composer-adjacent panels.
@@ -4539,6 +4614,11 @@ export const MessageList = memo(function MessageList({
       const viewportChanged = viewportHeight !== lastViewportHeight;
       lastViewportHeight = viewportHeight;
       const sizeChanged = heightChanged || viewportChanged;
+
+      if (sizeChanged && disclosureHeightChangeRestoreRef.current) {
+        disclosureHeightChangeRestoreRef.current();
+        return;
+      }
 
       const pendingInitialRestore = pendingInitialScrollRestoreRef.current;
       if (sizeChanged && pendingInitialRestore) {
@@ -5322,12 +5402,16 @@ export const MessageList = memo(function MessageList({
                   )
                 : tailRow.isYaCommand
                   ? t("sessionQueuedYaCommandAfterTurn")
-                  : getDeferredMessageStatus({
-                      isPatient: tailRow.isPatient,
-                      lanePosition: tailRow.lanePosition,
-                      timestampMs,
-                      nowMs,
-                    });
+                  : deferred.compactionGate?.state === "compacting"
+                    ? t("sessionQueuedCompactingFirst")
+                    : deferred.compactionGate?.state === "failed"
+                      ? t("sessionQueuedCompactionFailed")
+                      : getDeferredMessageStatus({
+                          isPatient: tailRow.isPatient,
+                          lanePosition: tailRow.lanePosition,
+                          timestampMs,
+                          nowMs,
+                        });
             const earlierPatientCount = tailRow.lanePosition?.patientIndex ?? 0;
             const steerQueuedLabel =
               earlierPatientCount > 0
@@ -5389,9 +5473,11 @@ export const MessageList = memo(function MessageList({
                       title={
                         tailRow.isRecovered
                           ? t("sessionRecoveredQueuedPausedTitle")
-                          : tailRow.isPatient
-                            ? "Patient queue waits for verified quiet. Regular queued messages may pass it."
-                            : undefined
+                          : deferred.compactionGate?.reason
+                            ? deferred.compactionGate.reason
+                            : tailRow.isPatient
+                              ? "Patient queue waits for verified quiet. Regular queued messages may pass it."
+                              : undefined
                       }
                     >
                       {deferredStatus}
@@ -5490,39 +5576,61 @@ export const MessageList = memo(function MessageList({
                         ) : null}
                       </div>
                     ) : (
-                      <QueuedMessageActions
-                        variant="session"
-                        text={deferred.content}
-                        composerEditAvailabilityStore={
-                          composerEditAvailabilityStore
-                        }
-                        onEdit={
-                          !tailRow.isYaCommand &&
-                          deferred.tempId &&
-                          onEditDeferred
-                            ? () => onEditDeferred(deferred.tempId as string)
-                            : undefined
-                        }
-                        onSteer={
-                          tailRow.isPatient &&
-                          deferred.tempId &&
-                          onSteerDeferred &&
-                          !deferred.metadata?.turnEffort
-                            ? () => onSteerDeferred(deferred.tempId as string)
-                            : undefined
-                        }
-                        steerLabel={steerQueuedLabel}
-                        onCancel={
-                          tailRow.allowsDeferredCancel && onCancelDeferred
-                            ? () => onCancelDeferred(deferred.tempId as string)
-                            : isClearloop && onCancelClearloop
-                              ? onCancelClearloop
+                      <>
+                        {deferred.compactionGate?.state === "failed" &&
+                        deferred.tempId &&
+                        onDeliverDeferredWithoutCompaction ? (
+                          <button
+                            type="button"
+                            className="deferred-message-action deferred-message-action-steer"
+                            onClick={() =>
+                              onDeliverDeferredWithoutCompaction(
+                                deferred.tempId as string,
+                              )
+                            }
+                            title={t("sessionQueuedSendWithoutCompactingTitle")}
+                          >
+                            <PlayIcon />
+                            <span>
+                              {t("sessionQueuedSendWithoutCompacting")}
+                            </span>
+                          </button>
+                        ) : null}
+                        <QueuedMessageActions
+                          variant="session"
+                          text={deferred.content}
+                          composerEditAvailabilityStore={
+                            composerEditAvailabilityStore
+                          }
+                          onEdit={
+                            !tailRow.isYaCommand &&
+                            deferred.tempId &&
+                            onEditDeferred
+                              ? () => onEditDeferred(deferred.tempId as string)
                               : undefined
-                        }
-                        cancelLabel={
-                          isClearloop ? t("clearloopCancel") : undefined
-                        }
-                      />
+                          }
+                          onSteer={
+                            tailRow.isPatient &&
+                            deferred.tempId &&
+                            onSteerDeferred &&
+                            !deferred.metadata?.turnEffort
+                              ? () => onSteerDeferred(deferred.tempId as string)
+                              : undefined
+                          }
+                          steerLabel={steerQueuedLabel}
+                          onCancel={
+                            tailRow.allowsDeferredCancel && onCancelDeferred
+                              ? () =>
+                                  onCancelDeferred(deferred.tempId as string)
+                              : isClearloop && onCancelClearloop
+                                ? onCancelClearloop
+                                : undefined
+                          }
+                          cancelLabel={
+                            isClearloop ? t("clearloopCancel") : undefined
+                          }
+                        />
+                      </>
                     )}
                   </div>
                 </div>

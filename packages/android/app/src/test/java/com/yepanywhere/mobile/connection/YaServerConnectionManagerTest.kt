@@ -22,6 +22,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -34,6 +35,122 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class YaServerConnectionManagerTest {
+    @Test
+    fun drainsEventsWhileResumeSecurityBookkeepingIsPending() = runBlocking {
+        val fixture = Fixture()
+        val transport = FakeTransport(fixture.credential)
+        fixture.connector.results.send(Result.success(transport))
+        val checking = CompletableDeferred<Unit>()
+        val finish = CompletableDeferred<Unit>()
+        var calls = 0
+        val manager = fixture.manager(securityClients = YaSecurityClientLifecycle { _, _ ->
+            if (++calls > 1) { checking.complete(Unit); finish.await() }
+            fixture.profile
+        })
+        val lease = manager.acquire()
+        try {
+            withTimeout(2000) { manager.state.first { it.phase == YaConnectionPhase.CONNECTED } }
+            val subscription = lease.subscribe(channel = "activity")
+            val event = async(start = CoroutineStart.UNDISPATCHED) { subscription.events.first() }
+            val id = transport.awaitSent("subscribe").getString("subscriptionId")
+            transport.incoming.send(JSONObject().put("type", "state").put("phase", "RETRYING"))
+            transport.incoming.send(JSONObject().put("type", "state").put("phase", "CONNECTED"))
+            withTimeout(2000) { checking.await() }
+            transport.incoming.send(JSONObject().put("type", "event").put("subscriptionId", id)
+                .put("eventType", "message").put("eventId", "1").put("data", "catch-up"))
+            assertEquals("catch-up", withTimeout(2000) { event.await() }.data)
+            assertFalse(finish.isCompleted)
+            subscription.close()
+        } finally { finish.complete(Unit); lease.releaseAndAwait(); manager.shutdownAndAwait() }
+    }
+
+    @Test
+    fun restoresBeforePublishingTheTransportToANewSubscriber() = runBlocking {
+        val fixture = Fixture()
+        val manager = fixture.manager()
+        val lease = manager.acquire()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val subscribed = CompletableDeferred<YaSubscription>()
+        val watcher = scope.launch {
+            manager.state.collect { state ->
+                if (state.phase == YaConnectionPhase.CONNECTED && !subscribed.isCompleted) {
+                    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        subscribed.complete(lease.subscribe("glossary", projectId = "project"))
+                    }
+                }
+            }
+        }
+        val transport = FakeTransport(fixture.credential)
+        try {
+            fixture.connector.results.send(Result.success(transport))
+            withTimeout(2_000) { subscribed.await(); transport.receiveStarted.await() }
+            assertEquals(1, transport.sent.count { it.optString("type") == "subscribe" })
+        } finally { watcher.cancel(); scope.cancel(); lease.releaseAndAwait(); manager.shutdownAndAwait() }
+    }
+    @Test
+    fun responseOwnershipSurvivesSiblingReleaseAndRejectsLateAdmission() = runBlocking {
+        val fixture = Fixture()
+        val transport = FakeTransport(fixture.credential)
+        fixture.connector.results.send(Result.success(transport))
+        val manager = fixture.manager()
+        val first = manager.acquire()
+        val sibling = manager.acquire()
+        try {
+            val body = FakeBody()
+            transport.body = body
+            val opened = first.fetchResponse("/movie", mapOf("Range" to "bytes=-17"))
+            assertEquals("bytes=-17", transport.bodyParams!!.getJSONObject("headers").getString("Range"))
+            sibling.releaseAndAwait()
+            assertFalse(body.closed)
+            first.releaseAndAwait()
+            assertTrue(body.closed)
+            assertTrue(runCatching { opened.nextChunk() }.isFailure)
+
+            val second = FakeTransport(fixture.credential)
+            fixture.connector.results.send(Result.success(second))
+            val next = manager.acquire()
+            val admission = CompletableDeferred<Unit>()
+            val finish = CompletableDeferred<YaResponseBody>()
+            second.bodyGate = { admission.complete(Unit); finish.await() }
+            val late = async { runCatching { next.fetchResponse("/movie", emptyMap()) } }
+            admission.await()
+            next.releaseAndAwait()
+            val unused = FakeBody()
+            finish.complete(unused)
+            assertTrue(late.await().isFailure)
+            assertTrue(unused.closed)
+        } finally { first.close(); sibling.close(); manager.shutdownAndAwait() }
+    }
+
+    @Test
+    fun canceledResponseAdmissionClosesEvenAfterItsReplyWasQueued() = runBlocking {
+        val fixture = Fixture()
+        val transport = FakeTransport(fixture.credential)
+        val body = FakeBody()
+        transport.body = body
+        fixture.connector.results.send(Result.success(transport))
+        val manager = fixture.manager()
+        val lease = manager.acquire()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val emitted = CopyOnWriteArrayList<JSONObject>()
+        val web = YaWebTransportSession("document", lease, scope, { emitted += it }) {}
+        try {
+            web.dispatch(JSONObject().put("handle", "document").put("id", "admission").put("method", "responseStart")
+                .put("params", JSONObject().put("path", "/movie")))
+            withTimeout(2_000) { while (emitted.none { it.optString("id") == "admission" }) delay(1) }
+            assertFalse(body.closed)
+            web.dispatch(JSONObject().put("handle", "document").put("id", "cancel-command").put("method", "cancel")
+                .put("params", JSONObject().put("id", "admission")))
+            assertTrue(body.closed)
+        } finally { web.close(); scope.cancel(); manager.shutdownAndAwait() }
+    }
+
+    private class FakeBody : YaResponseBody {
+        var closed = false
+        override val metadata = JSONObject().put("streaming", true).put("status", 200)
+        override suspend fun nextChunk(): ByteArray? { check(!closed); return null }
+        override fun close() { closed = true }
+    }
     @Test
     fun nativeSubscriptionFailureRetiresIntentAndPreservesItsCodeAcrossTheBridge() = runBlocking {
         val fixture = Fixture()
@@ -639,6 +756,14 @@ class YaServerConnectionManagerTest {
         val sent = CopyOnWriteArrayList<JSONObject>()
         val chunks = CopyOnWriteArrayList<ByteArray>()
         var cancelled = false
+        val receiveStarted = CompletableDeferred<Unit>()
+        var body: YaResponseBody? = null
+        var bodyParams: JSONObject? = null
+        var bodyGate: (suspend () -> YaResponseBody)? = null
+        override suspend fun fetchResponse(params: JSONObject): YaResponseBody? {
+            bodyParams = params
+            return bodyGate?.invoke() ?: body
+        }
         private val cancelledSignal = CompletableDeferred<Unit>()
 
         override fun send(message: JSONObject) {
@@ -651,7 +776,7 @@ class YaServerConnectionManagerTest {
             chunks += chunk
         }
 
-        override suspend fun receive(): JSONObject = incoming.receive()
+        override suspend fun receive(): JSONObject { receiveStarted.complete(Unit); return incoming.receive() }
 
         override suspend fun awaitClosed() {
             for (ignored in incoming) Unit

@@ -44,6 +44,34 @@ function deferred<T>(): {
 }
 
 describe("Providers Routes", () => {
+  it("publishes model-aware image preparation through provider discovery", async () => {
+    const routes = createProvidersRoutes({
+      providers: [
+        createProvider({
+          getAvailableModels: async () => [
+            { id: "opus", name: "Opus", resolvedModel: "claude-opus-4-8" },
+            { id: "claude-haiku-4-5", name: "Haiku" },
+          ],
+        }),
+        createProvider({ name: "codex" }),
+      ],
+    });
+    const { providers } = (await (await routes.request("/")).json()) as {
+      providers: ProviderInfo[];
+    };
+    expect(providers[0]?.models?.[0]?.imageSizing?.profiles).toMatchObject({
+      sd: { maxLongEdge: 2000, maxBytes: 3 * 1024 * 1024 },
+      hd: { maxLongEdge: 2576 },
+    });
+    expect(
+      providers[0]?.models?.[1]?.imageSizing?.profiles?.hd.maxLongEdge,
+    ).toBe(1568);
+    expect(providers[1]?.imageSizing?.profiles).toMatchObject({
+      sd: { maxLongEdge: 2000 },
+      hd: { maxLongEdge: 2048 },
+    });
+  });
+
   it("enumerates exposed identities without starting any provider probes", async () => {
     const providers = [
       createProvider(),
@@ -296,7 +324,7 @@ describe("Providers Routes", () => {
     expect(json.providers).toEqual([
       expect.objectContaining({
         name: "claude",
-        models: [{ id: "opus", name: "Opus" }],
+        models: [expect.objectContaining({ id: "opus", name: "Opus" })],
       }),
     ]);
   });
@@ -378,17 +406,21 @@ describe("Providers Routes", () => {
       provider: ProviderInfo;
     };
 
-    expect(forcedJson.provider.models).toEqual([{ id: "opus", name: "Opus" }]);
-    expect(ordinaryJson.provider.models).toEqual([
+    expect(forcedJson.provider.models).toMatchObject([
+      { id: "opus", name: "Opus" },
+    ]);
+    expect(ordinaryJson.provider.models).toMatchObject([
       { id: "opus", name: "Opus" },
     ]);
     const cachedJson = (await (await routes.request("/claude")).json()) as {
       provider: ProviderInfo;
     };
-    expect(cachedJson.provider.models).toEqual([{ id: "opus", name: "Opus" }]);
+    expect(cachedJson.provider.models).toMatchObject([
+      { id: "opus", name: "Opus" },
+    ]);
     expect(ingestModels).toHaveBeenCalledTimes(1);
     expect(ingestModels).toHaveBeenCalledWith("claude", [
-      { id: "opus", name: "Opus" },
+      expect.objectContaining({ id: "opus", name: "Opus" }),
     ]);
   });
 
@@ -421,7 +453,7 @@ describe("Providers Routes", () => {
       provider: ProviderInfo;
     };
 
-    expect(ordinaryJson.provider.models).toEqual([
+    expect(ordinaryJson.provider.models).toMatchObject([
       { id: "opus", name: "Opus" },
     ]);
     expect((await routes.request("/claude")).status).toBe(200);
@@ -458,7 +490,7 @@ describe("Providers Routes", () => {
         return body.provider.models;
       }),
     );
-    expect(rows).toEqual([
+    expect(rows).toMatchObject([
       [{ id: "opus", name: "Opus" }],
       [{ id: "opus", name: "Opus" }],
       [{ id: "opus", name: "Opus" }],

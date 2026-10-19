@@ -179,27 +179,22 @@ minimized; the controller then appears and its restore returns the pane.
   covers the composer in ordinary open mode. At 800px and below it becomes
   edge-to-edge within that reading region. Explicit fullscreen may still claim
   the viewport. The header never trades the filename away for controls: the
-  path keeps a readable column of its own, uses at most two lines, and the
-  metrics stay on one line. When the controls no longer fit beside that column
-  they move to a compact second header row rather than squeezing the path into
-  a one-glyph stack. Those controls then wrap greedily across the width the
-  header actually has, so widening the viewer only ever removes a row: it never
-  reserves columns a narrower layout once needed. A fixed grid or a private
-  width breakpoint is specifically ruled out — the file viewer used to pin
-  480px and below to a seven-column two-row grid, which capped each button row
-  at about half the header's width and spilled the rest into a third row beside
-  empty space. The `− N +` zoom control and the window block are each atomic, so
-  a wrap moves a whole group and never splits one. These header cutoffs use the
-  viewer's allocated width, so a narrow right pane receives the same compact
-  controls. The back control is an arrow with no
-  label, matching the standalone file page's own back control.
-  The window block keeps link, move to new tab, minimize and close together and
-  trailing, so close stays at the header's trailing edge on whichever row the
-  block lands. `packages/client/src/components/ViewerHeader.module.css` owns
-  this layout for every viewer header with a title, an optional revision or
-  metrics caption under it, and a control row — the session right pane, the
-  artifact link viewer, the session detail panel and the source diff pane
-  toolbar reflow on exactly these terms. The scrollable
+  full path remains visible, wrapping when necessary. A compact back arrow
+  immediately precedes the filename and aligns with its first line.
+  Move to new tab, minimize and close form one boxed group at the top right
+  only when both the full filename and the revision/stats line fit beside it.
+  Otherwise that group follows the file actions below. Moving it changes
+  neither the filename row's height nor its wrapping. This decision uses
+  measured content and allocated viewer width, including in a narrow right
+  pane, rather than a viewport breakpoint.
+  File actions fill the next row contiguously and wrap greedily across the
+  available width. The unboxed copy-link control stays with those actions.
+  The `−a` / `A+` zoom pair has no numeric readout; it retains the same zoom
+  limits and persistence. Both zoom and the three window controls remain
+  atomic groups when wrapping. The edit action uses an unboxed pencil.
+  `FileViewer.module.css` owns this title-and-actions layout;
+  `ViewerHeader.module.css` supplies greedy title/actions wrapping for the
+  other viewer headers. The scrollable
   document ends above the separate composer row, so its final line can always
   scroll completely clear of those controls without overlay-compensation
   padding.
@@ -218,9 +213,10 @@ synthetic click replay would lose browser user activation.
 
 ## Controller ownership
 
-Viewer headers share `ViewerWindowActions`: chain-link, move to new tab,
-minimize, close, with the same order and styling in file, artifact and right
-pane viewers. Ordinary left-click on chain-link copies the stable viewer URL;
+Viewer headers share `ViewerWindowActions`: an unboxed chain-link followed by
+boxed move to new tab, minimize and close controls. File viewers keep the
+chain-link in their file toolbar while the three window controls can move to
+the title row as described above. Ordinary left-click on chain-link copies the stable viewer URL;
 Shift-click or middle-click opens it in a new tab without closing. Move to new
 tab opens that viewer URL and closes the current viewer. It does not open a
 raw active-file response. Standalone pages omit move-out. Existing separate

@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { NativeNotificationStatus } from "../../components/NativeNotificationStatus";
 import { PushNotificationToggle } from "../../components/PushNotificationToggle";
 import { useConnectedDevices } from "../../hooks/useConnectedDevices";
 import {
@@ -13,6 +14,7 @@ import {
   useSubscribedDevices,
 } from "../../hooks/useSubscribedDevices";
 import { useI18n } from "../../i18n";
+import { nativeHost } from "../../lib/nativeHost";
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { HideInSettingsSearch } from "./SettingsSearchContext";
@@ -284,6 +286,8 @@ export function NotificationsSettings() {
     updateSetting,
   } = useNotificationSettings();
 
+  // The app's WebView has no Web Push; it enrolls per server natively.
+  const inApp = nativeHost.isAvailable();
   const hasSubscriptions = subscribedDevices.length > 0;
   const isLoading = devicesLoading || connectionsLoading;
   const [testDisplayUrgency, setTestDisplayUrgency] =
@@ -459,7 +463,8 @@ export function NotificationsSettings() {
     [removeDevice, unsubscribe],
   );
 
-  const serverTogglesGated = !hasSubscriptions;
+  // Native app subscriptions are not listed here but honor these toggles.
+  const serverTogglesGated = !hasSubscriptions && !inApp;
   const gatedTooltip = serverTogglesGated
     ? t("notificationsNoSubscribedDevices")
     : undefined;
@@ -467,11 +472,19 @@ export function NotificationsSettings() {
   return (
     <>
       <SettingsSection
-        title={t("notificationsThisBrowserTitle")}
-        description={t("notificationsThisBrowserDescription")}
+        title={
+          inApp
+            ? t("notificationsThisAppTitle")
+            : t("notificationsThisBrowserTitle")
+        }
+        description={
+          inApp
+            ? t("notificationsThisAppDescription")
+            : t("notificationsThisBrowserDescription")
+        }
       >
         <div className="settings-group">
-          <PushNotificationToggle />
+          {inApp ? <NativeNotificationStatus /> : <PushNotificationToggle />}
         </div>
       </SettingsSection>
 

@@ -226,13 +226,39 @@ export function draftStorageValueForPendingSend(
   return serializeDraftEnvelope({ ...existing, pendingSendAt: sentAtMs });
 }
 
+function sameAttachmentState(
+  next: DraftAttachmentState,
+  existing: DraftAttachmentState,
+): boolean {
+  const normalized = normalizeAttachmentState(next);
+  return (
+    normalized?.batchId === existing.batchId &&
+    JSON.stringify(normalized.refs) === JSON.stringify(existing.refs)
+  );
+}
+
+/**
+ * Re-stating the stored attachments returns the stored value unchanged, so a
+ * composer hydrating from a sibling tab's write does not write back a fresh
+ * timestamp. Each such write reached the other tab as a change, which
+ * hydrated and wrote again, carrying a sent draft's recovery copy back into
+ * both composers.
+ */
 export function draftStorageValueForAttachments(
   attachments: DraftAttachmentState | null | undefined,
   existingRaw?: string | null,
 ): string | null {
-  const existing = readDraftEnvelopeValue(existingRaw).envelope;
+  const { envelope: existing, legacy } = readDraftEnvelopeValue(existingRaw);
   const nextAttachments =
     attachments && attachments.refs.length > 0 ? attachments : undefined;
+  if (
+    existingRaw &&
+    !legacy &&
+    nextAttachments &&
+    existing?.attachments &&
+    sameAttachmentState(nextAttachments, existing.attachments)
+  )
+    return existingRaw;
   return serializeDraftEnvelope({
     version: DRAFT_ENVELOPE_VERSION,
     text: existing?.text ?? "",

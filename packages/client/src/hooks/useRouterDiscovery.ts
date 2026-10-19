@@ -12,7 +12,8 @@ export function useRouterDiscovery(provider: string | null, enabled: boolean) {
     data: AgentAuthRouterOverview | null;
     busy: boolean;
     error: boolean;
-  }>({ key, data: null, busy: false, error: false });
+    loaded: boolean;
+  }>({ key, data: null, busy: false, error: false, loaded: false });
   const generation = useRef(0);
   const reload = useCallback(async () => {
     if (!enabled || (provider !== "claude" && provider !== "codex")) return;
@@ -22,6 +23,7 @@ export function useRouterDiscovery(provider: string | null, enabled: boolean) {
       data: old.key === key ? old.data : null,
       busy: true,
       error: false,
+      loaded: old.key === key && old.loaded,
     }));
     let job = pending.get(key);
     if (!job) {
@@ -31,10 +33,16 @@ export function useRouterDiscovery(provider: string | null, enabled: boolean) {
     try {
       const data = await job;
       if (id === generation.current)
-        setState({ key, data, busy: false, error: false });
+        setState({ key, data, busy: false, error: false, loaded: true });
     } catch {
       if (id === generation.current)
-        setState((old) => ({ ...old, key, busy: false, error: true }));
+        setState((old) => ({
+          ...old,
+          key,
+          busy: false,
+          error: true,
+          loaded: true,
+        }));
     }
   }, [enabled, provider, key]);
   useEffect(() => {
@@ -59,7 +67,7 @@ export function useRouterDiscovery(provider: string | null, enabled: boolean) {
   return {
     ...(enabled && state.key === key
       ? state
-      : { data: null, busy: false, error: false }),
+      : { data: null, busy: false, error: false, loaded: false }),
     reload,
   };
 }

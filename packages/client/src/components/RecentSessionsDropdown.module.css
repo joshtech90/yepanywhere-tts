@@ -6,7 +6,13 @@
   min-width: 280px;
   max-width: min(830px, calc(100dvw - 32px));
   z-index: 10001;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.current {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .header {
@@ -24,11 +30,6 @@
   color: var(--text-muted);
   font-size: var(--font-size-sm);
   text-align: center;
-}
-
-.list {
-  max-height: 400px;
-  overflow-y: auto;
 }
 
 .item {

@@ -31,6 +31,7 @@ function parseFileRoute(route: string) {
   const url = new URL(route, "http://session.local");
   const match = /^\/projects\/([^/]+)\/file$/.exec(url.pathname);
   const path = url.searchParams.get("path");
+  const diff = url.searchParams.get("diff");
   if (!match || !path) return null;
   const positiveInteger = (key: string) => {
     const value = Number(url.searchParams.get(key));
@@ -39,6 +40,12 @@ function parseFileRoute(route: string) {
   return {
     projectId: match[1] as string,
     filePath: getProjectViewerFilePath(match[1] as string, path),
+    diffMode:
+      diff === "worktree"
+        ? ("worktree" as const)
+        : diff === "cumulative"
+          ? ("cumulative" as const)
+          : undefined,
     lineNumber: positiveInteger("line"),
     lineEnd: positiveInteger("lineEnd"),
     viewMode:

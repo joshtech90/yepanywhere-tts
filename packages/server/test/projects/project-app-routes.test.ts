@@ -25,6 +25,7 @@ import {
   type Principal,
 } from "../../src/auth/principal.js";
 import { SessionAccessResolver } from "../../src/auth/sessionAccess.js";
+import { ProjectAppAutoStart } from "../../src/projects/ProjectAppAutoStart.js";
 import { ProjectAppStore } from "../../src/projects/ProjectAppStore.js";
 import { ProjectServiceManager } from "../../src/projects/ProjectServiceManager.js";
 import { ProjectScanner } from "../../src/projects/scanner.js";
@@ -33,6 +34,7 @@ import { createArtifactRoutes } from "../../src/routes/artifacts.js";
 import { createProjectAppRoutes } from "../../src/routes/project-app.js";
 import { createLocalResourcePathPolicy } from "../../src/routes/local-resource-policy.js";
 import { createSessionPathScopeResolver } from "../../src/routes/session-path-scope.js";
+import { probeSessionSandboxAvailability } from "../../src/session-sandbox.js";
 
 let root: string;
 let projectPath: string;
@@ -341,6 +343,128 @@ it("opens a static app on the isolated artifact origin without starting any proc
   expect(
     (await post("open", { target: "app", audience: "local" })).status,
   ).toBe(404);
+});
+
+it("starts a stopped process app on open, survives a YA restart, respects Stop, and stops retrying a crash loop", {
+  // This case launches a real confined process, like ProjectServiceManager's
+  // native lifecycle checks; route-only cases above remain cross-platform.
+  skip: (await probeSessionSandboxAvailability()).state !== "available",
+  timeout: 30_000,
+}, async () => {
+  await writeFile(
+    join(projectPath, ".project-template/app.json"),
+    JSON.stringify({
+      service: {
+        version: 1,
+        where: { kind: "process", cwd: ".", entry: "/" },
+        start: { argv: [process.execPath, "server.mjs"], portEnv: "PORT" },
+        status: {
+          probe: "http",
+          path: "/health",
+          readyStatus: 200,
+          startupTimeoutMs: 5000,
+        },
+        stop: { signal: "SIGTERM", graceMs: 3000 },
+        serving: { target: "sandbox-loopback", protocol: "http" },
+      },
+    }),
+  );
+  await writeFile(
+    join(projectPath, "server.mjs"),
+    `import { createServer } from 'node:http';
+createServer((req, res) => res.end(req.url === '/health' ? 'ok' : 'app'))
+  .listen(Number(process.env.PORT), '127.0.0.1');
+`,
+  );
+  const dataDir = join(root, "data");
+  let clock = Date.now();
+  // A fresh manager, auto-start guard and routes are what a YA restart gives.
+  const boot = () => {
+    const manager = new ProjectServiceManager(dataDir);
+    const autoStart = new ProjectAppAutoStart(dataDir, {
+      services: manager,
+      projectPath: async () => projectPath,
+      mayAutoStart: async () => false,
+      now: () => clock,
+    });
+    const appDelivery = new ProjectAppDelivery(artifacts, manager, store);
+    const routes = new Hono();
+    routes.use("*", async (c, next) => {
+      c.set(PRINCIPAL_VARIABLE, principal);
+      await next();
+    });
+    routes.route(
+      "/api",
+      createProjectAppRoutes({
+        scanner,
+        store,
+        services: manager,
+        artifacts,
+        delivery: appDelivery,
+        autoStart,
+        activeGrants: () => grants,
+        sessionAccess: new SessionAccessResolver({
+          getLiveSession: () => undefined,
+          readCatalogRows: async () => [],
+          getSessionMetadata: () => undefined,
+        }),
+        sessionPathScope: createSessionPathScopeResolver({
+          sandboxStateRoot: join(dataDir, "session-sandboxes"),
+          allowedPaths: () => [root],
+          includeProjects: () => true,
+        }),
+        openService: (id, audience) => appDelivery.open(id, audience),
+      }),
+    );
+    const open = () =>
+      routes.request(`/api/projects/${projectId}/app/open`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: "app", audience: "local" }),
+      });
+    return { manager, open };
+  };
+  let yep = boot();
+  try {
+    // Never started: a view grant's open starts it, no address involved.
+    const first = await yep.open();
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ kind: "service" });
+    expect(yep.manager.upstream(projectId)).not.toBeNull();
+    // A YA restart interrupts the launch; the next open starts it again.
+    await yep.manager.close();
+    yep = boot();
+    expect(yep.manager.upstream(projectId)).toBeNull();
+    expect((await yep.open()).status).toBe(200);
+    expect(yep.manager.upstream(projectId)).not.toBeNull();
+    // An explicit Stop stays stopped until Start.
+    await yep.manager.stop(projectId, async () => {});
+    clock += 61_000;
+    const stopped = await yep.open();
+    expect(stopped.status).toBe(409);
+    expect(yep.manager.upstream(projectId)).toBeNull();
+    // A crashing app fails each guarded start, then pauses retries.
+    await writeFile(join(projectPath, "server.mjs"), "process.exit(3);\n");
+    await yep.manager.close();
+    // Forget the Stop, as for a project never started.
+    await rm(join(dataDir, "project-services"), { recursive: true });
+    yep = boot();
+    const start = vi.spyOn(yep.manager, "start");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      clock += 31_000;
+      const failed = await yep.open();
+      expect(failed.status).toBe(409);
+      expect(await failed.text()).toMatch(/exited/);
+    }
+    // Within the 30 s interval no further start is made either.
+    expect((await yep.open()).status).toBe(409);
+    clock += 31_000;
+    const paused = await yep.open();
+    expect(await paused.text()).toMatch(/paused.*exited/);
+    expect(start).toHaveBeenCalledTimes(3);
+  } finally {
+    await yep.manager.close();
+  }
 });
 
 it("requires execution authority for live preview and rejects invalid start options", async () => {

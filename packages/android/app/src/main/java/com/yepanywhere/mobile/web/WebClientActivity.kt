@@ -229,6 +229,7 @@ open class WebClientActivity : ComponentActivity() {
             launchPermissionRequest = {
                 notificationPermissionLauncher.launch(POST_NOTIFICATIONS_PERMISSION)
             },
+            showNotificationManagement = { showHostManagement() },
         )
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.rgb(24, 24, 24))
@@ -478,6 +479,7 @@ open class WebClientActivity : ComponentActivity() {
                 view: WebView,
                 request: WebResourceRequest,
             ): WebResourceResponse? {
+                (application as YepAnywhereApplication).artifactShell?.intercept(request)?.let { return it }
                 if (
                     assetLoader != null &&
                     request.isForMainFrame &&
@@ -497,6 +499,10 @@ open class WebClientActivity : ComponentActivity() {
                 request: WebResourceRequest,
             ): Boolean {
                 if (view !== webView) return true
+                // The trusted parent's CSP chooses its embedded viewers. Keep
+                // their HTTP(S) navigations inside the sandbox; main-frame
+                // links still use native routing and the bridge stays main-only.
+                if (!request.isForMainFrame && request.url.scheme in setOf("http", "https")) return false
                 return when (
                     WebClientNavigation.decide(request.url.toString(), config.origin)
                 ) {

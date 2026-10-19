@@ -16,6 +16,7 @@ import { IssueIndexer } from "./services/issues/IssueIndexer.js";
 import { createIssueRoutes } from "./routes/issues.js";
 import { IssueCredentials } from "./services/issues/credentials.js";
 import { IssueConfirmer } from "./services/issues/confirm.js";
+import { IssueStatusRefresher } from "./services/issues/status.js";
 import { getSessionSources } from "./sessions/provider-resolution.js";
 import type { HttpBindings } from "@hono/node-server";
 import { artifactViewerAgentEnvironment } from "./artifacts/agentEnvironment.js";
@@ -25,6 +26,7 @@ import {
   type ArtifactConfig,
 } from "./artifacts/config.js";
 import { createArtifactConfigWriter } from "./routes/artifactConfigWriter.js";
+import { createArtifactPreviewRoutes } from "./routes/artifact-previews.js";
 import { createArtifactRoutes } from "./routes/artifacts.js";
 import { createVhostSiteRoutes } from "./routes/vhostSites.js";
 import { createVhostAppRoutes } from "./routes/vhostApps.js";
@@ -61,6 +63,7 @@ import type {
 import {
   DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
   clampClearloopInactivitySeconds,
+  toUrlProjectId,
 } from "@yep-anywhere/shared";
 import {
   DEFAULT_HEARTBEAT_TURN_TEXT,
@@ -98,10 +101,12 @@ import { createProjectTemplateSourceRoutes } from "./routes/project-template-sou
 import { createProjectTemplateRoutes } from "./routes/project-templates.js";
 import { TemplateSourceService } from "./projects/TemplateSourceService.js";
 import { TemplateCreationService } from "./projects/TemplateCreationService.js";
+import { ProjectAppAutoStart } from "./projects/ProjectAppAutoStart.js";
 import { ProjectAppStore } from "./projects/ProjectAppStore.js";
 import {
   ProjectServiceManager,
   readProjectService,
+  readStaticAddressMode,
   projectServiceStaticApp,
 } from "./projects/ProjectServiceManager.js";
 import { ProjectAppDelivery } from "./artifacts/ProjectAppDelivery.js";
@@ -112,7 +117,7 @@ import { createProjectAccessRoutes } from "./routes/project-access.js";
 import { createProjectAppRoutes } from "./routes/project-app.js";
 import { SESSION_COOKIE_NAME } from "./auth/routes.js";
 import { getCookie as getRequestCookie } from "hono/cookie";
-import { levelFor } from "./auth/limitedUserPolicy.js";
+import { levelFor, satisfies } from "./auth/limitedUserPolicy.js";
 import type { DesktopBootstrapService } from "./desktop/DesktopBootstrapService.js";
 import type { DeviceBridgeService } from "./device/DeviceBridgeService.js";
 import type { FrontendProxy } from "./frontend/index.js";
@@ -179,6 +184,7 @@ import type {
   RemoteSessionService,
 } from "./remote-access/index.js";
 import { createRemoteAccessRoutes } from "./remote-access/index.js";
+import { createAndroidHostSummaryRoutes } from "./routes/android-host-summary.js";
 import { createActivityRoutes } from "./routes/activity.js";
 import { createBrowserProfilesRoutes } from "./routes/browser-profiles.js";
 import { createBrowserSettingsBackupRoutes } from "./routes/browser-settings-backup.js";
@@ -238,7 +244,10 @@ import { createInboxRoutes } from "./routes/inbox.js";
 import { createNetworkBindingRoutes } from "./routes/network-binding.js";
 import { createOnboardingRoutes } from "./routes/onboarding.js";
 import { createHostAgentProcessesRoutes } from "./routes/host-agent-processes.js";
-import { createProcessesRoutes } from "./routes/processes.js";
+import {
+  createProcessesRoutes,
+  describeCatalogSession,
+} from "./routes/processes.js";
 import {
   createGlobalProjectQueueRoutes,
   createProjectQueueRoutes,
@@ -346,6 +355,11 @@ import { initializeSessionHeartbeatDefaults } from "./services/sessionHeartbeatD
 import type { ProjectQueueService } from "./services/ProjectQueueService.js";
 import type { RelayClientService } from "./services/RelayClientService.js";
 import type { ServerSettingsService } from "./services/ServerSettingsService.js";
+import { RendezWatchService } from "./services/RendezWatchService.js";
+import { createRendezSessions } from "./services/rendezSessions.js";
+import { onRendezUserTurn } from "./services/rendezActivity.js";
+import { getLogger } from "./logging/logger.js";
+import { listHostedProviderRuntimes } from "./sdk/providers/provider-runtime-host.js";
 import {
   SessionWakeService,
   type SessionWakeDeliveryResult,
@@ -405,6 +419,8 @@ import {
 import { LifecycleWebhookService } from "./webhooks/LifecycleWebhookService.js";
 
 export interface AppOptions {
+  /** False for self-contained hosts with no external provider sessions. */
+  externalSessionsEnabled?: boolean;
   /** Owned update-service lookup for embedded applications and test fixtures. */
   getLatestVersion?: VersionRouteOptions["getLatestVersion"];
   artifacts?: ArtifactConfig;
@@ -1252,9 +1268,29 @@ export function createApp(options: AppOptions): AppResult {
     allowedPaths: getAllowedFilePaths,
     includeProjects: shouldIncludeProjects,
   });
+  const artifactPreviews = createArtifactPreviewRoutes({
+    policy: localResourcePathPolicy,
+    scope: sessionPathScope,
+    scanner,
+  });
+  app.route("/api", artifactPreviews.routes);
   const projectServices = isProviderRuntimeHostAvailable()
     ? new HostedProjectServices(effectiveDataDir)
     : new ProjectServiceManager(effectiveDataDir);
+  const projectAppAutoStart = new ProjectAppAutoStart(effectiveDataDir, {
+    services: projectServices,
+    projectPath: async (projectId) =>
+      (await scanner.getProject(projectId))?.path ?? null,
+    // The enabling principal must still hold what enabling it required.
+    mayAutoStart: async (by, projectId) => {
+      if (by === "superuser") return true;
+      const grants = getActiveLimitedGrants(by);
+      return (
+        grants?.allowPublicApps === true &&
+        satisfies(levelFor(grants, projectId), "new-session")
+      );
+    },
+  });
   const projectAppDelivery = new ProjectAppDelivery(
     artifactServer,
     projectServices,
@@ -1264,7 +1300,10 @@ export function createApp(options: AppOptions): AppResult {
       if (!project) return null;
       const declaration = await readProjectService(project.path);
       if (declaration?.where.kind !== "static") return null;
-      return projectServiceStaticApp(project.path, declaration);
+      return {
+        ...(await projectServiceStaticApp(project.path, declaration)),
+        address: await readStaticAddressMode(project.path),
+      };
     },
     async (reservation) => {
       const project = await scanner.getProject(reservation.projectId);
@@ -1277,6 +1316,7 @@ export function createApp(options: AppOptions): AppResult {
         )
       );
     },
+    projectAppAutoStart,
   );
   artifactServer.setProjectAppDelivery(projectAppDelivery);
   app.route(
@@ -1290,6 +1330,7 @@ export function createApp(options: AppOptions): AppResult {
       sessionPathScope,
       activeGrants: getActiveLimitedGrants,
       delivery: projectAppDelivery,
+      autoStart: projectAppAutoStart,
       onVisibilityChanged: (projectId) =>
         options.eventBus?.emit({
           type: "projects-changed",
@@ -1463,18 +1504,51 @@ export function createApp(options: AppOptions): AppResult {
   let retainedCollections: RetainedSessionCollections | undefined;
   let issueIndexer: IssueIndexer | undefined;
   let issueConfirmer: IssueConfirmer | undefined;
+  let issueStatuses: IssueStatusRefresher | undefined;
   const issueDisposers: Array<() => void> = [];
   let vocabularyLearning: VocabularyLearning | undefined;
   let vocabularyKeyterms: VocabularyKeyterms | undefined;
   let unsubscribeVocabulary: (() => void) | undefined;
   let sessionReadersDisposal: Promise<void> | undefined;
+  const rendezWatch = options.serverSettingsService
+    ? new RendezWatchService(
+        options.serverSettingsService,
+        async () => {
+          const paths = new Set(
+            supervisor
+              .getAllProcesses()
+              .filter(
+                (process) =>
+                  process.execution.kind === "local" &&
+                  process.isProcessAlive === true,
+              )
+              .map((process) => process.projectPath),
+          );
+          try {
+            for (const runtime of await listHostedProviderRuntimes()) {
+              if (runtime.state !== "closing") paths.add(runtime.projectPath);
+            }
+          } catch (error) {
+            getLogger().warn(
+              { error: String(error) },
+              "Rendez provider inventory unavailable; using local live sessions",
+            );
+          }
+          return [...paths].map((path) => ({ path }));
+        },
+        createRendezSessions(() => supervisor.getAllProcesses()),
+        onRendezUserTurn,
+      )
+    : undefined;
   const disposeSessionReaders = (): Promise<void> => {
     // Explicit shutdown and fixture ownership may join the same disposal.
     // Cache the promise before asynchronous cleanup can close shared services.
     sessionReadersDisposal ??= (async () => {
       await supervisor.stopBackgroundTasks();
+      await rendezWatch?.close();
       await projectServices.close();
       await projectAppStore.close();
+      await projectAppAutoStart.close();
       await templateCreations.close();
       await legacyRetirement;
       conversationSubscriptions?.close();
@@ -1482,6 +1556,7 @@ export function createApp(options: AppOptions): AppResult {
       for (const dispose of issueDisposers) dispose();
       await issueIndexer?.close();
       await issueConfirmer?.close();
+      await issueStatuses?.close();
       unsubscribeVocabulary?.();
       options.speechBackendRegistry?.setVocabularySource(undefined);
       await vocabularyKeyterms?.close();
@@ -1491,6 +1566,7 @@ export function createApp(options: AppOptions): AppResult {
       if (ownsDiscoverySqlite) discoverySqlite.close();
       await retainedCollections?.dispose();
       await projectQueueScheduler?.dispose();
+      artifactPreviews.close();
       await artifactServer.close();
       await projectFileCompletion.dispose();
       await bangCommandService?.dispose();
@@ -2196,30 +2272,31 @@ export function createApp(options: AppOptions): AppResult {
   );
 
   // Create external session tracker if eventBus is available
-  const externalTracker = options.eventBus
-    ? new ExternalSessionTracker({
-        eventBus: options.eventBus,
-        supervisor,
-        scanner,
-        projectDisplayName,
-        decayMs: 30000, // 30 seconds
-        // Keeps a silent external Claude turn (long tool call) visible.
-        // Claude keeps its per-process status files next to its config, not
-        // next to transcripts; a test transcript override reads none.
-        peerStatus: options.projectsDir
-          ? undefined
-          : new ClaudePeerStatus(
-              join(
-                process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
-                "sessions",
+  const externalTracker =
+    options.eventBus && options.externalSessionsEnabled !== false
+      ? new ExternalSessionTracker({
+          eventBus: options.eventBus,
+          supervisor,
+          scanner,
+          projectDisplayName,
+          decayMs: 30000, // 30 seconds
+          // Keeps a silent external Claude turn (long tool call) visible.
+          // Claude keeps its per-process status files next to its config, not
+          // next to transcripts; a test transcript override reads none.
+          peerStatus: options.projectsDir
+            ? undefined
+            : new ClaudePeerStatus(
+                join(
+                  process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+                  "sessions",
+                ),
               ),
-            ),
-        // Callback to get session summary for new external sessions
-        // projectId is now UrlProjectId (base64url) - ExternalSessionTracker converts it
-        getSessionSummary,
-        getSessionListSummary,
-      })
-    : undefined;
+          // Callback to get session summary for new external sessions
+          // projectId is now UrlProjectId (base64url) - ExternalSessionTracker converts it
+          getSessionSummary,
+          getSessionListSummary,
+        })
+      : undefined;
 
   // Name new sessions with Claude's cheap helper model (Haiku) so every
   // provider gets consistent titles instead of truncated first messages. Off
@@ -2910,6 +2987,18 @@ export function createApp(options: AppOptions): AppResult {
       createHostAgentProcessesRoutes({
         supervisor,
         serverSettingsService: options.serverSettingsService,
+        enabled: options.externalSessionsEnabled !== false,
+        describeSession: (sessionId, projectPath) =>
+          describeCatalogSession(
+            {
+              scanner,
+              readerFactory,
+              sessionIndexService: options.sessionIndexService,
+              sessionMetadataService: options.sessionMetadataService,
+            },
+            toUrlProjectId(projectPath),
+            sessionId,
+          ),
       }),
     );
   }
@@ -3008,17 +3097,24 @@ export function createApp(options: AppOptions): AppResult {
         );
       return getSessionSources(project, deps)[0]?.reader ?? null;
     };
-    const issueCredentials = new IssueCredentials({
-      dataDir: effectiveDataDir,
-    });
     const issueSettings = () =>
       settings.getSetting("issueAssociations") ?? DEFAULT_ISSUE_SETTINGS;
+    const issueCredentials = new IssueCredentials({
+      dataDir: effectiveDataDir,
+      settings: issueSettings,
+    });
     const issueStore = new IssueStore(issueDatabase, issueSettings);
     const confirmer = new IssueConfirmer(issueStore, {
       settings: issueSettings,
       credentials: issueCredentials,
     });
     issueConfirmer = confirmer;
+    const statuses = new IssueStatusRefresher({
+      store: issueStore,
+      settings: issueSettings,
+      credentials: issueCredentials,
+    });
+    issueStatuses = statuses;
     const indexer = new IssueIndexer(issueStore, {
       settings: issueSettings,
       confirm: () => confirmer.schedule(),
@@ -3098,6 +3194,7 @@ export function createApp(options: AppOptions): AppResult {
         issueCredentials,
         confirmer,
         async () => (await catalog.read()).rows,
+        statuses,
       ),
     );
     indexer.configure();
@@ -3479,6 +3576,7 @@ export function createApp(options: AppOptions): AppResult {
         projectStoragePolicy,
         hostAwakeService: options.hostAwakeService,
         sessionMetadataService: options.sessionMetadataService,
+        getRendezStatus: rendezWatch ? () => rendezWatch.status() : undefined,
         onAllowedHostsChanged: updateAllowedHosts,
         onFileAccessChanged: updateFileAccess,
         onRemoteSessionPersistenceChanged: options.remoteSessionService
@@ -3945,6 +4043,18 @@ export function createApp(options: AppOptions): AppResult {
     app.route(
       "/api/push",
       createPushRoutes({ pushService: options.pushService }),
+    );
+  }
+
+  // This native-only count stream is paired with the app-private Android runtime.
+  // Hosted clients never depend on it; older staged payloads yield HTTP 404.
+  if (process.env.YEP_ANDROID_SAF_SOCKET && options.eventBus) {
+    app.route(
+      "/api/android-host",
+      createAndroidHostSummaryRoutes({
+        supervisor,
+        eventBus: options.eventBus,
+      }),
     );
   }
 

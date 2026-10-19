@@ -470,12 +470,11 @@ To repeat the native proof, start
 `YA_NATIVE_PROBE_CONVERSATION=true`, a disposable `YA_NATIVE_PROBE_USERNAME` and
 `YA_NATIVE_PROBE_PASSWORD` (at least eight characters). Its default port is
 38901. Select an AVD explicitly, reverse TCP port 38901 with ADB, and build/install
-`assembleHostedLatestDebug` and `assembleHostedLatestDebugAndroidTest` with
-`-PyaNativeProbeCleartext=true`. Run
+`assembleHostedLatestDebug` and `assembleHostedLatestDebugAndroidTest`. Run
 `com.yepanywhere.mobile.ui.YaConversationInstrumentedTest` with instrumentation
 arguments `yaProbeWsUrl=ws://127.0.0.1:38901/api/ws`, `yaProbeUsername` and
-`yaProbePassword`. The cleartext allowance is debug-only; the YA payload still
-uses native encryption. Captures are under the application's external files
+`yaProbePassword`. Every build permits plain HTTP to loopback; the YA payload
+still uses native encryption. Captures are under the application's external files
 `conversation-captures` directory; present them through the repository artifact
 capture facility. Stop the probe and remove the ADB reverse mapping afterward.
 

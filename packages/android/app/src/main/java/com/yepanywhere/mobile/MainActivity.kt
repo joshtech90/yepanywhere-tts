@@ -25,6 +25,7 @@ import kotlinx.coroutines.job
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.yepanywhere.mobile.notifications.NativePushPresenter
@@ -47,7 +48,10 @@ class MainActivity : WebClientActivity() {
     private val pushPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val profile = pendingPushProfile
         pendingPushProfile = null
-        if (granted && profile != null) homeViewModel.setPush(profile, true)
+        // A denial refreshes the card into its blocked state and Settings link,
+        // and lets a newly paired server open without notifications.
+        if (!granted) homeViewModel.finishPushOffer()
+        homeViewModel.refreshNotifications(enableWhenReady = profile.takeIf { granted })
     }
     private fun enablePush(profileId: String) {
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -56,6 +60,23 @@ class MainActivity : WebClientActivity() {
             pushPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else homeViewModel.setPush(profileId, true)
     }
+    // A server the user asked to enable before Android sent them to Settings.
+    private var pendingSettingsPushProfile: String? = null
+    private fun openNotificationSettings(profileId: String) {
+        pendingSettingsPushProfile = profileId.takeIf { homeViewModel.state.value.servers[it]?.pushEnabled != true }
+        val intent = if (Build.VERSION.SDK_INT >= 26) {
+            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "package:$packageName".toUri())
+        }
+        startActivity(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        homeViewModel.refreshNotifications(enableWhenReady = pendingSettingsPushProfile)
+        pendingSettingsPushProfile = null
+    }
     // App Link credentials are transient visible UI state, never a ViewModel
     // value or saved-instance state.
     private var pairingInput by mutableStateOf<YaPairingInput?>(null)
@@ -63,6 +84,7 @@ class MainActivity : WebClientActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pendingPushProfile = savedInstanceState?.getString("pendingPushProfile")
+        pendingSettingsPushProfile = savedInstanceState?.getString("pendingSettingsPushProfile")
         pendingPushLaunch = savedInstanceState?.getString("pendingPushSubscription")?.let {
             PushLaunch(it, savedInstanceState.getString("pendingPushSession"))
         }
@@ -118,6 +140,8 @@ class MainActivity : WebClientActivity() {
                         pairingInput = pairingInput,
                         onClearPairingInput = { pairingInput = null },
                         onEnablePush = ::enablePush,
+                        onOpenNotificationSettings = ::openNotificationSettings,
+                        onAcceptPushOffer = { homeViewModel.acceptPushOffer()?.let(::enablePush) },
                     )
                 }
             }
@@ -135,6 +159,7 @@ class MainActivity : WebClientActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         pendingPushProfile?.let { outState.putString("pendingPushProfile", it) }
+        pendingSettingsPushProfile?.let { outState.putString("pendingSettingsPushProfile", it) }
         pendingPushLaunch?.let {
             outState.putString("pendingPushSubscription", it.subscription)
             outState.putString("pendingPushSession", it.session)

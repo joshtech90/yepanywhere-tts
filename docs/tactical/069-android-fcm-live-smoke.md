@@ -6,6 +6,11 @@ installation-level native foundation in
 
 Topic: android-fcm-push
 
+The configuration handling below records the original probe. Since
+2026-10-14, the public Android client config is tracked and Firebase-disabled
+builds use an explicit Gradle option; see the current
+[build contract](../../topics/android-fcm-push.md#android-build-configuration).
+
 ## Origin
 
 The credential-free push-broker milestone left its Android and live Firebase

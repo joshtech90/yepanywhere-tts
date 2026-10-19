@@ -6,7 +6,10 @@ import {
   capabilityBitIsSet,
   encodeCapabilityIds,
 } from "./capability-ids.js";
-import { PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY } from "./public-shares.js";
+import {
+  PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY,
+  PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
+} from "./public-shares.js";
 import { SECURITY_CLIENT_AUDIT_CAPABILITY } from "./security-clients.js";
 
 export type ServerCapabilityKind = "permanent" | "transitional";
@@ -101,6 +104,11 @@ export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
     name: "experimental-simple-client-conversation",
     index: CAPABILITY_ID_ALLOCATIONS.experimentalConversation.id,
     introducedIn: "0.8.2",
+  },
+  githubStatusControls: {
+    name: "github-status-controls",
+    index: CAPABILITY_ID_ALLOCATIONS.githubStatusControls.id,
+    introducedIn: "0.9.4",
   },
   issueSessionAssociations: {
     name: "issue-session-associations-v1",
@@ -540,6 +548,30 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Servers through 0.9.2 have no view route or proxy, so a hosted client must not offer views there.",
+    },
+  },
+  projectAppAutoStart: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectAppAutoStart.id,
+    name: "project-app-auto-start",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Opt-in start of a served process app when an authorized visit to its reserved address finds it stopped or unreachable, with a restart-loop pause.",
+    clientFallback:
+      "Hide the auto-start checkbox and make no auto-start request; a stopped app's address keeps showing that it is not serving.",
+    serverContract: {
+      routes: [
+        "GET /api/projects/:projectId/app/address",
+        "POST /api/projects/:projectId/app/address/auto-start",
+      ],
+      responseFields: ["autoStart"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Servers through 0.9.2 have no auto-start route, so a hosted client must not offer the setting there.",
     },
   },
   projectCreationGitChoice: {
@@ -1463,6 +1495,31 @@ export const SERVER_CAPABILITIES = {
       reason: "Requires ready SQLite draft storage.",
     },
   },
+  githubStatusControls: {
+    id: CAPABILITY_ID_ALLOCATIONS.githubStatusControls.id,
+    name: "github-status-controls",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.githubStatusControls.id,
+    },
+    description:
+      "Independent GitHub status checks, gh disable/account controls and durable tracker cache management.",
+    clientFallback:
+      "Hide GitHub status/CLI/cache controls and send no new settings or cache requests; retain legacy tracker confirmation.",
+    serverContract: {
+      routes: ["DELETE /api/issues/status"],
+      requestFields: ["githubStatusEnabled", "githubCli"],
+      routeModules: ["packages/server/src/routes/issue-status.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Experimental issue integration availability is installation-dependent.",
+    },
+  },
   issueSessionAssociations: {
     id: CAPABILITY_ID_ALLOCATIONS.issueSessionAssociations.id,
     name: "issue-session-associations-v1",
@@ -1671,6 +1728,34 @@ export const SERVER_CAPABILITIES = {
         "Question discovery across sessions requires server-owned previews without loading every transcript in the browser.",
     },
   },
+  artifactRelayPreview: {
+    id: CAPABILITY_ID_ALLOCATIONS.artifactRelayPreview.id,
+    name: "artifact-relay-preview",
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Authenticated read-only preview leases independent of artifact listener configuration.",
+    clientFallback:
+      "Keep configured artifact serving or scriptless/source preview; make no preview lease requests.",
+    serverContract: {
+      routes: [
+        "POST /api/artifact-previews",
+        "GET /api/artifact-previews/:id/file",
+        "DELETE /api/artifact-previews/:id",
+        "POST /api/sessions/:sessionId/artifact-previews",
+        "GET /api/sessions/:sessionId/artifact-previews/:id/file",
+        "DELETE /api/sessions/:sessionId/artifact-previews/:id",
+      ],
+      routeModules: ["packages/server/src/routes/artifact-previews.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted viewers must never forward arbitrary authenticated file reads to untrusted content.",
+    },
+  },
   artifactViewer: {
     id: CAPABILITY_ID_ALLOCATIONS.artifactViewer.id,
     name: "artifact-viewer",
@@ -1832,6 +1917,32 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Hosted public viewers can outpace installed servers, and frozen sessions need a bounded relay path without changing legacy response semantics.",
+    },
+  },
+  publicShareLiveSessionChunks: {
+    name: PUBLIC_SHARE_LIVE_SESSION_CHUNKS_CAPABILITY,
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "scoped" },
+    description:
+      "Secret-authorized metadata for a live share selects the same sequential pull transfer for a transient per-viewer snapshot of the current session; later updates keep the incremental live response.",
+    clientFallback:
+      "Use the existing one-response raw-json transfer through its 8 MiB relay cap and make no chunk request.",
+    serverContract: {
+      routes: [
+        "GET /public-api/shares/:secret/metadata",
+        "GET /public-api/shares/:secret/session-chunks",
+      ],
+      responseFields: [
+        "publicShareMetadata.capabilities",
+        "publicShareMetadata.sessionChunks",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted public viewers can outpace installed servers, and live sessions outgrow the one-response relay cap; a separate name keeps older viewers from treating a live share as frozen.",
     },
   },
   publicShareManagement: {
@@ -2074,6 +2185,84 @@ export const SERVER_CAPABILITIES = {
         "The core 60-day stable support corpus provides descriptors and the Maintainer approves removal.",
       removeServerAdvertisementWhen:
         "No maintained client branches on provider-descriptors.",
+    },
+  },
+  rendezUploads: {
+    id: CAPABILITY_ID_ALLOCATIONS.rendezUploads.id,
+    name: "rendez-uploads",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Configures opt-in project .rendez upload monitoring, project overrides and burst limits.",
+    clientFallback:
+      "Show server-update guidance and make no rendez settings write.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings"],
+      requestFields: ["settings.rendez"],
+      responseFields: ["settings.rendez"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers cannot monitor rendez uploads.",
+    },
+  },
+  rendezProjectStatus: {
+    id: CAPABILITY_ID_ALLOCATIONS.rendezProjectStatus.id,
+    name: "rendez-project-status",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Reports which projects' .rendez observers are running, for the settings project list.",
+    clientFallback:
+      "Show the project list without watching or waiting status and make no status request.",
+    serverContract: {
+      routes: ["GET /api/settings/rendez/status"],
+      responseFields: ["watching"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers do not report .rendez observer status.",
+    },
+  },
+  patientTopicShift: {
+    id: CAPABILITY_ID_ALLOCATIONS.patientTopicShift.id,
+    name: "patient-topic-shift",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Patient queue items carry their source and an optional compact-first threshold; the server compacts before delivery when usage is above it, reports the item's compaction state, and can deliver a failed item without compacting.",
+    clientFallback:
+      "Hide the Next-topic toolbar setting and action and the compaction thresholds, and send ordinary patient queue items.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PUT /api/settings",
+        "POST /api/sessions/:sessionId/deferred/:tempId/deliver-without-compaction",
+      ],
+      requestFields: [
+        "messageMetadata.patientSource",
+        "messageMetadata.compactAboveContextPercent",
+        "settings.clientDefaults.patientQueueCompactAtPercent",
+        "settings.clientDefaults.topicShiftCompactAtPercent",
+        "settings.clientDefaults.sessionToolbarPresence.topicShift",
+      ],
+      responseFields: [
+        "deferredMessages[].compactionGate",
+        "settings.clientDefaults.patientQueueCompactAtPercent",
+        "settings.clientDefaults.topicShiftCompactAtPercent",
+        "settings.clientDefaults.sessionToolbarPresence.topicShift",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Servers through 0.9.2 drop the item's source and threshold, so a hosted client must not offer compact-first delivery there.",
     },
   },
   projectDirectoryStoragePolicy: {
@@ -4163,6 +4352,11 @@ export const PROJECT_CAPTIONS_CAPABILITY =
 export const PROJECT_NAMES_CAPABILITY = SERVER_CAPABILITIES.projectNames.name;
 export const SIDEBAR_SESSION_RESUME_CAPABILITY =
   SERVER_CAPABILITIES.sidebarSessionResume.name;
+export const PATIENT_TOPIC_SHIFT_CAPABILITY =
+  SERVER_CAPABILITIES.patientTopicShift.name;
+export const RENDEZ_UPLOADS_CAPABILITY = SERVER_CAPABILITIES.rendezUploads.name;
+export const RENDEZ_PROJECT_STATUS_CAPABILITY =
+  SERVER_CAPABILITIES.rendezProjectStatus.name;
 export const SYNTHETIC_DONE_COMMAND_CAPABILITY =
   SERVER_CAPABILITIES.syntheticDoneCommand.name;
 export const SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY =

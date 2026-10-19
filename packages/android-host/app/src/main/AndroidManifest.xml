@@ -1,0 +1,31 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+  <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+  <application android:label="YA Host (Experimental)" android:allowBackup="false"
+      android:icon="@android:drawable/sym_def_app_icon" android:fullBackupContent="false"
+      android:theme="@style/HostTheme"
+      android:dataExtractionRules="@xml/backup_rules"
+      android:extractNativeLibs="true" android:networkSecurityConfig="@xml/network_security">
+    <provider android:name=".HostState" android:authorities="${applicationId}.host-state"
+        android:exported="${hostAdbExported}" android:permission="android.permission.DUMP" />
+    <activity android:name=".HostActivity" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+    <activity android:name=".WorkspacesActivity" android:exported="false" />
+    <activity android:name=".LocalWebActivity" android:exported="false" android:process=":web" />
+    <!-- Debug ADB control; DUMP requires privileged or administrator-granted authority. -->
+    <service android:name=".HostService" android:exported="${hostAdbExported}"
+        android:permission="android.permission.DUMP" android:foregroundServiceType="specialUse">
+      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+          android:value="User-started on-device coding agent host; server and agent sessions continue when its UI closes." />
+    </service>
+  </application>
+</manifest>

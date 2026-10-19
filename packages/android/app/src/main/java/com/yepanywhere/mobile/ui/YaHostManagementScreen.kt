@@ -2,6 +2,8 @@ package com.yepanywhere.mobile.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -61,6 +63,8 @@ fun YaHostManagementScreen(
     pairingInput: YaPairingInput? = null,
     onClearPairingInput: () -> Unit = {},
     onEnablePush: (String) -> Unit = {},
+    onOpenNotificationSettings: (String) -> Unit = {},
+    onAcceptPushOffer: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val uriHandler = LocalUriHandler.current
@@ -118,6 +122,25 @@ fun YaHostManagementScreen(
             dismissButton = {
                 TextButton(onClick = { confirmForgetProfileId = null }) {
                     Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
+
+    state.pushOffer?.takeIf { !state.pushOfferAccepted }?.let { profileId ->
+        val label = state.profiles.firstOrNull { it.id == profileId }?.label.orEmpty()
+        AlertDialog(
+            onDismissRequest = { viewModel.finishPushOffer() },
+            title = { Text(stringResource(R.string.native_push_offer_title)) },
+            text = { Text(stringResource(R.string.native_push_offer_body, label)) },
+            confirmButton = {
+                TextButton(onClick = onAcceptPushOffer) {
+                    Text(stringResource(R.string.native_push_enable))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.finishPushOffer() }) {
+                    Text(stringResource(R.string.native_push_offer_decline))
                 }
             },
         )
@@ -235,6 +258,7 @@ fun YaHostManagementScreen(
                     onEnablePush = onEnablePush,
                     onDisablePush = { viewModel.setPush(it, false) },
                     onTestPush = viewModel::testPush,
+                    onOpenNotificationSettings = onOpenNotificationSettings,
                 )
             }
         }
@@ -443,6 +467,7 @@ private fun ServerSettings(
     onEnablePush: (String) -> Unit,
     onDisablePush: (String) -> Unit,
     onTestPush: (String) -> Unit,
+    onOpenNotificationSettings: (String) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -470,6 +495,7 @@ private fun ServerSettings(
                 ?: YaHostState(profile = profile)
             ServerSettingsCard(
                 source = source,
+                deviceNotifications = state.deviceNotifications,
                 actionInProgress = state.actionInProgress,
                 onReauthenticate = { onReauthenticate(profile.id, it) },
                 onForgetServer = { onForgetServer(profile.id) },
@@ -477,6 +503,7 @@ private fun ServerSettings(
                 onEnablePush = { onEnablePush(profile.id) },
                 onDisablePush = { onDisablePush(profile.id) },
                 onTestPush = { onTestPush(profile.id) },
+                onOpenNotificationSettings = { onOpenNotificationSettings(profile.id) },
             )
         }
     }
@@ -485,6 +512,7 @@ private fun ServerSettings(
 @Composable
 private fun ServerSettingsCard(
     source: YaHostState,
+    deviceNotifications: YaDeviceNotifications,
     actionInProgress: Boolean,
     onReauthenticate: (String) -> Unit,
     onForgetServer: () -> Unit,
@@ -492,6 +520,7 @@ private fun ServerSettingsCard(
     onEnablePush: () -> Unit,
     onDisablePush: () -> Unit,
     onTestPush: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
 ) {
     val profile = source.profile
     val preferredRoute = profile.routes.firstOrNull { it.id == profile.preferredRouteId }
@@ -528,21 +557,16 @@ private fun ServerSettingsCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
             )
-            Text(
-                modifier = Modifier.padding(top = 10.dp),
-                text = stringResource(if (source.pushEnabled) R.string.native_push_enabled else R.string.native_push_disabled),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
+            if (deviceNotifications != YaDeviceNotifications.UNAVAILABLE) PushControls(
+                pushEnabled = source.pushEnabled,
+                deviceNotifications = deviceNotifications,
+                actionInProgress = actionInProgress,
+                revoked = profile.securityClient?.revoked == true,
+                onEnablePush = onEnablePush,
+                onDisablePush = onDisablePush,
+                onTestPush = onTestPush,
+                onOpenNotificationSettings = onOpenNotificationSettings,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = if (source.pushEnabled) onDisablePush else onEnablePush,
-                    enabled = !actionInProgress && profile.securityClient?.revoked != true) {
-                    Text(stringResource(if (source.pushEnabled) R.string.native_push_disable else R.string.native_push_enable))
-                }
-                if (source.pushEnabled) TextButton(onClick = onTestPush, enabled = !actionInProgress) {
-                    Text(stringResource(R.string.native_push_test))
-                }
-            }
             if (source.connection.phase == YaConnectionPhase.REAUTHENTICATION_REQUIRED) {
                 ReauthenticationCard(
                     actionInProgress = actionInProgress,
@@ -571,6 +595,59 @@ private fun ServerSettingsCard(
                         },
                     ),
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Server enrollment and Android's own notification switches are separate. A
+ * blocked device can only be fixed in Settings, so offer that instead of an
+ * Enable action that would silently do nothing.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PushControls(
+    pushEnabled: Boolean,
+    deviceNotifications: YaDeviceNotifications,
+    actionInProgress: Boolean,
+    revoked: Boolean,
+    onEnablePush: () -> Unit,
+    onDisablePush: () -> Unit,
+    onTestPush: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
+) {
+    val blocked = deviceNotifications == YaDeviceNotifications.BLOCKED ||
+        (pushEnabled && deviceNotifications != YaDeviceNotifications.READY)
+    Text(
+        modifier = Modifier.padding(top = 10.dp),
+        text = stringResource(
+            when {
+                pushEnabled && blocked -> R.string.native_push_enabled_blocked
+                pushEnabled -> R.string.native_push_enabled
+                blocked -> R.string.native_push_blocked
+                else -> R.string.native_push_disabled
+            },
+        ),
+        color = if (blocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (blocked) {
+            TextButton(onClick = onOpenNotificationSettings) {
+                Text(stringResource(R.string.native_push_open_settings))
+            }
+        } else if (!pushEnabled) {
+            TextButton(onClick = onEnablePush, enabled = !actionInProgress && !revoked) {
+                Text(stringResource(R.string.native_push_enable))
+            }
+        }
+        if (pushEnabled) {
+            TextButton(onClick = onDisablePush, enabled = !actionInProgress && !revoked) {
+                Text(stringResource(R.string.native_push_disable))
+            }
+            if (!blocked) TextButton(onClick = onTestPush, enabled = !actionInProgress) {
+                Text(stringResource(R.string.native_push_test))
             }
         }
     }

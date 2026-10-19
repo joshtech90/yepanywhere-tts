@@ -11,6 +11,7 @@ import { useRetainedVersionInfo } from "../hooks/useVersion";
 import { toBrowserAppHref } from "../lib/appHref";
 import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import styles from "./FileRevisionLink.module.css";
+import { ResourceContextMenu } from "./FileResourceActions";
 
 export interface FileRevisionLinkProps {
   projectId: string;
@@ -44,6 +45,11 @@ export function FileRevisionLink({
     value: GitFileRevision | null;
   }>({ identity, value: null });
   const revision = loaded.identity === identity ? loaded.value : null;
+  const [contextMenu, setContextMenu] = useState<{
+    identity: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!supported || !projectId || !path) return;
@@ -82,13 +88,35 @@ export function FileRevisionLink({
 
   return (
     <span className={`${styles.root} ${className ?? ""}`}>
-      <a className={styles.commit} href={href} title={tooltip}>
+      <a
+        className={styles.commit}
+        href={href}
+        title={tooltip}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setContextMenu({ identity, x: event.clientX, y: event.clientY });
+        }}
+      >
         {revision.commit.shortHash}
       </a>
       <span className={styles.age}>
         ({formatRevisionAge(revision.commit.authorDate)})
       </span>
       {revision.dirty && <span className={styles.dirty}>{dirtyLabel}</span>}
+      {contextMenu?.identity === identity && (
+        <ResourceContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onOpen={() => window.open(href, "_blank", "noopener,noreferrer")}
+          fileTarget={{
+            projectId,
+            path: rev ? path : (origPath ?? path),
+            rev: revision.commit.hash,
+          }}
+        />
+      )}
     </span>
   );
 }

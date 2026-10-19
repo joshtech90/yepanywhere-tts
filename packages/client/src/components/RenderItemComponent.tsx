@@ -364,9 +364,8 @@ function CollapsibleSystemMessage({
   label?: string;
 }) {
   const details = (item.details ?? [])
-    .map(systemDetailToText)
-    .map((text) => text.trim())
-    .filter(Boolean);
+    .map((detail) => ({ detail, text: systemDetailToText(detail).trim() }))
+    .filter(({ text }) => Boolean(text));
   const isCompactBoundary = item.subtype === "compact_boundary";
   const isToolOutput = item.subtype === "tool_output";
   const variantClass = isCompactBoundary
@@ -394,7 +393,10 @@ function CollapsibleSystemMessage({
     );
   }
 
-  const resolvedDetails = details.length > 0 ? details : [COMPACT_EMPTY_DETAIL];
+  const resolvedDetails =
+    details.length > 0
+      ? details
+      : [{ detail: COMPACT_EMPTY_DETAIL, text: COMPACT_EMPTY_DETAIL }];
 
   return (
     <details
@@ -415,18 +417,40 @@ function CollapsibleSystemMessage({
         </span>
       </summary>
       <div
-        className={`system-message-details${
+        className={`${styles.systemDetails}${
           isToolOutput ? ` ${styles.toolOutputDetails}` : ""
         }`}
       >
-        {resolvedDetails.map((detail, index) => (
-          <pre
-            className="system-message-detail"
-            key={`${item.id}-system-detail-${index}`}
-          >
-            {detail}
-          </pre>
-        ))}
+        {resolvedDetails.map(({ detail, text }, index) =>
+          isCompactBoundary &&
+          Array.isArray(detail) &&
+          detail.every((block) => block.type === "text") ? (
+            <div
+              className={styles.compactSummaryMarkdown}
+              key={`${item.id}-system-detail-${index}`}
+            >
+              {detail.map((block, blockIndex) =>
+                block.type === "text" ? (
+                  <TextBlock
+                    key={`${item.id}-system-detail-${index}-${blockIndex}`}
+                    text={block.text ?? ""}
+                    augmentHtml={
+                      typeof block._html === "string" ? block._html : undefined
+                    }
+                    paragraphQuoteCirclesEnabled={false}
+                  />
+                ) : null,
+              )}
+            </div>
+          ) : (
+            <pre
+              className={styles.systemDetail}
+              key={`${item.id}-system-detail-${index}`}
+            >
+              {text}
+            </pre>
+          ),
+        )}
       </div>
     </details>
   );

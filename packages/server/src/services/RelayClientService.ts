@@ -116,6 +116,15 @@ class ExponentialBackoff {
 /** Keepalive configuration */
 const PING_INTERVAL_MS = 30_000; // Send ping every 30 seconds
 const PONG_TIMEOUT_MS = 10_000; // Expect pong within 10 seconds
+const BATTERY_PONG_TIMEOUT_MS = 5_000;
+
+export type RelayKeepaliveProfile = "default" | "battery";
+
+function readKeepaliveProfile(): RelayKeepaliveProfile {
+  const value = process.env.YEP_RELAY_KEEPALIVE_PROFILE ?? "default";
+  if (value === "default" || value === "battery") return value;
+  throw new Error("YEP_RELAY_KEEPALIVE_PROFILE must be default or battery");
+}
 
 export class RelayClientService {
   /** WebSocket that has completed registration and is waiting for a client */
@@ -127,6 +136,8 @@ export class RelayClientService {
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private pongTimeout: ReturnType<typeof setTimeout> | null = null;
   private lastPingTime: number | null = null;
+  private pingSequence = 0;
+  private pendingPong: Buffer | null = null;
   private state: RelayClientState = {
     status: "disconnected",
     reconnectAttempts: 0,
@@ -134,7 +145,9 @@ export class RelayClientService {
   private enabled = false;
   private config: RelayClientConfig | null = null;
 
-  constructor() {
+  constructor(
+    private readonly keepaliveProfile: RelayKeepaliveProfile = readKeepaliveProfile(),
+  ) {
     this.backoff = new ExponentialBackoff(1000, 60_000, 2);
   }
 
@@ -223,16 +236,16 @@ export class RelayClientService {
         this.handleMessage(ws, data, isBinary);
       });
 
-      ws.on("close", () => {
-        this.handleClose(ws);
+      ws.on("close", (code?: number, reason?: Buffer) => {
+        this.handleClose(ws, code, reason?.toString());
       });
 
       ws.on("error", (error: Error) => {
         this.handleError(ws, error);
       });
 
-      ws.on("pong", () => {
-        this.handlePong(ws);
+      ws.on("pong", (data: Buffer) => {
+        this.handlePong(ws, data);
       });
     } catch (error) {
       console.error("[RelayClient] Failed to create WebSocket:", error);
@@ -386,7 +399,7 @@ export class RelayClientService {
     this.connect();
   }
 
-  private handleClose(ws: WebSocket): void {
+  private handleClose(ws: WebSocket, code?: number, reason?: string): void {
     // Only handle close for connections we're managing
     // Claimed connections are handed off and managed elsewhere
     if (ws === this.connectingWs) {
@@ -397,7 +410,9 @@ export class RelayClientService {
     }
 
     if (ws === this.waitingWs) {
-      console.log("[RelayClient] Connection closed");
+      console.log(
+        `[RelayClient] Connection closed (code ${code}${reason ? `: ${reason}` : ""})`,
+      );
       this.stopKeepalive();
       this.waitingWs = null;
       this.scheduleReconnect();
@@ -468,6 +483,11 @@ export class RelayClientService {
     this.stopKeepalive(); // Clear any existing keepalive
 
     this.pingInterval = setInterval(() => {
+      if (this.keepaliveProfile === "battery") {
+        // The pending probe owns its deadline, including a delayed callback.
+        if (!this.pongTimeout) this.sendBatteryPing(ws);
+        return;
+      }
       // Check for wall-clock drift (system was likely asleep)
       const now = Date.now();
       if (
@@ -501,6 +521,30 @@ export class RelayClientService {
     }, PING_INTERVAL_MS);
   }
 
+  /** Probe liveness after a scheduling gap instead of discarding a live socket. */
+  private sendBatteryPing(ws: WebSocket): void {
+    if (ws !== this.waitingWs) return;
+    const sentAt = Date.now();
+    const payload = Buffer.from(String(++this.pingSequence));
+    this.pendingPong = payload;
+    try {
+      ws.ping(payload);
+    } catch {
+      this.handleKeepaliveTimeout();
+      return;
+    }
+    this.pongTimeout = setTimeout(() => {
+      this.pongTimeout = null;
+      if (Date.now() - sentAt > BATTERY_PONG_TIMEOUT_MS * 2) {
+        // Sleep/stalls can delay the deadline too. Give a fresh probe its own
+        // bounded budget; a pong for the previous probe cannot satisfy it.
+        this.sendBatteryPing(ws);
+        return;
+      }
+      this.handleKeepaliveTimeout();
+    }, BATTERY_PONG_TIMEOUT_MS);
+  }
+
   /**
    * Stop the keepalive ping interval.
    */
@@ -514,20 +558,24 @@ export class RelayClientService {
       this.pongTimeout = null;
     }
     this.lastPingTime = null;
+    this.pendingPong = null;
   }
 
   /**
    * Handle pong response from the relay.
    */
-  private handlePong(ws: WebSocket): void {
+  private handlePong(ws: WebSocket, data: Buffer): void {
     // Only handle pong for our waiting connection
     if (ws !== this.waitingWs) return;
+    if (this.keepaliveProfile === "battery" && !this.pendingPong?.equals(data))
+      return;
 
     // Clear the pong timeout
     if (this.pongTimeout) {
       clearTimeout(this.pongTimeout);
       this.pongTimeout = null;
     }
+    this.pendingPong = null;
   }
 
   /**

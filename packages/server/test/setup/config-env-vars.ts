@@ -3,6 +3,7 @@
  * tests so developer-shell runtime knobs do not change default expectations.
  */
 export const CONFIG_ENV_VARS = [
+  "YEP_EXTERNAL_SESSIONS",
   "YEP_VHOST_OAUTH_PROVIDER",
   "YEP_VHOST_OAUTH_CLIENT_ID",
   "YEP_VHOST_OAUTH_CLIENT_SECRET",

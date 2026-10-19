@@ -123,7 +123,7 @@ async function serverFixture({
     }
   });
   servers.push(server);
-  await new Promise<void>((done) => server.listen(0, done));
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   const address = server.address();
   if (!address || typeof address === "string")
     throw new Error("Expected TCP listener");

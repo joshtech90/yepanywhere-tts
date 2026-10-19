@@ -72,6 +72,51 @@ const exists = (path: string) =>
   );
 
 describe("durable artifact grants", () => {
+  it("leaves empty and unchanged grant state untouched, including after restart", async () => {
+    const { base, entry } = await workspace();
+    const first = serverFor(base);
+    const stateFile = join(base, "state", "grants.json");
+    await first.ready;
+    await first.settleExpired();
+    expect(await exists(stateFile)).toBe(false);
+
+    const grant = await first.createGrant(entry, "local");
+    const saved = await stat(stateFile);
+    await first.settleExpired();
+    await first.settleExpired();
+    await first.close();
+
+    const second = serverFor(base);
+    try {
+      await second.ready;
+      await second.settleExpired();
+      const unchanged = await stat(stateFile);
+      expect(unchanged.ino).toBe(saved.ino);
+      expect(unchanged.mtimeMs).toBe(saved.mtimeMs);
+      expect((await second.app.request(grant.url)).status).toBe(200);
+    } finally {
+      await second.close();
+    }
+  });
+
+  it("retries a failed grant save on the next otherwise unchanged sweep", async () => {
+    const { base, entry } = await workspace();
+    const server = serverFor(base);
+    const stateFile = join(base, "state", "grants.json");
+    try {
+      await server.ready;
+      await mkdir(stateFile, { recursive: true });
+      await expect(server.createGrant(entry, "local")).rejects.toThrow();
+      await rm(stateFile, { recursive: true });
+      await server.settleExpired();
+      expect(JSON.parse(await readFile(stateFile, "utf8")).grants).toHaveLength(
+        1,
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
   it("serves a grant created by a previous process", async () => {
     const { base, entry } = await workspace();
     const first = serverFor(base);
@@ -107,6 +152,10 @@ describe("durable artifact grants", () => {
     const second = serverFor(base, { expiryDays: 1 });
     await second.ready;
     expect((await second.app.request(grant.url)).status).toBe(404);
+    expect(
+      JSON.parse(await readFile(join(base, "state", "grants.json"), "utf8"))
+        .grants,
+    ).toEqual([]);
     // Borrowing is the default, so nothing was deleted with it.
     expect(await exists(join(bundle, "index.html"))).toBe(true);
     await second.close();
@@ -124,6 +173,7 @@ describe("durable artifact grants", () => {
     expect(await exists(bundle)).toBe(true);
 
     clock.mockReturnValue(now + 25 * 3600_000);
+    expect((await server.app.request(grant.url)).status).toBe(404);
     await server.settleExpired();
     expect(await exists(bundle)).toBe(false);
     await server.close();
@@ -167,6 +217,10 @@ describe("durable artifact grants", () => {
     await borrowing.revoke(borrowed.id);
     await borrowing.settleExpired();
     expect(await exists(entry)).toBe(true);
+    expect(
+      JSON.parse(await readFile(join(base, "state", "grants.json"), "utf8"))
+        .grants,
+    ).toEqual([]);
     await borrowing.close();
   });
 

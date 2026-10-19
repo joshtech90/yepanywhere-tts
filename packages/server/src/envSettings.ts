@@ -108,7 +108,19 @@ export function redactSecretValue(value: string): string {
 }
 
 export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
+  {
+    name: "YEP_EXTERNAL_SESSIONS",
+    group: "Sessions & scanning",
+    description:
+      "Enable external-session activity tracking and host process inventory. Default true; self-contained hosts set false. Native history in configured provider stores remains readable.",
+  },
   // Server & network
+  {
+    name: "YEP_RELAY_KEEPALIVE_PROFILE",
+    group: "Server & network",
+    description:
+      "Relay liveness policy: default reconnects after a long clock gap; battery probes the existing socket with a five-second deadline. Both ping every 30 seconds. Default default; Android host selects battery.",
+  },
   {
     name: "PORT",
     group: "Server & network",

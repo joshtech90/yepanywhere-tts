@@ -6,6 +6,28 @@
       guard ProcessInfo.processInfo.arguments.contains("-qa-input-metrics") else { return }
       let script = """
         (() => {
+          // XCTest can expose the drawer's final AX frame before WebKit paints
+          // it (CI 38249220195). Gate its tap on the actual DOM hit target and
+          // two rendering frames, rather than a fixed sleep or an AX snapshot.
+          document.addEventListener('click', event => {
+            if (!event.target.closest?.('[aria-label="Open sidebar"]')) return;
+            document.getElementById('qa-host-switch-ready')?.remove();
+            const deadline = performance.now() + 5000;
+            let frames = 0;
+            const check = () => {
+              const button = document.querySelector('.sidebar-switch-host');
+              const rect = button?.getBoundingClientRect();
+              const hit = rect && document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+              const settled = button?.closest('aside')?.getAnimations().every(animation => animation.playState !== 'running');
+              frames = settled && rect && rect.width > 0 && rect.height > 0 && button.contains(hit) ? frames + 1 : 0;
+              if (frames >= 2) {
+                const ready = document.createElement('div'); ready.id = 'qa-host-switch-ready';
+                ready.style.cssText = 'position:fixed;top:0;right:0;z-index:99999;font:10px monospace;background:white;color:black';
+                ready.textContent = 'QA host switch ready'; document.body.append(ready);
+              } else if (performance.now() < deadline) requestAnimationFrame(check);
+            };
+            requestAnimationFrame(check);
+          }, true);
           window.addEventListener('yaKeyboardShown', () => {
             requestAnimationFrame(() => requestAnimationFrame(() => {
               let ready=document.getElementById('qa-keyboard-ready');

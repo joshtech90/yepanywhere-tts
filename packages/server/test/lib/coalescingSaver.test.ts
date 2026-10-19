@@ -63,6 +63,35 @@ describe("createCoalescingSaver", () => {
     expect(flushed).toBe(true);
   });
 
+  it("settles concurrent flushes when writes finish in microtasks", async () => {
+    // SQLite-backed writes resolve without I/O. Flushes starting a few
+    // microtasks apart used to re-arm each other's drains forever, freezing
+    // the server; a runaway drain parks here so the test fails instead.
+    let writes = 0;
+    const parked = new Promise<void>(() => {});
+    const saver = createCoalescingSaver(async () => {
+      if (++writes > 50) await parked;
+    });
+    const microtasks = (n: number) => {
+      let chain = Promise.resolve();
+      for (let i = 0; i < n; i++) chain = chain.then(() => {});
+      return chain;
+    };
+
+    const settled = Promise.all(
+      [0, 1, 3].map(async (offset) => {
+        await microtasks(offset);
+        await saver.flush();
+      }),
+    ).then(() => true);
+    const result = await Promise.race([
+      settled,
+      new Promise<false>((res) => setTimeout(() => res(false), 100)),
+    ]);
+    expect(result).toBe(true);
+    expect(writes).toBeLessThanOrEqual(4);
+  });
+
   it("recovers after a rejected write instead of wedging", async () => {
     let writes = 0;
     let fail = true;

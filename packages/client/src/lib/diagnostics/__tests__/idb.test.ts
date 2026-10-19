@@ -4,8 +4,11 @@ import {
   countEntries,
   deleteEntries,
   getAllEntries,
+  getEntry,
   openDatabase,
   putEntry,
+  putEntryWithKey,
+  sharedDatabase,
 } from "../idb";
 
 const DB_NAME = "test-idb";
@@ -88,5 +91,25 @@ describe("idb helpers", () => {
   it("handles empty delete gracefully", async () => {
     await deleteEntries(db, STORE_NAME, []);
     expect(await countEntries(db, STORE_NAME)).toBe(0);
+  });
+});
+
+describe("sharedDatabase", () => {
+  it("reopens after its cached connection was closed", async () => {
+    const shared = sharedDatabase("test-shared-idb", 1, (database) => {
+      database.createObjectStore("kv");
+    });
+    const first = await shared.get();
+    first.close();
+
+    await shared.run((database) =>
+      putEntryWithKey(database, "kv", "key", "value"),
+    );
+
+    const reopened = await shared.get();
+    expect(reopened).not.toBe(first);
+    expect(await getEntry(reopened, "kv", "key")).toBe("value");
+    reopened.close();
+    indexedDB.deleteDatabase("test-shared-idb");
   });
 });

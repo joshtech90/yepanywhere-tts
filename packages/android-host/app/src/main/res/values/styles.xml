@@ -1,0 +1,10 @@
+<resources>
+  <style name="HostTheme.Base" parent="android:style/Theme.Material.Light.NoActionBar" />
+  <style name="HostTheme" parent="HostTheme.Base">
+    <!-- WebView derives prefers-color-scheme from the native theme. -->
+    <item name="android:isLightTheme">@bool/webview_is_light_theme</item>
+    <item name="android:windowLightStatusBar">@bool/webview_is_light_theme</item>
+    <item name="android:windowLightNavigationBar">@bool/webview_is_light_theme</item>
+  </style>
+  <bool name="webview_is_light_theme">true</bool>
+</resources>

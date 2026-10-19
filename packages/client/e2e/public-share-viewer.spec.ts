@@ -5,6 +5,7 @@ import {
   type PublicSessionShareResponse,
 } from "@yep-anywhere/shared";
 import { expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture";
 
 const projectId = toUrlProjectId("/project");
 const attachmentPath =
@@ -188,13 +189,20 @@ for (const viewport of [
           document.documentElement.dataset.beforeExpandedTop = String(
             node.getBoundingClientRect().top,
           );
-          requestAnimationFrame(() => {
-            document.documentElement.dataset.firstExpandedTop = String(
-              document
-                .querySelector(".conversation-activity-summary")!
-                .getBoundingClientRect().top,
+          // Animation frames run before ResizeObserver's pre-paint layout
+          // corrections. Sample after the transcript's resize observer so
+          // this records the first painted geometry, including lazy styles.
+          const observer = new ResizeObserver(() => {
+            const expanded = document.querySelector(
+              ".conversation-activity-summary",
             );
+            if (expanded?.getAttribute("aria-expanded") !== "true") return;
+            document.documentElement.dataset.firstExpandedTop = String(
+              expanded.getBoundingClientRect().top,
+            );
+            observer.disconnect();
           });
+          observer.observe(document.querySelector(".message-list")!);
         },
         { once: true, capture: true },
       );
@@ -218,6 +226,11 @@ for (const viewport of [
         ),
       )
       .toBeLessThan(3);
+    await recordUiCapture(
+      page,
+      `public-share-expanded-${viewport.width}`,
+      viewport,
+    );
   });
 }
 

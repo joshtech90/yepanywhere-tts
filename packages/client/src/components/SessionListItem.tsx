@@ -23,6 +23,10 @@ import {
 import { useOptionalToastContext } from "../contexts/ToastContext";
 import { useI18n } from "../i18n";
 import { activityBus } from "../lib/activityBus";
+import {
+  sessionReadShortcut,
+  setSessionUnread,
+} from "../lib/sessionReadActions";
 import { toBrowserAppHref } from "../lib/appHref";
 import { formatBriefAge, formatSessionHoverAge } from "../lib/sessionAge";
 import {
@@ -390,19 +394,20 @@ export function SessionListItem({
     }
   };
 
-  const handleToggleRead = async () => {
-    const newHasUnread = !hasUnread;
+  const handleSetUnread = async (newHasUnread: boolean) => {
     try {
-      if (newHasUnread) {
-        await api.markSessionUnread(sessionId);
-      } else {
-        await api.markSessionSeen(sessionId);
-      }
+      await setSessionUnread(sessionId, newHasUnread);
       onToggleRead?.();
+      showToast?.(
+        newHasUnread ? t("sessionMarkedUnread") : t("sessionMarkedRead"),
+        "success",
+      );
     } catch (err) {
       console.error("Failed to update read status:", err);
+      showToast?.(t("sessionReadFailed"), "error");
     }
   };
+  const handleToggleRead = () => handleSetUnread(!hasUnread);
 
   const handleCopyPrompt = useCallback(() => {
     if (!copyPromptText) return;
@@ -766,6 +771,13 @@ export function SessionListItem({
     [],
   );
 
+  const handleSessionContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLAnchorElement>) => {
+      if (showHoverCard) event.preventDefault();
+    },
+    [showHoverCard],
+  );
+
   const handleSessionAuxClick = useCallback(
     (e: React.MouseEvent<HTMLAnchorElement>) => {
       if (e.button !== 1) return;
@@ -806,6 +818,13 @@ export function SessionListItem({
     <li
       ref={liRef}
       className={liClasses}
+      onKeyDown={(event) => {
+        const unread = sessionReadShortcut(event.nativeEvent);
+        if (unread === null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void handleSetUnread(unread);
+      }}
       onPointerEnter={
         showHoverCard ? (e) => handlePreviewPointer(e, enterPreview) : undefined
       }
@@ -879,6 +898,7 @@ export function SessionListItem({
             onClick={handleSessionClick}
             onMouseDown={handleSessionMouseDown}
             onAuxClick={handleSessionAuxClick}
+            onContextMenu={handleSessionContextMenu}
             className={`session-list-item__link ${
               mode === "compact" ? styles.compactLink : ""
             }`}
@@ -1132,6 +1152,7 @@ export function SessionListItem({
           onClick={handleSessionClick}
           onMouseDown={handleSessionMouseDown}
           onAuxClick={handleSessionAuxClick}
+          onContextMenu={handleSessionContextMenu}
         >
           {compactTrailing}
         </Link>

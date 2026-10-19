@@ -20,6 +20,7 @@ import {
   TAB_CREDENTIAL_OWNER_KEY,
   REMOTE_CREDENTIALS_KEY,
 } from "./storageKeys";
+import { notifySavedHostsWritten } from "./savedHostsWritten";
 import { generateUUID } from "./uuid";
 import { resumeScopeKey, type ResumeScope } from "./rejectedResumeStorage";
 
@@ -89,6 +90,7 @@ export function loadSavedHosts(): SavedHostsStorage {
 function saveSavedHosts(data: SavedHostsStorage): void {
   try {
     localStorage.setItem(SAVED_HOSTS_KEY, JSON.stringify(data));
+    notifySavedHostsWritten();
   } catch {
     // Ignore storage errors
   }

@@ -6,6 +6,35 @@
 
 Topic: relay-origin-and-share-gating
 
+## Relay Browser Origin Admission
+
+The relay applies the same allowlist to `/ws` and `/mux` upgrades and HTTP
+CORS, including preflights. Present disallowed WebSocket origins receive 403
+before upgrade; disallowed HTTP origins receive no CORS allow-origin header.
+Missing WebSocket `Origin` remains allowed for server, CLI and native clients.
+An empty, opaque `null`, or malformed origin is refused by a restricted policy.
+
+Production defaults admit `https://yepanywhere.com`, its HTTPS subdomains,
+`https://ya.graehl.org`, and the experimental Chrome client origin
+`chrome-extension://dgeameddpnggdeenoekpiaacfghdodch`. Chrome extension entries
+must use that exact scheme and a lowercase 32-character id in `a`–`p`.
+Extension wildcards, credentials, ports, paths (including a trailing slash),
+queries, fragments and other extension schemes are refused. Admitting one
+extension never admits another extension or an opaque `null` origin.
+
+`RELAY_ALLOWED_ORIGINS` is a comma-separated override, replacing the defaults
+when nonempty. It supports exact HTTP(S) origins, HTTP(S) wildcard subdomains
+and exact Chrome extension origins. Existing explicit `*` allow-all behavior
+is retained; an unset or blank value uses production defaults. Adding a
+production extension does not widen an operator's explicit allowlist.
+
+Origin admission reduces browser abuse and provides reachability; it creates
+no principal, credential or grant. Non-browser callers can spoof Origin.
+Normal Remote Access continues to authenticate through SRP and encrypt through
+NaCl. The store identity is pinned in the public
+[extension identity](../docs/distribution/chrome-extension/identity.json);
+client packaging and store publication remain experimental pending work.
+
 ## Public Share Authorization
 
 Public shares are bearer-link read-only views. New links use a 128-bit CSPRNG
@@ -167,6 +196,18 @@ chunk request and uses the existing runtime-validated raw-json response.
 Unmarked links make neither metadata nor chunk requests. The capability says
 nothing about live pagination, general relay streaming, public-share
 encryption, management, or relay multiplexing.
+
+For a live share, the metadata request may instead add
+`public-share-live-session-chunks-v1`. The server then serializes the current
+live session exactly as the one-response route would, compresses it, and holds
+it in memory for that viewer as a transient revision. The viewer pulls it with
+the same chunk protocol and keeps the share live; later updates use the
+existing incremental one-response route. A newer metadata request from the
+same viewer replaces its snapshot, the final chunk releases it, and it expires
+with viewer presence (120 s). Total retained snapshot bytes are capped at
+64 MiB, evicting the oldest; an evicted or expired transfer returns a
+retryable 409 and the viewer reloads. A session over the 64 MiB compressed or
+decompressed ceiling gets no capability and keeps the capped raw-json path.
 
 A pre-auth WebSocket selects one lifetime mode. The first public-share read
 locks it to public-read-only, while any SRP control attempt locks it to SRP even
@@ -345,8 +386,12 @@ the live edge, and scrolling away exposes **Follow** beside the floating
 Conversation control. Frozen shares have no Follow action because their
 transcript cannot advance. See [conversation-view.md](conversation-view.md).
 
-Image attachment chips load on hover or open through the existing share-scoped
-raw-file endpoint, using the link's relay and viewer identity. They never use
+Image attachment chips load their thumbnail once within a screen of the
+viewport (and on hover or open) through the existing share-scoped raw-file
+endpoint, using the link's relay and viewer identity: a viewer never has the
+uploader's cached thumbnail, so waiting for a click left only placeholders.
+Share viewers also start with inline media expanded, so an agent's image reads
+show when their row is opened. Chips never use
 the viewer's private upload endpoint or owner-side attachment cache. An absent
 or unauthorized attachment remains unavailable; it does not fall back to
 authenticated access.

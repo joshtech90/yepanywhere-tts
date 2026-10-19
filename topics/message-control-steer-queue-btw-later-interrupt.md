@@ -55,7 +55,8 @@ Rationale:
 | Any queue path | Route | `deferred` | Messages are inserted through YA-managed deferred delivery, not as direct steering. |
 | `Ctrl+Enter` alternate send | opposite of the visible Enter/default action | `steer` or `deferred` | In active steering sessions, Enter and `Ctrl+Enter` are complementary: one steers now, the other regular-queues. Patient is not the alternate-send shortcut. |
 | `Ctrl+Enter` with visible Project Queue action and enabled Project Queue shortcut | Project Queue | `deferred` metadata on a Project Queue item | Project Queue is a higher-level backlog. When the user has exposed that action and enabled its shortcut, `Ctrl+Enter` chooses the project-level queue instead of per-session queue/steer. |
-| Patient queue setting enabled for a new queued item | Queue action | `patient` | Per-item patient intent waits for the quiet/verified-idle patience threshold before delivery. This is a super-delay queue option, independent of provider steering support. |
+| Patient queue setting enabled for a new queued item | Queue action | `patient` | Claude waits for verified idle and the per-item quiet interval. Other providers retain ordinary turn-end timing. Steering is unaffected. |
+| Any busy session with the toolbar action shown | **Next topic when done** | `patient` with `patientSource: "topic-shift"` | Same waiting as patient queue, plus optional compaction first at its own threshold. See [patient topic shifts](patient-topic-shift.md). |
 | Queued chip on steering-capable active turn | `Steer now` | `steer` | User explicitly overrides queued/patient waiting and injects the queued item into the active turn. |
 | Current-session Project Queue row | `Steer now` | Project Queue force promotion with `steer` metadata | User explicitly resumes global Project Queue dispatch, bypasses quiet/idle blockers, and injects the selected project item into its active target session. |
 | `/btw` explicit route | Aside control | separate aside session | Not a queue path and not `steer`. |
@@ -69,6 +70,11 @@ Rationale:
 - Patient queue sends attach `deliveryIntent: "patient"` and keep their own
   accepted queue timestamp/metadata. Changing the patient setting later does
   not mutate already queued items.
+- Claude's patient timing waits for provider-retained background work to end
+  and then for a quiet interval (two seconds by default). Codex background
+  work is recorded without retaining the session, so its patient entries use
+  ordinary deferred timing. Patient intent still gives those entries durable
+  restart preservation. See [provider work](provider-wait-and-background-work.md).
 - `Steer now` on an existing queued chip strips one recognized patient prefix
   before steering for legacy queued items, because the user has explicitly
   overridden old prompt-visible "when done" wording with "now".

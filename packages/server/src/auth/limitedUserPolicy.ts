@@ -96,6 +96,7 @@ const DENIED_PREFIXES: readonly string[] = [
   "/api/local-image",
   "/api/file-edit",
   "/api/artifacts",
+  "/api/artifact-previews",
   "/api/glossary-artifacts",
   "/api/debug",
   "/api/dev",
@@ -206,6 +207,7 @@ const JOIN_SESSION_ACTIONS = new Set([
   // that file's directory, confined by the route to the session's project
   // and sandbox temp (routes/session-path-scope.ts).
   "artifacts",
+  "artifact-previews",
 ]);
 
 /**

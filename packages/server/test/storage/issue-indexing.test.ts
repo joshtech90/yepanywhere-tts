@@ -688,11 +688,17 @@ it("skips a republished catalog that has not changed, and still sweeps on demand
   expect(enumerations).toBe(4);
 });
 
-it("reads a reference straddling a capture chunk boundary", async () => {
+it("reads a reference straddling a capture chunk boundary, and none in a code block opened chunks earlier", async () => {
   // The reference starts five bytes before the 32 KiB boundary and ends after
   // it, so only a chunk that reads past its own range sees it whole; the chunk
-  // that starts after it does not own it and would never file it.
-  const text = `${"x".repeat(32 * 1024 - 6)} https://github.com/a/b/pull/42 tail`;
+  // that starts after it does not own it and would never file it. The sample
+  // URL lies two chunks past its fence's opening line, beyond any overlap.
+  const text = `${"x".repeat(32 * 1024 - 6)} https://github.com/a/b/pull/42 tail
+\`\`\`json
+${"y".repeat(40 * 1024)}
+{"content":"See https://github.com/o/r/pull/12"}
+\`\`\`
+`;
   const service = new DiscoverySqliteService({
     dataDir: directory(),
   });
@@ -730,6 +736,7 @@ it("reads a reference straddling a capture chunk boundary", async () => {
   indexer.refresh();
   await indexer.settled();
   expect(store.list("a/b#42")).toHaveLength(1);
+  expect(store.list("o/r#12")).toHaveLength(0);
 
   // The viewed window captures through the same loop, so it answers the same.
   indexer.observe({ sessionId: "viewed", projectId: "p" }, [

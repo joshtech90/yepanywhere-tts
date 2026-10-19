@@ -81,6 +81,10 @@ minutes.
 - **Cancel (delete).** Issue the delete request; the chip disappears only when
   the next server state no longer contains it. A delete of an already-gone id is
   a no-op.
+- **Composer recall never unqueues.** Queuing leaves focus in the emptied
+  composer, so ↑ and Ctrl+P there are easily pressed by accident. While the
+  last submission is still queued they do nothing; the message stays queued
+  and only the chip's explicit Edit or cancel controls remove it.
 - **Process restart / session stop.** Short-term direct/deferred queue state is
   gone. Persisted patient entries load as `paused-after-restart`; clients
   reflect those server-reported entries on the next sync and never resurrect
