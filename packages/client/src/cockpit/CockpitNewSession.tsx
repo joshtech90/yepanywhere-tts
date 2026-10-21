@@ -1,4 +1,4 @@
-import type { ProviderName, UploadedFile } from "@yep-anywhere/shared";
+import type { ProviderName } from "@yep-anywhere/shared";
 import {
   useEffect,
   useId,
@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../api/client";
+import { api, type SessionOptions } from "../api/client";
 import { isRequestDeadlineError } from "../api/requestDeadline";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import {
@@ -21,7 +21,10 @@ import { useProjects } from "../hooks/useProjects";
 import { useProviders } from "../hooks/useProviders";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useI18n } from "../i18n";
-import { revokeAttachmentPreviewUrls } from "../lib/sessionComposerAttachments";
+import {
+  revokeAttachmentPreviewUrls,
+  type ComposerUploadedAttachment,
+} from "../lib/sessionComposerAttachments";
 import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
 import { createSessionNavigationState } from "../lib/sessionNavigationState";
 import {
@@ -264,6 +267,77 @@ export function CockpitNewSession({
     );
   };
 
+  /**
+   * Files go into the session's own folder, so the session is created first,
+   * the files follow and the first message carries them, as on the classic
+   * form. A failed upload leaves the form filled for another try.
+   */
+  const startWithFiles = async (
+    targetProjectId: string,
+    text: string,
+    options: SessionOptions,
+  ): Promise<
+    Awaited<ReturnType<typeof api.createSession>> & {
+      model?: string;
+      provider?: ProviderName;
+    }
+  > => {
+    const created = await api.createSession(targetProjectId, options);
+    const imageProfile = getAttachmentUploadProfile(
+      attachmentQuality,
+      providerInfo,
+      options.model,
+    );
+    const uploaded: ComposerUploadedAttachment[] = [];
+    try {
+      for (const item of files) {
+        try {
+          // Without a staging batch the upload lands in the session folder.
+          uploaded.push(
+            (await uploadComposerAttachmentFile({
+              file: item.file,
+              sourceTransport: runtime.transport,
+              projectId: created.projectId,
+              sessionId: created.sessionId,
+              imageProfile,
+              onProgress: (bytesUploaded, uploadFile) => {
+                if (!mountedRef.current) return;
+                setUploadProgress((current) => ({
+                  ...current,
+                  [item.id]: Math.round(
+                    (bytesUploaded / Math.max(uploadFile.size, 1)) * 100,
+                  ),
+                }));
+              },
+            })) as ComposerUploadedAttachment,
+          );
+        } catch (uploadError) {
+          throw new Error(
+            t("newSessionUploadError", {
+              message:
+                uploadError instanceof Error
+                  ? uploadError.message
+                  : String(uploadError),
+            }),
+          );
+        }
+      }
+      await api.queueMessage(
+        created.sessionId,
+        text,
+        options.mode,
+        uploaded,
+        undefined,
+        options.thinking,
+        undefined,
+        Date.now(),
+      );
+    } finally {
+      revokeAttachmentPreviewUrls(uploaded);
+    }
+    return created;
+  };
+
   const start = async () => {
     if (!canStart || !choices) return;
     setStarting(true);
@@ -276,13 +350,17 @@ export function CockpitNewSession({
       }
       if (!targetProjectId) throw new Error(t("newSessionProjectNotFound"));
       const text = message.trim();
-      const result = await api.startSession(
-        targetProjectId,
-        text,
-        launchOptions(choices),
-        undefined,
-        Date.now(),
-      );
+      const options = launchOptions(choices);
+      const result =
+        files.length > 0
+          ? await startWithFiles(targetProjectId, text, options)
+          : await api.startSession(
+              targetProjectId,
+              text,
+              options,
+              undefined,
+              Date.now(),
+            );
       const remembered = rememberLaunch(defaults, choices.effective, legacy);
       if (remembered) {
         void updateSetting("newSessionDefaults", remembered).catch(() => {});
@@ -315,6 +393,7 @@ export function CockpitNewSession({
             ? err.message
             : t("newSessionStartError"),
       );
+      setUploadProgress({});
       setStarting(false);
     }
   };
@@ -340,6 +419,7 @@ export function CockpitNewSession({
   return (
     <>
       <form
+        {...attachmentDrop.handlers}
         aria-labelledby="cockpit-new-session-title"
         className={styles.root}
         onSubmit={submit}
@@ -516,12 +596,69 @@ export function CockpitNewSession({
             rows={5}
             value={message}
           />
+          {files.length > 0 && (
+            <ul
+              aria-label={t("toolbarAttachFiles")}
+              className={styles.attachments}
+            >
+              {files.map((item) => (
+                <li key={item.id}>
+                  <span className={styles.fileMark} aria-hidden="true">
+                    +
+                  </span>
+                  <span className={styles.fileName} title={item.file.name}>
+                    {item.file.name}
+                  </span>
+                  {uploadProgress[item.id] !== undefined && (
+                    <span className={styles.fileStatus}>
+                      {uploadProgress[item.id]}%
+                    </span>
+                  )}
+                  <button
+                    aria-label={t("attachmentRemove", {
+                      name: item.file.name,
+                    })}
+                    disabled={starting}
+                    onClick={() =>
+                      setFiles((current) =>
+                        current.filter((candidate) => candidate.id !== item.id),
+                      )
+                    }
+                    type="button"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           {error && (
             <p className={styles.error} role="alert">
               {error}
             </p>
           )}
           <div className={styles.actions}>
+            <input
+              className={styles.fileInput}
+              multiple
+              onChange={(event) => {
+                attachFiles(Array.from(event.target.files ?? []));
+                event.target.value = "";
+              }}
+              ref={fileInputRef}
+              tabIndex={-1}
+              type="file"
+            />
+            <button
+              aria-label={t("toolbarAttachFiles")}
+              className={`${styles.iconButton} ${styles.attachButton}`}
+              disabled={starting}
+              onClick={() => fileInputRef.current?.click()}
+              title={t("cockpitComposerAttachmentHint")}
+              type="button"
+            >
+              <PaperClipIcon />
+            </button>
             <button
               className={styles.secondary}
               disabled={starting}
@@ -541,6 +678,10 @@ export function CockpitNewSession({
             </button>
           </div>
         </section>
+        <CockpitAttachmentDropCue
+          label={t("cockpitComposerDropFiles")}
+          visible={attachmentDrop.draggingFiles}
+        />
       </form>
       {/* Beside the form: the menu's rename field is a form of its own, and
           Enter in the picker's filter must not start the session. */}

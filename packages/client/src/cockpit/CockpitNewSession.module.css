@@ -1,4 +1,5 @@
 .root {
+  position: relative;
   display: grid;
   width: min(100%, 44rem);
   margin: 0 auto;
@@ -235,6 +236,80 @@
   opacity: 0.5;
 }
 
+.fileInput {
+  display: none;
+}
+
+/* The paper clip sits apart from Cancel and Start. */
+.attachButton {
+  margin-right: auto;
+}
+
+.attachments {
+  display: flex;
+  margin: -0.4rem 0 0;
+  padding: 0;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  list-style: none;
+}
+
+.attachments li {
+  display: flex;
+  min-width: 0;
+  max-width: min(100%, 21rem);
+  min-height: 2.25rem;
+  padding: 0.22rem 0.28rem 0.22rem 0.45rem;
+  align-items: center;
+  gap: 0.38rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-md);
+  background: var(--cockpit-surface);
+}
+
+.fileMark {
+  color: var(--cockpit-accent);
+  font-weight: var(--cockpit-weight-bold);
+}
+
+.fileName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileStatus {
+  color: var(--cockpit-faint);
+  font-size: var(--cockpit-text-2xs);
+}
+
+.attachments button {
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0 0.45rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface-raised);
+  font: inherit;
+  font-size: var(--cockpit-text-xs);
+  cursor: pointer;
+}
+
+.attachments button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.attachments button:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
 .srOnly {
   position: absolute;
   width: 1px;
@@ -266,5 +341,15 @@
 
   .actions > * {
     flex: 1;
+  }
+
+  .actions > .attachButton {
+    flex: none;
+  }
+
+  /* Phones get a full-size tap target to remove a file. */
+  .attachments button {
+    min-width: 2.4rem;
+    min-height: 2.4rem;
   }
 }

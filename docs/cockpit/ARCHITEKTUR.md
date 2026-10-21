@@ -431,6 +431,16 @@ beliebiges Clipboard-HTML wird nicht als Anhang interpretiert. Upload,
 Bildverkleinerung, Fortschritt, Abbruch und Wiederholung bleiben Besitzer der
 vorhandenen Composer-Pipeline.
 
+Das Formular „Neue Sitzung“ nimmt Dateien fuer die erste Nachricht ueber
+Bueroklammer, Drag-and-drop auf das ganze Formular und Datei-Paste an
+(Joscha 21.10.2026). Bis zum Start bleiben sie nur im Browser, weil Uploads den
+Ordner der Sitzung brauchen. Mit Dateien startet das Formular wie die klassische
+Oberflaeche zweistufig: Sitzung ohne Nachricht anlegen, Dateien ueber denselben
+Upload-Helfer samt Bildverkleinerung hochladen, dann die erste Nachricht mit den
+Anhaengen senden. Schlaegt ein Upload fehl, bleibt das Formular mit Text und
+Dateien stehen und zeigt den Fehler; die angelegte, leere Sitzung wird nicht
+wiederverwendet. Ohne Dateien bleibt es beim einstufigen Start.
+
 Abgeschickte Nachrichten, die der Provider noch nicht uebernommen hat, bleiben
 am Ende des Verlaufs sichtbar (Joscha 02.10.2026): Pending-Echos als
 „Wird gesendet …“, Eintraege der Deferred Queue als „In der Warteschlange“ mit
