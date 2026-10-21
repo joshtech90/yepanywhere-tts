@@ -1,4 +1,7 @@
-import type { ProviderName } from "@yep-anywhere/shared";
+import type {
+  ImagePreparationProfile,
+  ProviderName,
+} from "@yep-anywhere/shared";
 import {
   useEffect,
   useId,
@@ -11,7 +14,6 @@ import {
 import { useNavigate } from "react-router-dom";
 import { api, type SessionOptions } from "../api/client";
 import { isRequestDeadlineError } from "../api/requestDeadline";
-import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import {
   getAttachmentUploadProfile,
   useAttachmentUploadQuality,
@@ -27,6 +29,9 @@ import {
 } from "../lib/sessionComposerAttachments";
 import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
 import { createSessionNavigationState } from "../lib/sessionNavigationState";
+import { getSourceRuntimeRegistry } from "../lib/sourceRuntime";
+import type { SourceTransport } from "../lib/transport";
+import type { PermissionMode } from "../types";
 import {
   CockpitAttachmentDropCue,
   useCockpitAttachmentDropTarget,
@@ -61,6 +66,7 @@ import {
   projectForFolder,
   removeFavorite,
 } from "./core/projectFavorites";
+import { COCKPIT_UPLOAD_STALL_MS } from "./useCockpitComposer";
 
 function FolderIcon() {
   return (
@@ -92,6 +98,82 @@ const OTHER_FOLDER = "\0other";
 interface CockpitNewSessionFile {
   id: string;
   file: File;
+}
+
+interface CockpitCreatedSession {
+  sessionId: string;
+  processId: string;
+  projectId: string;
+  permissionMode: PermissionMode;
+  appliedPermissionMode?: PermissionMode;
+  modeVersion: number;
+  recapAfterSeconds?: number;
+  model?: string;
+  provider?: ProviderName;
+}
+
+/**
+ * One upload into a session folder that gives up once no bytes have moved for
+ * a while: the shared transport can wait forever on a sleeping host, and the
+ * form would then stay at "Starting" with every button disabled.
+ */
+function uploadWithStallGuard(
+  file: File,
+  transport: SourceTransport,
+  options: {
+    projectId: string;
+    sessionId: string;
+    imageProfile: ImagePreparationProfile;
+    stalledMessage: string;
+    onProgress: (percent: number) => void;
+  },
+): Promise<ComposerUploadedAttachment> {
+  return new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    // Armed only once bytes go to the host, so shrinking a photo first never
+    // counts as a stall.
+    const armStallTimer = () => {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(options.stalledMessage));
+      }, COCKPIT_UPLOAD_STALL_MS);
+    };
+    uploadComposerAttachmentFile({
+      file,
+      sourceTransport: {
+        upload: (...args) => {
+          armStallTimer();
+          return transport.upload(...args);
+        },
+        uploadStagedAttachment: (...args) => {
+          armStallTimer();
+          return transport.uploadStagedAttachment(...args);
+        },
+      },
+      projectId: options.projectId,
+      sessionId: options.sessionId,
+      imageProfile: options.imageProfile,
+      signal: controller.signal,
+      onProgress: (bytesUploaded, uploadFile) => {
+        armStallTimer();
+        options.onProgress(
+          Math.round((bytesUploaded / Math.max(uploadFile.size, 1)) * 100),
+        );
+      },
+    })
+      .then((uploaded) => {
+        const attachment = uploaded as ComposerUploadedAttachment;
+        // A stalled attempt that still finishes only frees its preview.
+        if (controller.signal.aborted) {
+          revokeAttachmentPreviewUrls([attachment]);
+          return;
+        }
+        resolve(attachment);
+      }, reject)
+      .finally(() => clearTimeout(stallTimer));
+  });
 }
 
 /** Home prefixes shortened so the folder list stays readable on a phone. */
@@ -153,7 +235,6 @@ export function CockpitNewSession({
   );
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const runtime = useCurrentSourceRuntime();
   const [attachmentQuality] = useAttachmentUploadQuality();
   const messageRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -270,19 +351,37 @@ export function CockpitNewSession({
   /**
    * Files go into the session's own folder, so the session is created first,
    * the files follow and the first message carries them, as on the classic
-   * form. A failed upload leaves the form filled for another try.
+   * form. A failed upload leaves the form filled for another try. All three
+   * steps use the host chosen at the start, even if the view switches hosts
+   * meanwhile.
    */
   const startWithFiles = async (
     targetProjectId: string,
     text: string,
     options: SessionOptions,
-  ): Promise<
-    Awaited<ReturnType<typeof api.createSession>> & {
-      model?: string;
-      provider?: ProviderName;
+  ): Promise<CockpitCreatedSession> => {
+    const { transport } = getSourceRuntimeRegistry().getCurrentSourceRuntime();
+    const created = await transport.fetch<
+      CockpitCreatedSession | { queued: true; queueId: string }
+    >(`/projects/${targetProjectId}/sessions/create`, {
+      method: "POST",
+      body: JSON.stringify({
+        mode: options.mode,
+        model: options.model,
+        thinking: options.thinking,
+        provider: options.provider,
+      }),
+    });
+    // A host at its worker limit queues the creation instead; withdraw it
+    // rather than leave a session that would start later without the files.
+    if ("queued" in created) {
+      void transport
+        .fetch(`/queue/${encodeURIComponent(created.queueId)}`, {
+          method: "DELETE",
+        })
+        .catch(() => {});
+      throw new Error(t("newSessionServerBusy"));
     }
-  > => {
-    const created = await api.createSession(targetProjectId, options);
     const imageProfile = getAttachmentUploadProfile(
       attachmentQuality,
       providerInfo,
@@ -292,24 +391,20 @@ export function CockpitNewSession({
     try {
       for (const item of files) {
         try {
-          // Without a staging batch the upload lands in the session folder.
           uploaded.push(
-            (await uploadComposerAttachmentFile({
-              file: item.file,
-              sourceTransport: runtime.transport,
+            await uploadWithStallGuard(item.file, transport, {
               projectId: created.projectId,
               sessionId: created.sessionId,
               imageProfile,
-              onProgress: (bytesUploaded, uploadFile) => {
+              stalledMessage: t("cockpitUploadStalled"),
+              onProgress: (percent) => {
                 if (!mountedRef.current) return;
                 setUploadProgress((current) => ({
                   ...current,
-                  [item.id]: Math.round(
-                    (bytesUploaded / Math.max(uploadFile.size, 1)) * 100,
-                  ),
+                  [item.id]: percent,
                 }));
               },
-            })) as ComposerUploadedAttachment,
+            }),
           );
         } catch (uploadError) {
           throw new Error(
@@ -322,16 +417,16 @@ export function CockpitNewSession({
           );
         }
       }
-      await api.queueMessage(
-        created.sessionId,
-        text,
-        options.mode,
-        uploaded,
-        undefined,
-        options.thinking,
-        undefined,
-        Date.now(),
-      );
+      await transport.fetch(`/sessions/${created.sessionId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({
+          message: text,
+          mode: options.mode,
+          attachments: uploaded,
+          thinking: options.thinking,
+          clientTimestamp: Date.now(),
+        }),
+      });
     } finally {
       revokeAttachmentPreviewUrls(uploaded);
     }

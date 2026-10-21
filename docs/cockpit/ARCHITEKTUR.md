@@ -437,9 +437,14 @@ Bueroklammer, Drag-and-drop auf das ganze Formular und Datei-Paste an
 Ordner der Sitzung brauchen. Mit Dateien startet das Formular wie die klassische
 Oberflaeche zweistufig: Sitzung ohne Nachricht anlegen, Dateien ueber denselben
 Upload-Helfer samt Bildverkleinerung hochladen, dann die erste Nachricht mit den
-Anhaengen senden. Schlaegt ein Upload fehl, bleibt das Formular mit Text und
-Dateien stehen und zeigt den Fehler; die angelegte, leere Sitzung wird nicht
-wiederverwendet. Ohne Dateien bleibt es beim einstufigen Start.
+Anhaengen senden. Alle drei Schritte laufen ueber den Rechner, der beim Start
+aktiv war, auch wenn die Ansicht inzwischen den Rechner wechselt. Ein Upload,
+der 30 Sekunden keine Bytes bewegt, gilt wie im Sitzungs-Composer als
+gescheitert. Schlaegt ein Upload fehl, bleibt das Formular mit Text und Dateien
+stehen und zeigt den Fehler; die angelegte, leere Sitzung wird nicht
+wiederverwendet. Reiht ein ausgelasteter Rechner das Anlegen nur ein, zieht das
+Formular die Anfrage zurueck und meldet „Server beschaeftigt“, statt ohne
+Sitzung hochzuladen. Ohne Dateien bleibt es beim einstufigen Start.
 
 Abgeschickte Nachrichten, die der Provider noch nicht uebernommen hat, bleiben
 am Ende des Verlaufs sichtbar (Joscha 02.10.2026): Pending-Echos als
