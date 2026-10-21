@@ -80,7 +80,7 @@ function StarIcon() {
 
 function PaperClipIcon() {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
+    <svg className={styles.attachIcon} viewBox="0 0 24 24" aria-hidden="true">
       <path d="m19 11.5-7.1 7.1a4.6 4.6 0 0 1-6.5-6.5l7.8-7.8a3.1 3.1 0 0 1 4.4 4.4l-7.8 7.8a1.5 1.5 0 0 1-2.1-2.1l7.1-7.1" />
     </svg>
   );
@@ -596,48 +596,7 @@ export function CockpitNewSession({
             rows={5}
             value={message}
           />
-          {files.length > 0 && (
-            <ul
-              aria-label={t("toolbarAttachFiles")}
-              className={styles.attachments}
-            >
-              {files.map((item) => (
-                <li key={item.id}>
-                  <span className={styles.fileMark} aria-hidden="true">
-                    +
-                  </span>
-                  <span className={styles.fileName} title={item.file.name}>
-                    {item.file.name}
-                  </span>
-                  {uploadProgress[item.id] !== undefined && (
-                    <span className={styles.fileStatus}>
-                      {uploadProgress[item.id]}%
-                    </span>
-                  )}
-                  <button
-                    aria-label={t("attachmentRemove", {
-                      name: item.file.name,
-                    })}
-                    disabled={starting}
-                    onClick={() =>
-                      setFiles((current) =>
-                        current.filter((candidate) => candidate.id !== item.id),
-                      )
-                    }
-                    type="button"
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {error && (
-            <p className={styles.error} role="alert">
-              {error}
-            </p>
-          )}
-          <div className={styles.actions}>
+          <div className={styles.attachRow}>
             <input
               className={styles.fileInput}
               multiple
@@ -650,15 +609,57 @@ export function CockpitNewSession({
               type="file"
             />
             <button
-              aria-label={t("toolbarAttachFiles")}
-              className={`${styles.iconButton} ${styles.attachButton}`}
+              className={styles.attachButton}
               disabled={starting}
               onClick={() => fileInputRef.current?.click()}
               title={t("cockpitComposerAttachmentHint")}
               type="button"
             >
               <PaperClipIcon />
+              {t("toolbarAttachFiles")}
             </button>
+            {files.length > 0 && (
+              <ul
+                aria-label={t("toolbarAttachFiles")}
+                className={styles.attachments}
+              >
+                {files.map((item) => (
+                  <li key={item.id}>
+                    <span className={styles.fileName} title={item.file.name}>
+                      {item.file.name}
+                    </span>
+                    {uploadProgress[item.id] !== undefined && (
+                      <span className={styles.fileStatus}>
+                        {uploadProgress[item.id]}%
+                      </span>
+                    )}
+                    <button
+                      aria-label={t("attachmentRemove", {
+                        name: item.file.name,
+                      })}
+                      disabled={starting}
+                      onClick={() =>
+                        setFiles((current) =>
+                          current.filter(
+                            (candidate) => candidate.id !== item.id,
+                          ),
+                        )
+                      }
+                      type="button"
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {error && (
+            <p className={styles.error} role="alert">
+              {error}
+            </p>
+          )}
+          <div className={styles.actions}>
             <button
               className={styles.secondary}
               disabled={starting}

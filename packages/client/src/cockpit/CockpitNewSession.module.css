@@ -26,6 +26,7 @@
 
 .card {
   display: grid;
+  min-width: 0;
   padding: clamp(0.95rem, 3vw, 1.35rem);
   gap: 1.1rem;
   border: 1px solid var(--cockpit-border);
@@ -240,16 +241,65 @@
   display: none;
 }
 
-/* The paper clip sits apart from Cancel and Start. */
+/* The files for the first message sit beside the button that adds them. */
+.attachRow {
+  display: flex;
+  min-width: 0;
+  margin-top: -0.4rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
 .attachButton {
-  margin-right: auto;
+  display: inline-flex;
+  min-height: 2.25rem;
+  padding: 0 0.7rem;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
+  cursor: pointer;
+}
+
+.attachButton:hover:not(:disabled) {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.attachButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.attachButton:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.attachIcon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
 }
 
 /* A long file name shortens with an ellipsis instead of widening the card. */
 .attachments {
   display: flex;
   min-width: 0;
-  margin: -0.4rem 0 0;
+  max-width: 100%;
+  margin: 0;
   padding: 0;
   flex-wrap: wrap;
   gap: 0.4rem;
@@ -261,17 +311,12 @@
   min-width: 0;
   max-width: min(100%, 21rem);
   min-height: 2.25rem;
-  padding: 0.22rem 0.28rem 0.22rem 0.45rem;
+  padding: 0.22rem 0.28rem 0.22rem 0.6rem;
   align-items: center;
   gap: 0.38rem;
   border: 1px solid var(--cockpit-border);
   border-radius: var(--cockpit-radius-md);
   background: var(--cockpit-surface);
-}
-
-.fileMark {
-  color: var(--cockpit-accent);
-  font-weight: var(--cockpit-weight-bold);
 }
 
 .fileName {
@@ -345,8 +390,8 @@
     flex: 1;
   }
 
-  .actions > .attachButton {
-    flex: none;
+  .attachButton {
+    min-height: 2.9rem;
   }
 
   /* Phones get a full-size tap target to remove a file. */
