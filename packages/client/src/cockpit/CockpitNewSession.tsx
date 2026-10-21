@@ -1,4 +1,4 @@
-import type { ProviderName } from "@yep-anywhere/shared";
+import type { ProviderName, UploadedFile } from "@yep-anywhere/shared";
 import {
   useEffect,
   useId,
@@ -11,12 +11,23 @@ import {
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { isRequestDeadlineError } from "../api/requestDeadline";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import {
+  getAttachmentUploadProfile,
+  useAttachmentUploadQuality,
+} from "../hooks/useAttachmentUploadQuality";
 import { useModelSettings } from "../hooks/useModelSettings";
 import { useProjects } from "../hooks/useProjects";
 import { useProviders } from "../hooks/useProviders";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useI18n } from "../i18n";
+import { revokeAttachmentPreviewUrls } from "../lib/sessionComposerAttachments";
+import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
 import { createSessionNavigationState } from "../lib/sessionNavigationState";
+import {
+  CockpitAttachmentDropCue,
+  useCockpitAttachmentDropTarget,
+} from "./CockpitAttachmentDropTarget";
 import { CockpitFolderPicker } from "./CockpitFolderPicker";
 import styles from "./CockpitNewSession.module.css";
 import {
@@ -64,7 +75,21 @@ function StarIcon() {
   );
 }
 
+function PaperClipIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m19 11.5-7.1 7.1a4.6 4.6 0 0 1-6.5-6.5l7.8-7.8a3.1 3.1 0 0 1 4.4 4.4l-7.8 7.8a1.5 1.5 0 0 1-2.1-2.1l7.1-7.1" />
+    </svg>
+  );
+}
+
 const OTHER_FOLDER = "\0other";
+
+/** A file picked for the first message; it uploads once the session exists. */
+interface CockpitNewSessionFile {
+  id: string;
+  file: File;
+}
 
 /** Home prefixes shortened so the folder list stays readable on a phone. */
 function shortPath(path: string): string {
@@ -119,9 +144,29 @@ export function CockpitNewSession({
   const favorites = useCockpitProjectFavorites();
   const favoriteMenu = useCockpitProjectFavoriteMenu(favorites);
   const [message, setMessage] = useState("");
+  const [files, setFiles] = useState<CockpitNewSessionFile[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>(
+    {},
+  );
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const runtime = useCurrentSourceRuntime();
+  const [attachmentQuality] = useAttachmentUploadQuality();
   const messageRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Files stay local until the start: an upload needs the session's folder.
+  const attachFiles = (picked: File[]) => {
+    if (starting || picked.length === 0) return;
+    setFiles((current) => [
+      ...current,
+      ...picked.map((file) => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        file,
+      })),
+    ]);
+    setError(null);
+  };
+  const attachmentDrop = useCockpitAttachmentDropTarget(attachFiles);
   // A start that finishes after this view was left must not navigate back;
   // the session still runs and shows up in the list.
   const mountedRef = useRef(true);
