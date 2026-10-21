@@ -30,3 +30,10 @@ real native Android app completes the same explicit-failure/reselection
 experiments with no uncaught page exception or synthetic server response.
 
 Found 2026-10-07 while extending Android lifecycle comparisons to uploads.
+
+An abort is a second trigger (2026-10-21 review): the Cockpit stall watchdog
+in `useCockpitComposer.ts` and in the new-session form
+(`CockpitNewSession.tsx`) aborts a relay upload whose chunk is waiting on
+backpressure, and `RelayProtocol` rejects its unobserved completion promise
+with `Upload aborted`. The form still shows its stall error; the repair belongs
+in the same owning layer.
