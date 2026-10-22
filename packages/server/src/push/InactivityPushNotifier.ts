@@ -156,19 +156,47 @@ export class InactivityPushNotifier {
     try {
       const projectIds = await this.consumeDirtyProjectIds();
       if (this.disposed) return;
-      const projectEdges: ProjectInactivePayload[] = [];
+      const statuses = new Map<UrlProjectId, ProjectInactiveStatus>();
 
       for (const projectId of projectIds) {
         const status = await this.getProjectInactiveStatus(projectId);
         if (this.disposed) return;
-        const edge = this.updateProjectState(projectId, status);
-        if (edge) {
-          projectEdges.push(edge);
-        }
+        statuses.set(projectId, status);
       }
 
-      const globalEdge = await this.updateGlobalState();
+      const knownProjectIds = await this.getKnownProjectIds();
+      const globalStatuses = await Promise.all(
+        knownProjectIds.map((projectId) =>
+          this.getProjectInactiveStatus(projectId),
+        ),
+      );
       if (this.disposed) return;
+      // A lifecycle event during an awaited observation invalidates the
+      // snapshot's quiet readings, so no edge is consumed until a quiet
+      // observation completes. Activity it saw did happen, though; keep it so
+      // a turn ending mid-observation still arms its quiet edge.
+      if (this.runAgain) {
+        let sawActivity = false;
+        for (const [projectId, status] of statuses) {
+          if (status.inactive) continue;
+          sawActivity = true;
+          this.projectStates.set(projectId, { active: true, seenActive: true });
+        }
+        if (sawActivity || globalStatuses.some((status) => !status.inactive)) {
+          this.globalState = { active: true, seenActive: true };
+        }
+        for (const projectId of projectIds) this.dirtyProjects.add(projectId);
+        return;
+      }
+      const projectEdges: ProjectInactivePayload[] = [];
+      for (const [projectId, status] of statuses) {
+        const edge = this.updateProjectState(projectId, status);
+        if (edge) projectEdges.push(edge);
+      }
+      const globalEdge = this.updateGlobalState(
+        globalStatuses.every((status) => status.inactive),
+        knownProjectIds.length,
+      );
       const yaEnabled =
         this.pushService.isNotificationTypeEnabled("yaInactive");
 
@@ -178,9 +206,9 @@ export class InactivityPushNotifier {
         projectEdges.length > 0 &&
         this.pushService.isNotificationTypeEnabled("projectInactive")
       ) {
-        for (const payload of projectEdges) {
-          await this.sendProjectInactive(payload);
-        }
+        await Promise.all(
+          projectEdges.map((payload) => this.sendProjectInactive(payload)),
+        );
       }
     } catch (error) {
       console.error("[InactivityPushNotifier] Failed inactivity check:", error);
@@ -248,15 +276,10 @@ export class InactivityPushNotifier {
     };
   }
 
-  private async updateGlobalState(): Promise<YaInactivePayload | null> {
-    const knownProjectIds = await this.getKnownProjectIds();
-    const statuses = await Promise.all(
-      knownProjectIds.map((projectId) =>
-        this.getProjectInactiveStatus(projectId),
-      ),
-    );
-    if (this.disposed) return null;
-    const inactive = statuses.every((status) => status.inactive);
+  private updateGlobalState(
+    inactive: boolean,
+    projectCount: number,
+  ): YaInactivePayload | null {
     const previous = this.globalState;
 
     if (!inactive) {
@@ -275,7 +298,7 @@ export class InactivityPushNotifier {
 
     return {
       type: "ya-inactive",
-      projectCount: knownProjectIds.length,
+      projectCount,
       timestamp: new Date().toISOString(),
     };
   }

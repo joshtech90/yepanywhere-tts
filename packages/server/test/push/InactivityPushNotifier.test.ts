@@ -97,6 +97,7 @@ describe("InactivityPushNotifier", () => {
 
   afterEach(() => {
     notifier?.dispose();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -110,6 +111,91 @@ describe("InactivityPushNotifier", () => {
     });
     return notifier;
   }
+
+  it("rechecks activity arriving during observation without consuming the later quiet edge", async () => {
+    vi.useFakeTimers();
+    const process = createProcess(projectId, { state: { type: "in-turn" } });
+    supervisor.processes = [process];
+    const emit = () =>
+      eventBus.emit({
+        type: "process-state-changed",
+        sessionId: process.sessionId,
+        projectId,
+        activity: process.state.type === "idle" ? "idle" : "in-turn",
+        timestamp: new Date().toISOString(),
+      });
+    let resumeDuringObservation = false;
+    notifier = new InactivityPushNotifier({
+      eventBus,
+      pushService,
+      supervisor,
+      debounceMs: 1,
+      externalTracker: {
+        getExternalSessions: () => ["external-1"],
+        getExternalSessionInfoWithUrlId: async () => {
+          if (resumeDuringObservation) {
+            resumeDuringObservation = false;
+            process.state = { type: "in-turn" };
+            emit();
+          }
+          return null;
+        },
+      },
+    });
+    emit();
+    await vi.advanceTimersByTimeAsync(1);
+    process.state = { type: "idle" };
+    resumeDuringObservation = true;
+    emit();
+    await vi.advanceTimersByTimeAsync(2);
+    expect(pushService.sendToAll).not.toHaveBeenCalled();
+    process.state = { type: "idle" };
+    emit();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pushService.sendToAll).toHaveBeenCalledTimes(1);
+    expect(pushService.sendToAll).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "ya-inactive" }),
+    );
+  });
+
+  it("keeps activity seen by an invalidated observation for the quiet edge", async () => {
+    vi.useFakeTimers();
+    const process = createProcess(projectId, { state: { type: "in-turn" } });
+    supervisor.processes = [process];
+    const emit = () =>
+      eventBus.emit({
+        type: "process-state-changed",
+        sessionId: process.sessionId,
+        projectId,
+        activity: process.state.type === "idle" ? "idle" : "in-turn",
+        timestamp: new Date().toISOString(),
+      });
+    let finishDuringObservation = true;
+    notifier = new InactivityPushNotifier({
+      eventBus,
+      pushService,
+      supervisor,
+      debounceMs: 1,
+      externalTracker: {
+        getExternalSessions: () => ["external-1"],
+        getExternalSessionInfoWithUrlId: async () => {
+          if (finishDuringObservation) {
+            // The turn ends after its in-turn state was already read.
+            finishDuringObservation = false;
+            process.state = { type: "idle" };
+            emit();
+          }
+          return null;
+        },
+      },
+    });
+    emit();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(pushService.sendToAll).toHaveBeenCalledTimes(1);
+    expect(pushService.sendToAll).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "ya-inactive" }),
+    );
+  });
 
   it("cancels an inactivity edge pending when shutdown starts", async () => {
     const process = createProcess(projectId, { state: { type: "in-turn" } });

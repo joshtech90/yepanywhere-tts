@@ -18,7 +18,7 @@
 // Version constant for controlled updates
 // Increment this when making intentional SW changes
 // Browsers reinstall SW only when file content changes
-const SW_VERSION = "1.0.13";
+const SW_VERSION = "1.0.14";
 void SW_VERSION;
 const FRONTEND_RELOAD_QUERY_PARAM = "__ya_reload";
 const INCOMING_SHARE_QUERY_PARAM = "__ya_share";
@@ -39,6 +39,80 @@ function assetUrl(path) {
 const settings = {
   notifyInApp: false, // When true, notify even when app is focused (if session not viewed)
 };
+
+// The browser stops an idle worker after seconds, and the push that wakes it
+// starts with the defaults above; pages post settings only when they load.
+// Persist each posted value so a restarted worker presents by the user's
+// choice rather than the default.
+const SETTINGS_DB_NAME = "ya-sw-settings";
+const SETTINGS_STORE_NAME = "settings";
+const settingsPostedThisLifetime = new Set();
+let settingsRestore = null;
+let settingsWrites = Promise.resolve();
+
+function openSettingsDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(SETTINGS_DB_NAME, 1);
+    request.onerror = () => reject(request.error);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(SETTINGS_STORE_NAME, {
+        keyPath: "key",
+      });
+    };
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+function restoreSettings() {
+  settingsRestore ??= (async () => {
+    let db;
+    try {
+      db = await openSettingsDb();
+      const stored = await new Promise((resolve, reject) => {
+        const tx = db.transaction(SETTINGS_STORE_NAME, "readonly");
+        const request = tx.objectStore(SETTINGS_STORE_NAME).getAll();
+        tx.oncomplete = () => resolve(request.result || []);
+        tx.onerror = tx.onabort = () => reject(tx.error);
+      });
+      for (const { key, value } of stored) {
+        // A page that posted during the restore knows better than the disk.
+        if (
+          key in settings &&
+          typeof value === typeof settings[key] &&
+          !settingsPostedThisLifetime.has(key)
+        ) {
+          settings[key] = value;
+        }
+      }
+    } catch {
+      // Without storage the worker falls back to the defaults.
+    } finally {
+      db?.close();
+    }
+  })();
+  return settingsRestore;
+}
+
+function persistSetting(key, value) {
+  // Serialize writes so quick toggles land in the order they were posted.
+  settingsWrites = settingsWrites.then(async () => {
+    let db;
+    try {
+      db = await openSettingsDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(SETTINGS_STORE_NAME, "readwrite");
+        tx.objectStore(SETTINGS_STORE_NAME).put({ key, value });
+        tx.oncomplete = resolve;
+        tx.onerror = tx.onabort = () => reject(tx.error);
+      });
+    } catch {
+      // The in-memory value still applies for this worker lifetime.
+    } finally {
+      db?.close();
+    }
+  });
+  return settingsWrites;
+}
 
 /**
  * Browser connection presence is not a presentation signal. Only a focused
@@ -497,10 +571,18 @@ self.addEventListener("message", async (event) => {
 
   if (event.data?.type === "setting-update") {
     const { key, value } = event.data;
-    // Every mounted settings hook resyncs its value, so log only real changes.
-    if (key in settings && settings[key] !== value) {
-      settings[key] = value;
-      await swLog("info", `Setting updated: ${key} = ${value}`);
+    if (key in settings && typeof value === typeof settings[key]) {
+      settingsPostedThisLifetime.add(key);
+      // Persist even an unchanged value: after a restart the in-memory
+      // default may match the post while the disk still holds the old choice.
+      const persisted = persistSetting(key, value);
+      event.waitUntil?.(persisted);
+      // Every mounted settings hook resyncs its value, so log only real changes.
+      if (settings[key] !== value) {
+        settings[key] = value;
+        await swLog("info", `Setting updated: ${key} = ${value}`);
+      }
+      await persisted;
     }
   }
 
@@ -684,6 +766,7 @@ async function presentPush(data) {
     return self.registration.showNotification("Yep Anywhere", options);
   }
 
+  await restoreSettings();
   const sessionId = data.sessionId;
   const isSessionOpen = Boolean(
     sessionId &&

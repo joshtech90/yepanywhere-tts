@@ -249,8 +249,14 @@ export class PushService {
       this.nativePush?.sendToAll(payload) ?? Promise.resolve([]),
     ]);
 
-    // Clean up invalid subscriptions
-    await this.cleanupInvalidSubscriptions(results, subscriptions);
+    // Clean up invalid subscriptions. The pushes above were already handed
+    // to the transport; a failed save (logged by doSave) must not report
+    // them as undelivered, or callers skip the dismiss that follows them.
+    try {
+      await this.cleanupInvalidSubscriptions(results, subscriptions);
+    } catch {
+      // The in-memory removal still stops sends to the dead endpoint.
+    }
 
     return [...results, ...nativeResults];
   }

@@ -72,9 +72,23 @@ function loadServiceWorker(indexedDB = new IDBFactory()) {
   const setNotifyInApp = (enabled: boolean) => {
     vm.runInContext(`settings.notifyInApp = ${String(enabled)}`, context);
   };
+  // What a page's postMessage delivers, including the worker's waitUntil.
+  const postMessage = async (data: unknown) => {
+    const listener = workerGlobal.addEventListener.mock.calls.find(
+      ([type]) => type === "message",
+    )?.[1] as (event: unknown) => unknown;
+    const pending: Promise<unknown>[] = [];
+    await listener({
+      data,
+      ports: [],
+      waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+    });
+    await Promise.all(pending);
+  };
 
   return {
     handlePush,
+    postMessage,
     setNotifyInApp,
     showNotification,
     windowClients,
@@ -186,6 +200,42 @@ describe("service worker notification presentation", () => {
     await worker.handlePush(pendingInputPayload());
 
     expect(worker.showNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the focused-window opt-in after the worker restarts", async () => {
+    const db = new IDBFactory();
+    await loadServiceWorker(db).postMessage({
+      type: "setting-update",
+      key: "notifyInApp",
+      value: true,
+    });
+    // An idle worker is stopped; the next push starts a fresh instance.
+    const restarted = loadServiceWorker(db);
+    restarted.windowClients.push({
+      focused: true,
+      url: "https://example.test/remote/sessions/session-2",
+    });
+
+    await restarted.handlePush(pendingInputPayload());
+
+    expect(restarted.showNotification).toHaveBeenCalledTimes(1);
+
+    // Turning it off again must also survive the next restart.
+    await restarted.postMessage({
+      type: "setting-update",
+      key: "notifyInApp",
+      value: false,
+    });
+    const again = loadServiceWorker(db);
+    again.windowClients.push({
+      focused: true,
+      url: "https://example.test/remote/sessions/session-2",
+    });
+    await again.handlePush({
+      ...pendingInputPayload(),
+      timestamp: "2026-07-31T12:00:05.000Z",
+    });
+    expect(again.showNotification).not.toHaveBeenCalled();
   });
 
   it("still suppresses the session already visible in a focused window", async () => {
