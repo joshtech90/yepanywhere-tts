@@ -4,11 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   playReadAloud: vi.fn(async () => {}),
   stopReadAloud: vi.fn(),
+  getReadAloudToken: vi.fn<() => string | null>(() => null),
 }));
 
 vi.mock("../lib/readAloud", () => ({
   playReadAloud: mocks.playReadAloud,
   stopReadAloud: mocks.stopReadAloud,
+  getReadAloudToken: mocks.getReadAloudToken,
 }));
 
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
@@ -80,6 +82,7 @@ beforeEach(() => {
   resetCockpitAutoReadCache();
   mocks.playReadAloud.mockClear();
   mocks.stopReadAloud.mockClear();
+  mocks.getReadAloudToken.mockReset().mockReturnValue(null);
 });
 afterEach(() => {
   cleanup();
@@ -176,6 +179,22 @@ describe("useCockpitAutoReadAloud", () => {
     update({ loaded: true });
     settle();
     expect(mocks.playReadAloud).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not restart an answer already started or paused manually", () => {
+    const { result, update } = setup();
+    act(() => result.current.toggle());
+    update({ working: true, entries: [user("u2")] });
+    update({ working: false, entries: [user("u2"), answer("a2", "Result")] });
+    // A manual tap owns this answer before the auto-read settle timer fires.
+    // The token remains set while loading, playing, or paused.
+    mocks.getReadAloudToken.mockReturnValue("a2");
+    settle();
+    expect(mocks.playReadAloud).not.toHaveBeenCalled();
+    mocks.getReadAloudToken.mockReturnValue(null);
+    update({ entries: [user("u2"), answer("a2", "Result updated")] });
+    settle();
+    expect(mocks.playReadAloud).not.toHaveBeenCalled();
   });
 
   it("waits for a final answer that arrives just after the session goes idle", () => {
