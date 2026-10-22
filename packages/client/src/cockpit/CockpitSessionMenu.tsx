@@ -317,6 +317,11 @@ export function CockpitSessionMenu({
     >
       {view === "menu" && (
         <div className={styles.menuList}>
+          {archiveError && (
+            <div role="status" className={styles.error}>
+              {archiveError}
+            </div>
+          )}
           {showPin && (
             <button
               type="button"
