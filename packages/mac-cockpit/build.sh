@@ -17,7 +17,7 @@ AUSGABE="$HIER/build"
 APP="$AUSGABE/Yep Cockpit.app"
 
 [[ -f $ROLLEN ]] || { echo "Fehlt: $ROLLEN" >&2; exit 1; }
-[[ -f $SYMBOL ]] || { echo "Fehlt: $SYMBOL (randlos.py ausfuehren)" >&2; exit 1; }
+[[ -f $SYMBOL ]] || { echo "Fehlt: $SYMBOL (zeichen.py ausfuehren)" >&2; exit 1; }
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
