@@ -1,0 +1,22 @@
+#!/bin/sh
+# Minimal gradlew: delegates to a local gradle if the wrapper JAR is missing.
+# Android Studio regenerates the wrapper on first sync; for CLI use you can run:
+#   gradle wrapper --gradle-version 8.9
+# once, then this script will pick up the real wrapper.
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+JAR="$DIR/gradle/wrapper/gradle-wrapper.jar"
+
+if [ -f "$JAR" ]; then
+    exec "${JAVA_HOME:-/usr}/bin/java" \
+        -classpath "$JAR" \
+        org.gradle.wrapper.GradleWrapperMain "$@"
+elif command -v gradle >/dev/null 2>&1; then
+    echo "gradle-wrapper.jar missing - falling back to system gradle"
+    exec gradle "$@"
+else
+    echo "gradle-wrapper.jar is missing and no 'gradle' is on PATH."
+    echo "Open the project in Android Studio once (it will regenerate the wrapper),"
+    echo "or install Gradle 8.9 and run: gradle wrapper --gradle-version 8.9"
+    exit 1
+fi

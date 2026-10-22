@@ -269,6 +269,63 @@ describe("PushNotifier", () => {
       });
     });
 
+    // The Android app shows these; the relayed payload must fit FCM's 4 KiB.
+    it("carries the session title and a bounded final-answer excerpt", async () => {
+      const timestamp = "2026-01-01T00:00:05.000Z";
+      const longAnswer = `Fertig. ${"Ölwechsel 🛢️ ".repeat(200)}`;
+      const mockProcess = {
+        userTurnVersion: 0,
+        state: { type: "idle", since: new Date(timestamp) } as ProcessState,
+        startedAt: new Date("2026-01-01T00:00:00.000Z"),
+        getMessageHistory: () => [
+          { type: "user", message: { role: "user", content: "Mach" } },
+          {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: longAnswer }],
+            },
+          },
+          { type: "assistant", message: { role: "assistant", content: [] } },
+        ],
+      };
+      vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue(
+        mockProcess as unknown as ReturnType<
+          Supervisor["getProcessForSession"]
+        >,
+      );
+
+      new PushNotifier({
+        eventBus: mockEventBus,
+        pushService: mockPushService,
+        supervisor: mockSupervisor,
+        sessionTitle: async () => "Android-App bauen",
+      });
+      const event: ProcessStateEvent = {
+        type: "process-state-changed",
+        sessionId: "session-1",
+        projectId: testProjectId,
+        activity: "idle",
+        timestamp,
+      };
+      eventHandler?.({ ...event, activity: "in-turn" });
+      eventHandler?.(event);
+
+      await vi.waitFor(() => {
+        expect(mockPushService.sendToAll).toHaveBeenCalled();
+      });
+      const payload = vi.mocked(mockPushService.sendToAll).mock.calls[0][0] as {
+        sessionTitle?: string;
+        lastMessage?: string;
+      };
+      expect(payload.sessionTitle).toBe("Android-App bauen");
+      expect(payload.lastMessage?.startsWith("Fertig. Ölwechsel")).toBe(true);
+      expect(payload.lastMessage?.endsWith("…")).toBe(true);
+      expect(Buffer.byteLength(payload.lastMessage ?? "")).toBeLessThanOrEqual(
+        1003,
+      );
+    });
+
     it("should ignore synthetic idle events from process cleanup", async () => {
       vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue(undefined);
 

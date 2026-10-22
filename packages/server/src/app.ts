@@ -2550,6 +2550,19 @@ export function createApp(options: AppOptions): AppResult {
       pushService: options.pushService,
       supervisor,
       projectDisplayName,
+      sessionTitle: async (projectId, sessionId) =>
+        (
+          await describeCatalogSession(
+            {
+              scanner,
+              readerFactory,
+              sessionIndexService: options.sessionIndexService,
+              sessionMetadataService: options.sessionMetadataService,
+            },
+            projectId,
+            sessionId,
+          )
+        )?.sessionTitle,
     });
   }
 

@@ -38,6 +38,7 @@ import {
 } from "./CockpitAttachmentDropTarget";
 import { CockpitFolderPicker } from "./CockpitFolderPicker";
 import styles from "./CockpitNewSession.module.css";
+import { useCockpitAppShare } from "./useCockpitAppShare";
 import {
   CockpitProjectFavorites,
   useCockpitProjectFavoriteMenu,
@@ -251,6 +252,13 @@ export function CockpitNewSession({
     setError(null);
   };
   const attachmentDrop = useCockpitAttachmentDropTarget(attachFiles);
+  useCockpitAppShare(
+    (text) =>
+      setMessage((current) =>
+        current.trim() ? `${current}\n\n${text}` : text,
+      ),
+    attachFiles,
+  );
   // A start that finishes after this view was left must not navigate back;
   // the session still runs and shows up in the list.
   const mountedRef = useRef(true);

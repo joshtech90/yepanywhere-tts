@@ -80,6 +80,8 @@ export interface PendingInputPayload extends BasePushPayload {
   inputType: "tool-approval" | "user-question";
   /** Brief summary of what needs approval */
   summary: string;
+  /** Display title of the session, when it has one beyond "Untitled" */
+  sessionTitle?: string;
   /** ID of the input request (legacy, no longer used by client) */
   requestId?: string;
 }
@@ -93,6 +95,13 @@ export interface SessionHaltedPayload extends BasePushPayload {
   reason: "completed" | "error" | "idle";
   /** How long the session was running (ms) */
   duration: number;
+  /** Display title of the session, when it has one beyond "Untitled" */
+  sessionTitle?: string;
+  /**
+   * Start of the turn's final assistant text for a completed turn, bounded so
+   * the encrypted payload still fits an FCM data message (4 KiB).
+   */
+  lastMessage?: string;
 }
 
 /** Notification for a project becoming inactive after active work drains. */

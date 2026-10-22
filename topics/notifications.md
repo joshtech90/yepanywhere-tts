@@ -164,6 +164,14 @@ Event selection and presentation are separate controls:
 - Existing browser Web Push payloads already include descriptive project and
   session details. Aligning browser/native privacy controls remains future
   product work rather than an assumed current guarantee.
+- Web Push `pending-input` and `session-halted` payloads carry the optional
+  `sessionTitle` (absent when the session is only "Untitled" or the lookup
+  fails), and a completed `session-halted` carries `lastMessage`: the newest
+  assistant text, whitespace-collapsed and cut to 400 characters and about
+  1000 UTF-8 bytes with a trailing ellipsis. The bound keeps an encrypted,
+  base64url-relayed payload inside a 4 KiB FCM data message (fork Android app,
+  `packages/android-cockpit`). Error halts carry no excerpt. A pending-input
+  push whose request was answered during the title lookup is not sent.
 
 ## Security-Client Alerts
 

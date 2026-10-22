@@ -797,6 +797,55 @@ Fehlermeldung; die Ordnerauswahl und das Eintippen bleiben unveraendert
 nutzbar. Menue und Dialog liegen neben dem Formular, damit Enter dort nie die
 Sitzung startet.
 
+### Android-App „Yep Cockpit“ (22.10.2026)
+
+`packages/android-cockpit` ist wie die Mac-App eine schlanke native Huelle:
+je Rechner (Mac, aihub) eine WebView auf `/cockpit`, Adressen beim Bauen aus
+`AI Worker/hosts/rollen.json`, nur ueber das Tailnet. Die Upstream-App
+`packages/android` passt nicht: sie zeigt die normale Oberflaeche statt des
+Cockpits und pusht nur ueber den oeffentlichen Upstream-Broker.
+
+**Rechner.** Der Rechnerwechsel-Knopf des Cockpits schaltet auf die Ansicht des
+anderen Rechners, statt dessen Cockpit in der aktuellen zu laden. Ein Streifen
+in der Kachelfarbe des Rechners liegt hinter der Statusleiste. Fremde Adressen
+oeffnen im Standardbrowser, nie in einer Ansicht mit Cockpit-Anmeldung.
+Mikrofon (Diktierknopf) gibt die App nur den eigenen Rechnern frei.
+
+**Push.** Die App ist fuer jeden Yep-Server ein gewoehnliches Web-Push-Abo
+(`POST /api/push/subscribe`, `browserProfileId` `android-app-<installation>`).
+Ihr Endpunkt ist die Web-Push-Bruecke des Smartzone-Push-Dienstes auf aihub
+(`/api/push/webpush/yep/<tid>/<rechner>`); die Bruecke reicht den
+verschluesselten Inhalt unveraendert per FCM an genau dieses Geraet. Den
+privaten Schluessel hat nur die App (Android Keystore), Bruecke und Google
+sehen nur den Zeitpunkt. Beim ersten Abo je Rechner schaltet die App die
+Servereinstellung `sessionHalted` („Fertig“-Meldungen) einmal ein; spaeteres
+Abschalten in den Einstellungen bleibt bestehen. Je Sitzung gibt es eine
+Meldung: „Wartet auf dich“ wird von „Fertig“ ersetzt, ein `dismiss` raeumt nur
+eine offene Frage weg. Zeigt die App die Sitzung gerade im Vordergrund, kommt
+keine Meldung; oeffnet Joscha eine Sitzung, verschwindet ihre Meldung.
+Tippen oeffnet genau diese Sitzung im richtigen Rechner.
+
+**Antworten aus der Meldung.** „Fertig“ hat einen Antworten-Knopf. Der Text
+geht wie im Composer an `POST /api/sessions/:id/messages`; ohne laufenden
+Prozess (404) setzt `POST .../resume` die Sitzung ohne Modusangabe fort, der
+Server stellt deren eigenen Modus wieder her. Ergebnis ersetzt die Meldung
+(„Gesendet“ oder „Nicht gesendet, tippen zum Öffnen“).
+
+**Teilen an Yep.** Text, Links und Dateien aus anderen Apps landen nach der
+Rechnerwahl in „Neue Sitzung“. Die App kopiert Dateien in ihren privaten
+Speicher und beantwortet selbst die Adresse
+`/__yep_app/teilen/<id>/<n>` des gewaehlten Rechners; sie haengt
+`{ text, files: [{ url, name, type }] }` an `window.__yepAppShare` und
+sendet das Ereignis `yep-app-share`. `useCockpitAppShare` in „Neue Sitzung“
+leert die Warteschlange beim Einhaengen und bei jedem Ereignis, haengt Text an
+die Nachricht an und laedt nur Dateien unter `/__yep_app/` als Anhaenge.
+Hochgeladen wird wie bisher erst beim Start der Sitzung. Im Browser bleibt die
+Warteschlange leer.
+
+**Schnellstart.** Langes Druecken auf das App-Symbol bietet „Neu · Mac“ und
+„Neu · aihub“. Von aussen (Meldung, Verknuepfung, Teilen) oeffnet die App nur
+Sitzungen mit gepruefter Kennung oder „Neue Sitzung“, nie freie Pfade.
+
 ## Verworfene Alternativen
 
 ### Bestehende UI direkt umgestalten

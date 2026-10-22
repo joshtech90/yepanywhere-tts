@@ -36,6 +36,56 @@ export interface PushNotifierOptions {
   supervisor: Supervisor;
   /** Names the project in a notification; defaults to the path's name. */
   projectDisplayName?: ProjectDisplayNameResolver;
+  /** Resolves the session's display title; notifications omit it otherwise. */
+  sessionTitle?: (
+    projectId: UrlProjectId,
+    sessionId: string,
+  ) => Promise<string | undefined>;
+}
+
+/**
+ * Bounds for the final-answer excerpt. An encrypted, base64url-encoded Web
+ * Push payload relayed as an FCM data message must stay below 4 KiB.
+ */
+const LAST_MESSAGE_MAX_CHARS = 400;
+const LAST_MESSAGE_MAX_BYTES = 1000;
+
+type HistoryEntry = {
+  type?: string;
+  message?: { role?: string; content?: unknown };
+};
+
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block: unknown) => {
+      if (!block || typeof block !== "object") return "";
+      const { type, text } = block as { type?: unknown; text?: unknown };
+      return type === "text" && typeof text === "string" ? text : "";
+    })
+    .join("\n");
+}
+
+/**
+ * The text of the newest assistant message that has any, whitespace-collapsed
+ * and cut to the notification bounds. Undefined when there is none.
+ */
+export function finalAnswerExcerpt(
+  history: readonly HistoryEntry[],
+): string | undefined {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index];
+    if ((entry?.type ?? entry?.message?.role) !== "assistant") continue;
+    const text = textOf(entry?.message?.content).replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    let excerpt = Array.from(text).slice(0, LAST_MESSAGE_MAX_CHARS).join("");
+    while (Buffer.byteLength(excerpt) > LAST_MESSAGE_MAX_BYTES) {
+      excerpt = Array.from(excerpt).slice(0, -20).join("");
+    }
+    return excerpt.length < text.length ? `${excerpt.trimEnd()}…` : excerpt;
+  }
+  return undefined;
 }
 
 interface NotificationState {
@@ -49,6 +99,7 @@ export class PushNotifier {
   private pushService: PushService;
   private supervisor: Supervisor;
   private readonly projectDisplayName: ProjectDisplayNameResolver;
+  private readonly resolveSessionTitle: PushNotifierOptions["sessionTitle"];
   private unsubscribe: (() => void) | null = null;
   /**
    * Track sessions we've sent notifications for (to know when to send
@@ -65,6 +116,7 @@ export class PushNotifier {
     this.pushService = options.pushService;
     this.supervisor = options.supervisor;
     this.projectDisplayName = options.projectDisplayName ?? getProjectName;
+    this.resolveSessionTitle = options.sessionTitle;
 
     // Subscribe to EventBus for process state changes
     this.unsubscribe = this.eventBus.subscribe((event: BusEvent) => {
@@ -140,6 +192,22 @@ export class PushNotifier {
 
     const projectName = this.getProjectName(event.projectId);
     const summary = this.buildSummary(request);
+    // Without a resolver stay synchronous, as delivery was before titles.
+    const sessionTitle =
+      this.resolveSessionTitle &&
+      (await this.getSessionTitle(event.projectId, event.sessionId));
+    // The lookup yielded: an answer in the meantime already sent no dismiss
+    // for a notification that does not exist yet, so do not send a stale one.
+    const current = this.supervisor.getProcessForSession(
+      event.sessionId,
+    )?.state;
+    if (
+      this.disposed ||
+      current?.type !== "waiting-input" ||
+      current.request.id !== request.id
+    ) {
+      return;
+    }
 
     const payload: PendingInputPayload = {
       type: "pending-input",
@@ -150,6 +218,7 @@ export class PushNotifier {
       summary,
       requestId: request.id,
       timestamp: event.timestamp,
+      ...(sessionTitle ? { sessionTitle } : {}),
     };
 
     try {
@@ -190,6 +259,7 @@ export class PushNotifier {
       reason: "completed",
       duration: this.getDurationMs(process.startedAt, event.timestamp),
       timestamp: event.timestamp,
+      lastMessage: this.getFinalAnswerExcerpt(process),
     });
   }
 
@@ -253,6 +323,7 @@ export class PushNotifier {
     reason: SessionHaltedPayload["reason"];
     duration: number;
     timestamp: string;
+    lastMessage?: string;
   }): Promise<void> {
     if (this.pushService.getSubscriptionCount() === 0) {
       return;
@@ -262,6 +333,10 @@ export class PushNotifier {
       return;
     }
 
+    // Without a resolver stay synchronous, as delivery was before titles.
+    const sessionTitle =
+      this.resolveSessionTitle &&
+      (await this.getSessionTitle(input.projectId, input.sessionId));
     const payload: SessionHaltedPayload = {
       type: "session-halted",
       sessionId: input.sessionId,
@@ -270,6 +345,8 @@ export class PushNotifier {
       reason: input.reason,
       duration: input.duration,
       timestamp: input.timestamp,
+      ...(sessionTitle ? { sessionTitle } : {}),
+      ...(input.lastMessage ? { lastMessage: input.lastMessage } : {}),
     };
 
     try {
@@ -307,6 +384,27 @@ export class PushNotifier {
       console.log(`[PushNotifier] Sent dismiss for session ${sessionId}`);
     } catch (error) {
       console.error("[PushNotifier] Failed to send dismiss:", error);
+    }
+  }
+
+  /** A title lookup must never cost the notification itself. */
+  private async getSessionTitle(
+    projectId: UrlProjectId,
+    sessionId: string,
+  ): Promise<string | undefined> {
+    if (!this.resolveSessionTitle) return undefined;
+    try {
+      return await this.resolveSessionTitle(projectId, sessionId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private getFinalAnswerExcerpt(process: Process): string | undefined {
+    try {
+      return finalAnswerExcerpt(process.getMessageHistory());
+    } catch {
+      return undefined;
     }
   }
 
