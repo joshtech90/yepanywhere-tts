@@ -77,6 +77,9 @@ function isValidAuthState(value: unknown): value is AuthState {
     const account = state.account as Record<string, unknown> | null;
     if (!account || typeof account.passwordHash !== "string") return false;
   }
+  // Enabled state without an owner would reopen the unauthenticated setup
+  // route. Only an explicitly unconfigured/disabled state may lack one.
+  if (state.enabled === true && state.account === undefined) return false;
   // Both versions always wrote a sessions object. Without one, a bare
   // {"version":1} would migrate to a fresh state with auth off.
   const sessions = state.sessions;
@@ -85,6 +88,17 @@ function isValidAuthState(value: unknown): value is AuthState {
   }
   for (const session of Object.values(sessions)) {
     if (!session || typeof session !== "object" || Array.isArray(session)) {
+      return false;
+    }
+    const record = session as Record<string, unknown>;
+    // An invalid date compares as NaN and otherwise never expires. A null
+    // or empty limited-user identity otherwise falls back to the owner.
+    if (
+      typeof record.createdAt !== "string" ||
+      !Number.isFinite(Date.parse(record.createdAt)) ||
+      (record.username !== undefined &&
+        (typeof record.username !== "string" || record.username.length === 0))
+    ) {
       return false;
     }
   }

@@ -149,6 +149,11 @@ describe("AuthService unreadable state", () => {
       '{"version":99,"enabled":true,"sessions":{}}',
       "the authentication file has an unsupported format or version",
     ],
+    [
+      "enabled authentication without an owner credential",
+      '{"version":2,"enabled":true,"sessions":{}}',
+      "the authentication file has an unsupported format or version",
+    ],
   ] as const) {
     it(`refuses to start from ${label} state and keeps the file`, async () => {
       const filePath = path.join(testDir, "auth.json");
@@ -166,6 +171,29 @@ describe("AuthService unreadable state", () => {
       expect(await fs.readFile(filePath, "utf8")).toBe(content);
     });
   }
+
+  it.each([
+    { createdAt: "invalid-date" },
+    { createdAt: undefined },
+    { username: null },
+    { username: false },
+    { username: "" },
+  ])("refuses damaged session identity or expiry: %j", async (damage) => {
+    const service = new AuthService({ dataDir: testDir });
+    await service.initialize();
+    await service.createSession("test-agent", "limited-user");
+    const filePath = path.join(testDir, "auth.json");
+    const state = JSON.parse(await fs.readFile(filePath, "utf8"));
+    const verifier = Object.keys(state.sessions)[0]!;
+    Object.assign(state.sessions[verifier], damage);
+    const damaged = JSON.stringify(state);
+    await fs.writeFile(filePath, damaged);
+
+    const restarted = new AuthService({ dataDir: testDir });
+    await expect(restarted.initialize()).rejects.toThrow("unsupported format");
+    await restarted.flushPendingWrites();
+    expect(await fs.readFile(filePath, "utf8")).toBe(damaged);
+  });
 
   it("gives recovery instructions without exposing invalid credential data", async () => {
     const filePath = path.join(testDir, "auth.json");
@@ -204,7 +232,11 @@ describe("AuthService unreadable state", () => {
 
   it("refuses a failed migration even when the save error is ENOENT", async () => {
     const filePath = path.join(testDir, "auth.json");
-    const content = JSON.stringify({ version: 1, enabled: true, sessions: {} });
+    const content = JSON.stringify({
+      version: 1,
+      enabled: false,
+      sessions: {},
+    });
     await fs.writeFile(filePath, content);
     const failure = Object.assign(new Error("staging directory vanished"), {
       code: "ENOENT",
@@ -220,7 +252,7 @@ describe("AuthService unreadable state", () => {
       "[AuthService] Failed to save state:",
       failure,
     );
-    expect(service.isEnabled()).toBe(true);
+    expect(service.isEnabled()).toBe(false);
     expect(await fs.readFile(filePath, "utf8")).toBe(content);
   });
 
