@@ -16,6 +16,55 @@ function tool(
 }
 
 describe("Cockpit tool display projection", () => {
+  it.each([
+    {
+      oldText: "obsolete\n",
+      newText: "",
+      additions: [],
+      deletions: ["obsolete"],
+    },
+    {
+      oldText: "",
+      newText: "inserted\n",
+      additions: ["inserted"],
+      deletions: [],
+    },
+    { oldText: "  ", newText: "\t", additions: ["\t"], deletions: ["  "] },
+    {
+      oldText: "one\n\n",
+      newText: "one\n",
+      additions: ["one"],
+      deletions: ["one", ""],
+    },
+  ])(
+    "preserves empty and whitespace edit operands: $oldText -> $newText",
+    ({ oldText, newText, additions, deletions }) => {
+      const display = createCockpitToolDisplay(
+        tool({
+          toolName: "Edit",
+          toolInput: {
+            file_path: "sample.txt",
+            old_string: oldText,
+            new_string: newText,
+          },
+        }),
+      );
+      const file = display.files[0];
+      expect(file?.additions).toBe(additions.length);
+      expect(file?.deletions).toBe(deletions.length);
+      expect(
+        file?.lines
+          .filter((line) => line.kind === "addition")
+          .map((line) => line.text),
+      ).toEqual(additions);
+      expect(
+        file?.lines
+          .filter((line) => line.kind === "deletion")
+          .map((line) => line.text),
+      ).toEqual(deletions);
+    },
+  );
+
   it("projects shell command, output, failure status, and exit code", () => {
     const display = createCockpitToolDisplay(
       tool({
@@ -102,8 +151,7 @@ describe("Cockpit tool display projection", () => {
                   lines: ["-Status: queued", "+Status: ready"],
                 },
               ],
-              rawPatch:
-                "@@ -3,1 +3,1 @@\n-Status: queued\n+Status: ready\n",
+              rawPatch: "@@ -3,1 +3,1 @@\n-Status: queued\n+Status: ready\n",
             },
           ],
         },
@@ -132,8 +180,7 @@ describe("Cockpit tool display projection", () => {
               lines: ["-State: waiting", "+State: complete"],
             },
           ],
-          _rawPatch:
-            "@@ -8,1 +8,1 @@\n-State: waiting\n+State: complete\n",
+          _rawPatch: "@@ -8,1 +8,1 @@\n-State: waiting\n+State: complete\n",
         },
       }),
     );
