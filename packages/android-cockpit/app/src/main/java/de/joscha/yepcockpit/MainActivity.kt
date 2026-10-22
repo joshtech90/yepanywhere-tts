@@ -394,23 +394,8 @@ class MainActivity : Activity() {
         // Service-Worker-Adressen. (DownloadManager gaebe einen gesetzten
         // Cookie-Kopf auch an ein fremdes Weiterleitungsziel weiter.)
         val name = URLUtil.guessFileName(url, inhalt, typ)
-        val skript = """
-            (async () => {
-              try {
-                const u = ${JSONObject.quote(url)};
-                const b = u.startsWith("blob:")
-                  ? window.__yepBlobs?.get(u)
-                  : await (await fetch(u, { credentials: "same-origin" })).blob();
-                if (!b) throw new Error("blob weg");
-                if (b.size > $MAX_DOWNLOAD) throw new Error("zu gross");
-                const d = await new Promise((ok, f) => {
-                  const l = new FileReader(); l.onload = () => ok(l.result); l.onerror = f; l.readAsDataURL(b);
-                });
-                const name = window.__yepDownloadNamen?.get(u) || ${JSONObject.quote(name)};
-                YepApp.postMessage(JSON.stringify({ name, daten: d }));
-              } catch (e) { YepApp.postMessage(JSON.stringify({ fehler: String(e) })); }
-            })();
-        """.trimIndent()
+        val funktion = assets.open("download.js").bufferedReader().use { it.readText() }
+        val skript = "(function() { $funktion; downloadFile(${JSONObject.quote(url)}, ${JSONObject.quote(name)}, $MAX_DOWNLOAD); })();"
         view.evaluateJavascript(skript, null)
     }
 

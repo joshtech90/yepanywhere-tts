@@ -57,3 +57,12 @@ Log-Tags `YEPC_PUSH`, `YEPC_MAIN`, `YEPC_ANTWORT`:
 
 Bewusst ohne Jetpack Compose: die App hat außer einem Auswahldialog keine
 eigene Oberfläche.
+
+## Lokale Regressionen ohne Geraet
+
+`./gradlew testDebugUnitTest lintDebug` prueft Meldungen, Lebenszyklus und
+Entschluesselung. `node --test test/download.test.mjs` fuehrt das mitgelieferte
+Download-Skript aus: HTTP-Fehler duerfen keine Datei erzeugen, groessere
+Antworten werden beim Lesen abgebrochen, erfolgreiche Dateien behalten Bytes
+und Namen. Diese Tests belegen keine echte Android-Tastatureingabe oder
+FCM-Zustellung.
