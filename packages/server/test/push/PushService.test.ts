@@ -504,6 +504,32 @@ describe("PushService", () => {
       expect(pushService.isSubscribed("profile-1")).toBe(false);
     });
 
+    it("reports delivered pushes even when removing an expired one cannot be saved", async () => {
+      const gone = new Error("Gone") as Error & { statusCode: number };
+      gone.statusCode = 410;
+      vi.mocked(webPush.sendNotification)
+        .mockResolvedValueOnce({ statusCode: 201, body: "", headers: {} })
+        .mockRejectedValueOnce(gone);
+      await pushService.subscribe("profile-1", mockSubscription);
+      await pushService.subscribe("profile-2", {
+        ...mockSubscription,
+        endpoint: "https://fcm.googleapis.com/fcm/send/expired",
+      });
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      await fs.chmod(tempDir, 0o500);
+      try {
+        const results = await pushService.sendToAll({
+          type: "test",
+          message: "Test",
+          timestamp: new Date().toISOString(),
+        });
+        expect(results.map((result) => result.success)).toEqual([true, false]);
+      } finally {
+        await fs.chmod(tempDir, 0o700);
+      }
+      expect(pushService.isSubscribed("profile-2")).toBe(false);
+    });
+
     it("should handle send errors gracefully", async () => {
       const error = new Error("Network error") as Error & {
         statusCode: number;
