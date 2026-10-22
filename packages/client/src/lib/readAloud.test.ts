@@ -8,7 +8,9 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("../api/client", () => ({
   api: {
     ttsPlan: apiMocks.ttsPlan,
-    ttsSynthesize: apiMocks.ttsSynthesize,
+    // Keep the API promise distinct from Vitest's auto-observed mock result.
+    ttsSynthesize: async (...args: unknown[]) =>
+      apiMocks.ttsSynthesize(...args),
   },
 }));
 
@@ -25,15 +27,22 @@ import {
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
 }
 
 function deferred<T>(): Deferred<T> {
   let resolve: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((next) => {
+  let reject: ((reason: unknown) => void) | undefined;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
   return {
     promise,
+    reject(reason) {
+      if (!reject) throw new Error("deferred promise is not initialized");
+      reject(reason);
+    },
     resolve(value) {
       if (!resolve) throw new Error("deferred promise is not initialized");
       resolve(value);
@@ -117,6 +126,33 @@ describe("read-aloud controller", () => {
     expect(getReadAloudState()).toBe("idle");
     expect(getReadAloudToken()).toBeNull();
     expect(getReadAloudFailedToken()).toBeNull();
+  });
+
+  it("handles a failed prefetch while the current chunk is still playing", async () => {
+    const second = deferred<{ audioBase64: string }>();
+    const failure = new Error("prefetch offline");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    apiMocks.ttsPlan.mockResolvedValue({ chunks: ["First", "Second"] });
+    apiMocks.ttsSynthesize
+      .mockResolvedValueOnce({ audioBase64: "AA==" })
+      .mockReturnValueOnce(second.promise);
+
+    const playback = playReadAloud("Answer", "prefetch-failure");
+    await vi.waitFor(() => expect(getReadAloudState()).toBe("playing"));
+    second.reject(failure);
+    // Cross a task boundary: a late catch after ended would already have
+    // emitted an unhandled rejection in the browser (and fail Vitest).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getReadAloudState()).toBe("playing");
+    expect(consoleError).not.toHaveBeenCalled();
+
+    MockAudio.instances[0]?.onended?.();
+    await playback;
+    expect(getReadAloudState()).toBe("idle");
+    expect(getReadAloudFailedToken()).toBe("prefetch-failure");
+    expect(consoleError).toHaveBeenCalledWith("Read aloud failed:", failure);
   });
 
   it("pauses and resumes in place, and holds a chunk that lands while paused", async () => {
@@ -213,6 +249,41 @@ describe("read-aloud controller", () => {
     await playback;
   });
 
+  it.each(["initial", "resume"])(
+    "ignores an interrupted %s play after a newer resume succeeds",
+    async (attempt) => {
+      const interrupted = deferred<void>();
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      apiMocks.ttsPlan.mockResolvedValue({ chunks: ["Answer"] });
+      apiMocks.ttsSynthesize.mockResolvedValue({ audioBase64: "AA==" });
+      const playback = playReadAloud("Answer", "rapid-resume");
+      const audio = MockAudio.instances[0];
+      if (!audio) throw new Error("no audio element");
+      if (attempt === "initial") {
+        audio.play.mockReturnValueOnce(interrupted.promise);
+      } else {
+        await vi.waitFor(() => expect(audio.play).toHaveBeenCalledTimes(1));
+        pauseReadAloud();
+        audio.play.mockReturnValueOnce(interrupted.promise);
+        resumeReadAloud();
+      }
+      await vi.waitFor(() => expect(getReadAloudState()).toBe("playing"));
+      pauseReadAloud();
+      resumeReadAloud();
+      interrupted.reject(
+        new DOMException("interrupted by pause", "AbortError"),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(getReadAloudState()).toBe("playing");
+      expect(getReadAloudFailedToken()).toBeNull();
+      expect(consoleError).not.toHaveBeenCalled();
+      stopReadAloud();
+      await playback;
+    },
+  );
+
   it("ignores a late resume failure of an earlier playback", async () => {
     const rejects: Array<(error: unknown) => void> = [];
     apiMocks.ttsPlan.mockResolvedValue({ chunks: ["Only chunk"] });
@@ -267,6 +338,38 @@ describe("read-aloud controller", () => {
     expect(getReadAloudToken()).toBeNull();
     expect(getReadAloudFailedToken()).toBeNull();
   });
+
+  it.each(["plan", "synthesis"])(
+    "settles a stopped controller while %s is still pending",
+    async (stage) => {
+      const plan = deferred<{ chunks: string[] }>();
+      const synthesis = deferred<{ audioBase64: string }>();
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      apiMocks.ttsPlan.mockReturnValue(plan.promise);
+      apiMocks.ttsSynthesize.mockReturnValue(synthesis.promise);
+      let settled = false;
+      const playback = playReadAloud("Answer", "cancel-network").then(() => {
+        settled = true;
+      });
+      if (stage === "synthesis") {
+        plan.resolve({ chunks: ["Answer"] });
+        await vi.waitFor(() =>
+          expect(apiMocks.ttsSynthesize).toHaveBeenCalled(),
+        );
+      }
+      stopReadAloud();
+      await vi.waitFor(() => expect(settled).toBe(true));
+      expect(getReadAloudState()).toBe("idle");
+      if (stage === "plan") plan.reject(new Error("late plan failure"));
+      else synthesis.reject(new Error("late synthesis failure"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(consoleError).not.toHaveBeenCalled();
+      expect(MockURL.createObjectURL).not.toHaveBeenCalled();
+      await playback;
+    },
+  );
 
   it("publishes a caller-scoped failure that explicit stop clears", async () => {
     const failure = new Error("TTS unavailable");
