@@ -91,6 +91,20 @@ describe("normalizeGeneratedSessionTitle", () => {
   );
 
   it.each([
+    ['"Login-Fehler beheben', "Login-Fehler beheben"],
+    ['Login-Fehler beheben"', "Login-Fehler beheben"],
+    ["„Login-Fehler beheben", "Login-Fehler beheben"],
+    ["Login-Fehler beheben“.", "Login-Fehler beheben"],
+    ["'Login-Fehler beheben", "Login-Fehler beheben"],
+    ['"ENOENT" beheben', '"ENOENT" beheben'],
+    ['Fix "ENOENT"', 'Fix "ENOENT"'],
+    ['"Foo" vs "Bar', '"Foo" vs "Bar'],
+    ["Joscha's Bot'", "Joscha's Bot'"],
+  ])("removes an unpaired quote at the title edge: %s", (raw, title) => {
+    expect(normalizeGeneratedSessionTitle(raw)).toBe(title);
+  });
+
+  it.each([
     ["**Telegram-Bot Deploy**", "Telegram-Bot Deploy"],
     ["*Telegram-Bot Deploy*", "Telegram-Bot Deploy"],
     ["**Title:** Telegram-Bot Deploy", "Telegram-Bot Deploy"],

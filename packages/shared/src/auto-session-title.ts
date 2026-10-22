@@ -167,7 +167,27 @@ function stripTitleQuotes(value: string): string {
       if (!inner.includes(close)) return inner;
     }
   }
-  return value;
+  return stripUnpairedEdgeQuote(value);
+}
+
+const QUOTE_FAMILIES = ['"', "'", "`", "“”„", "‘’‚", "«»"] as const;
+
+/**
+ * Drop a lone quote at either edge (`"Login-Fehler beheben`). A quote whose
+ * family appears again inside the title may close or open a quoted term, so
+ * it stays.
+ */
+function stripUnpairedEdgeQuote(value: string): string {
+  let result = value;
+  for (const edge of ["start", "end"] as const) {
+    const char = edge === "start" ? result.charAt(0) : result.slice(-1);
+    const family = QUOTE_FAMILIES.find((chars) => char && chars.includes(char));
+    if (!family) continue;
+    const rest = edge === "start" ? result.slice(1) : result.slice(0, -1);
+    if ([...rest].some((c) => family.includes(c))) continue;
+    result = rest;
+  }
+  return result;
 }
 
 /**
