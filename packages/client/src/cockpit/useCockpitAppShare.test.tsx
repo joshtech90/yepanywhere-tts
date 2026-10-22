@@ -14,11 +14,13 @@ afterEach(() => {
 function Receiver({
   onText,
   onFiles,
+  onMissing,
 }: {
   onText: (text: string) => void;
   onFiles: (files: File[]) => void;
+  onMissing: (count: number) => void;
 }) {
-  useCockpitAppShare(onText, onFiles);
+  useCockpitAppShare(onText, onFiles, onMissing);
   return null;
 }
 
@@ -34,9 +36,12 @@ describe("useCockpitAppShare", () => {
     vi.stubGlobal("fetch", fetchMock);
     const onText = vi.fn();
     const onFiles = vi.fn();
+    const onMissing = vi.fn();
     window.__yepAppShare = [{ text: "  Link https://example.org  " }];
 
-    render(<Receiver onText={onText} onFiles={onFiles} />);
+    render(
+      <Receiver onText={onText} onFiles={onFiles} onMissing={onMissing} />,
+    );
     expect(onText).toHaveBeenCalledWith("Link https://example.org");
 
     window.__yepAppShare.push({
@@ -44,6 +49,7 @@ describe("useCockpitAppShare", () => {
         { url: "/__yep_app/teilen/abc/0", name: "foto.png", type: "image/png" },
         { url: "https://evil.example/x", name: "x" },
       ],
+      missing: 1,
     });
     window.dispatchEvent(new Event(COCKPIT_APP_SHARE_EVENT));
 
@@ -54,6 +60,9 @@ describe("useCockpitAppShare", () => {
     expect(files.map((file) => [file.name, file.type])).toEqual([
       ["foto.png", "image/png"],
     ]);
+    // The rejected foreign URL and the file the app could not copy are
+    // reported, so the text never arrives silently without its attachments.
+    expect(onMissing).toHaveBeenCalledWith(2);
     expect(window.__yepAppShare).toEqual([]);
   });
 });

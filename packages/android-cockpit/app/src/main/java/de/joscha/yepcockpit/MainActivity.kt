@@ -420,25 +420,50 @@ class MainActivity : Activity() {
     }
 
     private fun speichernAusSeite(text: String) {
-        val o = runCatching { JSONObject(text) }.getOrNull() ?: return
+        // Base64 dekodieren und schreiben kostet bei grossen Dateien Sekunden:
+        // nie im Hauptthread, sonst haengen Eingaben.
+        Thread({
+            val ergebnis = try {
+                speichernJetzt(text)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Download gescheitert: ${e.javaClass.simpleName}")
+                "Download gescheitert"
+            }
+            if (ergebnis != null) runOnUiThread { Toast.makeText(this, ergebnis, Toast.LENGTH_LONG).show() }
+        }, "yep-download").start()
+    }
+
+    /** Rueckmeldung fuer Joscha, oder null ohne Meldung. */
+    private fun speichernJetzt(text: String): String? {
+        // data:-URL eines 50-MB-Inhalts ist etwa 67 MB lang; mehr kommt nicht herein.
+        if (text.length > MAX_DOWNLOAD / 3 * 4 + 4096) return "Download zu groß, bitte im Browser laden"
+        val o = runCatching { JSONObject(text) }.getOrNull() ?: return null
         if (o.has("fehler")) {
             val grund = if (o.optString("fehler").contains("zu gross")) " (über 50 MB, bitte im Browser laden)" else ""
-            Toast.makeText(this, "Download gescheitert$grund", Toast.LENGTH_LONG).show()
-            return
+            return "Download gescheitert$grund"
         }
         val name = o.optString("name").ifBlank { "Download" }.replace('/', '_')
         val daten = o.optString("daten")
         val komma = daten.indexOf(',')
-        if (!daten.startsWith("data:") || komma < 0) return
+        if (!daten.startsWith("data:") || komma < 0) return "Download gescheitert"
         val typ = daten.substring(5, komma).substringBefore(';').ifBlank { "application/octet-stream" }
         val bytes = Base64.decode(daten.substring(komma + 1), Base64.DEFAULT)
         val werte = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, name)
             put(MediaStore.Downloads.MIME_TYPE, typ)
+            // Erst sichtbar, wenn vollstaendig geschrieben.
+            put(MediaStore.Downloads.IS_PENDING, 1)
         }
-        val ziel = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, werte) ?: return
-        contentResolver.openOutputStream(ziel)?.use { it.write(bytes) }
-        Toast.makeText(this, "In Downloads gespeichert: $name", Toast.LENGTH_SHORT).show()
+        val ziel = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, werte)
+            ?: return "Download gescheitert"
+        try {
+            contentResolver.openOutputStream(ziel)?.use { it.write(bytes) } ?: error("kein Ziel")
+            contentResolver.update(ziel, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+        } catch (e: Exception) {
+            contentResolver.delete(ziel, null, null)
+            throw e
+        }
+        return "In Downloads gespeichert: $name"
     }
 
     private fun fehlerSeite(r: Rechner, grund: String): String {

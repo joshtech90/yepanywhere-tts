@@ -57,7 +57,12 @@ object Push {
 
     /** Neues FCM-Token: alles neu anmelden, die alten Adressen sind tot. */
     fun tokenGeaendert(ctx: Context) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+        // Nur Bruecke und Abos vergessen; "fertig_an_*" bleibt, sonst schaltete
+        // ein Tokenwechsel von Joscha abgewaehlte Fertig-Meldungen wieder ein.
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit().apply {
+            prefs.all.keys.filter { !it.startsWith("fertig_an_") }.forEach { remove(it) }
+        }.apply()
         anmelden(ctx, erzwingen = true)
     }
 

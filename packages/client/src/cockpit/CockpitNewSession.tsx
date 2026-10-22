@@ -258,6 +258,7 @@ export function CockpitNewSession({
         current.trim() ? `${current}\n\n${text}` : text,
       ),
     attachFiles,
+    (count) => setError(t("cockpitAppShareMissingFiles", { count })),
   );
   // A start that finishes after this view was left must not navigate back;
   // the session still runs and shows up in the list.

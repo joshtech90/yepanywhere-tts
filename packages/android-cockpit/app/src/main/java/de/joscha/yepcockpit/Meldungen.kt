@@ -54,6 +54,9 @@ object Meldungen {
     fun verarbeiten(ctx: Context, rechner: Rechner, d: JSONObject) {
         val nm = ctx.getSystemService(NotificationManager::class.java)
         val sitzung = d.optString("sessionId").takeIf { Ziele.gueltig(it) }
+        // FCM haelt keine Reihenfolge ein: ein verspaetetes "Wartet" darf kein
+        // neueres "Fertig" ersetzen, ein altes "dismiss" keine neue Frage loeschen.
+        if (sitzung != null && !istNeuestes(ctx, rechner, sitzung, d.optString("timestamp"))) return
         val projekt = d.optString("projectId").takeIf { Ziele.gueltig(it) }
         val titel = d.optString("sessionTitle").ifBlank { d.optString("projectName").ifBlank { rechner.name } }
 
@@ -91,6 +94,24 @@ object Meldungen {
             "project-inactive" -> hinweis(ctx, rechner, "Alles erledigt", d.optString("projectName"))
             "ya-inactive" -> hinweis(ctx, rechner, "Alles erledigt", "Keine Sitzung arbeitet mehr")
         }
+    }
+
+    private const val STAND = "meldungsstand"
+    private const val STAND_ALTER_MS = 7 * 24 * 60 * 60 * 1000L
+
+    /** Merkt den Zeitpunkt des neuesten Ereignisses je Sitzung; aeltere verwirft es. */
+    @Synchronized
+    private fun istNeuestes(ctx: Context, rechner: Rechner, sitzung: String, zeit: String): Boolean {
+        val ms = runCatching { java.time.Instant.parse(zeit).toEpochMilli() }.getOrNull() ?: return true
+        val prefs = ctx.getSharedPreferences(STAND, Context.MODE_PRIVATE)
+        val schluessel = rechner.schluessel + "/" + sitzung
+        if (ms < prefs.getLong(schluessel, 0)) return false
+        val grenze = System.currentTimeMillis() - STAND_ALTER_MS
+        prefs.edit().apply {
+            putLong(schluessel, ms)
+            prefs.all.forEach { (k, v) -> if (v is Long && v < grenze) remove(k) }
+        }.apply()
+        return true
     }
 
     private fun zeigtGerade(rechner: Rechner, sitzung: String): Boolean =

@@ -94,7 +94,13 @@ export function finalAnswerExcerpt(
 ): string | undefined {
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const entry = history[index];
-    if ((entry?.type ?? entry?.message?.role) !== "assistant") continue;
+    const role = entry?.type ?? entry?.message?.role;
+    // A user prompt ends the finished turn; its text is never quoted as the
+    // answer. Tool results arrive as user rows without text blocks.
+    if (role === "user" && textOf(entry?.message?.content).trim()) {
+      return undefined;
+    }
+    if (role !== "assistant") continue;
     const excerpt = boundText(
       textOf(entry?.message?.content),
       LAST_MESSAGE_MAX_CHARS,

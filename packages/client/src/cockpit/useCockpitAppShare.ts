@@ -8,6 +8,8 @@ import { useEffect, useRef } from "react";
 export interface CockpitAppShare {
   text?: string;
   files?: Array<{ url: string; name?: string; type?: string }>;
+  /** Files the app could not take over (unreadable or too large). */
+  missing?: number;
 }
 
 declare global {
@@ -40,9 +42,10 @@ async function loadSharedFile(file: {
 export function useCockpitAppShare(
   onText: (text: string) => void,
   onFiles: (files: File[]) => void,
+  onMissing: (count: number) => void,
 ): void {
-  const latest = useRef({ onText, onFiles });
-  latest.current = { onText, onFiles };
+  const latest = useRef({ onText, onFiles, onMissing });
+  latest.current = { onText, onFiles, onMissing };
 
   useEffect(() => {
     let active = true;
@@ -52,17 +55,29 @@ export function useCockpitAppShare(
       for (const share of queue.splice(0)) {
         const text = share.text?.trim();
         if (text) latest.current.onText(text);
-        const files = (share.files ?? []).filter(
+        const offered = share.files ?? [];
+        const files = offered.filter(
           (file) =>
             typeof file.url === "string" &&
             file.url.startsWith(APP_FILE_PREFIX),
         );
-        if (files.length === 0) continue;
+        // A text must never arrive silently without the files shared with it.
+        const missingBefore =
+          (Number.isInteger(share.missing) ? (share.missing ?? 0) : 0) +
+          offered.length -
+          files.length;
+        if (files.length === 0) {
+          if (missingBefore > 0) latest.current.onMissing(missingBefore);
+          continue;
+        }
         void Promise.allSettled(files.map(loadSharedFile)).then((results) => {
+          if (!active) return;
           const loaded = results.flatMap((result) =>
             result.status === "fulfilled" ? [result.value] : [],
           );
-          if (active && loaded.length > 0) latest.current.onFiles(loaded);
+          if (loaded.length > 0) latest.current.onFiles(loaded);
+          const missing = missingBefore + files.length - loaded.length;
+          if (missing > 0) latest.current.onMissing(missing);
         });
       }
     };

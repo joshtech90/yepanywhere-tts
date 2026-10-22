@@ -1,6 +1,9 @@
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PushNotifier } from "../../src/push/PushNotifier.js";
+import {
+  finalAnswerExcerpt,
+  PushNotifier,
+} from "../../src/push/PushNotifier.js";
 import type { PushService } from "../../src/push/PushService.js";
 import { Supervisor } from "../../src/supervisor/Supervisor.js";
 import { MessageQueue } from "../../src/sdk/messageQueue.js";
@@ -267,6 +270,37 @@ describe("PushNotifier", () => {
         duration: 5000,
         timestamp,
       });
+    });
+
+    it("quotes only the finished turn's own answer", () => {
+      const answer = (text: string) => ({
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text }] },
+      });
+      const prompt = (text: string) => ({
+        type: "user",
+        message: { role: "user", content: text },
+      });
+      const toolResult = {
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", content: "ok" }],
+        },
+      };
+      // Text before a tool call in the same turn still belongs to it.
+      expect(
+        finalAnswerExcerpt([prompt("Bau es"), answer("Gebaut."), toolResult]),
+      ).toBe("Gebaut.");
+      // A later turn without its own text must not reuse the previous answer.
+      expect(
+        finalAnswerExcerpt([
+          prompt("Erster Auftrag"),
+          answer("Vorheriger Auftrag erledigt"),
+          prompt("Zweiter Auftrag"),
+          toolResult,
+        ]),
+      ).toBeUndefined();
     });
 
     // The Android app shows these; the relayed payload must fit FCM's 4 KiB.

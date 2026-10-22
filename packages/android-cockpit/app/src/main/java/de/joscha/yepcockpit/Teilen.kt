@@ -28,8 +28,8 @@ object Teilen {
 
     private fun ordner(ctx: Context) = File(ctx.filesDir, "teilen")
 
-    /** Kopiert Text und Dateien; gibt die Kennung zurueck. Laeuft nicht im Hauptthread. */
-    fun speichern(ctx: Context, text: String?, quellen: List<Uri>): String {
+    /** Kopiert Text und Dateien; Kennung und Zahl der nicht uebernommenen Dateien. Nicht im Hauptthread. */
+    fun speichern(ctx: Context, text: String?, quellen: List<Uri>): Pair<String, Int> {
         aufraeumen(ctx)
         val id = ByteArray(12).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
         val ziel = File(ordner(ctx), id).apply { mkdirs() }
@@ -50,9 +50,10 @@ object Teilen {
             summe += kopiert
             dateien.put(JSONObject().put("name", name).put("typ", typ))
         }
-        val meta = JSONObject().put("text", text.orEmpty()).put("dateien", dateien)
+        val fehlend = quellen.size - dateien.length()
+        val meta = JSONObject().put("text", text.orEmpty()).put("dateien", dateien).put("fehlend", fehlend)
         File(ziel, "meta.json").writeText(meta.toString())
-        return id
+        return id to fehlend
     }
 
     /** JavaScript, das den Inhalt an die Cockpit-Seite uebergibt. */
@@ -72,6 +73,7 @@ object Teilen {
             )
         }
         val eintrag = JSONObject().put("text", meta.optString("text")).put("files", liste)
+            .put("missing", meta.optInt("fehlend"))
         return "(function(e){(window.__yepAppShare=window.__yepAppShare||[]).push(e);" +
             "window.dispatchEvent(new Event('yep-app-share'));})($eintrag);"
     }

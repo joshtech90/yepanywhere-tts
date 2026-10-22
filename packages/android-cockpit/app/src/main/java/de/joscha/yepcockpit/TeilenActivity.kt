@@ -41,8 +41,13 @@ class TeilenActivity : Activity() {
     private fun uebergeben(r: Rechner, text: String, quellen: List<Uri>) {
         if (quellen.isNotEmpty()) Toast.makeText(this, "Wird übernommen …", Toast.LENGTH_SHORT).show()
         Thread({
-            val id = Teilen.speichern(applicationContext, text, quellen)
+            val (id, fehlend) = Teilen.speichern(applicationContext, text, quellen)
             runOnUiThread {
+                if (fehlend > 0) {
+                    Toast.makeText(
+                        this, "$fehlend Datei(en) nicht übernommen (unlesbar oder zu groß)", Toast.LENGTH_LONG,
+                    ).show()
+                }
                 startActivity(
                     Intent(this, MainActivity::class.java)
                         .putExtra(Meldungen.EXTRA_RECHNER, r.schluessel)

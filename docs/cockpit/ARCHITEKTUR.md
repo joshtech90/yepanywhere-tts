@@ -823,7 +823,11 @@ Abschalten in den Einstellungen bleibt bestehen. Je Sitzung gibt es eine
 Meldung: „Wartet auf dich“ wird von „Fertig“ ersetzt, ein `dismiss` raeumt nur
 eine offene Frage weg. Zeigt die App die Sitzung gerade im Vordergrund, kommt
 keine Meldung; oeffnet Joscha eine Sitzung, verschwindet ihre Meldung.
-Tippen oeffnet genau diese Sitzung im richtigen Rechner.
+Tippen oeffnet genau diese Sitzung im richtigen Rechner. FCM haelt keine
+Reihenfolge ein: je Rechner und Sitzung gilt nur das Ereignis mit dem
+neuesten `timestamp`, aeltere (auch ein verspaetetes `dismiss`) verwirft die
+App. Ein neues FCM-Token meldet alle Abos neu an, schaltet aber die
+„Fertig“-Meldungen nicht erneut ein.
 
 **Antworten aus der Meldung.** „Fertig“ hat einen Antworten-Knopf. Der Text
 geht wie im Composer an `POST /api/sessions/:id/messages`; ohne laufenden
@@ -839,8 +843,18 @@ Speicher und beantwortet selbst die Adresse
 sendet das Ereignis `yep-app-share`. `useCockpitAppShare` in „Neue Sitzung“
 leert die Warteschlange beim Einhaengen und bei jedem Ereignis, haengt Text an
 die Nachricht an und laedt nur Dateien unter `/__yep_app/` als Anhaenge.
+Dateien, die die App nicht kopieren konnte (unlesbar, mehr als 20 oder
+zusammen ueber 200 MB, Feld `missing`), fremde Adressen und gescheiterte
+Abrufe meldet „Neue Sitzung“ als Fehler mit ihrer Zahl, damit ein Text nie
+still ohne seine Anhaenge ankommt.
 Hochgeladen wird wie bisher erst beim Start der Sitzung. Im Browser bleibt die
 Warteschlange leer.
+
+**Downloads.** Die App laedt nur ueber die Seite selbst (`fetch` mit
+`credentials: same-origin`, Blobs aus einem nur auf den eigenen Rechnern
+eingespielten Merker, weil die CSP `fetch` auf `blob:` verbietet) und speichert
+in „Downloads“ unter dem Namen aus dem `download`-Attribut. Ueber 50 MB
+verweist sie auf den Browser. Fremde Adressen oeffnen im Browser.
 
 **Schnellstart.** Langes Druecken auf das App-Symbol bietet „Neu · Mac“ und
 „Neu · aihub“. Von aussen (Meldung, Verknuepfung, Teilen) oeffnet die App nur

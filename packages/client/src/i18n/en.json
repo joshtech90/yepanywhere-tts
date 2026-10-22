@@ -4993,6 +4993,7 @@
   "cockpitProjectFavoriteAdd": "Save folder as favorite",
   "cockpitProjectFavoriteRemove": "Remove from favorites",
   "cockpitNewSessionNoProvider": "No AI provider is installed.",
+  "cockpitAppShareMissingFiles": "{count} shared file(s) could not be added. Attach them again.",
   "cockpitNewSessionMessageLabel": "First message",
   "cockpitNewSessionCancel": "Cancel",
   "cockpitNewSessionStarting": "Starting…",
