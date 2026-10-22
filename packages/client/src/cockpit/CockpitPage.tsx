@@ -199,9 +199,6 @@ export function CockpitShell({
   const location = useLocation();
   // Back in the Cockpit, a way back offered by the settings is spent.
   useEffect(() => clearCockpitReturn(), []);
-  // Every navigation, also from inside the drawer, closes the drawer.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: location.key is the trigger
-  useEffect(() => setDrawerOpen(false), [location.key]);
   const openDrawer = useCallback(() => setDrawerOpen(true), []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const sidebarWidth = useCockpitSidebarWidth(
@@ -229,6 +226,13 @@ export function CockpitShell({
     setSearchOpen(false);
     setSearchFocusRequested(false);
   }, []);
+  // Sidebar links, history and keyboard shortcuts can navigate independently
+  // of the search panel. Reveal their destination instead of covering it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: location.key is the navigation trigger
+  useEffect(() => {
+    setDrawerOpen(false);
+    navigateFromSearch();
+  }, [location.key, navigateFromSearch]);
   const openSearchFromShortcut = useCallback(
     (focusOrigin: HTMLElement | null) => openSearch(true, focusOrigin),
     [openSearch],
