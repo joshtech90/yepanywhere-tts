@@ -6,7 +6,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitNewSession } from "./CockpitNewSession";
@@ -349,6 +349,32 @@ describe("Cockpit new session keyboard submission", () => {
     expect(state.fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Cockpit new session cancel", () => {
+  it("leaves to the Cockpit when the form was opened directly", () => {
+    render(
+      <MemoryRouter initialEntries={["/cockpit?view=new"]}>
+        <I18nProvider>
+          <Routes>
+            <Route element={<CockpitHome />} path="/cockpit" />
+          </Routes>
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByText("Cockpit home")).toBeTruthy();
+  });
+});
+
+function CockpitHome() {
+  const location = useLocation();
+  return location.search === "?view=new" ? (
+    <CockpitNewSession basePath="" />
+  ) : (
+    <p>Cockpit home</p>
+  );
+}
 
 describe("Cockpit new session source ownership", () => {
   it.each([false, true])(

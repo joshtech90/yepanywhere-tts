@@ -18,7 +18,11 @@ import {
   type ComposerUploadedAttachment,
 } from "../lib/sessionComposerAttachments";
 import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
-import { sendCockpitDirectMessage } from "./cockpitSend";
+import {
+  isCockpitProcessGone,
+  resumeCockpitSession,
+  sendCockpitDirectMessage,
+} from "./cockpitSend";
 
 /**
  * An upload that makes no progress this long is given up. The shared
@@ -26,6 +30,8 @@ import { sendCockpitDirectMessage } from "./cockpitSend";
  * then sat at 0% and blocked sending (Joscha 29.09.2026).
  */
 export const COCKPIT_UPLOAD_STALL_MS = 30_000;
+/** A send cleared its stored draft; a reopened composer may still show it. */
+const COCKPIT_DRAFT_SENT_EVENT = "yep-cockpit-draft-sent";
 import type { PermissionMode, SessionMetadata, SessionStatus } from "../types";
 import {
   cockpitComposerDraftKey,
@@ -103,6 +109,7 @@ export function useCockpitComposer(
   );
   const draftRef = useRef(draft);
   const draftRevisionRef = useRef(0);
+  const restoredRevisionRef = useRef(0);
   const [attachments, setAttachments] = useState<CockpitComposerAttachment[]>(
     [],
   );
@@ -129,6 +136,7 @@ export function useCockpitComposer(
     );
     draftRef.current = restored;
     draftRevisionRef.current += 1;
+    restoredRevisionRef.current = draftRevisionRef.current;
     setDraftState(restored);
     typingStartedAtRef.current = restored.trim()
       ? new Date().toISOString()
@@ -139,6 +147,29 @@ export function useCockpitComposer(
   useEffect(() => {
     setPromptHistory(readCockpitPromptHistory(runtime.sourceKey));
   }, [runtime.sourceKey]);
+
+  // Reopened while its send was still pending, this composer restored the
+  // text being sent. Left untouched, it goes once that send is accepted, so
+  // it cannot be sent a second time.
+  useEffect(() => {
+    const onSent = (event: Event) => {
+      const sent = (event as CustomEvent<{ key: string; text: string }>).detail;
+      if (
+        sent?.key !== draftKey ||
+        draftRef.current !== sent.text ||
+        draftRevisionRef.current !== restoredRevisionRef.current
+      ) {
+        return;
+      }
+      draftRevisionRef.current += 1;
+      draftRef.current = "";
+      setDraftState("");
+      typingStartedAtRef.current = null;
+      lastEditedAtRef.current = null;
+    };
+    window.addEventListener(COCKPIT_DRAFT_SENT_EVENT, onSent);
+    return () => window.removeEventListener(COCKPIT_DRAFT_SENT_EVENT, onSent);
+  }, [draftKey]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -352,23 +383,44 @@ export function useCockpitComposer(
 
       try {
         if (action === "queue") {
-          const result = await runtime.transport.fetch<{
-            deferredMessages?: DeferredQueueMessage[];
-          }>(`/sessions/${sessionPort.actualSessionId}/messages`, {
-            method: "POST",
-            body: JSON.stringify({
-              message: text,
-              mode: sessionPort.permissionMode,
-              attachments: uploaded.length ? uploaded : undefined,
+          let result: { deferredMessages?: DeferredQueueMessage[] } | null;
+          try {
+            result = await runtime.transport.fetch<{
+              deferredMessages?: DeferredQueueMessage[];
+            }>(`/sessions/${sessionPort.actualSessionId}/messages`, {
+              method: "POST",
+              body: JSON.stringify({
+                message: text,
+                mode: sessionPort.permissionMode,
+                attachments: uploaded.length ? uploaded : undefined,
+                tempId,
+                thinking: getThinkingSetting(),
+                showThinking: getShowThinkingSetting(),
+                deferred: true,
+                clientTimestamp: Date.parse(submittedAt),
+                messageMetadata: metadata,
+              }),
+            });
+          } catch (queueError) {
+            // No process means no turn to wait for: the message starts one.
+            if (!isCockpitProcessGone(queueError, sessionPort)) {
+              throw queueError;
+            }
+            result = null;
+            await resumeCockpitSession({
+              transport: runtime.transport,
+              projectId,
+              port: sessionPort,
+              text,
               tempId,
-              thinking: getThinkingSetting(),
-              showThinking: getShowThinkingSetting(),
-              deferred: true,
-              clientTimestamp: Date.parse(submittedAt),
+              submittedAt,
+              attachments: uploaded,
               messageMetadata: metadata,
-            }),
-          });
-          sessionPort.setDeferredMessages(result.deferredMessages ?? []);
+            });
+          }
+          if (result) {
+            sessionPort.setDeferredMessages(result.deferredMessages ?? []);
+          }
         } else {
           pendingId = sessionPort.addPendingMessage(
             text,
@@ -394,6 +446,11 @@ export function useCockpitComposer(
           // Another mount or tab may already own a newer persisted draft.
           if (readCockpitComposerDraft(draftKey) === draft) {
             writeCockpitComposerDraft(draftKey, "");
+            window.dispatchEvent(
+              new CustomEvent(COCKPIT_DRAFT_SENT_EVENT, {
+                detail: { key: draftKey, text: draft },
+              }),
+            );
           }
           draftRef.current = "";
           setDraftState("");

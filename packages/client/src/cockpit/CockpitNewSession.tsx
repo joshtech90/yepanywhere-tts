@@ -11,7 +11,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import type { SessionOptions } from "../api/client";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { isRequestDeadlineError } from "../api/requestDeadline";
@@ -194,6 +194,7 @@ export function CockpitNewSession({
 }: CockpitNewSessionProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const location = useLocation();
   const runtime = useCurrentSourceRuntime();
   const navigation = useMemo(
     () => createCockpitNavigation(basePath),
@@ -515,6 +516,18 @@ export function CockpitNewSession({
     }
   };
 
+  // Opened directly (an Android share or shortcut, a new tab) the form is
+  // the first entry: going back would do nothing or leave the Cockpit.
+  const cancel = () => {
+    const historyIndex = (window.history.state as { idx?: unknown } | null)
+      ?.idx;
+    if (location.key === "default" || historyIndex === 0) {
+      navigate(navigation.cockpit, { replace: true });
+    } else {
+      navigate(-1);
+    }
+  };
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
     void start();
@@ -782,7 +795,7 @@ export function CockpitNewSession({
             <button
               className={styles.secondary}
               disabled={starting}
-              onClick={() => navigate(-1)}
+              onClick={cancel}
               type="button"
             >
               {t("cockpitNewSessionCancel")}
