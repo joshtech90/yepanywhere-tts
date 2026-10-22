@@ -21,6 +21,7 @@ class AntwortEmpfaenger : BroadcastReceiver() {
         val projekt = intent.getStringExtra(Meldungen.EXTRA_PROJEKT)
         val sitzung = intent.getStringExtra(Meldungen.EXTRA_SITZUNG)
         if (text.isEmpty() || rechner == null || !Ziele.gueltig(projekt) || !Ziele.gueltig(sitzung)) return
+        val version = intent.getStringExtra(Meldungen.EXTRA_VERSION)
         val app = ctx.applicationContext
         val warten = goAsync()
         Thread({
@@ -30,8 +31,11 @@ class AntwortEmpfaenger : BroadcastReceiver() {
                 Log.w(TAG, "Antwort gescheitert: ${e.javaClass.simpleName}")
                 false
             }
-            Meldungen.antwortErgebnis(app, rechner, projekt!!, sitzung!!, ok, text)
-            warten.finish()
+            try {
+                Meldungen.antwortErgebnis(app, rechner, projekt!!, sitzung!!, version, ok, text)
+            } finally {
+                warten.finish()
+            }
         }, "yep-antwort").start()
     }
 

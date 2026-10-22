@@ -59,4 +59,26 @@ class MeldungenTest {
         Meldungen.sichtbarMelden(ctx, rechner, Uri.parse(rechner.pfad(pfad)))
         assertEquals(0, nm.activeNotifications.size)
     }
+    @Test
+    fun spaeteAntwortBestaetigungDarfNeueFrageNichtErsetzen() {
+        Meldungen.verarbeiten(ctx, rechner, fertig("sitzung"))
+        val version = nm.activeNotifications.single().notification.extras.getString(Meldungen.EXTRA_VERSION)
+        Meldungen.verarbeiten(ctx, rechner, fertig("sitzung").put("type", "pending-input")
+            .put("timestamp", "2026-10-22T18:00:01Z").put("summary", "Neue Frage"))
+        Meldungen.antwortErgebnis(ctx, rechner, "projekt", "sitzung", version, true, "Meine Antwort")
+        assertEquals(Meldungen.KANAL_WARTET, nm.activeNotifications.single().notification.channelId)
+    }
+
+    @Test
+    fun antwortBestaetigtNurDieUrspruenglicheNochUngeleseneMeldung() {
+        for (ok in listOf(true, false)) {
+            Meldungen.verarbeiten(ctx, rechner, fertig("sitzung"))
+            val version = nm.activeNotifications.single().notification.extras.getString(Meldungen.EXTRA_VERSION)
+            Meldungen.antwortErgebnis(ctx, rechner, "projekt", "sitzung", version, ok, "Meine Antwort")
+            assertEquals("Meine Antwort", nm.activeNotifications.single().notification.extras.getString("android.text"))
+            nm.cancelAll()
+            Meldungen.antwortErgebnis(ctx, rechner, "projekt", "sitzung", version, ok, "Meine Antwort")
+            assertEquals(0, nm.activeNotifications.size)
+        }
+    }
 }

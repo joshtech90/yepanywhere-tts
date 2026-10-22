@@ -8,6 +8,8 @@ import android.app.RemoteInput
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
+import java.util.UUID
 import org.json.JSONObject
 
 /**
@@ -26,6 +28,7 @@ object Meldungen {
     const val EXTRA_SITZUNG = "de.joscha.yepcockpit.SITZUNG"
     const val EXTRA_MELDUNG = "de.joscha.yepcockpit.MELDUNG"
     const val ANTWORT = "antwort"
+    const val EXTRA_VERSION = "de.joscha.yepcockpit.VERSION"
 
     /** Was die App gerade im Vordergrund zeigt; dafuer keine Meldung. */
     private var sichtbar: Pair<String, String>? = null
@@ -165,7 +168,9 @@ object Meldungen {
         antworten: Boolean,
     ) {
         val id = id(rechner, sitzung)
+        val version = UUID.randomUUID().toString()
         val b = grundgeruest(ctx, rechner, kanal, kopf, text)
+            .addExtras(Bundle().apply { putString(EXTRA_VERSION, version) })
             .setContentIntent(oeffnenIntent(ctx, rechner, projekt, sitzung, id))
             .setPublicVersion(
                 grundgeruest(ctx, rechner, kanal, kopf.substringBefore(" · "), "").build(),
@@ -174,6 +179,7 @@ object Meldungen {
             val eingabe = RemoteInput.Builder(ANTWORT).setLabel("Antwort an die Sitzung").build()
             val ziel = Intent(ctx, AntwortEmpfaenger::class.java)
                 .setAction("antworten:$id")
+                .putExtra(EXTRA_VERSION, version)
                 .putExtra(EXTRA_RECHNER, rechner.schluessel)
                 .putExtra(EXTRA_PROJEKT, projekt)
                 .putExtra(EXTRA_SITZUNG, sitzung)
@@ -181,7 +187,7 @@ object Meldungen {
             // RemoteInput braucht ein veraenderbares PendingIntent; das Ziel ist
             // ausdruecklich der nicht exportierte Empfaenger.
             val pi = PendingIntent.getBroadcast(
-                ctx, id, ziel, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                ctx, id, ziel, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_CANCEL_CURRENT,
             )
             b.addAction(
                 Notification.Action.Builder(null, "Antworten", pi)
@@ -193,9 +199,16 @@ object Meldungen {
         ctx.getSystemService(NotificationManager::class.java).notify(id, b.build())
     }
 
-    /** Rueckmeldung nach "Antworten": ersetzt die Meldung, ohne erneut zu klingeln. */
-    fun antwortErgebnis(ctx: Context, rechner: Rechner, projekt: String, sitzung: String, ok: Boolean, text: String) {
+    /** Eine spaete Rueckmeldung darf weder neue Fragen noch bereits gelesene Meldungen ersetzen. */
+    @Synchronized
+    fun antwortErgebnis(
+        ctx: Context, rechner: Rechner, projekt: String, sitzung: String,
+        version: String?, ok: Boolean, text: String,
+    ) {
         val id = id(rechner, sitzung)
+        val nm = ctx.getSystemService(NotificationManager::class.java)
+        val aktuell = nm.activeNotifications.firstOrNull { it.id == id }?.notification
+        if (version == null || aktuell?.extras?.getString(EXTRA_VERSION) != version) return
         val b = grundgeruest(
             ctx, rechner, KANAL_FERTIG,
             if (ok) "Gesendet" else "Nicht gesendet, tippen zum Öffnen",
