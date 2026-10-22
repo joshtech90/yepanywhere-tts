@@ -701,12 +701,19 @@ export function CockpitSessionDetail({
     return () => observer.disconnect();
   }, []);
 
+  const lastScrollTopRef = useRef(0);
   const updateFollowing = useCallback(() => {
     const container = scrollRef.current;
     if (!container) return;
-    const next =
-      container.scrollHeight - container.scrollTop - container.clientHeight <
-      72;
+    const distance =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    const movedUp = container.scrollTop < lastScrollTopRef.current;
+    lastScrollTopRef.current = container.scrollTop;
+    // Any step up from the end leaves it, however small. One wheel or touch
+    // frame moves less than the near-end band, and while a turn streams the
+    // next update would pull the reader back before they get past it. A
+    // shrinking transcript also lowers scrollTop, but leaves it at the end.
+    const next = movedUp && distance > 1 ? false : distance < 72;
     if (next === followingRef.current) return;
     followingRef.current = next;
     setFollowing(next);

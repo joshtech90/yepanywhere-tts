@@ -362,6 +362,45 @@ describe("Cockpit session detail", () => {
     }
   });
 
+  it("lets a reader leave the end in small steps while updates stream", () => {
+    detailMocks.data = detailData({ processState: "in-turn" });
+    const view = renderDetail();
+    const transcript = screen.getByLabelText("Session conversation");
+    let height = 2000;
+    Object.defineProperty(transcript, "scrollHeight", {
+      configurable: true,
+      get: () => height,
+    });
+    Object.defineProperty(transcript, "clientHeight", {
+      configurable: true,
+      get: () => 400,
+    });
+    transcript.scrollTop = 1600;
+    fireEvent.scroll(transcript);
+
+    // One wheel or touch frame moves less than the near-end band.
+    transcript.scrollTop = 1590;
+    fireEvent.scroll(transcript);
+    height = 2100;
+    const entries = detailMocks.data?.entries ?? [];
+    detailMocks.data = detailData({
+      entries: [
+        ...entries,
+        { kind: "user", key: "live-tail", text: "A live update arrived." },
+      ],
+      processState: "in-turn",
+    });
+    view.rerender(detailTree());
+
+    expect(transcript.scrollTop).toBe(1590);
+    expect(screen.getByRole("button", { name: "Jump to latest" })).toBeTruthy();
+
+    // Returning to the end follows again.
+    transcript.scrollTop = 1700;
+    fireEvent.scroll(transcript);
+    expect(screen.queryByRole("button", { name: "Jump to latest" })).toBeNull();
+  });
+
   it("keeps an idle session to a grey dot without a finished label", () => {
     renderDetail();
 
