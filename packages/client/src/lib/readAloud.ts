@@ -170,6 +170,10 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
       const current = pending;
       const next = chunks[i + 1];
       pending = next ? api.ttsSynthesize(next, true) : null;
+      // Prefetch can fail while the current audio is still playing. Observe
+      // rejection immediately; awaiting this same promise next still reports
+      // the failure through the caller's normal retry state.
+      pending?.catch(() => {});
       if (!current) {
         pending?.catch(() => {});
         break;

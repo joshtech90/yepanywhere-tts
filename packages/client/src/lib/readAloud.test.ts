@@ -8,7 +8,9 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("../api/client", () => ({
   api: {
     ttsPlan: apiMocks.ttsPlan,
-    ttsSynthesize: apiMocks.ttsSynthesize,
+    // Keep the API promise distinct from Vitest's auto-observed mock result.
+    ttsSynthesize: async (...args: unknown[]) =>
+      apiMocks.ttsSynthesize(...args),
   },
 }));
 
@@ -25,15 +27,22 @@ import {
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
 }
 
 function deferred<T>(): Deferred<T> {
   let resolve: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((next) => {
+  let reject: ((reason: unknown) => void) | undefined;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
   return {
     promise,
+    reject(reason) {
+      if (!reject) throw new Error("deferred promise is not initialized");
+      reject(reason);
+    },
     resolve(value) {
       if (!resolve) throw new Error("deferred promise is not initialized");
       resolve(value);
@@ -117,6 +126,33 @@ describe("read-aloud controller", () => {
     expect(getReadAloudState()).toBe("idle");
     expect(getReadAloudToken()).toBeNull();
     expect(getReadAloudFailedToken()).toBeNull();
+  });
+
+  it("handles a failed prefetch while the current chunk is still playing", async () => {
+    const second = deferred<{ audioBase64: string }>();
+    const failure = new Error("prefetch offline");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    apiMocks.ttsPlan.mockResolvedValue({ chunks: ["First", "Second"] });
+    apiMocks.ttsSynthesize
+      .mockResolvedValueOnce({ audioBase64: "AA==" })
+      .mockReturnValueOnce(second.promise);
+
+    const playback = playReadAloud("Answer", "prefetch-failure");
+    await vi.waitFor(() => expect(getReadAloudState()).toBe("playing"));
+    second.reject(failure);
+    // Cross a task boundary: a late catch after ended would already have
+    // emitted an unhandled rejection in the browser (and fail Vitest).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getReadAloudState()).toBe("playing");
+    expect(consoleError).not.toHaveBeenCalled();
+
+    MockAudio.instances[0]?.onended?.();
+    await playback;
+    expect(getReadAloudState()).toBe("idle");
+    expect(getReadAloudFailedToken()).toBe("prefetch-failure");
+    expect(consoleError).toHaveBeenCalledWith("Read aloud failed:", failure);
   });
 
   it("pauses and resumes in place, and holds a chunk that lands while paused", async () => {
