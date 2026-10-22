@@ -46,6 +46,9 @@ export function useCockpitAppShare(
 ): void {
   const latest = useRef({ onText, onFiles, onMissing });
   latest.current = { onText, onFiles, onMissing };
+  // Losses add up across shares; a later successful share (whose files may
+  // clear the form's error) re-reports them instead of hiding them.
+  const missingTotal = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -66,8 +69,14 @@ export function useCockpitAppShare(
           (Number.isInteger(share.missing) ? (share.missing ?? 0) : 0) +
           offered.length -
           files.length;
+        const report = (missing: number) => {
+          missingTotal.current += missing;
+          if (missingTotal.current > 0) {
+            latest.current.onMissing(missingTotal.current);
+          }
+        };
         if (files.length === 0) {
-          if (missingBefore > 0) latest.current.onMissing(missingBefore);
+          if (missingBefore > 0) report(missingBefore);
           continue;
         }
         void Promise.allSettled(files.map(loadSharedFile)).then((results) => {
@@ -76,8 +85,7 @@ export function useCockpitAppShare(
             result.status === "fulfilled" ? [result.value] : [],
           );
           if (loaded.length > 0) latest.current.onFiles(loaded);
-          const missing = missingBefore + files.length - loaded.length;
-          if (missing > 0) latest.current.onMissing(missing);
+          report(missingBefore + files.length - loaded.length);
         });
       }
     };

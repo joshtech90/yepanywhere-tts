@@ -458,7 +458,10 @@ class MainActivity : Activity() {
             ?: return "Download gescheitert"
         try {
             contentResolver.openOutputStream(ziel)?.use { it.write(bytes) } ?: error("kein Ziel")
-            contentResolver.update(ziel, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            val freigegeben = contentResolver.update(
+                ziel, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null,
+            )
+            check(freigegeben == 1) { "nicht freigegeben" }
         } catch (e: Exception) {
             contentResolver.delete(ziel, null, null)
             throw e

@@ -102,14 +102,16 @@ object Meldungen {
     /** Merkt den Zeitpunkt des neuesten Ereignisses je Sitzung; aeltere verwirft es. */
     @Synchronized
     private fun istNeuestes(ctx: Context, rechner: Rechner, sitzung: String, zeit: String): Boolean {
-        val ms = runCatching { java.time.Instant.parse(zeit).toEpochMilli() }.getOrNull() ?: return true
         val prefs = ctx.getSharedPreferences(STAND, Context.MODE_PRIVATE)
         val schluessel = rechner.schluessel + "/" + sitzung
+        // Ohne lesbaren Zeitpunkt nur, solange es fuer die Sitzung noch keinen Stand gibt.
+        val ms = runCatching { java.time.Instant.parse(zeit).toEpochMilli() }.getOrNull()
+            ?: return !prefs.contains(schluessel)
         if (ms < prefs.getLong(schluessel, 0)) return false
         val grenze = System.currentTimeMillis() - STAND_ALTER_MS
         prefs.edit().apply {
+            prefs.all.forEach { (k, v) -> if (k != schluessel && v is Long && v < grenze) remove(k) }
             putLong(schluessel, ms)
-            prefs.all.forEach { (k, v) -> if (v is Long && v < grenze) remove(k) }
         }.apply()
         return true
     }
