@@ -10,6 +10,7 @@ import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitNewSession } from "./CockpitNewSession";
+import { COCKPIT_APP_SHARE_EVENT } from "./useCockpitAppShare";
 
 const state = vi.hoisted(() => ({
   projects: [] as Array<{ id: string; name: string; path: string }>,
@@ -89,7 +90,11 @@ vi.mock("../hooks/useServerSettings", () => ({
   }),
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  delete window.__yepAppShare;
+  vi.unstubAllGlobals();
+});
 beforeEach(() => {
   localStorage.setItem(UI_KEYS.locale, "en");
   state.projects = [];
@@ -383,4 +388,44 @@ describe("Cockpit new session source ownership", () => {
       if (withFile) expect(state.calls).toContain("POST /sessions/s1/messages");
     },
   );
+});
+
+it("keeps Android shares queued during startup and accepts them after failure", async () => {
+  state.projects = [{ id: "os", name: "Smartzone OS", path: "/work/os" }];
+  state.providers = [claudeProvider];
+  let rejectStart!: (reason: Error) => void;
+  state.fetch.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectStart = reject;
+      }),
+  );
+  const sharedFetch = vi.fn(
+    async () => new Response(new Blob(["shared file"])),
+  );
+  vi.stubGlobal("fetch", sharedFetch);
+  renderPage();
+  const input = screen.getByRole("textbox", {
+    name: "First message",
+  }) as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: "Original request" } });
+  fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+  window.__yepAppShare = [
+    {
+      text: "Shared text",
+      files: [{ url: "/__yep_app/teilen/id/0", name: "shared.txt" }],
+    },
+  ];
+  await act(async () => {
+    window.dispatchEvent(new Event(COCKPIT_APP_SHARE_EVENT));
+  });
+  expect(sharedFetch).not.toHaveBeenCalled();
+  expect(input.value).toBe("Original request");
+  expect(window.__yepAppShare).toHaveLength(1);
+  await act(async () => {
+    rejectStart(new Error("Try again"));
+  });
+  expect(input.value).toBe("Original request\n\nShared text");
+  expect(screen.getByText("shared.txt")).toBeTruthy();
+  expect(window.__yepAppShare).toEqual([]);
 });

@@ -20,13 +20,18 @@ declare global {
 
 export const COCKPIT_APP_SHARE_EVENT = "yep-app-share";
 const APP_FILE_PREFIX = "/__yep_app/";
+// A share stays queued until an active form has accepted all of its parts.
+const claimedShares = new WeakSet<CockpitAppShare>();
 
-async function loadSharedFile(file: {
-  url: string;
-  name?: string;
-  type?: string;
-}): Promise<File> {
-  const response = await fetch(file.url, { cache: "no-store" });
+async function loadSharedFile(
+  file: {
+    url: string;
+    name?: string;
+    type?: string;
+  },
+  signal: AbortSignal,
+): Promise<File> {
+  const response = await fetch(file.url, { cache: "no-store", signal });
   if (!response.ok) throw new Error(`share file ${response.status}`);
   const blob = await response.blob();
   return new File([blob], file.name || "file", {
@@ -43,57 +48,79 @@ export function useCockpitAppShare(
   onText: (text: string) => void,
   onFiles: (files: File[]) => void,
   onMissing: (count: number) => void,
+  enabled = true,
 ): void {
-  const latest = useRef({ onText, onFiles, onMissing });
-  latest.current = { onText, onFiles, onMissing };
+  const latest = useRef({ onText, onFiles, onMissing, enabled });
+  latest.current = { onText, onFiles, onMissing, enabled };
   // Losses add up across shares; a later successful share (whose files may
   // clear the form's error) re-reports them instead of hiding them.
   const missingTotal = useRef(0);
 
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
-    const drain = () => {
-      const queue = window.__yepAppShare;
-      if (!queue?.length) return;
-      for (const share of queue.splice(0)) {
-        const text = share.text?.trim();
-        if (text) latest.current.onText(text);
-        const offered = share.files ?? [];
-        const files = offered.filter(
-          (file) =>
-            typeof file.url === "string" &&
-            file.url.startsWith(APP_FILE_PREFIX),
-        );
-        // A text must never arrive silently without the files shared with it.
-        const missingBefore =
-          (Number.isInteger(share.missing) ? (share.missing ?? 0) : 0) +
-          offered.length -
-          files.length;
-        const report = (missing: number) => {
-          missingTotal.current += missing;
-          if (missingTotal.current > 0) {
-            latest.current.onMissing(missingTotal.current);
-          }
-        };
-        if (files.length === 0) {
-          if (missingBefore > 0) report(missingBefore);
-          continue;
-        }
-        void Promise.allSettled(files.map(loadSharedFile)).then((results) => {
-          if (!active) return;
+    let draining = false;
+    let claimed: CockpitAppShare | undefined;
+    const controller = new AbortController();
+    const drain = async () => {
+      if (draining) return;
+      draining = true;
+      try {
+        while (active && latest.current.enabled) {
+          const share = window.__yepAppShare?.[0];
+          if (!share || claimedShares.has(share)) return;
+          claimed = share;
+          claimedShares.add(share);
+          const offered = share.files ?? [];
+          const files = offered.filter(
+            (file) =>
+              typeof file.url === "string" &&
+              file.url.startsWith(APP_FILE_PREFIX),
+          );
+          const results = files.length
+            ? await Promise.allSettled(
+                files.map((file) => loadSharedFile(file, controller.signal)),
+              )
+            : [];
+          if (!active || !latest.current.enabled) return;
           const loaded = results.flatMap((result) =>
             result.status === "fulfilled" ? [result.value] : [],
           );
+          const queue = window.__yepAppShare;
+          const index = queue?.indexOf(share) ?? -1;
+          if (index >= 0) queue?.splice(index, 1);
+          claimedShares.delete(share);
+          claimed = undefined;
+          // Deliver text and attachments together, only once the form can
+          // accept both. Navigation or starting a session leaves them queued.
+          const text = share.text?.trim();
+          if (text) latest.current.onText(text);
           if (loaded.length > 0) latest.current.onFiles(loaded);
-          report(missingBefore + files.length - loaded.length);
-        });
+          missingTotal.current +=
+            (Number.isInteger(share.missing) ? (share.missing ?? 0) : 0) +
+            offered.length -
+            loaded.length;
+          if (missingTotal.current > 0) {
+            latest.current.onMissing(missingTotal.current);
+          }
+        }
+      } finally {
+        draining = false;
       }
     };
-    drain();
-    window.addEventListener(COCKPIT_APP_SHARE_EVENT, drain);
+    const receive = () => {
+      void drain();
+    };
+    receive();
+    window.addEventListener(COCKPIT_APP_SHARE_EVENT, receive);
     return () => {
       active = false;
-      window.removeEventListener(COCKPIT_APP_SHARE_EVENT, drain);
+      controller.abort();
+      window.removeEventListener(COCKPIT_APP_SHARE_EVENT, receive);
+      if (claimed) {
+        claimedShares.delete(claimed);
+        window.dispatchEvent(new Event(COCKPIT_APP_SHARE_EVENT));
+      }
     };
-  }, []);
+  }, [enabled]);
 }
