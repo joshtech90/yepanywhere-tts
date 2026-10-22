@@ -2,6 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 const serviceWorkerSource = readFileSync(
@@ -23,9 +24,19 @@ interface PushPayload {
   timestamp: string;
 }
 
-function loadServiceWorker() {
+function loadServiceWorker(indexedDB = new IDBFactory()) {
   const windowClients: FakeWindowClient[] = [];
-  const showNotification = vi.fn(async () => undefined);
+  const visible = new Map<string, { data?: unknown; close: () => void }>();
+  const showNotification = vi.fn(
+    async (_title: string, options: { tag: string; data?: unknown }) => {
+      visible.set(options.tag, {
+        data: options.data,
+        close: () => {
+          visible.delete(options.tag);
+        },
+      });
+    },
+  );
   const workerGlobal = {
     addEventListener: vi.fn(),
     skipWaiting: vi.fn(),
@@ -35,12 +46,15 @@ function loadServiceWorker() {
     },
     registration: {
       scope: "https://example.test/remote/",
-      getNotifications: vi.fn(async () => []),
+      getNotifications: vi.fn(async ({ tag }: { tag: string }) =>
+        visible.has(tag) ? [visible.get(tag)] : [],
+      ),
       showNotification,
     },
   };
   const context = vm.createContext({
     URL,
+    indexedDB,
     console: {
       error: vi.fn(),
       log: vi.fn(),
@@ -59,7 +73,13 @@ function loadServiceWorker() {
     vm.runInContext(`settings.notifyInApp = ${String(enabled)}`, context);
   };
 
-  return { handlePush, setNotifyInApp, showNotification, windowClients };
+  return {
+    handlePush,
+    setNotifyInApp,
+    showNotification,
+    windowClients,
+    visible,
+  };
 }
 
 function pendingInputPayload(): PushPayload {
@@ -74,6 +94,55 @@ function pendingInputPayload(): PushPayload {
 }
 
 describe("service worker notification presentation", () => {
+  it("keeps a newer approval when an older dismiss arrives late", async () => {
+    const worker = loadServiceWorker();
+    await worker.handlePush({
+      ...pendingInputPayload(),
+      timestamp: "2026-10-22T12:00:02.000Z",
+    });
+    await worker.handlePush({
+      type: "dismiss",
+      sessionId: "session-1",
+      timestamp: "2026-10-22T12:00:01.000Z",
+    });
+    expect(worker.visible.has("session-session-1")).toBe(true);
+  });
+
+  it("remembers dismissal across worker restart and rejects delayed approval", async () => {
+    const db = new IDBFactory();
+    await loadServiceWorker(db).handlePush({
+      type: "dismiss",
+      sessionId: "session-1",
+      timestamp: "2026-10-22T12:00:01.000Z",
+    });
+    const worker = loadServiceWorker(db);
+    await worker.handlePush({
+      ...pendingInputPayload(),
+      timestamp: "2026-10-22T12:00:00.000Z",
+    });
+    expect(worker.showNotification).not.toHaveBeenCalled();
+  });
+
+  it("serializes overlapping display and dismissal and deduplicates a later replay", async () => {
+    const db = new IDBFactory();
+    const worker = loadServiceWorker(db);
+    const pending = pendingInputPayload();
+    await Promise.all([
+      worker.handlePush(pending),
+      worker.handlePush({
+        type: "dismiss",
+        sessionId: pending.sessionId,
+        timestamp: pending.timestamp,
+      }),
+    ]);
+    expect(worker.visible.size).toBe(0);
+    const restarted = loadServiceWorker(db);
+    const completed = { ...pending, type: "session-halted" };
+    await restarted.handlePush(completed);
+    await restarted.handlePush(completed);
+    expect(restarted.showNotification).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["no YA windows", []],
     [
