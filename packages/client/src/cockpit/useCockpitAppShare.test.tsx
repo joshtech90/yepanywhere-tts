@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   COCKPIT_APP_SHARE_EVENT,
@@ -15,12 +15,14 @@ function Receiver({
   onText,
   onFiles,
   onMissing,
+  enabled = true,
 }: {
   onText: (text: string) => void;
   onFiles: (files: File[]) => void;
   onMissing: (count: number) => void;
+  enabled?: boolean;
 }) {
-  useCockpitAppShare(onText, onFiles, onMissing);
+  useCockpitAppShare(onText, onFiles, onMissing, enabled);
   return null;
 }
 
@@ -65,4 +67,38 @@ describe("useCockpitAppShare", () => {
     expect(onMissing).toHaveBeenCalledWith(2);
     expect(window.__yepAppShare).toEqual([]);
   });
+});
+
+it("keeps a share atomic across navigation and a busy receiver", async () => {
+  let resolveFile!: (value: Response) => void;
+  const fetchMock = vi
+    .fn()
+    .mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFile = resolve;
+        }),
+    )
+    .mockResolvedValue(new Response(new Blob(["file"])));
+  vi.stubGlobal("fetch", fetchMock);
+  const callbacks = { onText: vi.fn(), onFiles: vi.fn(), onMissing: vi.fn() };
+  window.__yepAppShare = [
+    {
+      text: "Shared message",
+      files: [{ url: "/__yep_app/teilen/id/0", name: "notes.txt" }],
+    },
+  ];
+  const first = render(<Receiver {...callbacks} />);
+  expect(callbacks.onText).not.toHaveBeenCalled();
+  first.unmount();
+  const next = render(<Receiver {...callbacks} enabled={false} />);
+  await act(async () => {
+    resolveFile(new Response(new Blob(["old"])));
+  });
+  expect(callbacks.onFiles).not.toHaveBeenCalled();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  next.rerender(<Receiver {...callbacks} />);
+  await waitFor(() => expect(callbacks.onFiles).toHaveBeenCalledTimes(1));
+  expect(callbacks.onText).toHaveBeenCalledExactlyOnceWith("Shared message");
+  expect(window.__yepAppShare).toEqual([]);
 });
