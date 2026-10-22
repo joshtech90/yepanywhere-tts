@@ -77,6 +77,19 @@ describe("normalizeGeneratedSessionTitle", () => {
     );
   });
 
+  it.each([
+    ["„Telegram-Bot Deploy“", "Telegram-Bot Deploy"],
+    ["‚Telegram-Bot Deploy‘", "Telegram-Bot Deploy"],
+    ['"Foo" vs "Bar"', '"Foo" vs "Bar"'],
+    ['Fix "ENOENT"', 'Fix "ENOENT"'],
+    ['"ENOENT" beheben', '"ENOENT" beheben'],
+  ])(
+    "preserves quoted terms while removing title wrappers: %s",
+    (raw, title) => {
+      expect(normalizeGeneratedSessionTitle(raw)).toBe(title);
+    },
+  );
+
   it("takes the first non-empty line when the model adds a preamble", () => {
     expect(
       normalizeGeneratedSessionTitle(
