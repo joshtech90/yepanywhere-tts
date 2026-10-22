@@ -5,6 +5,7 @@ import { CockpitSessionRow } from "./CockpitSessionRow";
 import { filterCockpitCatalog, type CockpitCatalogView } from "./core/catalog";
 import { splitCockpitFavorites } from "./core/catalogSections";
 import { createCockpitNavigation } from "./core/navigation";
+import { containCockpitLocalEscape } from "./core/shortcuts";
 import styles from "./CockpitCatalog.module.css";
 import type { CockpitOrganizationController } from "./useCockpitOrganization";
 import { useCockpitSessionMenu } from "./useCockpitSessionMenu";
@@ -75,6 +76,14 @@ export function CockpitCatalog({
           <input
             aria-label={t("cockpitSearchLabel")}
             onChange={(event) => onQueryChange(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              // Escape belongs to the filter here, never to the page's Stop
+              // shortcut for the session open beside the list: it clears the
+              // filter, then leaves the field (a drawer closes on the next).
+              if (!containCockpitLocalEscape(event)) return;
+              if (query) onQueryChange("");
+              else event.currentTarget.blur();
+            }}
             placeholder={t("cockpitSearchPlaceholder")}
             type="search"
             value={query}
