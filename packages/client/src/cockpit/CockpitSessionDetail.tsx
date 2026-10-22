@@ -533,6 +533,11 @@ export function CockpitSessionDetail({
   // open until they return to the end, so the text under them does not
   // vanish mid-read. The next turn releases it as well.
   const wasWorkingRef = useRef(sessionWorking);
+  // Hold it in the completion render itself. Waiting for the layout effect
+  // would first unmount the open tools, losing their local inspection state.
+  const holdFinishedTurn =
+    latestTurnHeldOpen ||
+    (wasWorkingRef.current && !sessionWorking && !followingRef.current);
   useLayoutEffect(() => {
     if (wasWorkingRef.current && !sessionWorking && !followingRef.current) {
       setLatestTurnHeldOpen(true);
@@ -547,9 +552,9 @@ export function CockpitSessionDetail({
     () =>
       foldCockpitTurns(transcriptEntries, {
         expandedFoldKeys,
-        latestTurnOpen: sessionWorking || latestTurnHeldOpen,
+        latestTurnOpen: sessionWorking || holdFinishedTurn,
       }),
-    [expandedFoldKeys, latestTurnHeldOpen, sessionWorking, transcriptEntries],
+    [expandedFoldKeys, holdFinishedTurn, sessionWorking, transcriptEntries],
   );
 
   // Opening or closing a fold keeps that row where it is instead of

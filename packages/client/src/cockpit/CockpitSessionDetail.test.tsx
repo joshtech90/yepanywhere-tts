@@ -789,9 +789,17 @@ describe("Cockpit session detail", () => {
       transcript.scrollTop = 100;
       fireEvent.scroll(transcript);
 
+      const tool = view.container.querySelector<HTMLDetailsElement>(
+        "details[data-status]",
+      );
+      if (!tool) throw new Error("tool missing");
+      tool.open = true;
+      fireEvent(tool, new Event("toggle"));
+
       detailMocks.data = detailData({ entries: workedTurn });
       view.rerender(detailTree());
       expect(screen.getByText("Looking at the notes first.")).toBeTruthy();
+      expect(view.container.querySelector("details[open]")).toBe(tool);
 
       transcript.scrollTop = 1600;
       fireEvent.scroll(transcript);
