@@ -1008,6 +1008,60 @@ describe("PushNotifier", () => {
     });
   });
 
+  describe("overlapping approval delivery", () => {
+    it("deduplicates repeated state events and dismisses an answered in-flight approval", async () => {
+      const process = {
+        userTurnVersion: 0,
+        state: {
+          type: "waiting-input",
+          request: { id: "request-1", type: "tool-approval", toolName: "Bash" },
+        } as ProcessState,
+      };
+      vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue(
+        process as ReturnType<Supervisor["getProcessForSession"]>,
+      );
+      let delivered!: (
+        value: { browserProfileId: string; success: boolean }[],
+      ) => void;
+      const delivery = new Promise<
+        { browserProfileId: string; success: boolean }[]
+      >((resolve) => {
+        delivered = resolve;
+      });
+      vi.mocked(mockPushService.sendToAll).mockImplementationOnce(
+        () => delivery,
+      );
+      const notifier = new PushNotifier({
+        eventBus: mockEventBus,
+        pushService: mockPushService,
+        supervisor: mockSupervisor,
+      });
+      const event: ProcessStateEvent = {
+        type: "process-state-changed",
+        sessionId: "session-1",
+        projectId: testProjectId,
+        activity: "waiting-input",
+        timestamp: "2026-10-22T12:00:00.000Z",
+      };
+      eventHandler?.(event);
+      eventHandler?.(event);
+      expect(mockPushService.sendToAll).toHaveBeenCalledTimes(1);
+      process.state = { type: "in-turn" };
+      const answeredAt = "2026-10-22T12:00:01.000Z";
+      eventHandler?.({ ...event, activity: "in-turn", timestamp: answeredAt });
+      delivered([{ browserProfileId: "profile-1", success: true }]);
+      await delivery;
+      await Promise.resolve();
+      expect(mockPushService.sendToAll).toHaveBeenCalledTimes(2);
+      expect(mockPushService.sendToAll).toHaveBeenLastCalledWith({
+        type: "dismiss",
+        sessionId: "session-1",
+        timestamp: answeredAt,
+      });
+      notifier.dispose();
+    });
+  });
+
   describe("dismissal sync", () => {
     it("should send dismiss when process leaves waiting-input state", async () => {
       const mockProcess = {
