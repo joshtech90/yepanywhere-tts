@@ -276,14 +276,17 @@ export class PushNotifier {
       return;
     }
 
-    await this.sendSessionHalted({
-      sessionId: event.sessionId,
-      projectId: event.projectId,
-      reason: "completed",
-      duration: this.getDurationMs(process.startedAt, event.timestamp),
-      timestamp: event.timestamp,
-      lastMessage: this.getFinalAnswerExcerpt(process),
-    });
+    await this.sendSessionHalted(
+      {
+        sessionId: event.sessionId,
+        projectId: event.projectId,
+        reason: "completed",
+        duration: this.getDurationMs(process.startedAt, event.timestamp),
+        timestamp: event.timestamp,
+        lastMessage: this.getFinalAnswerExcerpt(process),
+      },
+      process,
+    );
   }
 
   /**
@@ -300,13 +303,16 @@ export class PushNotifier {
       state.active = false;
       state.errorNotified = true;
     }
-    await this.sendSessionHalted({
-      sessionId: event.sessionId,
-      projectId: event.projectId,
-      reason: "error",
-      duration: this.getDurationMs(process?.startedAt, event.timestamp),
-      timestamp: event.timestamp,
-    });
+    await this.sendSessionHalted(
+      {
+        sessionId: event.sessionId,
+        projectId: event.projectId,
+        reason: "error",
+        duration: this.getDurationMs(process?.startedAt, event.timestamp),
+        timestamp: event.timestamp,
+      },
+      process,
+    );
   }
 
   /**
@@ -340,14 +346,18 @@ export class PushNotifier {
     return state;
   }
 
-  private async sendSessionHalted(input: {
-    sessionId: string;
-    projectId: UrlProjectId;
-    reason: SessionHaltedPayload["reason"];
-    duration: number;
-    timestamp: string;
-    lastMessage?: string;
-  }): Promise<void> {
+  private async sendSessionHalted(
+    input: {
+      sessionId: string;
+      projectId: UrlProjectId;
+      reason: SessionHaltedPayload["reason"];
+      duration: number;
+      timestamp: string;
+      lastMessage?: string;
+    },
+    process?: Process,
+  ): Promise<void> {
+    const userTurnVersion = process?.userTurnVersion;
     if (this.pushService.getSubscriptionCount() === 0) {
       return;
     }
@@ -360,6 +370,18 @@ export class PushNotifier {
     const sessionTitle =
       this.resolveSessionTitle &&
       (await this.getSessionTitle(input.projectId, input.sessionId));
+    // Title resolution may outlive Stop, shutdown, or the next turn. Keep
+    // the originating Process even if normal cleanup unregisters it.
+    const current = this.supervisor.getProcessForSession(input.sessionId);
+    if (
+      this.disposed ||
+      (process &&
+        (process.userTurnVersion !== userTurnVersion ||
+          this.getNotificationState(process).stoppedAtUserTurn !== undefined ||
+          (current && current !== process)))
+    ) {
+      return;
+    }
     const payload: SessionHaltedPayload = {
       type: "session-halted",
       sessionId: input.sessionId,

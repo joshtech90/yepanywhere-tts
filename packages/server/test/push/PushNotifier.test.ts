@@ -673,6 +673,61 @@ describe("PushNotifier", () => {
     });
   });
 
+  describe("delayed session titles", () => {
+    it.each(["shutdown", "stop", "new-turn", "replacement"] as const)(
+      "does not send an obsolete completion after %s during title lookup",
+      async (action) => {
+        const process = {
+          userTurnVersion: 0,
+          state: { type: "idle", since: new Date() } as ProcessState,
+          startedAt: new Date(),
+        };
+        vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue(
+          process as ReturnType<Supervisor["getProcessForSession"]>,
+        );
+        let resolveTitle!: (title: string) => void;
+        const title = new Promise<string>((resolve) => {
+          resolveTitle = resolve;
+        });
+        const notifier = new PushNotifier({
+          eventBus: mockEventBus,
+          supervisor: mockSupervisor,
+          pushService: mockPushService,
+          sessionTitle: () => title,
+        });
+        const event: ProcessStateEvent = {
+          type: "process-state-changed",
+          sessionId: "session-1",
+          projectId: testProjectId,
+          activity: "idle",
+          timestamp: new Date().toISOString(),
+        };
+        eventHandler?.({ ...event, activity: "in-turn" });
+        eventHandler?.(event);
+        if (action === "shutdown") notifier.dispose();
+        else if (action === "stop")
+          eventHandler?.({
+            type: "session-stop-requested",
+            sessionId: event.sessionId,
+            projectId: testProjectId,
+            timestamp: event.timestamp,
+          });
+        else if (action === "new-turn") process.userTurnVersion++;
+        else
+          vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue({
+            ...process,
+          } as ReturnType<Supervisor["getProcessForSession"]>);
+        resolveTitle("Delayed title");
+        await title;
+        // Drain the title lookup and the notifier continuation.
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(mockPushService.sendToAll).not.toHaveBeenCalled();
+        notifier.dispose();
+      },
+    );
+  });
+
   describe("real supervisor and process lifecycle", () => {
     it.each(["stop", "kill", "shutdown"])(
       "keeps %s cleanup quiet without changing provider teardown",
