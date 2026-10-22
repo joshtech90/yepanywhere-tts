@@ -12,7 +12,8 @@ import {
   type KeyboardEvent,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type SessionOptions } from "../api/client";
+import type { SessionOptions } from "../api/client";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { isRequestDeadlineError } from "../api/requestDeadline";
 import {
   getAttachmentUploadProfile,
@@ -29,7 +30,6 @@ import {
 } from "../lib/sessionComposerAttachments";
 import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
 import { createSessionNavigationState } from "../lib/sessionNavigationState";
-import { getSourceRuntimeRegistry } from "../lib/sourceRuntime";
 import type { SourceTransport } from "../lib/transport";
 import type { PermissionMode } from "../types";
 import {
@@ -194,6 +194,7 @@ export function CockpitNewSession({
 }: CockpitNewSessionProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const runtime = useCurrentSourceRuntime();
   const navigation = useMemo(
     () => createCockpitNavigation(basePath),
     [basePath],
@@ -365,11 +366,11 @@ export function CockpitNewSession({
    * meanwhile.
    */
   const startWithFiles = async (
+    transport: SourceTransport,
     targetProjectId: string,
     text: string,
     options: SessionOptions,
   ): Promise<CockpitCreatedSession> => {
-    const { transport } = getSourceRuntimeRegistry().getCurrentSourceRuntime();
     const created = await transport.fetch<
       CockpitCreatedSession | { queued: true; queueId: string }
     >(`/projects/${targetProjectId}/sessions/create`, {
@@ -444,12 +445,19 @@ export function CockpitNewSession({
 
   const start = async () => {
     if (!canStart || !choices) return;
+    const transport = runtime.transport;
     setStarting(true);
     setError(null);
     try {
       let targetProjectId = projectChoice;
       if (customFolder) {
-        const added = await api.addProject(folderPath);
+        const added = await transport.fetch<{ project: { id: string } }>(
+          "/projects",
+          {
+            method: "POST",
+            body: JSON.stringify({ path: folderPath }),
+          },
+        );
         targetProjectId = added.project.id;
       }
       if (!targetProjectId) throw new Error(t("newSessionProjectNotFound"));
@@ -457,13 +465,17 @@ export function CockpitNewSession({
       const options = launchOptions(choices);
       const result =
         files.length > 0
-          ? await startWithFiles(targetProjectId, text, options)
-          : await api.startSession(
-              targetProjectId,
-              text,
-              options,
-              undefined,
-              Date.now(),
+          ? await startWithFiles(transport, targetProjectId, text, options)
+          : await transport.fetch<CockpitCreatedSession>(
+              `/projects/${targetProjectId}/sessions`,
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  ...options,
+                  message: text,
+                  clientTimestamp: Date.now(),
+                }),
+              },
             );
       const remembered = rememberLaunch(defaults, choices.effective, legacy);
       if (remembered) {
@@ -511,6 +523,8 @@ export function CockpitNewSession({
     if (
       event.key !== "Enter" ||
       event.shiftKey ||
+      event.repeat ||
+      event.keyCode === 229 ||
       event.nativeEvent.isComposing
     )
       return;

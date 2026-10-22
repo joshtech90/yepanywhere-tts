@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
@@ -15,6 +21,8 @@ const state = vi.hoisted(() => ({
   createResponse: {} as Record<string, unknown>,
   fetch: vi.fn(),
   startSession: vi.fn(),
+  otherHost: false,
+  otherFetch: vi.fn(),
   upload: vi.fn(),
 }));
 
@@ -24,6 +32,11 @@ vi.mock("../api/client", () => ({
       settings: { cockpitProjectFavorites: state.serverFavorites },
     })),
     startSession: state.startSession,
+    addProject: (path: string) =>
+      state.fetch("/projects", {
+        method: "POST",
+        body: JSON.stringify({ path }),
+      }),
   },
 }));
 
@@ -31,11 +44,22 @@ vi.mock("../lib/sourceRuntime", () => ({
   getSourceRuntimeRegistry: () => ({
     getCurrentSourceRuntime: () => ({
       transport: {
-        fetch: state.fetch,
+        fetch: state.otherHost ? state.otherFetch : state.fetch,
         upload: state.upload,
         uploadStagedAttachment: vi.fn(),
       },
     }),
+  }),
+}));
+
+vi.mock("../contexts/SourceRuntimeContext", () => ({
+  useCurrentSourceRuntime: () => ({
+    sourceKey: "local",
+    transport: {
+      fetch: state.fetch,
+      upload: state.upload,
+      uploadStagedAttachment: vi.fn(),
+    },
   }),
 }));
 
@@ -90,7 +114,7 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation(async (path: string, init?: RequestInit) => {
       state.calls.push(`${init?.method ?? "GET"} ${path}`);
-      return path.endsWith("/sessions/create")
+      return path.endsWith("/sessions/create") || path.endsWith("/sessions")
         ? state.createResponse
         : { queued: true };
     });
@@ -105,7 +129,20 @@ beforeEach(() => {
       mimeType: "text/plain",
     };
   });
-  state.startSession.mockReset();
+  state.otherHost = false;
+  state.otherFetch.mockReset().mockResolvedValue(state.createResponse);
+  state.startSession
+    .mockReset()
+    .mockImplementation(
+      (projectId: string, message: string, options: unknown) =>
+        (state.otherHost ? state.otherFetch : state.fetch)(
+          `/projects/${projectId}/sessions`,
+          {
+            method: "POST",
+            body: JSON.stringify({ message, ...(options as object) }),
+          },
+        ),
+    );
 });
 
 function renderPage() {
@@ -281,4 +318,69 @@ describe("Cockpit new session attachments", () => {
       "Server is busy. Please try again in a moment.",
     );
   });
+});
+
+describe("Cockpit new session keyboard submission", () => {
+  it("keeps composition, shifted and repeated Enter in the editor", async () => {
+    state.projects = [{ id: "os", name: "Smartzone OS", path: "/work/os" }];
+    state.providers = [claudeProvider];
+    renderPage();
+    const input = screen.getByRole("textbox", { name: "First message" });
+    fireEvent.change(input, {
+      target: { value: "Draft still being composed" },
+    });
+    for (const flags of [
+      { isComposing: true },
+      { keyCode: 229 },
+      { repeat: true },
+      { shiftKey: true },
+    ]) {
+      fireEvent.keyDown(input, { key: "Enter", ...flags });
+      expect(state.fetch).not.toHaveBeenCalled();
+    }
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    expect(state.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Cockpit new session source ownership", () => {
+  it.each([false, true])(
+    "keeps delayed folder resolution on its original host (files: %s)",
+    async (withFile) => {
+      state.providers = [claudeProvider];
+      let resolveProject!: (value: unknown) => void;
+      state.fetch.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveProject = resolve;
+          }),
+      );
+      const view = renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Fresh" }));
+      fireEvent.change(screen.getByRole("textbox", { name: "First message" }), {
+        target: { value: "Stay on this host" },
+      });
+      if (withFile)
+        fireEvent.drop(screen.getByRole("form"), {
+          dataTransfer: {
+            files: [new File(["hello"], "notes.txt", { type: "text/plain" })],
+            types: ["Files"],
+          },
+        });
+      fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+      expect(state.fetch.mock.calls[0]?.[0]).toBe("/projects");
+      state.otherHost = true;
+      view.unmount();
+      await act(async () => {
+        resolveProject({ project: { id: "os" } });
+      });
+      expect(state.otherFetch).not.toHaveBeenCalled();
+      expect(state.fetch.mock.calls[1]?.[0]).toBe(
+        withFile ? "/projects/os/sessions/create" : "/projects/os/sessions",
+      );
+      if (withFile) expect(state.calls).toContain("POST /sessions/s1/messages");
+    },
+  );
 });
