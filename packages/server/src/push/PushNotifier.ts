@@ -111,6 +111,13 @@ export function finalAnswerExcerpt(
   return undefined;
 }
 
+interface PendingNotification {
+  process: Process;
+  requestId: string;
+  delivered: boolean;
+  dismissedAt?: string;
+}
+
 interface NotificationState {
   active: boolean;
   stoppedAtUserTurn?: number;
@@ -128,7 +135,7 @@ export class PushNotifier {
    * Track sessions we've sent notifications for (to know when to send
    * dismiss). Each entry is deleted when its dismiss is sent.
    */
-  private sessionsWithNotification = new Set<string>();
+  private sessionsWithNotification = new Map<string, PendingNotification>();
   // Key by process lifetime: replacement sessions cannot inherit suppression,
   // and terminated processes do not leave an unbounded session-id ledger.
   private processStates = new WeakMap<Process, NotificationState>();
@@ -176,8 +183,12 @@ export class PushNotifier {
 
     // Send dismiss when leaving waiting-input (if we sent a notification for it)
     if (event.activity !== "waiting-input") {
-      if (this.sessionsWithNotification.delete(event.sessionId)) {
-        await this.sendDismiss(event.sessionId);
+      const pending = this.sessionsWithNotification.get(event.sessionId);
+      if (pending) {
+        this.sessionsWithNotification.delete(event.sessionId);
+        pending.dismissedAt = event.timestamp;
+        if (pending.delivered)
+          await this.sendDismiss(event.sessionId, event.timestamp);
       }
       if (event.activity !== "idle") {
         return;
@@ -213,6 +224,16 @@ export class PushNotifier {
       return;
     }
 
+    const previous = this.sessionsWithNotification.get(event.sessionId);
+    if (previous?.process === process && previous.requestId === request.id)
+      return;
+    const pending: PendingNotification = {
+      process,
+      requestId: request.id,
+      delivered: false,
+    };
+    // Claim this request before title lookup or delivery yields.
+    this.sessionsWithNotification.set(event.sessionId, pending);
     const projectName = this.getProjectName(event.projectId);
     const summary = this.buildSummary(request);
     // Without a resolver stay synchronous, as delivery was before titles.
@@ -221,14 +242,21 @@ export class PushNotifier {
       (await this.getSessionTitle(event.projectId, event.sessionId));
     // The lookup yielded: an answer in the meantime already sent no dismiss
     // for a notification that does not exist yet, so do not send a stale one.
-    const current = this.supervisor.getProcessForSession(
+    const currentProcess = this.supervisor.getProcessForSession(
       event.sessionId,
-    )?.state;
+    );
+    const current = currentProcess?.state;
     if (
       this.disposed ||
+      pending.dismissedAt ||
+      currentProcess !== process ||
+      this.getNotificationState(process).stoppedAtUserTurn !== undefined ||
       current?.type !== "waiting-input" ||
       current.request.id !== request.id
     ) {
+      if (this.sessionsWithNotification.get(event.sessionId) === pending) {
+        this.sessionsWithNotification.delete(event.sessionId);
+      }
       return;
     }
 
@@ -251,11 +279,21 @@ export class PushNotifier {
         console.log(
           `[PushNotifier] Sent pending-input notification to ${successCount}/${results.length} devices`,
         );
-        // Track that we sent a notification for this session
-        this.sessionsWithNotification.add(event.sessionId);
+        pending.delivered = true;
+        // An answer can arrive before the transport acknowledges the push.
+        // Use the answer's event time, never the later delivery time.
+        if (pending.dismissedAt)
+          await this.sendDismiss(event.sessionId, pending.dismissedAt);
       }
     } catch (error) {
       console.error("[PushNotifier] Failed to send push notification:", error);
+    } finally {
+      if (
+        (!pending.delivered || pending.dismissedAt) &&
+        this.sessionsWithNotification.get(event.sessionId) === pending
+      ) {
+        this.sessionsWithNotification.delete(event.sessionId);
+      }
     }
   }
 
@@ -276,14 +314,17 @@ export class PushNotifier {
       return;
     }
 
-    await this.sendSessionHalted({
-      sessionId: event.sessionId,
-      projectId: event.projectId,
-      reason: "completed",
-      duration: this.getDurationMs(process.startedAt, event.timestamp),
-      timestamp: event.timestamp,
-      lastMessage: this.getFinalAnswerExcerpt(process),
-    });
+    await this.sendSessionHalted(
+      {
+        sessionId: event.sessionId,
+        projectId: event.projectId,
+        reason: "completed",
+        duration: this.getDurationMs(process.startedAt, event.timestamp),
+        timestamp: event.timestamp,
+        lastMessage: this.getFinalAnswerExcerpt(process),
+      },
+      process,
+    );
   }
 
   /**
@@ -300,13 +341,16 @@ export class PushNotifier {
       state.active = false;
       state.errorNotified = true;
     }
-    await this.sendSessionHalted({
-      sessionId: event.sessionId,
-      projectId: event.projectId,
-      reason: "error",
-      duration: this.getDurationMs(process?.startedAt, event.timestamp),
-      timestamp: event.timestamp,
-    });
+    await this.sendSessionHalted(
+      {
+        sessionId: event.sessionId,
+        projectId: event.projectId,
+        reason: "error",
+        duration: this.getDurationMs(process?.startedAt, event.timestamp),
+        timestamp: event.timestamp,
+      },
+      process,
+    );
   }
 
   /**
@@ -340,14 +384,18 @@ export class PushNotifier {
     return state;
   }
 
-  private async sendSessionHalted(input: {
-    sessionId: string;
-    projectId: UrlProjectId;
-    reason: SessionHaltedPayload["reason"];
-    duration: number;
-    timestamp: string;
-    lastMessage?: string;
-  }): Promise<void> {
+  private async sendSessionHalted(
+    input: {
+      sessionId: string;
+      projectId: UrlProjectId;
+      reason: SessionHaltedPayload["reason"];
+      duration: number;
+      timestamp: string;
+      lastMessage?: string;
+    },
+    process?: Process,
+  ): Promise<void> {
+    const userTurnVersion = process?.userTurnVersion;
     if (this.pushService.getSubscriptionCount() === 0) {
       return;
     }
@@ -360,6 +408,18 @@ export class PushNotifier {
     const sessionTitle =
       this.resolveSessionTitle &&
       (await this.getSessionTitle(input.projectId, input.sessionId));
+    // Title resolution may outlive Stop, shutdown, or the next turn. Keep
+    // the originating Process even if normal cleanup unregisters it.
+    const current = this.supervisor.getProcessForSession(input.sessionId);
+    if (
+      this.disposed ||
+      (process &&
+        (process.userTurnVersion !== userTurnVersion ||
+          this.getNotificationState(process).stoppedAtUserTurn !== undefined ||
+          (current && current !== process)))
+    ) {
+      return;
+    }
     const payload: SessionHaltedPayload = {
       type: "session-halted",
       sessionId: input.sessionId,
@@ -391,7 +451,10 @@ export class PushNotifier {
   /**
    * Send a dismiss notification to close notifications on all devices.
    */
-  private async sendDismiss(sessionId: string): Promise<void> {
+  private async sendDismiss(
+    sessionId: string,
+    timestamp: string,
+  ): Promise<void> {
     if (this.pushService.getSubscriptionCount() === 0) {
       return;
     }
@@ -399,7 +462,7 @@ export class PushNotifier {
     const payload: DismissPayload = {
       type: "dismiss",
       sessionId,
-      timestamp: new Date().toISOString(),
+      timestamp,
     };
 
     try {

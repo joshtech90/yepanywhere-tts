@@ -94,6 +94,43 @@ describe("service worker notification clicks", () => {
     expect(openWindow).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "https://example.test/remote/cockpit/projects/project-1/sessions/session-10",
+    "https://example.test/remote/cockpit/projects/project-2/sessions/session-1",
+    "https://example.test/remote/cockpit?previous=session-1",
+  ])("navigates instead of focusing a partial match: %s", async (url) => {
+    const client = windowClient(url);
+    const { click } = loadServiceWorker([client]);
+    await click({ sessionId: "session-1", projectId: "project-1" });
+    expect(client.navigate).toHaveBeenCalledWith(
+      "https://example.test/remote/cockpit/projects/project-1/sessions/session-1",
+    );
+  });
+
+  it("leaves another service worker scope alone", async () => {
+    const other = windowClient(
+      "https://example.test/other/cockpit/projects/project-1/sessions/session-1",
+    );
+    const { click, openWindow } = loadServiceWorker([other]);
+    await click({ sessionId: "session-1", projectId: "project-1" });
+    expect(other.focus).not.toHaveBeenCalled();
+    expect(other.navigate).not.toHaveBeenCalled();
+    expect(openWindow).toHaveBeenCalledWith(
+      "https://example.test/remote/cockpit/projects/project-1/sessions/session-1",
+    );
+  });
+
+  it("navigates a session tab to the overview for a project notification", async () => {
+    const client = windowClient(
+      "https://example.test/remote/cockpit/projects/project-1/sessions/session-1",
+    );
+    const { click } = loadServiceWorker([client]);
+    await click({ target: "project", projectId: "project-2" });
+    expect(client.navigate).toHaveBeenCalledWith(
+      "https://example.test/remote/cockpit",
+    );
+  });
+
   it("sends project notifications to the Cockpit overview", async () => {
     const { click, openWindow } = loadServiceWorker([]);
 

@@ -18,7 +18,7 @@
 // Version constant for controlled updates
 // Increment this when making intentional SW changes
 // Browsers reinstall SW only when file content changes
-const SW_VERSION = "1.0.11";
+const SW_VERSION = "1.0.12";
 void SW_VERSION;
 const FRONTEND_RELOAD_QUERY_PARAM = "__ya_reload";
 const INCOMING_SHARE_QUERY_PARAM = "__ya_share";
@@ -744,14 +744,11 @@ async function openSession(sessionId, projectId) {
   if (sessionId && projectId) {
     // The Cockpit is the default surface; its session route mirrors the
     // classic one under ./cockpit/.
-    path = `./cockpit/projects/${encodeURIComponent(projectId)}/sessions/${sessionId}`;
+    path = `./cockpit/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`;
   }
   return openAppPath(path, {
     sessionId,
     projectId,
-    // Only a Cockpit tab counts: a classic tab would keep the old UI.
-    matchClient: (client) =>
-      sessionId && isCockpitUrl(client.url) && client.url.includes(sessionId),
   });
 }
 
@@ -760,19 +757,20 @@ async function openSession(sessionId, projectId) {
 async function openProject(projectId) {
   return openAppPath("./cockpit", {
     projectId,
-    matchClient: (client) => isCockpitUrl(client.url),
   });
 }
 
 async function openProjects() {
-  return openAppPath("./cockpit", {
-    matchClient: (client) => isCockpitUrl(client.url),
-  });
+  return openAppPath("./cockpit", {});
 }
 
-function isCockpitUrl(url) {
+function isAppClient(client) {
   try {
-    return new URL(url).pathname.includes("/cockpit");
+    const url = new URL(client.url);
+    const scope = new URL(self.registration.scope);
+    return (
+      url.origin === scope.origin && url.pathname.startsWith(scope.pathname)
+    );
   } catch {
     return false;
   }
@@ -780,9 +778,9 @@ function isCockpitUrl(url) {
 
 async function openAppPath(path, context) {
   const url = new URL(path, self.registration.scope).href;
-  const { matchClient, ...logContext } = context;
+  const target = new URL(url);
 
-  await swLog("info", "Opening app URL", { url, ...logContext });
+  await swLog("info", "Opening app URL", { url, ...context });
 
   // Try to focus an existing matching window, or open a new one.
   // includeUncontrolled: true ensures we find windows that haven't been claimed yet
@@ -798,21 +796,28 @@ async function openAppPath(path, context) {
 
   // Look for an existing window we can focus
   for (const client of clients) {
-    if (matchClient?.(client)) {
+    if (
+      isAppClient(client) &&
+      new URL(client.url).pathname === target.pathname
+    ) {
       await swLog("info", "Focusing existing matching window");
-      return client.focus();
+      try {
+        return await client.focus();
+      } catch {
+        // A tab can close between enumeration and focus. Try another one.
+      }
     }
   }
 
   // Try to navigate an existing window
   for (const client of clients) {
-    if ("navigate" in client) {
+    if (isAppClient(client) && "navigate" in client) {
       await swLog("info", "Navigating existing window", {
         clientUrl: client.url,
       });
       try {
-        await client.navigate(url);
-        return client.focus();
+        const navigated = await client.navigate(url);
+        if (navigated) return await navigated.focus();
       } catch (e) {
         await swLog("error", "Failed to navigate window", { error: e.message });
       }

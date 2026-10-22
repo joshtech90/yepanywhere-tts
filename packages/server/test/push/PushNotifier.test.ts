@@ -673,6 +673,61 @@ describe("PushNotifier", () => {
     });
   });
 
+  describe("delayed session titles", () => {
+    it.each(["shutdown", "stop", "new-turn", "replacement"] as const)(
+      "does not send an obsolete completion after %s during title lookup",
+      async (action) => {
+        const process = {
+          userTurnVersion: 0,
+          state: { type: "idle", since: new Date() } as ProcessState,
+          startedAt: new Date(),
+        };
+        vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue(
+          process as ReturnType<Supervisor["getProcessForSession"]>,
+        );
+        let resolveTitle!: (title: string) => void;
+        const title = new Promise<string>((resolve) => {
+          resolveTitle = resolve;
+        });
+        const notifier = new PushNotifier({
+          eventBus: mockEventBus,
+          supervisor: mockSupervisor,
+          pushService: mockPushService,
+          sessionTitle: () => title,
+        });
+        const event: ProcessStateEvent = {
+          type: "process-state-changed",
+          sessionId: "session-1",
+          projectId: testProjectId,
+          activity: "idle",
+          timestamp: new Date().toISOString(),
+        };
+        eventHandler?.({ ...event, activity: "in-turn" });
+        eventHandler?.(event);
+        if (action === "shutdown") notifier.dispose();
+        else if (action === "stop")
+          eventHandler?.({
+            type: "session-stop-requested",
+            sessionId: event.sessionId,
+            projectId: testProjectId,
+            timestamp: event.timestamp,
+          });
+        else if (action === "new-turn") process.userTurnVersion++;
+        else
+          vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue({
+            ...process,
+          } as ReturnType<Supervisor["getProcessForSession"]>);
+        resolveTitle("Delayed title");
+        await title;
+        // Drain the title lookup and the notifier continuation.
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(mockPushService.sendToAll).not.toHaveBeenCalled();
+        notifier.dispose();
+      },
+    );
+  });
+
   describe("real supervisor and process lifecycle", () => {
     it.each(["stop", "kill", "shutdown"])(
       "keeps %s cleanup quiet without changing provider teardown",
@@ -950,6 +1005,60 @@ describe("PushNotifier", () => {
 
       const payload = vi.mocked(mockPushService.sendToAll).mock.calls[0][0];
       expect(payload.summary).toBe(shortPrompt);
+    });
+  });
+
+  describe("overlapping approval delivery", () => {
+    it("deduplicates repeated state events and dismisses an answered in-flight approval", async () => {
+      const process = {
+        userTurnVersion: 0,
+        state: {
+          type: "waiting-input",
+          request: { id: "request-1", type: "tool-approval", toolName: "Bash" },
+        } as ProcessState,
+      };
+      vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue(
+        process as ReturnType<Supervisor["getProcessForSession"]>,
+      );
+      let delivered!: (
+        value: { browserProfileId: string; success: boolean }[],
+      ) => void;
+      const delivery = new Promise<
+        { browserProfileId: string; success: boolean }[]
+      >((resolve) => {
+        delivered = resolve;
+      });
+      vi.mocked(mockPushService.sendToAll).mockImplementationOnce(
+        () => delivery,
+      );
+      const notifier = new PushNotifier({
+        eventBus: mockEventBus,
+        pushService: mockPushService,
+        supervisor: mockSupervisor,
+      });
+      const event: ProcessStateEvent = {
+        type: "process-state-changed",
+        sessionId: "session-1",
+        projectId: testProjectId,
+        activity: "waiting-input",
+        timestamp: "2026-10-22T12:00:00.000Z",
+      };
+      eventHandler?.(event);
+      eventHandler?.(event);
+      expect(mockPushService.sendToAll).toHaveBeenCalledTimes(1);
+      process.state = { type: "in-turn" };
+      const answeredAt = "2026-10-22T12:00:01.000Z";
+      eventHandler?.({ ...event, activity: "in-turn", timestamp: answeredAt });
+      delivered([{ browserProfileId: "profile-1", success: true }]);
+      await delivery;
+      await Promise.resolve();
+      expect(mockPushService.sendToAll).toHaveBeenCalledTimes(2);
+      expect(mockPushService.sendToAll).toHaveBeenLastCalledWith({
+        type: "dismiss",
+        sessionId: "session-1",
+        timestamp: answeredAt,
+      });
+      notifier.dispose();
     });
   });
 

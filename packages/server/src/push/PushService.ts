@@ -234,7 +234,8 @@ export class PushService {
   ): Promise<SendResult[]> {
     this.ensureInitialized();
 
-    const browserProfileIds = Object.keys(this.state.subscriptions);
+    const subscriptions = { ...this.state.subscriptions };
+    const browserProfileIds = Object.keys(subscriptions);
     if (!this.vapidKeys && browserProfileIds.length > 0)
       throw new Error("VAPID keys not configured");
     const [results, nativeResults] = await Promise.all([
@@ -249,7 +250,7 @@ export class PushService {
     ]);
 
     // Clean up invalid subscriptions
-    await this.cleanupInvalidSubscriptions(results);
+    await this.cleanupInvalidSubscriptions(results, subscriptions);
 
     return [...results, ...nativeResults];
   }
@@ -334,6 +335,7 @@ export class PushService {
    */
   private async cleanupInvalidSubscriptions(
     results: SendResult[],
+    sentSubscriptions: Record<string, StoredSubscription>,
   ): Promise<void> {
     const invalidProfiles = results.filter(
       (r) => !r.success && (r.statusCode === 404 || r.statusCode === 410),
@@ -342,6 +344,13 @@ export class PushService {
     if (invalidProfiles.length === 0) return;
 
     for (const { browserProfileId } of invalidProfiles) {
+      // A response for the old endpoint must not revoke a renewal made while
+      // delivery was in flight, even if it reused the same profile id.
+      if (
+        this.state.subscriptions[browserProfileId] !==
+        sentSubscriptions[browserProfileId]
+      )
+        continue;
       delete this.state.subscriptions[browserProfileId];
       console.log(
         `[PushService] Removed expired subscription: ${browserProfileId}`,

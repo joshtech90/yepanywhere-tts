@@ -260,6 +260,43 @@ describe("PushService", () => {
     });
   });
 
+  it.each([404, 410])(
+    "keeps a renewed subscription when its old endpoint returns %i",
+    async (statusCode) => {
+      await pushService.subscribe("profile-1", mockSubscription);
+      let rejectOld!: (error: Error) => void;
+      vi.mocked(webPush.sendNotification).mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectOld = reject;
+          }),
+      );
+      const oldSend = pushService.sendToAll({
+        type: "test",
+        message: "Old endpoint",
+        timestamp: new Date().toISOString(),
+      });
+      const renewed = {
+        ...mockSubscription,
+        endpoint: "https://fcm.googleapis.com/fcm/send/renewed",
+      };
+      await pushService.subscribe("profile-1", renewed);
+      rejectOld(Object.assign(new Error("Expired"), { statusCode }));
+      await oldSend;
+      const reloaded = new PushService({ dataDir: tempDir, vapidKeys });
+      await reloaded.initialize();
+      expect(reloaded.getSubscriptions()["profile-1"]?.subscription).toEqual(
+        renewed,
+      );
+      vi.mocked(webPush.sendNotification).mockResolvedValue({
+        statusCode: 201,
+        headers: {},
+        body: "",
+      });
+      expect((await reloaded.sendTest("profile-1")).success).toBe(true);
+    },
+  );
+
   describe("sending notifications", () => {
     it("should send notification to device", async () => {
       vi.mocked(webPush.sendNotification).mockResolvedValue({
