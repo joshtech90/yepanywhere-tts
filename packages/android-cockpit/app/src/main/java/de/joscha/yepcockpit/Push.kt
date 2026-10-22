@@ -109,7 +109,9 @@ object Push {
             val endpunkt = "${BuildConfig.PUSH_BRUECKE}/api/push/webpush/$APP/$tid/${r.schluessel}"
             val stand = prefs.getString("abo_${r.schluessel}", null)
             val zeit = prefs.getLong("abo_zeit_${r.schluessel}", 0)
-            if (!erzwingen && stand == endpunkt && jetzt - zeit < ABO_ALTER_MS) return true
+            if (!erzwingen && stand == endpunkt && jetzt - zeit < ABO_ALTER_MS &&
+                prefs.getBoolean("fertig_an_${r.schluessel}", false)
+            ) return true
             val cookies = Netz.cookies(r)
             if (cookies == null) {
                 Log.d(TAG, "${r.schluessel}: noch nicht angemeldet")
@@ -148,7 +150,10 @@ object Push {
                     methode = "PUT",
                 )
                 Log.d(TAG, "${r.schluessel}: Fertig-Meldungen status=${s.status}")
-                if (s.status == 200) prefs.edit().putBoolean("fertig_an_${r.schluessel}", true).apply()
+                // Ein erfolgreiches Abo allein bedeutet noch keine Fertig-Meldungen.
+                // Fehlende Ersteinrichtung beim naechsten Versuch nachholen.
+                if (s.status != 200) return false
+                prefs.edit().putBoolean("fertig_an_${r.schluessel}", true).apply()
             }
         }
         return true
