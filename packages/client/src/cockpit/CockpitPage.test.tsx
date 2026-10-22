@@ -174,6 +174,26 @@ function renderShell(
 }
 
 describe("Cockpit shell", () => {
+  it("reveals navigation destinations while global search is open", () => {
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(
+      screen.getByRole("heading", { name: "Search sessions and content" }),
+    ).toBeTruthy();
+    // A navigation shortcut from a result or non-editing control changes the
+    // route just like selecting a session in the persistent sidebar.
+    fireEvent.keyDown(document.body, { key: "g" });
+    fireEvent.keyDown(document.body, { key: "p" });
+    expect(
+      screen
+        .getByRole("link", { name: "Projects" })
+        .getAttribute("aria-current"),
+    ).toBe("page");
+    expect(
+      screen.queryByRole("heading", { name: "Search sessions and content" }),
+    ).toBeNull();
+  });
+
   it("opens a drawer with navigation and sessions from a phone session", () => {
     const restore = mockPhoneLayout();
     try {
