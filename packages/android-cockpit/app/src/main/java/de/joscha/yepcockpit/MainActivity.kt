@@ -105,7 +105,12 @@ class MainActivity : Activity() {
 
         val zuletzt = getSharedPreferences("ansicht", MODE_PRIVATE).getString("rechner", null)
         zeigen(RechnerListe.nach(zuletzt) ?: RechnerListe.alle.first())
-        behandeln(intent)
+        // Nach einem Prozessende stellt Android die urspruengliche Startabsicht
+        // erneut zu (Wiederherstellung oder Start aus "Zuletzt verwendet"). Sie
+        // ist dann laengst erledigt: kein zweites Teilen, kein Sprung zur alten Meldung.
+        val erledigt = savedInstanceState != null ||
+            (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        if (!erledigt) behandeln(intent)
 
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), ANFRAGE_MELDUNGEN)
