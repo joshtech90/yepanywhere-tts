@@ -73,11 +73,15 @@ export CODEX_HOME="$HOME/.codex-profiles/loadbalanced"
 if [ -x "$HOME/.npm-global/bin/claude" ]; then
   export CLAUDE_CODE_EXECUTABLE="$HOME/.npm-global/bin/claude"
 fi
-# Vorlesen ueber den Gemini-Web-Vorlesedienst auf dem Dienste-Rechner (aihub),
-# Token aus ~/.config/gemini-tts/token. Die Adresse liefert der Rollen-Befehl
-# aus AI Worker/hosts, damit ein Umzug hier nichts aendert. Faellt der Dienst
-# aus, liest der Server ueber Google Cloud (Algenib) vor.
+# Vorlesen wie in PocketClaude mit Grok (Stimme Leo), Ersatz ist der
+# Gemini-Web-Vorlesedienst. Beide laufen auf dem Dienste-Rechner (aihub),
+# Token aus ~/.config/grok-tts/token bzw. ~/.config/gemini-tts/token. Die
+# Adressen liefert der Rollen-Befehl aus AI Worker/hosts, damit ein Umzug hier
+# nichts aendert. Fallen beide aus, liest der Server ueber Google Cloud
+# (Algenib) vor.
 if [ -x "$HOME/.local/bin/rolle" ]; then
+  TTS_GROK_URL="$("$HOME/.local/bin/rolle" url vorlesen-grok 2>/dev/null || true)"
+  [ -n "$TTS_GROK_URL" ] && export TTS_GROK_URL
   TTS_GEMINI_URL="$("$HOME/.local/bin/rolle" url vorlesen 2>/dev/null || true)"
   [ -n "$TTS_GEMINI_URL" ] && export TTS_GEMINI_URL
 fi
