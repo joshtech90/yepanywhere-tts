@@ -827,3 +827,37 @@ describe("Cockpit composer", () => {
     expect(reopenedForPointer.isConnected).toBe(false);
   });
 });
+
+describe("Cockpit composer send completion ownership", () => {
+  it("preserves a newer persisted draft after leaving and reopening a pending send", async () => {
+    let resolveSend!: (value: unknown) => void;
+    runtime.transport.fetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        }),
+    );
+    const first = render(composer());
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "submitted" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    first.unmount();
+    const second = render(composer());
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "new unsent draft" },
+    });
+    await act(async () => {
+      resolveSend({
+        processId: "p1",
+        permissionMode: "default",
+        modeVersion: 1,
+      });
+    });
+    second.unmount();
+    render(composer());
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "new unsent draft",
+    );
+  });
+});

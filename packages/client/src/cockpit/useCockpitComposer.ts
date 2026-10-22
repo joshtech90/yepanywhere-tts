@@ -34,6 +34,7 @@ import {
   deriveCockpitComposerActions,
   frequentCockpitPrompts,
   readCockpitComposerSessionDraft,
+  readCockpitComposerDraft,
   readCockpitPromptHistory,
   rememberCockpitPrompt,
   removeCockpitPrompt,
@@ -133,7 +134,7 @@ export function useCockpitComposer(
       ? new Date().toISOString()
       : null;
     lastEditedAtRef.current = typingStartedAtRef.current;
-  }, [draftKey, projectId, runtime.sourceKey, sessionId]);
+  }, [projectId, runtime.sourceKey, sessionId]);
 
   useEffect(() => {
     setPromptHistory(readCockpitPromptHistory(runtime.sourceKey));
@@ -390,7 +391,10 @@ export function useCockpitComposer(
         rememberCockpitPrompt(runtime.sourceKey, text, submittedAt);
         setPromptHistory(readCockpitPromptHistory(runtime.sourceKey));
         if (draftRevisionRef.current === submittedDraftRevision) {
-          writeCockpitComposerDraft(draftKey, "");
+          // Another mount or tab may already own a newer persisted draft.
+          if (readCockpitComposerDraft(draftKey) === draft) {
+            writeCockpitComposerDraft(draftKey, "");
+          }
           draftRef.current = "";
           setDraftState("");
           typingStartedAtRef.current = null;
