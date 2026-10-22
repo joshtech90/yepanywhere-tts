@@ -18,7 +18,11 @@ import {
   type ComposerUploadedAttachment,
 } from "../lib/sessionComposerAttachments";
 import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
-import { sendCockpitDirectMessage } from "./cockpitSend";
+import {
+  isCockpitProcessGone,
+  resumeCockpitSession,
+  sendCockpitDirectMessage,
+} from "./cockpitSend";
 
 /**
  * An upload that makes no progress this long is given up. The shared
@@ -352,23 +356,44 @@ export function useCockpitComposer(
 
       try {
         if (action === "queue") {
-          const result = await runtime.transport.fetch<{
-            deferredMessages?: DeferredQueueMessage[];
-          }>(`/sessions/${sessionPort.actualSessionId}/messages`, {
-            method: "POST",
-            body: JSON.stringify({
-              message: text,
-              mode: sessionPort.permissionMode,
-              attachments: uploaded.length ? uploaded : undefined,
+          let result: { deferredMessages?: DeferredQueueMessage[] } | null;
+          try {
+            result = await runtime.transport.fetch<{
+              deferredMessages?: DeferredQueueMessage[];
+            }>(`/sessions/${sessionPort.actualSessionId}/messages`, {
+              method: "POST",
+              body: JSON.stringify({
+                message: text,
+                mode: sessionPort.permissionMode,
+                attachments: uploaded.length ? uploaded : undefined,
+                tempId,
+                thinking: getThinkingSetting(),
+                showThinking: getShowThinkingSetting(),
+                deferred: true,
+                clientTimestamp: Date.parse(submittedAt),
+                messageMetadata: metadata,
+              }),
+            });
+          } catch (queueError) {
+            // No process means no turn to wait for: the message starts one.
+            if (!isCockpitProcessGone(queueError, sessionPort)) {
+              throw queueError;
+            }
+            result = null;
+            await resumeCockpitSession({
+              transport: runtime.transport,
+              projectId,
+              port: sessionPort,
+              text,
               tempId,
-              thinking: getThinkingSetting(),
-              showThinking: getShowThinkingSetting(),
-              deferred: true,
-              clientTimestamp: Date.parse(submittedAt),
+              submittedAt,
+              attachments: uploaded,
               messageMetadata: metadata,
-            }),
-          });
-          sessionPort.setDeferredMessages(result.deferredMessages ?? []);
+            });
+          }
+          if (result) {
+            sessionPort.setDeferredMessages(result.deferredMessages ?? []);
+          }
         } else {
           pendingId = sessionPort.addPendingMessage(
             text,

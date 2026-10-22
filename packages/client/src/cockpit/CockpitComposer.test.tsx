@@ -224,6 +224,67 @@ describe("Cockpit composer", () => {
     expect(globalResume).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { action: "Send", status: 404, processState: "idle" as const },
+    { action: "Queue message", status: 410, processState: "in-turn" as const },
+  ])(
+    "resumes with the message when the owned process ended unnoticed ($action)",
+    async ({ action, status, processState }) => {
+      const gone = Object.assign(new Error(`API error: ${status}`), { status });
+      runtime.transport.fetch
+        .mockRejectedValueOnce(gone)
+        .mockResolvedValueOnce({
+          processId: "process-2",
+          permissionMode: "default",
+          modeVersion: 2,
+          serverTimestamp: 0,
+        });
+      const port = sessionPort({
+        processState,
+        status: { owner: "self", processId: "process-1" },
+      });
+      render(composer(port));
+      const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+      fireEvent.change(input, { target: { value: "Still deliver this." } });
+      fireEvent.click(screen.getByRole("button", { name: action }));
+
+      await waitFor(() => expect(input.value).toBe(""));
+      expect(runtime.transport.fetch.mock.calls.map((call) => call[0])).toEqual(
+        [
+          "/sessions/session-1/messages",
+          "/projects/project-1/sessions/session-1/resume",
+        ],
+      );
+      const body = JSON.parse(
+        String(runtime.transport.fetch.mock.calls[1]?.[1]?.body),
+      );
+      expect(body.message).toBe("Still deliver this.");
+      expect(body.tempId).toBeTruthy();
+      expect(port.setStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ owner: "self", processId: "process-2" }),
+      );
+      expect(port.removePendingMessage).not.toHaveBeenCalled();
+      expect(screen.queryByRole("alert")).toBeNull();
+    },
+  );
+
+  it("never resumes a session another program controls", async () => {
+    runtime.transport.fetch.mockRejectedValueOnce(
+      Object.assign(new Error("API error: 404"), { status: 404 }),
+    );
+    const port = sessionPort({ status: { owner: "external" } });
+    render(composer(port));
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    fireEvent.change(input, { target: { value: "Not behind its back." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await screen.findByRole("alert");
+    expect(runtime.transport.fetch).toHaveBeenCalledTimes(1);
+    expect(input.value).toBe("Not behind its back.");
+  });
+
   it("keeps new input added while the previous send is pending", async () => {
     let finishSend:
       | ((result: {
