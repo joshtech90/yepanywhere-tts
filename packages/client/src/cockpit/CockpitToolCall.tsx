@@ -318,7 +318,18 @@ export function CockpitToolCall({
         {entry.tool.kind === "shell" ? (
           <ShellDetail entry={entry} />
         ) : entry.tool.kind === "files" ? (
-          <FilesDetail entry={entry} />
+          <>
+            {entry.tool.status === "error" && entry.tool.rawResult && (
+              <CopyableCodeSection
+                copiedLabel={t("cockpitToolErrorOutputCopied")}
+                copyLabel={t("cockpitToolCopyErrorOutput")}
+                error
+                heading={t("cockpitToolErrorOutput")}
+                text={entry.tool.rawResult}
+              />
+            )}
+            <FilesDetail entry={entry} />
+          </>
         ) : (
           <GenericDetail entry={entry} />
         )}

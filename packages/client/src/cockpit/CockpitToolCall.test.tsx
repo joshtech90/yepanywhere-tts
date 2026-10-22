@@ -91,6 +91,25 @@ beforeEach(() => {
 });
 
 describe("Cockpit tool call", () => {
+  it("shows the failure reason beside a rejected file edit", async () => {
+    renderTool(
+      entry({
+        status: "error",
+        rawResult: "Expected lines were not found in notes/fern.md",
+      }),
+    );
+    fireEvent.click(screen.getByLabelText("Show or hide details for Edit"));
+    expect(
+      screen.getByText("Expected lines were not found in notes/fern.md"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy error output" }));
+    await waitFor(() =>
+      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(
+        "Expected lines were not found in notes/fern.md",
+      ),
+    );
+  });
+
   it("says running only while the session is working", () => {
     const view = render(
       <I18nProvider>
