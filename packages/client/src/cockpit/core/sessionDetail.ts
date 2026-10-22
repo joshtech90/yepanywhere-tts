@@ -220,6 +220,25 @@ function contentText(content: string | ContentBlock[]): string {
     .trim();
 }
 
+// Every live update projects the whole transcript again. A tool card parses
+// diffs and serializes its input and result, so an unchanged call, which the
+// render-item projection keeps as the same object, reuses its display.
+const toolDisplays = new WeakMap<
+  Extract<RenderItem, { type: "tool_call" }>,
+  CockpitToolDisplay
+>();
+
+function toolDisplay(
+  item: Extract<RenderItem, { type: "tool_call" }>,
+): CockpitToolDisplay {
+  let display = toolDisplays.get(item);
+  if (!display) {
+    display = createCockpitToolDisplay(item);
+    toolDisplays.set(item, display);
+  }
+  return display;
+}
+
 function entryKey(
   sourceKey: string,
   sessionId: string,
@@ -353,7 +372,7 @@ export function createCockpitTranscriptEntries(input: {
         key: entryKey(input.sourceKey, input.sessionId, "tool", item.id),
         ...(timestamp ? { timestamp } : {}),
         sourceItems: [item],
-        tool: createCockpitToolDisplay(item),
+        tool: toolDisplay(item),
       });
       continue;
     }
