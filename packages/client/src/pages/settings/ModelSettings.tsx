@@ -61,6 +61,7 @@ import {
   ClaudeAutoCompactPercentOverrideControl,
   YaCompactContextEarlyControl,
 } from "./compactSettingsControls";
+import { useAutoSessionTitleUpdate } from "./autoSessionTitleUpdate";
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { SettingsSection } from "./SettingsSection";
@@ -238,17 +239,13 @@ export function ModelSettings() {
   const [autoTitleLengthDraft, setAutoTitleLengthDraft] = useState<
     string | null
   >(null);
-  const updateAutoSessionTitle = useCallback(
-    async (patch: Partial<AutoSessionTitleSettings>) => {
-      await updateSetting(
-        "autoSessionTitle",
-        normalizeAutoSessionTitleSettings(
-          patch,
-          normalizeAutoSessionTitleSettings(settings?.autoSessionTitle),
-        ),
-      );
-    },
-    [settings?.autoSessionTitle, updateSetting],
+  const saveAutoSessionTitle = useCallback(
+    (next: AutoSessionTitleSettings) => updateSetting("autoSessionTitle", next),
+    [updateSetting],
+  );
+  const updateAutoSessionTitle = useAutoSessionTitleUpdate(
+    settings?.autoSessionTitle,
+    saveAutoSessionTitle,
   );
 
   // Header undo across both state sources: the client-scoped model prefs
