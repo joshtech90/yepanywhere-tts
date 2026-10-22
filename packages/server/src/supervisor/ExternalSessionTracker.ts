@@ -123,6 +123,7 @@ export class ExternalSessionTracker {
   private abortGraceMs: number;
   private forkGraceMs: number;
   private unsubscribe: (() => void) | null = null;
+  private disposed = false;
   private getSessionSummary?: (
     sessionId: string,
     projectId: UrlProjectId,
@@ -464,6 +465,7 @@ export class ExternalSessionTracker {
    * Clean up resources.
    */
   dispose(): void {
+    this.disposed = true;
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;
@@ -944,8 +946,17 @@ export class ExternalSessionTracker {
     /** Checked right before publishing, after any await: still true? */
     stillCurrent: () => boolean = () => true,
   ): Promise<void> {
+    // Project resolution can yield while activity resumes, YA takes over, or
+    // the tracker shuts down. Never publish that obsolete ownership afterward.
+    const canPublish = () =>
+      !this.disposed &&
+      !this.supervisor.getProcessForSession(sessionId) &&
+      (ownership.owner === "none"
+        ? !this.externalSessions.has(sessionId)
+        : this.externalSessions.get(sessionId) === info) &&
+      stillCurrent();
     if (info.projectId) {
-      if (!stillCurrent()) return;
+      if (!canPublish()) return;
       const event: SessionStatusEvent = {
         type: "session-status-changed",
         sessionId,
@@ -970,7 +981,7 @@ export class ExternalSessionTracker {
       return;
     }
 
-    if (!stillCurrent()) return;
+    if (!canPublish()) return;
     const event: SessionStatusEvent = {
       type: "session-status-changed",
       sessionId,

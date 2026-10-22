@@ -26,18 +26,26 @@ function splitOversizeToken(
   maxChars: number,
   maxBytes: number,
 ): string[] {
+  // Track the running size instead of rejoining the buffer per character: a
+  // long unbroken token (a hash, a blob) otherwise blocks the event loop.
   const parts: string[] = [];
-  let buf: string[] = [];
+  let buf = "";
+  let bufBytes = 0;
   for (const ch of token) {
-    const candidate = buf.join("") + ch;
-    if (buf.length && !withinLimit(candidate, maxChars, maxBytes)) {
-      parts.push(buf.join(""));
-      buf = [ch];
+    const chBytes = utf8Len(ch);
+    if (
+      buf &&
+      (buf.length + ch.length > maxChars || bufBytes + chBytes > maxBytes)
+    ) {
+      parts.push(buf);
+      buf = ch;
+      bufBytes = chBytes;
     } else {
-      buf.push(ch);
+      buf += ch;
+      bufBytes += chBytes;
     }
   }
-  if (buf.length) parts.push(buf.join(""));
+  if (buf) parts.push(buf);
   return parts;
 }
 
@@ -234,14 +242,15 @@ function balancedDpChunks(input: string): string[] {
     units: string[];
     score: number[];
   } | null = null;
+  // The units do not depend on the cap; split once, not once per candidate.
+  const units = ttsUnits(text, HARD_MAX_CHUNK_CHARS, MAX_CHUNK_BYTES);
+  const charsPrefix = prefixLengths(units);
+  const bytesPrefix = prefixLengths(units, true);
   for (const cap of candidateCaps(
     PREFERRED_CHUNK_CHARS,
     HARD_MAX_CHUNK_CHARS,
   )) {
-    const units = ttsUnits(text, HARD_MAX_CHUNK_CHARS, MAX_CHUNK_BYTES);
     if (!units.length) continue;
-    const charsPrefix = prefixLengths(units);
-    const bytesPrefix = prefixLengths(units, true);
     const result = balancedPartition(
       units,
       charsPrefix,
