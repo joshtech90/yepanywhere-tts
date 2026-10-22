@@ -62,9 +62,26 @@ function setRemembered(sessionId: string, on: boolean): void {
   store(on ? [...rest, sessionId] : rest);
 }
 
+// Another Cockpit window of this device (PWA and browser tab) may change the
+// list; without re-reading it, the next toggle here would write the stale
+// copy back and undo that change.
+function onStorage(event: StorageEvent): void {
+  if (event.key !== STORAGE_KEY && event.key !== null) return;
+  remembered = null;
+  for (const listener of listeners) listener();
+}
+
 function subscribe(listener: () => void): () => void {
+  if (listeners.size === 0 && typeof window !== "undefined") {
+    window.addEventListener("storage", onStorage);
+  }
   listeners.add(listener);
-  return () => listeners.delete(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && typeof window !== "undefined") {
+      window.removeEventListener("storage", onStorage);
+    }
+  };
 }
 
 function snapshot(): string[] {

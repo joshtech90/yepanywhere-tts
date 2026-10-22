@@ -329,6 +329,26 @@ describe("useCockpitAutoReadAloud", () => {
     expect(other.result.current.enabled).toBe(false);
   });
 
+  it("keeps a switch changed in another window of the same device", () => {
+    const { result } = setup();
+    expect(result.current.enabled).toBe(false);
+
+    // Another Cockpit window switches this session on.
+    act(() => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(["session-a"]));
+      window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
+    });
+    expect(result.current.enabled).toBe(true);
+
+    // Switching another session here keeps that change.
+    const other = setup({ sessionId: "session-b" });
+    act(() => other.result.current.toggle());
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]")).toEqual([
+      "session-a",
+      "session-b",
+    ]);
+  });
+
   it("stops playback when switched off", () => {
     const { result } = setup();
     act(() => result.current.toggle());
