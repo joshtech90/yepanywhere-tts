@@ -380,12 +380,17 @@ export function CockpitHiddenView({
           <h2 id="cockpit-list-title">{t("cockpitHiddenTitle")}</h2>
         </div>
       </header>
+      {sessionsFeed.error && (
+        <p className={styles.notice} role="status">
+          {t("cockpitCatalogError")}
+        </p>
+      )}
       {failed && (
         <p className={styles.notice} role="status">
           {t("cockpitHiddenRestoreError")}
         </p>
       )}
-      {rows.length === 0 && !sessionsFeed.loading && (
+      {rows.length === 0 && !sessionsFeed.loading && !sessionsFeed.error && (
         <p className={styles.empty}>{t("cockpitHiddenEmpty")}</p>
       )}
       <ul className={styles.list}>

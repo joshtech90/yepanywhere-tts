@@ -1,10 +1,12 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import { CockpitCatalog } from "./CockpitCatalog";
 import type { CockpitCatalogView } from "./core/catalog";
+import { createCockpitNavigation } from "./core/navigation";
+import { useCockpitShortcuts } from "./useCockpitShortcuts";
 import type { CockpitOrganizationController } from "./useCockpitOrganization";
 
 afterEach(cleanup);
@@ -54,17 +56,50 @@ function organization(): CockpitOrganizationController {
   };
 }
 
+function ShortcutPage({
+  children,
+  onStop,
+}: {
+  children: ReactNode;
+  onStop: () => void;
+}) {
+  const rootRef = useRef<HTMLElement>(null);
+  useCockpitShortcuts({
+    drawerOpen: false,
+    navigation: createCockpitNavigation(""),
+    onCloseDrawer: vi.fn(),
+    onCloseHelp: vi.fn(),
+    onCloseSearch: vi.fn(),
+    onOpenHelp: vi.fn(),
+    onOpenSearch: vi.fn(),
+    rootRef,
+    searchOpen: false,
+    shortcutsOpen: false,
+  });
+  return (
+    <main ref={rootRef}>
+      {children}
+      <button data-cockpit-shortcut="stop" onClick={onStop} type="button">
+        Stop
+      </button>
+    </main>
+  );
+}
+
 function CatalogHarness({
   catalog,
+  onStop,
   organizationController = organization(),
   path = "/cockpit",
 }: {
   catalog: CockpitCatalogView;
+  /** Mounts the page shortcuts with a running session's Stop button. */
+  onStop?: () => void;
   organizationController?: CockpitOrganizationController;
   path?: string;
 }) {
   const [query, setQuery] = useState("");
-  const catalogElement = (
+  const catalogView = (
     <CockpitCatalog
       basePath=""
       catalog={catalog}
@@ -76,6 +111,11 @@ function CatalogHarness({
       organization={organizationController}
       query={query}
     />
+  );
+  const catalogElement = onStop ? (
+    <ShortcutPage onStop={onStop}>{catalogView}</ShortcutPage>
+  ) : (
+    catalogView
   );
   return (
     <MemoryRouter initialEntries={[path]}>
@@ -93,6 +133,25 @@ function CatalogHarness({
 }
 
 describe("Cockpit catalog", () => {
+  it("clears the sidebar filter on Escape without stopping the open session", () => {
+    const onStop = vi.fn();
+    render(<CatalogHarness catalog={catalogWithSessions(3)} onStop={onStop} />);
+    const input = screen.getByRole("searchbox", {
+      name: "Sessions",
+    }) as HTMLInputElement;
+    input.focus();
+    fireEvent.change(input, { target: { value: "Release" } });
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(onStop).not.toHaveBeenCalled();
+    expect(input.value).toBe("");
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(onStop).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(input);
+    expect(screen.getByText("Fixture session 2")).toBeTruthy();
+  });
+
   it("keeps the search draft while summary updates arrive", () => {
     let catalog = catalogWithSessions(30);
     const { rerender } = render(<CatalogHarness catalog={catalog} />);
