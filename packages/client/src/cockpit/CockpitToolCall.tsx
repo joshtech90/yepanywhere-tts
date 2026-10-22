@@ -227,11 +227,10 @@ function FilesDetail({ entry }: { entry: CockpitToolEntry }) {
           className={styles.diff}
           role="region"
         >
-          {selected.lines.map((line) => (
-            <DiffLine
-              key={`${line.kind}-${line.oldLine ?? ""}-${line.newLine ?? ""}-${line.text}`}
-              line={line}
-            />
+          {selected.lines.map((line, index) => (
+            // Bare apply-patch hunk headers repeat with identical content, and
+            // the rows hold no state, so their position is their identity.
+            <DiffLine key={index} line={line} />
           ))}
           {selected.truncated && (
             <p className={styles.truncated}>{t("cockpitToolDiffTruncated")}</p>
