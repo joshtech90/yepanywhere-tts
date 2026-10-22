@@ -11,31 +11,39 @@ export function CockpitStopButton({
   stop,
 }: Pick<CockpitAttentionPort, "interruptible" | "stop">) {
   const { t } = useI18n();
-  const inFlightRef = useRef(false);
+  const inFlightRef = useRef<symbol | null>(null);
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<CockpitAttentionActionResult | null>(
     null,
   );
 
   useEffect(() => {
-    if (interruptible) return;
-    inFlightRef.current = false;
-    setPending(false);
-    setResult(null);
+    if (!interruptible) {
+      inFlightRef.current = null;
+      setPending(false);
+      setResult(null);
+    }
+    return () => {
+      inFlightRef.current = null;
+    };
   }, [interruptible]);
 
   if (!interruptible) return null;
 
   const handleStop = async () => {
     if (inFlightRef.current) return;
-    inFlightRef.current = true;
+    const attempt = Symbol();
+    inFlightRef.current = attempt;
     setPending(true);
     setResult(null);
     try {
-      setResult(await stop());
+      const nextResult = await stop();
+      if (inFlightRef.current === attempt) setResult(nextResult);
     } finally {
-      inFlightRef.current = false;
-      setPending(false);
+      if (inFlightRef.current === attempt) {
+        inFlightRef.current = null;
+        setPending(false);
+      }
     }
   };
 
