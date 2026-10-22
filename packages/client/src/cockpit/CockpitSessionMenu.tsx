@@ -66,6 +66,7 @@ export function CockpitSessionMenu({
     y: anchor ? Math.max(8, anchor.y) : 8,
   });
 
+  const generationRef = useRef(0);
   const menuRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const archiveCancelButtonRef = useRef<HTMLButtonElement>(null);
@@ -73,6 +74,7 @@ export function CockpitSessionMenu({
 
   // Reset internal states whenever the menu opens or session changes
   useEffect(() => {
+    generationRef.current += 1;
     if (open) {
       setView("menu");
       setRenameTitle(sessionTitle);
@@ -81,6 +83,10 @@ export function CockpitSessionMenu({
       setIsRenaming(false);
       setIsArchiving(false);
     }
+    return () => {
+      // A dismissed menu must not close or update a later menu on completion.
+      generationRef.current += 1;
+    };
   }, [open, sessionTitle]);
 
   // Capture active element before shifting focus, restore focus when closed
@@ -252,19 +258,22 @@ export function CockpitSessionMenu({
     if (!trimmed || busy || isRenaming) {
       return;
     }
+    const generation = generationRef.current;
     setIsRenaming(true);
     setRenameError(null);
     try {
       const success = await onRename(trimmed);
+      if (generationRef.current !== generation) return;
       if (success) {
         onClose();
       } else {
         setRenameError(copy?.renameError ?? t("cockpitSessionMenuRenameError"));
       }
     } catch {
+      if (generationRef.current !== generation) return;
       setRenameError(copy?.renameError ?? t("cockpitSessionMenuRenameError"));
     } finally {
-      setIsRenaming(false);
+      if (generationRef.current === generation) setIsRenaming(false);
     }
   };
 
@@ -272,10 +281,12 @@ export function CockpitSessionMenu({
     if (busy || isArchiving) {
       return;
     }
+    const generation = generationRef.current;
     setIsArchiving(true);
     setArchiveError(null);
     try {
       const success = await onArchive();
+      if (generationRef.current !== generation) return;
       if (success) {
         onClose();
       } else {
@@ -284,11 +295,12 @@ export function CockpitSessionMenu({
         );
       }
     } catch {
+      if (generationRef.current !== generation) return;
       setArchiveError(
         copy?.archiveError ?? t("cockpitSessionMenuArchiveError"),
       );
     } finally {
-      setIsArchiving(false);
+      if (generationRef.current === generation) setIsArchiving(false);
     }
   };
 

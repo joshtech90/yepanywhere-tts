@@ -6,6 +6,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
 import {
@@ -302,4 +303,60 @@ describe("CockpitSessionMenu without confirmation", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     await vi.waitFor(() => expect(onClose).toHaveBeenCalled());
   });
+});
+
+describe("CockpitSessionMenu request lifetime", () => {
+  it.each(["rename", "archive"] as const)(
+    "does not close a replacement menu when an old %s finishes",
+    async (action) => {
+      let finish!: (value: boolean) => void;
+      const pending = new Promise<boolean>((resolve) => {
+        finish = resolve;
+      });
+      function Harness() {
+        const [target, setTarget] = useState("first");
+        return (
+          <>
+            <button type="button" onClick={() => setTarget("second")}>
+              Next menu
+            </button>
+            {target && (
+              <CockpitSessionMenu
+                key={target}
+                open
+                anchor={{ x: 10, y: 10 }}
+                sessionTitle={target}
+                pinned={false}
+                busy={false}
+                confirmArchive={false}
+                onClose={() => setTarget("")}
+                onTogglePin={() => {}}
+                onRename={() => pending}
+                onArchive={() => pending}
+              />
+            )}
+          </>
+        );
+      }
+      render(
+        <I18nProvider>
+          <Harness />
+        </I18nProvider>,
+      );
+      if (action === "rename") {
+        fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+        fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      } else {
+        fireEvent.click(screen.getByRole("menuitem", { name: "Hide" }));
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Next menu" }));
+      await act(async () => {
+        finish(true);
+        await pending;
+      });
+      expect(
+        screen.getByRole("menu", { name: "Actions for second" }),
+      ).toBeTruthy();
+    },
+  );
 });
