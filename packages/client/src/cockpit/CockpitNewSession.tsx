@@ -511,6 +511,8 @@ export function CockpitNewSession({
     if (
       event.key !== "Enter" ||
       event.shiftKey ||
+      event.repeat ||
+      event.keyCode === 229 ||
       event.nativeEvent.isComposing
     )
       return;

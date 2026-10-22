@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
@@ -280,5 +286,31 @@ describe("Cockpit new session attachments", () => {
     expect(screen.getByRole("alert").textContent).toBe(
       "Server is busy. Please try again in a moment.",
     );
+  });
+});
+
+describe("Cockpit new session keyboard submission", () => {
+  it("keeps composition, shifted and repeated Enter in the editor", async () => {
+    state.projects = [{ id: "os", name: "Smartzone OS", path: "/work/os" }];
+    state.providers = [claudeProvider];
+    state.startSession.mockResolvedValue(state.createResponse);
+    renderPage();
+    const input = screen.getByRole("textbox", { name: "First message" });
+    fireEvent.change(input, {
+      target: { value: "Draft still being composed" },
+    });
+    for (const flags of [
+      { isComposing: true },
+      { keyCode: 229 },
+      { repeat: true },
+      { shiftKey: true },
+    ]) {
+      fireEvent.keyDown(input, { key: "Enter", ...flags });
+      expect(state.startSession).not.toHaveBeenCalled();
+    }
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    expect(state.startSession).toHaveBeenCalledTimes(1);
   });
 });
