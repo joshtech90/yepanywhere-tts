@@ -3,6 +3,7 @@ package de.joscha.yepcockpit
 import android.app.Application
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.webkit.ServiceWorkerClient
 import android.webkit.ServiceWorkerController
@@ -12,11 +13,13 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
@@ -68,6 +71,50 @@ class MainActivityTest {
             controller.pause().stop().destroy()
             Meldungen.sichtbarMelden(ctx, null, null)
             nm.cancelAll()
+            ReflectionHelpers.setField(speicher, "_value", vorher)
+        }
+    }
+
+    @Test
+    fun mehrereGeteilteInhalteBleibenVorUndNachDemLadenErhalten() {
+        val r = Rechner("mac", "Mac", Uri.parse("https://mac.example:3400"), 0, 0)
+        val feld = RechnerListe::class.java.getDeclaredField("alle\$delegate").apply { isAccessible = true }
+        val speicher = feld.get(null)
+        val vorher = RechnerListe.alle
+        ReflectionHelpers.setField(speicher, "_value", listOf(r))
+        val ctx: Context = RuntimeEnvironment.getApplication()
+        val controller = Robolectric.buildActivity(MainActivity::class.java)
+        try {
+            val a = controller.setup().get()
+            val wurzel = a.findViewById<FrameLayout>(android.R.id.content).getChildAt(0) as LinearLayout
+            val web = (wurzel.getChildAt(1) as FrameLayout).getChildAt(0) as WebView
+            fun teilen(text: String) {
+                val (id, _) = Teilen.speichern(ctx, text, emptyList())
+                controller.newIntent(Intent().putExtra(Meldungen.EXTRA_RECHNER, r.schluessel).putExtra(Teilen.EXTRA, id))
+            }
+            teilen("Erster Text")
+            teilen("Zweiter Text")
+            web.webViewClient.onPageFinished(web, r.pfad(Ziele.NEUE_SITZUNG))
+            val skript = shadowOf(web).lastEvaluatedJavascript
+            assertTrue(skript.contains("Erster Text"))
+            assertTrue(skript.contains("Zweiter Text"))
+            teilen("Dritter Text")
+            // Bereits geladene Eingabe bleibt bestehen; neuer Inhalt kommt
+            // sofort und braucht keinen weiteren Seitenlade-Callback.
+            assertTrue(shadowOf(web).lastEvaluatedJavascript.contains("Dritter Text"))
+            // Waehrend "Neue Sitzung" noch laedt, gehoert die geladene Seite zur
+            // alten Adresse: ein weiterer Inhalt wartet auf die neue Seite.
+            val sitzung = r.pfad("/cockpit/projects/projekt/sessions/sitzung")
+            web.loadUrl(sitzung)
+            web.webViewClient.onPageFinished(web, sitzung)
+            teilen("Vierter Text")
+            teilen("Fuenfter Text")
+            assertTrue(!shadowOf(web).lastEvaluatedJavascript.contains("Fuenfter Text"))
+            web.webViewClient.onPageFinished(web, r.pfad(Ziele.NEUE_SITZUNG))
+            assertTrue(shadowOf(web).lastEvaluatedJavascript.contains("Vierter Text"))
+            assertTrue(shadowOf(web).lastEvaluatedJavascript.contains("Fuenfter Text"))
+        } finally {
+            controller.pause().stop().destroy()
             ReflectionHelpers.setField(speicher, "_value", vorher)
         }
     }
