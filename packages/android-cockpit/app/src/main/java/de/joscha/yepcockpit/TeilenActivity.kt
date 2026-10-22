@@ -41,8 +41,15 @@ class TeilenActivity : Activity() {
     private fun uebergeben(r: Rechner, text: String, quellen: List<Uri>) {
         if (quellen.isNotEmpty()) Toast.makeText(this, "Wird übernommen …", Toast.LENGTH_SHORT).show()
         Thread({
-            val (id, fehlend) = Teilen.speichern(applicationContext, text, quellen)
+            val ergebnis = runCatching { Teilen.speichern(applicationContext, text, quellen) }
             runOnUiThread {
+                val (id, fehlend) = ergebnis.getOrElse {
+                    // Beispielsweise voller privater Speicher: kein unbehandelter
+                    // Fehler im Worker-Thread, der die ganze App beendet.
+                    Toast.makeText(this, "Teilen gescheitert, bitte erneut versuchen", Toast.LENGTH_LONG).show()
+                    finish()
+                    return@runOnUiThread
+                }
                 if (fehlend > 0) {
                     Toast.makeText(
                         this, "$fehlend Datei(en) nicht übernommen (unlesbar oder zu groß)", Toast.LENGTH_LONG,

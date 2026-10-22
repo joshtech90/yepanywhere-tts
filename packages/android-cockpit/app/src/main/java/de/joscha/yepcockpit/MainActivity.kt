@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.Icon
 import android.net.Uri
@@ -55,8 +56,11 @@ class MainActivity : Activity() {
     private var dateiRueckruf: ValueCallback<Array<Uri>>? = null
     private var mikrofonAnfrage: PermissionRequest? = null
 
-    /** Geteilter Inhalt, der nach dem Laden von "Neue Sitzung" eingesetzt wird. */
-    private val ausstehendesTeilen = HashMap<String, String>()
+    /** Geteilte Inhalte je Rechner, die nach dem Laden von "Neue Sitzung" eingesetzt werden. */
+    private val ausstehendesTeilen = HashMap<String, MutableList<String>>()
+
+    /** Rechner, deren Seite fertig geladen ist und geteilte Inhalte sofort annimmt. */
+    private val geladen = HashSet<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,7 +105,12 @@ class MainActivity : Activity() {
 
         val zuletzt = getSharedPreferences("ansicht", MODE_PRIVATE).getString("rechner", null)
         zeigen(RechnerListe.nach(zuletzt) ?: RechnerListe.alle.first())
-        behandeln(intent)
+        // Nach einem Prozessende stellt Android die urspruengliche Startabsicht
+        // erneut zu (Wiederherstellung oder Start aus "Zuletzt verwendet"). Sie
+        // ist dann laengst erledigt: kein zweites Teilen, kein Sprung zur alten Meldung.
+        val erledigt = savedInstanceState != null ||
+            (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        if (!erledigt) behandeln(intent)
 
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), ANFRAGE_MELDUNGEN)
@@ -174,19 +183,44 @@ class MainActivity : Activity() {
         val r = RechnerListe.nach(intent?.getStringExtra(Meldungen.EXTRA_RECHNER)) ?: return
         val teilen = intent?.getStringExtra(Teilen.EXTRA)?.takeIf { Teilen.gueltig(it) }
         val pfad = when {
-            teilen != null -> Ziele.NEUE_SITZUNG
             intent?.getStringExtra(EXTRA_ZIEL) == ZIEL_NEU -> Ziele.NEUE_SITZUNG
             else -> Ziele.sitzung(
                 intent?.getStringExtra(Meldungen.EXTRA_PROJEKT).orEmpty(),
                 intent?.getStringExtra(Meldungen.EXTRA_SITZUNG).orEmpty(),
             )
         }
-        if (teilen != null) ausstehendesTeilen[r.schluessel] = teilen
         zeigen(r)
-        if (pfad != null) ansicht(r).loadUrl(r.pfad(pfad))
+        val a = ansicht(r)
+        when {
+            // "Neue Sitzung" steht schon: Inhalt anhaengen statt neu laden, sonst
+            // gingen vorher geteilte oder getippte Eingaben verloren.
+            teilen != null && r.schluessel in geladen && istNeueSitzung(r, a.url) ->
+                einsetzen(a, listOf(teilen))
+            teilen != null -> {
+                ausstehendesTeilen.getOrPut(r.schluessel) { mutableListOf() }.add(teilen)
+                laden(r, a, r.pfad(Ziele.NEUE_SITZUNG))
+            }
+            pfad != null -> laden(r, a, r.pfad(pfad))
+        }
         // Erledigt: die Absicht nicht nach einer Drehung noch einmal ausfuehren.
         intent?.removeExtra(Meldungen.EXTRA_RECHNER)
         intent?.removeExtra(Teilen.EXTRA)
+    }
+
+    /** Bis die neue Seite fertig ist, nimmt die alte keine geteilten Inhalte mehr an. */
+    private fun laden(r: Rechner, view: WebView, url: String) {
+        geladen.remove(r.schluessel)
+        view.loadUrl(url)
+    }
+
+    private fun istNeueSitzung(r: Rechner, url: String?): Boolean {
+        val uri = url?.let(Uri::parse) ?: return false
+        return r.besitzt(uri) && uri.path == "/cockpit" && uri.getQueryParameter("view") == "new"
+    }
+
+    private fun einsetzen(view: WebView, ids: List<String>) {
+        val skript = ids.mapNotNull { Teilen.einsetzenSkript(this, it) }.joinToString("")
+        if (skript.isNotEmpty()) view.evaluateJavascript(skript, null)
     }
 
     private fun verknuepfungenSetzen() {
@@ -267,16 +301,20 @@ class MainActivity : Activity() {
             return true
         }
 
+        override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+            if (view === ansichten[r.schluessel]) geladen.remove(r.schluessel)
+        }
+
         override fun onPageFinished(view: WebView, url: String) {
             val uri = Uri.parse(url)
             if (!r.besitzt(uri)) return
+            // Ein abgebrochenes Laden meldet sich noch mit seiner alten Adresse.
+            if (view === ansichten[r.schluessel] && url == view.url) geladen.add(r.schluessel)
             sichtbarMelden()
             // Nach der Anmeldung liegen die Cookies vor: Push einrichten.
             Push.anmelden(this@MainActivity)
-            if (uri.path == "/cockpit" && uri.getQueryParameter("view") == "new") {
-                ausstehendesTeilen.remove(r.schluessel)?.let { id ->
-                    Teilen.einsetzenSkript(this@MainActivity, id)?.let { view.evaluateJavascript(it, null) }
-                }
+            if (istNeueSitzung(r, url)) {
+                ausstehendesTeilen.remove(r.schluessel)?.let { einsetzen(view, it) }
             }
         }
 
@@ -297,6 +335,7 @@ class MainActivity : Activity() {
             Log.w(TAG, "Renderer weg (${r.schluessel}), crash=${detail.didCrash()}")
             ablage.removeView(view)
             ansichten.remove(r.schluessel)
+            geladen.remove(r.schluessel)
             view.destroy()
             if (aktiv == r) zeigen(r)
             return true
