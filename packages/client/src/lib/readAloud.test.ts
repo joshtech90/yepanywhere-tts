@@ -339,6 +339,38 @@ describe("read-aloud controller", () => {
     expect(getReadAloudFailedToken()).toBeNull();
   });
 
+  it.each(["plan", "synthesis"])(
+    "settles a stopped controller while %s is still pending",
+    async (stage) => {
+      const plan = deferred<{ chunks: string[] }>();
+      const synthesis = deferred<{ audioBase64: string }>();
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      apiMocks.ttsPlan.mockReturnValue(plan.promise);
+      apiMocks.ttsSynthesize.mockReturnValue(synthesis.promise);
+      let settled = false;
+      const playback = playReadAloud("Answer", "cancel-network").then(() => {
+        settled = true;
+      });
+      if (stage === "synthesis") {
+        plan.resolve({ chunks: ["Answer"] });
+        await vi.waitFor(() =>
+          expect(apiMocks.ttsSynthesize).toHaveBeenCalled(),
+        );
+      }
+      stopReadAloud();
+      await vi.waitFor(() => expect(settled).toBe(true));
+      expect(getReadAloudState()).toBe("idle");
+      if (stage === "plan") plan.reject(new Error("late plan failure"));
+      else synthesis.reject(new Error("late synthesis failure"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(consoleError).not.toHaveBeenCalled();
+      expect(MockURL.createObjectURL).not.toHaveBeenCalled();
+      await playback;
+    },
+  );
+
   it("publishes a caller-scoped failure that explicit stop clears", async () => {
     const failure = new Error("TTS unavailable");
     const consoleError = vi

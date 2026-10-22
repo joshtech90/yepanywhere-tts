@@ -12,6 +12,7 @@ export type ReadAloudState = "idle" | "loading" | "playing" | "paused";
 let audioEl: HTMLAudioElement | null = null;
 let objectUrl: string | null = null;
 let cancelPlaybackWait: (() => void) | null = null;
+let cancelNetworkWait: (() => void) | null = null;
 let sessionId = 0;
 let playAttempt = 0;
 let token: string | null = null;
@@ -48,6 +49,8 @@ function resetReadAloud(nextFailedToken: string | null): void {
   const shouldEmit =
     state !== "idle" || token !== null || failedToken !== nextFailedToken;
   sessionId++;
+  cancelNetworkWait?.();
+  cancelNetworkWait = null;
   cancelPlaybackWait?.();
   cancelPlaybackWait = null;
   if (audioEl) {
@@ -136,6 +139,10 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
   emit();
 
   const alive = () => sessionId === mySession && audioEl === audio;
+  const cancelled = Symbol("cancelled");
+  const cancellation = new Promise<typeof cancelled>((resolve) => {
+    cancelNetworkWait = () => resolve(cancelled);
+  });
 
   const playUrl = (url: string): Promise<void> =>
     new Promise((resolve, reject) => {
@@ -169,7 +176,9 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
   let pending: Promise<{ audioBase64: string; mimeType?: string }> | null =
     null;
   try {
-    const { chunks } = await api.ttsPlan(text);
+    const plan = await Promise.race([api.ttsPlan(text), cancellation]);
+    if (plan === cancelled) return;
+    const { chunks } = plan;
     if (!alive() || chunks.length === 0) {
       if (alive()) stopReadAloud();
       return;
@@ -188,7 +197,9 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
         pending?.catch(() => {});
         break;
       }
-      const { audioBase64, mimeType } = await current;
+      const result = await Promise.race([current, cancellation]);
+      if (result === cancelled) return;
+      const { audioBase64, mimeType } = result;
       if (!alive()) {
         pending?.catch(() => {});
         return;
@@ -206,7 +217,9 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
     if (alive()) stopReadAloud();
   } catch (err) {
     pending?.catch(() => {});
-    console.error("Read aloud failed:", err);
-    if (alive()) resetReadAloud(id);
+    if (alive()) {
+      console.error("Read aloud failed:", err);
+      resetReadAloud(id);
+    }
   }
 }
