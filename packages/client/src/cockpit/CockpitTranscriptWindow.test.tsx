@@ -21,9 +21,7 @@ function transcript(items: CockpitTranscriptEntry[]) {
       following
       pinnedEntryKey={null}
       renderEntry={(entry) => (
-        <article data-testid="entry">
-          {entry.key}
-        </article>
+        <article data-testid="entry">{entry.key}</article>
       )}
     />
   );
@@ -40,15 +38,53 @@ function pinnedTranscript(
       following
       pinnedEntryKey={pinnedEntryKey}
       renderEntry={(entry) => (
-        <article data-testid="entry">
-          {entry.key}
-        </article>
+        <article data-testid="entry">{entry.key}</article>
       )}
     />
   );
 }
 
 describe("Cockpit transcript render window", () => {
+  it("preserves open details and their local state across the window threshold", () => {
+    const items = entries(200);
+    const renderWindow = (count: number) => (
+      <CockpitTranscriptWindow
+        beforeRows={null}
+        entries={items.slice(0, count)}
+        following
+        pinnedEntryKey={null}
+        renderEntry={(entry) => (
+          <details data-cockpit-entry-key={entry.key}>
+            <summary>{entry.key}</summary>
+            <input aria-label={`Note for ${entry.key}`} defaultValue="" />
+          </details>
+        )}
+      />
+    );
+    const view = render(renderWindow(199));
+    const disclosure = view.container.querySelector<HTMLDetailsElement>(
+      'details[data-cockpit-entry-key="entry-198"]',
+    );
+    if (!disclosure) throw new Error("disclosure missing");
+    disclosure.open = true;
+    fireEvent(disclosure, new Event("toggle"));
+    const input = view.getByRole("textbox", {
+      name: "Note for entry-198",
+    }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Keep my inspection" } });
+
+    view.rerender(renderWindow(200));
+    expect(view.container.querySelector("details[open]")).toBe(disclosure);
+    expect(view.getByRole("textbox", { name: "Note for entry-198" })).toBe(
+      input,
+    );
+    expect(input.value).toBe("Keep my inspection");
+
+    view.rerender(renderWindow(199));
+    expect(view.container.querySelector("details[open]")).toBe(disclosure);
+    expect(input.value).toBe("Keep my inspection");
+  });
+
   it("keeps the direct DOM path for an ordinary transcript", () => {
     const view = render(transcript(entries(20)));
 

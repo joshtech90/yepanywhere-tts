@@ -110,9 +110,9 @@ export function CockpitTranscriptWindow({
       )}
       {renderWindow.rows.map((entry) => {
         const renderedEntry = renderEntry(entry);
-        if (!renderWindow.active) {
-          return <Fragment key={entry.key}>{renderedEntry}</Fragment>;
-        }
+        // Keep the row's parent and sibling slots stable when appends or
+        // folding cross the window threshold. Remounting here closes native
+        // disclosures and discards the reader's selected tool file.
         const spacerBefore = renderWindow.getRowSpacerBefore(entry.key);
         return (
           <Fragment key={entry.key}>
@@ -123,29 +123,33 @@ export function CockpitTranscriptWindow({
                 style={{ height: spacerBefore }}
               />
             )}
-            <span
-              ref={(element) => {
-                renderWindow.registerRowStart(entry.key, element);
-              }}
-              aria-hidden="true"
-              data-cockpit-render-boundary="row-start"
-              style={TRANSCRIPT_RENDER_MARKER_STYLE}
-            />
+            {renderWindow.active && (
+              <span
+                ref={(element) => {
+                  renderWindow.registerRowStart(entry.key, element);
+                }}
+                aria-hidden="true"
+                data-cockpit-render-boundary="row-start"
+                style={TRANSCRIPT_RENDER_MARKER_STYLE}
+              />
+            )}
             <div
               className={styles.transcriptRow}
               data-cockpit-entry-key={entry.key}
-              data-render-id={entry.key}
+              data-render-id={renderWindow.active ? entry.key : undefined}
             >
               {renderedEntry}
             </div>
-            <span
-              ref={(element) => {
-                renderWindow.registerRowEnd(entry.key, element);
-              }}
-              aria-hidden="true"
-              data-cockpit-render-boundary="row-end"
-              style={TRANSCRIPT_RENDER_MARKER_STYLE}
-            />
+            {renderWindow.active && (
+              <span
+                ref={(element) => {
+                  renderWindow.registerRowEnd(entry.key, element);
+                }}
+                aria-hidden="true"
+                data-cockpit-render-boundary="row-end"
+                style={TRANSCRIPT_RENDER_MARKER_STYLE}
+              />
+            )}
           </Fragment>
         );
       })}
