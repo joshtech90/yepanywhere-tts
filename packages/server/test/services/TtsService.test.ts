@@ -3,7 +3,7 @@ import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TtsService } from "../../src/services/TtsService.js";
 
 interface Stub {
@@ -65,6 +65,8 @@ describe("TtsService with the Gemini read-aloud service", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     process.env = { ...envBefore };
     if (stub) await new Promise((r) => stub?.server.close(r));
     stub = null;
@@ -125,5 +127,47 @@ describe("TtsService with the Gemini read-aloud service", () => {
     const long = "Satz eins. ".repeat(1000); // ~11000 chars
     const joined = tts.planChunks(long).join(" ");
     expect(joined.length).toBeGreaterThan(5000);
+  });
+
+  it("joins a pending recovery check before choosing the synthesis backend", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(Response.json({ ok: false }, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const tts = new TtsService({ dataDir });
+    await tts.initialize();
+
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    let finishHealth!: (response: Response) => void;
+    fetchMock.mockImplementation(async (url) => {
+      if (String(url).endsWith("/health")) {
+        return new Promise((resolve) => {
+          finishHealth = resolve;
+        });
+      }
+      return new Response("OggS-recovered");
+    });
+
+    // Status starts a refresh; playback arrives before that refresh finishes.
+    tts.getStatus();
+    const audio = Promise.allSettled([
+      tts.synthesizeAudio("Erster Abschnitt"),
+      tts.synthesizeAudio("Zweiter Abschnitt"),
+    ]);
+    finishHealth(Response.json({ ok: true }));
+    const results = await audio;
+    expect(results).toEqual([
+      {
+        status: "fulfilled",
+        value: { audio: Buffer.from("OggS-recovered"), mimeType: "audio/ogg" },
+      },
+      {
+        status: "fulfilled",
+        value: { audio: Buffer.from("OggS-recovered"), mimeType: "audio/ogg" },
+      },
+    ]);
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/health")),
+    ).toHaveLength(2);
   });
 });
