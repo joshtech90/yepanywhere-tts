@@ -792,4 +792,64 @@ describe("ExternalSessionTracker", () => {
       tracker.dispose();
     }
   });
+
+  it.each(["new-activity", "owned", "disposed"] as const)(
+    "does not publish stale idle status after %s during project resolution",
+    async (change) => {
+      vi.useFakeTimers();
+      const eventBus = new EventBus();
+      const events: BusEvent[] = [];
+      eventBus.subscribe((event) => events.push(event));
+      const projectId = encodeProjectId("/tmp/test");
+      let owned = false;
+      const resolveProject = vi.fn().mockResolvedValue({ id: projectId });
+      const tracker = new ExternalSessionTracker({
+        eventBus,
+        supervisor: {
+          getProcessForSession: () => (owned ? { projectId } : undefined),
+        } as unknown as Supervisor,
+        scanner: {
+          getProjectBySessionDirSuffix: resolveProject,
+        } as unknown as ProjectScanner,
+        decayMs: 20,
+        peerStatus: { isBusy: async () => false },
+      });
+      const fileChange = () =>
+        eventBus.emit({
+          type: "file-change",
+          provider: "claude",
+          path: "/tmp/projects/-tmp-test/racing.jsonl",
+          relativePath: "-tmp-test/racing.jsonl",
+          changeType: "modify",
+          fileType: "session",
+          timestamp: new Date().toISOString(),
+        });
+      try {
+        fileChange();
+        await vi.advanceTimersByTimeAsync(0);
+        let finishLookup!: (project: { id: typeof projectId }) => void;
+        resolveProject.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishLookup = resolve;
+            }),
+        );
+        await vi.advanceTimersByTimeAsync(20);
+        expect(tracker.isExternal("racing")).toBe(false);
+        if (change === "new-activity") fileChange();
+        else if (change === "owned") owned = true;
+        else tracker.dispose();
+        await vi.advanceTimersByTimeAsync(0);
+        events.length = 0;
+        finishLookup({ id: projectId });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(
+          events.filter((event) => event.type === "session-status-changed"),
+        ).toEqual([]);
+      } finally {
+        tracker.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
 });
