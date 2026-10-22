@@ -26,6 +26,7 @@ import { useViewportWidth } from "../hooks/useViewportWidth";
 import { type MessageKey, useI18n } from "../i18n";
 import { hasCoarsePointer } from "../lib/deviceDetection";
 import { setSpeechCaptureActivity } from "../lib/speechCaptureActivity";
+import { setMicTitleActivity } from "../lib/micTitleActivity";
 import type { SpeechCommitOutcome } from "../lib/speechDraftTransaction";
 import {
   armSpeechFollowUp,
@@ -508,6 +509,7 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
   useEffect(
     () => () => {
       setSpeechCaptureActivity(speechCaptureOwnerRef.current, null);
+      setMicTitleActivity(speechCaptureOwnerRef.current, null);
       releaseSpeechFollowUpOwner(speechCaptureOwnerRef.current);
     },
     [],
@@ -587,6 +589,10 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
       reducePlayback ? speechCapturePhase : null,
     );
   }, [reducePlayback, speechCapturePhase]);
+
+  useEffect(() => {
+    setMicTitleActivity(speechCaptureOwnerRef.current, speechCapturePhase);
+  }, [speechCapturePhase]);
 
   useEffect(
     () => () => {

@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-20
+
+### Added
+- Managed HTML artifact viewing over encrypted remote connections, with media
+  streaming, file previews, reload recovery, and session App navigation.
+- Sandboxed project apps, reusable project templates, app sharing controls,
+  and automatic refresh of changed static apps.
+- Optional project rendez upload delivery to live sessions, with per-project
+  settings and support for nested uploads.
+- Sidebar categories, session read/unread shortcuts, patient topic shifts,
+  and optional compaction before a topic shift.
+- Native mobile transport support and push enrollment for the Android and
+  iOS companion apps.
+
+### Changed
+- Refresh provider integrations and preserve session settings across resumes,
+  clones, and forks. Codex compaction output has inspectable summaries.
+- Keep project identity and session titles accessible in compact headers;
+  improve code-copy controls, file links, and viewer navigation.
+- Bound long-lived server caches and transcript retention, and reduce idle
+  work and redundant draft synchronization.
+
+### Fixed
+- Preserve early composer edits, synchronized attachments, queued drafts,
+  and scroll ownership through startup and reconnect.
+- Recover interrupted native connections without discarding valid credentials
+  or presenting fabricated server errors.
+- Harden provider-host continuity, relay recovery, and native request and
+  response ownership during cancellation and reconnect.
+
 ### Security
+- Update markdown-it to 15.0.2 for the smartquotes denial-of-service advisory
+  GHSA-r7fv-28h4-cvq7. YA keeps typography disabled.
 - Limited-user Project Queue and All Sessions responses are now scoped to
   granted projects, including queue messages and attachments, recovered queue
   items, project options, pagination, and aggregate statistics. The Users

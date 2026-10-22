@@ -490,6 +490,7 @@ export type {
   ProviderSessionDefaults,
   NewSessionDefaults,
   BusyComposerDefaultAction,
+  RendezDelivery,
   ClientDefaults,
   CollapsedComposerButtonPreference,
   GrokSpeechAudioClientDefault,
@@ -576,6 +577,7 @@ export {
   DEFAULT_CACHE_MISS_BILLING_SETTINGS,
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
   DEFAULT_STEER_NOW_ENABLED,
+  RENDEZ_DELIVERIES,
 } from "./types.js";
 
 export type {
@@ -1673,6 +1675,10 @@ export {
 
 export {
   DEFAULT_ISSUE_SETTINGS,
+  DEFAULT_ISSUE_CONTENT_TTL_SECONDS,
+  DEFAULT_ISSUE_STATUS_COMMENT_TTL_SECONDS,
+  ISSUE_CONTENT_TTL_SECONDS,
+  ISSUE_STATUS_COMMENT_TTL_SECONDS,
   DEFAULT_JIRA_KEY_BLOCKLIST,
   issueLookupUrl,
   issueUrl,
@@ -1712,6 +1718,9 @@ export { PDFJS_VERSION } from "./pdfjs.js";
 
 export {
   projectServiceSchema,
+  projectFileLinksSchema,
+  projectFileLink,
+  type ProjectFileLinks,
   type ProjectServiceDeclaration,
   type ProjectAppInfo,
   type ProjectAppView,

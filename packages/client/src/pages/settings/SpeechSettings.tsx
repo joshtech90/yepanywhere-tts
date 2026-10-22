@@ -85,6 +85,8 @@ export function SpeechSettings() {
     setKeepMicWarm,
     reducePlayback,
     setReducePlayback,
+    audioWorklet,
+    setAudioWorklet,
     unspokenPunctuation,
     setUnspokenPunctuation,
     followUpListenMs,
@@ -118,6 +120,7 @@ export function SpeechSettings() {
       speechSmartTurnSettings,
       keepMicWarm,
       reducePlayback,
+      audioWorklet,
       unspokenPunctuation,
       followUpListenMs,
       asrAttributionMs,
@@ -133,6 +136,7 @@ export function SpeechSettings() {
       speechSmartTurnSettings,
       keepMicWarm,
       reducePlayback,
+      audioWorklet,
       unspokenPunctuation,
       followUpListenMs,
       asrAttributionMs,
@@ -150,6 +154,7 @@ export function SpeechSettings() {
       setSpeechSmartTurnSettings(snapshot.speechSmartTurnSettings);
       setKeepMicWarm(snapshot.keepMicWarm);
       setReducePlayback(snapshot.reducePlayback);
+      setAudioWorklet(snapshot.audioWorklet);
       setUnspokenPunctuation(snapshot.unspokenPunctuation);
       setFollowUpListenMs(snapshot.followUpListenMs);
       setAsrAttributionMs(snapshot.asrAttributionMs);
@@ -165,6 +170,7 @@ export function SpeechSettings() {
       setSpeechSmartTurnSettings,
       setKeepMicWarm,
       setReducePlayback,
+      setAudioWorklet,
       setUnspokenPunctuation,
       setFollowUpListenMs,
       setAsrAttributionMs,
@@ -600,6 +606,21 @@ export function SpeechSettings() {
               checked={reducePlayback}
               onChange={(event) => setReducePlayback(event.target.checked)}
               aria-label={t("speechSettingsReducePlaybackTitle")}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+
+        <SettingsItem
+          label={t("speechSettingsAudioWorkletTitle")}
+          description={t("speechSettingsAudioWorkletDescription")}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={audioWorklet}
+              onChange={(event) => setAudioWorklet(event.target.checked)}
+              aria-label={t("speechSettingsAudioWorkletTitle")}
             />
             <span className="toggle-slider" />
           </label>

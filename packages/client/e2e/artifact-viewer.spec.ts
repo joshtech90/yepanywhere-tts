@@ -791,6 +791,26 @@ test("finds within the scriptless preview without giving it scripts", async ({
   ).toBe("");
 });
 
+test("scriptless preview applies a self-contained export's data: stylesheets", async ({
+  page,
+}) => {
+  // Quarto/Pandoc embed-resources output links its CSS as data: URLs, which
+  // the srcdoc frame's inherited app policy refuses unless they are inlined.
+  const percent = `data:text/css,${encodeURIComponent("body.paper{padding-left:37px}")}`;
+  const base64 = `data:text/css;base64,${Buffer.from(".paper td{padding-left:11px}").toString("base64")}`;
+  const htmlPath = join(directory, "bundle", "embedded-css.html");
+  await writeFile(
+    htmlPath,
+    `<!doctype html><html lang="en"><head><link rel="stylesheet" href="${percent}"><link href="${base64}" rel="stylesheet"></head><body class="paper"><table><tr><td>cell</td></tr></table></body></html>`,
+  );
+  await page.goto(
+    `${base}/e2e/fixtures/artifact-viewer.html?editor&path=${encodeURIComponent(htmlPath)}`,
+  );
+  const frame = page.frameLocator('iframe[title="embedded-css.html"]');
+  await expect(frame.getByText("cell")).toHaveCSS("padding-left", "11px");
+  await expect(frame.locator("body")).toHaveCSS("padding-left", "37px");
+});
+
 test("sanitized preview section links scroll within the document", async ({
   page,
 }) => {

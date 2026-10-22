@@ -205,7 +205,6 @@ type PendingSpeechDeliveryIntent =
   | {
       kind: "fork-summary";
       focusAfterSubmit: boolean;
-      speechTriggered: boolean;
     }
   | { kind: "fork-without-summary"; focusAfterSubmit: boolean };
 
@@ -218,7 +217,6 @@ interface SubmissionCompositionSnapshot {
 
 interface PendingSpeechDelivery {
   intent: PendingSpeechDeliveryIntent;
-  visibleTextSnapshot: string;
   draft: string;
   composition: SubmissionCompositionSnapshot;
   speechInsertionRangeRef: { current: SpeechInsertionRange | null };
@@ -1391,17 +1389,12 @@ export function MessageInput({
       }
       // The delivery press owns the current draft and speech target. Detach
       // both from the live composer so speech can settle without consuming
-      // text the user starts typing for the next turn. Keep the exact visible
-      // click-time projection immutable while late finals update the detached
-      // draft only for failure recovery and composition metadata.
+      // text the user starts typing for the next turn. Delivery during capture
+      // is unreviewed: final ASR revisions update this detached draft before
+      // successful settlement authorizes sending it with the speech prefix.
       const draft = controls.getDraft();
       pendingSpeechDeliveryRef.current = {
         intent,
-        visibleTextSnapshot: getSpeechVisibleDraftText(
-          draft,
-          interimTranscriptRef.current,
-          speechInsertionRangeRef.current,
-        ),
         draft,
         composition: {
           typingStartedAt: typingStartedAtRef.current,
@@ -1460,7 +1453,6 @@ export function MessageInput({
         deferSpeechDelivery({
           kind: "fork-summary",
           focusAfterSubmit,
-          speechTriggered,
         })
       ) {
         return true;
@@ -1509,6 +1501,7 @@ export function MessageInput({
       messageOverride?: unknown,
       focusAfterSubmit = true,
       preserveComposer = false,
+      speechTriggered = false,
     ) => {
       if (
         !forkSummaryMode?.onSubmitWithoutSummary ||
@@ -1530,7 +1523,7 @@ export function MessageInput({
       const finalText = override ?? controls.getDraft();
       const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
         configuredPrefix: speechMessagePrefix,
-        speechTriggered: false,
+        speechTriggered,
         recentSpeech: isRecentSpeechAttribution(),
       });
       if (!preserveComposer) {
@@ -1789,6 +1782,7 @@ export function MessageInput({
       preserveComposer = false,
       focusAfterSubmit = true,
       topicShift = false,
+      speechTriggered = false,
     ) => {
       const override =
         typeof messageOverride === "string" ? messageOverride : undefined;
@@ -1844,7 +1838,7 @@ export function MessageInput({
         }
         const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
           configuredPrefix: speechMessagePrefix,
-          speechTriggered: false,
+          speechTriggered,
           recentSpeech: isRecentSpeechAttribution(),
         });
         questionAside?.onDismiss?.();
@@ -1892,6 +1886,7 @@ export function MessageInput({
       submissionSnapshot?: SubmissionCompositionSnapshot,
       preserveComposer = false,
       focusAfterSubmit = true,
+      speechTriggered = false,
     ) => {
       if (!submit) return;
       const finalText = (messageOverride ?? controls.getDraft()).trimEnd();
@@ -1914,7 +1909,7 @@ export function MessageInput({
         );
         const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
           configuredPrefix: speechMessagePrefix,
-          speechTriggered: false,
+          speechTriggered,
           recentSpeech: isRecentSpeechAttribution(),
         });
         if (!preserveComposer) {
@@ -2040,10 +2035,12 @@ export function MessageInput({
     try {
       if (pending.intent.kind === "queue") {
         handleQueue(
-          pending.visibleTextSnapshot,
+          pending.draft,
           pending.composition,
           true,
           pending.intent.focusAfterSubmit,
+          false,
+          true,
         );
         return;
       }
@@ -2052,18 +2049,19 @@ export function MessageInput({
           pending.intent.newSession
             ? queueNewSessionAt(pending.intent.newSessionTarget)
             : onProjectQueue,
-          pending.visibleTextSnapshot,
+          pending.draft,
           pending.composition,
           true,
           pending.intent.focusAfterSubmit,
+          true,
         );
         return;
       }
       if (pending.intent.kind === "fork-summary") {
         const accepted = handleForkSummarySubmit(
-          pending.visibleTextSnapshot,
+          pending.draft,
           pending.intent.focusAfterSubmit,
-          pending.intent.speechTriggered,
+          true,
           true,
         );
         if (accepted) clearPendingOwner();
@@ -2072,8 +2070,9 @@ export function MessageInput({
       }
       if (pending.intent.kind === "fork-without-summary") {
         const accepted = handleForkWithoutSummary(
-          pending.visibleTextSnapshot,
+          pending.draft,
           pending.intent.focusAfterSubmit,
+          true,
           true,
         );
         if (accepted) clearPendingOwner();
@@ -2081,10 +2080,10 @@ export function MessageInput({
         return;
       }
       void handleSubmit(
-        pending.visibleTextSnapshot,
+        pending.draft,
         pending.intent.actionOverride,
         pending.intent.focusAfterSubmit,
-        false,
+        true,
         pending.composition,
         true,
       );
@@ -2242,11 +2241,9 @@ export function MessageInput({
     resolveComposerBangDraft(visibleDeliveryDraft).kind === "bang";
   const manualDeliverySpeechPrefix =
     speechMessagePrefix &&
-    asrAttributionMs > 0 &&
     (speechAttributionActive ||
-      ((speechPending !== null || pendingSpeechDeliveryRef.current !== null) &&
-        (speechTransactionHasTextRef.current ||
-          interimTranscript.trim().length > 0)))
+      speechPending !== null ||
+      pendingSpeechDeliveryRef.current !== null)
       ? speechMessagePrefix
       : null;
   const primaryDeliverySpeechPrefix = primaryRunsLocalBang

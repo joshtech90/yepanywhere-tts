@@ -1,3 +1,4 @@
+import { RENDEZ_DELIVERIES, type RendezDelivery } from "@yep-anywhere/shared";
 import { useState } from "react";
 import type { ServerSettings } from "../../api/client";
 import { useI18n } from "../../i18n";
@@ -114,6 +115,27 @@ export function RendezSettings({
             onChange({ ...value, enabled: event.target.checked })
           }
         />
+      </SettingsItem>
+      <SettingsItem
+        label={t("rendezDeliveryTitle")}
+        description={t("rendezDeliveryDescription")}
+        descriptionLayout="full-width-on-narrow"
+        keywords={["rendez", "upload", "steer", "queue", "delivery"]}
+      >
+        <select
+          value={value.delivery ?? "auto"}
+          disabled={saving}
+          aria-label={t("rendezDeliveryTitle")}
+          onChange={(event) => {
+            const next = event.target.value as RendezDelivery;
+            if (!RENDEZ_DELIVERIES.includes(next)) return;
+            onChange({ ...value, delivery: next });
+          }}
+        >
+          <option value="auto">{t("rendezDeliveryAuto")}</option>
+          <option value="steer">{t("rendezDeliverySteer")}</option>
+          <option value="queue">{t("rendezDeliveryQueue")}</option>
+        </select>
       </SettingsItem>
       {shown.length > 0 && (
         <table className={styles.table}>

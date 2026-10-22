@@ -2,12 +2,31 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as zlib from "node:zlib";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CodexEntryCacheBudget } from "../../src/sessions/codex-entry-cache-budget.js";
 import { CodexSessionReader } from "../../src/sessions/codex-reader.js";
+import { isZstdJsonlSupported } from "../../src/utils/jsonl.js";
 
 const projectId = "test-project" as UrlProjectId;
+
+const zstdCompressSync = (
+  zlib as typeof zlib & {
+    zstdCompressSync?: (buffer: Buffer) => Buffer;
+  }
+).zstdCompressSync;
+const itIfNativeZstd =
+  typeof zstdCompressSync === "function" && isZstdJsonlSupported()
+    ? it
+    : it.skip;
+
+function zstdCompressed(content: Buffer): Buffer {
+  if (!zstdCompressSync) {
+    throw new Error("zstd compression is unavailable in this Node.js");
+  }
+  return zstdCompressSync(content);
+}
 
 function userMessageLine(message: string): string {
   return JSON.stringify({
@@ -96,7 +115,8 @@ describe("CodexSessionReader entry cache budget", () => {
   async function createSession(
     sessionId: string,
     messages: number,
-  ): Promise<{ path: string; size: number }> {
+    options: { compressed?: boolean } = {},
+  ): Promise<{ path: string; size: number; decodedSize: number }> {
     const now = new Date().toISOString();
     const lines = [
       JSON.stringify({
@@ -113,9 +133,20 @@ describe("CodexSessionReader entry cache budget", () => {
     for (let i = 0; i < messages; i++) {
       lines.push(userMessageLine(`message ${i} ${"x".repeat(200)}`));
     }
-    const path = join(testDir, `${sessionId}.jsonl`);
-    await writeFile(path, `${lines.join("\n")}\n`);
-    return { path, size: (await stat(path)).size };
+    const content = Buffer.from(`${lines.join("\n")}\n`);
+    const path = join(
+      testDir,
+      options.compressed ? `${sessionId}.jsonl.zst` : `${sessionId}.jsonl`,
+    );
+    await writeFile(
+      path,
+      options.compressed ? zstdCompressed(content) : content,
+    );
+    return {
+      path,
+      size: (await stat(path)).size,
+      decodedSize: content.length,
+    };
   }
 
   it("evicts the least recently used session across readers", async () => {
@@ -165,6 +196,39 @@ describe("CodexSessionReader entry cache budget", () => {
     expect(concurrent?.data.session.entries).toHaveLength(21);
     expect(reader.getEntryCacheStats().sessions).toBe(0);
     expect(budget.getStats().retainedEntries).toBe(0);
+  });
+
+  // A sweep over zstd rollouts once retained ~2.6 GB of heap under a 256 MB
+  // budget because entries were charged their compressed file size.
+  itIfNativeZstd("charges a compressed rollout its decoded size", async () => {
+    const session = await createSession("budget-compressed", 40, {
+      compressed: true,
+    });
+    expect(session.size * 4).toBeLessThan(session.decodedSize);
+
+    const tight = new CodexEntryCacheBudget({
+      maxSourceBytes: session.decodedSize - 1,
+    });
+    const tightReader = new CodexSessionReader({
+      sessionsDir: testDir,
+      entryCacheBudget: tight,
+    });
+    const loaded = await tightReader.getSession("budget-compressed", projectId);
+    expect(loaded?.data.session.entries).toHaveLength(41);
+    expect(tightReader.getEntryCacheStats().sessions).toBe(0);
+
+    const roomy = new CodexEntryCacheBudget({
+      maxSourceBytes: session.decodedSize,
+    });
+    const roomyReader = new CodexSessionReader({
+      sessionsDir: testDir,
+      entryCacheBudget: roomy,
+    });
+    await roomyReader.getSession("budget-compressed", projectId);
+    expect(roomy.getStats()).toMatchObject({
+      retainedEntries: 1,
+      retainedSourceBytes: session.decodedSize,
+    });
   });
 
   it("drops a cached session once appends grow it past the budget", async () => {

@@ -107,6 +107,7 @@ describe("IssueSettings tracker confirmation", () => {
 
   it("gates new credential policy controls and sends no unsupported fields to an old server", async () => {
     await renderPane();
+    expect(screen.queryByRole("slider")).toBeNull();
     expect(
       screen.queryByLabelText("Check GitHub issue and PR status"),
     ).toBeNull();
@@ -122,6 +123,41 @@ describe("IssueSettings tracker confirmation", () => {
     );
     expect(body).not.toHaveProperty("githubCli");
     expect(body).not.toHaveProperty("githubStatusEnabled");
+  });
+
+  it("shows independent lifetime defaults and saves only after a slider gesture commits", async () => {
+    await renderPane({
+      contentTtlSeconds: 1209600,
+      statusCommentTtlSeconds: 300,
+    });
+    state.fetch.mockImplementation(async (_path, init) =>
+      coverage(JSON.parse(init.body)),
+    );
+    const content = screen.getByRole<HTMLInputElement>("slider", {
+      name: "Subject & body cache lifetime",
+    });
+    const activity = screen.getByRole<HTMLInputElement>("slider", {
+      name: "Status & comments cache lifetime",
+    });
+    expect(content.getAttribute("aria-valuetext")).toBe("2 weeks");
+    expect(activity.getAttribute("aria-valuetext")).toBe("5 minutes");
+    fireEvent.change(content, { target: { value: "0" } });
+    expect(content.getAttribute("aria-valuetext")).toBe("1 second");
+    expect(
+      state.fetch.mock.calls.filter((call) => call[1]?.method === "PUT"),
+    ).toHaveLength(0);
+    await act(async () => fireEvent.pointerUp(content));
+    expect(JSON.parse(state.fetch.mock.lastCall![1].body)).toMatchObject({
+      contentTtlSeconds: 1,
+      statusCommentTtlSeconds: 300,
+    });
+    fireEvent.change(activity, { target: { value: activity.max } });
+    await act(async () => fireEvent.keyUp(activity, { key: "End" }));
+    expect(JSON.parse(state.fetch.mock.lastCall![1].body)).toMatchObject({
+      contentTtlSeconds: 1,
+      statusCommentTtlSeconds: null,
+    });
+    expect(activity.getAttribute("aria-valuetext")).toBe("Never expire (∞)");
   });
 
   it("lets GitHub status use credentials independently of tracker confirmation", async () => {

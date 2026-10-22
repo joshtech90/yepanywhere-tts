@@ -25,6 +25,75 @@ normalized text is available. Compressed Codex sources cannot be read by this
 background adapter.
 
 Search uses literal, case-insensitive substrings of stored keys, URLs and titles.
+Fetched confirmation subjects also participate in substring search, even when
+a manual title overrides the displayed subject. Display prefers the manual
+title, then the fetched subject, then a descriptive observed link label. This
+also searches durably fetched descriptions. Canonical content subjects take
+precedence over legacy confirmation subjects. Search itself makes no tracker
+requests and list responses never carry complete bodies. Selected tickets show
+the cached plain-text description; fetching it does not require downloading
+other tickets' bodies. Jira v3 requests explicitly include `summary,description`;
+ADF text, paragraph breaks, link destinations and smart-link card URLs become
+searchable text. Remote smart-card preview metadata and attachments are not
+fetched. GitHub uses the issue endpoint's `body`, including for pull requests.
+
+The refresh and settings controls are compact icons with accessible names and
+44-pixel targets. Normal refresh scans all stored canonical ticket URLs,
+including old-session references, for missing or expired content. It respects
+a shared subject/body TTL, default two weeks, including 404/410 negative results.
+Right-click, long-press or Shift+F10 on refresh immediately rechecks all tickets,
+ignoring cache age, without opening a menu. This bypasses TTL, including cached
+misses, but respects retry cooldowns and provider rate limits. Selecting a ticket
+requests the same revalidation for that item; saved content remains visible.
+Concurrent requests coalesce, with at most the latest selected item retained
+for a follow-up pass.
+These actions refresh already discovered references; they do not read previously
+unindexed session transcripts.
+
+Settings provides two cache-lifetime sliders: **Subject & body** defaults to
+two weeks for both Jira and GitHub; **Status & comments** defaults to five
+minutes and currently controls GitHub status checks only. Comments are not
+fetched yet. Both sliders have discrete stops from one second through
+**Never expire (∞)**. A drag updates its displayed value immediately and saves
+when released; keyboard changes save on key release. Expiration only permits
+a later refresh/view to fetch again; it never starts a polling timer. Never
+expire still permits initial acquisition, explicit content revalidation and
+status-cache clearing. Failed requests retain their separate retry cooldown.
+The settings response supplies `contentTtlSeconds` and
+`statusCommentTtlSeconds`, with `null` meaning never expire. Older servers omit
+these fields, so clients hide the controls; older clients omit them on save,
+so servers preserve the saved values.
+
+Refresh runs serially, pauses one second between requests, reads at most 50
+candidate identities per page, and yields between cached pages. Requests time
+out after ten seconds and responses are bounded to 2 MiB. ETag and Last-Modified
+validators are used when returned; a 304 advances validation time and retains
+the body. A provider without validators receives a normal GET. Transient errors
+preserve prior content without marking it fresh and impose a five-minute retry
+cooldown. Rate limits stop the pass and persist their retry deadline across
+restarts, with no automatic retry timer. Refresh progress and failure counts
+appear beneath the toolbar. A stopped/restarted server needs another refresh;
+completed per-ticket results survive, so regular refresh skips them.
+
+Content is stored once per canonical tracker identity in `issue_content`, in
+app-data SQLite. A 404/410 removes previously saved content for that ticket;
+other failures retain the last good text. Deleting an item cascades to its
+content. Public HTTPS Jira tickets and github.com items can be fetched without
+credentials. Jira credentials are sent only to the exact configured site and
+context path; GitHub credentials only to api.github.com. Redirects are refused.
+Unsupported hosts/protocols count as failed attempts. Public shares receive no
+cached tracker content. Explicit refresh requires Issues & PRs enabled, while
+automatic confirmation retains its separate setting and once-per-reference
+policy. That first confirmation now retains description text from the same
+response when the fetched site's canonical record exists. Existing subject-only
+confirmations remain eligible for normal refresh.
+
+The optional `contentRefresh` response field advertises the refresh and cached
+content routes. Clients connected to earlier servers retain list-only refresh
+and offer no force-refresh action or body read. Disabling the feature or changing
+its settings fences in-flight content publication. The fuller first-mention
+TTL policy, indexed search/highlighting and comments remain in the
+[content-search sketch](issue-session-associations.sketches.md).
 Pasting a full URL finds its canonical record. An exact lookup, `GET /api/issues?ref=<url>`,
 matches only the item whose canonical identity the URL names, from any URL a
 browser shows for it: GitHub subpaths such as `/files`, either the `issues/`
@@ -288,7 +357,8 @@ badge. Jira status and Enterprise hosts remain deferred. These operations only
 read GitHub metadata, even when the underlying token has broader permissions.
 
 A `GET /api/issues` read returns cached facts and queues returned items whose
-state is missing or at least five minutes old. Merged facts never automatically
+state is missing or older than the status/comment TTL (default five minutes).
+Merged facts never automatically
 expire or refresh. A failed lookup retains the last successful state/check time
 and persists a five-minute retry delay. Readers share one server-wide pass,
 with up to 50 items per GraphQL query and at most 200 queued/in-flight items.

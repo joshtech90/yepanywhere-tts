@@ -26,10 +26,10 @@ capture records the current selection as the insertion target; mutable speech
 appears as an underlined preview, and finalized text commits into the ordinary
 editable draft at that mapped target.
 
-Manual Send, Steer, Queue, and Project Queue during capture operate on the exact
-text visible at the press. They stop capture, wait for successful transcription
-settlement, and then deliver the preserved snapshot. A failed or cancelled
-cycle does not silently deliver provisional text. Streaming backends may commit
+Manual Send, Steer, Queue, and Project Queue during capture stop capture, wait
+for successful transcription settlement, and then deliver the final ASR wording
+at the captured insertion target. A failed or cancelled cycle does not silently
+deliver provisional text. Streaming backends may commit
 several chunks and support Smart Turn or spoken control words; batch backends
 return one final transcript after recording stops and do not provide mid-
 utterance Smart Turn.
@@ -291,16 +291,23 @@ returns idle without an error or transcript. Once the start message has been
 sent, Stop retains the flush/finalize behavior above; a subsequent connection
 failure remains a real error unless existing transcript salvage applies.
 
-The governing visible-speech action invariant is that an explicit composer
-action operates on exactly the text projected when the user invokes it,
-including an underlined interim at its visible insertion or replacement span.
-Stop commits that snapshot into the editable draft. Send, Steer, and Queue
-record the delivery intent, stop capture, wait for successful provider
-settlement, and deliver that immutable snapshot rather than a later recognizer
-correction or subsequent draft state. Delivery snapshots do not first commit
-provisional text into the editable textarea. A failed speech cycle clears the
-pending delivery instead of sending the snapshot; a later deliberate delivery
-press may still send the retained draft. This contract applies to the
+Stop and delivery have different review contracts. Plain Stop commits the
+visible snapshot into the editable draft for review. Enter, Send, Steer, Queue,
+and Project Queue during capture authorize an **unreviewed speech send**: the
+user has not yet seen the recognizer's final wording, even if a full interim
+preview was visible. ASR therefore gets its final pass before delivery. This
+is the maintainer-directed correction of 2026-10-20, not a separate hotkey.
+
+Delivery records its intent and detaches the draft and speech insertion target
+at the press. Final recognizer results revise that detached draft; successful
+provider settlement authorizes sending it. Text typed afterward belongs to the
+next draft and is neither consumed nor overwritten. These sends use the
+configured Speech message prefix (including Off or custom text) independently
+of the Quick-send speech-prefix window. The timing window applies to later
+manual sends after capture has already settled, not Enter during capture.
+A failed speech cycle clears pending delivery and restores recoverable text;
+a later deliberate delivery press may still send the retained draft. This
+contract applies to the
 active-session, new-session, and floating composers and to mic-button or
 keyboard-shortcut invocation of the same action. Action eligibility is checked
 before speech ownership transfers and again before a deferred typed action
@@ -565,6 +572,18 @@ is broader than spoken `cancel`, which only removes the latest finalized
 speech chunk and keeps recognition running.
 
 ## Feedback
+
+The browser/window title starts with `◷🎙` while capture is starting and `🎙`
+while recording, including audio memos. These cues remain visible independently
+of the optional composer hotkey beacon and playback reduction setting. They
+disappear when capture stops; final ASR processing and idle warmed microphone
+tracks do not count as recording. Multiple mounted controls retain the cue
+until the last active capture stops. The leading cue leaves configured title
+formats and the trailing delivery/beacon suffix intact.
+
+Browser-native delivery waits for recognition's final results and end event
+after stopping. If it does not finish within five seconds, delivery fails and
+the draft remains recoverable; late results cannot send it afterward.
 
 The mic's capture readiness stays event-driven. While the capture path is
 initializing or browser-native capture is reconnecting, the mic uses an amber

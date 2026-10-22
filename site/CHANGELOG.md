@@ -6,7 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [site-v1.12.0] - 2026-10-20
+
+### Added
+- Publish guides for project templates, project apps, local access passwords,
+  limited users, and iPad Home Screen installation.
+
 ### Changed
+- Publish the current remote client, including managed artifact viewing,
+  project apps, draft recovery, and compact session navigation.
+- Explain provider-host continuity and scripting workflows.
 - Describe native mobile notification registration, push data and retention,
   the synthetic review demo, and the public privacy/deletion contact.
 

@@ -1,5 +1,6 @@
 import { UI_KEYS } from "../storageKeys";
 import { setSpeechCaptureActivity } from "../speechCaptureActivity";
+import { connectMicSampleTap, type MicSampleTap } from "./micSampleTap";
 
 export const SPEECH_CAPTURE_SAMPLE_RATE = 16_000;
 export const SHARED_SPEECH_MIC_LEASE_STORAGE_KEY =
@@ -465,38 +466,34 @@ export function startSpeechWaveformMonitor(
       .webkitAudioContext;
   if (!AudioContextCtor) return () => {};
 
-  let context: AudioContext | null = null;
-  let source: MediaStreamAudioSourceNode | null = null;
-  let processor: ScriptProcessorNode | null = null;
-  let silentGain: GainNode | null = null;
+  let context: AudioContext;
+  let source: MediaStreamAudioSourceNode;
   try {
     context = new AudioContextCtor();
     source = context.createMediaStreamSource(stream);
-    processor = context.createScriptProcessor(1024, 1, 1);
-    silentGain = context.createGain();
-    silentGain.gain.value = 0;
-    processor.onaudioprocess = (event) => {
-      onAudioSamples(event.inputBuffer.getChannelData(0));
-    };
-    source.connect(processor);
-    processor.connect(silentGain);
-    silentGain.connect(context.destination);
-    void context.resume().catch(() => undefined);
   } catch {
-    processor?.disconnect();
-    source?.disconnect();
-    silentGain?.disconnect();
-    void context?.close().catch(() => undefined);
     return () => {};
   }
-
-  return () => {
-    if (processor) processor.onaudioprocess = null;
-    processor?.disconnect();
-    source?.disconnect();
-    silentGain?.disconnect();
-    void context?.close();
+  // The display is best-effort: a monitor that cannot start shows no waveform
+  // and must not disturb the capture it decorates.
+  let stopped = false;
+  let tap: MicSampleTap | null = null;
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    tap?.disconnect();
+    source.disconnect();
+    void context.close().catch(() => undefined);
   };
+  void connectMicSampleTap(context, source, {
+    batchSize: 1024,
+    onSamples: onAudioSamples,
+  }).then((connected) => {
+    if (stopped) connected.disconnect();
+    else tap = connected;
+  }, stop);
+  void context.resume().catch(() => undefined);
+  return stop;
 }
 
 export function isSharedSpeechMicStream(stream: MediaStream | null): boolean {

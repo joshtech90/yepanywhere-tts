@@ -39,7 +39,7 @@
   font-size: var(--font-size-sm);
 }
 .button,
-.settingsLink,
+.toolbarIcon,
 .iconButton,
 .textButton {
   display: inline-flex;
@@ -67,6 +67,22 @@
   border-color: transparent;
   font-size: 20px;
 }
+.toolbarIcon {
+  flex: 0 0 44px;
+  height: 44px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+}
+.description {
+  margin-bottom: var(--space-3);
+}
+.description summary {
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
 .textButton {
   background: transparent;
   border-color: transparent;
@@ -74,7 +90,7 @@
   padding: 4px 0;
 }
 .button:hover:not(:disabled),
-.settingsLink:hover,
+.toolbarIcon:hover:not(:disabled),
 .iconButton:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
@@ -83,7 +99,8 @@
   outline: 2px solid var(--focus-border);
   outline-offset: 2px;
 }
-.button:disabled {
+.button:disabled,
+.toolbarIcon:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -304,7 +321,7 @@
     padding: var(--space-3);
   }
   .button,
-  .settingsLink,
+  .toolbarIcon,
   .iconButton,
   .textButton,
   .choice,

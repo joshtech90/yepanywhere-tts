@@ -1046,15 +1046,26 @@ function ToolbarHidePopover({
       onClose();
       state.target.focus({ preventScroll: true });
     };
+    const handleScroll = (event: Event) => {
+      // Transcript reflow can scroll a sibling while these options are edited.
+      // Only scrolling an ancestor can move this menu's toolbar anchor.
+      if (
+        event.target === document ||
+        event.target === window ||
+        (event.target instanceof Element && event.target.contains(state.target))
+      ) {
+        onClose();
+      }
+    };
     document.addEventListener("pointerdown", handlePointerDown, true);
     document.addEventListener("keydown", handleKeyDown, true);
     window.addEventListener("resize", onClose);
-    window.addEventListener("scroll", onClose, true);
+    window.addEventListener("scroll", handleScroll, true);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("resize", onClose);
-      window.removeEventListener("scroll", onClose, true);
+      window.removeEventListener("scroll", handleScroll, true);
     };
   }, [onClose, state.target]);
 

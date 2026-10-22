@@ -1,4 +1,5 @@
 import { lstat } from "node:fs/promises";
+import { RENDEZ_DELIVERIES, type RendezDelivery } from "@yep-anywhere/shared";
 import { isAbsolute, join } from "node:path";
 import { getLogger } from "../logging/logger.js";
 import {
@@ -19,6 +20,8 @@ export interface RendezSettings {
   projects: Record<string, boolean>;
   windowMs?: number;
   maxPerWindow?: number;
+  /** Absent means "auto". */
+  delivery?: RendezDelivery;
 }
 
 export function parseRendezSettings(value: unknown): RendezSettings {
@@ -60,11 +63,18 @@ export function parseRendezSettings(value: unknown): RendezSettings {
       "rendez.projects requires at most 128 absolute paths with boolean overrides",
     );
   }
+  if (
+    fields.delivery !== undefined &&
+    !RENDEZ_DELIVERIES.includes(fields.delivery as RendezDelivery)
+  ) {
+    throw new Error(`rendez.delivery must be one of ${RENDEZ_DELIVERIES}`);
+  }
   return {
     enabled: fields.enabled,
     projects: Object.fromEntries(projects) as Record<string, boolean>,
     windowMs: (fields.windowMs as number | undefined) ?? 1000,
     maxPerWindow: (fields.maxPerWindow as number | undefined) ?? 10,
+    delivery: (fields.delivery as RendezDelivery | undefined) ?? "auto",
   };
 }
 

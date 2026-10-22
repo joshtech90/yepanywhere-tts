@@ -49,6 +49,38 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The page an app reports, after its name; it gives way first when crowded. */
+.crumbs {
+  flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-size: 0.8em;
+  color: var(--text-secondary);
+}
+.crumbTrail {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.crumbSeparator {
+  padding: 0 3px;
+  opacity: 0.7;
+}
+.crumb {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.crumb:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
 .frame {
   flex: 1;
   width: 100%;

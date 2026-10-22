@@ -1,4 +1,7 @@
-import { PUBLIC_FILE_SHARES_CAPABILITY } from "@yep-anywhere/shared";
+import {
+  PUBLIC_FILE_SHARES_CAPABILITY,
+  SERVER_CAPABILITIES,
+} from "@yep-anywhere/shared";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
@@ -123,6 +126,35 @@ it("mints a public file share when none exists", async () => {
     projectId: PROJECT_ID,
     path: FILE_PATH,
   });
+});
+
+it("prefers the project app's public file link over a YA file share", async () => {
+  state.version = version([
+    PUBLIC_FILE_SHARES_CAPABILITY,
+    SERVER_CAPABILITIES.projectService.name,
+  ]);
+  runtime.transport.fetch.mockResolvedValue({
+    fileLinks: {
+      pathTemplate: "/{path}",
+      baseUrl: "https://app.example/?ya_access=tok",
+    },
+  });
+  openMenu();
+  await vi.waitFor(() =>
+    expect(runtime.transport.fetch).toHaveBeenCalledWith(
+      `/projects/${PROJECT_ID}/app`,
+    ),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  fireEvent.click(screen.getByText("Copy public URL"));
+  await vi.waitFor(() =>
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      `https://app.example/${FILE_PATH}?ya_access=tok`,
+    ),
+  );
+  expect(state.getPublicFileShares).not.toHaveBeenCalled();
+  expect(state.createPublicFileShare).not.toHaveBeenCalled();
+  runtime.transport.fetch.mockReset();
 });
 
 it("offers Copy public URL for an absolute project-file path", async () => {

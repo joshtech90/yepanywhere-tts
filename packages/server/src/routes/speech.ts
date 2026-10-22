@@ -1208,11 +1208,10 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
         404,
       );
     }
+    // Prewarm is a hint: a backend with no cold model load is already as
+    // warm as it gets, so the request succeeds without doing anything.
     if (!supportsPrewarm(backend)) {
-      return c.json(
-        { error: `Backend does not support prewarm: ${parsed.backendId}` },
-        400,
-      );
+      return c.json({ ok: true });
     }
 
     logger.info(

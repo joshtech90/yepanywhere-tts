@@ -1223,7 +1223,29 @@ Previous-model registry review:
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
 
-Current source refresh, 2026-10-16 (Claude Code 2.1.301 / SDK 0.3.301):
+Current source refresh, 2026-10-21 (Claude Code 2.1.306 / SDK 0.3.306):
+
+- The SDK and matching native packages advance from 0.3.301 to 0.3.306.
+  The bundled Linux executable reports Claude Code 2.1.306 and embeds
+  Bun 1.4.4. Updating the standalone Claude installation does not update
+  this preferred YA runtime. Compatibility markers advance together.
+- The declaration delta adds optional context-usage source identifiers,
+  usage recommendations, attribution settings, and a nested-user-namespace
+  sandbox opt-in. YA's consumed query/control methods remain compatible;
+  the new sandbox opt-in is not enabled by this refresh.
+- Upstream fixes SDK controls waiting behind context checks, MCP-server
+  replacement collisions, headless authentication, and resume/compaction
+  behavior. Fork subagents are now enabled upstream by default in SDK
+  sessions; YA retains its configured spawn-depth policy.
+- A no-turn handshake through YA's control-probe path returns 13 model
+  rows, including Opus 5.5, Sonnet 5.5, Haiku 5.5, and Fable 5.1 aliases.
+  Native `/goal` and `/loop` remain available. Claude provider tests (48),
+  transcript-schema tests (26), and server type checking pass.
+- No assistant turn ran: authenticated generation and newly written
+  2.1.306 transcripts remain outside this refresh's coverage. Existing
+  provider-host workers must restart to adopt the loaded SDK update.
+
+Previous source refresh, 2026-10-16 (Claude Code 2.1.301 / SDK 0.3.301):
 
 - The SDK and its native executable packages advance from 0.3.300 to
   0.3.301; the bundled Linux executable reports Claude Code 2.1.301. Root
@@ -2069,9 +2091,9 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.301` | `0.3.301` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.306` | `0.3.306` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `1.9.0` | Active ACP client dependency for Grok/Gemini |
 
-Observed 2026-10-16.
+Claude SDK observed 2026-10-21; ACP SDK observed 2026-10-16.
 
 Treat both rows as provider-refresh inputs.

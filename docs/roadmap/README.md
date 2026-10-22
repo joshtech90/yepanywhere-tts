@@ -78,7 +78,7 @@ reviews. Assistant invocation/context is a compelling optional direction, but
 remains research/docs only: no device investigation or implementation spike is
 authorized. This does not change the incubation order or companion release scope.
 
-Last updated: 2026-10-18.
+Last updated: 2026-10-20.
 
 This is Yep Anywhere's canonical product-priority overview. Keep initiative
 status, the next action, and major blockers here; keep implementation steps in
@@ -91,9 +91,10 @@ managed HTTPS content delivery and compatibility. The fixed Cloudflare host is
 live, and real YA-pane acceptance over the public encrypted relay passes in
 desktop Chrome, Android Chrome on an Android 15 emulator and the attached
 Android 17 phone. Opus 5.5 high-effort review findings are addressed; physical
-native fresh pairing and static fallback pass. YA client/server
-release publication, native app delivery and WebKit qualification remain;
-custom artifact deployments retain precedence.
+native fresh pairing and static fallback pass. Desktop 0.4.1, Android
+internal build 65001 and website 1.12.0 now carry this work. Standalone npm
+processing, iOS delivery and WebKit qualification remain; custom artifact
+deployments retain precedence.
 
 The maintainer accepted [Android packaged service-worker delivery and secure
 transport hardening](../tactical/156-android-secure-transport-and-artifacts.md).
@@ -123,7 +124,18 @@ a coordinated beta native/server connection window without an echo negotiation
 or old-Android compatibility layer. The shared 1 MiB body budget includes
 completed/cancelled tails until receipt, with spare credit lent while preserving
 progress for other native readers.
-Nothing in this implementation phase has been published.
+October 20 publication delivered signed desktop 0.4.1 and Android internal
+`0.1.2-ci.550.1` / code `65001` from `e65db78de`. All 24 general CI and
+12 runtime/SQLite jobs pass on `bd309cd6e`; one native-phone browser retry
+retains an unresolved [duplicate first character](../../gaps/native-phone-browser-duplicate-first-character.md).
+The [npm 0.10.2 workflow](https://github.com/kzahel/yepanywhere/actions/runs/39472217467)
+succeeded and npm accepted the provenance-backed upload, but the registry is
+still processing it and serves 0.9.2.
+[Website 1.12.0](https://github.com/kzahel/yepanywhere/actions/runs/39478921330)
+is deployed; its browser protocol retains the approved 0.9.2 fallback,
+independently of the native-only connection window. The remaining publication
+blocker is npm's external processing step. iOS publication remains outside
+this release request.
 
 ## 1. Publish the desktop and mobile apps with continuous delivery
 

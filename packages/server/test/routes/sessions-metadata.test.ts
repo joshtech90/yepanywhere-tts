@@ -401,6 +401,7 @@ describe("Sessions metadata route", () => {
           isTerminated: false,
           setPermissionMode,
           noteInputIntent: vi.fn(),
+          noteBusySendAction: vi.fn(),
           primeSupportedCommandsForMessage,
           deferMessage,
           waitForPatientQueuePersistenceIdle,
@@ -485,6 +486,7 @@ describe("Sessions metadata route", () => {
         getProcessForSession: vi.fn(() => ({
           isTerminated: false,
           noteInputIntent: vi.fn(),
+          noteBusySendAction: vi.fn(),
           primeSupportedCommandsForMessage: vi.fn(async () => {}),
           deferMessage,
           waitForPatientQueuePersistenceIdle: vi.fn(async () => {}),
@@ -524,6 +526,7 @@ describe("Sessions metadata route", () => {
           isTerminated: false,
           setPermissionMode: vi.fn(),
           noteInputIntent: vi.fn(),
+          noteBusySendAction: vi.fn(),
           primeSupportedCommandsForMessage: vi.fn(async () => {}),
           deferMessage: vi.fn(() => ({ success: true, deferred: true })),
           waitForPatientQueuePersistenceIdle: vi.fn(async () => {}),
@@ -581,6 +584,7 @@ describe("Sessions metadata route", () => {
         getProcessForSession: vi.fn(() => ({
           isTerminated: false,
           noteInputIntent,
+          noteBusySendAction: vi.fn(),
           primeSupportedCommandsForMessage,
           deferMessage,
           waitForPatientQueuePersistenceIdle: vi.fn(async () => {}),
@@ -731,6 +735,7 @@ describe("Sessions metadata route", () => {
         getProcessForSession: vi.fn(() => ({
           isTerminated: false,
           noteInputIntent: vi.fn(),
+          noteBusySendAction: vi.fn(),
           primeSupportedCommandsForMessage,
           deferMessage,
           waitForPatientQueuePersistenceIdle,
@@ -4207,6 +4212,7 @@ describe("Sessions metadata route", () => {
           resolvedModel: "gpt-5.4",
           executor: undefined,
           noteInputIntent: vi.fn(),
+          noteBusySendAction: vi.fn(),
         })),
         queueMessageToSession,
       } as unknown as SessionsDeps["supervisor"],
@@ -4273,6 +4279,7 @@ describe("Sessions metadata route", () => {
           resolvedModel: "claude-sonnet-4-6",
           executor: undefined,
           noteInputIntent: vi.fn(),
+          noteBusySendAction: vi.fn(),
         })),
         queueMessageToSession,
       } as unknown as SessionsDeps["supervisor"],
@@ -5203,6 +5210,9 @@ describe("Sessions metadata route", () => {
   });
 
   it("gives a failed fork's number to the next fork", async () => {
+    const warn = vi
+      .spyOn(getLogger(), "warn")
+      .mockImplementation(() => undefined);
     const project = createProject();
     const dataDir = await mkdtemp(join(tmpdir(), "ya-fork-ordinal-"));
     try {
@@ -5243,6 +5253,13 @@ describe("Sessions metadata route", () => {
         });
 
       expect((await fork()).status).toBe(500);
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          event: "session_fork_failed",
+          error: "provider fork failed",
+        }),
+        "Transcript fork failed",
+      );
       const response = await fork();
       expect(response.status).toBe(200);
       expect((await response.json()).title).toBe("Fork: Refactor session");

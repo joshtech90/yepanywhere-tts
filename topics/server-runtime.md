@@ -4,6 +4,15 @@ Topic: node-22-builtin-sqlite
 
 ## Runtime contract
 
+**Security baseline (2026-10-21):** deploy Node 22.23.4, 24.22.1 or
+26.12.1, or a newer patched release on a maintained line. Node's
+[October security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)
+fixes Brotli decoder remote code execution and DNS/TLS validation issues.
+Prefer 24.22.1 for existing Node 24 installations. The functional engine
+floor below is not a security endorsement of older runtimes. Upgrade the
+runtime used by every service and restart the wrapper, provider host/workers
+and relay; a backend-only reload deliberately retains provider processes.
+
 New standalone server releases require Node.js `^22.16 || ^23.11 || >=24.10`,
 or Bun `>=1.3.14`. Recommend a maintained Node LTS for new installations.
 Prerelease runtimes are not included in these ranges. Root and server engines,
@@ -154,8 +163,8 @@ runtime version mismatch.
 
 ## Verification
 
-The Server Runtime And SQLite workflow tests Node 22.16.0, 23.11.0, 24.10.0
-and current Node 24 on Linux, macOS and Windows. It checks the generated engine
+The Server Runtime And SQLite workflow tests patched Node 22.23.4, 24.22.1
+and 26.12.1 on Linux, macOS and Windows. It checks the generated engine
 range, CLI/direct-entry rejection, clean npm installation, storage contracts,
 and Node/Bun file interoperability. Bun uses Desktop's exact 1.3.14 pin. Fresh-package checks exercise the forced
 Bun CLI, HTTP/WebSocket ping, a real child shell/agent CLI and the compiled

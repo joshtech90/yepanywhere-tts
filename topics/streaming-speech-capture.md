@@ -3,7 +3,8 @@
 > YA's server-streaming speech path treats browser microphone capture as a
 > stateful device pipeline: PCM frames from the first real audio callback,
 > direct `/api/speech/ws` locally or a dedicated secure relay speech channel
-> remotely, and explicit opt-in for warm mic or future AudioWorklet modes.
+> remotely, AudioWorklet capture with a ScriptProcessor fallback, and explicit
+> opt-in for warm mic.
 
 Topic: streaming-speech-capture
 
@@ -20,20 +21,53 @@ Primary code: `packages/client/src/lib/speechProviders/YaServerProvider.ts`
 
 ## Capture modes
 
-- **Standard mode (current): Web Audio `ScriptProcessorNode`.** Deprecated but
-  universally available. The processor pulls mic frames off the audio clock;
-  it must be connected to `destination` (through a zero-gain node) to fire. YA
-  requests a 16 kHz `AudioContext` so Web Audio can resample the mic track to
-  xAI's native STT rate before YA packs samples into PCM16.
-- **AudioWorklet mode (planned, opt-in):** the modern replacement. Recent
-  Chrome supports `AudioWorkletNode`, so the next implementation pass should
-  add a small PCM worklet behind feature detection (`audioContext.audioWorklet`
-  and `AudioWorkletNode`) and a visible capture-mode option. Keep
-  `ScriptProcessorNode` as fallback and do **not** make AudioWorklet the silent
-  default until desktop Chrome plus mobile browsers prove reliable. This will
-  address processor deprecation and likely mobile frame-delivery flakiness; it
-  will **not** fix the pre-graph `getUserMedia` cold-open latency, which occurs
-  before either processor type exists.
+Every YA Web Audio microphone consumer (streaming STT, the waveform monitor,
+and audio memo recording) reads samples through one shared tap,
+`connectMicSampleTap` in
+`packages/client/src/lib/speechProviders/micSampleTap.ts`. Either mode
+delivers the same mono `Float32Array` batches (1024 samples for STT and the
+waveform, 2048 for memos), so consumers do not know which mode ran. Both modes
+reach `destination` through a zero-gain node, since an unconnected capture
+node is never pulled. YA requests a 16 kHz `AudioContext` for STT so Web Audio
+can resample the mic track to xAI's native STT rate before YA packs samples
+into PCM16.
+
+- **AudioWorklet mode (default).** A small processor running on the audio
+  rendering thread re-batches 128-sample render quanta and transfers each
+  batch to the main thread. A main-thread stall therefore delays batches
+  rather than dropping them, and the ScriptProcessor deprecation warning goes
+  away. The module is loaded from a blob URL (the app CSP allows `blob:`
+  scripts), and loading starts when the capture `AudioContext` is created, in
+  parallel with `getUserMedia`. A module load is per context and took 30-75 ms
+  on desktop Chrome, longer than a warm mic takes to open, so with **Keep Mic
+  Warm** on, streaming STT reuses one capture context
+  (`streamingCaptureContext.ts`): it is created and loaded at prewarm (after
+  the page has had user activation) or at the first dictation, resumed in each
+  dictation's gesture, suspended when no dictation uses it, and closed when the
+  page is hidden while idle. Without Keep Mic Warm, the mobile norm, each
+  dictation creates and closes its own context as before. Speech in the gap
+  before the capture is built is not buffered, so this load shows directly as
+  later `first audio frame` and later red indicator.
+  The browser-local Speech setting **Capture microphone off the main thread**
+  (`yep-anywhere-speech-audio-worklet`, default on by maintainer direction)
+  turns it off. The setting is read at each capture start.
+- **ScriptProcessor mode (fallback).** The deprecated `ScriptProcessorNode`,
+  used when the setting is off, when `audioContext.audioWorklet` or
+  `AudioWorkletNode` is missing (older iOS before 14.5), or when the module
+  load or node construction fails. A failure logs one
+  `[YaAudio] AudioWorklet … using ScriptProcessor capture` warning, and the
+  STT `[YaSTT] graph built (capture=worklet|script-processor)` mark names the
+  mode that ran. AudioWorklet inside iOS web views has broken across versions,
+  so this fallback is required, not optional.
+
+Neither mode fixes the pre-graph `getUserMedia` cold-open latency, which
+occurs before either capture node exists.
+
+The real-Chromium fake-microphone check in
+`packages/client/e2e/audio-memo.spec.ts` asserts that default capture
+constructs an `AudioWorkletNode` under the app's real CSP. jsdom unit tests
+exercise the fallback; the processor's re-batching is unit-tested in
+`packages/client/src/lib/__tests__/micSampleTap.test.ts`.
 
 ## Hard contracts (each cost a debugging cycle)
 
@@ -54,8 +88,8 @@ Primary code: `packages/client/src/lib/speechProviders/YaServerProvider.ts`
    utterance arrived as 2.2s).
 
 3. **"listening" means audio is actually flowing.** Status flips to
-   `listening` only from the **first real `onaudioprocess` callback**, not after
-   a fixed sequence. A suspended/dead context never reaches `listening`; the
+   `listening` only from the **first real sample batch** delivered by the
+   capture tap (in either mode), not after a fixed sequence or node creation. A suspended/dead context never reaches `listening`; the
    3.5s audio-flow watchdog then surfaces a visible error. `resume()` rejection
    is logged, not swallowed.
 
@@ -281,10 +315,11 @@ facility.
 
 Observed: on mobile (hosted ya.graehl.org client) the mic shows the amber
 **connecting** state ("starting") and never reaches the red **listening**
-state. Per contract #3, `listening` is gated on the first real
-`onaudioprocess` callback, so "never red" means **the first audio frame never
-fires** - the indicator gate is doing its honest job; the fault is upstream in
-capture, not in the button. Best guesses, roughly in order:
+state. Per contract #3, `listening` is gated on the first real sample batch,
+so "never red" means **the first audio frame never fires** - the indicator
+gate is doing its honest job; the fault is upstream in capture, not in the
+button. The observation predates AudioWorklet mode and did not record the
+device or browser. Best guesses, roughly in order:
 
 1. **Streaming capture runs but `ScriptProcessorNode` never fires.** On mobile
    browsers (iOS Safari especially) `ScriptProcessorNode.onaudioprocess` is
@@ -299,16 +334,16 @@ capture, not in the button. Best guesses, roughly in order:
    longer advertise them; they have different browser-default processing and no
    streaming Smart Turn.
 3. **AudioWorklet mode is the likely real fix.** The deprecated
-   `ScriptProcessorNode` is exactly the component that is flaky on mobile;
-   moving capture to an `AudioWorklet` (the planned opt-in mode) is the
-   strongest candidate to make mobile capture deliver frames reliably. This
-   raises the priority of that planned work specifically for mobile.
+   `ScriptProcessorNode` is exactly the component that is flaky on mobile, and
+   AudioWorklet mode is now the default. Retest on the affected device first:
+   if it now turns red, guess 1 was the cause.
 
 Next diagnostic step (not yet done): enable **Remote Log Collection**
 (Developer Mode) on the phone so the `[YaSTT]` marks reach
 `~/.yep-anywhere/logs/client-logs/`, then read which mark is last:
-- `graph built` present but no `first audio frame` -> ScriptProcessor /
-  suspended-AudioContext on mobile (guess 1/3).
+- `graph built` present but no `first audio frame` -> capture node /
+  suspended-AudioContext on mobile (guess 1/3); the mark's `capture=` names
+  which mode failed.
 - no `getUserMedia ready` -> the device open itself hangs on mobile.
 - also confirm whether the transport resolved to direct `/api/speech/ws` or the
   dedicated relayed speech channel; both should still reach the same client
@@ -324,9 +359,10 @@ Next diagnostic step (not yet done): enable **Remote Log Collection**
   `onError`/timeout salvage + request-id guard (#6); browser-local warm-mic
   option with pointer-near initial prewarm; temporary Smart Turn follow-up
   listening across composer navigation; browser-local mic device picker;
-  `[YaSTT]` diagnostics.
-- **Open / not implemented:** mobile "never red" (above); AudioWorklet mode.
-  The non-AudioWorklet path already sends 16 kHz PCM16 in 100 ms chunks.
+  `[YaSTT]` diagnostics; default-on AudioWorklet capture with ScriptProcessor
+  fallback for every Web Audio mic consumer.
+- **Open / not implemented:** mobile "never red" (above), pending a retest
+  with AudioWorklet mode on iPad/phone.
 
 ## Diagnostics
 
@@ -334,5 +370,5 @@ Next diagnostic step (not yet done): enable **Remote Log Collection**
 size, processing constraints, and latency where the browser reports it, plus
 `frame peak=`) are intentionally kept in
 `doStartStreaming` while this path is being hardened; they flow to the remote
-client log collector too. Remove or gate them once standard mode is settled and
-AudioWorklet mode lands.
+client log collector too. Remove or gate them once AudioWorklet mode has
+proved reliable on desktop and mobile.

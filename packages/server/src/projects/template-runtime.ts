@@ -1,5 +1,8 @@
 import { spawn } from "node:child_process";
-import { projectServiceSchema } from "@yep-anywhere/shared";
+import {
+  projectServiceSchema,
+  projectFileLinksSchema,
+} from "@yep-anywhere/shared";
 import { prepareSessionSandbox } from "../session-sandbox.js";
 import { z } from "zod";
 import { filterEnvForChildProcess } from "../sdk/providers/env-filter.js";
@@ -29,6 +32,8 @@ const argv = z
   .min(1)
   .max(64);
 const runtimeSchema = z.object({
+  viewAudience: z.literal("public").optional(),
+  fileLinks: projectFileLinksSchema.optional(),
   kind: z.enum(["static", "server"]),
   dir: localPath,
   setup: argv,

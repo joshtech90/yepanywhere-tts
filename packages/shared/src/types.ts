@@ -821,6 +821,18 @@ export interface SessionToolbarPresenceClientDefaults {
 
 export type BusyComposerDefaultAction = "steer" | "queue";
 
+/**
+ * How a .rendez upload reaches a session with a running turn. "auto" repeats
+ * the user's last send choice during a turn in that session, else steers.
+ */
+export type RendezDelivery = "auto" | BusyComposerDefaultAction;
+
+export const RENDEZ_DELIVERIES: readonly RendezDelivery[] = [
+  "auto",
+  "steer",
+  "queue",
+];
+
 export type CollapsedComposerButtonPreference =
   | "primary"
   | "alternate"

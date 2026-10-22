@@ -5,6 +5,7 @@ import type {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useFileVhostService } from "../hooks/useFileVhostService";
+import { useProjectFileLink } from "../hooks/useProjectFileLink";
 import { useCanUseBearerGrants } from "../hooks/useActingPrincipal";
 import { useI18n } from "../i18n";
 import { writeClipboardTextLater } from "../lib/clipboard";
@@ -44,6 +45,7 @@ export function PublicFileShareModal({
 }: PublicFileShareModalProps) {
   const { t } = useI18n();
   const vhostService = useFileVhostService(projectId);
+  const projectAppLink = useProjectFileLink({ projectId, path: filePath });
   const canUseBearerGrants = useCanUseBearerGrants();
   const transformUrl = (url: string) =>
     (playLinks && publicSharePlayUrlFromFileShareUrl(url)) || url;
@@ -170,6 +172,34 @@ export function PublicFileShareModal({
           <span className={styles.liveBadge}>{t("publicShareLiveBadge")}</span>
         </div>
         <p className={styles.description}>{t("publicFileShareDescription")}</p>
+        {projectAppLink && (
+          <section className={styles.inventory}>
+            <p className={styles.description}>{t("projectFileLinkAccess")}</p>
+            <a href={projectAppLink} target="_blank" rel="noopener noreferrer">
+              {new URL(projectAppLink).host}
+            </a>
+            <button
+              type="button"
+              className={`settings-button settings-button-primary ${styles.createButton}`}
+              onClick={() => {
+                void writeClipboardTextLater(
+                  Promise.resolve(projectAppLink),
+                ).then((copied) => {
+                  setNotice(
+                    t(
+                      copied
+                        ? "publicFileShareCopied"
+                        : "publicFileShareManualCopy",
+                    ),
+                  );
+                  if (!copied) setManualUrl(projectAppLink);
+                });
+              }}
+            >
+              {t("projectFileLinkCopy")}
+            </button>
+          </section>
+        )}
         {playLinks && (
           <p className={styles.description}>{t("publicFileSharePlayLinks")}</p>
         )}

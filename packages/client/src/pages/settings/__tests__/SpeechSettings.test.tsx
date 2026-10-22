@@ -40,6 +40,8 @@ const speechCaptureSettings = vi.hoisted(() => ({
   setKeepMicWarm: vi.fn(),
   reducePlayback: true,
   setReducePlayback: vi.fn(),
+  audioWorklet: true,
+  setAudioWorklet: vi.fn(),
   unspokenPunctuation: false,
   setUnspokenPunctuation: vi.fn(),
   followUpListenMs: 0,

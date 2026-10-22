@@ -7,6 +7,12 @@ cover the bounded owners; the watcher test checks the store seen when a
 watch is created, not delivery from a real watch or collectability, and the
 full-history repeat sweep has not been rerun.
 
+Follow-up 2026-10-21: the Codex budget charged file size, so zstd rollouts
+retained several times their budget and back-to-back audit sweeps exhausted
+the heap. It now charges decoded bytes; see the topic's Codex retention note.
+That rerun measured all caches enabled (about 956 MB live after two sweeps),
+not the caches-at-0 sweep step 9 still calls for.
+
 ## Objective
 
 Make every long-lived server cache release its memory without a restart, and

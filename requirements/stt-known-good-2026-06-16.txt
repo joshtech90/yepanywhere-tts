@@ -21,12 +21,17 @@
 # linux-64 / Python 3.12, alone and as the requirements/stt-nemo.txt
 # constraint set; NeMo 2.0.0 still resolves with torch 2.12.0 and the pinned
 # Transformers build. They were not installed into the live env.
+#
+# Security patch bump on 2026-10-21 (certifi 2026.5.20 -> 2026.10.19)
+# removes the affected emSign trust root. Linux/Python 3.12 uv resolves pass
+# for this snapshot and the NeMo constraints. Verified HTTPS requests pass
+# with requests and httpx; existing live environments need their own update.
 accelerate==1.14.0
 annotated-doc==0.0.4
 anyio==4.14.2
 audioread==3.1.0
 av==17.1.0
-certifi==2026.5.20
+certifi==2026.10.19
 cffi==2.0.0
 charset-normalizer==3.4.7
 click==8.4.1

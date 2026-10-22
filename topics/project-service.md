@@ -83,6 +83,22 @@ add New session, Share, Settings and the microphone in that same top band.
 New tab, Back, new session and mic are direct icon actions with accessible
 labels. Keep the icon band thin, truncating its title when space is tight;
 service details stay in Settings.
+
+**Page location in the bar.** The app frame is cross-origin, so YA cannot read
+which page it shows. An app that wants its page named in the bar posts
+`{type: "yep-anywhere:app-location", href}` to its parent on load and on
+history or `#` changes (the repo-view template base does). YA
+accepts it only from its own frame's window with the view's origin, drops any
+`ya_access`, and shows the path after the project name as small crumbs. The
+crumbs clip at their start, so the current page stays visible, and give way
+first when the bar is crowded (on phones they usually vanish). YA answers each
+report, and each later change, with `{type:
+"yep-anywhere:app-location-shown", shown}` posted to the frame at the view's
+origin; `shown` is false while the trail is clipped, so an app can show its
+own crumbs only when the bar does not (repo-view hides its crumbs while framed
+unless told `shown: false`). A directory
+crumb navigates the frame under the view's own access link. Apps that never
+post keep the static title; nothing changes for them.
 Closing it changes navigation only. Stop is a separate service control in
 Settings. Use the existing iframe sandbox, credential
 separation, and safe new-tab behavior in [active-content security](active-content-security.md).
@@ -187,7 +203,13 @@ composer-adjacent session content are tracked in the
 
 **Copy link** copies an authorized, current viewer link; it does not publish
 or reserve anything. Explain when that link grants transferable access and
-when it expires. **Share** offers existing public-audience artifact sharing
+when it expires. A copied link is for someone else, so on a local
+(`.localhost`) page without a served address, Copy link mints the public link
+at click time when sharing is allowed (`canShare`), else copies the local one;
+viewing alone mints no public grant. Open in new tab keeps the view link;
+apps opting into public viewing below start with a public address. When
+the copied link differs from the view link only by host, it names the page the
+crumbs show, keeping its own `ya_access`. **Share** offers existing public-audience artifact sharing
 when this target, server and principal support it, without requiring a vhost.
 For a service, it may offer reservation and serving through enabled vhosts,
 subject to publication authority and the private-apps ceiling. Show an existing
@@ -196,6 +218,84 @@ intended access before creating a grant or publishing. Publicly reachable
 artifact bearer links remain link-required access, distinct from the vhost
 “Public — no link required” option. With neither delivery option available,
 explain that sharing is unavailable rather than sending unsupported requests.
+
+## Public browser apps and project file links
+
+Implemented (2026-10-21). Project browsers may
+opt into casually shareable viewing without routing games and other interactive
+apps through a public tunnel. Two independent top-level fields in
+`.project-template/app.json` express that choice:
+
+```json
+{
+  "viewAudience": "public",
+  "fileLinks": { "pathTemplate": "/{path}" }
+}
+```
+
+`viewAudience: "public"` opens the declared app on its existing serving public
+vhost from the outset, including the embedded frame and Open in new tab.
+Relative navigation and address-bar copies therefore keep the public origin.
+The default remains the caller's local/direct or remote audience. The opt-in
+does not reserve an address, enable serving, or change visitor access. Missing
+public delivery reports unavailable rather than silently substituting a local
+URL. Existing app lifecycle and permission checks still govern an explicit
+App open.
+
+`fileLinks` declares that the app can present project files. An empty object
+uses `/{path}`; `enabled: false` disables mapping while retaining a custom
+template, and absence disables it too. YA resolves a repository-relative
+file into an app-relative route and combines it with the
+existing serving public reservation and that reservation's access token.
+`{path}` encodes each path segment while retaining slashes; `{pathQuery}`
+encodes the whole path for a query value. Templates must be origin-relative,
+cannot specify an authority or `ya_access`, and must contain one supported
+placeholder. A requested fragment is preserved. Link construction rejects
+traversal and paths outside the selected project. It does no filesystem read;
+the app remains responsible for validating existence, symlinks and its serving
+boundary when a visitor follows the link. Mapping a file promises an app
+presentation, not permission to publish additional content.
+
+The initial implementation uses static mapping only. Reading this declaration
+and constructing a link must never probe or start an app, even when stopped.
+Without `fileLinks`, no app query or launch is attempted. A future dynamic
+resolver must separately declare its protocol endpoint, supported paths and
+whether explicit resolution may start the app; absence of that declaration
+means no discovery. Merely rendering session text never launches an app.
+
+YA supplies the template and public base URL as optional `fileLinks` metadata
+in the existing App information response. The client substitutes paths locally;
+there is no per-file resolver request and no request to the app. Metadata is
+read when the copy/share surface opens, never for every rendered autolink.
+
+The regular file viewer's Share surface offers the existing public app link
+before creating a YA file share or another vhost. Every file context menu's
+Copy public URL — session project-path autolinks and artifact previews
+included — copies the mapped app link whenever one resolves, ahead of any
+caller-supplied YA file-share link; there is one mapping contract for all
+entry points. The File Viewer's Share surface keeps the YA file share as a
+second choice. Normal clicks still open YA's regular project file viewer,
+including session autolinks; the app route is a public-copy action. A page
+viewed through a public share (`/share/…`, `play.html`) has no project
+authority, so it cannot offer the app link and copies its own share link. Show the public destination and explain that the bearer
+grants app access, not only access to the selected file. Keep the ordinary YA
+file-share and file-viewer actions available. No public-share action may return
+a localhost fallback. A missing mapping or public reservation leaves the
+ordinary file actions usable and creates no publication state.
+
+Authorization reuses project viewing and private-app-link distribution rights;
+the app never receives YA credentials or chooses the public origin/token.
+Clients gate App information on `project-service` and feature-detect the
+optional `fileLinks` response. There is no new endpoint. The optional-feature
+review inspected v0.10.0, v0.10.1 and v0.10.2 (all released October 20); they
+lack the fields, so clients retain ordinary file actions on those servers.
+Old servers ignore the optional declaration fields
+and retain their previous viewing behavior.
+
+**Decision:** static declarations precede a runtime resolver. They cover
+repository browsers without process startup, network requests or availability
+coupling. Public viewing is a separate per-app opt-in, so file-link support
+does not impose tunnel latency on interactive apps.
 
 ## Standard declaration: where, start, status, stop, serving
 

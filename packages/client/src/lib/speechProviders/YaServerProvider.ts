@@ -22,6 +22,16 @@ import {
   stopSpeechStreamTracks,
 } from "./sharedMicCapture";
 import {
+  connectMicSampleTap,
+  type MicSampleTap,
+  prepareMicSampleTap,
+} from "./micSampleTap";
+import {
+  acquireStreamingCaptureContext,
+  prewarmStreamingCaptureContext,
+  type StreamingCaptureContextLease,
+} from "./streamingCaptureContext";
+import {
   decideBatchSpeechCommand,
   getTrailingTranscriptCommand,
   getWordText,
@@ -117,7 +127,7 @@ const STREAM_CHUNK_MS = 100;
 const STREAM_CHUNK_SAMPLES = Math.round(
   (STREAM_SAMPLE_RATE * STREAM_CHUNK_MS) / 1000,
 );
-const SCRIPT_PROCESSOR_BUFFER_SIZE = 1024;
+const CAPTURE_BATCH_SAMPLES = 1024;
 const PCM_FRAME_POOL_SIZE = 16;
 const STREAM_MIME_TYPE = `audio/pcm;rate=${STREAM_SAMPLE_RATE};encoding=s16le`;
 // If the Web Audio processor never fires within this window the capture
@@ -218,23 +228,6 @@ function getAudioContextConstructor(): typeof AudioContext | null {
       .webkitAudioContext ??
     null
   );
-}
-
-function createStreamingAudioContext(
-  AudioContextCtor: typeof AudioContext,
-): AudioContext {
-  try {
-    return new AudioContextCtor({
-      latencyHint: "interactive",
-      sampleRate: STREAM_SAMPLE_RATE,
-    });
-  } catch {
-    try {
-      return new AudioContextCtor({ latencyHint: "interactive" });
-    } catch {
-      return new AudioContextCtor();
-    }
-  }
 }
 
 function speechWsUrl(basePath: string): string {
@@ -530,10 +523,9 @@ export class YaServerProvider implements SpeechProvider {
   // does not re-hit /speech/prewarm. Cleared on failure to allow a retry.
   private prewarmedBackendKey: string | null = null;
   private ws: SpeechStreamingSocket | null = null;
-  private audioContext: AudioContext | null = null;
+  private audioContextLease: StreamingCaptureContextLease | null = null;
   private audioSource: MediaStreamAudioSourceNode | null = null;
-  private processor: ScriptProcessorNode | null = null;
-  private silentGain: GainNode | null = null;
+  private sampleTap: MicSampleTap | null = null;
   private pcmChunker: Pcm16Chunker | null = null;
   private batchRecording: BatchRecording | null = null;
   private mimeType = "audio/webm";
@@ -667,6 +659,10 @@ export class YaServerProvider implements SpeechProvider {
     // a one-shot /speech/prewarm HTTP call — no audio, no held WebSocket — and
     // needs no mic permission, so it runs even where the mic warm cannot.
     this.prewarmBackendModel();
+    const AudioContextCtor = getAudioContextConstructor();
+    if (this.options.serverStreaming && AudioContextCtor) {
+      prewarmStreamingCaptureContext(AudioContextCtor, STREAM_SAMPLE_RATE);
+    }
     const permissions = navigator.permissions;
     if (typeof permissions?.query !== "function") return;
     if (this.prewarmRequest) return;
@@ -810,10 +806,20 @@ export class YaServerProvider implements SpeechProvider {
     // resume runs inside the click's user-activation window. iOS/Android refuse
     // to start an AudioContext resumed outside a user gesture; resuming after
     // `await getUserMedia` previously left capture dead on mobile.
-    const audioContext = createStreamingAudioContext(AudioContextCtor);
-    this.audioContext = audioContext;
+    // With Keep Mic Warm the context and its capture worklet survive between
+    // dictations too, so a warm start pays neither a device open nor a module
+    // load.
+    const audioContextLease = acquireStreamingCaptureContext(
+      AudioContextCtor,
+      STREAM_SAMPLE_RATE,
+      { reuse: this.options.keepMicWarm === true },
+    );
+    this.audioContextLease = audioContextLease;
+    const audioContext = audioContextLease.context;
+    // A shared context always resumes: the previous dictation's suspend may
+    // still be pending while its state reads "running".
     const resumePromise =
-      audioContext.state === "suspended"
+      audioContext.state === "suspended" || this.options.keepMicWarm === true
         ? audioContext.resume()
         : Promise.resolve();
     // Do not swallow a rejected resume. We still build the graph (connecting a
@@ -823,10 +829,15 @@ export class YaServerProvider implements SpeechProvider {
     resumePromise.catch((err: unknown) => {
       console.warn("[YaSTT] AudioContext.resume() rejected", err);
     });
+    // Load the capture worklet while the mic opens, so building the graph
+    // does not add a module load after getUserMedia.
+    void prepareMicSampleTap(audioContext);
 
     const abandonContext = (): void => {
-      void audioContext.close();
-      if (this.audioContext === audioContext) this.audioContext = null;
+      audioContextLease.release();
+      if (this.audioContextLease === audioContextLease) {
+        this.audioContextLease = null;
+      }
     };
 
     // Open the socket in parallel with mic acquisition and graph setup. Relay
@@ -906,18 +917,11 @@ export class YaServerProvider implements SpeechProvider {
     pcmChunker = new Pcm16Chunker(sendPcmFrame);
     this.pcmChunker = pcmChunker;
     const source = audioContext.createMediaStreamSource(stream);
-    const processor = audioContext.createScriptProcessor(
-      SCRIPT_PROCESSOR_BUFFER_SIZE,
-      1,
-      1,
-    );
-    const silentGain = audioContext.createGain();
-    silentGain.gain.value = 0;
+    this.audioSource = source;
     this.audioProcessorActive = false;
     let loudnessFramesLeft = 6;
-    processor.onaudioprocess = (event) => {
+    const onCaptureSamples = (input: Float32Array): void => {
       if (token !== this.startToken || this.disposed) return;
-      const input = event.inputBuffer.getChannelData(0);
       if (!this.audioProcessorActive) {
         // First real callback: capture is genuinely live. Only now flip to
         // "listening" so the indicator never claims to record while the
@@ -939,15 +943,26 @@ export class YaServerProvider implements SpeechProvider {
       this.options.onAudioSamples?.(input);
       pcmChunker.writeFloatSamples(input, audioContext.sampleRate);
     };
-    source.connect(processor);
-    processor.connect(silentGain);
-    silentGain.connect(audioContext.destination);
-
-    this.audioSource = source;
-    this.processor = processor;
-    this.silentGain = silentGain;
+    let sampleTap: MicSampleTap;
+    try {
+      sampleTap = await connectMicSampleTap(audioContext, source, {
+        batchSize: CAPTURE_BATCH_SAMPLES,
+        onSamples: onCaptureSamples,
+      });
+    } catch (err) {
+      closePendingSocket();
+      this.cleanupStreamingMedia();
+      throw err;
+    }
+    if (this.disposed || token !== this.startToken) {
+      // The superseding start or disposal owns the rest of this graph.
+      sampleTap.disconnect();
+      closePendingSocket();
+      return;
+    }
+    this.sampleTap = sampleTap;
     this.startAudioFlowWatchdog(token);
-    mark("graph built");
+    mark(`graph built (capture=${sampleTap.mode})`);
 
     const sendStartAndFlush = (): void => {
       if (!ws) return;
@@ -1871,15 +1886,13 @@ export class YaServerProvider implements SpeechProvider {
     this.stopWaveformMonitor = null;
     this.clearSmartTurnGrace();
     this.clearAudioFlowWatchdog();
-    this.processor?.disconnect();
+    this.sampleTap?.disconnect();
     this.audioSource?.disconnect();
-    this.silentGain?.disconnect();
-    this.processor = null;
+    this.sampleTap = null;
     this.audioSource = null;
-    this.silentGain = null;
     this.pcmChunker = null;
-    void this.audioContext?.close();
-    this.audioContext = null;
+    this.audioContextLease?.release();
+    this.audioContextLease = null;
     if (releaseMic) this.releaseActiveStream();
   }
 

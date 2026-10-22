@@ -294,12 +294,14 @@ it.skipIf(process.platform !== "linux")(
 
     // A claimed upload whose sender stopped before recording an outcome
     // may already have been sent, so it becomes uncertain instead.
+    // Closing drains the accepted write; otherwise it can overwrite this
+    // simulated interrupted record after send() has already been observed.
+    await stop();
     const [record] = await records(root);
     await writeFile(
       join(root, "delivered", "session-a", record.id, "record.json"),
       JSON.stringify({ ...record, state: "pending" }),
     );
-    await stop();
     await start();
     await vi.waitFor(
       async () => expect((await records(root))[0]?.state).toBe("uncertain"),

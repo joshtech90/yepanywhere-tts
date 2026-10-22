@@ -96,6 +96,7 @@ export const BROWSER_SETTINGS_BACKUP_KEYS = [
   UI_KEYS.emulatorAdaptiveFps,
   UI_KEYS.attachmentUploadQuality,
   UI_KEYS.tabTitleActivityEnabled,
+  UI_KEYS.composerBeaconEnabled,
   UI_KEYS.projectCodeNamesEnabled,
   UI_KEYS.projectCodeNameActivityPulseEnabled,
   UI_KEYS.settingsIconStyle,

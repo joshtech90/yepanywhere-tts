@@ -1,4 +1,6 @@
 import { createIssueStatusRoutes } from "./issue-status.js";
+import { createIssueContentRoutes } from "./issue-content.js";
+import type { IssueContentRefresher } from "../services/issues/content.js";
 import { Hono, type MiddlewareHandler } from "hono";
 import type {
   IssueSettings,
@@ -11,7 +13,13 @@ import type { IssueCredentials } from "../services/issues/credentials.js";
 import type { IssueConfirmer } from "../services/issues/confirm.js";
 import type { IssueStatusRefresher } from "../services/issues/status.js";
 import { issueUrl } from "../services/issues/extract.js";
-import { issueLookupUrl } from "@yep-anywhere/shared";
+import {
+  issueLookupUrl,
+  DEFAULT_ISSUE_CONTENT_TTL_SECONDS,
+  DEFAULT_ISSUE_STATUS_COMMENT_TTL_SECONDS,
+  ISSUE_CONTENT_TTL_SECONDS,
+  ISSUE_STATUS_COMMENT_TTL_SECONDS,
+} from "@yep-anywhere/shared";
 
 /** Rejects a confirmation block rather than storing a half-configured one. */
 function confirmation(
@@ -69,13 +77,43 @@ export function createIssueRoutes(
     }[]
   > = async () => [],
   statuses?: IssueStatusRefresher,
+  content?: IssueContentRefresher,
 ) {
   const routes = new Hono();
-  routes.get("/issues/settings", (c) => c.json(indexer.coverage()));
+  const settingsCoverage = () => {
+    const coverage = indexer.coverage();
+    return {
+      ...coverage,
+      settings: {
+        ...coverage.settings,
+        contentTtlSeconds:
+          coverage.settings.contentTtlSeconds === undefined
+            ? DEFAULT_ISSUE_CONTENT_TTL_SECONDS
+            : coverage.settings.contentTtlSeconds,
+        statusCommentTtlSeconds:
+          coverage.settings.statusCommentTtlSeconds === undefined
+            ? DEFAULT_ISSUE_STATUS_COMMENT_TTL_SECONDS
+            : coverage.settings.statusCommentTtlSeconds,
+      },
+    };
+  };
+  routes.get("/issues/settings", (c) => c.json(settingsCoverage()));
   routes.put("/issues/settings", async (c) => {
     const body = (await c.req.json().catch(() => null)) as IssueSettings | null;
     const confirm = body ? confirmation(body.confirmation) : null;
     const cli = body?.githubCli;
+    if (
+      body &&
+      ((body.contentTtlSeconds !== undefined &&
+        !(ISSUE_CONTENT_TTL_SECONDS as readonly unknown[]).includes(
+          body.contentTtlSeconds,
+        )) ||
+        (body.statusCommentTtlSeconds !== undefined &&
+          !(ISSUE_STATUS_COMMENT_TTL_SECONDS as readonly unknown[]).includes(
+            body.statusCommentTtlSeconds,
+          )))
+    )
+      return c.json({ error: "Unsupported ticket cache lifetime" }, 400);
     if (
       body &&
       ((body.githubStatusEnabled !== undefined &&
@@ -120,6 +158,12 @@ export function createIssueRoutes(
         enabled: body.enabled,
         scope: body.scope,
         recentDays: body.recentDays,
+        ...(body.contentTtlSeconds !== undefined
+          ? { contentTtlSeconds: body.contentTtlSeconds }
+          : {}),
+        ...(body.statusCommentTtlSeconds !== undefined
+          ? { statusCommentTtlSeconds: body.statusCommentTtlSeconds }
+          : {}),
         aggressiveMatching: body.aggressiveMatching ?? false,
         ...(body.githubStatusEnabled !== undefined
           ? { githubStatusEnabled: body.githubStatusEnabled }
@@ -131,7 +175,7 @@ export function createIssueRoutes(
         ...(blocked ? { jiraKeyBlocklist: blocked } : {}),
       },
     });
-    return c.json(indexer.coverage());
+    return c.json(settingsCoverage());
   });
   // Presence and origin only; a stored key is never returned to a client, and
   // this pair stays reachable while discovery is off so it can be set up first.
@@ -228,11 +272,13 @@ export function createIssueRoutes(
       sort,
       ...(ref === undefined ? {} : { ref }),
       items,
+      ...(content ? { contentRefresh: content.status() } : {}),
       ...(refreshing ? { statusRefreshing: true } : {}),
       coverage: indexer.coverage(),
       nextOffset: items.length === p.size ? p.start + p.size : null,
     });
   });
+  routes.route("/", createIssueContentRoutes(indexer.store, content));
   routes.get("/issues/sessions", async (c) => {
     const p = page(c.req.query("limit"), c.req.query("offset"));
     const id = c.req.query("id");

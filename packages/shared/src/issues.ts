@@ -3,6 +3,10 @@ export interface IssueSettings {
   enabled: boolean;
   scope: "viewed" | "recent";
   recentDays: number;
+  /** Subject/body and unavailable-item freshness; null means never expire. */
+  contentTtlSeconds?: number | null;
+  /** Status freshness, also reserved for future comments; null means never expire. */
+  statusCommentTtlSeconds?: number | null;
   /** Absent means discovery never contacts a tracker, the original contract. */
   confirmation?: IssueConfirmationSettings;
   /**
@@ -24,6 +28,34 @@ export const DEFAULT_ISSUE_SETTINGS: IssueSettings = {
   scope: "viewed",
   recentDays: 7,
 };
+
+export const DEFAULT_ISSUE_CONTENT_TTL_SECONDS = 14 * 86400;
+export const DEFAULT_ISSUE_STATUS_COMMENT_TTL_SECONDS = 300;
+export const ISSUE_CONTENT_TTL_SECONDS = [
+  1,
+  60,
+  3600,
+  86400,
+  259200,
+  604800,
+  1209600,
+  2592000,
+  7776000,
+  null,
+] as const;
+export const ISSUE_STATUS_COMMENT_TTL_SECONDS = [
+  1,
+  5,
+  15,
+  60,
+  300,
+  900,
+  3600,
+  21600,
+  86400,
+  604800,
+  null,
+] as const;
 
 /**
  * Opt-in tracker confirmation.
@@ -195,6 +227,14 @@ export interface IssueCoverage {
   counts: Array<{ state: string; count: number }>;
 }
 export interface IssueSearchResult {
+  /** Presence advertises subject/body refresh and cached content endpoints. */
+  contentRefresh?: {
+    active: boolean;
+    checked: number;
+    skipped: number;
+    failed: number;
+    error: string | null;
+  };
   /** Absent on earlier experimental servers; do not offer unsupported sorting. */
   supportedSorts?: IssueSort[];
   sort?: IssueSort | "key";

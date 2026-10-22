@@ -170,7 +170,7 @@ interface MessageDeliveryBaseline {
 const RENDEZ_STATUS_REFRESH_MS = 10_000;
 const RENDEZ_OFF: RendezSettingsValue = { enabled: false, projects: {} };
 
-/** Same default and per-project choices, ignoring burst limits. */
+/** Same default, delivery and per-project choices, ignoring burst limits. */
 function sameRendezChoices(
   a: RendezSettingsValue,
   b: RendezSettingsValue,
@@ -178,6 +178,7 @@ function sameRendezChoices(
   const aKeys = Object.keys(a.projects);
   return (
     a.enabled === b.enabled &&
+    (a.delivery ?? "auto") === (b.delivery ?? "auto") &&
     aKeys.length === Object.keys(b.projects).length &&
     aKeys.every((path) => a.projects[path] === b.projects[path])
   );
@@ -581,6 +582,7 @@ export function MessageDeliverySettings() {
               ...settings?.rendez,
               enabled: snapshot.rendez.enabled,
               projects: snapshot.rendez.projects,
+              delivery: snapshot.rendez.delivery,
             },
           }
         : {}),

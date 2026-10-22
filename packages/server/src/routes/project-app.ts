@@ -22,6 +22,7 @@ import type { ProjectAppStore } from "../projects/ProjectAppStore.js";
 import { projectAppPublicAllowed } from "../projects/projectAppPolicy.js";
 import {
   readProjectService,
+  readAppDeclaration,
   projectServiceStaticStamp,
   projectServiceStaticApp,
   type ProjectServices,
@@ -124,7 +125,9 @@ export function createProjectAppRoutes(deps: {
       canShare: !!deps.artifacts.config.publicOrigin,
       removedFrom: [...visibility.values()],
     };
+    let fileLinks: { enabled: boolean; pathTemplate: string } | undefined;
     try {
+      fileLinks = (await readAppDeclaration(project.path))?.fileLinks;
       info.declaration = await readProjectService(project.path);
       info.livePreview =
         (await readProjectService(project.path, "live-preview")) ?? undefined;
@@ -169,7 +172,28 @@ export function createProjectAppRoutes(deps: {
       principal.kind === "superuser" ||
       principal.grants.allowPrivateAppLinks !== false;
     if (!info.canCopyLink) info.canShare = false;
+    if (fileLinks?.enabled && info.declaration && info.canCopyLink) {
+      const url = await publicAddress(project.id);
+      if (url)
+        info.fileLinks = { pathTemplate: fileLinks.pathTemplate, baseUrl: url };
+    }
     return info;
+  };
+
+  const publicAddress = async (
+    projectId: string,
+  ): Promise<string | undefined> => {
+    if (!deps.delivery || !deps.artifacts.config.vhostPublicRoot)
+      return undefined;
+    const reservation = (await deps.store.reservations(projectId)).find(
+      (row) =>
+        row.serving && row.namespace === deps.artifacts.config.vhostPublicRoot,
+    );
+    return reservation
+      ? deps.delivery.addressLink(
+          await deps.delivery.effectiveReservation(reservation),
+        )
+      : undefined;
   };
 
   routes.get("/projects/:projectId/app", async (c) => {
@@ -321,6 +345,18 @@ export function createProjectAppRoutes(deps: {
         400,
       );
     const request = parsed.data;
+    let publicViewUrl: string | undefined;
+    if (
+      request.target === "app" &&
+      (await readAppDeclaration(project.path))?.viewAudience === "public"
+    ) {
+      publicViewUrl = await publicAddress(project.id);
+      if (!publicViewUrl)
+        throw new HTTPException(409, {
+          message: "This app requires a serving public address",
+        });
+      request.audience = "public";
+    }
     let path: string;
     let declaredRoot: string | undefined;
     let id: string;
@@ -398,7 +434,7 @@ export function createProjectAppRoutes(deps: {
     const view: ProjectAppView = {
       id,
       kind,
-      url: grant.url,
+      url: publicViewUrl ?? grant.url,
       expiresAt: grant.expiresAt,
       label: basename(path),
       transferable: true,

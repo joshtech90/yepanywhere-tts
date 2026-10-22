@@ -8,7 +8,7 @@ import {
 } from "react";
 import { useLongPress } from "../hooks/useLongPress";
 import { useI18n } from "../i18n";
-import { writeClipboardText } from "../lib/clipboard";
+import { writeClipboardText, writeClipboardTextLater } from "../lib/clipboard";
 import styles from "./ViewerWindowActions.module.css";
 
 /** Shared viewer window actions: copy link, move out, minimize, close. */
@@ -39,7 +39,8 @@ export function ViewerWindowActions({
   onCopyLinkContextMenu,
 }: {
   url: string;
-  copyUrl?: string;
+  /** What Copy link copies; a function resolves it at click time. */
+  copyUrl?: string | (() => Promise<string>);
   onClose?: () => void;
   onMinimize?: () => void;
   /** Refetch the viewed document from disk; viewers never watch files. */
@@ -166,8 +167,17 @@ export function ViewerWindowActions({
             }
             if (event.ctrlKey || event.metaKey || event.altKey) return;
             event.preventDefault();
-            void writeClipboardText(
-              new URL(copyUrl, window.location.href).href,
+            void (
+              typeof copyUrl === "string"
+                ? writeClipboardText(
+                    new URL(copyUrl, window.location.href).href,
+                  )
+                : writeClipboardTextLater(
+                    copyUrl().then(
+                      (resolved) =>
+                        new URL(resolved, window.location.href).href,
+                    ),
+                  )
             ).then((success) => {
               setCopied(success ? "copied" : "failed");
               if (success) onCopied?.();

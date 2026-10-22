@@ -1646,12 +1646,15 @@ describe("MessageInput", () => {
     act(() => {
       voiceButtonState.isListening = false;
       voicePropsState.current?.onPendingSpeechChange?.("finalizing");
+      voicePropsState.current?.onTranscript?.("final words");
       voicePropsState.current?.onPendingSpeechChange?.(null, "completed");
       voicePropsState.current?.onPendingSpeechChange?.(null, "completed");
     });
 
     await waitFor(() =>
-      expect(onSubmitWithoutSummary).toHaveBeenCalledWith("branch provisional"),
+      expect(onSubmitWithoutSummary).toHaveBeenCalledWith(
+        "[ASR] branch final words",
+      ),
     );
     expect(onSubmitWithoutSummary).toHaveBeenCalledOnce();
   });
@@ -1755,7 +1758,7 @@ describe("MessageInput", () => {
       voicePropsState.current?.onListeningStart?.();
       voicePropsState.current?.onPendingSpeechChange?.("listening");
     });
-    fireEvent.click(screen.getByRole("button", { name: "Fork with summary" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Fork with summary/ }));
     expect(textarea.value).toBe("");
 
     rerender(view(true));
@@ -1852,7 +1855,7 @@ describe("MessageInput", () => {
       voicePropsState.current?.onListeningStart?.();
       voicePropsState.current?.onPendingSpeechChange?.("listening");
     });
-    fireEvent.click(screen.getByRole("button", { name: "Fork with summary" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Fork with summary/ }));
     expect(textarea.value).toBe("");
 
     let thrown: unknown;
@@ -3261,8 +3264,8 @@ describe("MessageInput", () => {
     expect(document.activeElement).toBe(textarea);
   });
 
-  it("sends the visible interim snapshot after speech settles", async () => {
-    window.localStorage.setItem(UI_KEYS.speechAsrAttributionMs, "1000");
+  it("sends final ASR wording with its prefix even when quick-send attribution is off", async () => {
+    window.localStorage.setItem(UI_KEYS.speechAsrAttributionMs, "0");
     const onSend = vi.fn();
     const textarea = renderMessageInput(vi.fn(), {
       onSend,
@@ -3293,9 +3296,13 @@ describe("MessageInput", () => {
     });
 
     await waitFor(() => {
-      expectSubmission(onSend, "[ASR] alpha provisional words omega", "direct");
+      expectSubmission(
+        onSend,
+        "[ASR] alpha backend final words omega",
+        "direct",
+      );
     });
-    expect(onSend.mock.calls[0]?.[0]).not.toContain("backend final words");
+    expect(onSend.mock.calls[0]?.[0]).not.toContain("provisional words");
   });
 
   it("keeps a new draft typed while a speech queue settles", async () => {
@@ -3313,7 +3320,7 @@ describe("MessageInput", () => {
       voicePropsState.current?.onInterimTranscript?.("previous turn");
     });
 
-    fireEvent.click(screen.getByLabelText("toolbarQueueLabel"));
+    fireEvent.click(screen.getByLabelText(/^toolbarQueueLabel/));
     fireEvent.change(textarea, { target: { value: "next turn draft" } });
 
     act(() => {
@@ -3324,10 +3331,10 @@ describe("MessageInput", () => {
     });
 
     await waitFor(() => {
-      expectSubmission(onQueue, "previous turn", "deferred");
+      expectSubmission(onQueue, "[ASR] previous turn final", "deferred");
       expect(textarea.value).toBe("next turn draft");
     });
-    expect(onQueue.mock.calls[0]?.[0]).not.toContain("previous turn final");
+    expect(onQueue).toHaveBeenCalledOnce();
   });
 
   it("restores a detached speech draft without replacing newer text", () => {
@@ -3342,7 +3349,7 @@ describe("MessageInput", () => {
       voicePropsState.current?.onListeningStart?.();
       voicePropsState.current?.onPendingSpeechChange?.("listening");
     });
-    fireEvent.click(screen.getByLabelText("toolbarSend"));
+    fireEvent.click(screen.getByLabelText(/^toolbarSend/));
     fireEvent.change(textarea, { target: { value: "next turn draft" } });
     act(() => {
       voiceButtonState.isListening = false;
@@ -3370,7 +3377,7 @@ describe("MessageInput", () => {
       voicePropsState.current?.onListeningStart?.();
       voicePropsState.current?.onPendingSpeechChange?.("listening");
     });
-    fireEvent.click(screen.getByLabelText("toolbarSend"));
+    fireEvent.click(screen.getByLabelText(/^toolbarSend/));
 
     act(() => {
       voiceButtonState.isListening = false;
@@ -3383,7 +3390,11 @@ describe("MessageInput", () => {
     act(() => {
       voicePropsState.current?.onPendingSpeechChange?.(null, "completed");
     });
-    expectSubmission(onSend, "[ASR] visible at press", "direct");
+    expectSubmission(
+      onSend,
+      "[ASR] visible at press settled backend words",
+      "direct",
+    );
   });
 
   it("shows no speech prefix cue and sends verbatim when prefixing is Off", async () => {
@@ -5547,7 +5558,7 @@ describe("MessageInput", () => {
     await waitFor(() => {
       expectSubmission(
         onProjectQueue,
-        "Needs review: project-wide dictation",
+        "Needs review: settled backend words",
         "deferred",
       );
       expect(screen.queryByText("Needs review:")).toBeNull();

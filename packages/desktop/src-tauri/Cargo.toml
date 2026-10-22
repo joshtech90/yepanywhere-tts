@@ -1,6 +1,6 @@
 [package]
 name = "yep-anywhere-desktop"
-version = "0.2.2"
+version = "0.4.1"
 description = "Yep Anywhere Desktop App"
 authors = ["Kyle Graehl <kgraehl@gmail.com>"]
 edition = "2021"
@@ -27,7 +27,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "=0.6.4"
+objc2 = "=0.6.5"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSFont", "NSPopUpButton", "NSProgressIndicator", "NSTextField", "NSView", "NSWindow", "NSResponder"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSGeometry"] }
 

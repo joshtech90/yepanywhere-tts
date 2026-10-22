@@ -3,9 +3,12 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
 
-const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
-const projectId = Buffer.from(mockProjectPath).toString("base64url");
-const sessionId = "mock-session-001";
+// This project is seeded for this test alone (support/default-profile.ts):
+// the shared mockproject can hold sessions earlier tests left active, which
+// correctly make the Project Queue action appear.
+const idleProjectPath = join(e2ePaths.tempDir, "idle-queue-project");
+const projectId = Buffer.from(idleProjectPath).toString("base64url");
+const sessionId = "idle-queue-session-001";
 
 test.use({ serviceWorkers: "block" });
 

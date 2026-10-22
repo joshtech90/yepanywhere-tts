@@ -7,7 +7,7 @@ if (process.env.NO_COLOR) delete process.env.NO_COLOR;
 // or relay setup is needed to exercise session state in a real browser.
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: "session-read-state.spec.ts",
+  testMatch: ["session-read-state.spec.ts", "composer-beacon.spec.ts"],
   outputDir: `../../.artifacts/session-state-results/${randomUUID()}`,
   globalTeardown: "./e2e/global-teardown.ts",
   workers: 1,

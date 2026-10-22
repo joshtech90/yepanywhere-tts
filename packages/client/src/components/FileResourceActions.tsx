@@ -6,6 +6,7 @@ import { api } from "../api/client";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useOptionalToastContext } from "../contexts/ToastContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { useProjectFileLink } from "../hooks/useProjectFileLink";
 import { beginTooltipSuppression } from "../hooks/useTooltipAppearance";
 import {
   useGitHubFileLink,
@@ -418,12 +419,20 @@ export function ResourceContextMenu({
   const { t } = useI18n();
   const saveDownload = useSaveResourceDownload();
   const githubLink = useGitHubFileLink(fileTarget);
+  const projectAppLink = useProjectFileLink(fileTarget);
+  // A declared app presentation outranks the caller's YA file-share fallback;
+  // the File Viewer's Share surface still offers both.
+  const copyPublicUrl = projectAppLink
+    ? () => {
+        void writeClipboardText(projectAppLink);
+      }
+    : onCopyPublicUrl;
   const [panel, setPanel] = useState<"open" | "root">("root");
   const hasPresentationChoice = Boolean(onOpenSource && onOpenPreview);
   const hasCopyActions = Boolean(
     onCopyLink ||
       onCopyProjectRelativePath ||
-      onCopyPublicUrl ||
+      copyPublicUrl ||
       onCopyAbsolutePath ||
       onCopyFilePath ||
       onCopyImage ||
@@ -444,7 +453,7 @@ export function ResourceContextMenu({
     Number(Boolean(onCopyImage)) +
     Number(Boolean(onCopyLink)) +
     Number(Boolean(onCopyProjectRelativePath)) +
-    Number(Boolean(onCopyPublicUrl)) +
+    Number(Boolean(copyPublicUrl)) +
     Number(Boolean(onCopyAbsolutePath)) +
     Number(Boolean(onCopyFilePath)) +
     Number(Boolean(onCopyViewerLink)) +
@@ -595,10 +604,10 @@ export function ResourceContextMenu({
               </CopyActionLabel>
             </FilePathContextMenuItem>
           ) : null}
-          {onCopyPublicUrl ? (
+          {copyPublicUrl ? (
             <FilePathContextMenuItem
               onHover={usesHoverFlyout ? () => setPanel("root") : undefined}
-              onSelect={() => select(onCopyPublicUrl)}
+              onSelect={() => select(copyPublicUrl)}
             >
               <CopyActionLabel>
                 {t("fileLinkMenuCopyPublicUrl" as never)}

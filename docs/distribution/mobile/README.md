@@ -241,6 +241,21 @@ records local Release/reboot acceptance, matched browser comparisons, failed CI
 attempts and the remaining physical update/network/overnight/keyboard checks.
 Public tracks and tester membership were unchanged.
 
+The October 20 coordinated release published `0.1.2-ci.550.1` / code `65001`
+from `e65db78de294a50b9941836f042bbd7940e7edc6` to internal testing.
+[Run 39469337588](https://github.com/kzahel/yepanywhere/actions/runs/39469337588)
+passed build/lint/package inspection and the complete direct/mux instrumentation
+gates before publication. The retained receipt reports `published` on
+`internal`; its signed-bundle SHA-256 is
+`dcd32000a6f1adc772781e8aaf839b5675a2558831bd7990467748345a4b2129`.
+All 964 entries in the tested candidate match the signed upload; only signing
+metadata was added. The 100 MiB mux upload completed. The earlier nightly
+[upload timeout](../../../gaps/android-ci-mux-upload-timeout.md) remains an
+unexplained intermittent failure. Emulator typing maxima were 131.3 ms direct
+and 142.7 ms mux under the existing software-renderer budget; this run does not
+establish fresh physical-device acceptance against the 100 ms input ceiling.
+Public tracks and tester membership were unchanged.
+
 The main-only GitHub `android-internal` environment holds the existing upload
 key as `ANDROID_UPLOAD_KEYSTORE_BASE64`, `ANDROID_UPLOAD_STORE_PASSWORD` and
 `ANDROID_UPLOAD_KEY_PASSWORD`. The signing step checks its public certificate

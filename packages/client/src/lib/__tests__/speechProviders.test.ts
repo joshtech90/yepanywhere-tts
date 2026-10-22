@@ -599,6 +599,51 @@ describe("browser-native speech provider", () => {
     return Recognition;
   }
 
+  it("accepts the final result after stop and settles only on end", () => {
+    class DelayedRecognition extends FakeSpeechRecognition {
+      stop() {}
+    }
+    const Recognition = installFakeSpeechRecognition(DelayedRecognition);
+    const onResult = vi.fn();
+    const provider = new BrowserNativeProvider({ onResult });
+    provider.start();
+    provider.stop();
+    expect(provider.getState().status).toBe("finalizing");
+    Recognition.instance?.onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "final wording" } }],
+    } as unknown as Event);
+    expect(onResult).toHaveBeenCalledWith("final wording");
+    expect(provider.getState().status).toBe("finalizing");
+    Recognition.instance?.onend?.(new Event("end"));
+    expect(provider.getState().status).toBe("idle");
+    provider.dispose();
+  });
+
+  it("fails a stalled finalization and ignores late results", () => {
+    vi.useFakeTimers();
+    class DelayedRecognition extends FakeSpeechRecognition {
+      stop() {}
+    }
+    const Recognition = installFakeSpeechRecognition(DelayedRecognition);
+    const onResult = vi.fn();
+    const provider = new BrowserNativeProvider({ onResult });
+    try {
+      provider.start();
+      provider.stop();
+      vi.advanceTimersByTime(5000);
+      expect(provider.getState().status).toBe("error");
+      Recognition.instance?.onresult?.({
+        resultIndex: 0,
+        results: [{ isFinal: true, 0: { transcript: "too late" } }],
+      } as unknown as Event);
+      expect(onResult).not.toHaveBeenCalled();
+    } finally {
+      provider.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("does not expose prewarm, avoiding browser-owned recording indicators", () => {
     const provider = new BrowserNativeProvider();
 
@@ -1063,6 +1108,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -1641,6 +1687,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -1971,6 +2018,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -2110,6 +2158,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -2248,6 +2297,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -2391,6 +2441,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -2521,6 +2572,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -2689,6 +2741,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -2735,9 +2788,8 @@ describe("YA server speech provider", () => {
     await Promise.resolve();
     await Promise.resolve();
     FakeWebSocket.instances[0]?.open();
-    await Promise.resolve();
-    await Promise.resolve();
     const ws = FakeWebSocket.instances[0]!;
+    await vi.waitFor(() => expect(ws.onmessage).not.toBeNull());
 
     // A finalized block commits to the draft.
     ws.receive({
@@ -2820,6 +2872,7 @@ describe("YA server speech provider", () => {
       // A context that resumes but whose processor never fires a callback:
       // capture is dead even though state reports "running".
       class FakeAudioContext {
+        suspend = vi.fn(async () => undefined);
         readonly state = "suspended";
         readonly sampleRate = 48_000;
         readonly destination = {};
@@ -2936,6 +2989,7 @@ describe("YA server speech provider", () => {
     const audioContextOptions: AudioContextOptions[] = [];
     const scriptProcessorArgs: Array<[number, number, number]> = [];
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 16_000;
       readonly destination = {};
@@ -3095,6 +3149,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -3682,6 +3737,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -3777,6 +3833,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -3879,6 +3936,7 @@ describe("YA server speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       readonly state = "running";
       readonly sampleRate = 48_000;
       readonly destination = {};
@@ -3970,6 +4028,7 @@ describe("direct xAI speech provider", () => {
     }
 
     class FakeAudioContext {
+      suspend = vi.fn(async () => undefined);
       state: AudioContextState = "running";
       sampleRate = 16_000;
       destination = {};
@@ -4033,9 +4092,10 @@ describe("direct xAI speech provider", () => {
     expect(ws.protocols).toEqual(["xai-client-secret.browser-xai-key"]);
 
     ws.receive({ type: "transcript.created" });
-    await Promise.resolve();
 
-    expect(provider.getState().status).toBe("listening");
+    await vi.waitFor(() =>
+      expect(provider.getState().status).toBe("listening"),
+    );
     expect(ws.sent.some((data) => typeof data !== "string")).toBe(true);
 
     ws.receive({

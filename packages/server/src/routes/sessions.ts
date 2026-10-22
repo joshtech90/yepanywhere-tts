@@ -8363,6 +8363,9 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       }
     }
 
+    // Uploads arriving outside the composer follow this choice in "auto".
+    process.noteBusySendAction(userMessage);
+
     // Retained for response compatibility. YA no longer chooses an implicit
     // model-specific threshold; only an explicit per-model setting can trigger
     // early compaction.

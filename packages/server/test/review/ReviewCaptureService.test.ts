@@ -135,7 +135,11 @@ describe("ReviewCaptureService", () => {
     await expect(
       execFileAsync("git", ["-C", repo, "cat-file", "-e", dirty.captureBlobId]),
     ).resolves.toBeTruthy();
-  });
+    // A dozen git subprocesses plus `git gc` are genuinely slow on Windows CI:
+    // the whole 4-test file took 4022ms on one windows-latest run, and this
+    // test alone ran 10113ms past the 5000ms default on another (kzahel CI
+    // 39582298608, 2026-10-21). Budget about 3x that observed maximum.
+  }, 30_000);
 
   it("captures into app data without project or Git metadata by default", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "yep-review-capture-data-"));

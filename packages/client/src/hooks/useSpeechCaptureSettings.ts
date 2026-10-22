@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { UI_KEYS } from "../lib/storageKeys";
+import { getSpeechAudioWorkletSetting } from "../lib/speechProviders/micSampleTap";
 import { releaseSharedSpeechMicStream } from "../lib/speechProviders/sharedMicCapture";
 
 const subscribers = new Set<() => void>();
@@ -153,6 +154,17 @@ export function setSpeechReducePlaybackSetting(enabled: boolean): void {
   for (const subscriber of subscribers) subscriber();
 }
 
+export function setSpeechAudioWorkletSetting(enabled: boolean): void {
+  // Read at each capture start, so the next dictation or memo uses it.
+  if (canUseLocalStorage()) {
+    globalThis.localStorage.setItem(
+      UI_KEYS.speechAudioWorklet,
+      enabled ? "true" : "false",
+    );
+  }
+  for (const subscriber of subscribers) subscriber();
+}
+
 export function setSpeechUnspokenPunctuationSetting(enabled: boolean): void {
   if (canUseLocalStorage()) {
     globalThis.localStorage.setItem(
@@ -240,6 +252,9 @@ export function useSpeechCaptureSettings() {
   const [reducePlayback, setReducePlaybackState] = useState(
     getSpeechReducePlaybackSetting,
   );
+  const [audioWorklet, setAudioWorkletState] = useState(
+    getSpeechAudioWorkletSetting,
+  );
   const [unspokenPunctuation, setUnspokenPunctuationState] = useState(
     getSpeechUnspokenPunctuationSetting,
   );
@@ -259,6 +274,7 @@ export function useSpeechCaptureSettings() {
       setKeepMicWarmState(getSpeechKeepMicWarmSetting());
       setMicDeviceIdState(getSpeechMicDeviceIdSetting());
       setReducePlaybackState(getSpeechReducePlaybackSetting());
+      setAudioWorkletState(getSpeechAudioWorkletSetting());
       setUnspokenPunctuationState(getSpeechUnspokenPunctuationSetting());
       setFollowUpListenMsState(getSpeechFollowUpListenMsSetting());
       setAsrAttributionMsState(getSpeechAsrAttributionMsSetting());
@@ -283,6 +299,10 @@ export function useSpeechCaptureSettings() {
 
   const setReducePlayback = useCallback((enabled: boolean) => {
     setSpeechReducePlaybackSetting(enabled);
+  }, []);
+
+  const setAudioWorklet = useCallback((enabled: boolean) => {
+    setSpeechAudioWorkletSetting(enabled);
   }, []);
 
   const setUnspokenPunctuation = useCallback((enabled: boolean) => {
@@ -320,6 +340,8 @@ export function useSpeechCaptureSettings() {
     setMicDeviceId,
     reducePlayback,
     setReducePlayback,
+    audioWorklet,
+    setAudioWorklet,
     unspokenPunctuation,
     setUnspokenPunctuation,
     followUpListenMs,

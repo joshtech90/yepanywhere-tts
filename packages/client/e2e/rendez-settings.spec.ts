@@ -21,6 +21,7 @@ test("rendez search exposes a persisted toggle without replacing project overrid
     projects: { "/rendez-settings-test": false },
     windowMs: 1234,
     maxPerWindow: 7,
+    delivery: "auto",
   };
   try {
     const response = await page.request.put(`${baseURL}/api/settings`, {

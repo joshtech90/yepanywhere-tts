@@ -97,6 +97,21 @@ still apply. External, root-relative and scheme links are unchanged. The
 public-share play frame already routes relative links the same way through
 its injected handler (2026-09-30).
 
+Self-contained exports (Quarto or Pandoc `embed-resources`) link their
+stylesheets as `data:text/css` URLs. The srcdoc frame inherits YA's own
+`style-src 'self' 'unsafe-inline'`, which refuses data: stylesheets, so such
+a page rendered unstyled. The wrapper now decodes each data: CSS stylesheet
+link into an inline `<style>` with the same `media`, and places its policy
+first in the file's own head rather than nesting the file inside a wrapper
+body, so the file's `<html>`/`<body>` attributes and head order survive.
+Inline CSS was already admitted, so this grants the file no new capability;
+a link that is not a decodable data: CSS URL is left for the policy to
+refuse. The preview policy also admits `data:`/`blob:` fonts, which YA's
+own policy may still refuse (the hosted client's does). Scripts stay off:
+Quarto pages lose only their scripted extras (tabsets, copy buttons, icon
+fonts), and the scripted rendering remains the public-share play frame or an
+interactive preview (2026-10-22).
+
 This is defense in depth at the client presentation boundary. The later server
 containment protects old clients, address-bar visits, modified browser
 navigation that escapes interception, redirects, and copied raw endpoints.

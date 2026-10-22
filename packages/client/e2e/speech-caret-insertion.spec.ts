@@ -68,7 +68,14 @@ async function openBrowserSpeechComposer(
       }
 
       stop() {
-        queueMicrotask(() => this.onend?.call(this, new Event("end")));
+        queueMicrotask(() => {
+          const finalText = (
+            window as unknown as { finalSpeechOnStop?: string }
+          ).finalSpeechOnStop;
+          if (finalText)
+            this.emit([{ transcript: finalText, isFinal: true }], 0);
+          this.onend?.call(this, new Event("end"));
+        });
       }
 
       abort() {}
@@ -222,7 +229,7 @@ test("moves a later final-only browser result to the live caret", async ({
   await expect(textarea).toHaveValue("resumed speech spoken first");
 });
 
-test("sends the interim text visible when Send is pressed", async ({
+test("sends the final ASR wording with its prefix when Send is pressed", async ({
   page,
   baseURL,
 }) => {
@@ -243,10 +250,13 @@ test("sends the interim text visible when Send is pressed", async ({
     "provisional words",
   );
 
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.evaluate(() => {
+    Object.assign(window, { finalSpeechOnStop: "final wording" });
+  });
+  await page.getByRole("button", { name: /^Send/ }).click();
 
   await expect(
-    page.getByRole("main").getByText("provisional words alpha omega", {
+    page.getByRole("main").getByText("🎤 final wording alpha omega", {
       exact: true,
     }),
   ).toBeVisible();

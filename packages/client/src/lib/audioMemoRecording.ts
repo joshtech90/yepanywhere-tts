@@ -1,4 +1,10 @@
 import { setSpeechCaptureActivity } from "./speechCaptureActivity";
+import { setMicTitleActivity } from "./micTitleActivity";
+import {
+  connectMicSampleTap,
+  type MicSampleTap,
+  prepareMicSampleTap,
+} from "./speechProviders/micSampleTap";
 import {
   speechMicConstraints,
   releaseSharedSpeechMicStream,
@@ -44,8 +50,7 @@ export class AudioMemoRecording {
   private context: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
-  private processor: ScriptProcessorNode | null = null;
-  private gain: GainNode | null = null;
+  private sampleTap: MicSampleTap | null = null;
   private chunks: Float32Array[] = [];
   private sampleCount = 0;
   private sampleRate = AUDIO_MEMO_SAMPLE_RATE;
@@ -59,6 +64,8 @@ export class AudioMemoRecording {
   }): Promise<MediaStream> {
     releaseSharedSpeechMicStream();
     this.context = new AudioContext({ sampleRate: AUDIO_MEMO_SAMPLE_RATE });
+    void prepareMicSampleTap(this.context);
+    setMicTitleActivity(this, "starting");
     try {
       await this.context.resume();
       if (this.closed) throw new Error("Audio memo recording cancelled");
@@ -84,12 +91,8 @@ export class AudioMemoRecording {
         throw new Error("Audio memo recording cancelled");
       this.sampleRate = this.context.sampleRate;
       this.source = this.context.createMediaStreamSource(stream);
-      this.processor = this.context.createScriptProcessor(2048, 1, 1);
-      this.gain = this.context.createGain();
-      this.gain.gain.value = 0;
-      this.processor.onaudioprocess = (event) => {
+      const onSamples = (samples: Float32Array): void => {
         if (this.closed) return;
-        const samples = event.inputBuffer.getChannelData(0);
         if (
           this.sampleCount + samples.length >
           this.sampleRate * AUDIO_MEMO_MAX_SECONDS
@@ -101,9 +104,16 @@ export class AudioMemoRecording {
         this.sampleCount += samples.length;
         options.onSamples(samples, this.sampleCount / this.sampleRate);
       };
-      this.source.connect(this.processor);
-      this.processor.connect(this.gain);
-      this.gain.connect(this.context.destination);
+      const tap = await connectMicSampleTap(this.context, this.source, {
+        batchSize: 2048,
+        onSamples,
+      });
+      if (this.closed) {
+        tap.disconnect();
+        throw new Error("Audio memo recording cancelled");
+      }
+      this.sampleTap = tap;
+      setMicTitleActivity(this, "capturing");
       return stream;
     } catch (error) {
       this.cancel();
@@ -113,10 +123,9 @@ export class AudioMemoRecording {
 
   private close(): void {
     this.closed = true;
-    if (this.processor) this.processor.onaudioprocess = null;
-    this.processor?.disconnect();
+    setMicTitleActivity(this, null);
+    this.sampleTap?.disconnect();
     this.source?.disconnect();
-    this.gain?.disconnect();
     if (this.stream) {
       for (const track of this.stream.getTracks()) track.onended = null;
       stopSpeechStreamTracks(this.stream);

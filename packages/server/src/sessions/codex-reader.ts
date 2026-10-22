@@ -273,6 +273,12 @@ interface CodexEntryCache {
   ctimeMs: number;
   size: number;
   entries: CodexSessionEntry[];
+  /**
+   * Decoded JSONL bytes behind `entries`, charged to the retention budget.
+   * Not `size`: a zstd rollout's file size understates its parsed heap
+   * several-fold, and lineage entries come from other rollout files.
+   */
+  sourceBytes: number;
   partialLine: Buffer;
   nextLeafOrdinal?: number;
   normalizationSource: object;
@@ -674,7 +680,7 @@ export class CodexSessionReader implements ISessionReader {
 
     for (const cached of this.entryCache.values()) {
       entries += cached.entries.length;
-      sourceBytes += cached.size - cached.startByte;
+      sourceBytes += cached.sourceBytes;
       partialLineBytes += cached.partialLine.length;
     }
 
@@ -1821,13 +1827,7 @@ export class CodexSessionReader implements ISessionReader {
       }
       cached.uncached = true;
     };
-    if (
-      !this.entryCacheBudget.admit(
-        cached,
-        cached.size - cached.startByte,
-        release,
-      )
-    ) {
+    if (!this.entryCacheBudget.admit(cached, cached.sourceBytes, release)) {
       release();
     }
   }
@@ -1909,6 +1909,7 @@ export class CodexSessionReader implements ISessionReader {
       }
 
       cached.entries.push(...parsed.entries);
+      cached.sourceBytes += parsed.sourceBytes;
       cached.partialLine = parsed.partialLine;
       cached.nextLeafOrdinal = nextLeafOrdinal;
       cached.size = stats.size;
@@ -1967,6 +1968,7 @@ export class CodexSessionReader implements ISessionReader {
       ctimeMs: stats.ctimeMs,
       size: stats.size,
       entries: parsed.entries,
+      sourceBytes: parsed.sourceBytes,
       partialLine: parsed.partialLine,
       nextLeafOrdinal: parsed.nextLeafOrdinal,
       normalizationSource: {},
@@ -2109,6 +2111,7 @@ export class CodexSessionReader implements ISessionReader {
           parseMs,
           lineCount: inherited.lineCount + leaf.lineCount,
           maxLineLength: Math.max(inherited.maxLineLength, leaf.maxLineLength),
+          sourceBytes: inherited.bytesRead + leaf.sourceBytes,
         };
       }
       const parsed = await readCodexRolloutLineageEntries(lineage);
@@ -2119,6 +2122,7 @@ export class CodexSessionReader implements ISessionReader {
         parseMs: parsed.parseMs,
         lineCount: parsed.lineCount,
         maxLineLength: parsed.maxLineLength,
+        sourceBytes: parsed.bytesRead,
       };
     }
     if (isCompressedCodexRolloutPath(filePath)) {
@@ -2126,9 +2130,11 @@ export class CodexSessionReader implements ISessionReader {
       const readLinesMs = Date.now() - readStartedAt;
       const entries: CodexSessionEntry[] = [];
       let maxLineLength = 0;
+      let sourceBytes = 0;
       const parseStartedAt = Date.now();
       for (const line of lines) {
         maxLineLength = Math.max(maxLineLength, line.length);
+        sourceBytes += Buffer.byteLength(line) + 1;
         const entry = parseCodexSessionEntry(line);
         if (entry) {
           entries.push(entry);
@@ -2141,6 +2147,7 @@ export class CodexSessionReader implements ISessionReader {
         parseMs: Date.now() - parseStartedAt,
         lineCount: lines.length,
         maxLineLength,
+        sourceBytes,
       };
     }
 

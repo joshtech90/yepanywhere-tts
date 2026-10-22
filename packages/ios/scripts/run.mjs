@@ -128,6 +128,8 @@ if (phase === "build") {
     "Release",
     "-sdk",
     "iphoneos",
+    "-destination",
+    "generic/platform=iOS",
     "-derivedDataPath",
     derived,
     "-onlyUsePackageVersionsFromResolvedFile",

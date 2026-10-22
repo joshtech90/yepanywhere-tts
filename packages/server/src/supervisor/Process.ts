@@ -18,6 +18,7 @@ import type {
   SessionQueuedYaCommand,
   SessionSandboxEnforcement,
   SyntheticSessionBoundaryCommand,
+  BusyComposerDefaultAction,
   SessionWakeReason,
   SessionWakeReasonSnapshot,
   SlashCommand,
@@ -1198,6 +1199,8 @@ export class Process {
   /** Function to steer an active turn (provider-specific, currently Codex app-server) */
   private steerFn: ((message: UserMessage) => Promise<boolean>) | null;
   private readonly steerUsesMessageQueue: boolean;
+  /** How the user last chose to send while a turn was running. */
+  private _lastBusySendAction: BusyComposerDefaultAction | undefined;
   private appendConversationContextFn: ProcessConstructorOptions["appendConversationContextFn"];
   private readonly mcpAppRequestFn: ProcessConstructorOptions["mcpAppRequestFn"];
 
@@ -1611,6 +1614,29 @@ export class Process {
    */
   get isProcessAlive(): boolean | undefined {
     return this._isProcessAlive?.();
+  }
+
+  /**
+   * Steer or queue, as the user's most recent send during a running turn
+   * chose; undefined before any. Other senders follow it on the user's behalf.
+   */
+  get lastBusySendAction(): BusyComposerDefaultAction | undefined {
+    return this._lastBusySendAction;
+  }
+
+  /** Record the choice a human send made; internal re-deferrals do not. */
+  noteBusySendAction(message: UserMessage): void {
+    if (
+      message.metadata?.origin !== "user" ||
+      message.automaticSource !== undefined
+    ) {
+      return;
+    }
+    const intent = message.metadata.deliveryIntent;
+    if (intent === "steer") this._lastBusySendAction = "steer";
+    else if (intent === "deferred" || intent === "patient") {
+      this._lastBusySendAction = "queue";
+    }
   }
 
   get canProbeLiveness(): boolean {

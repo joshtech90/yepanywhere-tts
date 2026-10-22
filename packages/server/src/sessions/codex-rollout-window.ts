@@ -25,6 +25,8 @@ export interface CodexParsedEntrySnapshot {
   parseMs: number;
   lineCount: number;
   maxLineLength: number;
+  /** Decoded JSONL bytes the entries were parsed from. */
+  sourceBytes: number;
 }
 
 interface CodexEntrySnapshot {
@@ -147,6 +149,7 @@ export class CodexRolloutWindowReader {
       parseMs,
       lineCount,
       maxLineLength,
+      sourceBytes: totalBytesRead,
     };
   }
 

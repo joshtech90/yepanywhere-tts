@@ -59,6 +59,37 @@ function harness(overrides: Partial<IssueSettings> = {}) {
 }
 
 describe("tracker confirmation", () => {
+  it("retains the description from first-mention confirmation under the fetched site's canonical identity", async () => {
+    const h = harness();
+    h.capture("https://example.atlassian.net/browse/ASR-7");
+    h.capture("https://other.atlassian.net/browse/ASR-7", "other");
+    const confirmer = new IssueConfirmer(h.store, {
+      settings: h.settings,
+      credentials: h.credentials,
+      fetch: vi.fn(async () =>
+        Response.json({
+          fields: {
+            summary: "Lao",
+            description: {
+              type: "doc",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "Only in the description" }],
+                },
+              ],
+            },
+          },
+        }),
+      ),
+    });
+    await confirmer.drain();
+    expect(
+      h.store.list("Only in the description").map((item) => item.url),
+    ).toEqual(["https://example.atlassian.net/browse/ASR-7"]);
+    await confirmer.close();
+    h.db.close();
+  });
   it("asks once per newly seen reference and never again on its own", async () => {
     const h = harness();
     const fetcher = vi.fn(async (url: string | URL | Request) => {
@@ -360,7 +391,7 @@ describe("tracker confirmation", () => {
     await confirmer.drain();
     const jira = seen.find(([url]) => url.includes("atlassian"))!;
     expect(jira[0]).toBe(
-      "https://example.atlassian.net/rest/api/3/issue/PROJ-7?fields=summary",
+      "https://example.atlassian.net/rest/api/3/issue/PROJ-7?fields=summary,description",
     );
     expect(
       Buffer.from(jira[1].replace("Basic ", ""), "base64").toString(),

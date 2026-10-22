@@ -2069,6 +2069,8 @@ export interface ServerSettings {
     projects: Record<string, boolean>;
     windowMs?: number;
     maxPerWindow?: number;
+    /** Absent means "auto". */
+    delivery?: import("@yep-anywhere/shared").RendezDelivery;
   };
   /** Where new YA-owned project state is written. */
   projectDirectoryStorage?: "app-data" | "project";

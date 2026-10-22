@@ -123,6 +123,16 @@ test("directory mentions resolve per occurrence and session controls stay local"
   await control.click({ button: "right" });
   await expect(menu).toBeInViewport();
   await recordUiCapture(page, "directory-links-phone");
+  // Link changes can scroll the transcript asynchronously. That sibling scroll
+  // must not dismiss a menu anchored to the stationary composer toolbar.
+  await page.locator(".session-messages").evaluate(async (transcript) => {
+    const scrolled = new Promise<void>((resolve) => {
+      transcript.addEventListener("scroll", () => resolve(), { once: true });
+    });
+    transcript.scrollTop -= 40;
+    await scrolled;
+  });
+  await expect(menu).toBeVisible();
   const composer = page.locator("[data-composer-input]");
   let typed = "";
   for (const character of "Review the template") {
@@ -131,7 +141,7 @@ test("directory mentions resolve per occurrence and session controls stay local"
     typed += character;
     await composer.pressSequentially(character);
     await expect(composer).toHaveValue(typed, { timeout: 100 });
-    // Focusing the composer closes the popover; reopen for the next update.
+    // Return to the toolbar for the next link update.
     await control.click({ button: "right" });
   }
   await page.keyboard.press("Escape");

@@ -106,6 +106,7 @@ import {
 } from "../../hooks/useSidebarSpacing";
 import { TAB_SIZES, useTabSize } from "../../hooks/useTabSize";
 import { useTabTitleActivityPreference } from "../../hooks/useTabTitleActivityPreference";
+import { useComposerBeaconPreference } from "../../hooks/useComposerBeaconPreference";
 import { THEMES, useTheme } from "../../hooks/useTheme";
 import { SUPPORTED_LOCALES, useI18n } from "../../i18n";
 import {
@@ -358,6 +359,8 @@ export function AppearanceSettings() {
   } = useProjectCodeNamePreferences();
   const { tabTitleActivityEnabled, setTabTitleActivityEnabled } =
     useTabTitleActivityPreference();
+  const { composerBeaconEnabled, setComposerBeaconEnabled } =
+    useComposerBeaconPreference();
   const { showConnectionBars, setShowConnectionBars } = useDeveloperMode();
   const outputInlineMathHtml = useMemo(
     () => renderFixedFontMath(OUTPUT_INLINE_MATH_SAMPLE).html,
@@ -469,6 +472,7 @@ export function AppearanceSettings() {
     undoEntry(sidebarDuplicateHidingEnabled, setSidebarDuplicateHidingEnabled),
     undoEntry(projectCodeNamesEnabled, setProjectCodeNamesEnabled),
     undoEntry(tabTitleActivityEnabled, setTabTitleActivityEnabled),
+    undoEntry(composerBeaconEnabled, setComposerBeaconEnabled),
     undoEntry(
       projectCodeNameActivityPulseEnabled,
       setProjectCodeNameActivityPulseEnabled,
@@ -1526,6 +1530,22 @@ export function AppearanceSettings() {
               disabled={!projectCodeNamesEnabled || !tabTitleActivityEnabled}
               onChange={(e) =>
                 setProjectCodeNameActivityPulseEnabled(e.target.checked)
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceComposerBeaconTitle")}
+          description={t("appearanceComposerBeaconDescription")}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              aria-label={t("appearanceComposerBeaconTitle")}
+              checked={composerBeaconEnabled}
+              onChange={(event) =>
+                setComposerBeaconEnabled(event.target.checked)
               }
             />
             <span className="toggle-slider" />

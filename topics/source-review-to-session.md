@@ -1075,7 +1075,7 @@ review require a server update. It does not mount a new browse/review component
 or call one of its routes.
 
 Ignore whitespace and direct selected-tree-to-HEAD per-file comparison require
-the transitional `git-source-review-projections` capability. Inclusive **To
+the permanent `git-source-review-projections` capability. Inclusive **To
 HEAD** separately requires permanent `git-inclusive-to-head`; without it, the
 inclusive control is hidden and makes no range request. Without the older
 projection capability, direct/whitespace controls make no projection request,

@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { VOICE_INPUT_CAPABILITY } from "@yep-anywhere/shared";
 import { createRef } from "react";
+import { MIC_TITLE_ATTRIBUTE } from "../../lib/micTitleActivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UseSpeechRecognitionOptions } from "../../hooks/useSpeechRecognition";
 import {
@@ -155,6 +156,24 @@ vi.mock("../SpeechWaveform", () => ({
 }));
 
 describe("VoiceInputButton", () => {
+  it("reports recording for the title even with playback reduction off", () => {
+    document.title = "Session";
+    speechCaptureState.reducePlayback = false;
+    speechState.status = "starting";
+    const view = render(<VoiceInputButton onTranscript={vi.fn()} />);
+    const title = document.querySelector("title");
+    expect(title?.getAttribute(MIC_TITLE_ATTRIBUTE)).toBe("starting");
+    speechState.status = "listening";
+    speechState.isListening = true;
+    view.rerender(<VoiceInputButton onTranscript={vi.fn()} />);
+    expect(title?.getAttribute(MIC_TITLE_ATTRIBUTE)).toBe("capturing");
+    speechState.status = "finalizing";
+    speechState.isListening = false;
+    view.rerender(<VoiceInputButton onTranscript={vi.fn()} />);
+    expect(title?.hasAttribute(MIC_TITLE_ATTRIBUTE)).toBe(false);
+    view.unmount();
+    expect(title?.hasAttribute(MIC_TITLE_ATTRIBUTE)).toBe(false);
+  });
   it("keeps inactive server models out of browser recognition options when capabilities arrive", () => {
     const view = render(
       <VoiceInputButton onTranscript={vi.fn()} speechMethod="browser-native" />,

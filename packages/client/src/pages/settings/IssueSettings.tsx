@@ -1,5 +1,7 @@
 import {
   DEFAULT_JIRA_KEY_BLOCKLIST,
+  ISSUE_CONTENT_TTL_SECONDS,
+  ISSUE_STATUS_COMMENT_TTL_SECONDS,
   SERVER_CAPABILITIES,
   serverHasCapability,
   type IssueCoverage,
@@ -152,6 +154,22 @@ function IssueSettingsControls() {
           />
         </SettingsItem>
       )}
+      {settings?.contentTtlSeconds !== undefined && (
+        <CacheTtlControl
+          settings={settings}
+          busy={busy}
+          save={save}
+          field="contentTtlSeconds"
+        />
+      )}
+      {settings?.statusCommentTtlSeconds !== undefined && (
+        <CacheTtlControl
+          settings={settings}
+          busy={busy}
+          save={save}
+          field="statusCommentTtlSeconds"
+        />
+      )}
       <SettingsItem
         as="label"
         id="issue-aggressive-matching"
@@ -205,6 +223,87 @@ interface ControlProps {
   settings: Settings;
   busy: boolean;
   save: (next: Settings) => Promise<void>;
+}
+
+function CacheTtlControl({
+  settings,
+  busy,
+  save,
+  field,
+}: ControlProps & {
+  field: "contentTtlSeconds" | "statusCommentTtlSeconds";
+}) {
+  const { t } = useI18n();
+  const content = field === "contentTtlSeconds";
+  const values: readonly (number | null)[] = content
+    ? ISSUE_CONTENT_TTL_SECONDS
+    : ISSUE_STATUS_COMMENT_TTL_SECONDS;
+  const saved = values.findIndex((value) => value === settings[field]);
+  const [position, setPosition] = useState(saved);
+  useEffect(() => setPosition(saved), [saved]);
+  const label = (seconds: number | null) => {
+    if (seconds === null) return t("issuesTtlNever");
+    if (seconds === 1) return t("issuesTtlSecond");
+    if (seconds === 60) return t("issuesTtlMinute");
+    if (seconds === 3600) return t("issuesTtlHour");
+    if (seconds === 86400) return t("issuesTtlDay");
+    if (seconds === 14 * 86400) return t("issuesTtlTwoWeeks");
+    if (seconds % 86400 === 0)
+      return t("issuesTtlDays", { count: seconds / 86400 });
+    if (seconds % 3600 === 0)
+      return t("issuesTtlHours", { count: seconds / 3600 });
+    if (seconds % 60 === 0)
+      return t("issuesTtlMinutes", { count: seconds / 60 });
+    return t("issuesTtlSeconds", { count: seconds });
+  };
+  const commit = (input: HTMLInputElement) => {
+    const value = values[Number(input.value)];
+    if (!busy && value !== undefined && value !== settings[field])
+      void save({ ...settings, [field]: value });
+  };
+  const id = `issue-${field}`;
+  const title = t(content ? "issuesContentTtl" : "issuesStatusCommentTtl");
+  return (
+    <SettingsItem
+      id={id}
+      label={title}
+      className={styles.scopeRow}
+      description={t(
+        content ? "issuesContentTtlHelp" : "issuesStatusCommentTtlHelp",
+      )}
+    >
+      <div className={styles.cacheLifetime}>
+        <output htmlFor={`${id}-slider`}>
+          {label(values[position] ?? null)}
+        </output>
+        <input
+          id={`${id}-slider`}
+          type="range"
+          min={0}
+          max={values.length - 1}
+          step={1}
+          list={`${id}-ticks`}
+          aria-label={title}
+          aria-valuetext={label(values[position] ?? null)}
+          value={position}
+          disabled={busy}
+          onChange={(event) => setPosition(Number(event.target.value))}
+          onPointerUp={(event) => commit(event.currentTarget)}
+          onKeyUp={(event) => commit(event.currentTarget)}
+          onBlur={(event) => commit(event.currentTarget)}
+        />
+        <datalist id={`${id}-ticks`}>
+          {values.map((value, index) => (
+            <option key={String(value)} value={index} label={label(value)} />
+          ))}
+        </datalist>
+        <div className={styles.cacheEndpoints}>
+          <span>{t("issuesTtlSecond")}</span>
+          <span>{t("issuesTtlNever")}</span>
+        </div>
+      </div>
+    </SettingsItem>
+  );
 }
 
 const NO_CONFIRMATION: NonNullable<Settings["confirmation"]> = {

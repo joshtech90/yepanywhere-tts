@@ -3,6 +3,7 @@ import type {
   IssueSettings,
   IssueTrackerStatus,
 } from "@yep-anywhere/shared";
+import { DEFAULT_ISSUE_STATUS_COMMENT_TTL_SECONDS } from "@yep-anywhere/shared";
 import type { IssueStore } from "./IssueStore.js";
 import type { IssueCredentials } from "./credentials.js";
 
@@ -12,13 +13,13 @@ import type { IssueCredentials } from "./credentials.js";
  *
  * Confirmation asks about a reference once, which suits a title but not a
  * state that changes. This asks again only when a list read returns the item
- * and what the server holds is older than `FRESH_MS`; merged is final. Nothing
+ * and what the server holds is older than the status/comment TTL; merged is final. Nothing
  * runs on a timer, so with no readers there are no requests. Every caller
  * joins one pass, which asks GitHub about up to `BATCH` items per request.
  * Facts and retry timestamps persist in SQLite; RAM holds at most 2,000 rows.
  */
 
-const FRESH_MS = 5 * 60_000;
+const RETRY_MS = 5 * 60_000;
 const BATCH = 50;
 /** References waiting for or inside a pass; a reader past this gets none. */
 const QUEUE_LIMIT = 200;
@@ -35,7 +36,7 @@ export interface IssueStatusDeps {
 
 interface Known {
   status?: IssueTrackerStatus;
-  /** Last attempt, successful or not; a failure is not retried before FRESH_MS. */
+  /** Last attempt, successful or not; failed attempts retain a retry cooldown. */
   askedAt: number;
 }
 
@@ -99,7 +100,14 @@ export class IssueStatusRefresher {
   private stale(known: Known | undefined): boolean {
     if (!known) return true;
     if (known.status?.state === "merged") return false;
-    return this.now() - known.askedAt >= FRESH_MS;
+    if (!known.status || known.askedAt > Date.parse(known.status.checkedAt))
+      return this.now() - known.askedAt >= RETRY_MS;
+    const ttl = this.deps.settings().statusCommentTtlSeconds;
+    return (
+      ttl !== null &&
+      this.now() - known.askedAt >=
+        (ttl ?? DEFAULT_ISSUE_STATUS_COMMENT_TTL_SECONDS) * 1000
+    );
   }
 
   /**
@@ -168,6 +176,9 @@ export class IssueStatusRefresher {
       try {
         const generation = this.generation;
         const policy = JSON.stringify(this.deps.settings());
+        // Start the attempt before acquiring facts. A successful check is at
+        // or after this timestamp; a later failed attempt preserves older facts.
+        const askedAt = this.now();
         const states = await this.ask(batch);
         if (
           generation !== this.generation ||
@@ -175,7 +186,6 @@ export class IssueStatusRefresher {
           policy !== JSON.stringify(this.deps.settings())
         )
           continue;
-        const askedAt = this.now();
         const entries = batch.map((id) => ({
           id,
           status: states.get(id),

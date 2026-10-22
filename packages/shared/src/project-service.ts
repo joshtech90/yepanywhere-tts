@@ -100,7 +100,84 @@ export const projectServiceSchema = z.union([
 
 export type ProjectServiceDeclaration = z.infer<typeof projectServiceSchema>;
 
+export const projectFileLinksSchema = z.strictObject({
+  enabled: z.boolean().default(true),
+  pathTemplate: z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine((template) => {
+      if (
+        !template.startsWith("/") ||
+        template.startsWith("//") ||
+        /[\\\s#]/.test(template) ||
+        hasControlCharacters(template)
+      )
+        return false;
+      const placeholders = template.match(/\{path(?:Query)?\}/g);
+      if (placeholders?.length !== 1) return false;
+      const sample = template.replace(/\{path(?:Query)?\}/, "file");
+      if (/[{}]/.test(sample)) return false;
+      try {
+        const url = new URL(sample, "https://app.invalid");
+        return (
+          url.origin === "https://app.invalid" &&
+          !url.searchParams.has("ya_access") &&
+          decodeURIComponent(sample.split("?")[0]!)
+            .split("/")
+            .every((part) => part !== "." && part !== "..")
+        );
+      } catch {
+        return false;
+      }
+    })
+    .default("/{path}"),
+});
+
+export interface ProjectFileLinks {
+  pathTemplate: string;
+  /** Public address and access token are supplied by YA, never the template. */
+  baseUrl: string;
+}
+
+/** Construct a project file link without querying or starting the app. */
+export function projectFileLink(
+  links: ProjectFileLinks,
+  path: string,
+  fragment = "",
+): string | null {
+  const parts = path.split("/");
+  if (
+    !path ||
+    path.includes("\\") ||
+    hasControlCharacters(path) ||
+    parts.some((part) => !part || part === "." || part === "..")
+  )
+    return null;
+  const route = links.pathTemplate.replace(
+    /\{path(Query)?\}/,
+    (_match, query) =>
+      query
+        ? encodeURIComponent(path)
+        : parts.map(encodeURIComponent).join("/"),
+  );
+  const base = new URL(links.baseUrl);
+  const url = new URL(route, base);
+  if (
+    base.protocol !== "https:" ||
+    base.hostname === "localhost" ||
+    base.hostname.endsWith(".localhost") ||
+    url.origin !== base.origin
+  )
+    return null;
+  const token = base.searchParams.get("ya_access");
+  if (token) url.searchParams.set("ya_access", token);
+  url.hash = fragment;
+  return url.href;
+}
+
 export interface ProjectAppInfo {
+  fileLinks?: ProjectFileLinks;
   /** Explicit template dev service; gated by project-live-preview. */
   livePreview?: ProjectServiceDeclaration;
   mode?: "app" | "live-preview";

@@ -22,6 +22,19 @@ test("new-session attachment panel records a memo, preserves cancellation and se
   const projectId = Buffer.from(join(e2ePaths.tempDir, "mockproject")).toString(
     "base64url",
   );
+  // Default capture must use the AudioWorklet tap, loaded under the app's
+  // real CSP, rather than silently falling back to ScriptProcessor.
+  await page.addInitScript(() => {
+    const scope = window as unknown as { yaWorkletNodes: number };
+    scope.yaWorkletNodes = 0;
+    const Native = window.AudioWorkletNode;
+    window.AudioWorkletNode = class extends Native {
+      constructor(...args: ConstructorParameters<typeof AudioWorkletNode>) {
+        super(...args);
+        scope.yaWorkletNodes += 1;
+      }
+    };
+  });
   await page.route("**/api/providers", (route) =>
     route.fulfill({
       json: {
@@ -105,6 +118,11 @@ test("new-session attachment panel records a memo, preserves cancellation and se
   const wav = await readFile(attachment.path);
   expect(wav.toString("ascii", 0, 4)).toBe("RIFF");
   expect(wav.length).toBeGreaterThan(44);
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { yaWorkletNodes: number }).yaWorkletNodes,
+    ),
+  ).toBeGreaterThan(0);
 });
 
 test("desktop attachment panel shows recent upload origins and a readable hover preview", async ({

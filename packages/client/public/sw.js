@@ -497,7 +497,8 @@ self.addEventListener("message", async (event) => {
 
   if (event.data?.type === "setting-update") {
     const { key, value } = event.data;
-    if (key in settings) {
+    // Every mounted settings hook resyncs its value, so log only real changes.
+    if (key in settings && settings[key] !== value) {
       settings[key] = value;
       await swLog("info", `Setting updated: ${key} = ${value}`);
     }

@@ -1,3 +1,5 @@
+import type { RendezDelivery } from "@yep-anywhere/shared";
+import type { UserMessage } from "../sdk/types.js";
 import { getProviderImageSizing } from "./image-preparation.mjs";
 import {
   getProviderHostInventory,
@@ -21,6 +23,7 @@ const PROVIDER_HOST_SEND_MS = 30_000;
  */
 export function createRendezSessions(
   getAllProcesses: () => Process[],
+  getDelivery: () => RendezDelivery | undefined,
 ): RendezSessions {
   return {
     async route(project, target): Promise<RendezDeliveryRoute> {
@@ -43,17 +46,30 @@ export function createRendezSessions(
                 diagnostics: "The target session is not live in this project",
               };
             }
-            const result = owned.queueMessage(
-              {
-                uuid: id,
-                text,
-                metadata: {
-                  origin: "rendezvous",
-                  serverReceivedAt: new Date().toISOString(),
-                },
+            // An upload is the user's own input, so it takes a typed send's
+            // path and presentation: a steer into the running turn, or a
+            // queued chip. Held to turn end while the user steers, it would
+            // land after the commentary sent about it.
+            const delivery = getDelivery() ?? "auto";
+            const action =
+              delivery === "auto"
+                ? (owned.lastBusySendAction ?? "steer")
+                : delivery;
+            const message: UserMessage = {
+              uuid: id,
+              // Identifies the queued chip and the delivered echo.
+              tempId: id,
+              text,
+              metadata: {
+                origin: "rendezvous",
+                serverReceivedAt: new Date().toISOString(),
+                deliveryIntent: action === "steer" ? "steer" : "deferred",
               },
-              { allowSteer: false },
-            );
+            };
+            const result =
+              action === "steer"
+                ? owned.queueMessage(message)
+                : owned.deferMessage(message, { promoteIfReady: true });
             return { accepted: result.success, diagnostics: result.error };
           },
         };

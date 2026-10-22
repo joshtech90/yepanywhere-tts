@@ -13,6 +13,35 @@ Result meanings:
   action that was not available during the run.
 - **NOT RUN** — the check was outside the completed scope; the reason is noted.
 
+## 2026-10-20 — signed Stable 0.4.1 publication
+
+[Desktop CI 39469339008](https://github.com/kzahel/yepanywhere/actions/runs/39469339008)
+published [Stable 0.4.1](https://github.com/kzahel/yepanywhere/releases/tag/desktop-v0.4.1)
+from `e65db78de294a50b9941836f042bbd7940e7edc6`. Both macOS architectures
+passed signing and notarization; Windows produced the signed per-user NSIS
+installer. The finalizer verified the complete asset set and all three updater
+signatures before publishing the private draft. No MSI was published.
+
+| Check | Result |
+| --- | --- |
+| All platform build/source gates | PASS |
+| Windows packaged runtime smoke | PASS |
+| Apple Silicon and Intel signing/notarization | PASS |
+| Complete immutable assets and updater signatures | PASS |
+| Public `latest.json` | PASS: 0.4.1, both Mac architectures and Windows NSIS |
+| Stable update feed from 0.2.2 | PASS: HTTP 200 offering 0.4.1 for Apple Silicon, Intel Mac and Windows |
+| General CI / runtime matrix | PASS: 24 / 12 jobs on `bd309cd6e`, which only adds test repairs to the application source |
+| Fresh native install/update/relaunch and long-idle acceptance | NOT RUN: this publication exercised hosted packaging gates, not a fresh testbed installation |
+
+The general CI pass includes one native-phone browser retry, retained in
+[the duplicate-character gap](../../gaps/native-phone-browser-duplicate-first-character.md).
+The earlier Windows dev-wrapper cleanup failure passed its isolated rerun and
+the fresh main run; [its cause remains open](../../gaps/windows-dev-reload-process-identity.md).
+The initial 0.4.0 release was canceled before publication to include the newly
+published markdown-it 15.0.2 security patch. Existing tags were not moved.
+The distribution catalog still identifies desktop as beta; publication does
+not close the remaining native acceptance work below.
+
 ## 2026-10-03 — native updater implementation verification
 
 Update state, startup/daily scheduling, manual coalescing, dismissal and progress

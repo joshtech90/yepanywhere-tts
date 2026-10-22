@@ -723,3 +723,133 @@ it("keeps the live iframe across settings and sharing and delegates mic synchron
   await screen.findByText("Valid while this app launch is running.");
   expect(container.querySelector("iframe")).toBe(frame);
 });
+it("shows the page its frame reports and opens a crumb under the view's link", async () => {
+  const original = mock.fetch.getMockImplementation()!;
+  mock.fetch.mockImplementation(async (...args) =>
+    String(args[0]).endsWith("/open")
+      ? {
+          id: "service:test",
+          kind: "service",
+          label: "App",
+          url: "https://app-x.example/?ya_access=view-token",
+        }
+      : original(...args),
+  );
+  const { container } = render(
+    <I18nProvider>
+      <ProjectAppViewer projectId="test" projectName="draft" />
+    </I18nProvider>,
+  );
+  await waitFor(() => expect(container.querySelector("iframe")).not.toBeNull());
+  const frame = container.querySelector("iframe")!;
+  // The frame is committed before the effect that listens for its reports
+  // runs; flush effects so a report is not posted into that gap.
+  await act(async () => {});
+  const report = (href: string, source: MessageEventSource | null) =>
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { type: "yep-anywhere:app-location", href },
+          source,
+        }),
+      );
+    });
+  const paper = "/research/papers/p/_build/index.html";
+  // Neither another window nor another origin names the frame's page.
+  report(`https://app-x.example${paper}`, window);
+  report(`https://elsewhere.example${paper}`, frame.contentWindow);
+  expect(
+    screen.queryByRole("navigation", { name: "Page shown in the app" }),
+  ).toBeNull();
+  const answers = vi
+    .spyOn(frame.contentWindow!, "postMessage")
+    .mockImplementation(() => {});
+  report(`https://app-x.example${paper}?ya_access=leak`, frame.contentWindow);
+  const trail = await screen.findByRole("navigation", {
+    name: "Page shown in the app",
+  });
+  expect(trail.textContent).toBe("/research/papers/p/_build/index.html");
+  expect(trail.textContent).not.toContain("leak");
+  // The page learns whether the bar shows its whole path: jsdom lays out
+  // nothing, so not yet; a trail that fits answers that it does.
+  const shown = (value: boolean) =>
+    expect(answers).toHaveBeenLastCalledWith(
+      { type: "yep-anywhere:app-location-shown", shown: value },
+      "https://app-x.example",
+    );
+  await waitFor(() => shown(false));
+  Object.defineProperty(trail, "clientWidth", { value: 300 });
+  Object.defineProperty(trail, "scrollWidth", { value: 300 });
+  report(`https://app-x.example${paper}`, frame.contentWindow);
+  await waitFor(() => shown(true));
+  fireEvent.click(screen.getByRole("button", { name: "papers" }));
+  expect(frame.src).toBe(
+    "https://app-x.example/research/papers/?ya_access=view-token",
+  );
+});
+it.each([true, false])(
+  "copies the public link to the shown page from a local view when canShare=%s",
+  async (canShare) => {
+    const original = mock.fetch.getMockImplementation()!;
+    mock.fetch.mockImplementation(
+      async (path: string, options?: { body: string }) => {
+        if (path.endsWith("/open")) {
+          const { audience } = JSON.parse(options!.body);
+          return {
+            id: "service:test",
+            kind: "service",
+            label: "App",
+            url:
+              audience === "public"
+                ? "https://app-x.apps.example/?ya_access=public-token"
+                : "http://app-x.localhost:3400/?ya_access=local-token",
+          };
+        }
+        const value = await original(path, options);
+        return path.endsWith("/app") ? { ...value, canShare } : value;
+      },
+    );
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const { container } = render(
+      <I18nProvider>
+        <ProjectAppViewer projectId="test" />
+      </I18nProvider>,
+    );
+    await waitFor(() =>
+      expect(container.querySelector("iframe")?.src).toContain("localhost"),
+    );
+    const frame = container.querySelector("iframe")!;
+    // Flush the effect that listens for the frame's reports (see above).
+    await act(async () => {});
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            type: "yep-anywhere:app-location",
+            href: "http://app-x.localhost:3400/docs/a.html?q=1#s",
+          },
+          source: frame.contentWindow,
+        }),
+      );
+    });
+    await screen.findByRole("navigation", { name: "Page shown in the app" });
+    fireEvent.click(screen.getByRole("button", { name: "Copy viewer link" }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        canShare
+          ? "https://app-x.apps.example/docs/a.html?q=1&ya_access=public-token#s"
+          : "http://app-x.localhost:3400/docs/a.html?q=1&ya_access=local-token#s",
+      ),
+    );
+    // Open in new tab keeps the local link.
+    expect(
+      screen
+        .getByRole("link", { name: "Move viewer to new tab" })
+        .getAttribute("href"),
+    ).toContain("app-x.localhost");
+  },
+);

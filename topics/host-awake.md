@@ -337,7 +337,7 @@ other sensitive host data. `powerObservedAt` is an epoch-millisecond timestamp
 for the battery and power-source sample, allowing clients to label stale data
 rather than presenting it as a live gauge.
 
-Register one transitional `host-awake-control` string in the existing
+Register one permanent `host-awake-control` string in the existing
 `/api/version` capability array on servers that implement the settings and
 status API, so a newer hosted client does not call those routes on an older
 server. The existing version hook fetches this coarse discovery data on mount

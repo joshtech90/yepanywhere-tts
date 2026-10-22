@@ -108,6 +108,7 @@ export class BrowserNativeProvider implements SpeechProvider {
   private lastCommittedFinalChunk = "";
   private disposed = false;
   private speechActivityTimer: ReturnType<typeof setTimeout> | null = null;
+  private finalizationTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: SpeechProviderOptions = {}) {
     this.options = options;
@@ -130,7 +131,7 @@ export class BrowserNativeProvider implements SpeechProvider {
 
   start(): void {
     if (this.disposed) return;
-    if (this.state.isListening) return;
+    if (this.state.isListening || this.state.status === "finalizing") return;
 
     const Ctor = getSpeechRecognition();
     if (!Ctor) {
@@ -205,11 +206,11 @@ export class BrowserNativeProvider implements SpeechProvider {
     recognition.onspeechend = markSpeechEnded;
 
     recognition.onresult = (event) => {
-      if (this.recognition !== recognition || this.isStopping) return;
+      if (this.recognition !== recognition) return;
 
       // Result changes are the reliable speech-activity fallback on browsers
       // that omit or delay the optional sound/speech boundary events.
-      this.markSpeechActivity(recognition);
+      if (!this.isStopping) this.markSpeechActivity(recognition);
 
       let interimText = "";
       let latestFinal = "";
@@ -293,7 +294,7 @@ export class BrowserNativeProvider implements SpeechProvider {
       }
 
       const trimmedInterim = interimText.trim();
-      if (trimmedInterim) {
+      if (trimmedInterim && !this.isStopping) {
         this.setState({ interimTranscript: trimmedInterim });
         this.options.onInterimResult?.(trimmedInterim);
       } else if (interimText && !trimmedInterim) {
@@ -337,6 +338,8 @@ export class BrowserNativeProvider implements SpeechProvider {
     };
 
     recognition.onend = () => {
+      if (this.recognition !== recognition || this.disposed) return;
+      this.clearFinalizationTimer();
       this.clearSpeechActivityTimer();
       if (!this.isStopping && this.recognition === recognition) {
         // Auto-restart after Chrome's ~60s idle timeout.
@@ -356,10 +359,11 @@ export class BrowserNativeProvider implements SpeechProvider {
           this.options.onEnd?.();
         }
       } else {
+        this.recognition = null;
         this.setState({
           isListening: false,
           interimTranscript: "",
-          status: "idle",
+          status: this.state.error ? "error" : "idle",
         });
         this.options.onEnd?.();
       }
@@ -377,19 +381,45 @@ export class BrowserNativeProvider implements SpeechProvider {
   }
 
   stop(): void {
-    if (this.disposed) return;
+    if (this.disposed || this.isStopping || !this.recognition) return;
     this.isStopping = true;
     this.clearSpeechActivityTimer();
-    if (this.recognition) {
-      this.recognition.stop();
-      this.recognition = null;
-    }
     this.setState({
       isListening: false,
       interimTranscript: "",
-      status: "idle",
+      status: "finalizing",
       error: null,
     });
+    this.finalizationTimer = setTimeout(() => {
+      const error = "Speech recognition did not finish after stopping";
+      this.abandon(error);
+      this.options.onError?.(error);
+    }, 5000);
+    this.recognition.stop();
+  }
+
+  cancel(): void {
+    this.abandon(null);
+  }
+
+  private abandon(error: string | null): void {
+    this.clearFinalizationTimer();
+    this.clearSpeechActivityTimer();
+    this.isStopping = true;
+    const recognition = this.recognition;
+    this.recognition = null;
+    recognition?.abort();
+    this.setState({
+      isListening: false,
+      interimTranscript: "",
+      status: error ? "error" : "idle",
+      error,
+    });
+  }
+
+  private clearFinalizationTimer(): void {
+    if (this.finalizationTimer !== null) clearTimeout(this.finalizationTimer);
+    this.finalizationTimer = null;
   }
 
   beginInsertionBoundary(): void {
@@ -403,6 +433,7 @@ export class BrowserNativeProvider implements SpeechProvider {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.clearFinalizationTimer();
     this.isStopping = true;
     this.clearSpeechActivityTimer();
     if (this.recognition) {

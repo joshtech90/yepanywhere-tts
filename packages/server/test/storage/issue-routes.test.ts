@@ -51,6 +51,33 @@ it("gates all data routes, validates settings, saves through the shared settings
     expect((await request("/")).status).toBe(403);
     expect((await request("/evidence?id=anything")).status).toBe(403);
     expect((await request("/settings")).status).toBe(200);
+    expect((await (await request("/settings")).json()).settings).toMatchObject({
+      contentTtlSeconds: 1209600,
+      statusCommentTtlSeconds: 300,
+    });
+    for (const value of [0, -1, 2, "never"]) {
+      expect(
+        (
+          await request("/settings", "PUT", {
+            enabled: true,
+            scope: "viewed",
+            recentDays: 7,
+            contentTtlSeconds: value,
+          })
+        ).status,
+      ).toBe(400);
+    }
+    expect(
+      (
+        await request("/settings", "PUT", {
+          enabled: true,
+          scope: "viewed",
+          recentDays: 7,
+          contentTtlSeconds: null,
+          statusCommentTtlSeconds: 1,
+        })
+      ).status,
+    ).toBe(200);
     expect(
       (
         await request("/settings", "PUT", {
@@ -152,6 +179,11 @@ it("gates all data routes, validates settings, saves through the shared settings
     const second = new ServerSettingsService({ dataDir });
     await second.initialize();
     expect(second.getSetting("issueAssociations")?.enabled).toBe(true);
+    // Older clients omit both fields; their later PUTs must preserve them.
+    expect(second.getSetting("issueAssociations")).toMatchObject({
+      contentTtlSeconds: null,
+      statusCommentTtlSeconds: 1,
+    });
   } finally {
     unsub();
     await indexer.close();
@@ -481,7 +513,12 @@ it("asks a tracker only about a reference YA captured in that project", async ()
   });
   const fetcher = vi.fn(
     async () =>
-      new Response(JSON.stringify({ title: "A pull" }), { status: 200 }),
+      new Response(
+        JSON.stringify({ title: "Repair 50%_complete cancellation" }),
+        {
+          status: 200,
+        },
+      ),
   );
   const confirmer = new IssueConfirmer(store, {
     settings: () => settings.getSetting("issueAssociations")!,
@@ -520,6 +557,22 @@ it("asks a tracker only about a reference YA captured in that project", async ()
       { id: "m", text: "see https://github.com/a/b/issues/7" },
     );
     await confirmer.drain();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    const search = async (query: string) =>
+      (await app.request(`/issues?q=${encodeURIComponent(query)}`)).json();
+    const found = await search("CANCELL");
+    expect(found.items).toMatchObject([
+      { key: "a/b#7", title: "Repair 50%_complete cancellation" },
+    ]);
+    expect((await search("50%_complete")).items).toHaveLength(1);
+    expect((await search("50%complete")).items).toHaveLength(0);
+    expect((await search("50__complete")).items).toHaveLength(0);
+    store.title(found.items[0].id, "Local override");
+    expect((await search("cancellation")).items).toMatchObject([
+      { title: "Local override" },
+    ]);
+    expect((await search("local override")).items).toHaveLength(1);
     expect(fetcher).toHaveBeenCalledTimes(1);
 
     // A typo, a key captured only in another project, and the right key under

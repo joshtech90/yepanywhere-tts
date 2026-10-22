@@ -150,6 +150,8 @@ import {
 import { useDeveloperMode } from "../hooks/useDeveloperMode";
 import { useAutoReadAloud } from "../hooks/useAutoReadAloud";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { useComposerBeacon } from "../hooks/useComposerBeacon";
+import { useTranscriptComposerFocus } from "../hooks/useTranscriptComposerFocus";
 import type { DraftControls } from "../hooks/useDraftPersistence";
 import { applyEarlyComposerTyping } from "../lib/earlyComposerTyping";
 import {
@@ -1153,6 +1155,19 @@ function SessionPageContent({
     showToast,
     onNavigateToParentAside: navigate,
   });
+  const beginBeaconSubmission = useComposerBeacon({
+    sessionKey: `${sourceRuntime.sourceKey}:${actualSessionId}`,
+    active: !isDomLingerParked && !mainComposerForAside,
+    controlsRef: draftControlsRef,
+    messages,
+    isMessageDelivered,
+  });
+  const transcriptComposerFocus = useTranscriptComposerFocus(
+    !isDomLingerParked &&
+      !mainComposerForAside &&
+      !(projectAppEnabled && projectAppOpen),
+    draftControlsRef,
+  );
   const [correctionDraft, setCorrectionDraft] = useState<{
     messageId: string;
     originalText: string;
@@ -2800,6 +2815,13 @@ function SessionPageContent({
       undefined,
       clientTimestampIso,
     );
+    const completeBeaconSubmission = !preserveComposer
+      ? beginBeaconSubmission({
+          tempId,
+          content: outgoingText,
+          timestamp: clientTimestampIso,
+        })
+      : undefined;
     if (!localControl) {
       setProcessState("in-turn"); // Optimistic: show processing indicator immediately
       if (!options.preserveScroll) setScrollTrigger((prev) => prev + 1);
@@ -2826,6 +2848,7 @@ function SessionPageContent({
     let uploadedAttachments: UploadedFile[] = [];
 
     const confirmSubmission = () => {
+      completeBeaconSubmission?.("delivered");
       if (!preserveComposer) {
         rememberSentSubmission(text, tempId);
         draftControlsRef.current?.confirmInputClear();
@@ -3087,6 +3110,7 @@ function SessionPageContent({
       }
 
       // Remove from pending queue and restore draft on error
+      completeBeaconSubmission?.("error");
       removePendingMessage(tempId);
       if (!preserveComposer) {
         draftControlsRef.current?.restoreFromStorage();
@@ -3454,6 +3478,11 @@ function SessionPageContent({
     // server's deferred-queue state (SSE event + this POST response). We still
     // mint a tempId so the server can echo this message back by identity.
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const completeBeaconSubmission = beginBeaconSubmission({
+      tempId,
+      content: outgoingText,
+      timestamp: new Date(clientTimestamp).toISOString(),
+    });
     setScrollTrigger((prev) => prev + 1);
     logSessionUiTrace("composer-deferred-start", {
       sessionId,
@@ -3532,6 +3561,9 @@ function SessionPageContent({
       revokeAttachmentPreviewUrls(currentAttachments);
       setCorrectionDraft(null);
       clearQuoteAnchors();
+      completeBeaconSubmission(
+        result.deferred === false || result.promoted ? "delivered" : "queued",
+      );
       return true;
     } catch (err) {
       console.error("Failed to queue deferred message:", err);
@@ -3584,6 +3616,7 @@ function SessionPageContent({
           revokeAttachmentPreviewUrls(currentAttachments);
           setCorrectionDraft(null);
           clearQuoteAnchors();
+          completeBeaconSubmission("delivered");
           return true;
         } catch (retryErr) {
           console.error("Failed to resume session:", retryErr);
@@ -3599,6 +3632,7 @@ function SessionPageContent({
 
       draftControlsRef.current?.restoreFromStorage();
       setComposerAttachments(currentAttachments, { persistDraft: false });
+      completeBeaconSubmission("error");
       const errorMsg =
         finalError instanceof Error ? finalError.message : String(finalError);
       if (
@@ -6843,6 +6877,7 @@ function SessionPageContent({
             className={`${styles.messages} session-messages`}
             tabIndex={-1}
             data-session-read-scope={sessionId}
+            {...transcriptComposerFocus}
           >
             {error && (
               <div role="status">

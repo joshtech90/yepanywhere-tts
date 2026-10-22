@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { Locator } from "@playwright/test";
 import {
   decodeJsonFrame,
+  type IssueCoverage,
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
 import { e2ePaths, expect, test } from "./fixtures.js";
@@ -124,7 +125,12 @@ test("header preserves identity, overflow actions and rename typing during live 
           },
         ],
         nextOffset: null,
-        coverage: { active: false },
+        coverage: {
+          settings: { enabled: true, scope: "viewed", recentDays: 7 },
+          active: false,
+          error: null,
+          counts: [],
+        } satisfies IssueCoverage,
       },
     }),
   );
@@ -432,6 +438,9 @@ test("header preserves identity, overflow actions and rename typing during live 
     })
     .click();
   await expect(page).toHaveURL(/\/issues\?/);
+  await expect(
+    page.getByRole("region", { name: "Issue search results" }),
+  ).toBeVisible();
   await expectHeaderSizing(page.locator("header.session-header"), 44);
   await expect(
     page.getByRole("button", { name: "Rename...", exact: true }),

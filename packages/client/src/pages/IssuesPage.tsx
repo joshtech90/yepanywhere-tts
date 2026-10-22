@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useIssuesEnabled } from "../hooks/useIssuesEnabled";
+import { useLongPress } from "../hooks/useLongPress";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import { PageHeader } from "../components/PageHeader";
@@ -47,6 +48,7 @@ function IssueBrowser() {
   const [result, setResult] = useState<IssueSearchResult>();
   const [selected, setSelected] = useState<IssueItem>();
   const [detail, setDetail] = useState<IssueSessionsResult>();
+  const [body, setBody] = useState<{ id: string; text: string }>();
   // The dismissed filter `detail` was fetched under; the checkbox can change
   // before its replacement arrives.
   const [detailIncludesDismissed, setDetailIncludesDismissed] = useState(false);
@@ -98,7 +100,11 @@ function IssueBrowser() {
               ? current
               : previous;
           });
-          if (next.coverage.active) timer = setTimeout(load, 750);
+          if (
+            (next.coverage.active || next.contentRefresh?.active) &&
+            !document.hidden
+          )
+            timer = setTimeout(load, 750);
           else if (next.statusRefreshing && statusRechecks++ < 3)
             timer = setTimeout(load, 1500);
         }
@@ -107,9 +113,17 @@ function IssueBrowser() {
       }
     };
     timer = setTimeout(() => void load(), 150);
+    const visible = () => {
+      if (!document.hidden) {
+        if (timer) clearTimeout(timer);
+        void load();
+      }
+    };
+    document.addEventListener("visibilitychange", visible);
     return () => {
       disposed = true;
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", visible);
     };
   }, [
     transport,
@@ -175,7 +189,35 @@ function IssueBrowser() {
     // until the new answer arrives, so an expanded row keeps the mentions it
     // has already loaded.
     if (item.id !== selected?.id) setDetail(undefined);
+    if (result?.contentRefresh && !item.unresolved)
+      void action("/issues/refresh", "POST", { force: true, id: item.id });
   };
+  const supportsContent = result?.contentRefresh !== undefined;
+  const refreshing = result?.contentRefresh?.active ?? false;
+  useEffect(() => {
+    let disposed = false;
+    if (selected && supportsContent)
+      void transport
+        .fetch<{ content: { body: string | null } | null }>(
+          `/issues/content?${new URLSearchParams({ id: selected.id, revision: `${revision}:${refreshing}` })}`,
+        )
+        .then(({ content }) => {
+          if (!disposed)
+            setBody({ id: selected.id, text: content?.body ?? "" });
+        })
+        .catch(() => {
+          if (!disposed) setError(t("issuesLoadError"));
+        });
+    return () => {
+      disposed = true;
+    };
+  }, [selected, supportsContent, refreshing, revision, transport, t]);
+  const refresh = (force: boolean) => {
+    if (busy || refreshing) return;
+    if (supportsContent) void action("/issues/refresh", "POST", { force });
+    else setRevision((x) => x + 1);
+  };
+  const refreshPress = useLongPress(() => refresh(true));
   const edit = (item: IssueItem, kind: "title" | "url" | "delete") => {
     if (kind === "url") select(item);
     setEditing({ item, kind });
@@ -241,16 +283,76 @@ function IssueBrowser() {
           }}
         />
         <button
-          className={styles.button}
+          className={styles.toolbarIcon}
           type="button"
-          onClick={() => setRevision((x) => x + 1)}
+          aria-label={t("issuesRefresh")}
+          title={supportsContent ? t("issuesRefreshHint") : t("issuesRefresh")}
+          disabled={busy || refreshing}
+          {...refreshPress.handlers}
+          onClick={refreshPress.click(() => refresh(false))}
+          onKeyDown={(event) => {
+            if (
+              event.key === "ContextMenu" ||
+              (event.shiftKey && event.key === "F10")
+            ) {
+              event.preventDefault();
+              refresh(true);
+            }
+          }}
         >
-          {t("issuesRefresh")}
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M20 7v5h-5M4 17v-5h5" />
+            <path d="M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 17.9 17" />
+          </svg>
         </button>
-        <Link className={styles.settingsLink} to={`${base}/settings/issues`}>
-          {t("issuesSettings")}
+        <Link
+          className={styles.toolbarIcon}
+          to={`${base}/settings/issues`}
+          aria-label={t("issuesSettings")}
+          title={t("issuesSettings")}
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+          </svg>
         </Link>
       </div>
+      {result?.contentRefresh &&
+        (result.contentRefresh.active ||
+          result.contentRefresh.checked > 0 ||
+          result.contentRefresh.error) && (
+          <p className={styles.muted} role="status">
+            {result.contentRefresh.active
+              ? t("issuesRefreshingContent")
+              : t("issuesRefreshedContent")}{" "}
+            {t("issuesRefreshCounts", {
+              checked: result.contentRefresh.checked,
+              skipped: result.contentRefresh.skipped,
+              failed: result.contentRefresh.failed,
+            })}
+            {result.contentRefresh.error && ` ${result.contentRefresh.error}`}
+          </p>
+        )}
       <details className={styles.coverage}>
         <summary>
           {result?.coverage.active
@@ -494,6 +596,12 @@ function IssueBrowser() {
               >
                 {selected.key} ↗
               </a>
+            )}
+            {body?.id === selected.id && body.text && (
+              <details className={styles.description} open>
+                <summary>{t("issuesBodyDescription")}</summary>
+                <p className={styles.expandedExcerpt}>{body.text}</p>
+              </details>
             )}
             <div className={styles.sessionHeading}>
               <h3>{t("issuesAssociatedSessions")}</h3>

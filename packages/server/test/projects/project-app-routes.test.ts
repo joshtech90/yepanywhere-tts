@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   toUrlProjectId,
+  projectFileLink,
   type LimitedUserGrants,
   type ProjectServiceDeclaration,
 } from "@yep-anywhere/shared";
@@ -153,6 +154,51 @@ function post(action: string, body: unknown = {}) {
     body: JSON.stringify(body),
   });
 }
+
+it("offers static public file links without launching and honors viewing and distribution opt-ins", async () => {
+  artifacts.config.vhostPublicRoot = "apps.example";
+  artifacts.config.publicOrigin = "https://artifacts.example";
+  grants.newSessionProjects = [projectId];
+  grants.allowPublicApps = true;
+  const declarationFile = join(projectPath, ".project-template/app.json");
+  const declaration = JSON.parse(await readFile(declarationFile, "utf8"));
+  const get = async () =>
+    (await app.request(`/api/projects/${projectId}/app`)).json();
+  expect((await get()).fileLinks).toBeUndefined();
+  await writeFile(
+    declarationFile,
+    JSON.stringify({ ...declaration, viewAudience: "public", fileLinks: {} }),
+  );
+  expect(
+    (await post("open", { target: "app", audience: "local" })).status,
+  ).toBe(409);
+  await post("address/reserve", { name: "archer-browser" });
+  await post("address/serve", { serving: true, public: false });
+  const links = (await get()).fileLinks;
+  expect(links.pathTemplate).toBe("/{path}");
+  expect(new URL(links.baseUrl).hostname).toBe("archer-browser.apps.example");
+  expect(new URL(links.baseUrl).searchParams.get("ya_access")).toBeTruthy();
+  expect(new URL(projectFileLink(links, "research/survey.md")!).pathname).toBe(
+    "/research/survey.md",
+  );
+  expect(await services.status(projectId)).toBeNull();
+  const view = await (
+    await post("open", { target: "app", audience: "local" })
+  ).json();
+  expect(view.url).toBe(links.baseUrl);
+  grants.allowPrivateAppLinks = false;
+  expect((await get()).fileLinks).toBeUndefined();
+  grants.allowPrivateAppLinks = true;
+  await writeFile(
+    declarationFile,
+    JSON.stringify({ ...declaration, fileLinks: { enabled: false } }),
+  );
+  expect((await get()).fileLinks).toBeUndefined();
+  const localView = await (
+    await post("open", { target: "app", audience: "local" })
+  ).json();
+  expect(new URL(localView.url).hostname).toBe("artifacts.localhost");
+});
 
 it("restricts inventory to administrators and retains orphan names for token-revoking release", async () => {
   const orphanId = toUrlProjectId(join(root, "gone"));

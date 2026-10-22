@@ -425,6 +425,21 @@ describe("speech routes", () => {
     backend.resolvePrewarm?.();
   });
 
+  it("answers prewarm for a backend with nothing to warm as success", async () => {
+    const registry = new SpeechBackendRegistry();
+    await registry.register(new RecordingBatchBackend());
+    const { app } = await createSpeechApp(undefined, registry);
+
+    const res = await app.request("/api/speech/prewarm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backendId: "ya-recording" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
   it("retains batch audio with transcript and session context metadata", async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "ya-speech-"));
     tempDirs.push(dataDir);

@@ -1,5 +1,14 @@
 import { useEffect, useRef } from "react";
 import { useInboxCounts } from "../lib/clientSummaryStore";
+import {
+  getMicTitlePrefix,
+  MIC_TITLE_ATTRIBUTE,
+} from "../lib/micTitleActivity";
+import {
+  appendComposerBeacon,
+  COMPOSER_BEACON_ATTRIBUTE,
+  stripComposerBeacon,
+} from "../lib/composerBeacon";
 import { PROJECT_CODE_NAME_TITLE_ATTRIBUTE } from "./useDocumentTitle";
 import { useProjectCodeNamePreferences } from "./useProjectCodeNamePreferences";
 import { useTabTitleActivityPreference } from "./useTabTitleActivityPreference";
@@ -71,7 +80,7 @@ export function stripTabTitlePrefixes(
   hostIdentityIcon?: string,
   projectCodeNameTitle = /^[A-Za-z0-9_-]{1,12}:/u.test(title),
 ): string {
-  let next = title;
+  let next = stripComposerBeacon(title).replace(/^(?:◷)?🎙 /u, "");
   for (;;) {
     const stripped = next
       .replace(BADGE_PREFIX_REGEX, "")
@@ -153,10 +162,12 @@ export function useNeedsAttentionBadge(hostIdentityIcon?: string) {
       const projectCodeNameTitle = document
         .querySelector("title")
         ?.hasAttribute(PROJECT_CODE_NAME_TITLE_ATTRIBUTE);
-      document.title = stripTabTitlePrefixes(
-        document.title,
-        hostIdentityIcon,
-        projectCodeNameTitle,
+      document.title = appendComposerBeacon(
+        stripTabTitlePrefixes(
+          document.title,
+          hostIdentityIcon,
+          projectCodeNameTitle,
+        ),
       );
     };
   }, [hostIdentityIcon]);
@@ -169,12 +180,9 @@ export function useNeedsAttentionBadge(hostIdentityIcon?: string) {
       activityStartedAtRef.current = null;
     }
 
-    // Track if we're currently updating to avoid observer loop
-    let isUpdating = false;
     let activityTimer: ReturnType<typeof setInterval> | null = null;
 
     const updateTitle = () => {
-      isUpdating = true;
       const projectCodeNameTitle = document
         .querySelector("title")
         ?.hasAttribute(PROJECT_CODE_NAME_TITLE_ATTRIBUTE);
@@ -190,18 +198,19 @@ export function useNeedsAttentionBadge(hostIdentityIcon?: string) {
           ? getTabTitleActivityFrame(activityStartedAt)
           : undefined;
 
-      document.title = composeTabTitle(
-        baseTitle,
-        count,
-        activityFrame,
-        hostIdentityIcon,
-        projectCodeNameTitle,
-        projectCodeNameActivityPulseEnabled,
-      );
-      // Use setTimeout to reset flag after current mutation cycle completes
-      setTimeout(() => {
-        isUpdating = false;
-      }, 0);
+      const nextTitle =
+        getMicTitlePrefix() +
+        appendComposerBeacon(
+          composeTabTitle(
+            baseTitle,
+            count,
+            activityFrame,
+            hostIdentityIcon,
+            projectCodeNameTitle,
+            projectCodeNameActivityPulseEnabled,
+          ),
+        );
+      if (document.title !== nextTitle) document.title = nextTitle;
     };
 
     updateTitle();
@@ -213,38 +222,7 @@ export function useNeedsAttentionBadge(hostIdentityIcon?: string) {
     }
 
     // Also observe title changes from useDocumentTitle and re-apply indicators
-    const observer = new MutationObserver(() => {
-      // Skip if we're the ones who triggered the change
-      if (isUpdating) return;
-
-      // Check if the indicators need to be (re)applied
-      const currentTitle = document.title;
-      const projectCodeNameTitle = document
-        .querySelector("title")
-        ?.hasAttribute(PROJECT_CODE_NAME_TITLE_ATTRIBUTE);
-      const baseTitle = stripTabTitlePrefixes(
-        currentTitle,
-        hostIdentityIcon,
-        projectCodeNameTitle,
-      );
-      const activityStartedAt = activityStartedAtRef.current;
-      const activityFrame =
-        showSessionActivity && activityStartedAt !== null
-          ? getTabTitleActivityFrame(activityStartedAt)
-          : undefined;
-      const expectedTitle = composeTabTitle(
-        baseTitle,
-        count,
-        activityFrame,
-        hostIdentityIcon,
-        projectCodeNameTitle,
-        projectCodeNameActivityPulseEnabled,
-      );
-
-      if (currentTitle !== expectedTitle) {
-        updateTitle();
-      }
-    });
+    const observer = new MutationObserver(updateTitle);
 
     const titleElement = document.querySelector("title");
     if (titleElement) {
@@ -252,6 +230,12 @@ export function useNeedsAttentionBadge(hostIdentityIcon?: string) {
         childList: true,
         characterData: true,
         subtree: true,
+        attributes: true,
+        attributeFilter: [
+          COMPOSER_BEACON_ATTRIBUTE,
+          MIC_TITLE_ATTRIBUTE,
+          PROJECT_CODE_NAME_TITLE_ATTRIBUTE,
+        ],
       });
     }
 

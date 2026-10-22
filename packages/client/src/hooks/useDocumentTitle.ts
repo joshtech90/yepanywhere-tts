@@ -1,5 +1,6 @@
 import { sanitizeSessionTitle } from "@yep-anywhere/shared";
 import { useEffect } from "react";
+import { appendComposerBeacon } from "../lib/composerBeacon";
 import { useProjectCodeNamePreferences } from "./useProjectCodeNamePreferences";
 
 const BASE_TITLE = "Yep Anywhere";
@@ -51,16 +52,16 @@ export function useDocumentTitle(
     } else {
       titleElement?.removeAttribute(PROJECT_CODE_NAME_TITLE_ATTRIBUTE);
     }
-    document.title = formatDocumentTitle(
-      projectName,
-      displayedProjectCodeName,
-      sessionName,
+    // Only the human title is truncated; never publish a title missing an
+    // active beacon while waiting for the badge observer to run.
+    document.title = appendComposerBeacon(
+      formatDocumentTitle(projectName, displayedProjectCodeName, sessionName),
     );
 
     // Restore base title on unmount
     return () => {
       titleElement?.removeAttribute(PROJECT_CODE_NAME_TITLE_ATTRIBUTE);
-      document.title = BASE_TITLE;
+      document.title = appendComposerBeacon(BASE_TITLE);
     };
   }, [displayedProjectCodeName, enabled, projectName, sessionName]);
 }

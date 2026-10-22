@@ -361,7 +361,7 @@ The 2026-08-05 audit supplies the initial registry backlog:
 | Owner | Current risk | Required pressure contract |
 |---|---|---|
 | App session readers | 500-entry LRU with hit retouch since 2026-10-07; individual Codex readers retain mapping/file caches. Codex detail updates added per-session in-flight ownership, bounded plain-file reads, and invalidation-fenced publication on 2026-08-24, then append-aware normalized projection reuse on 2026-08-28 | Byte/rebuild-cost bound and access retouch; close and release cold project readers without interrupting active owners |
-| Codex parsed transcripts | Bounded 2026-10-07 (`codex-entry-cache-budget.ts`): every reader's detail entry cache is admitted to one process-wide source-byte LRU (default 256 MB, `YEP_CODEX_PARSE_CACHE_MB`) with retouch on hit and growth re-admission; a file over the whole budget is served uncached | Register with a future pressure coordinator as rebuildable; entries plus WeakMap-linked normalized copies release together |
+| Codex parsed transcripts | Bounded 2026-10-07 (`codex-entry-cache-budget.ts`): every reader's detail entry cache is admitted to one process-wide source-byte LRU (default 256 MB, `YEP_CODEX_PARSE_CACHE_MB`), charged decoded JSONL bytes (zstd rollouts and lineage segments included, since 2026-10-21), with retouch on hit and growth re-admission; a file over the whole budget is served uncached | Register with a future pressure coordinator as rebuildable; entries plus WeakMap-linked normalized copies release together |
 | Claude parsed transcripts | Added 2026-08-07 (`claude-transcript-cache.ts`): process-wide, source-byte LRU (default 192 MB, `YEP_CLAUDE_PARSE_CACHE_MB`), in-flight coalescing, incremental append parsing; a file over the whole budget is never retained | Register with a future pressure coordinator as rebuildable; entries plus WeakMap-linked normalized copies release together |
 | Pi parsed transcripts | Resolved 2026-08-07: one current version per file, 64-file LRU with access retouch | One current version per canonical file plus byte-bounded LRU |
 | Session summary index | Cold loads now share one mutable scope and validation cannot erase a newer dirty revision; 10,000 scopes bounded by an LRU with hit retouch whose eviction also drops the scope's validation times, persisted-scope flag, and (when clean) dirty revision (2026-10-07) | Cap live bytes; release disk-rebuildable cold scopes |
@@ -410,7 +410,14 @@ entry evicted during its own re-parse does not void the replacement; only
 invalidation or a concurrent replacement does. After the bound, the same sweep
 retained 256 MB of Codex source as about 270 MB of live heap, and repeated
 sweeps stayed flat. Roughly 700 MB of post-sweep heap outside this cache
-remains unattributed. This owner does not resolve the reader FIFO in the
+remains unattributed.
+The budget first charged each entry its file size. Once most rollouts were
+zstd-compressed (2–8x), that understated retention: on 2026-10-19 and
+2026-10-21 two back-to-back audit sweeps aborted the dev server on the
+4.2 GB heap limit, and one 740-session sweep left 3.04 GB live after forced
+GC (2.77 GB with only the Codex cache enabled). Entries are now charged the
+decoded bytes they were parsed from, including inherited lineage segments;
+the same sweep then left about 956 MB live, flat across a second sweep. This owner does not resolve the reader FIFO in the
 table above or the distinct read-only summary/projection coordination tracked
 by tacticals 038 and 056.
 

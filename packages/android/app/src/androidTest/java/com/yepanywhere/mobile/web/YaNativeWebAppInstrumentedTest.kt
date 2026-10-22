@@ -289,12 +289,12 @@ class YaNativeWebAppInstrumentedTest {
             if (secondProfile != null) {
                 device.findObject(By.desc("New tab")).click()
                 device.wait(Until.findObject(By.res("android", "text1").text(secondHostLabel)), 5_000).click()
-                await(scenario, "document.body.textContent.includes('preview-project')")
+                await(scenario, "document.body.textContent.includes('preview-project')", expectedProfileId = secondProfile.id)
                 scenario.onActivity { assertEquals(secondProfile.id, it.nativeTransportDiagnostics()?.getString("profileId")) }
                 device.findObject(By.desc("Tabs, 5 open")).click()
                 captureTabs(device, application, "native-tabs-hosts.png")
                 device.wait(Until.findObject(By.desc("Switch to tab: $hostLabel, /projects/$projectId/sessions/android-preview-session")), 5_000).click()
-                await(scenario, "document.body.textContent.includes('Preview message 50')")
+                await(scenario, "document.body.textContent.includes('Preview message 50')", expectedProfileId = profile.id)
                 scenario.onActivity { assertEquals(profile.id, it.nativeTransportDiagnostics()?.getString("profileId")) }
                 // Closing the second host removes metadata and releases only its consumer.
                 device.findObject(By.desc("Tabs, 5 open")).click()
@@ -406,15 +406,20 @@ class YaNativeWebAppInstrumentedTest {
 
     // Initial direct 1 MiB emulator proof completed in 9.1 s; 30 s gives ~3x
     // that full-run maximum for ordinary document readiness on this testbed.
-    private fun await(scenario: ActivityScenario<out WebClientActivity>, script: String, timeoutSeconds: Long = 30) {
+    private fun await(scenario: ActivityScenario<out WebClientActivity>, script: String, timeoutSeconds: Long = 30, expectedProfileId: String? = null) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
         var actual = ""
+        var actualProfileId: String? = null
         while (System.nanoTime() < deadline) {
             // Reload can discard an evaluateJavascript callback sent to the
             // departing renderer. Wait for the replacement native handshake.
             var ready = false
             scenario.onActivity { activity ->
-                ready = activity.nativeTransportDiagnostics() != null && activity.findViewById<WebView>(R.id.web_client)?.progress == 100
+                val diagnostics = activity.nativeTransportDiagnostics()
+                actualProfileId = diagnostics?.optString("profileId")
+                // Both hosts serve the same fixture text. Wait for the native
+                // handoff before an old document can satisfy the page predicate.
+                ready = diagnostics != null && (expectedProfileId == null || actualProfileId == expectedProfileId) && activity.findViewById<WebView>(R.id.web_client)?.progress == 100
             }
             if (!ready) { Thread.sleep(100); continue }
             actual = evaluate(scenario, script)
@@ -422,7 +427,7 @@ class YaNativeWebAppInstrumentedTest {
             Thread.sleep(100)
         }
         val body = evaluate(scenario, "JSON.stringify({body: document.body.textContent.slice(0, 1800), value: document.querySelector('textarea[data-composer-input]')?.value, active: document.activeElement?.outerHTML.slice(0,200), latencies: window.nativeTypingLatencies})")
-        throw AssertionError("Expected $script; got $actual; page=$body")
+        throw AssertionError("Expected $script; got $actual; nativeProfile=$actualProfileId; expectedProfile=$expectedProfileId; page=$body")
     }
 
     private fun evaluate(scenario: ActivityScenario<out WebClientActivity>, script: String): String {

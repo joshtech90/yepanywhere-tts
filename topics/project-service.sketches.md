@@ -4,6 +4,21 @@ Designs that are not current guidance. [[project-service]] owns the current
 declaration and lifecycle contract. Dates are when an option was weighed,
 not when it might be revisited.
 
+## File-link resolver protocol (October 21, 2026)
+
+Static `fileLinks.pathTemplate` covers repository browsers without querying an
+app. Apps whose routes depend on an index could instead opt into a resolver
+endpoint accepting a project-relative path and fragment and returning an
+app-relative route or an explicit unsupported result. YA still supplies
+the existing public vhost and matching token outside that response.
+
+No declaration means no discovery, probe, or startup. A declared resolver may
+start a stopped app only with a further explicit `startOnRequest` opt-in, on a
+user action and under existing lifecycle authority and loop guards. Rendering
+session autolinks must never trigger it. Requests need bounded time and size,
+broker confinement, and no redirect-following. This remains unimplemented;
+the static template needs no resolver round trip.
+
 ## Reload signal without restart (October 15, 2026)
 
 Settings offers **Restart app** for a running process app: YA stops the owned

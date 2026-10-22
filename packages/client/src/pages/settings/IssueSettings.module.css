@@ -2,6 +2,27 @@
   display: grid;
   gap: var(--space-2);
 }
+.cacheLifetime {
+  width: 100%;
+  display: grid;
+  gap: var(--space-1);
+}
+.cacheLifetime output {
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+}
+.cacheLifetime input {
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  accent-color: var(--accent-primary);
+}
+.cacheEndpoints {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
 .control,
 .days,
 .action {

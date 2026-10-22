@@ -64,6 +64,7 @@ export const UI_KEYS = {
   liveToolOutputEnabled: "yep-anywhere-live-tool-output-enabled",
   speechKeepMicWarm: "yep-anywhere-speech-keep-mic-warm",
   speechReducePlayback: "yep-anywhere-speech-reduce-playback",
+  speechAudioWorklet: "yep-anywhere-speech-audio-worklet",
   speechUnspokenPunctuation: "yep-anywhere-speech-unspoken-punctuation",
   speechFollowUpListenMs: "yep-anywhere-speech-follow-up-listen-ms",
   speechAsrAttributionMs: "yep-anywhere-speech-asr-attribution-ms",
@@ -147,6 +148,7 @@ export const UI_KEYS = {
   emulatorAdaptiveFps: "yep-anywhere-emulator-adaptive-fps",
   attachmentUploadQuality: "yep-anywhere-attachment-upload-quality",
   tabTitleActivityEnabled: "yep-anywhere-tab-title-activity-enabled",
+  composerBeaconEnabled: "yep-anywhere-composer-beacon-enabled",
   projectCodeNamesEnabled: "yep-anywhere-project-code-names-enabled",
   projectCodeNameActivityPulseEnabled:
     "yep-anywhere-project-code-name-activity-pulse-enabled",

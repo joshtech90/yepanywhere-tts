@@ -2424,7 +2424,7 @@ export const SERVER_CAPABILITIES = {
   codexPaginatedRolloutLineage: {
     id: CAPABILITY_ID_ALLOCATIONS.codexPaginatedRolloutLineage.id,
     name: "codex-paginated-rollout-lineage",
-    kind: "transitional",
+    kind: "permanent",
     area: "sessions",
     introducedIn: "0.8.1",
     advertisement: { kind: "version-implied" },
@@ -2445,12 +2445,9 @@ export const SERVER_CAPABILITIES = {
       ],
     },
     lifecycle: {
-      kind: "transitional",
-      reviewAfter: "2026-10-01",
-      removeClientGateWhen:
-        "The optional hosted-client support corpus contains no server without reference-backed Codex rollout reads and the Maintainer approves removal.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on codex-paginated-rollout-lineage.",
+      kind: "permanent",
+      reason:
+        "Hosted clients may reach older servers without reference-backed Codex rollout reads; the client only disables Codex Clone and Fork there.",
     },
   },
   toolResultMediaPreservationPolicy: {
@@ -2697,7 +2694,7 @@ export const SERVER_CAPABILITIES = {
   gitSourceReviewProjections: {
     id: CAPABILITY_ID_ALLOCATIONS.gitSourceReviewProjections.id,
     name: "git-source-review-projections",
-    kind: "transitional",
+    kind: "permanent",
     area: "gitStatus",
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
@@ -2725,12 +2722,9 @@ export const SERVER_CAPABILITIES = {
       ],
     },
     lifecycle: {
-      kind: "transitional",
-      reviewAfter: "2026-10-28",
-      removeClientGateWhen:
-        "The hosted-client compatibility floor excludes servers older than the Source Control projection contract.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on git-source-review-projections.",
+      kind: "permanent",
+      reason:
+        "Hosted clients may reach older servers without Source Control projections; the client only withholds the projection controls there.",
     },
   },
   gitInclusiveToHead: {
@@ -3241,7 +3235,7 @@ export const SERVER_CAPABILITIES = {
   },
   claudeAdditionalModels: {
     name: "claude-additional-models",
-    kind: "transitional",
+    kind: "permanent",
     area: "providers",
     introducedIn: "0.6.3",
     advertisement: { kind: "version-implied" },
@@ -3262,18 +3256,15 @@ export const SERVER_CAPABILITIES = {
       ],
     },
     lifecycle: {
-      kind: "transitional",
-      reviewAfter: "2026-10-25",
-      removeClientGateWhen:
-        "The hosted-client compatibility floor excludes servers older than the additional-model settings/catalog API.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on claude-additional-models.",
+      kind: "permanent",
+      reason:
+        "Hosted clients may reach older servers without the additional-model settings/catalog API; the client only hides the setting there.",
     },
   },
   claudeGateway: {
     id: CAPABILITY_ID_ALLOCATIONS.claudeGateway.id,
     name: "claude-gateway",
-    kind: "transitional",
+    kind: "permanent",
     area: "providers",
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
@@ -3287,12 +3278,9 @@ export const SERVER_CAPABILITIES = {
       responseFields: ["settings.claudeGatewayUrl", "providers[].name"],
     },
     lifecycle: {
-      kind: "transitional",
-      reviewAfter: "2026-10-27",
-      removeClientGateWhen:
-        "The hosted-client compatibility floor excludes servers older than the Claude Gateway settings/provider contract.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on claude-gateway.",
+      kind: "permanent",
+      reason:
+        "Hosted clients may reach older servers without the Claude Gateway settings/provider contract; the client only hides Gateway configuration there.",
     },
   },
   claudeGatewayServices: {
@@ -3332,7 +3320,7 @@ export const SERVER_CAPABILITIES = {
   claudeGatewayAutostart: {
     id: CAPABILITY_ID_ALLOCATIONS.claudeGatewayAutostart.id,
     name: "claude-gateway-autostart",
-    kind: "transitional",
+    kind: "permanent",
     area: "providers",
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
@@ -3346,18 +3334,15 @@ export const SERVER_CAPABILITIES = {
       responseFields: ["settings.claudeGatewayStartCommand"],
     },
     lifecycle: {
-      kind: "transitional",
-      reviewAfter: "2026-10-28",
-      removeClientGateWhen:
-        "The hosted-client compatibility floor excludes servers older than the Gateway autostart setting and provider-refresh behavior.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on claude-gateway-autostart.",
+      kind: "permanent",
+      reason:
+        "Hosted clients may reach older servers without the Gateway autostart setting; the client only hides the start-command field there.",
     },
   },
   claudeGatewayDisableAgent: {
     id: CAPABILITY_ID_ALLOCATIONS.claudeGatewayDisableAgent.id,
     name: "claude-gateway-disable-agent",
-    kind: "transitional",
+    kind: "permanent",
     area: "providers",
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
@@ -3371,18 +3356,15 @@ export const SERVER_CAPABILITIES = {
       responseFields: ["settings.claudeGatewayDisableAgent"],
     },
     lifecycle: {
-      kind: "transitional",
-      reviewAfter: "2026-11-09",
-      removeClientGateWhen:
-        "The hosted-client compatibility floor excludes servers older than the Gateway Agent-tool setting.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on claude-gateway-disable-agent.",
+      kind: "permanent",
+      reason:
+        "Hosted clients may reach older servers without the Gateway Agent-tool setting; the client only hides the setting there.",
     },
   },
   claudeGatewayDisablePlanMode: {
     id: CAPABILITY_ID_ALLOCATIONS.claudeGatewayDisablePlanMode.id,
     name: "claude-gateway-disable-plan-mode",
-    kind: "transitional",
+    kind: "permanent",
     area: "providers",
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
@@ -3396,18 +3378,15 @@ export const SERVER_CAPABILITIES = {
       responseFields: ["settings.claudeGatewayDisablePlanMode"],
     },
     lifecycle: {
-      kind: "transitional",
-      reviewAfter: "2026-11-17",
-      removeClientGateWhen:
-        "The hosted-client compatibility floor excludes servers older than the Gateway plan-mode setting.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on claude-gateway-disable-plan-mode.",
+      kind: "permanent",
+      reason:
+        "Hosted clients may reach older servers without the Gateway plan-mode setting; the client only hides the setting there.",
     },
   },
   providerSubscriptionUsage: {
     id: CAPABILITY_ID_ALLOCATIONS.providerSubscriptionUsage.id,
     name: "provider-subscription-usage",
-    kind: "transitional",
+    kind: "permanent",
     area: "providers",
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
@@ -3420,12 +3399,9 @@ export const SERVER_CAPABILITIES = {
       responseFields: ["usage"],
     },
     lifecycle: {
-      kind: "transitional",
-      reviewAfter: "2026-10-29",
-      removeClientGateWhen:
-        "The hosted-client compatibility floor excludes servers older than the subscription-usage route.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on provider-subscription-usage.",
+      kind: "permanent",
+      reason:
+        "Hosted clients may reach older servers without the subscription-usage route; the client only hides usage badges and detail there.",
     },
   },
   providerHostControl: {
@@ -3619,7 +3595,7 @@ export const SERVER_CAPABILITIES = {
   },
   hostAwakeControl: {
     name: "host-awake-control",
-    kind: "transitional",
+    kind: "permanent",
     area: "remoteAccess",
     introducedIn: "0.6.3",
     advertisement: { kind: "version-implied" },
@@ -3638,12 +3614,9 @@ export const SERVER_CAPABILITIES = {
       ],
     },
     lifecycle: {
-      kind: "transitional",
-      reviewAfter: "2026-10-21",
-      removeClientGateWhen:
-        "The hosted-client compatibility floor excludes servers older than the host-awake settings/status API.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on host-awake-control.",
+      kind: "permanent",
+      reason:
+        "Hosted clients may reach older servers without the host-awake settings/status API; the client only hides host-awake settings there.",
     },
   },
   hostAgentProcessObservability: {
@@ -4263,7 +4236,7 @@ export const SERVER_CAPABILITIES = {
   sessionForkTurnIntents: {
     id: CAPABILITY_ID_ALLOCATIONS.sessionForkTurnIntents.id,
     name: "session-fork-turn-intents",
-    kind: "transitional",
+    kind: "permanent",
     area: "sessions",
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
@@ -4276,12 +4249,9 @@ export const SERVER_CAPABILITIES = {
       requestFields: ["forkKind", "sourceMessageId"],
     },
     lifecycle: {
-      kind: "transitional",
-      reviewAfter: "2026-10-01",
-      removeClientGateWhen:
-        "The optional hosted-client support corpus contains no server without server-resolved fork intents and the Maintainer approves removal.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on session-fork-turn-intents.",
+      kind: "permanent",
+      reason:
+        "Hosted clients may reach older servers without server-resolved fork intents; the client only hides Clone and direct Fork there.",
     },
   },
 } as const satisfies Record<string, ServerCapabilityDefinition>;

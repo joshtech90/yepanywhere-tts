@@ -279,6 +279,25 @@ export async function seedDefaultProfile(directory: string) {
   }
   console.log("[E2E] Created isolated speech composer sessions");
 
+  // A project no other test touches, so a check that needs the whole project
+  // idle is not falsified by sessions earlier tests left active in
+  // mockproject.
+  const idleProjectPath = join(E2E_TEMP_DIR, "idle-queue-project");
+  mkdirSync(idleProjectPath, { recursive: true });
+  const idleSessionDir = join(
+    E2E_CLAUDE_SESSIONS_DIR,
+    hostname(),
+    idleProjectPath.replace(/\//g, "-"),
+  );
+  mkdirSync(idleSessionDir, { recursive: true });
+  writeFileSync(
+    join(idleSessionDir, "idle-queue-session-001.jsonl"),
+    mockMessages
+      .map((message) => JSON.stringify({ ...message, cwd: idleProjectPath }))
+      .join("\n"),
+  );
+  console.log("[E2E] Created idle Project Queue project");
+
   // Deterministic transcript specimen for semantic-boundary browser gates.
   // Keep it separate from mock-session-001 so transport/navigation tests that
   // expect the historical one-row fixture retain their exact input.

@@ -8,7 +8,7 @@ describe("speech waveform monitor", () => {
     vi.unstubAllGlobals();
   });
 
-  it("forwards microphone samples and disconnects its silent audio graph", () => {
+  it("forwards microphone samples and disconnects its silent audio graph", async () => {
     const source = { connect: vi.fn(), disconnect: vi.fn() };
     const processor = {
       onaudioprocess: null as ((event: AudioProcessingEvent) => void) | null,
@@ -36,6 +36,7 @@ describe("speech waveform monitor", () => {
     const stop = startSpeechWaveformMonitor({} as MediaStream, onSamples);
     const samples = Float32Array.from([0.1, -0.2]);
 
+    await vi.waitFor(() => expect(processor.onaudioprocess).not.toBeNull());
     processor.onaudioprocess?.({
       inputBuffer: {
         getChannelData: () => samples,

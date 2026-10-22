@@ -47,7 +47,11 @@ function graphql(answers: Record<string, unknown>) {
   });
 }
 
-function harness(answers: Record<string, unknown>, store?: IssueStore) {
+function harness(
+  answers: Record<string, unknown>,
+  store?: IssueStore,
+  clockStep = 0,
+) {
   let now = Date.parse("2026-10-13T10:00:00Z");
   let settings: IssueSettings = {
     enabled: true,
@@ -64,7 +68,7 @@ function harness(answers: Record<string, unknown>, store?: IssueStore) {
       cliToken: async () => null,
     }),
     fetch: fetch as unknown as typeof globalThis.fetch,
-    now: () => now,
+    now: () => (now += clockStep),
   });
   return {
     fetch,
@@ -80,6 +84,50 @@ function harness(answers: Record<string, unknown>, store?: IssueStore) {
 }
 
 describe("tracker status refresh", () => {
+  it("honors short TTLs when the clock advances during a successful fetch", async () => {
+    const h = harness({ "o/app#2": { state: "OPEN" } }, undefined, 1);
+    h.set({ statusCommentTtlSeconds: 1 });
+    h.read(DRAFT);
+    await h.refresher.settled();
+    h.advance(1000);
+    expect(h.read(DRAFT).refreshing).toBe(true);
+    await h.refresher.settled();
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    h.fetch.mockRejectedValueOnce(new Error("offline"));
+    h.advance(1000);
+    h.read(DRAFT);
+    await h.refresher.settled();
+    h.advance(1000);
+    expect(h.read(DRAFT).refreshing).toBe(false);
+    expect(h.fetch).toHaveBeenCalledTimes(3);
+    await h.refresher.close();
+  });
+  it("uses its own TTL on reads without a stale-triggered loop, including one second and never expire", async () => {
+    const h = harness({
+      "o/app#2": { __typename: "PullRequest", state: "OPEN", isDraft: true },
+    });
+    h.set({ contentTtlSeconds: 1209600, statusCommentTtlSeconds: 1 });
+    h.read(DRAFT);
+    await h.refresher.settled();
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    h.advance(999);
+    expect(h.read(DRAFT).refreshing).toBe(false);
+    h.advance(1);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    expect(h.read(DRAFT).refreshing).toBe(true);
+    await h.refresher.settled();
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    h.set({ statusCommentTtlSeconds: null });
+    h.advance(365 * 86400_000);
+    expect(h.read(DRAFT).refreshing).toBe(false);
+    await h.refresher.settled();
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    h.refresher.clear();
+    expect(h.read(DRAFT).refreshing).toBe(true);
+    await h.refresher.settled();
+    expect(h.fetch).toHaveBeenCalledTimes(3);
+    await h.refresher.close();
+  });
   it("asks once per batch, reports states, and asks again only when stale and unmerged", async () => {
     const h = harness({
       "o/app#1": { __typename: "PullRequest", state: "MERGED", isDraft: false },

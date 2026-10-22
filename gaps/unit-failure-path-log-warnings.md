@@ -40,3 +40,12 @@ fork and Pi registry fixtures still emit their expected production warnings.
 Their cross-owner logger assertions cannot be safely folded into the native
 host lifecycle change. Focused count-stream tests and Android lint are clean;
 no global diagnostic filter was added.
+
+2026-10-21: rustls update validation passes the complete workspace suite
+(6,635 server and 7,062 client cases). Queue dispatch, clearloop,
+highlight-worker, unavailable CUDA voice registration, gateway readiness and
+invalid Pi registry fixtures still emit the expected diagnostics above. The
+transcript-fork fixture now captures its injected failure. Native Android
+profile-handoff checks and iOS builds add no runtime warnings. The remaining
+cross-owner diagnostic assertions stay separate from this transport dependency
+and native test synchronization repair; no global filter was added.

@@ -52,7 +52,10 @@ v0.9.2, none of which has rendez code. `rendez-uploads` has permanent ID 131 and
 `rendez-project-status` ID 133; both are version-implied from 0.9.4 and change
 no existing capability's meaning. Before release, ID 131 was renamed from
 `rendezvous-uploads` and the settings field from `rendezvous` to `rendez`; an
-old `rendezvous` settings entry is ignored. Delivered turns still carry the
+old `rendezvous` settings entry is ignored. The `delivery` field joined ID
+131's settings contract before release, so no separate capability gates its
+control; a pre-release dev server that advertises 131 without it drops the
+field and keeps the old turn-end delivery. Delivered turns still carry the
 message origin `rendezvous`, a persisted value shared with the provider host.
 
 The settings and burst limits are also available through the authenticated
@@ -64,10 +67,13 @@ The settings and burst limits are also available through the authenticated
     "enabled": false,
     "projects": { "/work/project": true },
     "windowMs": 1000,
-    "maxPerWindow": 10
+    "maxPerWindow": 10,
+    "delivery": "auto"
   }
 }
 ```
+
+`delivery` is `auto`, `steer` or `queue`; absent means `auto`.
 
 Set `enabled` to `true` for the global default. Each absolute project-path entry
 overrides that default; omit an entry to inherit it. YA checks live projects
@@ -99,7 +105,28 @@ Replace `user@host` and `/work/project` with your SSH destination and project
 path. This also works from Windows OpenSSH or a WSL shell. The receiving
 machine watches the directory; your desktop does not need to invoke
 `agentctl` or know the session id. Each completed upload becomes a user turn
-with an attachment. It queues behind work already running.
+with an attachment.
+
+## Uploads during a running turn
+
+An upload that arrives while the agent is working takes the path and
+presentation of a typed send, chosen by **Uploads during a running turn** in
+the rendez card (`rendez.delivery`):
+
+- **Steer** adds it to the current turn, as a steered message, where the
+  provider supports steering, so it reaches the agent before commentary sent
+  after it. Without steering support it waits for the turn's end.
+- **Queue** holds it as a visible queued message that can be cancelled or
+  steered from the queue until the turn ends.
+- **Auto**, the default, repeats how the user last sent a message while that
+  session was working, and steers before there is one. The server learns that
+  from each send's delivery choice; a browser's per-session Enter toggle is
+  otherwise invisible to it.
+
+With steering disabled, as before this setting, every upload during a long
+turn waited for its end and arrived merged with the others, after the
+user's steered commentary about them, while each showed as already sent.
+An idle session receives an upload at once in every mode.
 
 Delivery reaches only a live session. `latest-session` points at the session
 you last messaged in the project, and nothing arrives while that session is not

@@ -138,6 +138,9 @@ honest: those controls genuinely never collapse.
   control's special long-press action remains active alongside quick hide.
   Choosing Hide calls the same `setControlPresence(key, "hidden")` path as the
   slider; Settings remains the place to restore the control or choose a tier.
+  Transcript scrolling, including reflow caused by editing file-link options,
+  must not dismiss this menu: its anchor stays in the composer toolbar. Scrolling
+  an ancestor of the anchor, resizing, clicking outside, or Escape dismisses it.
 - **Specimen activation** — focuses the row's presence slider; it must not be
   a dead visual-only affordance.
 - **Header undo / Reset** — snapshot restore covers the presence map; Reset

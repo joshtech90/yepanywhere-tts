@@ -5,6 +5,8 @@ import type {
   PendingConfirmation,
 } from "./IssueStore.js";
 import type { IssueCredentials } from "./credentials.js";
+import { issueUrl } from "./extract.js";
+import { jiraDescription, readTrackerJson } from "./content.js";
 
 /**
  * Asks a tracker once whether a newly seen reference is real.
@@ -54,6 +56,8 @@ export class IssueConfirmer {
 
   /** Answer one reference. Never throws; an error is a verdict, not a crash. */
   private async ask(row: PendingConfirmation): Promise<ConfirmationVerdict> {
+    if (this.store.contentBackoff() > Date.now())
+      return { state: "unreachable", detail: "Tracker rate limit cooldown" };
     const settings = this.deps.settings();
     const provider = row.provider === "jira" ? "jira" : "github";
     const credential = await this.deps.credentials.resolve(provider);
@@ -72,13 +76,32 @@ export class IssueConfirmer {
           "User-Agent": "yep-anywhere",
         },
         signal: AbortSignal.timeout(TIMEOUT_MS),
+        redirect: "error",
       });
       if (response.status === 404 || response.status === 410)
         return { state: "rejected", detail: "The tracker has no such item" };
       if (!response.ok)
         return { state: "unreachable", detail: `HTTP ${response.status}` };
-      const body = (await response.json()) as Record<string, unknown>;
-      return { state: "confirmed", title: request.title(body) };
+      const body = await readTrackerJson(response);
+      const title = request.title(body);
+      const description = request.description(body);
+      if (
+        request.identity &&
+        title !== undefined &&
+        description !== undefined &&
+        this.enabled() &&
+        JSON.stringify(settings) === JSON.stringify(this.deps.settings())
+      )
+        this.store.saveContent(request.identity, {
+          title,
+          body: description,
+          state: "available",
+          checkedAt: Date.now(),
+          retryAfter: 0,
+          etag: response.headers.get("etag"),
+          modified: response.headers.get("last-modified"),
+        });
+      return { state: "confirmed", title };
     } catch (error) {
       return {
         state: "unreachable",
@@ -93,6 +116,8 @@ export class IssueConfirmer {
     settings: IssueSettings,
   ): {
     url: string;
+    identity?: string;
+    description: (body: Record<string, unknown>) => string | undefined;
     headers: (token: string, settings: IssueSettings) => Record<string, string>;
     title: (body: Record<string, unknown>) => string | undefined;
   } | null {
@@ -100,7 +125,14 @@ export class IssueConfirmer {
       const base = jiraBase(settings);
       if (!base || !/^[A-Z][A-Z0-9_]+-[1-9]\d*$/.test(row.refKey)) return null;
       return {
-        url: `${base}/rest/api/3/issue/${encodeURIComponent(row.refKey)}?fields=summary`,
+        url: `${base}/rest/api/3/issue/${encodeURIComponent(row.refKey)}?fields=summary,description`,
+        identity: issueUrl(`${base}/browse/${row.refKey}`)?.identity,
+        description: (body) => {
+          const fields = body.fields as Record<string, unknown> | undefined;
+          return fields && "description" in fields
+            ? jiraDescription(fields.description)
+            : undefined;
+        },
         headers: (token, current) => ({
           // Jira Cloud pairs the account email with the API token.
           Authorization: `Basic ${Buffer.from(
@@ -120,6 +152,15 @@ export class IssueConfirmer {
     return {
       // The issues endpoint answers for pull requests too.
       url: `https://api.github.com/repos/${parts[1]}/${parts[2]}/issues/${parts[3]}`,
+      identity: issueUrl(
+        `https://github.com/${parts[1]}/${parts[2]}/issues/${parts[3]}`,
+      )?.identity,
+      description: (body) =>
+        typeof body.body === "string"
+          ? body.body
+          : body.body === null
+            ? ""
+            : undefined,
       headers: (token) => ({
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",

@@ -10,6 +10,7 @@ import {
 import { join, resolve } from "node:path";
 import {
   projectServiceSchema,
+  projectFileLinksSchema,
   type ProjectServiceDeclaration,
 } from "@yep-anywhere/shared";
 import { z } from "zod";
@@ -53,6 +54,8 @@ export interface ProjectServiceUpstream {
 }
 
 const appDeclarationSchema = z.object({
+  viewAudience: z.literal("public").optional(),
+  fileLinks: projectFileLinksSchema.optional(),
   service: projectServiceSchema.optional(),
   livePreview: projectServiceSchema
     .refine(
@@ -95,7 +98,7 @@ export async function readStaticAddressMode(
   return (await readAppDeclaration(projectPath))?.staticAddress ?? "redirect";
 }
 
-async function readAppDeclaration(
+export async function readAppDeclaration(
   projectPath: string,
 ): Promise<z.infer<typeof appDeclarationSchema> | null> {
   const root = await realpath(projectPath);

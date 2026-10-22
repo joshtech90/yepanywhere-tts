@@ -95,7 +95,7 @@ subscription usage.
 
 ## Compatibility
 
-`provider-subscription-usage` is a transitional server capability covering
+`provider-subscription-usage` is a permanent server capability covering
 `GET /api/providers/:name/subscription-usage`. A client must observe the
 capability before making the request. Without it, the client makes no
 unsupported request, shows no subscription-usage badges or detail, and

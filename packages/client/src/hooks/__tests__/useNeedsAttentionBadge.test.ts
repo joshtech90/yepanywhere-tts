@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { setMicTitleActivity } from "../../lib/micTitleActivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getTabTitleActivityFrame,
@@ -64,6 +65,27 @@ describe("tab title indicators", () => {
     expect(composeTabTitle("yep:Session", 2, "bold", "💻", true, true)).toBe(
       `(2) 💻 ${toMathematicalBold("yep")}:Session`,
     );
+  });
+
+  it("keeps real mic activity first across title updates and multiple owners", async () => {
+    const first = {};
+    const second = {};
+    renderHook(() => useNeedsAttentionBadge("💻"));
+    try {
+      act(() => setMicTitleActivity(first, "starting"));
+      await waitFor(() => expect(document.title).toBe("◷🎙 💻 yep:Session"));
+      act(() => setMicTitleActivity(second, "capturing"));
+      await waitFor(() => expect(document.title).toBe("🎙 💻 yep:Session"));
+      document.title = "yep:Renamed";
+      await waitFor(() => expect(document.title).toBe("🎙 💻 yep:Renamed"));
+      act(() => setMicTitleActivity(first, null));
+      await waitFor(() => expect(document.title).toBe("🎙 💻 yep:Renamed"));
+      act(() => setMicTitleActivity(second, null));
+      await waitFor(() => expect(document.title).toBe("💻 yep:Renamed"));
+    } finally {
+      setMicTitleActivity(first, null);
+      setMicTitleActivity(second, null);
+    }
   });
 
   it("strips known prefixes before recomposing", () => {
