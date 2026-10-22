@@ -61,6 +61,8 @@ function resetReadAloud(nextFailedToken: string | null): void {
     // stop signal, so dropping these handlers is safe.
     audioEl.onended = null;
     audioEl.onerror = null;
+    audioEl.onpause = null;
+    audioEl.onplay = null;
     audioEl.src = "";
     audioEl = null;
   }
@@ -139,6 +141,23 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
   emit();
 
   const alive = () => sessionId === mySession && audioEl === audio;
+  // A call, the lock screen or unplugged headphones pause and resume the
+  // element directly; the controls follow so one tap acts on the real state.
+  // The pause just before "ended" and late events of a pause the user has
+  // already undone do not count.
+  audio.onpause = () => {
+    if (!alive() || !audio.paused || audio.ended || state !== "playing") {
+      return;
+    }
+    playAttempt++;
+    state = "paused";
+    emit();
+  };
+  audio.onplay = () => {
+    if (!alive() || audio.paused || state !== "paused") return;
+    state = "playing";
+    emit();
+  };
   const cancelled = Symbol("cancelled");
   const cancellation = new Promise<typeof cancelled>((resolve) => {
     cancelNetworkWait = () => resolve(cancelled);
