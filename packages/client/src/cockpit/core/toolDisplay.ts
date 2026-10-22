@@ -189,6 +189,9 @@ function getShellDisplay(
   const result = resultValue(item);
   const resultRecord = isRecord(result) ? result : undefined;
   const content = item.toolResult?.content ?? "";
+  const hasChannels =
+    typeof resultRecord?.stdout === "string" ||
+    typeof resultRecord?.stderr === "string";
   const command =
     shellCommand(item.toolInput) ||
     nonEmptyString(
@@ -203,23 +206,30 @@ function getShellDisplay(
   if (canonicalName === "Bash") {
     const isError =
       item.toolResult?.isError === true || item.status === "error";
-    const normalized = normalizeBashResult(result, isError);
+    const normalized = normalizeBashResult(
+      typeof result === "string" ||
+        hasChannels ||
+        resultRecord?.backgroundTaskId
+        ? result
+        : content,
+      isError,
+    );
     return {
       command,
-      stdout: normalized.stdout || (!isError ? content : ""),
-      stderr: normalized.stderr || (isError ? content : ""),
+      stdout: normalized.stdout,
+      stderr: normalized.stderr,
       exitCode: normalized.exitCode ?? getExitCode(result, content),
       interrupted: normalized.interrupted || item.status === "aborted",
     };
   }
 
   const stdout =
-    nonEmptyString(resultRecord?.stdout) ??
-    nonEmptyString(resultRecord?.output) ??
-    (item.toolResult?.isError ? "" : content);
+    stringValue(resultRecord?.stdout) ??
+    stringValue(resultRecord?.output) ??
+    (hasChannels || item.toolResult?.isError ? "" : content);
   const stderr =
-    nonEmptyString(resultRecord?.stderr) ??
-    (item.toolResult?.isError ? content : "");
+    stringValue(resultRecord?.stderr) ??
+    (!hasChannels && item.toolResult?.isError ? content : "");
   return {
     command,
     stdout,

@@ -16,6 +16,28 @@ function tool(
 }
 
 describe("Cockpit tool display projection", () => {
+  it.each(["Bash", "Exec", "WriteStdin"])(
+    "keeps structured %s output channels separate when one is empty",
+    (toolName) => {
+      for (const isError of [false, true]) {
+        const stdout = isError ? "failed command output\n" : "";
+        const stderr = isError ? "" : "warning on stderr\n";
+        const display = createCockpitToolDisplay(
+          tool({
+            toolName,
+            status: isError ? "error" : "complete",
+            toolResult: {
+              content: stdout || stderr,
+              isError,
+              structured: { stdout, stderr, exitCode: isError ? 1 : 0 },
+            },
+          }),
+        );
+        expect(display.shell).toMatchObject({ stdout, stderr });
+      }
+    },
+  );
+
   it.each([
     {
       oldText: "obsolete\n",
