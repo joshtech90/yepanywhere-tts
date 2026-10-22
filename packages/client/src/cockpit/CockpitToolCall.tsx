@@ -1,10 +1,7 @@
 import { useState } from "react";
 import { useI18n, type TranslationFn } from "../i18n";
 import type { CockpitToolEntry } from "./core/sessionDetail";
-import type {
-  CockpitDiffLine,
-  CockpitToolStatus,
-} from "./core/toolDisplay";
+import type { CockpitDiffLine, CockpitToolStatus } from "./core/toolDisplay";
 import { CockpitToolCopyButton } from "./CockpitToolCopyButton";
 import styles from "./CockpitToolCall.module.css";
 
@@ -83,11 +80,7 @@ function diffClipboardText(lines: readonly CockpitDiffLine[]): string {
     .map((line) => {
       if (line.kind === "hunk") return line.text;
       const marker =
-        line.kind === "addition"
-          ? "+"
-          : line.kind === "deletion"
-            ? "-"
-            : " ";
+        line.kind === "addition" ? "+" : line.kind === "deletion" ? "-" : " ";
       return `${marker}${line.text}`;
     })
     .join("\n");
@@ -314,10 +307,7 @@ export function CockpitToolCall({
           <strong>{entry.tool.displayName}</strong>
           <small>{entry.tool.summary}</small>
         </span>
-        <span
-          className={styles.status}
-          data-status={status}
-        >
+        <span className={styles.status} data-status={status}>
           <i aria-hidden="true" />
           {statusLabel(status, t)}
         </span>

@@ -154,9 +154,7 @@ describe("Cockpit tool call", () => {
     );
 
     fireEvent.click(
-      screen.getByLabelText(
-        "Show or hide details for provider_future_action",
-      ),
+      screen.getByLabelText("Show or hide details for provider_future_action"),
     );
     expect(
       screen.getByText(
