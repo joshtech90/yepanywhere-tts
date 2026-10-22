@@ -3,7 +3,6 @@ package de.joscha.yepcockpit
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.ContentValues
 import android.content.Intent
@@ -132,8 +131,7 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         vordergrund = false
-        Meldungen.Sichtbar.rechner = null
-        Meldungen.Sichtbar.pfad = null
+        sichtbarMelden()
         // Hintergrund-Aufrufe (Push-Abo, Antworten) lesen die Cookies.
         CookieManager.getInstance().flush()
     }
@@ -162,10 +160,13 @@ class MainActivity : Activity() {
         sichtbarMelden()
     }
 
-    private fun sichtbarMelden() {
-        if (!vordergrund || !::aktiv.isInitialized) return
-        Meldungen.Sichtbar.rechner = aktiv.schluessel
-        Meldungen.Sichtbar.pfad = ansichten[aktiv.schluessel]?.url?.let { Uri.parse(it).path }
+    private fun sichtbarMelden(url: String? = null) {
+        if (!vordergrund || !::aktiv.isInitialized) {
+            Meldungen.sichtbarMelden(this, null, null)
+            return
+        }
+        val uri = (url ?: ansichten[aktiv.schluessel]?.url)?.let(Uri::parse)
+        Meldungen.sichtbarMelden(this, aktiv, uri)
     }
 
     /** Ziel aus Meldung, Verknuepfung oder Teilen. Nur gepruefte Kennungen, nie freie Pfade. */
@@ -280,13 +281,7 @@ class MainActivity : Activity() {
         }
 
         override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
-            if (view === ansichten[aktiv.schluessel]) sichtbarMelden()
-            // Sitzung geoeffnet: ihre Meldung ist gelesen.
-            val teile = Uri.parse(url).pathSegments
-            val i = teile.indexOf("sessions")
-            if (i >= 0 && i + 1 < teile.size && r.besitzt(Uri.parse(url))) {
-                getSystemService(NotificationManager::class.java).cancel(Meldungen.id(r, teile[i + 1]))
-            }
+            if (view === ansichten[aktiv.schluessel]) sichtbarMelden(url)
         }
 
         override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? =

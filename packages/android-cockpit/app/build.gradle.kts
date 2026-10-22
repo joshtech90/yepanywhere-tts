@@ -72,6 +72,10 @@ android {
         }
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
     buildFeatures {
         buildConfig = true
     }
@@ -91,4 +95,6 @@ dependencies {
     // Nur fuer addWebMessageListener mit Herkunftsfilter (Downloads aus der Seite).
     implementation("androidx.webkit:webkit:1.14.0")
     testImplementation("junit:junit:4.13.2")
+    // Exercise Android notifications and content providers without a device.
+    testImplementation("org.robolectric:robolectric:4.16")
 }

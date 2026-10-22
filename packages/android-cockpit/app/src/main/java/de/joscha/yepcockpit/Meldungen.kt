@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.RemoteInput
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import org.json.JSONObject
 
 /**
@@ -27,9 +28,19 @@ object Meldungen {
     const val ANTWORT = "antwort"
 
     /** Was die App gerade im Vordergrund zeigt; dafuer keine Meldung. */
-    object Sichtbar {
-        @Volatile var rechner: String? = null
-        @Volatile var pfad: String? = null
+    private var sichtbar: Pair<String, String>? = null
+
+    /** Nur die aktive Vordergrundansicht darf eine Sitzung als gelesen melden. */
+    @Synchronized
+    fun sichtbarMelden(ctx: Context, rechner: Rechner?, uri: Uri?) {
+        val teile = uri?.pathSegments.orEmpty()
+        val sitzung = if (rechner?.besitzt(uri) == true && teile.size == 5 &&
+            teile[0] == "cockpit" && teile[1] == "projects" && teile[3] == "sessions"
+        ) teile[4].takeIf { Ziele.gueltig(it) } else null
+        sichtbar = if (rechner != null && sitzung != null) rechner.schluessel to sitzung else null
+        if (rechner != null && sitzung != null) {
+            ctx.getSystemService(NotificationManager::class.java).cancel(id(rechner, sitzung))
+        }
     }
 
     fun kanaeleAnlegen(ctx: Context) {
@@ -51,6 +62,7 @@ object Meldungen {
 
     fun id(rechner: Rechner, sitzung: String): Int = (rechner.schluessel + "/" + sitzung).hashCode()
 
+    @Synchronized
     fun verarbeiten(ctx: Context, rechner: Rechner, d: JSONObject) {
         val nm = ctx.getSystemService(NotificationManager::class.java)
         val sitzung = d.optString("sessionId").takeIf { Ziele.gueltig(it) }
@@ -117,7 +129,7 @@ object Meldungen {
     }
 
     private fun zeigtGerade(rechner: Rechner, sitzung: String): Boolean =
-        Sichtbar.rechner == rechner.schluessel && Sichtbar.pfad?.contains(sitzung) == true
+        sichtbar == rechner.schluessel to sitzung
 
     private fun dauerText(ms: Long): String {
         val min = ms / 60_000
