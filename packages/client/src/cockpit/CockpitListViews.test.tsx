@@ -3,8 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
-import { CockpitProjectsView, CockpitSessionsView } from "./CockpitListViews";
+import {
+  CockpitHiddenView,
+  CockpitProjectsView,
+  CockpitSessionsView,
+} from "./CockpitListViews";
 import type { CockpitOrganizationController } from "./useCockpitOrganization";
+
+const feed = vi.hoisted(() => ({ error: null as Error | null }));
 
 vi.mock("../hooks/useProjects", () => ({
   useProjects: () => ({
@@ -41,7 +47,7 @@ vi.mock("../contexts/SourceRuntimeContext", () => ({
 vi.mock("../hooks/useGlobalSessionsFeed", () => ({
   useGlobalSessionsFeed: () => ({
     query: "cockpit-test",
-    error: null,
+    error: feed.error,
     loading: false,
     hasMore: false,
     loadMore: vi.fn(async () => {}),
@@ -75,6 +81,7 @@ vi.mock("../lib/clientSummaryStore", () => ({
 
 afterEach(cleanup);
 beforeEach(() => {
+  feed.error = null;
   localStorage.setItem(UI_KEYS.locale, "en");
 });
 
@@ -138,5 +145,26 @@ describe("Cockpit sessions view", () => {
     expect(favorites.textContent).toContain("Starred plan");
     expect(favorites.textContent).not.toContain("Recent work");
     expect(screen.getByText("Recent work")).toBeTruthy();
+  });
+});
+
+describe("Cockpit hidden sessions", () => {
+  it("reports catalog failures instead of claiming there are no hidden sessions", () => {
+    feed.error = new Error("offline");
+    render(
+      <MemoryRouter>
+        <I18nProvider>
+          <CockpitHiddenView
+            basePath=""
+            shellKind="offline"
+            organization={{} as CockpitOrganizationController}
+          />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("status").textContent).toMatch(
+      /could not|unavailable/i,
+    );
+    expect(screen.queryByText("No hidden sessions loaded.")).toBeNull();
   });
 });
