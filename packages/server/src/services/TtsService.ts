@@ -60,6 +60,8 @@ export class TtsService {
   private geminiToken: string | null = null;
   private geminiHealthy = false;
   private geminiCheckedAt = 0;
+  /** Status and playback share the one pending health check. */
+  private geminiCheck: Promise<boolean> | null = null;
 
   constructor(options: TtsServiceOptions = {}) {
     this.dataDir = options.dataDir;
@@ -148,11 +150,19 @@ export class TtsService {
 
   /** Health check of the Gemini service, cached for a minute. Never throws. */
   private async checkGemini(force: boolean): Promise<boolean> {
+    if (this.geminiCheck) return this.geminiCheck;
     const now = Date.now();
     if (!force && now - this.geminiCheckedAt < GEMINI_HEALTH_TTL_MS) {
       return this.geminiHealthy;
     }
-    this.geminiCheckedAt = now;
+    this.geminiCheck = this.refreshGeminiHealth().finally(() => {
+      this.geminiCheckedAt = Date.now();
+      this.geminiCheck = null;
+    });
+    return this.geminiCheck;
+  }
+
+  private async refreshGeminiHealth(): Promise<boolean> {
     try {
       const res = await fetch(`${this.geminiUrl}/health`, {
         headers: this.geminiHeaders(),

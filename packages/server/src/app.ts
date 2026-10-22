@@ -1549,6 +1549,7 @@ export function createApp(options: AppOptions): AppResult {
     // Explicit shutdown and fixture ownership may join the same disposal.
     // Cache the promise before asynchronous cleanup can close shared services.
     sessionReadersDisposal ??= (async () => {
+      await autoSessionTitleService?.stop();
       await supervisor.stopBackgroundTasks();
       await rendezWatch?.close();
       await projectServices.close();
@@ -2031,6 +2032,7 @@ export function createApp(options: AppOptions): AppResult {
   let pushNotifier: PushNotifier | undefined;
   let inactivityPushNotifier: InactivityPushNotifier | undefined;
   const stopNotifications = () => {
+    void autoSessionTitleService?.stop();
     pushNotifier?.dispose();
     inactivityPushNotifier?.dispose();
     // Fence automation before provider shutdown; reader disposal joins work
