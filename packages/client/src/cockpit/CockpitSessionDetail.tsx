@@ -305,6 +305,17 @@ const TranscriptEntry = memo(function TranscriptEntry({
   }
   const time = entryTime(entry.timestamp, locale);
   if (entry.kind === "boundary") {
+    if (entry.subtype === "error" || entry.subtype === "warning") {
+      return (
+        <p
+          className={contentStyles.providerNotice}
+          data-cockpit-entry-key={entry.key}
+          data-severity={entry.subtype}
+        >
+          {entry.content}
+        </p>
+      );
+    }
     return (
       <div className={styles.boundary} data-cockpit-entry-key={entry.key}>
         <span aria-hidden="true" />
@@ -580,6 +591,7 @@ export function CockpitSessionDetail({
     [locale, sessionWorking, toggleFold],
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A source/session identity change resets local interaction state.
   useLayoutEffect(() => {
     prependRef.current = null;
     followingRef.current = true;
@@ -589,6 +601,7 @@ export function CockpitSessionDetail({
     setLatestTurnHeldOpen(false);
   }, [interactionKey]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Folding changes DOM geometry without changing canonical entries.
   useLayoutEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
@@ -899,6 +912,7 @@ export function CockpitSessionDetail({
         aria-label={t("cockpitSessionTranscriptAria")}
         className={styles.transcript}
         onScroll={updateFollowing}
+        role="region"
         ref={scrollRef}
       >
         <CockpitTranscriptWindow

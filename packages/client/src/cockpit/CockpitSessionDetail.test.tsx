@@ -12,6 +12,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
+import { buildSessionDetailRenderItems } from "../lib/sessionDetail/renderItems";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
 import { createCockpitTranscriptEntries } from "./core/sessionDetail";
 import type { CockpitSessionDetailData } from "./useCockpitSessionDetail";
@@ -152,6 +153,49 @@ beforeEach(() => {
 });
 
 describe("Cockpit session detail", () => {
+  it("keeps provider errors and retry warnings visible after a later answer", () => {
+    const renderItems = buildSessionDetailRenderItems({
+      messages: [
+        { id: "prompt", type: "user", content: "Check the release." },
+        {
+          id: "retry",
+          type: "error",
+          error: "Connection lost. Retrying.",
+          codexWillRetry: true,
+        },
+        {
+          id: "failure",
+          type: "error",
+          error: "Account quota exhausted <script>unsafe</script>",
+        },
+        {
+          id: "answer",
+          type: "assistant",
+          content: [
+            { type: "text", text: "The earlier partial result is ready." },
+          ],
+        },
+      ],
+      provider: "codex",
+    });
+    detailMocks.data = detailData({
+      entries: createCockpitTranscriptEntries({
+        sourceKey: "local",
+        sessionId: "session-1",
+        renderItems,
+      }),
+    });
+    const view = renderDetail();
+    expect(screen.getByText("Connection lost. Retrying.")).toBeTruthy();
+    expect(
+      screen.getByText("Account quota exhausted <script>unsafe</script>"),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("The earlier partial result is ready."),
+    ).toBeTruthy();
+    expect(view.container.querySelector("script")).toBeNull();
+  });
+
   it("renders a quiet read-only conversation with the shared read-aloud entry", () => {
     renderDetail();
 

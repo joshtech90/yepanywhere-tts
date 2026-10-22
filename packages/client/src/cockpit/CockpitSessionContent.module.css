@@ -158,3 +158,17 @@
   font-size: var(--cockpit-text-xs);
   font-weight: var(--cockpit-weight-medium);
 }
+
+.providerNotice {
+  padding: 0.8rem;
+  margin: 0 0 1rem;
+  border: 1px solid currentColor;
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-warning);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.providerNotice[data-severity="error"] {
+  color: var(--cockpit-danger);
+}

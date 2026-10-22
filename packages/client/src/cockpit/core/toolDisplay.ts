@@ -100,8 +100,22 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function contentLines(text: string): string[] {
+  if (text === "") return [];
+  const lines = text.split(/\r?\n/);
+  // A final newline terminates the last line; it does not add a blank line.
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
 function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function boundedText(text: string): string {
@@ -120,10 +134,7 @@ function serialize(value: unknown): string {
 }
 
 function firstLine(text: string, maxLength = 100): string {
-  const line = text
-    .split(/\r?\n/, 1)[0]
-    ?.replace(/\s+/g, " ")
-    .trim();
+  const line = text.split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim();
   if (!line) return "";
   return line.length > maxLength ? `${line.slice(0, maxLength - 1)}…` : line;
 }
@@ -178,13 +189,16 @@ function getShellDisplay(
   const result = resultValue(item);
   const resultRecord = isRecord(result) ? result : undefined;
   const content = item.toolResult?.content ?? "";
+  const hasChannels =
+    typeof resultRecord?.stdout === "string" ||
+    typeof resultRecord?.stderr === "string";
   const command =
     shellCommand(item.toolInput) ||
     nonEmptyString(
       isRecord(item.toolInput)
-        ? item.toolInput.linked_command ??
+        ? (item.toolInput.linked_command ??
             item.toolInput.command ??
-            item.toolInput.cmd
+            item.toolInput.cmd)
         : undefined,
     ) ||
     (canonicalName === "KillShell" ? getFirstStringValue(item.toolInput) : "");
@@ -193,25 +207,29 @@ function getShellDisplay(
     const isError =
       item.toolResult?.isError === true || item.status === "error";
     const normalized = normalizeBashResult(
-      result,
+      typeof result === "string" ||
+        hasChannels ||
+        resultRecord?.backgroundTaskId
+        ? result
+        : content,
       isError,
     );
     return {
       command,
-      stdout: normalized.stdout || (!isError ? content : ""),
-      stderr: normalized.stderr || (isError ? content : ""),
+      stdout: normalized.stdout,
+      stderr: normalized.stderr,
       exitCode: normalized.exitCode ?? getExitCode(result, content),
       interrupted: normalized.interrupted || item.status === "aborted",
     };
   }
 
   const stdout =
-    nonEmptyString(resultRecord?.stdout) ??
-    nonEmptyString(resultRecord?.output) ??
-    (item.toolResult?.isError ? "" : content);
+    stringValue(resultRecord?.stdout) ??
+    stringValue(resultRecord?.output) ??
+    (hasChannels || item.toolResult?.isError ? "" : content);
   const stderr =
-    nonEmptyString(resultRecord?.stderr) ??
-    (item.toolResult?.isError ? content : "");
+    stringValue(resultRecord?.stderr) ??
+    (!hasChannels && item.toolResult?.isError ? content : "");
   return {
     command,
     stdout,
@@ -223,9 +241,8 @@ function getShellDisplay(
 }
 
 function filePathFromHeader(line: string): string | undefined {
-  const applyPatch = /^\*\*\*\s+(?:Update File|Add File|Delete File):\s+(.+?)\s*$/.exec(
-    line,
-  );
+  const applyPatch =
+    /^\*\*\*\s+(?:Update File|Add File|Delete File):\s+(.+?)\s*$/.exec(line);
   if (applyPatch?.[1]) return applyPatch[1].trim();
   const gitHeader = /^diff --git a\/(.+?) b\/(.+?)\s*$/.exec(line);
   if (gitHeader?.[2]) return gitHeader[2].trim();
@@ -279,9 +296,7 @@ function addRawPatch(
 ) {
   const selectFile = (path: string): MutableFileChange | null => {
     const file = mutableFile(files, path);
-    return preservePopulatedFiles && file.sourceLines.length > 0
-      ? null
-      : file;
+    return preservePopulatedFiles && file.sourceLines.length > 0 ? null : file;
   };
   let currentPath = fallbackPath;
   let current: MutableFileChange | null | undefined = fallbackPath
@@ -348,10 +363,10 @@ function addReplacement(
 ) {
   const file = mutableFile(files, path);
   file.sourceLines.push({ text: "@@ -1 +1 @@", oldStart: 1, newStart: 1 });
-  oldText.split(/\r?\n/).forEach((line) => {
+  contentLines(oldText).forEach((line) => {
     file.sourceLines.push({ text: `-${line}` });
   });
-  newText.split(/\r?\n/).forEach((line) => {
+  contentLines(newText).forEach((line) => {
     file.sourceLines.push({ text: `+${line}` });
   });
 }
@@ -488,14 +503,10 @@ function getFileChanges(item: ToolCallItem): CockpitFileChange[] {
       Array.isArray(structuredPatch) && structuredPatch.length > 0;
     addStructuredPatch(files, primaryPath, structuredPatch);
     const oldText =
-      nonEmptyString(resultRecord?.oldString) ?? nonEmptyString(input?.old_string);
+      stringValue(resultRecord?.oldString) ?? stringValue(input?.old_string);
     const newText =
-      nonEmptyString(resultRecord?.newString) ?? nonEmptyString(input?.new_string);
-    if (
-      !hasStructuredPatch &&
-      oldText !== undefined &&
-      newText !== undefined
-    ) {
+      stringValue(resultRecord?.newString) ?? stringValue(input?.new_string);
+    if (!hasStructuredPatch && oldText !== undefined && newText !== undefined) {
       addReplacement(files, primaryPath, oldText, newText);
     }
     const writeContent =
@@ -510,7 +521,7 @@ function getFileChanges(item: ToolCallItem): CockpitFileChange[] {
       writeContent !== undefined
     ) {
       const file = mutableFile(files, primaryPath);
-      writeContent.split(/\r?\n/).forEach((line) => {
+      contentLines(writeContent).forEach((line) => {
         file.sourceLines.push({ text: `+${line}` });
       });
     }
