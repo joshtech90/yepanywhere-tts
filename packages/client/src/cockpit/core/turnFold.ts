@@ -164,6 +164,22 @@ function foldTurn(
   expandedFoldKeys: ReadonlySet<string>,
   interjected: boolean,
 ): CockpitDisplayEntry[] {
+  // A notice after the work, such as the compaction before the next prompt,
+  // stays visible anyway; it does not keep the turn from ending on its answer.
+  let workEnd = body.length;
+  while (workEnd > 0 && body[workEnd - 1]?.kind === "boundary") workEnd -= 1;
+  const notices = body.slice(workEnd);
+  if (notices.length > 0 && !notices.some((entry) => entry.turnAborted)) {
+    return [
+      ...foldTurn(
+        prompt,
+        body.slice(0, workEnd),
+        expandedFoldKeys,
+        interjected,
+      ),
+      ...notices,
+    ];
+  }
   const head = prompt ? [prompt] : [];
   const answer = body[body.length - 1];
   if (!isFinalAnswer(answer) || body.some((entry) => entry.turnAborted)) {
