@@ -9,6 +9,7 @@ import {
   getReadAloudToken,
   playReadAloud,
   stopReadAloud,
+  subscribeReadAloud,
 } from "../lib/readAloud";
 import type { CockpitTranscriptEntry } from "./core/sessionDetail";
 
@@ -150,6 +151,8 @@ interface TurnWatch {
   /** Key of the final answer when the turn began; undefined = unknown. */
   baseline: string | null | undefined;
   endedAt: number | null;
+  /** Answer entry the user played by hand since the turn ended. */
+  manualEntryKey: string | null;
 }
 
 export function useCockpitAutoReadAloud({
@@ -212,6 +215,7 @@ export function useCockpitAutoReadAloud({
         external: false,
         baseline: loaded ? answerKey : undefined,
         endedAt: null,
+        manualEntryKey: null,
       };
       watchRef.current = watch;
       skippedRef.current = false;
@@ -221,6 +225,7 @@ export function useCockpitAutoReadAloud({
         watch.working = true;
         watch.external = false;
         watch.baseline = loaded ? answerKey : undefined;
+        watch.manualEntryKey = null;
         skippedRef.current = false;
       } else if (watch.baseline === undefined && loaded) {
         watch.baseline = answerKey;
@@ -252,17 +257,32 @@ export function useCockpitAutoReadAloud({
       ? COCKPIT_AUTO_READ_EXTERNAL_SETTLE_MS
       : COCKPIT_AUTO_READ_SETTLE_MS;
     const current = watch;
+    // A manual start during settling owns this answer, even when it already
+    // ended or was stopped before the timer fires. Auto-read must not repeat
+    // it, restart it or undo a manual pause.
+    const noteManualPlayback = () => {
+      if (getReadAloudToken() === answerEntryKey) {
+        current.manualEntryKey = answerEntryKey;
+      }
+    };
+    const unsubscribe = subscribeReadAloud(noteManualPlayback);
     const timer = setTimeout(() => {
       if (current.endedAt !== endedAt || skippedRef.current) return;
       current.endedAt = null;
       current.baseline = answerKey;
-      // A manual start during settling already owns this answer. In
-      // particular, auto-read must not restart it or undo a manual pause.
-      if (getReadAloudToken() === answerEntryKey) return;
+      if (
+        getReadAloudToken() === answerEntryKey ||
+        current.manualEntryKey === answerEntryKey
+      ) {
+        return;
+      }
       // The answer's own read-aloud control shows this playback and pauses it.
       void playReadAloud(answerText, answerEntryKey);
     }, settleMs);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
   }, [
     aborted,
     answerEntryKey,
