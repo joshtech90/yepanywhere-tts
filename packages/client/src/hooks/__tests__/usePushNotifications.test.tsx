@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   getPushPublicKey: vi.fn(),
   getServerSettings: vi.fn(),
   unsubscribePush: vi.fn(),
+  getPushSubscriptions: vi.fn(),
 }));
 
 vi.mock("../../api/client", () => ({
@@ -28,6 +29,10 @@ describe("usePushNotifications", () => {
         return true;
       }),
     };
+    mocks.getPushSubscriptions.mockReset();
+    mocks.getPushSubscriptions.mockResolvedValue({
+      subscriptions: [{ browserProfileId: "profile-1" }],
+    });
     mocks.getServerSettings.mockReset();
     mocks.getServerSettings.mockResolvedValue({
       settings: { serviceWorkerEnabled: true },
@@ -100,6 +105,15 @@ describe("usePushNotifications", () => {
       expect(result.current.toggle.isSubscribed).toBe(false);
     });
     expect(mocks.unsubscribePush).toHaveBeenCalledWith("profile-1");
+  });
+
+  it("does not claim enrollment when only the local browser subscription remains", async () => {
+    mocks.getPushSubscriptions.mockResolvedValue({ subscriptions: [] });
+    const { result } = renderHook(() => usePushNotifications());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.isSupported).toBe(true);
+    expect(result.current.isSubscribed).toBe(false);
+    expect(subscription).not.toBeNull();
   });
 
   it("recovers when the browser permission request never settles", async () => {
