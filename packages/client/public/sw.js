@@ -18,7 +18,7 @@
 // Version constant for controlled updates
 // Increment this when making intentional SW changes
 // Browsers reinstall SW only when file content changes
-const SW_VERSION = "1.0.12";
+const SW_VERSION = "1.0.13";
 void SW_VERSION;
 const FRONTEND_RELOAD_QUERY_PARAM = "__ya_reload";
 const INCOMING_SHARE_QUERY_PARAM = "__ya_share";
@@ -536,16 +536,116 @@ self.addEventListener("push", (event) => {
     return;
   }
 
-  event.waitUntil(
-    swLog("info", "Push received", {
-      type: data.type,
-      sessionId: data.sessionId,
-      projectId: data.projectId,
-    }).then(() => handlePush(data)),
-  );
+  event.waitUntil(handlePush(data));
 });
 
-async function handlePush(data) {
+// Push handlers may overlap, and transports may replay or reorder messages.
+// Keep the latest event per tray slot across worker restarts. Both disk and
+// the storage-unavailable fallback retain at most 256 recently used slots.
+const PUSH_ORDER_LIMIT = 256;
+const pushOrderFallback = new Map();
+let pushQueue = Promise.resolve();
+
+function handlePush(data) {
+  const handling = pushQueue.then(() => handleOrderedPush(data));
+  pushQueue = handling.catch(() => {});
+  return handling;
+}
+
+function pushOrderKey(data) {
+  if (data.type === "pending-input" || data.type === "dismiss")
+    return data.sessionId ? `approval:${data.sessionId}` : null;
+  if (data.type === "session-halted")
+    return data.sessionId ? `halted:${data.sessionId}` : null;
+  if (data.type === "project-inactive")
+    return data.projectId ? `project:${data.projectId}` : null;
+  return data.type === "ya-inactive" ? "ya-inactive" : null;
+}
+
+async function openPushOrderDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("ya-push-order", 1);
+    request.onerror = () => reject(request.error);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("events", { keyPath: "key" });
+    };
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+async function readPushOrder(db, key) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("events", "readonly");
+    const request = tx.objectStore("events").get(key);
+    tx.oncomplete = () => resolve(request.result);
+    tx.onerror = tx.onabort = () => reject(tx.error);
+  });
+}
+
+async function writePushOrder(db, entry) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("events", "readwrite");
+    const store = tx.objectStore("events");
+    store.put(entry);
+    const request = store.getAll();
+    request.onsuccess = () => {
+      const entries = request.result.sort((a, b) => b.usedAt - a.usedAt);
+      for (const expired of entries.slice(PUSH_ORDER_LIMIT)) {
+        store.delete(expired.key);
+      }
+    };
+    tx.oncomplete = resolve;
+    tx.onerror = tx.onabort = () => reject(tx.error);
+  });
+}
+
+async function handleOrderedPush(data) {
+  if (!data || typeof data !== "object") return;
+  const key = pushOrderKey(data);
+  const timestamp = Date.parse(data.timestamp);
+  const ordered = key && Number.isFinite(timestamp);
+  let db;
+  let previous = ordered ? pushOrderFallback.get(key) : undefined;
+  try {
+    if (ordered) {
+      try {
+        db = await openPushOrderDb();
+        previous ??= await readPushOrder(db, key);
+      } catch {
+        // Storage failure must not disable notification delivery.
+      }
+      if (
+        previous &&
+        (timestamp < previous.timestamp ||
+          (timestamp === previous.timestamp &&
+            (data.type !== "dismiss" || previous.dismissed)))
+      )
+        return;
+    }
+    await presentPush(data);
+    if (ordered) {
+      const entry = {
+        key,
+        timestamp,
+        dismissed: data.type === "dismiss",
+        usedAt: Date.now(),
+      };
+      pushOrderFallback.delete(key);
+      pushOrderFallback.set(key, entry);
+      if (pushOrderFallback.size > PUSH_ORDER_LIMIT)
+        pushOrderFallback.delete(pushOrderFallback.keys().next().value);
+      try {
+        if (db) await writePushOrder(db, entry);
+      } catch {
+        // The bounded in-memory history still protects this worker lifetime.
+      }
+    }
+  } finally {
+    db?.close();
+  }
+}
+
+async function presentPush(data) {
   // Check app window state for notification suppression
   const clients = await self.clients.matchAll({
     type: "window",

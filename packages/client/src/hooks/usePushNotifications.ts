@@ -125,10 +125,14 @@ export function usePushNotifications() {
         // Check current subscription status
         const subscription = await reg.pushManager.getSubscription();
         const browserProfileId = getOrCreateBrowserProfileId();
+        const isSubscribed = await hasServerSubscription(
+          subscription,
+          browserProfileId,
+        );
 
         setState({
           isSupported: true,
-          isSubscribed: !!subscription,
+          isSubscribed,
           isLoading: false,
           error: null,
           permission: Notification.permission,
@@ -158,10 +162,14 @@ export function usePushNotifications() {
     const handleSubscriptionChange = async () => {
       try {
         const subscription = await registration.pushManager.getSubscription();
+        const isSubscribed = await hasServerSubscription(
+          subscription,
+          getOrCreateBrowserProfileId(),
+        );
         if (disposed) return;
         setState((current) => ({
           ...current,
-          isSubscribed: !!subscription,
+          isSubscribed,
           isLoading: false,
           error: null,
         }));
@@ -436,6 +444,19 @@ export interface SwLogEntry {
   level: "info" | "warn" | "error";
   message: string;
   data: Record<string, unknown>;
+}
+
+// A local PushManager endpoint can outlive server revocation or a failed
+// enrollment. Only the server row makes this browser a delivery destination.
+async function hasServerSubscription(
+  subscription: PushSubscription | null,
+  browserProfileId: string,
+): Promise<boolean> {
+  if (!subscription) return false;
+  const { subscriptions } = await api.getPushSubscriptions();
+  return subscriptions.some(
+    (entry) => entry.browserProfileId === browserProfileId,
+  );
 }
 
 /**
