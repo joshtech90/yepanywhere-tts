@@ -7,7 +7,8 @@ import {
   type CockpitPeer,
 } from "./core/peer";
 
-// One request per page load; the file only changes with a new release.
+// One answer per page load once the server has given one. A request that
+// never reached the server (offline, proxy error) is retried on reconnect.
 let peerRequest: Promise<CockpitPeer | null> | null = null;
 
 function loadCockpitPeer(): Promise<CockpitPeer | null> {
@@ -15,10 +16,18 @@ function loadCockpitPeer(): Promise<CockpitPeer | null> {
     peerRequest =
       typeof fetch === "function"
         ? fetch(COCKPIT_PEER_PATH, { cache: "no-cache" })
-            .then((response) => (response.ok ? response.json() : null))
-            // A missing file answers with the app page, which is no JSON.
+            .then((response) => {
+              if (response.status >= 500) {
+                throw new Error("Peer discovery unavailable");
+              }
+              // A missing file answers with 404 or the app page (no JSON).
+              return response.ok ? response.json().catch(() => null) : null;
+            })
             .then((raw) => parseCockpitPeer(raw, window.location.origin))
-            .catch(() => null)
+            .catch(() => {
+              peerRequest = null;
+              return null;
+            })
         : Promise.resolve(null);
   }
   return peerRequest;
@@ -33,11 +42,21 @@ export function useCockpitPeer(): CockpitPeer | null {
   const [peer, setPeer] = useState<CockpitPeer | null>(null);
   useEffect(() => {
     let active = true;
-    void loadCockpitPeer().then((value) => {
-      if (active) setPeer(value);
-    });
+    const load = () => {
+      void loadCockpitPeer().then((value) => {
+        if (active) setPeer(value);
+      });
+    };
+    const loadWhenVisible = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    load();
+    window.addEventListener("online", load);
+    document.addEventListener("visibilitychange", loadWhenVisible);
     return () => {
       active = false;
+      window.removeEventListener("online", load);
+      document.removeEventListener("visibilitychange", loadWhenVisible);
     };
   }, []);
   return peer;
