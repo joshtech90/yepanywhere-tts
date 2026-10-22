@@ -44,11 +44,29 @@ export interface PushNotifierOptions {
 }
 
 /**
- * Bounds for the final-answer excerpt. An encrypted, base64url-encoded Web
- * Push payload relayed as an FCM data message must stay below 4 KiB.
+ * Bounds for the final-answer excerpt and the session title. An encrypted,
+ * base64url-encoded Web Push payload relayed as an FCM data message must stay
+ * below 4 KiB, so every user-authored field is bounded.
  */
 const LAST_MESSAGE_MAX_CHARS = 400;
 const LAST_MESSAGE_MAX_BYTES = 1000;
+const TITLE_MAX_CHARS = 120;
+const TITLE_MAX_BYTES = 360;
+
+/** Whitespace-collapsed text cut to both bounds, with an ellipsis if cut. */
+function boundText(
+  raw: string,
+  maxChars: number,
+  maxBytes: number,
+): string | undefined {
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (!text) return undefined;
+  let cut = Array.from(text).slice(0, maxChars).join("");
+  while (Buffer.byteLength(cut) > maxBytes) {
+    cut = Array.from(cut).slice(0, -20).join("");
+  }
+  return cut.length < text.length ? `${cut.trimEnd()}…` : cut;
+}
 
 type HistoryEntry = {
   type?: string;
@@ -77,13 +95,12 @@ export function finalAnswerExcerpt(
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const entry = history[index];
     if ((entry?.type ?? entry?.message?.role) !== "assistant") continue;
-    const text = textOf(entry?.message?.content).replace(/\s+/g, " ").trim();
-    if (!text) continue;
-    let excerpt = Array.from(text).slice(0, LAST_MESSAGE_MAX_CHARS).join("");
-    while (Buffer.byteLength(excerpt) > LAST_MESSAGE_MAX_BYTES) {
-      excerpt = Array.from(excerpt).slice(0, -20).join("");
-    }
-    return excerpt.length < text.length ? `${excerpt.trimEnd()}…` : excerpt;
+    const excerpt = boundText(
+      textOf(entry?.message?.content),
+      LAST_MESSAGE_MAX_CHARS,
+      LAST_MESSAGE_MAX_BYTES,
+    );
+    if (excerpt) return excerpt;
   }
   return undefined;
 }
@@ -394,7 +411,10 @@ export class PushNotifier {
   ): Promise<string | undefined> {
     if (!this.resolveSessionTitle) return undefined;
     try {
-      return await this.resolveSessionTitle(projectId, sessionId);
+      const title = await this.resolveSessionTitle(projectId, sessionId);
+      return title
+        ? boundText(title, TITLE_MAX_CHARS, TITLE_MAX_BYTES)
+        : undefined;
     } catch {
       return undefined;
     }

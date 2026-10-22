@@ -3,7 +3,6 @@ package de.joscha.yepcockpit
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.app.DownloadManager
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.ContentValues
@@ -15,7 +14,6 @@ import android.graphics.Color
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
@@ -231,6 +229,13 @@ class MainActivity : Activity() {
         setDownloadListener { url, _, inhalt, typ, _ -> herunterladen(r, this, url, inhalt, typ) }
         // Downloads aus blob:- und Worker-Adressen kann nur die Seite selbst
         // lesen; sie reicht den Inhalt ueber diesen Kanal, nur von den eigenen Rechnern.
+        // Die CSP des Cockpits verbietet fetch auf blob:-Adressen. Deshalb merkt
+        // sich die Seite ihre Blobs kurz selbst, nur auf den eigenen Rechnern.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(
+                this, BLOB_MERKER, RechnerListe.alle.map { it.basis.toString() }.toSet(),
+            )
+        }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             WebViewCompat.addWebMessageListener(
                 this, "YepApp",
@@ -385,42 +390,40 @@ class MainActivity : Activity() {
 
     private fun herunterladen(r: Rechner, view: WebView, url: String, inhalt: String?, typ: String?) {
         val uri = Uri.parse(url)
-        val name = URLUtil.guessFileName(url, inhalt, typ)
-        val ueberSeite = uri.scheme == "blob" || uri.path?.contains("/__ya-download/") == true
-        when {
-            ueberSeite -> {
-                // Die Seite liest den Inhalt selbst und schickt ihn als data:-URL.
-                val skript = """
-                    (async () => {
-                      try {
-                        const b = await (await fetch(${JSONObject.quote(url)})).blob();
-                        const d = await new Promise((ok, f) => {
-                          const l = new FileReader(); l.onload = () => ok(l.result); l.onerror = f; l.readAsDataURL(b);
-                        });
-                        YepApp.postMessage(JSON.stringify({ name: ${JSONObject.quote(name)}, daten: d }));
-                      } catch (e) { YepApp.postMessage(JSON.stringify({ fehler: String(e) })); }
-                    })();
-                """.trimIndent()
-                view.evaluateJavascript(skript, null)
-            }
-            r.besitzt(uri) -> {
-                val anfrage = DownloadManager.Request(uri)
-                    .setTitle(name)
-                    .setMimeType(typ)
-                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
-                Netz.cookies(r)?.let { anfrage.addRequestHeader("Cookie", it) }
-                getSystemService(DownloadManager::class.java).enqueue(anfrage)
-                Toast.makeText(this, "Lädt: $name", Toast.LENGTH_SHORT).show()
-            }
-            else -> extern(uri)
+        if (uri.scheme != "blob" && !r.besitzt(uri)) {
+            extern(uri)
+            return
         }
+        // Immer ueber die Seite selbst: ihr fetch schickt Cookies nur an den
+        // eigenen Ursprung, auch bei Weiterleitungen, und erreicht blob:- und
+        // Service-Worker-Adressen. (DownloadManager gaebe einen gesetzten
+        // Cookie-Kopf auch an ein fremdes Weiterleitungsziel weiter.)
+        val name = URLUtil.guessFileName(url, inhalt, typ)
+        val skript = """
+            (async () => {
+              try {
+                const u = ${JSONObject.quote(url)};
+                const b = u.startsWith("blob:")
+                  ? window.__yepBlobs?.get(u)
+                  : await (await fetch(u, { credentials: "same-origin" })).blob();
+                if (!b) throw new Error("blob weg");
+                if (b.size > $MAX_DOWNLOAD) throw new Error("zu gross");
+                const d = await new Promise((ok, f) => {
+                  const l = new FileReader(); l.onload = () => ok(l.result); l.onerror = f; l.readAsDataURL(b);
+                });
+                const name = window.__yepDownloadNamen?.get(u) || ${JSONObject.quote(name)};
+                YepApp.postMessage(JSON.stringify({ name, daten: d }));
+              } catch (e) { YepApp.postMessage(JSON.stringify({ fehler: String(e) })); }
+            })();
+        """.trimIndent()
+        view.evaluateJavascript(skript, null)
     }
 
     private fun speichernAusSeite(text: String) {
         val o = runCatching { JSONObject(text) }.getOrNull() ?: return
         if (o.has("fehler")) {
-            Toast.makeText(this, "Download gescheitert", Toast.LENGTH_SHORT).show()
+            val grund = if (o.optString("fehler").contains("zu gross")) " (über 50 MB, bitte im Browser laden)" else ""
+            Toast.makeText(this, "Download gescheitert$grund", Toast.LENGTH_LONG).show()
             return
         }
         val name = o.optString("name").ifBlank { "Download" }.replace('/', '_')
@@ -446,7 +449,10 @@ class MainActivity : Activity() {
             justify-content:center;height:100vh;margin:0;text-align:center;padding:0 24px">
             <div><h2 style="color:#fff">${r.name} ist gerade nicht erreichbar</h2>
             <p>$text</p><p>Tailscale an? Rechner wach?</p>
-            <p><a style="color:#8ab4ff;font-size:18px" href="${r.start}">Erneut versuchen</a></p></div>
+            <p><a style="color:#8ab4ff;font-size:18px" href="${r.start}">Erneut versuchen</a></p>
+            ${RechnerListe.alle.filter { it != r }.joinToString("") {
+                "<p><a style=\"color:#8ab4ff;font-size:18px\" href=\"${it.start}\">Zu ${it.name} wechseln</a></p>"
+            }}</div>
             </body></html>
         """.trimIndent()
     }
@@ -458,5 +464,33 @@ class MainActivity : Activity() {
         private const val ANFRAGE_MELDUNGEN = 3
         const val EXTRA_ZIEL = "de.joscha.yepcockpit.ZIEL"
         const val ZIEL_NEU = "neu"
+        /** Haelt Blobs bis eine Minute nach dem Freigeben, damit ein Download sie noch lesen kann. */
+        private val BLOB_MERKER = """
+            (() => {
+              const blobs = new Map();
+              const namen = new Map();
+              Object.defineProperty(window, "__yepBlobs", { value: blobs });
+              Object.defineProperty(window, "__yepDownloadNamen", { value: namen });
+              // WebView reicht das download-Attribut nicht weiter; die Seite merkt es sich.
+              document.addEventListener("click", (e) => {
+                const a = e.target instanceof Element ? e.target.closest("a[download]") : null;
+                if (a && a.href) namen.set(a.href, a.getAttribute("download") || "");
+              }, true);
+              const anlegen = URL.createObjectURL.bind(URL);
+              const freigeben = URL.revokeObjectURL.bind(URL);
+              URL.createObjectURL = (o) => {
+                const u = anlegen(o);
+                if (o instanceof Blob) blobs.set(u, o);
+                return u;
+              };
+              URL.revokeObjectURL = (u) => {
+                freigeben(u);
+                setTimeout(() => blobs.delete(u), 60000);
+              };
+            })();
+        """.trimIndent()
+
+        /** Downloads laufen als data:-URL durch den Speicher; groessere gehen im Browser. */
+        private const val MAX_DOWNLOAD = 50 * 1024 * 1024
     }
 }

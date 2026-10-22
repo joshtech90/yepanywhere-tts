@@ -299,7 +299,7 @@ describe("PushNotifier", () => {
         eventBus: mockEventBus,
         pushService: mockPushService,
         supervisor: mockSupervisor,
-        sessionTitle: async () => "Android-App bauen",
+        sessionTitle: async () => `Android-App bauen ${"Ü".repeat(500)}`,
       });
       const event: ProcessStateEvent = {
         type: "process-state-changed",
@@ -318,11 +318,15 @@ describe("PushNotifier", () => {
         sessionTitle?: string;
         lastMessage?: string;
       };
-      expect(payload.sessionTitle).toBe("Android-App bauen");
+      expect(payload.sessionTitle?.startsWith("Android-App bauen Ü")).toBe(
+        true,
+      );
       expect(payload.lastMessage?.startsWith("Fertig. Ölwechsel")).toBe(true);
       expect(payload.lastMessage?.endsWith("…")).toBe(true);
-      expect(Buffer.byteLength(payload.lastMessage ?? "")).toBeLessThanOrEqual(
-        1003,
+      // The relay (Smartzone fcm.WEBPUSH_MAX_BYTES) takes 2800 encrypted
+      // bytes; aes128gcm adds a 86-byte header, a delimiter and a 16-byte tag.
+      expect(Buffer.byteLength(JSON.stringify(payload)) + 103).toBeLessThan(
+        2800,
       );
     });
 

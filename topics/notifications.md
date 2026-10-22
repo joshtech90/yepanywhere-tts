@@ -166,7 +166,7 @@ Event selection and presentation are separate controls:
   product work rather than an assumed current guarantee.
 - Web Push `pending-input` and `session-halted` payloads carry the optional
   `sessionTitle` (absent when the session is only "Untitled" or the lookup
-  fails), and a completed `session-halted` carries `lastMessage`: the newest
+  fails; cut to 120 characters and about 360 UTF-8 bytes), and a completed `session-halted` carries `lastMessage`: the newest
   assistant text, whitespace-collapsed and cut to 400 characters and about
   1000 UTF-8 bytes with a trailing ellipsis. The bound keeps an encrypted,
   base64url-relayed payload inside a 4 KiB FCM data message (fork Android app,
