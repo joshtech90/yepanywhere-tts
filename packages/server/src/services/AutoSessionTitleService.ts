@@ -74,13 +74,6 @@ export interface AutoSessionTitleServiceOptions {
   clearTimeoutFn?: typeof clearTimeout;
 }
 
-/**
- * Hard ceiling on concurrent helper queries. Sessions are titled one at a
- * time: a burst of new sessions should never fan out into a burst of provider
- * processes competing with the user's own work.
- */
-const MAX_CONCURRENT_TITLE_JOBS = 1;
-
 /** Keep automatic naming consistent across Claude, Codex, and future sources. */
 export const AUTO_SESSION_TITLE_HELPER_PROVIDER: ProviderName = "claude";
 
@@ -113,7 +106,9 @@ export class AutoSessionTitleService {
     sessionId: string;
     projectId: UrlProjectId;
   }> = [];
-  private activeJobs = 0;
+  /** One admitted job, including its context read and metadata write. */
+  private activeWork?: Promise<void>;
+  private activeAbortController?: AbortController;
   private unsubscribe?: () => void;
   private stopped = false;
 
@@ -161,7 +156,7 @@ export class AutoSessionTitleService {
     });
   }
 
-  stop(): void {
+  stop(): Promise<void> {
     this.stopped = true;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
@@ -170,6 +165,9 @@ export class AutoSessionTitleService {
     }
     this.timers.clear();
     this.queue.length = 0;
+    this.activeAbortController?.abort();
+    // Storage owners must join a read/write already in flight before closing.
+    return this.activeWork ?? Promise.resolve();
   }
 
   /**
@@ -253,26 +251,31 @@ export class AutoSessionTitleService {
     if (this.outcomes.has(sessionId)) return;
     this.outcomes.set(sessionId, "pending");
     this.queue.push({ sessionId, projectId });
-    void this.drain();
+    this.drain();
   }
 
-  private async drain(): Promise<void> {
-    if (this.activeJobs >= MAX_CONCURRENT_TITLE_JOBS) return;
+  private drain(): void {
+    if (this.stopped || this.activeWork) return;
     const next = this.queue.shift();
     if (!next) return;
 
-    this.activeJobs += 1;
-    try {
-      await this.titleSession(next.sessionId, next.projectId);
-    } finally {
-      this.activeJobs -= 1;
-      if (this.queue.length > 0) void this.drain();
-    }
+    const controller = new AbortController();
+    this.activeAbortController = controller;
+    this.activeWork = this.titleSession(
+      next.sessionId,
+      next.projectId,
+      controller.signal,
+    ).finally(() => {
+      this.activeWork = undefined;
+      this.activeAbortController = undefined;
+      this.drain();
+    });
   }
 
   private async titleSession(
     sessionId: string,
     projectId: UrlProjectId,
+    signal: AbortSignal,
   ): Promise<void> {
     if (this.stopped) return;
     const settings = this.options.getSettings();
@@ -289,6 +292,7 @@ export class AutoSessionTitleService {
     const startedAt = this.now();
     try {
       const context = await this.options.loadContext(sessionId, projectId);
+      if (signal.aborted || !this.options.getSettings().enabled) return;
       if (!context) {
         this.outcomes.set(sessionId, "failed");
         return;
@@ -309,7 +313,6 @@ export class AutoSessionTitleService {
         return;
       }
 
-      const abortController = new AbortController();
       const generated = await this.options.generateTitle(
         AUTO_SESSION_TITLE_HELPER_PROVIDER,
         {
@@ -318,9 +321,10 @@ export class AutoSessionTitleService {
           lengthTarget: settings.maxLength,
           language: settings.language,
           model: HELPER_SIDE_MODEL_CHEAPEST,
-          signal: abortController.signal,
+          signal,
         },
       );
+      if (signal.aborted || !this.options.getSettings().enabled) return;
 
       const title = normalizeGeneratedSessionTitle(
         generated.text,
@@ -362,6 +366,7 @@ export class AutoSessionTitleService {
         "Auto session title set",
       );
     } catch (error) {
+      if (signal.aborted) return;
       this.outcomes.set(sessionId, "failed");
       getLogger().warn(
         {

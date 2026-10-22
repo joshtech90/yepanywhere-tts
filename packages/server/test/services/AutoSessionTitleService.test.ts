@@ -8,6 +8,7 @@ import {
   AUTO_SESSION_TITLE_MAX_AGE_MS,
   AUTO_SESSION_TITLE_HELPER_PROVIDER,
   AutoSessionTitleService,
+  type AutoSessionTitleServiceOptions,
   buildTranscriptExcerpt,
   type AutoTitleSessionContext,
 } from "../../src/services/AutoSessionTitleService.js";
@@ -44,7 +45,7 @@ function fixture(
           ...overrides.context,
         };
 
-  const generateTitle = vi.fn(
+  const generateTitle = vi.fn<AutoSessionTitleServiceOptions["generateTitle"]>(
     async (): Promise<{ text: string }> => ({ text: "Stripe anfragen" }),
   );
   const loadContext = vi.fn(async () => context);
@@ -69,7 +70,15 @@ function fixture(
     clearTimeoutFn: (() => {}) as unknown as typeof clearTimeout,
   });
 
-  return { service, eventBus, titles, generateTitle, loadContext, setTitle };
+  return {
+    service,
+    eventBus,
+    titles,
+    settings,
+    generateTitle,
+    loadContext,
+    setTitle,
+  };
 }
 
 /** Let the microtask-based debounce and the async job chain settle. */
@@ -189,7 +198,9 @@ describe("AutoSessionTitleService", () => {
   it("titles known sessions handed over at start when backfill is on", async () => {
     const backfill = fixture({ settings: { backfillExisting: true } });
     backfill.service.start();
-    const old = new Date(NOW - AUTO_SESSION_TITLE_MAX_AGE_MS * 10).toISOString();
+    const old = new Date(
+      NOW - AUTO_SESSION_TITLE_MAX_AGE_MS * 10,
+    ).toISOString();
 
     backfill.service.backfill([
       { sessionId: "old-a", projectId: PROJECT_ID, activityAt: old },
@@ -205,7 +216,9 @@ describe("AutoSessionTitleService", () => {
   it("keeps the age window and user titles for handed-over sessions", async () => {
     const plain = fixture({ customTitle: "Mein Titel" });
     plain.service.start();
-    const old = new Date(NOW - AUTO_SESSION_TITLE_MAX_AGE_MS * 10).toISOString();
+    const old = new Date(
+      NOW - AUTO_SESSION_TITLE_MAX_AGE_MS * 10,
+    ).toISOString();
 
     plain.service.backfill([
       { sessionId: "old", projectId: PROJECT_ID, activityAt: old },
@@ -254,7 +267,11 @@ describe("AutoSessionTitleService", () => {
 
   it("waits past a bare slash command until a real prompt arrives", async () => {
     const setup = fixture({
-      context: { fullTitle: "/effort", lastAgentText: undefined, messageCount: 2 },
+      context: {
+        fullTitle: "/effort",
+        lastAgentText: undefined,
+        messageCount: 2,
+      },
     });
     setup.service.start();
     emitUpdate(setup.eventBus, "s1");
@@ -320,6 +337,65 @@ describe("AutoSessionTitleService", () => {
     emitUpdate(harness.eventBus, "s1");
     await settle();
     expect(harness.generateTitle).not.toHaveBeenCalled();
+  });
+
+  it("does not launch a helper when stopped during a context read", async () => {
+    let finishRead!: (context: AutoTitleSessionContext) => void;
+    harness.loadContext.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishRead = resolve;
+      }),
+    );
+    emitUpdate(harness.eventBus, "s1");
+    await settle();
+    const stopped = harness.service.stop();
+    finishRead({
+      provider: "claude",
+      fullTitle: "Fix the crash",
+      messageCount: 2,
+    });
+    await stopped;
+    await settle();
+    expect(harness.generateTitle).not.toHaveBeenCalled();
+    expect(harness.titles.size).toBe(0);
+  });
+
+  it("aborts active generation and drops queued titles on shutdown", async () => {
+    let finishTitle!: (result: { text: string }) => void;
+    harness.generateTitle.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishTitle = resolve;
+      }),
+    );
+    emitUpdate(harness.eventBus, "s1");
+    emitUpdate(harness.eventBus, "s2");
+    await settle();
+    const request = harness.generateTitle.mock.calls[0]?.[1] as
+      | { signal: AbortSignal }
+      | undefined;
+    const stopped = harness.service.stop();
+    // Even a provider which resolves after abort must not publish a title.
+    finishTitle({ text: "Late result" });
+    await stopped;
+    await settle();
+    expect(request?.signal.aborted).toBe(true);
+    expect(harness.generateTitle).toHaveBeenCalledTimes(1);
+    expect(harness.titles.size).toBe(0);
+  });
+
+  it("discards a helper result after automatic titles are disabled", async () => {
+    let finishTitle!: (result: { text: string }) => void;
+    harness.generateTitle.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishTitle = resolve;
+      }),
+    );
+    emitUpdate(harness.eventBus, "s1");
+    await settle();
+    harness.settings.enabled = false;
+    finishTitle({ text: "Late result" });
+    await settle();
+    expect(harness.titles.size).toBe(0);
   });
 });
 
