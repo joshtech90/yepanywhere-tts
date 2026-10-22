@@ -921,4 +921,34 @@ describe("Cockpit composer send completion ownership", () => {
       "new unsent draft",
     );
   });
+
+  it("clears the sent text from a composer reopened before the send finished", async () => {
+    let resolveSend!: (value: unknown) => void;
+    runtime.transport.fetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        }),
+    );
+    const first = render(composer());
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "submitted" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    first.unmount();
+    render(composer());
+    const reopened = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(reopened.value).toBe("submitted");
+
+    await act(async () => {
+      resolveSend({
+        processId: "p1",
+        permissionMode: "default",
+        modeVersion: 1,
+      });
+    });
+
+    // Still showing it would invite sending the same message twice.
+    expect(reopened.value).toBe("");
+  });
 });
