@@ -74,7 +74,6 @@ export function CockpitSessionMenu({
 
   // Reset internal states whenever the menu opens or session changes
   useEffect(() => {
-    generationRef.current += 1;
     if (open) {
       setView("menu");
       setRenameTitle(sessionTitle);
@@ -83,11 +82,18 @@ export function CockpitSessionMenu({
       setIsRenaming(false);
       setIsArchiving(false);
     }
+  }, [open, sessionTitle]);
+
+  // A dismissed menu must not close or update a later menu on completion.
+  // Only opening and closing count: a successful rename reports its new
+  // title before it resolves, and must still close this menu.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: open is the trigger
+  useEffect(() => {
+    generationRef.current += 1;
     return () => {
-      // A dismissed menu must not close or update a later menu on completion.
       generationRef.current += 1;
     };
-  }, [open, sessionTitle]);
+  }, [open]);
 
   // Capture active element before shifting focus, restore focus when closed
   useLayoutEffect(() => {

@@ -132,6 +132,46 @@ describe("CockpitSessionMenu", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("closes after a rename whose new title arrives before it resolves", async () => {
+    const onClose = vi.fn();
+    // The Cockpit reports the confirmed title to the list before the rename
+    // promise settles, so the open menu re-renders with it mid-action.
+    function Harness() {
+      const [title, setTitle] = useState("Sprint Planning");
+      return (
+        <I18nProvider>
+          <CockpitSessionMenu
+            open
+            anchor={{ x: 100, y: 100 }}
+            sessionTitle={title}
+            pinned={false}
+            busy={false}
+            onClose={onClose}
+            onTogglePin={vi.fn()}
+            onRename={async (next) => {
+              setTitle(next);
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              return true;
+            }}
+            onArchive={vi.fn(() => Promise.resolve(true))}
+          />
+        </I18nProvider>
+      );
+    }
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "Sprint Review" } });
+    await act(async () => {
+      const form = input.closest("form");
+      if (form) fireEvent.submit(form);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("shows error on rename failure and keeps form open", async () => {
     const onRename = vi.fn(() => Promise.resolve(false));
     const onClose = vi.fn();
