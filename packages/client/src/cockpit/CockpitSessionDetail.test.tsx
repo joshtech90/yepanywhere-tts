@@ -218,6 +218,54 @@ describe("Cockpit session detail", () => {
     ).toBe("/projects/project-1/sessions/session-1");
   });
 
+  it("keeps opened live thinking open when the answer starts streaming", () => {
+    const thinkingOnly = {
+      kind: "assistant" as const,
+      key: "live-assistant",
+      text: [],
+      thinking: [
+        {
+          id: "live-thinking",
+          text: "Comparing the two drafts.",
+          status: "complete" as const,
+        },
+      ],
+      spokenText: "",
+      isStreaming: false,
+    };
+    detailMocks.data = detailData({
+      entries: [thinkingOnly],
+      processState: "in-turn",
+    });
+    const view = renderDetail();
+    const thinking = view.container.querySelector("details");
+    if (!thinking) throw new Error("thinking missing");
+    thinking.open = true;
+
+    detailMocks.data = detailData({
+      entries: [
+        {
+          ...thinkingOnly,
+          text: [
+            {
+              id: "live-text",
+              text: "The second draft",
+              isStreaming: true,
+              abortedMidStream: false,
+            },
+          ],
+          isStreaming: true,
+        },
+      ],
+      processState: "in-turn",
+    });
+    view.rerender(detailTree());
+
+    expect(screen.getByText("The second draft")).toBeTruthy();
+    expect(view.container.querySelector("details")).toBe(thinking);
+    expect(thinking.open).toBe(true);
+  });
+
   it("shows work in another program in the header and at the transcript end", () => {
     detailMocks.data = detailData({
       status: { owner: "external" },
@@ -312,6 +360,45 @@ describe("Cockpit session detail", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("lets a reader leave the end in small steps while updates stream", () => {
+    detailMocks.data = detailData({ processState: "in-turn" });
+    const view = renderDetail();
+    const transcript = screen.getByLabelText("Session conversation");
+    let height = 2000;
+    Object.defineProperty(transcript, "scrollHeight", {
+      configurable: true,
+      get: () => height,
+    });
+    Object.defineProperty(transcript, "clientHeight", {
+      configurable: true,
+      get: () => 400,
+    });
+    transcript.scrollTop = 1600;
+    fireEvent.scroll(transcript);
+
+    // One wheel or touch frame moves less than the near-end band.
+    transcript.scrollTop = 1590;
+    fireEvent.scroll(transcript);
+    height = 2100;
+    const entries = detailMocks.data?.entries ?? [];
+    detailMocks.data = detailData({
+      entries: [
+        ...entries,
+        { kind: "user", key: "live-tail", text: "A live update arrived." },
+      ],
+      processState: "in-turn",
+    });
+    view.rerender(detailTree());
+
+    expect(transcript.scrollTop).toBe(1590);
+    expect(screen.getByRole("button", { name: "Jump to latest" })).toBeTruthy();
+
+    // Returning to the end follows again.
+    transcript.scrollTop = 1700;
+    fireEvent.scroll(transcript);
+    expect(screen.queryByRole("button", { name: "Jump to latest" })).toBeNull();
   });
 
   it("keeps an idle session to a grey dot without a finished label", () => {
@@ -789,9 +876,17 @@ describe("Cockpit session detail", () => {
       transcript.scrollTop = 100;
       fireEvent.scroll(transcript);
 
+      const tool = view.container.querySelector<HTMLDetailsElement>(
+        "details[data-status]",
+      );
+      if (!tool) throw new Error("tool missing");
+      tool.open = true;
+      fireEvent(tool, new Event("toggle"));
+
       detailMocks.data = detailData({ entries: workedTurn });
       view.rerender(detailTree());
       expect(screen.getByText("Looking at the notes first.")).toBeTruthy();
+      expect(view.container.querySelector("details[open]")).toBe(tool);
 
       transcript.scrollTop = 1600;
       fireEvent.scroll(transcript);

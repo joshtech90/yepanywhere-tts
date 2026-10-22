@@ -1,10 +1,7 @@
 import { useState } from "react";
 import { useI18n, type TranslationFn } from "../i18n";
 import type { CockpitToolEntry } from "./core/sessionDetail";
-import type {
-  CockpitDiffLine,
-  CockpitToolStatus,
-} from "./core/toolDisplay";
+import type { CockpitDiffLine, CockpitToolStatus } from "./core/toolDisplay";
 import { CockpitToolCopyButton } from "./CockpitToolCopyButton";
 import styles from "./CockpitToolCall.module.css";
 
@@ -83,11 +80,7 @@ function diffClipboardText(lines: readonly CockpitDiffLine[]): string {
     .map((line) => {
       if (line.kind === "hunk") return line.text;
       const marker =
-        line.kind === "addition"
-          ? "+"
-          : line.kind === "deletion"
-            ? "-"
-            : " ";
+        line.kind === "addition" ? "+" : line.kind === "deletion" ? "-" : " ";
       return `${marker}${line.text}`;
     })
     .join("\n");
@@ -234,11 +227,10 @@ function FilesDetail({ entry }: { entry: CockpitToolEntry }) {
           className={styles.diff}
           role="region"
         >
-          {selected.lines.map((line) => (
-            <DiffLine
-              key={`${line.kind}-${line.oldLine ?? ""}-${line.newLine ?? ""}-${line.text}`}
-              line={line}
-            />
+          {selected.lines.map((line, index) => (
+            // Bare apply-patch hunk headers repeat with identical content, and
+            // the rows hold no state, so their position is their identity.
+            <DiffLine key={index} line={line} />
           ))}
           {selected.truncated && (
             <p className={styles.truncated}>{t("cockpitToolDiffTruncated")}</p>
@@ -314,10 +306,7 @@ export function CockpitToolCall({
           <strong>{entry.tool.displayName}</strong>
           <small>{entry.tool.summary}</small>
         </span>
-        <span
-          className={styles.status}
-          data-status={status}
-        >
+        <span className={styles.status} data-status={status}>
           <i aria-hidden="true" />
           {statusLabel(status, t)}
         </span>
@@ -328,7 +317,18 @@ export function CockpitToolCall({
         {entry.tool.kind === "shell" ? (
           <ShellDetail entry={entry} />
         ) : entry.tool.kind === "files" ? (
-          <FilesDetail entry={entry} />
+          <>
+            {entry.tool.status === "error" && entry.tool.rawResult && (
+              <CopyableCodeSection
+                copiedLabel={t("cockpitToolErrorOutputCopied")}
+                copyLabel={t("cockpitToolCopyErrorOutput")}
+                error
+                heading={t("cockpitToolErrorOutput")}
+                text={entry.tool.rawResult}
+              />
+            )}
+            <FilesDetail entry={entry} />
+          </>
         ) : (
           <GenericDetail entry={entry} />
         )}

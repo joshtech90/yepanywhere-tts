@@ -374,39 +374,32 @@ const TranscriptEntry = memo(function TranscriptEntry({
   }
 
   // Thinking without an answer yet is one quiet line, not an answer card.
-  if (entry.text.length === 0 && entry.thinking.length > 0) {
-    return (
-      <article
-        className={styles.thinkingEntry}
-        data-cockpit-entry-key={entry.key}
-        data-entry-kind="assistant"
-      >
-        <AssistantContent entry={entry} />
-      </article>
-    );
-  }
-
+  // Both shapes share one element tree, so thinking the reader opened stays
+  // open when the answer starts to stream below it.
+  const thinkingOnly = entry.text.length === 0 && entry.thinking.length > 0;
   return (
     <article
-      className={styles.assistantEntry}
+      className={thinkingOnly ? styles.thinkingEntry : styles.assistantEntry}
       data-cockpit-entry-key={entry.key}
       data-entry-kind="assistant"
     >
-      <header className={styles.entryHeader}>
-        <span className={styles.assistantIdentity}>
-          <span className={styles.assistantMark} aria-hidden="true">
-            AI
-          </span>
-          <strong>{t("cockpitSessionAssistant")}</strong>
-          {entry.isStreaming && (
-            <span className={styles.streamingLabel}>
-              {t("cockpitSessionStreaming")}
+      {!thinkingOnly && (
+        <header className={styles.entryHeader}>
+          <span className={styles.assistantIdentity}>
+            <span className={styles.assistantMark} aria-hidden="true">
+              AI
             </span>
-          )}
-        </span>
-        {time && <time dateTime={entry.timestamp}>{time}</time>}
-      </header>
-      <div className={styles.assistantBody}>
+            <strong>{t("cockpitSessionAssistant")}</strong>
+            {entry.isStreaming && (
+              <span className={styles.streamingLabel}>
+                {t("cockpitSessionStreaming")}
+              </span>
+            )}
+          </span>
+          {time && <time dateTime={entry.timestamp}>{time}</time>}
+        </header>
+      )}
+      <div className={thinkingOnly ? undefined : styles.assistantBody}>
         <AssistantContent entry={entry} />
       </div>
       {entry.spokenText && !entry.isStreaming && (
@@ -533,6 +526,11 @@ export function CockpitSessionDetail({
   // open until they return to the end, so the text under them does not
   // vanish mid-read. The next turn releases it as well.
   const wasWorkingRef = useRef(sessionWorking);
+  // Hold it in the completion render itself. Waiting for the layout effect
+  // would first unmount the open tools, losing their local inspection state.
+  const holdFinishedTurn =
+    latestTurnHeldOpen ||
+    (wasWorkingRef.current && !sessionWorking && !followingRef.current);
   useLayoutEffect(() => {
     if (wasWorkingRef.current && !sessionWorking && !followingRef.current) {
       setLatestTurnHeldOpen(true);
@@ -547,9 +545,9 @@ export function CockpitSessionDetail({
     () =>
       foldCockpitTurns(transcriptEntries, {
         expandedFoldKeys,
-        latestTurnOpen: sessionWorking || latestTurnHeldOpen,
+        latestTurnOpen: sessionWorking || holdFinishedTurn,
       }),
-    [expandedFoldKeys, latestTurnHeldOpen, sessionWorking, transcriptEntries],
+    [expandedFoldKeys, holdFinishedTurn, sessionWorking, transcriptEntries],
   );
 
   // Opening or closing a fold keeps that row where it is instead of
@@ -703,12 +701,19 @@ export function CockpitSessionDetail({
     return () => observer.disconnect();
   }, []);
 
+  const lastScrollTopRef = useRef(0);
   const updateFollowing = useCallback(() => {
     const container = scrollRef.current;
     if (!container) return;
-    const next =
-      container.scrollHeight - container.scrollTop - container.clientHeight <
-      72;
+    const distance =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    const movedUp = container.scrollTop < lastScrollTopRef.current;
+    lastScrollTopRef.current = container.scrollTop;
+    // Any step up from the end leaves it, however small. One wheel or touch
+    // frame moves less than the near-end band, and while a turn streams the
+    // next update would pull the reader back before they get past it. A
+    // shrinking transcript also lowers scrollTop, but leaves it at the end.
+    const next = movedUp && distance > 1 ? false : distance < 72;
     if (next === followingRef.current) return;
     followingRef.current = next;
     setFollowing(next);

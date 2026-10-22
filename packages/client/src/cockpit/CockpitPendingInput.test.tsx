@@ -12,9 +12,7 @@ import { UI_KEYS } from "../lib/storageKeys";
 import type { InputRequest } from "../types";
 import { CockpitPendingInput } from "./CockpitPendingInput";
 
-function approvalRequest(
-  overrides: Partial<InputRequest> = {},
-): InputRequest {
+function approvalRequest(overrides: Partial<InputRequest> = {}): InputRequest {
   return {
     id: "request-1",
     sessionId: "session-1",
@@ -135,9 +133,7 @@ describe("Cockpit pending input", () => {
 
     await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
     expect(onNotice).toHaveBeenCalledWith("stale");
-    expect(screen.getByRole("alert").textContent).toContain(
-      "already answered",
-    );
+    expect(screen.getByRole("alert").textContent).toContain("already answered");
   });
 
   it("adapts a provider-neutral choice into the existing question panel", async () => {

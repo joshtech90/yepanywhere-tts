@@ -293,6 +293,39 @@ describe("Cockpit tool display projection", () => {
     expect(display.files[0]?.lines).toHaveLength(2);
   });
 
+  it("keeps patch lines that only look like unified file headers", () => {
+    const display = createCockpitToolDisplay(
+      tool({
+        toolName: "apply_patch",
+        toolInput: {
+          _rawPatch: [
+            "*** Begin Patch",
+            "*** Update File: db/seed.sql",
+            "@@",
+            "--- old seed note",
+            "+++ counter",
+            "+-- new seed note",
+            " SELECT 1;",
+            "*** End Patch",
+          ].join("\n"),
+        },
+      }),
+    );
+
+    expect(display.files.map((file) => file.path)).toEqual(["db/seed.sql"]);
+    expect(display.files[0]).toMatchObject({ additions: 2, deletions: 1 });
+    expect(
+      display.files[0]?.lines
+        .filter((line) => line.kind !== "hunk")
+        .map((line) => line.text),
+    ).toEqual([
+      "-- old seed note",
+      "++ counter",
+      "-- new seed note",
+      "SELECT 1;",
+    ]);
+  });
+
   it("shows an apply-patch move only under its destination path", () => {
     const display = createCockpitToolDisplay(
       tool({

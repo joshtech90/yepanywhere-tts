@@ -19,6 +19,7 @@ import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitToolCall } from "./CockpitToolCall";
 import type { CockpitToolEntry } from "./core/sessionDetail";
+import { createCockpitToolDisplay } from "./core/toolDisplay";
 
 function entry(
   overrides: Partial<CockpitToolEntry["tool"]> = {},
@@ -91,6 +92,67 @@ beforeEach(() => {
 });
 
 describe("Cockpit tool call", () => {
+  it("shows the failure reason beside a rejected file edit", async () => {
+    renderTool(
+      entry({
+        status: "error",
+        rawResult: "Expected lines were not found in notes/fern.md",
+      }),
+    );
+    fireEvent.click(screen.getByLabelText("Show or hide details for Edit"));
+    expect(
+      screen.getByText("Expected lines were not found in notes/fern.md"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy error output" }));
+    await waitFor(() =>
+      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(
+        "Expected lines were not found in notes/fern.md",
+      ),
+    );
+  });
+
+  it("keeps repeated bare hunk headers as distinct diff rows", () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    try {
+      renderTool({
+        kind: "tool",
+        key: "local-tool-1",
+        tool: createCockpitToolDisplay({
+          type: "tool_call",
+          id: "tool-1",
+          toolName: "apply_patch",
+          toolInput: {
+            patch: [
+              "*** Begin Patch",
+              "*** Update File: notes/fern.md",
+              "@@",
+              "-Status: queued",
+              "+Status: ready",
+              "@@",
+              "-Owner: none",
+              "+Owner: fern",
+              "*** End Patch",
+            ].join("\n"),
+          },
+          status: "complete",
+          sourceMessages: [],
+        }),
+      });
+      fireEvent.click(screen.getByLabelText("Show or hide details for Edit"));
+      expect(screen.getAllByText("@@")).toHaveLength(2);
+      expect(screen.getByText("Owner: fern")).toBeTruthy();
+      expect(
+        consoleError.mock.calls.some((call) =>
+          String(call[0]).includes("same key"),
+        ),
+      ).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("says running only while the session is working", () => {
     const view = render(
       <I18nProvider>
@@ -154,9 +216,7 @@ describe("Cockpit tool call", () => {
     );
 
     fireEvent.click(
-      screen.getByLabelText(
-        "Show or hide details for provider_future_action",
-      ),
+      screen.getByLabelText("Show or hide details for provider_future_action"),
     );
     expect(
       screen.getByText(

@@ -63,11 +63,12 @@ export function CockpitToolCopyButton({
     setStatus(copied ? "copied" : "error");
   }, [copying, text]);
 
-  const currentLabel = status === "copied"
-    ? copiedLabel
-    : status === "error"
-    ? failedLabel
-    : label;
+  const currentLabel =
+    status === "copied"
+      ? copiedLabel
+      : status === "error"
+        ? failedLabel
+        : label;
 
   return (
     <button

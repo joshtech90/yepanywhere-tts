@@ -61,17 +61,18 @@ export function CockpitCopyResponseButton({
     setStatus(copied ? "copied" : "error");
   }, [copying, text]);
 
-  const label = target === "prompt"
-    ? status === "copied"
-      ? t("cockpitSessionCopyPromptCopied")
-      : status === "error"
-        ? t("cockpitSessionCopyPromptFailed")
-        : t("cockpitSessionCopyPrompt")
-    : status === "copied"
-      ? t("cockpitSessionCopyResponseCopied")
-      : status === "error"
-        ? t("cockpitSessionCopyResponseFailed")
-        : t("cockpitSessionCopyResponse");
+  const label =
+    target === "prompt"
+      ? status === "copied"
+        ? t("cockpitSessionCopyPromptCopied")
+        : status === "error"
+          ? t("cockpitSessionCopyPromptFailed")
+          : t("cockpitSessionCopyPrompt")
+      : status === "copied"
+        ? t("cockpitSessionCopyResponseCopied")
+        : status === "error"
+          ? t("cockpitSessionCopyResponseFailed")
+          : t("cockpitSessionCopyResponse");
 
   return (
     <button

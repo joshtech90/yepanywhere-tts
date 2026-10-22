@@ -328,6 +328,35 @@ describe("foldCockpitTurns", () => {
     ]);
   });
 
+  it("folds a finished turn that a compaction notice follows", () => {
+    const prompt = createUserEntry("user-1");
+    const tool = createToolEntry("tool-1");
+    const finalAnswer = createAssistantEntry("asst-final");
+    const compaction = createBoundaryEntry("boundary-1");
+    const nextPrompt = createUserEntry("user-2");
+    const nextAnswer = createAssistantEntry("asst-next");
+
+    const result = foldCockpitTurns(
+      [prompt, tool, finalAnswer, compaction, nextPrompt, nextAnswer],
+      { expandedFoldKeys: new Set(), latestTurnOpen: false },
+    );
+
+    expect(result).toEqual([
+      prompt,
+      {
+        kind: "fold",
+        key: "text-asst-final\0fold",
+        expanded: false,
+        steps: 1,
+        notes: 0,
+      },
+      finalAnswer,
+      compaction,
+      nextPrompt,
+      nextAnswer,
+    ]);
+  });
+
   it("yields no fold row for a turn with nothing to hide", () => {
     const prompt = createUserEntry("user-1");
     const plainFinalAnswer = createAssistantEntry("asst-1", {

@@ -240,12 +240,18 @@ function getShellDisplay(
   };
 }
 
+const APPLY_PATCH_FILE_HEADER =
+  /^\*\*\*\s+(?:Update File|Add File|Delete File):\s+(.+?)\s*$/;
+
 function filePathFromHeader(line: string): string | undefined {
-  const applyPatch =
-    /^\*\*\*\s+(?:Update File|Add File|Delete File):\s+(.+?)\s*$/.exec(line);
+  const applyPatch = APPLY_PATCH_FILE_HEADER.exec(line);
   if (applyPatch?.[1]) return applyPatch[1].trim();
   const gitHeader = /^diff --git a\/(.+?) b\/(.+?)\s*$/.exec(line);
   if (gitHeader?.[2]) return gitHeader[2].trim();
+  return undefined;
+}
+
+function unifiedNewFilePath(line: string): string | undefined {
   const newFile = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
   if (newFile?.[1] && newFile[1] !== "/dev/null") return newFile[1].trim();
   return undefined;
@@ -302,7 +308,22 @@ function addRawPatch(
   let current: MutableFileChange | null | undefined = fallbackPath
     ? selectFile(fallbackPath)
     : undefined;
-  for (const line of patch.replace(/\r\n?/g, "\n").split("\n")) {
+  const lines = patch.replace(/\r\n?/g, "\n").split("\n");
+  // A unified diff names a file in a "--- " line directly followed by "+++ ".
+  // An apply-patch has its own headers; there, and anywhere else, such lines
+  // are changes: a removed "-- " comment or an added "++ " line.
+  const unified = !lines.some((line) => APPLY_PATCH_FILE_HEADER.test(line));
+  const isUnifiedFileHeader = (index: number): boolean => {
+    if (!unified) return false;
+    const line = lines[index] ?? "";
+    if (line.startsWith("--- ")) {
+      return lines[index + 1]?.startsWith("+++ ") === true;
+    }
+    return (
+      line.startsWith("+++ ") && lines[index - 1]?.startsWith("--- ") === true
+    );
+  };
+  for (const [index, line] of lines.entries()) {
     const movePath = movePathFromHeader(line);
     if (movePath) {
       const moved = currentPath
@@ -313,13 +334,16 @@ function addRawPatch(
         preservePopulatedFiles && moved.sourceLines.length > 0 ? null : moved;
       continue;
     }
-    const headerPath = filePathFromHeader(line);
+    const unifiedHeader = isUnifiedFileHeader(index);
+    const headerPath =
+      filePathFromHeader(line) ??
+      (unifiedHeader ? unifiedNewFilePath(line) : undefined);
     if (headerPath) {
       currentPath = headerPath;
       current = selectFile(headerPath);
       continue;
     }
-    if (line.startsWith("--- ")) continue;
+    if (unifiedHeader) continue;
     if (
       line.startsWith("@@") ||
       line.startsWith("+") ||
