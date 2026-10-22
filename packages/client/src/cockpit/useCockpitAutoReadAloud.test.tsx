@@ -5,13 +5,24 @@ const mocks = vi.hoisted(() => ({
   playReadAloud: vi.fn(async () => {}),
   stopReadAloud: vi.fn(),
   getReadAloudToken: vi.fn<() => string | null>(() => null),
+  listeners: new Set<() => void>(),
 }));
 
 vi.mock("../lib/readAloud", () => ({
   playReadAloud: mocks.playReadAloud,
   stopReadAloud: mocks.stopReadAloud,
   getReadAloudToken: mocks.getReadAloudToken,
+  subscribeReadAloud: (listener: () => void) => {
+    mocks.listeners.add(listener);
+    return () => mocks.listeners.delete(listener);
+  },
 }));
+
+/** Simulate the shared controller switching to another token. */
+function setReadAloudToken(token: string | null) {
+  mocks.getReadAloudToken.mockReturnValue(token);
+  for (const listener of [...mocks.listeners]) listener();
+}
 
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import type {
@@ -83,6 +94,7 @@ beforeEach(() => {
   mocks.playReadAloud.mockClear();
   mocks.stopReadAloud.mockClear();
   mocks.getReadAloudToken.mockReset().mockReturnValue(null);
+  mocks.listeners.clear();
 });
 afterEach(() => {
   cleanup();
@@ -197,6 +209,36 @@ describe("useCockpitAutoReadAloud", () => {
     expect(mocks.playReadAloud).not.toHaveBeenCalled();
   });
 
+  it("does not repeat an answer read or stopped manually while settling", () => {
+    const { result, update } = setup({ workingElsewhere: true });
+    act(() => result.current.toggle());
+    update({ working: true, entries: [user("u2")] });
+    update({
+      working: false,
+      workingElsewhere: false,
+      entries: [user("u2"), answer("a2", "Fertig")],
+    });
+    // A short manual playback starts and already ends before the timer.
+    setReadAloudToken("a2");
+    setReadAloudToken(null);
+    settle(COCKPIT_AUTO_READ_EXTERNAL_SETTLE_MS);
+    expect(mocks.playReadAloud).not.toHaveBeenCalled();
+
+    // The next turn's answer is read again.
+    update({ working: true, entries: [user("u2"), answer("a2", "Fertig")] });
+    update({
+      working: false,
+      entries: [
+        user("u2"),
+        answer("a2", "Fertig"),
+        user("u3"),
+        answer("a3", "Neu"),
+      ],
+    });
+    settle();
+    expect(mocks.playReadAloud).toHaveBeenCalledWith("Neu", "a3");
+  });
+
   it("waits for a final answer that arrives just after the session goes idle", () => {
     const { result, update } = setup();
     act(() => result.current.toggle());
@@ -285,6 +327,26 @@ describe("useCockpitAutoReadAloud", () => {
 
     const other = setup({ sessionId: "session-b" });
     expect(other.result.current.enabled).toBe(false);
+  });
+
+  it("keeps a switch changed in another window of the same device", () => {
+    const { result } = setup();
+    expect(result.current.enabled).toBe(false);
+
+    // Another Cockpit window switches this session on.
+    act(() => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(["session-a"]));
+      window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
+    });
+    expect(result.current.enabled).toBe(true);
+
+    // Switching another session here keeps that change.
+    const other = setup({ sessionId: "session-b" });
+    act(() => other.result.current.toggle());
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]")).toEqual([
+      "session-a",
+      "session-b",
+    ]);
   });
 
   it("stops playback when switched off", () => {

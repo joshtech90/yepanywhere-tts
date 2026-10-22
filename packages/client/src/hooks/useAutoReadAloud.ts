@@ -14,6 +14,16 @@ function readStored(): boolean {
   }
 }
 
+/** The newest assistant text of a session and a stable key for it. */
+export interface LatestAssistantText {
+  key: string;
+  text: string;
+}
+
+function isBusy(processState: string): boolean {
+  return processState === "in-turn" || processState === "waiting-input";
+}
+
 /**
  * Auto-read-aloud: when enabled, reads the latest assistant message aloud as
  * soon as a turn finishes (process state transitions in-turn -> idle).
@@ -22,15 +32,17 @@ function readStored(): boolean {
  * decides independently whether it speaks.
  *
  * @param processState current session process state
- * @param getLatestAssistantText returns the full plain text of the last
- *   assistant message (or null if none) — read lazily when a turn finishes
+ * @param getLatestAssistantText returns the last assistant message with text
+ *   (or null if none) — read lazily when a turn starts and finishes
  */
 export function useAutoReadAloud(
   processState: string,
-  getLatestAssistantText: () => string | null,
+  getLatestAssistantText: () => LatestAssistantText | null,
 ): { enabled: boolean; toggle: () => void } {
   const [enabled, setEnabled] = useState(readStored);
   const prevProcessState = useRef(processState);
+  // Newest assistant text when the turn began; undefined = no turn seen.
+  const turnBaseline = useRef<string | null | undefined>(undefined);
   // Keep the latest getter without forcing the effect to re-run on every render.
   const getterRef = useRef(getLatestAssistantText);
   getterRef.current = getLatestAssistantText;
@@ -51,12 +63,22 @@ export function useAutoReadAloud(
   useEffect(() => {
     const prev = prevProcessState.current;
     prevProcessState.current = processState;
-    if (!enabled) return;
+    if (isBusy(processState)) {
+      if (!isBusy(prev) || turnBaseline.current === undefined) {
+        turnBaseline.current = getterRef.current()?.key ?? null;
+      }
+      return;
+    }
     // A turn just completed.
     if (prev === "in-turn" && processState === "idle") {
-      const text = getterRef.current();
-      if (text?.trim()) {
-        void playReadAloud(text, "auto");
+      const baseline = turnBaseline.current;
+      turnBaseline.current = undefined;
+      if (!enabled) return;
+      const latest = getterRef.current();
+      // A turn that wrote no new text (stopped early, only tools, a command
+      // such as /compact) must not repeat the previous answer.
+      if (latest?.text.trim() && latest.key !== baseline) {
+        void playReadAloud(latest.text, "auto");
       }
     }
   }, [processState, enabled]);

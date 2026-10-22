@@ -90,6 +90,35 @@ describe("normalizeGeneratedSessionTitle", () => {
     },
   );
 
+  it.each([
+    ['"Login-Fehler beheben', "Login-Fehler beheben"],
+    ['Login-Fehler beheben"', "Login-Fehler beheben"],
+    ["„Login-Fehler beheben", "Login-Fehler beheben"],
+    ["Login-Fehler beheben“.", "Login-Fehler beheben"],
+    ["'Login-Fehler beheben", "Login-Fehler beheben"],
+    ['"ENOENT" beheben', '"ENOENT" beheben'],
+    ['Fix "ENOENT"', 'Fix "ENOENT"'],
+    ['"Foo" vs "Bar', '"Foo" vs "Bar'],
+    ["Joscha's Bot'", "Joscha's Bot'"],
+  ])("removes an unpaired quote at the title edge: %s", (raw, title) => {
+    expect(normalizeGeneratedSessionTitle(raw)).toBe(title);
+  });
+
+  it.each([
+    ["**Telegram-Bot Deploy**", "Telegram-Bot Deploy"],
+    ["*Telegram-Bot Deploy*", "Telegram-Bot Deploy"],
+    ["**Title:** Telegram-Bot Deploy", "Telegram-Bot Deploy"],
+    ['Title: **"Telegram-Bot Deploy"**.', "Telegram-Bot Deploy"],
+    ["Dateien mit Muster foo*", "Dateien mit Muster foo*"],
+    ["**Stripe** und **PayPal**", "**Stripe** und **PayPal**"],
+    ["__init__ aufraeumen", "__init__ aufraeumen"],
+  ])(
+    "removes complete Markdown wrappers without leaving fragments: %s",
+    (raw, title) => {
+      expect(normalizeGeneratedSessionTitle(raw)).toBe(title);
+    },
+  );
+
   it("takes the first non-empty line when the model adds a preamble", () => {
     expect(
       normalizeGeneratedSessionTitle(

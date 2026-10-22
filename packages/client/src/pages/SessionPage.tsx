@@ -292,6 +292,7 @@ import {
   uploadComposerAttachmentFile,
 } from "../lib/sessionComposerSubmission";
 import { isLegacyCodexSetupText } from "@yep-anywhere/shared/transcript/codexLegacySetup";
+import { getMessageId } from "@yep-anywhere/shared/transcript/message";
 import { resolveSessionProviderCapabilities } from "../lib/providerCapabilities";
 import {
   serverSupportsProjectQueue,
@@ -903,7 +904,7 @@ function SessionPageContent({
         const m = messages[i];
         if (isAssistantRole(m)) {
           const text = getMessagePlainText(m);
-          if (text.trim()) return text;
+          if (text.trim()) return { key: getMessageId(m) || text, text };
         }
       }
       return null;

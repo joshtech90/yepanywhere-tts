@@ -55,8 +55,11 @@ class MockAudio {
 
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  onpause: (() => void) | null = null;
+  onplay: (() => void) | null = null;
   src = "";
   ended = false;
+  paused = true;
   pause = vi.fn();
   play = vi.fn(async () => {});
 
@@ -192,6 +195,49 @@ describe("read-aloud controller", () => {
     resumeReadAloud();
     expect(getReadAloudState()).toBe("playing");
     expect(audio.play).toHaveBeenCalledTimes(3);
+    audio.onended?.();
+    await playback;
+    expect(getReadAloudState()).toBe("idle");
+  });
+
+  it("follows a pause and resume from outside the app, such as the lock screen", async () => {
+    apiMocks.ttsPlan.mockResolvedValue({ chunks: ["Only"] });
+    apiMocks.ttsSynthesize.mockResolvedValueOnce({ audioBase64: "AA==" });
+
+    const playback = playReadAloud("Answer", "external-controls");
+    await vi.waitFor(() => expect(getReadAloudState()).toBe("playing"));
+    const audio = MockAudio.instances[0];
+    if (!audio) throw new Error("no audio element");
+    audio.paused = false;
+
+    // A phone call or the lock screen pauses the element directly.
+    audio.paused = true;
+    audio.onpause?.();
+    expect(getReadAloudState()).toBe("paused");
+    expect(getReadAloudToken()).toBe("external-controls");
+
+    // One tap on the answer's control continues it.
+    resumeReadAloud();
+    expect(getReadAloudState()).toBe("playing");
+    expect(audio.play).toHaveBeenCalledTimes(2);
+
+    // The lock screen can also continue a paused playback.
+    pauseReadAloud();
+    audio.paused = true;
+    audio.onpause?.();
+    expect(getReadAloudState()).toBe("paused");
+    audio.paused = false;
+    audio.onplay?.();
+    expect(getReadAloudState()).toBe("playing");
+
+    // A late pause event from an earlier pause after a fast resume, and the
+    // pause that precedes "ended", leave the state alone.
+    audio.onpause?.();
+    expect(getReadAloudState()).toBe("playing");
+    audio.paused = true;
+    audio.ended = true;
+    audio.onpause?.();
+    expect(getReadAloudState()).toBe("playing");
     audio.onended?.();
     await playback;
     expect(getReadAloudState()).toBe("idle");

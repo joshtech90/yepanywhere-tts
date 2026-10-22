@@ -133,9 +133,20 @@ export function normalizeAutoSessionTitleSettings(
   };
 }
 
-const LEADING_LABEL_RE = /^(?:title|titel)\s*[:\-–—]\s*/iu;
-const MARKDOWN_NOISE_RE = /^[#>*\-\s]+/u;
+const LEADING_LABEL_RE =
+  /^(?:\*\*|__)?(?:title|titel)(?:\*\*|__)?\s*[:\-–—](?:\*\*|__)?\s*/iu;
+const MARKDOWN_NOISE_RE = /^(?:[#>\-\s]+|\*\s+)/u;
+const MARKDOWN_WRAPPER_RE = /^(\*{1,3}|_{1,3})(\S(?:.*\S)?)\1$/u;
 const TRAILING_PUNCTUATION_RE = /[.!?,;:]+$/u;
+
+function stripMarkdownWrapper(value: string): string {
+  const match = MARKDOWN_WRAPPER_RE.exec(value);
+  if (!match) return value;
+  const [, marker, inner] = match;
+  // `**a** und **b**` is two emphasized terms, not one wrapped title.
+  if (!marker || !inner || inner.includes(marker.charAt(0))) return value;
+  return inner;
+}
 
 function stripTitleQuotes(value: string): string {
   if (/^["'`“”‘’„‚«»]+$/u.test(value)) return "";
@@ -156,7 +167,27 @@ function stripTitleQuotes(value: string): string {
       if (!inner.includes(close)) return inner;
     }
   }
-  return value;
+  return stripUnpairedEdgeQuote(value);
+}
+
+const QUOTE_FAMILIES = ['"', "'", "`", "“”„", "‘’‚", "«»"] as const;
+
+/**
+ * Drop a lone quote at either edge (`"Login-Fehler beheben`). A quote whose
+ * family appears again inside the title may close or open a quoted term, so
+ * it stays.
+ */
+function stripUnpairedEdgeQuote(value: string): string {
+  let result = value;
+  for (const edge of ["start", "end"] as const) {
+    const char = edge === "start" ? result.charAt(0) : result.slice(-1);
+    const family = QUOTE_FAMILIES.find((chars) => char && chars.includes(char));
+    if (!family) continue;
+    const rest = edge === "start" ? result.slice(1) : result.slice(0, -1);
+    if ([...rest].some((c) => family.includes(c))) continue;
+    result = rest;
+  }
+  return result;
 }
 
 /**
@@ -187,7 +218,9 @@ export function normalizeGeneratedSessionTitle(
   // single pass in either order leaves one of them behind.
   let stripped = firstLine.replace(MARKDOWN_NOISE_RE, "");
   for (let pass = 0; pass < 4; pass += 1) {
-    const next = stripTitleQuotes(stripped.replace(LEADING_LABEL_RE, ""))
+    const next = stripTitleQuotes(
+      stripMarkdownWrapper(stripped.replace(LEADING_LABEL_RE, "")),
+    )
       .replace(TRAILING_PUNCTUATION_RE, "")
       .trim();
     if (next === stripped) break;
