@@ -63,7 +63,9 @@ export interface CockpitAssistantEntry extends CockpitTranscriptEntryBase {
 
 export interface CockpitBoundaryEntry extends CockpitTranscriptEntryBase {
   kind: "boundary";
-  subtype: "compact_boundary" | "status";
+  subtype: "compact_boundary" | "status" | "error" | "warning";
+  /** Provider/runtime diagnostics must survive the quiet transcript projection. */
+  content?: string;
 }
 
 export interface CockpitToolEntry extends CockpitTranscriptEntryBase {
@@ -376,7 +378,10 @@ export function createCockpitTranscriptEntries(input: {
 
     if (
       item.type === "system" &&
-      (item.subtype === "compact_boundary" || item.subtype === "status")
+      (item.subtype === "compact_boundary" ||
+        item.subtype === "status" ||
+        item.subtype === "error" ||
+        item.subtype === "warning")
     ) {
       flushAssistant();
       const timestamp = timestampForItem(item);
@@ -386,6 +391,9 @@ export function createCockpitTranscriptEntries(input: {
         ...(timestamp ? { timestamp } : {}),
         sourceItems: [item],
         subtype: item.subtype,
+        ...(item.subtype === "error" || item.subtype === "warning"
+          ? { content: item.content }
+          : {}),
       });
     }
   }

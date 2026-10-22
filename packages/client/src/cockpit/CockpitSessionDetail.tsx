@@ -305,6 +305,17 @@ const TranscriptEntry = memo(function TranscriptEntry({
   }
   const time = entryTime(entry.timestamp, locale);
   if (entry.kind === "boundary") {
+    if (entry.subtype === "error" || entry.subtype === "warning") {
+      return (
+        <p
+          className={contentStyles.providerNotice}
+          data-cockpit-entry-key={entry.key}
+          data-severity={entry.subtype}
+        >
+          {entry.content}
+        </p>
+      );
+    }
     return (
       <div className={styles.boundary} data-cockpit-entry-key={entry.key}>
         <span aria-hidden="true" />
