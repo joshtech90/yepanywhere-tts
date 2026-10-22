@@ -249,6 +249,41 @@ describe("read-aloud controller", () => {
     await playback;
   });
 
+  it.each(["initial", "resume"])(
+    "ignores an interrupted %s play after a newer resume succeeds",
+    async (attempt) => {
+      const interrupted = deferred<void>();
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      apiMocks.ttsPlan.mockResolvedValue({ chunks: ["Answer"] });
+      apiMocks.ttsSynthesize.mockResolvedValue({ audioBase64: "AA==" });
+      const playback = playReadAloud("Answer", "rapid-resume");
+      const audio = MockAudio.instances[0];
+      if (!audio) throw new Error("no audio element");
+      if (attempt === "initial") {
+        audio.play.mockReturnValueOnce(interrupted.promise);
+      } else {
+        await vi.waitFor(() => expect(audio.play).toHaveBeenCalledTimes(1));
+        pauseReadAloud();
+        audio.play.mockReturnValueOnce(interrupted.promise);
+        resumeReadAloud();
+      }
+      await vi.waitFor(() => expect(getReadAloudState()).toBe("playing"));
+      pauseReadAloud();
+      resumeReadAloud();
+      interrupted.reject(
+        new DOMException("interrupted by pause", "AbortError"),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(getReadAloudState()).toBe("playing");
+      expect(getReadAloudFailedToken()).toBeNull();
+      expect(consoleError).not.toHaveBeenCalled();
+      stopReadAloud();
+      await playback;
+    },
+  );
+
   it("ignores a late resume failure of an earlier playback", async () => {
     const rejects: Array<(error: unknown) => void> = [];
     apiMocks.ttsPlan.mockResolvedValue({ chunks: ["Only chunk"] });

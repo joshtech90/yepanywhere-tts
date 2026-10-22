@@ -13,6 +13,7 @@ let audioEl: HTMLAudioElement | null = null;
 let objectUrl: string | null = null;
 let cancelPlaybackWait: (() => void) | null = null;
 let sessionId = 0;
+let playAttempt = 0;
 let token: string | null = null;
 let failedToken: string | null = null;
 let state: ReadAloudState = "idle";
@@ -80,6 +81,7 @@ export function stopReadAloud(): void {
  */
 export function pauseReadAloud(): void {
   if (state !== "playing" && state !== "loading") return;
+  playAttempt++;
   audioEl?.pause();
   state = "paused";
   emit();
@@ -96,9 +98,15 @@ export function resumeReadAloud(): void {
   if (!waitingForChunk) {
     const audio = audioEl;
     const mySession = sessionId;
+    const attempt = ++playAttempt;
     audio.play().catch(() => {
       // Only this playback, and only if nothing paused or replaced it since.
-      if (sessionId === mySession && audioEl === audio && state === "playing") {
+      if (
+        sessionId === mySession &&
+        audioEl === audio &&
+        playAttempt === attempt &&
+        state === "playing"
+      ) {
         pauseReadAloud();
       }
     });
@@ -148,9 +156,11 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
       if (prev && prev !== url) URL.revokeObjectURL(prev);
       // A pause during loading holds the next chunk until resumed.
       if (state !== "paused") {
+        const attempt = ++playAttempt;
         audio.play().catch(() => {
-          // A pause tapped before play() settles aborts it; that is no failure.
-          if (state === "paused" && audioEl === audio) return;
+          // A pause invalidates this attempt even if a newer resume already
+          // succeeded before the browser delivers the aborted play rejection.
+          if (!alive() || playAttempt !== attempt) return;
           fail();
         });
       }
