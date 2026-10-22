@@ -5,7 +5,11 @@ import {
   useRef,
   useSyncExternalStore,
 } from "react";
-import { playReadAloud, stopReadAloud } from "../lib/readAloud";
+import {
+  getReadAloudToken,
+  playReadAloud,
+  stopReadAloud,
+} from "../lib/readAloud";
 import type { CockpitTranscriptEntry } from "./core/sessionDetail";
 
 /**
@@ -252,6 +256,9 @@ export function useCockpitAutoReadAloud({
       if (current.endedAt !== endedAt || skippedRef.current) return;
       current.endedAt = null;
       current.baseline = answerKey;
+      // A manual start during settling already owns this answer. In
+      // particular, auto-read must not restart it or undo a manual pause.
+      if (getReadAloudToken() === answerEntryKey) return;
       // The answer's own read-aloud control shows this playback and pauses it.
       void playReadAloud(answerText, answerEntryKey);
     }, settleMs);

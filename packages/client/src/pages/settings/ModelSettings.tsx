@@ -50,7 +50,7 @@ import {
   getDefaultProvider,
   useProviders,
 } from "../../hooks/useProviders";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useForkSummaryAutoOpen } from "../../hooks/useForkSummaryAutoOpen";
 import { useProviderSubscriptionUsage } from "../../hooks/useProviderSubscriptionUsage";
 import { useServerSettings } from "../../hooks/useServerSettings";
@@ -235,6 +235,9 @@ export function ModelSettings() {
   const autoSessionTitle = normalizeAutoSessionTitleSettings(
     settings?.autoSessionTitle,
   );
+  const [autoTitleLengthDraft, setAutoTitleLengthDraft] = useState<
+    string | null
+  >(null);
   const updateAutoSessionTitle = useCallback(
     async (patch: Partial<AutoSessionTitleSettings>) => {
       await updateSetting(
@@ -1210,12 +1213,28 @@ export function ModelSettings() {
                   className="settings-input-small"
                   min={AUTO_SESSION_TITLE_MIN_LENGTH}
                   max={AUTO_SESSION_TITLE_MAX_LENGTH}
-                  value={autoSessionTitle.maxLength}
+                  value={autoTitleLengthDraft ?? autoSessionTitle.maxLength}
                   disabled={settingsLoading}
                   onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    if (!Number.isFinite(parsed)) return;
-                    void updateAutoSessionTitle({ maxLength: parsed });
+                    setAutoTitleLengthDraft(e.target.value);
+                  }}
+                  onBlur={(e) => {
+                    const text = e.currentTarget.value.trim();
+                    setAutoTitleLengthDraft(null);
+                    if (!text) return;
+                    const parsed = Number(text);
+                    if (
+                      Number.isFinite(parsed) &&
+                      parsed !== autoSessionTitle.maxLength
+                    ) {
+                      void updateAutoSessionTitle({ maxLength: parsed });
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      e.currentTarget.blur();
+                    }
                   }}
                   aria-label={t("autoSessionTitleMaxLengthLabel")}
                 />

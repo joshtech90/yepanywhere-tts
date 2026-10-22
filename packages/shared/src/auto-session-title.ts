@@ -134,9 +134,30 @@ export function normalizeAutoSessionTitleSettings(
 }
 
 const LEADING_LABEL_RE = /^(?:title|titel)\s*[:\-–—]\s*/iu;
-const SURROUNDING_QUOTES_RE = /^["'`“”‘’«»]+|["'`“”‘’«»]+$/gu;
 const MARKDOWN_NOISE_RE = /^[#>*\-\s]+/u;
 const TRAILING_PUNCTUATION_RE = /[.!?,;:]+$/u;
+
+function stripTitleQuotes(value: string): string {
+  if (/^["'`“”‘’„‚«»]+$/u.test(value)) return "";
+  for (const [open, close] of [
+    ['"', '"'],
+    ["'", "'"],
+    ["`", "`"],
+    ["“", "”"],
+    ["‘", "’"],
+    ["„", "“"],
+    ["‚", "‘"],
+    ["«", "»"],
+    ["»", "«"],
+  ] as const) {
+    if (value.startsWith(open) && value.endsWith(close)) {
+      const inner = value.slice(1, -1);
+      // Quoted terms inside a title are content, not a whole-title wrapper.
+      if (!inner.includes(close)) return inner;
+    }
+  }
+  return value;
+}
 
 /**
  * Turn raw helper-model output into a storable title.
@@ -166,9 +187,7 @@ export function normalizeGeneratedSessionTitle(
   // single pass in either order leaves one of them behind.
   let stripped = firstLine.replace(MARKDOWN_NOISE_RE, "");
   for (let pass = 0; pass < 4; pass += 1) {
-    const next = stripped
-      .replace(LEADING_LABEL_RE, "")
-      .replace(SURROUNDING_QUOTES_RE, "")
+    const next = stripTitleQuotes(stripped.replace(LEADING_LABEL_RE, ""))
       .replace(TRAILING_PUNCTUATION_RE, "")
       .trim();
     if (next === stripped) break;
