@@ -271,6 +271,26 @@ describe("CockpitSessionMenu", () => {
 });
 
 describe("CockpitSessionMenu without confirmation", () => {
+  it("shows a failed direct hide and lets the user retry", async () => {
+    const onArchive = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const onClose = vi.fn();
+    renderMenu({ onArchive, onClose, confirmArchive: false });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: "Hide" }));
+    });
+    expect(screen.getByRole("status").textContent).toMatch(/could not/i);
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: "Hide" }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("hides an idle session at once", async () => {
     const onArchive = vi.fn(() => Promise.resolve(true));
     const onClose = vi.fn();
