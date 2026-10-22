@@ -218,6 +218,54 @@ describe("Cockpit session detail", () => {
     ).toBe("/projects/project-1/sessions/session-1");
   });
 
+  it("keeps opened live thinking open when the answer starts streaming", () => {
+    const thinkingOnly = {
+      kind: "assistant" as const,
+      key: "live-assistant",
+      text: [],
+      thinking: [
+        {
+          id: "live-thinking",
+          text: "Comparing the two drafts.",
+          status: "complete" as const,
+        },
+      ],
+      spokenText: "",
+      isStreaming: false,
+    };
+    detailMocks.data = detailData({
+      entries: [thinkingOnly],
+      processState: "in-turn",
+    });
+    const view = renderDetail();
+    const thinking = view.container.querySelector("details");
+    if (!thinking) throw new Error("thinking missing");
+    thinking.open = true;
+
+    detailMocks.data = detailData({
+      entries: [
+        {
+          ...thinkingOnly,
+          text: [
+            {
+              id: "live-text",
+              text: "The second draft",
+              isStreaming: true,
+              abortedMidStream: false,
+            },
+          ],
+          isStreaming: true,
+        },
+      ],
+      processState: "in-turn",
+    });
+    view.rerender(detailTree());
+
+    expect(screen.getByText("The second draft")).toBeTruthy();
+    expect(view.container.querySelector("details")).toBe(thinking);
+    expect(thinking.open).toBe(true);
+  });
+
   it("shows work in another program in the header and at the transcript end", () => {
     detailMocks.data = detailData({
       status: { owner: "external" },

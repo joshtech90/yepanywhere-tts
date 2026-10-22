@@ -374,39 +374,32 @@ const TranscriptEntry = memo(function TranscriptEntry({
   }
 
   // Thinking without an answer yet is one quiet line, not an answer card.
-  if (entry.text.length === 0 && entry.thinking.length > 0) {
-    return (
-      <article
-        className={styles.thinkingEntry}
-        data-cockpit-entry-key={entry.key}
-        data-entry-kind="assistant"
-      >
-        <AssistantContent entry={entry} />
-      </article>
-    );
-  }
-
+  // Both shapes share one element tree, so thinking the reader opened stays
+  // open when the answer starts to stream below it.
+  const thinkingOnly = entry.text.length === 0 && entry.thinking.length > 0;
   return (
     <article
-      className={styles.assistantEntry}
+      className={thinkingOnly ? styles.thinkingEntry : styles.assistantEntry}
       data-cockpit-entry-key={entry.key}
       data-entry-kind="assistant"
     >
-      <header className={styles.entryHeader}>
-        <span className={styles.assistantIdentity}>
-          <span className={styles.assistantMark} aria-hidden="true">
-            AI
-          </span>
-          <strong>{t("cockpitSessionAssistant")}</strong>
-          {entry.isStreaming && (
-            <span className={styles.streamingLabel}>
-              {t("cockpitSessionStreaming")}
+      {!thinkingOnly && (
+        <header className={styles.entryHeader}>
+          <span className={styles.assistantIdentity}>
+            <span className={styles.assistantMark} aria-hidden="true">
+              AI
             </span>
-          )}
-        </span>
-        {time && <time dateTime={entry.timestamp}>{time}</time>}
-      </header>
-      <div className={styles.assistantBody}>
+            <strong>{t("cockpitSessionAssistant")}</strong>
+            {entry.isStreaming && (
+              <span className={styles.streamingLabel}>
+                {t("cockpitSessionStreaming")}
+              </span>
+            )}
+          </span>
+          {time && <time dateTime={entry.timestamp}>{time}</time>}
+        </header>
+      )}
+      <div className={thinkingOnly ? undefined : styles.assistantBody}>
         <AssistantContent entry={entry} />
       </div>
       {entry.spokenText && !entry.isStreaming && (
