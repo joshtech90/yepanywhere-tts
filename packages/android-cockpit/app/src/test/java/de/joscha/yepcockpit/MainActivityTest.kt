@@ -9,11 +9,14 @@ import android.os.Bundle
 import android.webkit.ServiceWorkerClient
 import android.webkit.ServiceWorkerController
 import android.webkit.ServiceWorkerWebSettings
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -118,6 +121,56 @@ class MainActivityTest {
             controller.pause().stop().destroy()
             ReflectionHelpers.setField(speicher, "_value", vorher)
         }
+    }
+
+    @Test
+    fun fremdeLinksOeffnenAlsBrowserTabUndEigeneBleibenImCockpit() {
+        val r = Rechner("mac", "Mac", Uri.parse("https://mac.example:3400"), 0, 0)
+        val feld = RechnerListe::class.java.getDeclaredField("alle\$delegate").apply { isAccessible = true }
+        val speicher = feld.get(null)
+        val vorher = RechnerListe.alle
+        ReflectionHelpers.setField(speicher, "_value", listOf(r))
+        val controller = Robolectric.buildActivity(MainActivity::class.java)
+        try {
+            val a = controller.setup().get()
+            val wurzel = a.findViewById<FrameLayout>(android.R.id.content).getChildAt(0) as LinearLayout
+            val web = (wurzel.getChildAt(1) as FrameLayout).getChildAt(0) as WebView
+            val gestartet = shadowOf(a)
+            gestartet.clearNextStartedActivities()
+            fun antippen(url: String) = web.webViewClient.shouldOverrideUrlLoading(web, anfrage(url))
+
+            // Eigene Cockpit-Seiten bleiben in der angemeldeten Ansicht.
+            assertFalse(antippen(r.pfad("/cockpit?view=sessions")))
+            assertNull(gestartet.nextStartedActivity)
+
+            // Fremde Webadressen, auch derselbe Host auf anderem Port: Browser-Tab.
+            for (url in listOf("https://example.com/seite?a=1", "http://mac.example:8080/")) {
+                assertTrue(antippen(url))
+                val tab = gestartet.nextStartedActivity
+                assertEquals(Intent.ACTION_VIEW, tab.action)
+                assertEquals(url, tab.dataString)
+                assertTrue(tab.hasCategory(Intent.CATEGORY_BROWSABLE))
+                assertTrue(tab.hasExtra("android.support.customtabs.extra.SESSION"))
+            }
+
+            // Mail geht ohne Browser-Tab an die Mail-App, unbekannte Schemata nirgendwohin.
+            assertTrue(antippen("mailto:post@example.com"))
+            assertFalse(gestartet.nextStartedActivity.hasExtra("android.support.customtabs.extra.SESSION"))
+            assertTrue(antippen("intent://x#Intent;package=de.joscha.yepcockpit;end"))
+            assertNull(gestartet.nextStartedActivity)
+        } finally {
+            controller.pause().stop().destroy()
+            ReflectionHelpers.setField(speicher, "_value", vorher)
+        }
+    }
+
+    private fun anfrage(url: String) = object : WebResourceRequest {
+        override fun getUrl(): Uri = Uri.parse(url)
+        override fun isForMainFrame() = true
+        override fun isRedirect() = false
+        override fun hasGesture() = true
+        override fun getMethod() = "GET"
+        override fun getRequestHeaders(): Map<String, String> = emptyMap()
     }
 
     @Test

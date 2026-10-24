@@ -43,8 +43,8 @@ import org.json.JSONObject
 /**
  * Eine WebView je Rechner, wie in der Mac-App. Die Cockpit-Oberflaeche bleibt
  * unveraendert; die App ergaenzt nur, was eine Browser-App nicht kann.
- * Fremde Adressen oeffnen im normalen Browser, nie in einer Ansicht mit
- * Cockpit-Anmeldung.
+ * Fremde Adressen oeffnen als Browser-Tab ueber der App, nie in einer Ansicht
+ * mit Cockpit-Anmeldung.
  */
 class MainActivity : Activity() {
     private lateinit var leiste: View
@@ -414,9 +414,9 @@ class MainActivity : Activity() {
     // MARK: Hilfen
 
     private fun extern(uri: Uri) {
-        if (uri.scheme !in setOf("http", "https", "mailto", "tel")) return
+        val absicht = fremdeAbsicht(uri) ?: return
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE))
+            startActivity(absicht)
         } catch (e: ActivityNotFoundException) {
             Toast.makeText(this, "Keine App für diesen Link", Toast.LENGTH_SHORT).show()
         }
@@ -539,5 +539,24 @@ class MainActivity : Activity() {
 
         /** Downloads laufen als data:-URL durch den Speicher; groessere gehen im Browser. */
         private const val MAX_DOWNLOAD = 50 * 1024 * 1024
+
+        /** Kennzeichnet eine Absicht als Custom Tab; ohne Sitzung genuegt der leere Eintrag. */
+        private const val CUSTOM_TAB_SITZUNG = "android.support.customtabs.extra.SESSION"
+
+        /**
+         * Webadressen oeffnen als Browser-Tab (Custom Tab) ueber der App; Zurueck
+         * fuehrt ins Cockpit. Ein normales Chrome-Fenster schloss sich auf Joschas
+         * vivo (Android 16, Chrome 155) nach dem Kaltstart sofort wieder (24.10.2026).
+         * Hat eine App die Adresse fest uebernommen, etwa GitHub, oeffnet weiter
+         * diese. Mail und Telefon gehen an ihre App.
+         */
+        fun fremdeAbsicht(uri: Uri): Intent? {
+            val absicht = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
+            return when (uri.scheme) {
+                "http", "https" -> absicht.putExtras(Bundle().apply { putBinder(CUSTOM_TAB_SITZUNG, null) })
+                "mailto", "tel" -> absicht
+                else -> null
+            }
+        }
     }
 }
