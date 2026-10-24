@@ -143,8 +143,8 @@ class MainActivityTest {
             assertFalse(antippen(r.pfad("/cockpit?view=sessions")))
             assertNull(gestartet.nextStartedActivity)
 
-            // Fremde Webadressen, auch derselbe Host auf anderem Port: Browser-Tab.
-            for (url in listOf("https://example.com/seite?a=1", "http://mac.example:8080/")) {
+            // Fremde Webadressen, auch derselbe Host mit anderem Port oder ohne https: Browser-Tab.
+            for (url in listOf("https://example.com/seite?a=1", "https://mac.example:8080/", "http://mac.example:3400/")) {
                 assertTrue(antippen(url))
                 val tab = gestartet.nextStartedActivity
                 assertEquals(Intent.ACTION_VIEW, tab.action)
