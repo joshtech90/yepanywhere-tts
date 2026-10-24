@@ -19,6 +19,7 @@ ANDROID_SERIAL=emulator-5554 packages/android-cockpit/build.sh --debug   # bauen
 
 - Je Rechner eine WebView; der Rechnerwechsel-Knopf im Cockpit schaltet die
   Ansicht. Streifen hinter der Statusleiste in der Kachelfarbe des Rechners.
+- Fremde Links öffnen als Browser-Tab über der App; Zurück führt ins Cockpit.
 - Push „Fertig“ (mit Sitzungstitel und Anfang der finalen Antwort) und
   „Wartet auf dich“, auch bei geschlossener App. Tippen öffnet die Sitzung,
   „Antworten“ schickt Text direkt an sie.

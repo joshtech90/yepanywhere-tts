@@ -808,7 +808,13 @@ Cockpits und pusht nur ueber den oeffentlichen Upstream-Broker.
 **Rechner.** Der Rechnerwechsel-Knopf des Cockpits schaltet auf die Ansicht des
 anderen Rechners, statt dessen Cockpit in der aktuellen zu laden. Ein Streifen
 in der Kachelfarbe des Rechners liegt hinter der Statusleiste. Fremde Adressen
-oeffnen im Standardbrowser, nie in einer Ansicht mit Cockpit-Anmeldung.
+oeffnen nie in einer Ansicht mit Cockpit-Anmeldung: Webadressen erscheinen als
+Browser-Tab des Standardbrowsers (Custom Tab) ueber der App, Zurueck fuehrt
+unveraendert ins Cockpit. Hat eine App die Adresse fest uebernommen (App Link),
+oeffnet diese; Mail- und Telefonlinks gehen an ihre App, andere Schemata
+nirgendwohin. Ein normales Chrome-Fenster schloss sich auf Joschas vivo
+(Android 16, Chrome 155) nach dem Kaltstart jedes Mal sofort wieder, die App
+sprang zurueck (24.10.2026).
 Mikrofon (Diktierknopf) gibt die App nur den eigenen Rechnern frei.
 
 **Push.** Die App ist fuer jeden Yep-Server ein gewoehnliches Web-Push-Abo
