@@ -183,6 +183,28 @@ Codex `turn/interrupt`) bracket the ladder but cancel work; they are not
 | 2. End of turn (the real queue) | `priority: "later"`; not consumed mid-turn, starts the next turn at turn end (cron/loop prompts use this lane) | no protocol lane — the native app holds the message client-side until `turn/completed`; YA holds it server-side (`deferred`) | → queue |
 | 3. End of turn + verified quiet window | not native | not native | Zz patient (`patienceSeconds`) |
 
+Codex 0.164 moves `turn/steer` to level 0 by default. Its feature flag
+`instant_interrupt` (listed "under development", enabled without any config)
+makes a steer cancel the in-flight model response — including a tool call
+whose input is still being generated — and resample with the steer included;
+the cancelled output is discarded and Codex logs the
+`response.interrupt.accepted` / `response.output_item.interrupted` events as
+unhandled. The request schema has no per-steer lane option. Measured
+2026-10-23 with an ephemeral app-server thread (gpt-6-astra, low effort,
+one ~2,500-word `apply_patch` write, steer 10s into tool-input generation):
+with the flag on, the interrupt discarded the partial call and the write
+landed 190s after the steer; with `--disable instant_interrupt`, the steer
+waited, the write landed uninterrupted, and the steer arrived as the next
+item (level 1, the behavior in the table above). In real use the default
+cost a session four rewrites of a multi-minute write, one per user steer.
+
+Contract: YA Codex session launches pass `-c features.instant_interrupt=false`
+so ↗ steer stays level 1. When `$CODEX_HOME/config.toml` mentions
+`instant_interrupt` at all, YA passes nothing and the user's setting governs.
+The `-c` form is deliberate: a CLI without the feature ignores an unknown
+`features.*` key but exits on `--disable <unknown>`. One-shot app-servers
+(model list, rate limits, recaps, summaries) take no steers and are unchanged.
+
 Asymmetry worth knowing: Codex exposes steering in the protocol but
 queueing only as client-side holding; Claude exposes all three native
 lanes as data on the user message itself (`priority`), so "Claude can't

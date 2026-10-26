@@ -1,4 +1,5 @@
 import type {
+  StagedAttachmentRef,
   ImagePreparationProfile,
   ThinkingOption,
   TurnEffort,
@@ -255,6 +256,7 @@ export async function collectComposerAttachmentsForSubmission({
   updatePendingMessage,
   uploadingStatus,
   uploadFailureMessage = "An attachment failed to upload. Attach it again before sending.",
+  collectSyncedAttachments,
 }: {
   currentAttachments: readonly ComposerAttachment[];
   pendingUploads: readonly Promise<ComposerAttachment | null>[];
@@ -271,6 +273,7 @@ export async function collectComposerAttachmentsForSubmission({
   ) => void;
   uploadingStatus?: string;
   uploadFailureMessage?: string;
+  collectSyncedAttachments?: () => Promise<StagedAttachmentRef[]>;
 }): Promise<ComposerAttachment[]> {
   const collectedAttachments = [...currentAttachments];
   const showUploadStatus =
@@ -281,8 +284,25 @@ export async function collectComposerAttachmentsForSubmission({
   }
 
   try {
+    if (collectSyncedAttachments) {
+      const refs = await collectSyncedAttachments();
+      const collectedIds = new Set(collectedAttachments.map((a) => a.id));
+      for (const ref of refs) {
+        if (!collectedIds.has(ref.id)) {
+          collectedAttachments.push(ref);
+          collectedIds.add(ref.id);
+        }
+      }
+    }
+    const removeCollected = () => {
+      const sentIds = new Set(collectedAttachments.map((a) => a.id));
+      setComposerAttachments(
+        (prev) => prev.filter((attachment) => !sentIds.has(attachment.id)),
+        { persistDraft: false },
+      );
+    };
+    removeCollected();
     if (pendingUploads.length > 0) {
-      setComposerAttachments([], { persistDraft: false });
       const results = await Promise.all(pendingUploads);
       for (const result of results) {
         if (result) collectedAttachments.push(result);
@@ -294,15 +314,7 @@ export async function collectComposerAttachmentsForSubmission({
         );
       }
 
-      const sentIds = new Set(
-        collectedAttachments.map((attachment) => attachment.id),
-      );
-      setComposerAttachments(
-        (prev) => prev.filter((attachment) => !sentIds.has(attachment.id)),
-        { persistDraft: false },
-      );
-    } else {
-      setComposerAttachments([], { persistDraft: false });
+      removeCollected();
     }
   } finally {
     if (showUploadStatus && pendingMessageId) {

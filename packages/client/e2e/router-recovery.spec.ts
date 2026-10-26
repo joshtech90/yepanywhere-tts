@@ -43,6 +43,20 @@ test("router recovery preserves sequential typing during status updates and fits
   await expect(
     page.getByText("Failed-launch cleanup pending: 2"),
   ).toBeVisible();
+  // A healthy pairing shows which socket it uses and hides the socket choice.
+  await expect(
+    page.getByText("Uses AAR’s default socket", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByRole("textbox")).toHaveCount(0);
+  for (const viewport of [
+    { width: 1000, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await recordUiCapture(page, `router-healthy-${viewport.width}`, viewport);
+  }
+  await page.setViewportSize({ width: 1000, height: 600 });
+  await page.getByRole("button", { name: "Change socket" }).click();
   const input = page.getByRole("textbox", { name: "Socket path (optional)" });
   const measurements = await input.evaluate((element) => {
     const field = element as HTMLInputElement;

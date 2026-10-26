@@ -91,7 +91,21 @@ matching upstream release tags when the version changed; the real zero-token
 probe covers the production model-discovery command but intentionally does not
 exercise authenticated assistant events or persisted sessions.
 
-Current refresh, 2026-10-16 (Pi 1.3.0): the installed binary passes the
+Current refresh, 2026-10-23 (Pi 1.4.0): the installed binary passes the
+zero-token RPC contract and the local-server effort-retry integration test
+with `PI_EXECUTABLE` set explicitly to the managed launcher. Against the
+installed 1.3.0 release, `dist/modes/rpc` and the session manager are
+unchanged; `dist/cli.js` remains. The agent session now omits a recovery
+attempt cut off at the output limit, together with its tool results, from
+model context through context edits, which `PiSessionReader` already
+skips. Compaction summaries use the model's output limit, and resumed
+sessions activate extension tools registered after the branch recorded its
+loadout. None changes an RPC command, response, lifecycle event, or entry
+type YA consumes, so root compatibility advances to 1.4.0 with no adapter
+change. No authenticated turn ran; the evidence is the installed `dist`
+diff and the package changelog.
+
+Previous refresh, 2026-10-16 (Pi 1.3.0): the installed binary passes the
 zero-token RPC contract and the local-server effort-retry integration test
 with `PI_EXECUTABLE` set explicitly to the managed launcher. Compared with
 the installed 1.2.0 release, Pi's RPC mode, agent-core lifecycle events,
@@ -228,11 +242,39 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible ([provider-version-support](provider-version-support.md)).
 
+Current source refresh, 2026-10-23 (0.164.0, generated types only):
+
+- Installed Codex is `codex-cli 0.164.0`; the official `rust-v0.164.0` tag
+  resolves to `6aaac6948`, 1,004 commits after `rust-v0.163.0`.
+  `expectedVersion` and `compatibleThroughVersion` record `0.164.0`.
+- Regeneration adds `ImageGenerationInputImage` and changes five subset
+  files, all with fields YA does not read: image-generation items carry
+  either a `fileId` attachment reference or an inline `result`, plus
+  observed `inputImages`; MCP server status gains `toolListMeta`;
+  `thread/fork` gains `experimentalDisablePredictionMcp` and narrows
+  prediction-mode config overrides; `turn/start` and `turn/steer` gain
+  `responsesapiClientMetadataPatch`. YA renders no image-generation item
+  and never requests prediction mode. No adapter change.
+- Cold resume now restores a thread's saved service tier, reasoning
+  summary, and personality unless the caller overrides them (upstream
+  `430a16799`). YA sends a selected tier on resume and the current
+  selection on every `turn/start`, and its live tier change writes
+  `thread/settings/update`, so Codex's saved tier tracks YA's. The
+  `setServiceTier` comment now states the version-dependent behavior.
+  Residual: a tier saved by another client (the Codex TUI) on a thread YA
+  resumes at standard speed would be restored, because YA omits the field
+  for standard rather than sending an explicit clear.
+- A zero-token `model/list` returns the same eight models as the 0.163.0
+  audit, `gpt-6.1-sol` default at low effort.
+- No 0.164.0 rollout exists locally yet, and no credentialed smoke ran.
+  Server type checking and the provider suites (809 tests) pass on the
+  regenerated types.
+
 Recheck, 2026-10-16: installed Codex is still `0.163.0`, the latest stable
 release (only `0.164.0` alphas are newer), and `pnpm codex:protocol:check`
 reports no drift. Nothing to refresh.
 
-Current source refresh, 2026-10-15 (0.163.0, generated types only):
+Previous source refresh, 2026-10-15 (0.163.0, generated types only):
 
 - Installed Codex is `codex-cli 0.163.0`; the official `rust-v0.163.0` tag
   resolves to `83086188a`, 232 commits after `rust-v0.162.1`.
@@ -1223,7 +1265,25 @@ Previous-model registry review:
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
 
-Current source refresh, 2026-10-21 (Claude Code 2.1.306 / SDK 0.3.306):
+Current source refresh, 2026-10-23 (Claude Code 2.1.309 / SDK 0.3.309):
+
+- The SDK and matching native packages advance from 0.3.306 to 0.3.309;
+  the bundled Linux executable reports Claude Code 2.1.309, ahead of the
+  standalone 2.1.308 install. Compatibility markers advance together.
+- The declaration delta is additive and unused by YA: a `liveReply`
+  control option for cloud and Remote Control workers, an
+  `sshHostCommands` desktop setting, documented value filtering for
+  `disableAllHooks` and HTTP-hook allowlists in embedder settings, and
+  bridge reconnect semantics for undelivered writes. `agentSdkTypes`,
+  `core`, and tool declarations are unchanged.
+- A no-turn handshake returns the same 13 model rows and efforts as
+  0.3.306. `/goal` and `/loop` remain native. Claude provider tests (48),
+  transcript-schema tests (26), and server type checking pass.
+- No assistant turn ran, so authenticated generation and 2.1.309
+  transcripts are not covered. Existing provider-host workers must
+  restart to adopt the update.
+
+Previous source refresh, 2026-10-21 (Claude Code 2.1.306 / SDK 0.3.306):
 
 - The SDK and matching native packages advance from 0.3.301 to 0.3.306.
   The bundled Linux executable reports Claude Code 2.1.306 and embeds
@@ -1915,7 +1975,26 @@ Difference detectors:
 - `@agentclientprotocol/sdk` changes enough to alter `ACPClient` request,
   notification, or permission typings.
 
-Current compatibility audit, 2026-10-16 (1.0.60, no adapter change):
+Current compatibility audit, 2026-10-23 (1.0.67, no adapter change):
+
+- Installed Grok is `grok 1.0.67 (2fe064390d07) [stable]`; ACP
+  `initialize` reports agent 1.0.67, protocol 1. Public `xai-org/grok-build`
+  was not rechecked. Local release notes cover 1.0.63–1.0.67.
+- `grok models`, `models_cache.json`, and a no-token `session/new` list the
+  same four models as 1.0.60, default `grok-4.7`, every model at `high`
+  effort. `session/new` still returns `configOptions` for model and effort
+  and no modes.
+- Launch remains `grok agent [--effort] [-m] --no-leader stdio`.
+  `session/load` with `_meta.noReplay` succeeds on an empty session.
+  `sessionCapabilities` adds `resume`, which YA does not use.
+- Release-note items touching YA's path: since 1.0.64 an untrusted folder
+  runs only managed hooks, while headless sessions treat user hooks as
+  trusted; 1.0.63 `/fork` keeps the parent's `-m`/`--effort`. YA configures
+  no Grok hooks. The rest are terminal UI, worktree, and auth fixes.
+- The four Grok provider/reader test files (73 tests) pass. No live prompt
+  ran; the probe left two empty sessions under `~/.grok/sessions/`.
+
+Previous compatibility audit, 2026-10-16 (1.0.60, no adapter change):
 
 - Installed Grok is `grok 1.0.60 (01a8e1c591c0) [stable]`; ACP `initialize`
   reports agent 1.0.60, protocol 1. Public `xai-org/grok-build` is git
@@ -1962,8 +2041,8 @@ official agent SDKs inject into spawned non-leader agents, against
 `session/set_config_option` for mid-session model/effort and `session/close`
 for shutdown.
 
-Status: Grok ACP is current through installed 1.0.60, subject to the
-live-prompt coverage gap. Root `compatibleThroughVersion` records `1.0.60`.
+Status: Grok ACP is current through installed 1.0.67, subject to the
+live-prompt coverage gap. Root `compatibleThroughVersion` records `1.0.67`.
 
 Previous source refresh, 2026-08-16:
 

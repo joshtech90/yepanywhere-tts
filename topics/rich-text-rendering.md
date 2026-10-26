@@ -698,6 +698,8 @@ relabeled as a failed execution merely because its preview is unavailable.
 Unknown augmentation fields are retained, and Claude Read dedup records with a
 file path but no body keep their distinct “unchanged” display.
 
+Write acknowledgements with `content` and no `file` key remain eligible for
+rich presentation; a missing file body is not a malformed acknowledgement.
 Observed text-block acknowledgements do not suppress input-side Edit diffs or
 UpdatePlan steps/counts. Plan sibling output is available behind disclosure.
 Nullable Edit original context means unavailable context, not proof of a new

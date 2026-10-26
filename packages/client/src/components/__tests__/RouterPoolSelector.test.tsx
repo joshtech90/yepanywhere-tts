@@ -362,6 +362,17 @@ it("shows discovery failure with Retry, and progress while checking", () => {
   expect(screen.getByRole("status").textContent).toBe("routerChecking");
   view.rerender(<RouterPoolSelector {...props} error={false} busy={false} />);
   expect(view.container.textContent).toBe("");
+  // No pool granted for this provider: nothing to route, so no control.
+  view.rerender(
+    <RouterPoolSelector
+      {...props}
+      provider="codex"
+      error={false}
+      busy={false}
+      data={overview()}
+    />,
+  );
+  expect(view.container.textContent).toBe("");
 });
 function Discovery({
   provider = "claude",

@@ -84,6 +84,13 @@ function normalizeAttachmentRef(value: unknown): StagedAttachmentRef | null {
     ...(height !== undefined ? { height } : {}),
     createdAt,
     updatedAt,
+    ...(typeof value.rendezPath === "string"
+      ? { rendezPath: value.rendezPath }
+      : {}),
+    ...(value.rendezAutoSendAt === null ||
+    optionalFiniteNumber(value.rendezAutoSendAt) !== undefined
+      ? { rendezAutoSendAt: value.rendezAutoSendAt as number | null }
+      : {}),
   };
 }
 
@@ -205,7 +212,18 @@ export function draftStorageValueForText(
   return serializeDraftEnvelope({
     version: DRAFT_ENVELOPE_VERSION,
     text,
-    ...(existing?.attachments ? { attachments: existing.attachments } : {}),
+    ...(existing?.attachments
+      ? {
+          attachments: {
+            ...existing.attachments,
+            refs: existing.attachments.refs.map((ref) =>
+              text.length > 0 && ref.rendezAutoSendAt !== undefined
+                ? { ...ref, rendezAutoSendAt: null }
+                : ref,
+            ),
+          },
+        }
+      : {}),
   });
 }
 

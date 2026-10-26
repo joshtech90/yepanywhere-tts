@@ -269,7 +269,7 @@ test("router-owned pools expose selection and usage without integration administ
   });
   await expect(
     overview.getByText(
-      "Manage accounts, pools and access grants in Agent Auth Router.",
+      "Accounts, pools and access grants are managed in Agent Auth Router.",
       { exact: false },
     ),
   ).toBeVisible();

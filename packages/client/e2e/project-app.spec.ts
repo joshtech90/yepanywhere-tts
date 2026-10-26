@@ -235,8 +235,11 @@ test("Live preview reloads Vite changes through the sandbox app proxy", async ({
         if (String(payload) === '{"type":"connected"}') connected = true;
       }),
     );
-    const started = page.waitForResponse((response) =>
-      response.url().endsWith("/app/start"),
+    // /app/start waits for process readiness, not just request acceptance.
+    // The 2026-10-26 full run exceeded 5s; allow 4x that observed bound.
+    const started = page.waitForResponse(
+      (response) => response.url().endsWith("/app/start"),
+      { timeout: 20_000 },
     );
     await app
       .getByRole("button", { name: "Live preview", exact: true })

@@ -21,12 +21,12 @@ the loaded refresh window fixes that mechanism. After a client reload, a
 six-second observation held 100 rows across 24 store notifications and the user
 reported that flashing stopped. This does not close the original wake delay.
 
-The granted tab also repeatedly emitted `Tool result for unknown tool_use`
-while rendering this long conversation. Investigate tool-result pairing and
-render repetition at the owning projection; do not suppress the warning. The
-bounded performance snapshot after reload observed 21 long tasks in 25 seconds,
-with a 91 ms maximum, and no multi-second main-thread pause. It cannot explain
-an earlier stall that was outside the capture.
+The repeated `Tool result for unknown tool_use` warning is separately fixed:
+the October 25 granted tab placed a result before its matching call, and shared
+projection now registers calls before attaching results. This does not close
+the wake delay. The bounded September performance snapshot after reload
+observed 21 long tasks in 25 seconds, with a 91 ms maximum, and no multi-second
+main-thread pause. It cannot explain an earlier stall outside the capture.
 
 Related contracts: `topics/client-global-store.md`,
 `topics/session-summary-fidelity.md`, and `topics/remote-browser-diagnostics.md`.

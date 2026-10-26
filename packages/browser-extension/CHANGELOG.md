@@ -1,5 +1,13 @@
 # Chrome extension changelog
 
+## [0.1.4] - 2026-10-24
+
+- Refresh the bundled client for Yep Anywhere 0.11.0, including cached ticket
+  description search and existing-folder project setup on supported servers.
+- Improve composer focus, draft handling, session navigation and provider controls.
+- Update client dependencies for published security advisories.
+- Preserve the existing store identity, install permissions and saved-host login.
+
 ## [0.1.3] - 2026-10-14
 
 - Open the app in popup windows and from the toolbar context menu.

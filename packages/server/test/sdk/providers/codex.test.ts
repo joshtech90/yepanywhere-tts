@@ -497,6 +497,54 @@ describe("CodexProvider", () => {
       }
     });
 
+    it("launches sessions with steer-cancels-generation disabled unless the user's Codex config sets it", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-steer-lane-"));
+      const argvPath = join(tempDir, "argv.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-steer-lane",
+        buildFakeCodexAppServer(join(tempDir, "requests.jsonl")).replace(
+          /^(#![^\n]*\n)/,
+          `$1(await import("node:fs")).appendFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`,
+        ),
+      );
+      const launchArguments = async (codexHome: string): Promise<string[]> => {
+        writeFileSync(argvPath, "");
+        const session = await new CodexProvider({
+          codexPath,
+          codexHome,
+        }).startSession({ cwd: tempDir });
+        try {
+          await session.iterator.next();
+        } finally {
+          await session.abort();
+        }
+        return readFileSync(argvPath, "utf8")
+          .trim()
+          .split("\n")
+          .flatMap((line) => JSON.parse(line) as string[]);
+      };
+      try {
+        const defaultHome = join(tempDir, "default-home");
+        mkdirSync(defaultHome);
+        expect((await launchArguments(defaultHome)).join(" ")).toContain(
+          "-c features.instant_interrupt=false",
+        );
+
+        const configuredHome = join(tempDir, "configured-home");
+        mkdirSync(configuredHome);
+        writeFileSync(
+          join(configuredHome, "config.toml"),
+          "[features]\ninstant_interrupt = true\n",
+        );
+        expect((await launchArguments(configuredHome)).join(" ")).not.toContain(
+          "instant_interrupt",
+        );
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("runs goal control through thread goal RPCs without a model turn", async () => {
       const tempDir = mkdtempSync(join(tmpdir(), "codex-goal-commands-"));
       const logPath = join(tempDir, "fake-codex-requests.jsonl");

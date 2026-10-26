@@ -66,7 +66,17 @@ Status: **implemented (2026-09-20).**
     than created (a limited user's own project root is still made on first
     use). An existing empty folder gets the same Git initialization; one
     with any content is added as it is, never initialized. The
-    Git choice is remembered in the browser. Servers without
+    Git choice is remembered in the browser.
+  - The panel asks the server what the settled path holds
+    (`project-folder-state`, checked 200 ms after the entry stops changing;
+    the previous answer stands meanwhile) and says so. A folder with
+    content, such as an existing repository first opened in YA, shows only
+    that Start adds it as it is: no starting points, no Git choice, and the
+    start action reads **Add project**. A path naming a file says it is not
+    a folder and offers nothing to start. A missing path or an empty folder
+    keeps the palette and Git choice. Servers without the capability get no
+    request; the panel then shows every choice and its plan text notes that
+    a folder with files is added as it is. Servers without
     `project-creation-git-choice` always initialize Git; there the box is
     checked and disabled and no choice is sent.
 - A name that still equals the path's last component is no override. Only a

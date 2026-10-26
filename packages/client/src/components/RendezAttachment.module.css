@@ -1,0 +1,46 @@
+.root {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.preview {
+  position: relative;
+  padding: 3px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  overflow: hidden;
+  min-width: 0;
+  max-width: 100%;
+}
+.counting {
+  border-color: color-mix(
+    in srgb,
+    var(--app-yep-green) 45%,
+    var(--border-color)
+  );
+}
+.progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: var(--rendez-progress);
+  height: 2px;
+  background: color-mix(
+    in srgb,
+    var(--app-yep-green) 60%,
+    var(--text-secondary)
+  );
+}
+.status {
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+.status small {
+  display: block;
+  color: var(--text-muted);
+  margin-top: 2px;
+  font-size: inherit;
+}

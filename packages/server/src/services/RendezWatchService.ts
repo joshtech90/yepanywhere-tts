@@ -123,6 +123,19 @@ export class RendezWatchService {
   private busy = false;
   private closed = false;
   private settings: RendezSettings;
+  private composeProject: string | undefined;
+
+  /** A visible new-session composer can own watching before its first send. */
+  async setComposeProject(project: string | undefined): Promise<boolean> {
+    this.composeProject = project;
+    this.schedule();
+    await this.work;
+    return !!project && this.started.has(project);
+  }
+
+  enabled(project: string): boolean {
+    return process.platform !== "win32" && this.isOn(project);
+  }
 
   constructor(
     settingsService: ServerSettingsService,
@@ -172,7 +185,8 @@ export class RendezWatchService {
   private rearm(prior: RendezSettings, next: RendezSettings): void {
     const now = ++this.sequence;
     if (prior.enabled !== next.enabled) {
-      // Inheriting projects follow the new default from now on.
+      // Snapshot prior overrides before deleting them; inheriting projects
+      // follow the new default from now on.
       for (const project of [...this.projectArmedAt.keys()]) {
         if (!(project in next.projects)) this.projectArmedAt.delete(project);
       }
@@ -191,6 +205,7 @@ export class RendezWatchService {
   }
 
   private async mayAttach(project: string): Promise<boolean> {
+    if (project === this.composeProject) return true;
     const armedAt = this.projectArmedAt.get(project) ?? this.globalArmedAt;
     const messagedAt = this.messagedAt.get(project);
     if (
@@ -262,7 +277,13 @@ export class RendezWatchService {
     const configured = this.settings;
     const enabled =
       configured.enabled || Object.values(configured.projects).some(Boolean);
-    const projects = enabled ? await this.listProjects() : [];
+    const projects = enabled ? [...(await this.listProjects())] : [];
+    if (
+      enabled &&
+      this.composeProject &&
+      !projects.some((p) => p.path === this.composeProject)
+    )
+      projects.unshift({ path: this.composeProject });
     if (this.closed || configured !== this.settings) return;
     const wanted = new Set<string>();
     const windowMs = configured.windowMs ?? 1000;

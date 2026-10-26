@@ -66,7 +66,8 @@ test("an unmatched typed path opens the same New project panel", async ({
   const search = page.getByRole("combobox", { name: "Project path" });
   await search.fill("~/no-such-project-yet");
   const panel = page.getByRole("region", { name: "New project", exact: true });
-  await expect(panel.getByText(/No project at .* yet/)).toBeVisible();
+  const missingFolder = panel.getByText(/No folder at .* yet/);
+  await expect(missingFolder).toBeVisible();
   // The search box is the path field: no second box repeats it.
   await expect(panel.getByRole("textbox")).toHaveCount(0);
   await expect(page.locator(".new-session-project-summary-title")).toHaveText(
@@ -77,7 +78,7 @@ test("an unmatched typed path opens the same New project panel", async ({
   await expect(page.locator("#new-session-project-panel")).toBeVisible();
   await page.locator("textarea.new-session-form-textarea").click();
   await expect(page.locator("#new-session-project-panel")).toBeHidden();
-  await expect(panel.getByText(/No project at .* yet/)).toBeVisible();
+  await expect(missingFolder).toBeVisible();
   await page
     .locator(".new-session-project-chooser")
     .evaluate((node) => node.scrollIntoView({ block: "start" }));

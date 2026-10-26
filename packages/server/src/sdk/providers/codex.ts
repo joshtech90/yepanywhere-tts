@@ -21,7 +21,9 @@ import { startAgentSelfSession } from "./agent-self.js";
  */
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   CODEX_TOOL_CORRELATION_FIELD,
   type CodexAsyncUserInputQuestion,
@@ -356,6 +358,31 @@ async function waitForCodexOverloadRetry(
     timeout.unref?.();
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/**
+ * Codex 0.164 enables `instant_interrupt` by default, which makes
+ * `turn/steer` cancel the in-flight model response, including a tool call
+ * still being generated, instead of landing after the current tool call.
+ * YA's steer is the after-tool-call lane, so session launches disable the
+ * flag unless the user's own Codex config names it. `-c` rather than
+ * `--disable`: a CLI that lacks the feature rejects `--disable` but ignores
+ * an unknown `features.*` key.
+ */
+export async function codexSteerLaneArguments(
+  env: NodeJS.ProcessEnv,
+): Promise<string[]> {
+  const configPath = join(
+    env.CODEX_HOME ?? join(homedir(), ".codex"),
+    "config.toml",
+  );
+  try {
+    const config = await readFile(configPath, "utf8");
+    if (/\binstant_interrupt\b/.test(config)) return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return ["-c", "features.instant_interrupt=false"];
 }
 
 async function withCodexTimeout<T>(
@@ -2238,8 +2265,9 @@ export class CodexProvider implements AgentProvider {
       effortUpdatesActiveTurn: true,
       setServiceTier: async (serviceTier) => {
         const next = serviceTier || null;
-        // Thread settings apply from the next turn; resume does not restore
-        // them, so later turn/start requests carry the selection too.
+        // Thread settings apply from the next turn. Resume restores them only
+        // from Codex 0.164.0, so later turn/start requests carry the
+        // selection too.
         if (activeClient && runtimeState.threadId) {
           await activeClient.request("thread/settings/update", {
             threadId: runtimeState.threadId,
@@ -3095,7 +3123,12 @@ export class CodexProvider implements AgentProvider {
       (notification) =>
         this.shouldSuppressLiveDeltaNotification(notification, options),
       sessionSandbox,
-      options.routerLaunch ? codexRouterArguments(options.routerLaunch) : [],
+      [
+        ...(options.routerLaunch
+          ? codexRouterArguments(options.routerLaunch)
+          : []),
+        ...(await codexSteerLaneArguments(codexEnv)),
+      ],
     );
     setActiveClient(appServer);
 

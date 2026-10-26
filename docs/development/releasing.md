@@ -68,3 +68,22 @@ See [mobile store preparation](../distribution/mobile/README.md) for shared
 listing copy, existing icons, initial artwork, and the boundary between internal
 testing and public store submission. Private account and credential inventory
 lives in the dotfiles runbooks.
+
+## Coordinated source releases
+
+For a coordinated release, prepare all product version metadata and changelogs
+in one commit on `main`. The standalone desktop and extension helpers normally
+create their own version commits; applying those metadata changes together
+keeps the release tags on one source revision. Push the candidate to `main`
+and pass platform CI plus the extension's manual `package` acceptance run.
+Recheck the clean source, unused versions, changelogs and extension store
+identity, then atomically push the npm, desktop and extension tags to that
+verified commit. The tagged workflows retain their normal tests, exact-ZIP
+acceptance, signing and publication checks.
+
+The Android internal workflow can run in parallel; its own build and native
+acceptance gates still precede publication. Dispatch it on the same `main`
+revision and verify the workflow's `headSha` matches the coordinated release
+commit. The dispatch pins its source; later branch movement does not change
+the selected artifact.
+Chrome review and Android public-beta promotion remain separate delivery steps.

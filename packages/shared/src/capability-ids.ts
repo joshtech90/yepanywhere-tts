@@ -822,6 +822,18 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "rendez-project-status",
     introducedIn: "0.9.4",
   },
+  projectFolderState: {
+    id: 134,
+    direction: "server",
+    name: "project-folder-state",
+    introducedIn: "0.10.3",
+  },
+  rendezCompose: {
+    id: 135,
+    direction: "server",
+    name: "rendez-active-compose",
+    introducedIn: "0.11.1",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

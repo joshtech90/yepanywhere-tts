@@ -48,11 +48,11 @@
   "devDependencies": {
     "@types/node": "^22.19.15",
     "typescript": "^5.7.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "dependencies": {
     "tssrp6a": "^3.0.0",
     "tweetnacl": "^1.0.3",
-    "zod": "^4.3.4"
+    "zod": "^4.6.7"
   }
 }

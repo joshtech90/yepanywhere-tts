@@ -16,6 +16,7 @@ import {
   type DraftSnapshot,
   type DraftWrite,
   type DraftWriteResult,
+  type StagedAttachmentRef,
 } from "@yep-anywhere/shared";
 import { readDraftEnvelopeValue } from "./draftEnvelope";
 import { accountDraftStorageKey } from "./draftAccountStorage";
@@ -452,8 +453,20 @@ export interface PendingDraft {
  * focused sibling types into: that write lands in the sibling's composer and
  * drops whatever was typed after the text it was merged from.
  */
-function holdsRemote(e: Entry, local: DraftPayload): boolean {
+function holdsRemote(
+  e: Entry,
+  local: DraftPayload,
+  merged: DraftPayload,
+): boolean {
   if (siblingForeground()) return true;
+  // Attachment-only reconciliation leaves the typed text and selection alone.
+  if (
+    draftPayloadEqual(
+      { ...local, attachments: [] },
+      { ...merged, attachments: [] },
+    )
+  )
+    return false;
   if (!editing(e.key)) return false;
   return (
     draftHasContent(local) ||
@@ -683,7 +696,15 @@ export class DraftSyncClient {
       this.beginSubmit(e);
       return;
     }
-    this.schedule(e, raw === null ? 0 : 3000);
+    // A rendez deadline must observe typing/removal without the normal draft
+    // debounce. Only these short-lived attachment drafts take the urgent path.
+    const rendezDraft = [payload(e.address, raw), e.saved.base?.payload].some(
+      (draft) =>
+        draft?.attachments.some(
+          (ref) => typeof ref.rendezAutoSendAt === "number",
+        ),
+    );
+    this.schedule(e, raw === null || rendezDraft ? 0 : 3000);
     if (e.remote) status();
   }
   private schedule(e: Entry, delay: number): void {
@@ -866,7 +887,7 @@ export class DraftSyncClient {
       );
       if (!draftPayloadEqual(local, merged)) {
         e.remote = read;
-        if (holdsRemote(e, local) || conflicting(e)) {
+        if (holdsRemote(e, local, merged) || conflicting(e)) {
           status();
           return;
         }
@@ -1194,6 +1215,67 @@ export class DraftSyncClient {
       /* The existing send can still succeed. Preserve its recovery copy. */
     }
   }
+  /** Extend the captured submission before Send, respecting deliberate removals. */
+  async collectSubmissionAttachments(
+    key: string,
+  ): Promise<StagedAttachmentRef[]> {
+    const e = this.register(key);
+    if (!e) return [];
+    if (!e.saved.submitted) this.beginSubmit(e);
+    await e.submissionTask;
+    const saved = e.saved;
+    const submitted = saved.submitted;
+    if (!submitted || this.stopped)
+      throw new Error("Draft submission is no longer active");
+    if ((this.started && !this.identified) || saved.pending)
+      throw new Error("Draft save is unresolved; retry Send");
+    const read = await this.post<DraftRead>("read", { slot: e.address.slot });
+    if (this.stopped || e.saved !== saved || saved.submitted !== submitted)
+      throw new Error("Draft changed while preparing attachments; retry Send");
+    const merged = mergeDrafts(
+      saved.base?.payload ?? EMPTY_DRAFT,
+      submitted.payload,
+      read.snapshot.payload,
+    );
+    // A fresh read is necessary even when the first capture hasn't reached
+    // this browser. Do not adopt another device's text as part of this Send.
+    if (!merged.attachments.some((ref) => ref.rendezPath !== undefined))
+      return [];
+    // Manual Send owns this snapshot now. Cancel its deadlines in the same
+    // revision that confirmation will later clear, before materialization.
+    merged.attachments = merged.attachments.map((ref) =>
+      ref.rendezPath !== undefined ? { ...ref, rendezAutoSendAt: null } : ref,
+    );
+    if (
+      !draftPayloadEqual(
+        { ...merged, attachments: [] },
+        { ...submitted.payload, attachments: [] },
+      )
+    )
+      throw new Error(
+        "Draft text changed on another device; review it before sending",
+      );
+    const operation: DraftWrite = {
+      slot: e.address.slot,
+      baseRevision: read.snapshot.revision,
+      ticket: read.ticket,
+      operationId: generateUUID(),
+      payload: merged,
+    };
+    const result = await this.post<DraftWriteResult>("write", operation);
+    if (
+      this.stopped ||
+      e.saved !== saved ||
+      saved.submitted !== submitted ||
+      result.outcome !== "accepted"
+    )
+      throw new Error("Draft changed while preparing attachments; retry Send");
+    submitted.payload = result.snapshot.payload;
+    submitted.revision = result.snapshot.revision;
+    saved.base = result.snapshot;
+    this.persist(e);
+    return result.snapshot.payload.attachments;
+  }
   async confirm(key: string): Promise<void> {
     const e = this.register(key);
     if (!e) return;
@@ -1330,7 +1412,18 @@ export class DraftSyncClient {
           // A pending save reads the server anyway. Preempting its debounce
           // made each tab's save a change notice that sent the other tab's
           // save at once, so two tabs alternated writes on every keystroke.
-          if (e && !e.timer && e.saved.base?.revision !== item.revision)
+          // Incoming rendez files must join the composer even during a long
+          // run of typing. Ordinary drafts retain their quiet-save debounce.
+          const rendezDraft =
+            e &&
+            payload(e.address, e.saved.raw).attachments.some(
+              (ref) => ref.rendezPath !== undefined,
+            );
+          if (
+            e &&
+            (!e.timer || rendezDraft) &&
+            e.saved.base?.revision !== item.revision
+          )
             this.schedule(e, 0);
         }
         after = result.next ?? "";
@@ -1526,6 +1619,14 @@ export function setDraftAccount(source: string, owner: string): void {
 export function confirmSyncedDraft(key: string): void {
   const a = draftAddress(key);
   if (a) void clients.get(a.source)?.confirm(key);
+}
+export async function collectSyncedSubmissionAttachments(
+  key: string,
+): Promise<StagedAttachmentRef[]> {
+  const address = draftAddress(key);
+  return address
+    ? (clients.get(address.source)?.collectSubmissionAttachments(key) ?? [])
+    : [];
 }
 export function resumeSyncedDraft(key: string): void {
   const a = draftAddress(key);

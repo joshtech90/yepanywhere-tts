@@ -60,7 +60,7 @@ binary JSON framing, server-info authentication and resume challenge binding.
 Foreign harnesses additionally corrupt M2 and JSON and assert typed errors.
 
 The 27th check compares a complete second transcript using srp 0.7.0-rc.3
-and crypto-bigint 0.7.5: A, x, verifier, k, padded u, client/server S, server B,
+and crypto-bigint 0.7.6: A, x, verifier, k, padded u, client/server S, server B,
 M1 and M2 all match the production oracle. Both backends are compiled into
 this experiment; its binary sizes are not the cost of a selected single
 shipping backend.

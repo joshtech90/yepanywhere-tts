@@ -82,7 +82,12 @@ const server = createServer({ allowHalfOpen: false }, (client) => {
       client.resume();
     });
     client.once("close", () => upstream.destroy());
-    upstream.once("close", () => client.destroy());
+    // A cleanly closed upstream has already handed over its last bytes, which
+    // may still sit in the client's write buffer: end the client after they
+    // flush. Destroying it here truncated any reply larger than that buffer.
+    upstream.once("close", (hadError) =>
+      hadError ? client.destroy() : client.end(),
+    );
   };
   client.on("data", onData);
 });

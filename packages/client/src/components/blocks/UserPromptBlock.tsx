@@ -464,7 +464,7 @@ function UserPromptActionButtons({
           </svg>
         </button>
       )}
-      {((onForkAfter && onForkAfterSummary) || forkUnavailableMessage) && (
+      {(onForkAfter || forkUnavailableMessage) && (
         <ForkTurnMenu
           messageId={messageId}
           onForkBefore={onForkBefore}
@@ -599,9 +599,7 @@ export const UserPromptBlock = memo(function UserPromptBlock({
     Number(Boolean(content)) +
     Number(Boolean(onCorrect)) +
     Number(Boolean(onCancelUnconfirmed)) +
-    Number(
-      Boolean((onForkAfter && onForkAfterSummary) || forkUnavailableMessage),
-    ) +
+    Number(Boolean(onForkAfter || forkUnavailableMessage)) +
     Number(Boolean(onTrimBefore)) +
     Children.count(extraActions);
   const measurementKey =

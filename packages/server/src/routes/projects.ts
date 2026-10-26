@@ -22,6 +22,7 @@ import {
   decideProjectCreation,
   ensureProjectDirectory,
   isContainedOnDisk,
+  probeProjectFolder,
 } from "./project-creation.js";
 import type { LimitedUsersService } from "../auth/LimitedUsersService.js";
 import { principalFor } from "../auth/limitedLaunchPolicy.js";
@@ -63,6 +64,18 @@ import type { Supervisor } from "../supervisor/Supervisor.js";
 import type { Project, SessionSummary } from "../supervisor/types.js";
 import { buildProviderProjectCatalog } from "./provider-catalog.js";
 import { getActiveSessionIndexOptions } from "./session-list-options.js";
+
+/** A typed project path as the server will store it: `~` expanded, no trailing separator. */
+function normalizeAddedProjectPath(typed: string): string {
+  let normalizedPath = typed.trim();
+  if (normalizedPath.startsWith("~")) {
+    normalizedPath = normalizedPath.replace("~", homedir());
+  }
+  if (normalizedPath.length > 1 && /[/\\]$/.test(normalizedPath)) {
+    normalizedPath = normalizedPath.slice(0, -1);
+  }
+  return canonicalizeProjectPath(normalizedPath);
+}
 
 export interface ProjectsDeps {
   scanner: ProjectScanner;
@@ -524,6 +537,26 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     return c.json({ projects });
   });
 
+  // GET /api/projects/folder-state?path= - What adding this path would find.
+  // Registered before /:projectId, which would otherwise claim the segment.
+  // Answers only where this principal may add a project.
+  routes.get("/folder-state", async (c) => {
+    const typed = c.req.query("path");
+    if (!typed?.trim()) return c.json({ error: "path is required" }, 400);
+    const normalizedPath = normalizeAddedProjectPath(typed);
+    if (!isAbsolutePath(normalizedPath)) {
+      return c.json({ error: "Path must be absolute" }, 400);
+    }
+    const creation = await decideProjectCreation(c, normalizedPath);
+    if (creation.kind === "denied") {
+      return c.json({ error: creation.error }, 403);
+    }
+    return c.json({
+      path: normalizedPath,
+      state: await probeProjectFolder(normalizedPath),
+    });
+  });
+
   // GET /api/projects/:projectId - Get project info
   routes.get("/:projectId", async (c) => {
     const projectId = c.req.param("projectId");
@@ -615,16 +648,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       throw error;
     }
 
-    // Normalize path (remove trailing slashes, expand ~)
-    let normalizedPath = body.path.trim();
-    if (normalizedPath.startsWith("~")) {
-      normalizedPath = normalizedPath.replace("~", homedir());
-    }
-    // Remove trailing slash/backslash
-    if (normalizedPath.length > 1 && /[/\\]$/.test(normalizedPath)) {
-      normalizedPath = normalizedPath.slice(0, -1);
-    }
-    normalizedPath = canonicalizeProjectPath(normalizedPath);
+    const normalizedPath = normalizeAddedProjectPath(body.path);
 
     // Validate path is absolute
     if (!isAbsolutePath(normalizedPath)) {

@@ -8,11 +8,16 @@ import {
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { projectAppApi, type ProjectAppTarget } from "../api/projectApp";
+import { useArtifactTabHandoff } from "../hooks/useArtifactTabHandoff";
 import { useLongPress } from "../hooks/useLongPress";
 import { useVersion } from "../hooks/useVersion";
 import { activityBus } from "../lib/activityBus";
 import { UI_KEYS } from "../lib/storageKeys";
-import { artifactAudience } from "../lib/artifactPreview";
+import {
+  appTabUrl,
+  artifactAudience,
+  artifactTabUrl,
+} from "../lib/artifactPreview";
 import type { VoiceInputButtonRef } from "./VoiceInputButton";
 import { ViewerWindowActions } from "./ViewerWindowActions";
 import { ComposerMicAction } from "./ComposerMicAction";
@@ -239,9 +244,21 @@ export function ProjectAppViewer({
   }, [target, onTarget]);
   // A cross-origin frame's location is unreadable, so an app that wants its
   // page shown in the bar posts it; only this frame's own origin counts.
-  const frameRef = useRef<HTMLIFrameElement>(null);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const [frame, setFrame] = useState<HTMLIFrameElement | null>(null);
+  const attachFrame = useCallback((element: HTMLIFrameElement | null) => {
+    frameRef.current = element;
+    setFrame(element);
+  }, []);
   const [frameLocation, setFrameLocation] = useState<URL | null>(null);
   const viewUrl = view?.url;
+  // The sandboxed frame cannot show a PDF; its hand-off page asks for a tab.
+  // A service is its own origin, while static apps and artifacts are grants.
+  useArtifactTabHandoff(
+    frame,
+    viewUrl,
+    view?.kind === "service" ? appTabUrl : artifactTabUrl,
+  );
   // biome-ignore lint/correctness/useExhaustiveDependencies: A reload remounts the frame, whose page reports itself again.
   useEffect(() => {
     setFrameLocation(null);
@@ -1172,7 +1189,7 @@ export function ProjectAppViewer({
       {view && (
         <iframe
           key={`${view.id}:${reload}`}
-          ref={frameRef}
+          ref={attachFrame}
           hidden={details}
           className={styles.frame}
           title={view.label}

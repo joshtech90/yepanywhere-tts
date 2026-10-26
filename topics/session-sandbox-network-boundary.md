@@ -116,6 +116,10 @@ its first line and is spliced to `127.0.0.1:<port>` inside the namespace.
 - Connections are capped, a port line that does not arrive promptly or is not
   a port in 1–65535 closes the connection, and idle spliced connections close
   after ten minutes. The broker exits with its launch and removes its socket.
+- An app's clean close ends YA's side only after the reply's buffered bytes
+  flush; an error close discards them. Destroying on every close truncated
+  replies from servers that close right after writing (Python `http.server`,
+  repo-view), breaking PDFs and large pages on reserved app hosts.
 
 Servers bound to the sandbox's loopback need no change. How YA offers such a
 server to the logged-in user is the session-app contract in

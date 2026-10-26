@@ -463,3 +463,6 @@
 - android-host — experimental on-device YA host, shared Alpine payload and lifecycle.
 
 - rendezvous — project file uploads, live-session routing, attachment previews, and held burst overflow.
+
+- dependency-security-maintenance - Patch advisories and retain green cross-platform CI.
+- coordinated-releases - Same-source npm, desktop, extension and Android release preparation and delivery.

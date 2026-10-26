@@ -1,9 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { connect } from "node:net";
+import { type AddressInfo, connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   prepareSessionSandbox,
@@ -50,6 +51,56 @@ async function waitFor(check: () => boolean, what: string): Promise<void> {
   }
   throw new Error(`timed out waiting for ${what}`);
 }
+
+// The broker splices whatever loopback it runs in, so the host's will do.
+describe("session sandbox port broker splice", { timeout: 20_000 }, () => {
+  it("delivers a large reply whose upstream closes right after writing it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ya-port-broker-splice-"));
+    const socketPath = join(root, "broker.sock");
+    // Small enough to arrive whole, with its close, before the reader drains;
+    // an odd size leaves a partial chunk queued (an exact 256 KiB did not).
+    const body = Buffer.alloc(250_000, 0x61);
+    const upstream = createServer((socket) =>
+      socket.once("data", () => socket.end(body)),
+    );
+    await new Promise<void>((resolve) =>
+      upstream.listen(0, "127.0.0.1", resolve),
+    );
+    const broker = spawn(
+      process.execPath,
+      [
+        fileURLToPath(
+          new URL("../src/session-sandbox-port-broker.mjs", import.meta.url),
+        ),
+        socketPath,
+      ],
+      { stdio: ["pipe", "ignore", "inherit"] },
+    );
+    try {
+      await waitFor(() => existsSync(socketPath), "the port broker socket");
+      const { port } = upstream.address() as AddressInfo;
+      const received = await new Promise<number>((resolve, reject) => {
+        const socket = connect(socketPath);
+        let total = 0;
+        // Read only after the upstream has written everything and closed, so
+        // the reply is still buffered in the broker when its upstream closes.
+        socket.pause();
+        setTimeout(() => socket.resume(), 300);
+        socket.on("data", (chunk) => {
+          total += chunk.length;
+        });
+        socket.once("error", reject);
+        socket.once("close", () => resolve(total));
+        socket.write(`${port}\nGET / HTTP/1.0\r\n\r\n`);
+      });
+      expect(received).toBe(body.length);
+    } finally {
+      broker.kill("SIGTERM");
+      upstream.close();
+      await rm(root, { recursive: true });
+    }
+  });
+});
 
 // Real-sandbox launches: see the timing note in session-sandbox.test.ts.
 describe("session sandbox port broker", { timeout: 20_000 }, () => {

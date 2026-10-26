@@ -59,7 +59,16 @@ export async function validateDraftAttachmentRefs(
       body: draftAttachmentBody(state.refs),
     },
   );
-  return response.refs;
+  return response.refs.map((ref) => {
+    const original = state.refs.find((candidate) => candidate.id === ref.id);
+    return original?.rendezAutoSendAt !== undefined
+      ? {
+          ...ref,
+          rendezPath: original.rendezPath,
+          rendezAutoSendAt: original.rendezAutoSendAt,
+        }
+      : ref;
+  });
 }
 
 export async function deleteDraftAttachmentRef(

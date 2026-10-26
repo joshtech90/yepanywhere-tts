@@ -6,11 +6,7 @@ import { basename, dirname, extname, relative, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import { AppWebSocketProxy } from "./AppWebSocketProxy.js";
 import { getRequestListener } from "@hono/node-server";
-import {
-  ARTIFACT_SANDBOX,
-  ARTIFACT_TAB_PROTOCOL,
-  MCP_APP_PROXY_PATH,
-} from "@yep-anywhere/shared";
+import { ARTIFACT_SANDBOX, MCP_APP_PROXY_PATH } from "@yep-anywhere/shared";
 import { FRAME_FIND_AGENT_SCRIPT } from "@yep-anywhere/shared/find/frameFindAgent.generated";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -37,6 +33,7 @@ import {
   mcpAppViewCsp,
   parseMcpAppCspParam,
 } from "./mcpAppProxy.js";
+import { isFramePdfNavigation, pdfInFrameDocument } from "./pdfInFrame.js";
 import { proxyLoopbackVhost } from "./vhost-proxy.js";
 import { linkedVhostSite, serveVhostSite } from "./VhostSiteServer.js";
 import {
@@ -53,25 +50,6 @@ import { hostnameFromHostHeader } from "./vhosts.js";
 
 const MAX_GRANTS = 256;
 
-function escapeHtml(value: string): string {
-  return value.replace(
-    /[&<>"']/g,
-    (char) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        char
-      ]!,
-  );
-}
-
-/**
- * Stand-in served to a sandboxed frame that navigated to a PDF. The frame may
- * not open popups or download, so its buttons ask the YA viewer to open this
- * same URL in a new tab; the page's own address is the fallback.
- */
-function pdfInFrameDocument(name: string): string {
-  const protocol = JSON.stringify(ARTIFACT_TAB_PROTOCOL);
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(name)}</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:24px;color:#222;background:#fafafa}p{margin:0 0 12px}.actions{display:flex;flex-wrap:wrap;gap:8px}button{font:inherit;padding:6px 12px}code{word-break:break-all;user-select:all}</style></head><body><p><strong>${escapeHtml(name)}</strong> is a PDF. The embedded preview cannot display PDFs, so open it in its own tab.</p><p class="actions"><button type="button" id="open">Open PDF in a new tab</button><button type="button" id="download">Download</button><button type="button" onclick="history.back()">Back</button></p><p>If nothing opens, copy this address into a new tab: <code id="address"></code></p><script>(function(){var url=new URL(location.href);url.hash="";url.search="";document.getElementById("address").textContent=url.href;function send(download){var target=new URL(url.href);if(download)target.searchParams.set("download","true");parent.postMessage({protocol:${protocol},type:"open",url:target.href},"*");}document.getElementById("open").onclick=function(){send(false);};document.getElementById("download").onclick=function(){send(true);};})();</script></body></html>`;
-}
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 /**
  * Appended to HTML framed by a YA viewer so the viewer's find field can search
@@ -300,15 +278,7 @@ export class ArtifactServer {
       }
       grant.files.add(canonical);
       const mime = getMimeType(canonical) ?? "application/octet-stream";
-      // Chromium refuses its PDF viewer inside a sandboxed frame and shows
-      // "This content is blocked", so a frame navigation to a PDF gets a page
-      // that opens the same URL in a top-level tab instead. Direct fetches,
-      // top-level tabs, and explicit downloads still receive the bytes.
-      if (
-        mime === "application/pdf" &&
-        c.req.header("Sec-Fetch-Dest") === "iframe" &&
-        new URL(c.req.url).searchParams.get("download") !== "true"
-      ) {
+      if (isFramePdfNavigation(c.req.raw, mime)) {
         await handle.close();
         return c.html(pdfInFrameDocument(basename(canonical)));
       }

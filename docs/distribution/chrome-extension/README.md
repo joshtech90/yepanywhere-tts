@@ -1,8 +1,10 @@
 # Chrome Web Store publication
 
-Version **0.1.1** is **Published — public**, verified on **2026-10-14**, in
-all regions. Version **0.1.3** was submitted on **2026-10-14** and is
-**Pending review**, with automatic publication after approval. The item is
+Version **0.1.4** is **Published — public**, verified on **2026-10-24** by
+[the read-only API check](https://github.com/kzahel/yepanywhere/actions/runs/40112516468).
+The [release workflow](https://github.com/kzahel/yepanywhere/actions/runs/40109396544)
+submitted the accepted ZIP, and Google subsequently published the update.
+There is no pending submitted candidate. Distribution remains all regions. The item is
 `dgeameddpnggdeenoekpiaacfghdodch`; [identity.json](identity.json) holds its
 public key. Account links and reviewer credentials belong in the private
 `dotfiles/runbooks/yepanywhere-chrome-extension.md` inventory.
@@ -18,7 +20,7 @@ pnpm --filter @yep-anywhere/browser-extension acceptance
 
 The build includes the complete client, worker and panel. Assembly uses the
 extension package's own version, independent of server release tags. It creates
-`packages/browser-extension/release/yep-anywhere-chrome-0.1.3.zip`, a checksum
+`packages/browser-extension/release/yep-anywhere-chrome-0.1.4.zip`, a checksum
 and `build.json` containing the source revision, dirty-state flag, extension id
 and file count. The manifest is at the ZIP root. Source maps, inline/remote
 HTML scripts, missing entries, wrong icon sizes, an incorrect store key and
@@ -46,14 +48,14 @@ clears that extension's storage.
 ## Releasing an update
 
 Update and commit `packages/browser-extension/CHANGELOG.md` with a section
-such as `## [0.1.4]`. From a clean, current `main` checkout, run:
+such as `## [0.1.5]`. From a clean, current `main` checkout, run:
 
 ```sh
-scripts/release-extension.sh 0.1.4
+scripts/release-extension.sh 0.1.5
 ```
 
 The helper validates the version and changelog, commits the package version,
-and atomically pushes `main` and `extension-v0.1.4`. CI must pass packaging and
+and atomically pushes `main` and `extension-v0.1.5`. CI must pass packaging and
 both exact-ZIP acceptance gates before it can authenticate and upload. The
 publisher checks source revision, checksum and pinned store identity, waits
 for upload processing, and submits with review enabled and warnings blocked.
@@ -148,7 +150,23 @@ OUTPUT.png`. Extension icons under `packages/browser-extension/src/icons/`
 are rasterizations of `packages/client/public/icon.svg`; only the 128px store
 icon uses the required 16px transparent padding.
 
-## Verified CI candidate
+## Verified 0.1.4 release
+
+[Release CI 40109396544](https://github.com/kzahel/yepanywhere/actions/runs/40109396544)
+passed exact-store-manifest, owned-site badge and unreadable-tab/site-access
+acceptance before submitting version **0.1.4** from
+`bcdd87c0f0a87193b81c8f7b5f52262960ffb4b0`. Its receipt reports
+`submitted` / `PENDING_REVIEW` at upload time. The subsequent read-only check
+above confirms **PUBLISHED**, version **0.1.4**, with no pending submission.
+The [release](https://github.com/kzahel/yepanywhere/releases/tag/extension-v0.1.4)
+retains the exact ZIP, build record, checksum and receipt. Its SHA-256 is
+`59b2fcb2f625756066de640e32178af45c2c7dffe0721b939825804570da8239`.
+The downloaded ZIP matches that checksum and clean source record, and signs
+into the existing isolated reviewer host over its public TLS relay in a fresh,
+subsequently removed Chromium profile. Store identity and install permissions
+are unchanged.
+
+## Previously verified 0.1.3 candidate
 
 [Chrome Extension CI 38604832081](https://github.com/kzahel/yepanywhere/actions/runs/38604832081)
 passed its package and acceptance job for source
@@ -183,9 +201,12 @@ the exact CI ZIP before submission. Keep that server available during review.
 
 The maintainer authorized submission, and the console confirmed it on
 2026-10-13 with **Publish automatically after review** enabled. Version 0.1.1
-is now public. The exact 0.1.3 CI ZIP was uploaded and submitted on 2026-10-14
+was published. The exact 0.1.3 CI ZIP was uploaded and submitted on 2026-10-14
 after saving its `contextMenus` justification. The console confirmed submission
-and reports **Pending review**; automatic publication after approval is enabled.
+and initially reported **Pending review**, with automatic publication after
+approval enabled. Version 0.1.3 is now published; the October 24 read-only API
+check confirmed its public state with no pending submission before the
+0.1.4 update described above.
 For later updates, refresh the package, listing and disclosures, verify
 reviewer access, then submit the new extension version.
 

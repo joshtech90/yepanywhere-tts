@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -133,8 +134,20 @@ child.stderr.on("data", (chunk) => {
   stderr = `${stderr}${chunk}`.slice(-8000);
 });
 
-function stopTree() {
-  if (child.exitCode !== null) return;
+async function stopTree() {
+  if (child.stdout.closed && child.stderr.closed &&
+      (child.exitCode !== null || child.signalCode !== null)) return;
+  const closed = new Promise((resolveClosed) => {
+    // Match the E2E process lifecycle's graceful-shutdown bound, then force
+    // termination. Always join close before releasing the fixture directory.
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, 10_000);
+    child.once("close", () => {
+      clearTimeout(timer);
+      resolveClosed();
+    });
+  });
   if (process.platform === "win32") {
     spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
       windowsHide: true,
@@ -143,6 +156,7 @@ function stopTree() {
   } else {
     child.kill("SIGTERM");
   }
+  await closed;
 }
 
 try {
@@ -228,6 +242,7 @@ try {
   );
 } finally {
   lines.close();
-  stopTree();
-  rmSync(dataDir, { recursive: true, force: true });
+  await stopTree();
+  // Windows can retain filesystem handles briefly after the process closes.
+  await rm(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

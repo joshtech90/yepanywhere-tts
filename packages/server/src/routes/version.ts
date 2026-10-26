@@ -612,6 +612,7 @@ const BASE_CAPABILITIES: string[] = [
   SERVER_CAPABILITIES.rendezUploads.name,
   SERVER_CAPABILITIES.patientTopicShift.name,
   SERVER_CAPABILITIES.rendezProjectStatus.name,
+  SERVER_CAPABILITIES.projectFolderState.name,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
@@ -648,6 +649,7 @@ export interface VersionRouteOptions {
   /** Owned update lookup; the default uses the public update service. */
   getLatestVersion?: typeof getLatestVersion;
   getDraftSyncAvailable?: () => boolean;
+  getRendezComposeAvailable?: () => boolean;
   vhostAppControlAvailable?: boolean;
   getExperimentalConversationAvailable?: () => boolean;
   /** Read retained startup state; never probe storage in the version route. */
@@ -748,6 +750,8 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   ];
   if (options?.getDraftSyncAvailable?.())
     capabilities.push(SERVER_CAPABILITIES.draftSync.name);
+  if (options?.getRendezComposeAvailable?.())
+    capabilities.push(SERVER_CAPABILITIES.rendezCompose.name);
   capabilities.push(SERVER_CAPABILITIES.vhostBearerAccess.name);
   capabilities.push(SERVER_CAPABILITIES.vhostOauthAccess.name);
   capabilities.push(SERVER_CAPABILITIES.vhostOauthProviders.name);

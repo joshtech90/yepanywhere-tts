@@ -41,6 +41,9 @@ function RouterSettingsForSource() {
     null,
   );
   const [path, setPath] = useState("");
+  const [editingSocket, setEditingSocket] = useState(false);
+  // Bumped by each completed status read so the pool overview rereads too.
+  const [checks, setChecks] = useState(0);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
@@ -72,6 +75,7 @@ function RouterSettingsForSource() {
         }
       }
       setLoaded(true);
+      setChecks((n) => n + 1);
     },
     [supportsRecovery],
   );
@@ -116,6 +120,14 @@ function RouterSettingsForSource() {
           : t("routerDisconnected");
   const pending = recovery?.pendingCancellations ?? 0;
   const canReadAccounts = state === "connected" && !recovery?.issue && !error;
+  const healthy = canReadAccounts && recovery?.reachable !== false;
+  // A healthy pairing needs no socket choice; show it on trouble or request.
+  const showSocket =
+    state !== "revocation-pending" &&
+    (state === "disconnected" || !healthy || editingSocket);
+  const checkedAt = recovery?.checkedAt
+    ? new Date(recovery.checkedAt).toLocaleTimeString()
+    : null;
   return (
     <section
       className={styles.panel}
@@ -140,7 +152,23 @@ function RouterSettingsForSource() {
         )}
         {recovery?.reachable === true &&
           !recovery.issue &&
-          state === "connected" && <p>{t("routerReady")}</p>}
+          state === "connected" && (
+            <p>{t("routerReadyAt", { time: checkedAt ?? "" })}</p>
+          )}
+        {state !== "disconnected" && status.customSocket !== undefined && (
+          <p className={styles.muted}>
+            {status.customSocket ? (
+              t("routerSocketCustom")
+            ) : (
+              <>
+                {t("routerSocketDefault")}{" "}
+                <code className={styles.path}>
+                  ~/.agent-auth-router/control.sock
+                </code>
+              </>
+            )}
+          </p>
+        )}
         {!supportsRecovery && state === "connected" && (
           <p>{t("routerLegacyStatus")}</p>
         )}
@@ -150,7 +178,7 @@ function RouterSettingsForSource() {
           <p>{t("routerDisconnectedHelp")}</p>
         )}
       </div>
-      {state !== "revocation-pending" && (
+      {showSocket && (
         <label>
           {t("routerSocket")}
           <input
@@ -165,15 +193,32 @@ function RouterSettingsForSource() {
         </label>
       )}
       <div className={styles.actions}>
-        {state !== "revocation-pending" && (
+        {showSocket && (
           <button
             type="button"
             disabled={busy}
-            onClick={() => void run(() => api.routerConnect(path || undefined))}
+            onClick={() =>
+              void run(async () => {
+                await api.routerConnect(path || undefined);
+                setEditingSocket(false);
+              })
+            }
           >
             {state === "disconnected"
               ? t("routerConnect")
               : t("routerRetryConnection")}
+          </button>
+        )}
+        <button type="button" disabled={busy} onClick={() => void run()}>
+          {busy && loaded ? t("routerCheckingShort") : t("routerCheckStatus")}
+        </button>
+        {!showSocket && state === "connected" && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setEditingSocket(true)}
+          >
+            {t("routerChangeSocket")}
           </button>
         )}
         {state !== "disconnected" && (
@@ -192,9 +237,6 @@ function RouterSettingsForSource() {
               : t("routerDisconnectAction")}
           </button>
         )}
-        <button type="button" disabled={busy} onClick={() => void run()}>
-          {t("routerCheckStatus")}
-        </button>
       </div>
       {error && error !== recovery?.issue?.message && (
         <p role="alert">{error}</p>
@@ -217,7 +259,9 @@ function RouterSettingsForSource() {
       {canReadAccounts && accounts.length === 0 && loaded && (
         <p>{t("routerNoAccounts")}</p>
       )}
-      {supportsPools && canReadAccounts && <AgentAuthRouterPools />}
+      {supportsPools && canReadAccounts && (
+        <AgentAuthRouterPools reloadToken={checks} />
+      )}
       {!supportsPools &&
         accounts.map((account) => (
           <div className={styles.account} key={account.id}>

@@ -162,6 +162,11 @@ export function createDraftRoutes(deps: {
         throw new Error("Draft attachment missing or invalid");
       refs.push(...valid);
     }
+    const currentRefs = new Map(
+      deps.store
+        .read(owner(c), slot)
+        .snapshot.payload.attachments.map((ref) => [ref.id, ref]),
+    );
     const write: DraftWrite = {
       slot,
       baseRevision: body.baseRevision,
@@ -169,9 +174,20 @@ export function createDraftRoutes(deps: {
       operationId: body.operationId,
       payload: {
         fields: payload.fields,
-        attachments: payload.attachments.map(
-          (ref) => refs.find((valid) => valid.id === ref.id)!,
-        ),
+        attachments: payload.attachments.map((ref) => {
+          const valid = refs.find((candidate) => candidate.id === ref.id)!;
+          const current = currentRefs.get(ref.id);
+          return current?.rendezAutoSendAt !== undefined
+            ? {
+                ...valid,
+                rendezPath: current.rendezPath,
+                rendezAutoSendAt:
+                  ref.rendezAutoSendAt === null
+                    ? null
+                    : current.rendezAutoSendAt,
+              }
+            : valid;
+        }),
       },
       recovery: body.recovery === true || clear,
     };

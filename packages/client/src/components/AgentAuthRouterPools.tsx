@@ -28,7 +28,12 @@ const reasonKeys = {
   "auth-unavailable": "routerPoolAuthUnavailable",
 } as const;
 
-function useOverview(poolId?: string, model?: string, policy?: string) {
+function useOverview(
+  reloadToken: number,
+  poolId?: string,
+  model?: string,
+  policy?: string,
+) {
   const { t } = useI18n();
   const [data, setData] = useState<AgentAuthRouterOverview | null>(null);
   const [error, setError] = useState("");
@@ -64,22 +69,63 @@ function useOverview(poolId?: string, model?: string, policy?: string) {
     },
     [poolId, model, policy, t],
   );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadToken asks for a reread.
   useEffect(() => {
     void run();
     return () => {
       request.current++;
     };
-  }, [run]);
-  return { data, error, busy, run };
+  }, [run, reloadToken]);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  /**
+   * An account refresh starts the provider CLI and takes seconds, so it runs
+   * outside `busy`; the overview rereads once it settles. A refresh that
+   * outlives this panel (for example a YA host switch) starts no reread.
+   */
+  const refreshAccount = useCallback(
+    async (accountId: string) => {
+      let failure: unknown;
+      try {
+        await api.routerRefreshOverview({ accountId });
+      } catch (e) {
+        failure = e;
+      }
+      if (!mounted.current) return;
+      await run(failure ? () => Promise.reject(failure) : undefined);
+    },
+    [run],
+  );
+  return { data, error, busy, run, refreshAccount };
 }
 
-/** Cached, owner-only overview. The editor is separate from observation refresh. */
-export function AgentAuthRouterPools() {
+/**
+ * Cached, owner-only overview. The editor is separate from observation
+ * refresh. A changed `reloadToken` (each router status check) rereads it, so
+ * newly granted pools appear without a separate reload.
+ */
+export function AgentAuthRouterPools({
+  reloadToken = 0,
+}: {
+  reloadToken?: number;
+}) {
   const { t } = useI18n();
   const [poolId, setPoolId] = useState("");
   const [model, setModel] = useState("");
   const [draft, setDraft] = useState<AgentAuthRouterPoolInput | null>(null);
-  const { data, error, busy, run } = useOverview(poolId, model);
+  // Account refreshes start Codex/Claude and take seconds; each locks only
+  // its own button while the rest of the overview stays usable.
+  const [refreshing, setRefreshing] = useState<ReadonlySet<string>>(new Set());
+  const { data, error, busy, run, refreshAccount } = useOverview(
+    reloadToken,
+    poolId,
+    model,
+  );
   const { version } = useVersion();
   const ownerAware = serverHasCapability(
     version,
@@ -329,7 +375,9 @@ export function AgentAuthRouterPools() {
           <p className={styles.muted}>{t("routerPoolRevisionHelp")}</p>
         </div>
       )}
-      {!data?.pools.length && <p>{t("routerPoolEmpty")}</p>}
+      {data && !data.pools.length && (
+        <p>{t(canManage ? "routerPoolEmpty" : "routerPoolEmptyGranted")}</p>
+      )}
       <div className={styles.grid}>
         {accounts.map((account) => (
           <article className={styles.account} key={account.id}>
@@ -359,7 +407,11 @@ export function AgentAuthRouterPools() {
             )}
             {!account.enabled && <p>{t("routerAccountDisabledLabel")}</p>}
             {account.error && (
-              <p role="status">{t("routerPoolRefreshFailed")}</p>
+              <p role="status">
+                {t("routerPoolRefreshFailed")}
+                {/* AAR's reason, already scrubbed of secrets and paths. */}
+                <span className={styles.muted}> ({account.error})</span>
+              </p>
             )}
             {account.blocked && (
               <p>
@@ -414,14 +466,24 @@ export function AgentAuthRouterPools() {
             ))}
             <button
               type="button"
-              disabled={busy || !account.enabled}
-              onClick={() =>
-                void run(() =>
-                  api.routerRefreshOverview({ accountId: account.id }),
-                )
-              }
+              disabled={refreshing.has(account.id) || !account.enabled}
+              onClick={() => {
+                const id = account.id;
+                setRefreshing((s) => new Set(s).add(id));
+                void refreshAccount(id).finally(() =>
+                  setRefreshing((s) => {
+                    const next = new Set(s);
+                    next.delete(id);
+                    return next;
+                  }),
+                );
+              }}
             >
-              {t("routerRefreshUsage")}
+              {t(
+                refreshing.has(account.id)
+                  ? "routerRefreshingUsage"
+                  : "routerRefreshUsage",
+              )}
             </button>
           </article>
         ))}

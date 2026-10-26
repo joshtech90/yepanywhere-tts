@@ -470,6 +470,41 @@ describe("native source transport", () => {
     expect(host.chunks.every((chunk) => chunk.length <= 65_560)).toBe(true);
   });
 
+  it("allows a progressing upload past two minutes but cancels a stalled one", async () => {
+    const { host, transport } = await setup();
+    vi.useFakeTimers();
+    const file = new NodeFile(["attachment"], "test.txt") as unknown as File;
+    let settled = false;
+    const upload = transport.uploadStagedAttachment(file).then(
+      (value) => {
+        settled = true;
+        return value;
+      },
+      (error: Error) => {
+        settled = true;
+        return error;
+      },
+    );
+    await vi.waitFor(() =>
+      expect(host.commands.at(-1)?.method).toBe("uploadEnd"),
+    );
+    const uploadId = (host.commands[0]!.params as { uploadId: string })
+      .uploadId;
+    for (const bytesReceived of [1, 2, 3]) {
+      await vi.advanceTimersByTimeAsync(90_000);
+      await host.emit({ type: "upload_progress", uploadId, bytesReceived });
+      expect(settled).toBe(false);
+    }
+    // Repeated progress with no new bytes must not keep a stuck upload alive.
+    await vi.advanceTimersByTimeAsync(90_000);
+    await host.emit({ type: "upload_progress", uploadId, bytesReceived: 3 });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await upload).toMatchObject({ message: "Native upload timed out" });
+    expect(
+      host.commands.some((command) => command.method === "uploadCancel"),
+    ).toBe(true);
+  });
+
   it("aborts an upload while native startup is pending", async () => {
     const { host, transport } = await setup();
     host.handler = (command) =>

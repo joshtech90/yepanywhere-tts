@@ -73,3 +73,24 @@ at this address.” Its retained UI error says project-write sandboxing requires
 Linux/Bubblewrap on this macOS host. This narrows that attempt's failure; it
 does not settle the other historical instruction/geometry cases. No product
 behavior, assertions or timeouts were changed for this unrelated platform gate.
+
+## Recheck 2026-10-23
+
+Two consecutive post-publish browser runs on this Linux host each failed
+different App cases. At `92b0d2f91` (plus WIP), 427 passed and two failed:
+the Live preview reload at `project-app.spec.ts:165` and the image-upload
+quality case. At `1db2e30b7`, 428 passed and one failed: the app inventory at
+`project-app.spec.ts:282`, where "Copy viewer link" never appeared within 5 s.
+Run alone, the inventory case then passed three times in a row. Both commits
+touched only provider markers and a unit test, so these are still
+intermittent failures that the full run triggers. The cause is unproved.
+Contributing-model: claude-opus-5-5.
+
+## Narrowed 2026-10-26
+
+The latest publish again exceeded the five-second `/app/start` response wait.
+That endpoint waits for process readiness before responding. The Live preview
+case now allows 20 seconds, four times the observed limit, and preserves its
+real reload assertions. This addresses the response budget only; the other
+instruction, sandbox, inventory and geometry findings remain separate.
+Contributing-model: 6.1-Sol.

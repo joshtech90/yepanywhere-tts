@@ -339,6 +339,8 @@ export class NativeSourceTransport implements SourceTransport, Connection {
       this.protocol?.rejectAllPending(error);
       for (const upload of this.uploads.values()) upload.reject(error);
     }
+    // Snapshot: callbacks may remove/re-add subscriptions during notification.
+    // oxlint-disable-next-line unicorn/no-useless-spread
     for (const listener of [...this.listeners]) listener();
     if (phase === "REAUTHENTICATION_REQUIRED" || phase === "REVOKED")
       this.onAuthenticationRequired();
@@ -599,12 +601,33 @@ export class NativeSourceTransport implements SourceTransport, Connection {
     if (this.uploads.size >= 4) throw new Error("Native upload limit exceeded");
     const uploadId = generateUUID();
     let rejectUpload!: (error: Error) => void;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const progress = () => {
+      clearTimeout(timer);
+      timer = setTimeout(
+        () => rejectUpload(new Error("Native upload timed out")),
+        120_000,
+      );
+    };
+    let acknowledged = 0;
     const completion = new Promise<T>((resolve, reject) => {
       rejectUpload = reject;
       this.uploads.set(uploadId, {
         resolve: (value) => resolve(value as T),
         reject,
-        onProgress: options?.onProgress,
+        onProgress: (bytes) => {
+          // Only new server-acknowledged bytes renew the inactivity deadline.
+          // Slow credited transfers can take longer than two minutes overall.
+          if (
+            Number.isSafeInteger(bytes) &&
+            bytes > acknowledged &&
+            bytes <= file.size
+          ) {
+            acknowledged = bytes;
+            progress();
+          }
+          options?.onProgress?.(bytes);
+        },
       });
     });
     const operation = new AbortController();
@@ -624,10 +647,7 @@ export class NativeSourceTransport implements SourceTransport, Connection {
       );
     options?.signal?.addEventListener("abort", abort, { once: true });
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    const timer = setTimeout(
-      () => rejectUpload(new Error("Native upload timed out")),
-      120_000,
-    );
+    progress();
     try {
       if (options?.signal?.aborted)
         throw (

@@ -466,6 +466,9 @@ describe.skipIf(process.platform === "win32")(
       await f.connector.connect();
       const pairs = f.requests.filter((r) => r.path === "/v1/pair");
       expect(pairs[1]?.body).toEqual(pairs[0]?.body);
+      // The UI learns the socket is custom without receiving its path.
+      expect(f.connector.summary()).toMatchObject({ customSocket: true });
+      expect(JSON.stringify(f.connector.summary())).not.toContain(f.socketPath);
       await chmod(f.socketPath, 0o666);
       expect(await f.connector.recovery()).toMatchObject({
         state: "connected",

@@ -30,6 +30,18 @@ const attachmentEnvelope = JSON.stringify({
 });
 
 describe("draftEnvelope", () => {
+  it("cancels rendez auto-send on the first text write and keeps it cancelled after erasure", () => {
+    const initial = JSON.parse(attachmentEnvelope);
+    initial.attachments.refs[0].rendezAutoSendAt = Date.now() + 10_000;
+    initial.attachments.refs[0].rendezPath =
+      "/project/.rendez/delivered/file.png";
+    const typed = draftStorageValueForText("a", JSON.stringify(initial));
+    const erased = draftStorageValueForText("", typed);
+    expect(readDraftAttachmentStateValue(erased)?.refs[0]).toMatchObject({
+      rendezAutoSendAt: null,
+      rendezPath: "/project/.rendez/delivered/file.png",
+    });
+  });
   it("reads legacy raw strings as text drafts", () => {
     expect(readDraftTextValue("legacy text")).toBe("legacy text");
     expect(hasDraftContentValue("legacy text")).toBe(true);

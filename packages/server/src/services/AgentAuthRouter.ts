@@ -18,6 +18,7 @@ import type {
   AgentAuthRouterPoolInput,
   AgentAuthRouterPoolPolicy,
   AgentAuthRouterRecovery,
+  AgentAuthRouterStatus,
 } from "@yep-anywhere/shared";
 import type {
   SessionMetadata,
@@ -90,6 +91,11 @@ const hash = (token: string) =>
   createHash("sha256").update(token).digest("hex");
 const token = (prefix: string) =>
   prefix + randomBytes(32).toString("base64url");
+/** AAR's own default control socket, used when the owner names none. */
+export function defaultRouterSocket(): string {
+  return join(homedir(), ".agent-auth-router", "control.sock");
+}
+
 export function validateRouterSocket(socketPath: string): void {
   if (process.platform === "win32")
     throw new RouterUnavailable(
@@ -311,9 +317,15 @@ export class AgentAuthRouter {
     });
     this.state = next;
   }
-  summary() {
+  summary(): AgentAuthRouterStatus {
     const c = this.state.connection;
-    return { state: c?.state ?? "disconnected", routerId: c?.routerId ?? null };
+    return {
+      state: c?.state ?? "disconnected",
+      routerId: c?.routerId ?? null,
+      ...(c && c.state !== "disconnected"
+        ? { customSocket: c.socketPath !== defaultRouterSocket() }
+        : {}),
+    };
   }
   /** An explicit observation; never pairs, revokes, or retries cleanup on read. */
   recovery(): Promise<AgentAuthRouterRecovery> {
@@ -422,10 +434,7 @@ export class AgentAuthRouter {
         throw new RouterUnavailable(409, "Finish pending disconnect first");
       const keep = previous && previous.state !== "disconnected";
       const path = resolve(
-        socketPath ??
-          (keep
-            ? previous.socketPath
-            : join(homedir(), ".agent-auth-router", "control.sock")),
+        socketPath ?? (keep ? previous.socketPath : defaultRouterSocket()),
       );
       const info = await this.info({
         socketPath: path,

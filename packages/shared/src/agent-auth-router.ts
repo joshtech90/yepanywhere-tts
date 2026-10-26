@@ -3,6 +3,12 @@ import type { ModelInfo, ThinkingOption } from "./types.js";
 export interface AgentAuthRouterStatus {
   state: "pairing" | "connected" | "revocation-pending" | "disconnected";
   routerId: string | null;
+  /**
+   * Whether the saved pairing uses a socket other than AAR's default, so the
+   * UI can say which without receiving the path. Absent while disconnected
+   * and from servers before 2026-10-24.
+   */
+  customSocket?: boolean;
 }
 
 export type AgentAuthRouterIssueCode =

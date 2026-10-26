@@ -39,6 +39,9 @@ message sent before turning it on does not count. A project whose `.rendez`
 already exists attaches without waiting, so a server restart resumes watching.
 Trying settings out therefore leaves no trace in any project. Turning a project
 off stops its observer and keeps its files.
+On servers supporting [active-compose](#attach-to-the-active-new-session-draft),
+opening an eligible new-session composer also starts watching its enabled
+project, without requiring a first message or an existing session.
 
 With the `rendez-project-status` capability, each watched row also shows
 **watching** while its observer runs, or **starts at your next message**
@@ -104,12 +107,57 @@ scp screenshot.png user@host:/work/project/.rendez/latest-session/
 Replace `user@host` and `/work/project` with your SSH destination and project
 path. This also works from Windows OpenSSH or a WSL shell. The receiving
 machine watches the directory; your desktop does not need to invoke
-`agentctl` or know the session id. Each completed upload becomes a user turn
-with an attachment.
+`agentctl` or know the session id. Each completed upload appears as an
+attachment in the session composer before becoming a user turn.
+
+## Composer draft and countdown
+
+Session-addressed uploads join the existing shared session draft, preserving
+its text and attachments. With no text, incoming captures share a ten-second
+auto-send countdown. Each new capture resets the active countdown; only the
+latest attachment shows its countdown and progress border. Earlier attachments
+look like normal attachments. The countdown sends the waiting captures together
+in one message, rather than one turn per capture.
+Text already in the draft, or typing before the deadline, keeps the upload
+for normal Send. Erasing that text does not restart auto-send. Removing an
+attachment cancels its countdown. A draft held for Send stays held when more
+captures arrive; a countdown never sends only part of the draft.
+Arrivals reconcile while typing instead of waiting for the normal quiet-save
+debounce. In enabled projects, or with captures already visible, Send reads the shared draft
+before collecting attachments, including captures received by the server whose
+previews have not arrived yet. It respects deliberate removals and records the
+expanded submission so successful Send clears those captures too. A concurrent
+draft conflict or failed read stops Send with recovery retained. A capture
+received after that collection belongs to the next draft. Existing servers
+without draft synchronization retain browser-local collection.
+Send consumes the attachments through the ordinary browser upload path;
+untouched uploads use rendez delivery below.
+
+The deadline belongs to the server and runs without an open browser. Text
+changes and removals sync immediately while a deadline is active. The server
+arbitrates manual materialization against auto-send to prevent a duplicate
+at the deadline. If auto-send is refused, the attachment returns to the draft
+for manual Send. Server restart retains staged attachments for manual Send;
+it never replays an old countdown. Upload receipts acknowledge draft staging,
+not provider acceptance or completion.
+
+One shared next-deadline timer owns at most 256 pending uploads. Additional
+uploads stay in their drafts without automatic delivery, subject to the
+100-attachment draft limit and existing watcher burst limits. The client
+countdown stops ticking while its tab is hidden and refreshes on return.
+
+Compatibility review (2026-10-26): stable `v0.10.0`, `v0.10.1`, `v0.10.2`
+and `v0.11.0` have staged attachment references without `rendezAutoSendAt`
+or `rendezPath`. These optional draft response annotations add no endpoint
+or capability requirement: absence renders the ordinary attachment chip and
+keeps the server's existing immediate delivery. Clients may cancel a current
+deadline with null; servers canonicalize its path and numeric deadline.
+Existing clients can edit and send the shared draft; server-side text
+observation also cancels the countdown when a client omits the annotations.
 
 ## Uploads during a running turn
 
-An upload that arrives while the agent is working takes the path and
+After the composer countdown, an untouched upload takes the path and
 presentation of a typed send, chosen by **Uploads during a running turn** in
 the rendez card (`rendez.delivery`):
 
@@ -126,7 +174,7 @@ the rendez card (`rendez.delivery`):
 With steering disabled, as before this setting, every upload during a long
 turn waited for its end and arrived merged with the others, after the
 user's steered commentary about them, while each showed as already sent.
-An idle session receives an upload at once in every mode.
+An idle session receives an upload when its countdown ends in every mode.
 
 Delivery reaches only a live session. `latest-session` points at the session
 you last messaged in the project, and nothing arrives while that session is not
@@ -171,10 +219,10 @@ without delivering it and restores the pointer.
 
 ## Accidental bulk transfers
 
-Uploads start immediately. By default, each route admits at most ten uploads
+Upload preparation starts immediately. By default, each route admits at most ten uploads
 per rolling 1,000 ms, with at most ten uploads awaiting queue acceptance across
 the project. `windowMs` and `maxPerWindow` configure those limits. Acceptance
-can mean queued for the session; it does not wait for model completion.
+can mean staged in the draft; it does not wait for model completion.
 
 Excess arrivals are **held**, never automatically sent later. After overload,
 new arrivals remain held until four quiet windows pass (four seconds by
@@ -194,6 +242,57 @@ inbox. [rsync manual](https://download.samba.org/pub/rsync/rsync.1)
 
 ## Choose the recipient
 
+### Attach to the active new-session draft
+
+Upload to `<project>/.rendez/active-compose/` to attach files to the visible
+new-session composer, or use the ordinary `latest-session` destination when
+there is no active composer claim. `active-compose` is a separate symlink;
+neither `latest-session` nor explicit session destinations change meaning.
+
+The server owner has one reconciled new-session draft per server, independent
+of project selection. A visible ordinary new-session composer with a confirmed
+project acquires its claim when opened, foregrounded, or reconnected. The last
+acquisition wins across windows and devices. Renewals cannot reclaim ownership
+from a newer claimant. Fork/handoff/template composers and limited accounts do
+not acquire this filesystem destination.
+
+The visible claimant renews every 15 seconds. Hiding the tab, navigating away,
+changing project, starting the session, or disconnecting releases its claim.
+Loss of the browser expires eligibility after 45 seconds; the shared server
+cleanup sweep restores the fallback symlink within another minute. During that
+cleanup delay, stale draft deliveries fail rather than reaching a session.
+Window blur alone does not release it: using a screenshot tool must not change
+the destination. A hidden tab does not renew, and an older visible window does
+not take over merely because its renewal is due.
+
+The project must have rendez monitoring enabled. Opening an eligible composer
+can start its observer before any session exists or has received a message.
+Accepted files become normal protected staging references in the shared draft;
+they appear as attachments without sending a turn or creating a session.
+Reconciliation can apply attachment-only changes while typing, retaining the
+text and selection. Normal Send later consumes the draft attachments.
+
+Capture fixes the claim identity. A claim that ends during preparation fails
+that delivery; it never retargets the upload to another claim or session.
+Existing files and delivery records stay on disk. Burst limits and held-file
+behavior still apply; an overload diagnostic is recorded rather than inserted
+as draft text. The internal `ya-new-session-draft` route is YA-owned and is not
+a provider session or a target for the standalone helper's turn delivery.
+
+The optional `rendez-active-compose` capability (ID 135) advertises
+`POST /api/rendez/compose` with `claimId`, `projectId` (null releases), and
+`acquire`. It requires POSIX watching, server settings and draft storage.
+The 2026-10-24 compatibility review checked stable `v0.10.0`, `v0.10.1`,
+`v0.10.2` and `v0.11.0`; none has this contract. Without the capability clients
+send no claim requests. Existing session uploads and draft editing remain
+available. The uploader must explicitly select the new destination.
+
+**Separate active-compose destination** (vs. redirecting latest-session):
+opening a draft must not intercept a transfer explicitly addressed to the
+last-messaged or a named session.
+
+### Session destinations
+
 `latest-session` follows the last session accepting an actual user message in
 that project. Coordination requests, takeover notices, automated turns, and
 rendez uploads do not change it. Once an upload is received, its recipient
@@ -201,8 +300,9 @@ is fixed. For an ongoing transfer stream that must stay with one session, use
 the stable directory returned by an explicit subscription instead.
 
 Monitoring is opt-in, with a global default and a per-project override.
-YA watches only projects with a verified live session, including sessions
-known to the provider service but not owned by YA, and attaches a project only
+YA watches projects with a verified live session or an active new-session
+compose claim. Live sessions include those known to the provider service but
+not owned by YA. It attaches a project only
 as [Enable monitoring](#enable-monitoring) describes. Watcher ownership is
 independent: YA can use its own live-session state when provider hosting is
 disabled. An explicit helper subscription can opt into revival separately.
@@ -211,7 +311,7 @@ Disabling monitoring stops delivery without deleting the files.
 
 ## Files and attachment history
 
-Any file type can be uploaded. Each becomes one user turn whose
+Any file type can be uploaded. An automatically sent upload becomes one user turn whose
 `User uploaded files:` section is the same one browser attachments use, so YA
 shows it as an attachment. The incoming file remains the original. Delivery
 stores a separate snapshot under `.rendez/delivered/<route>/<delivery-id>/`.

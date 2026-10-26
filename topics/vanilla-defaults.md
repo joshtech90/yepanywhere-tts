@@ -293,6 +293,16 @@ it lets Claude act concurrently with it; operators can deny expensive,
 side-effecting, or lock-holding commands. Other tool types, subagent-owned Bash,
 and the SDK's all-task background control remain excluded.
 
+YA launches Codex sessions with Codex 0.164's default-on `instant_interrupt`
+feature disabled, so a steer lands after the current tool call instead of
+discarding a response or tool call still being generated. This departs from
+first-party Codex 0.164 but restores YA's documented steer lane, which a live
+on/off probe confirmed the flag had broken. Any mention of `instant_interrupt`
+in the user's `$CODEX_HOME/config.toml` stays authoritative and suppresses the
+override. Authorized by graehl on 2026-10-23 after a session lost four
+multi-minute writes to steers. See
+[steer-queue-provider-differences](steer-queue-provider-differences.md).
+
 [mic-button-speech-ui](mic-button-speech-ui.md) treats conservative
 mid-sentence capitalization smoothing as built-in speech-input behavior, with
 no preference. Some recognizers title-case every finalized phrase after a

@@ -47,6 +47,13 @@
   background: var(--bg-secondary);
   overflow-wrap: anywhere;
 }
+.muted {
+  color: var(--text-secondary);
+}
+/* A path wraps as a unit rather than at its hyphens. */
+.path {
+  white-space: nowrap;
+}
 .actions {
   display: flex;
   flex-wrap: wrap;

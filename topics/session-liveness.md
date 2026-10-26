@@ -99,6 +99,15 @@ and why Codex background terminals do not retain a session.
   and detail, and should not be described as user-visible progress.
 - `long-silent-unverified` and `needs-attention` are product-visible states.
   They should not be hidden behind calm queue wording or spinner animation.
+- The transcript's processing indicator rotates its phrases only while output
+  is recent. After 30 seconds with no new output during an open turn (counted
+  from the newest of the turn start, the latest transcript message, streamed
+  content, and the server's last provider message), it shows a static
+  "No new output for {duration}" that ticks each second, adding "provider
+  reports the turn active ({age} ago)" only when an active provider probe ran
+  after that output. The 30-second threshold is deliberately shorter than the
+  five-minute long-silence status: a silent tool-call generation runs for
+  minutes, and phrases during it read as progress.
 - A provider-reported interrupt is terminal liveness evidence for the affected
   turn, not silence and not progress. YA must render it explicitly and reconcile
   pending tool rows, queued-message state, and ownership rather than leaving an

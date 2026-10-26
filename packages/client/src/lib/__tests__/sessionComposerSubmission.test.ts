@@ -207,9 +207,13 @@ describe("session composer submission helpers", () => {
     expect(updatePendingMessage).toHaveBeenNthCalledWith(1, "temp-a", {
       status: "Uploading",
     });
-    expect(setComposerAttachments).toHaveBeenNthCalledWith(1, [], {
-      persistDraft: false,
-    });
+    expect(setComposerAttachments).toHaveBeenNthCalledWith(
+      1,
+      expect.any(Function),
+      {
+        persistDraft: false,
+      },
+    );
     expect(setComposerAttachments).toHaveBeenNthCalledWith(
       2,
       expect.any(Function),

@@ -53,7 +53,7 @@ export const AskUserQuestionDisplayInputSchema = z.object({
 export const WriteDisplayResultSchema = z.union([
   z.object({ file: TextFileDisplaySchema, content: z.string().optional() }),
   z.string().transform((content) => ({ content, file: undefined })),
-  z.object({ content: z.string(), file: z.undefined() }),
+  z.object({ content: z.string(), file: z.undefined().optional() }),
 ]);
 export const PlainToolOutputSchema = z.union([
   z.string(),

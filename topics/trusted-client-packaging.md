@@ -107,7 +107,7 @@ the uploaded package.
 
 CI codes are `10000 + run_number * 100 + run_attempt`; attempts must remain
 below 100. These monotonically advance for new workflow runs without a source
-version bump. The human version is `0.1.2-ci.<run>.<attempt>`. Local fixed-version
+version bump. The human version is `0.1.3-ci.<run>.<attempt>`. Local fixed-version
 builds retain their checked-in version. After CI delivery starts, local manual
 uploads must explicitly choose a code above the current Play release.
 
@@ -117,6 +117,8 @@ principals and application transport credentials. The Google grant is limited
 to this app's testing releases. Production and tester membership are not
 modified. The workflow retains a signed AAB and receipt with source SHA,
 version, bundle SHA-256, internal track and publication result.
+The internal track's tester notes come from `packages/android/RELEASE_NOTES.txt`;
+the release identity remains bound to the selected source commit.
 
 A requested release of the already published source is skipped. An older version
 cannot replace a newer internal release. A mismatching uploaded bundle, unknown

@@ -28,6 +28,12 @@ export function toPersistedStagedAttachmentRef(
     ...(attachment.height !== undefined ? { height: attachment.height } : {}),
     createdAt: attachment.createdAt,
     updatedAt: attachment.updatedAt,
+    ...(attachment.rendezPath !== undefined
+      ? { rendezPath: attachment.rendezPath }
+      : {}),
+    ...(attachment.rendezAutoSendAt !== undefined
+      ? { rendezAutoSendAt: attachment.rendezAutoSendAt }
+      : {}),
   };
 }
 

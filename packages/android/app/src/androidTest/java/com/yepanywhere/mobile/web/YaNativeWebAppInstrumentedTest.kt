@@ -188,10 +188,9 @@ class YaNativeWebAppInstrumentedTest {
             val latencyBudgetMs = if (isEmulator()) 2_000 else 100
             assertTrue("Input acknowledgement exceeded $latencyBudgetMs ms: $latency; uploadBytes=$uploadBytes; timing=$timing", latency <= latencyBudgetMs)
             assertEquals(200, runBlocking { sibling.request("GET", "/version").status })
-            // API 35 emulator: whole 100 MiB proof 27 s; Pixel: 16 s.
-            // 120 s allows ~4x the slowest run, including a 30 s failed focus
-            // observation. This opt-in device probe has no CI timing baseline.
-            await(scenario, "document.querySelector('.attachment-list')?.textContent.includes('native-upload.bin') === true && !document.querySelector('.attachment-list')?.textContent.includes('%')", 120)
+            // Hosted run 40179442039 exceeded 120 s while still transferring.
+            // Allow 3x that observed bound; input latency gates stay unchanged.
+            await(scenario, "document.querySelector('.attachment-list')?.textContent.includes('native-upload.bin') === true && !document.querySelector('.attachment-list')?.textContent.includes('%')", 360)
             scenario.onActivity { activity ->
                 val proof = activity.nativeTransportDiagnostics() ?: org.json.JSONObject()
                 proof.remove("profileId")

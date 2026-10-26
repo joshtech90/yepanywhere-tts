@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-24
+
+### Added
+- Bundle Yep Anywhere's current server and client: ticket-description search,
+  existing-folder project setup, provider updates and improved microphone input.
+- Stable 0.6.0 overtakes the 0.5.x Latest series, allowing those users to select
+  Stable and upgrade through the existing signed updater.
+
+### Fixed
+- Preserve Codex steering, composer focus and drafts through active sessions.
+- Improve public app links, PDF handoff, sandboxed previews and reply delivery.
+- Bundle the patched JavaScript and Rust runtime/network dependencies.
+
 ## [0.4.1] - 2026-10-20
 
 ### Added

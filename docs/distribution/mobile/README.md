@@ -248,6 +248,7 @@ passed build/lint/package inspection and the complete direct/mux instrumentation
 gates before publication. The retained receipt reports `published` on
 `internal`; its signed-bundle SHA-256 is
 `dcd32000a6f1adc772781e8aaf839b5675a2558831bd7990467748345a4b2129`.
+
 All 964 entries in the tested candidate match the signed upload; only signing
 metadata was added. The 100 MiB mux upload completed. The earlier nightly
 [upload timeout](../../../gaps/android-ci-mux-upload-timeout.md) remains an
@@ -255,6 +256,18 @@ unexplained intermittent failure. Emulator typing maxima were 131.3 ms direct
 and 142.7 ms mux under the existing software-renderer budget; this run does not
 establish fresh physical-device acceptance against the 100 ms input ceiling.
 Public tracks and tester membership were unchanged.
+
+The October 24 coordinated release published `0.1.3-ci.567.1` / code `66701`
+from `bcdd87c0f0a87193b81c8f7b5f52262960ffb4b0` to internal testing.
+[Run 40107321514](https://github.com/kzahel/yepanywhere/actions/runs/40107321514)
+passed build/lint/package inspection and the minified WebView direct/relay
+acceptance gates before publication. Its receipt reports `published` on
+`internal`, names that source commit and records signed-bundle SHA-256
+`883d0228fbaa1e3790eb6030990cba228af32ab85a7c35775724cd7db90cefe9`.
+The downloaded signed bundle matches the receipt; all 966 tested bundle entries
+are unchanged, with only three signing entries added. Public-beta promotion
+and the existing physical update/network/overnight/keyboard follow-ups remain
+separate.
 
 The main-only GitHub `android-internal` environment holds the existing upload
 key as `ANDROID_UPLOAD_KEYSTORE_BASE64`, `ANDROID_UPLOAD_STORE_PASSWORD` and

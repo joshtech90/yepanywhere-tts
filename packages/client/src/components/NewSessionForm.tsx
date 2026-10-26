@@ -11,6 +11,7 @@ import { resolveRouterModel, routerAliasTargets } from "@yep-anywhere/shared";
 import type { RouterSelection } from "./RouterPoolSelector";
 import { DraftSyncNotice } from "./DraftSyncNotice";
 import { DRAFT_STORAGE_EVENT, draftStorage } from "../lib/draftSyncStorage";
+import { useRendezCompose } from "../hooks/useRendezCompose";
 import { MachineControlSessionSelection } from "./MachineControlSessionSelection";
 import { useComposerVoiceRef } from "../hooks/useComposerVoiceRef";
 import type { ProjectAppTarget } from "../api/projectApp";
@@ -695,6 +696,15 @@ export function NewSessionForm({
   const launchLock = useMemo<LaunchLock>(
     () => launchLockFor(principal),
     [principal],
+  );
+  useRendezCompose(
+    sourceTransport,
+    selectedProject?.id === projectId ? projectId : undefined,
+    principalResolved &&
+      !launchLock.limited &&
+      !launch &&
+      !isStarting &&
+      serverHasCapability(versionInfo, SERVER_CAPABILITIES.rendezCompose),
   );
   const supportsSessionSandboxing =
     serverHasAvailableSessionSandbox(versionInfo);
@@ -1636,14 +1646,54 @@ export function NewSessionForm({
         : null,
     [newProjectPanelShown, newProjectTypedEntry, newProjectBase, projects],
   );
+  // What the settled path holds decides what Start can do there: a folder
+  // with content is added as it is, so it offers no starting point or Git
+  // choice. The last answer stands while the next path is checked, so typing
+  // does not flash the palette away and back.
+  const newProjectProbePath =
+    newProjectPanelShown &&
+    serverHasCapability(
+      versionInfo,
+      SERVER_CAPABILITIES.projectFolderState.name,
+    )
+      ? (newProjectTarget?.path ?? "")
+      : "";
+  const [newProjectFolder, setNewProjectFolder] = useState<
+    "missing" | "empty" | "contents" | "file" | null
+  >(null);
+  useEffect(() => {
+    if (!newProjectProbePath) {
+      setNewProjectFolder(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api
+        .getProjectFolderState(newProjectProbePath)
+        .then((result) => {
+          if (!cancelled) setNewProjectFolder(result.state);
+        })
+        .catch(() => {
+          if (!cancelled) setNewProjectFolder(null);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [newProjectProbePath]);
+  const newProjectFolderState = newProjectProbePath ? newProjectFolder : null;
+  const newProjectOffersStart =
+    newProjectFolderState !== "contents" && newProjectFolderState !== "file";
   const newProjectTemplates = templateChoices?.enabled
     ? templateChoices.templates
     : [];
-  const newProjectTemplate = newProjectPanelShown
-    ? newProjectTemplates.find(
-        (template) => templateChoiceKey(template) === newProjectChoice,
-      )
-    : undefined;
+  const newProjectTemplate =
+    newProjectPanelShown && newProjectOffersStart
+      ? newProjectTemplates.find(
+          (template) => templateChoiceKey(template) === newProjectChoice,
+        )
+      : undefined;
   // A template project is made by its own Create & prepare action, so the
   // ordinary start waits while one is chosen.
   const creatingTemplateProject = newProjectTemplate !== undefined;
@@ -1651,6 +1701,11 @@ export function NewSessionForm({
     newProjectPanelShown && !newProjectTemplate && newProjectTarget?.path
       ? newProjectTarget
       : null;
+  const startActionKey = !newProjectSubmission
+    ? "newSessionStartAction"
+    : newProjectFolderState === "contents"
+      ? "newSessionAddAndStartAction"
+      : "newSessionCreateAndStartAction";
   const projectCreationGitChoice = serverHasCapability(
     versionInfo,
     SERVER_CAPABILITIES.projectCreationGitChoice.name,
@@ -4390,20 +4445,10 @@ export function NewSessionForm({
               }
               className="send-button new-session-submit-button"
               aria-label={describePrefixedDelivery(
-                launch?.startLabel ??
-                  t(
-                    newProjectSubmission
-                      ? "newSessionCreateAndStartAction"
-                      : "newSessionStartAction",
-                  ),
+                launch?.startLabel ?? t(startActionKey),
               )}
               title={describePrefixedTooltip(
-                launch?.startLabel ??
-                  t(
-                    newProjectSubmission
-                      ? "newSessionCreateAndStartAction"
-                      : "newSessionStartAction",
-                  ),
+                launch?.startLabel ?? t(startActionKey),
               )}
             >
               {isStarting ? (
@@ -4611,60 +4656,75 @@ export function NewSessionForm({
       ) : null}
       <p className={styles.newProjectTarget}>
         {newProjectTarget?.path
-          ? t(newProjectOpen ? "newProjectCreates" : "newProjectFromSearch", {
-              path: shortenPath(newProjectTarget.path),
-            })
+          ? t(
+              newProjectFolderState === "contents"
+                ? "newProjectExistingFolder"
+                : newProjectFolderState === "empty"
+                  ? "newProjectEmptyFolderExists"
+                  : newProjectFolderState === "file"
+                    ? "newProjectPathIsFile"
+                    : newProjectOpen
+                      ? "newProjectCreates"
+                      : newProjectFolderState === "missing"
+                        ? "newProjectNoFolder"
+                        : "newProjectFromSearch",
+              { path: shortenPath(newProjectTarget.path) },
+            )
           : t("newProjectNeedsName")}
       </p>
-      <ProjectStartPalette
-        name="new-session-project-start"
-        legend={t("newProjectStartFrom")}
-        disabled={isStarting || templateProjectBusy}
-        choices={[
-          {
-            key: EMPTY_FOLDER_CHOICE,
-            title: t("newProjectEmptyFolder"),
-            description: t("newProjectEmptyFolderHint"),
-          },
-          ...newProjectTemplates.map((template) => ({
-            key: templateChoiceKey(template),
-            title: template.title,
-            description: template.description,
-            icon: template.icon,
-          })),
-        ]}
-        selected={
-          newProjectTemplate
-            ? templateChoiceKey(newProjectTemplate)
-            : EMPTY_FOLDER_CHOICE
-        }
-        onSelect={setNewProjectChoice}
-      />
-      {!newProjectTemplate && (
+      {newProjectOffersStart && (
         <>
-          <label className={styles.newProjectGit}>
-            <input
-              type="checkbox"
-              checked={newProjectInitializesGit}
-              disabled={!projectCreationGitChoice || isStarting}
-              onChange={(event) => {
-                setNewProjectGitInit(event.target.checked);
-                localStorage.setItem(
-                  UI_KEYS.newProjectGitInit,
-                  String(event.target.checked),
-                );
-              }}
-            />
-            {t("newProjectGitInit")}
-          </label>
-          {newProjectTarget?.path && (
-            <p className={styles.newProjectPlan}>
-              {t(
-                newProjectInitializesGit
-                  ? "newProjectPlanGit"
-                  : "newProjectPlan",
+          <ProjectStartPalette
+            name="new-session-project-start"
+            legend={t("newProjectStartFrom")}
+            disabled={isStarting || templateProjectBusy}
+            choices={[
+              {
+                key: EMPTY_FOLDER_CHOICE,
+                title: t("newProjectEmptyFolder"),
+                description: t("newProjectEmptyFolderHint"),
+              },
+              ...newProjectTemplates.map((template) => ({
+                key: templateChoiceKey(template),
+                title: template.title,
+                description: template.description,
+                icon: template.icon,
+              })),
+            ]}
+            selected={
+              newProjectTemplate
+                ? templateChoiceKey(newProjectTemplate)
+                : EMPTY_FOLDER_CHOICE
+            }
+            onSelect={setNewProjectChoice}
+          />
+          {!newProjectTemplate && (
+            <>
+              <label className={styles.newProjectGit}>
+                <input
+                  type="checkbox"
+                  checked={newProjectInitializesGit}
+                  disabled={!projectCreationGitChoice || isStarting}
+                  onChange={(event) => {
+                    setNewProjectGitInit(event.target.checked);
+                    localStorage.setItem(
+                      UI_KEYS.newProjectGitInit,
+                      String(event.target.checked),
+                    );
+                  }}
+                />
+                {t("newProjectGitInit")}
+              </label>
+              {newProjectTarget?.path && (
+                <p className={styles.newProjectPlan}>
+                  {t(
+                    newProjectInitializesGit
+                      ? "newProjectPlanGit"
+                      : "newProjectPlan",
+                  )}
+                </p>
               )}
-            </p>
+            </>
           )}
         </>
       )}

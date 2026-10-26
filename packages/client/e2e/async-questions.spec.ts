@@ -12,6 +12,7 @@ import {
   disposeYaServerProcess,
 } from "./support/ya-server-process";
 import { recordUiCapture } from "./support/ui-capture";
+import { routeWithDrain, drainManagedRoutes } from "./support/managed-routes";
 
 test.use({ serviceWorkers: "block" });
 
@@ -119,18 +120,22 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
   await page.route(`**/api/sessions/${sessionId}/process`, (route) =>
     route.fulfill({ json: { process: null } }),
   );
-  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
-    sends.push(route.request().postDataJSON());
-    if (holdReply)
-      await new Promise<void>((resolve) => {
-        replyGate.release = resolve;
-      });
-    await route.fulfill(
-      fail
-        ? { status: 503, json: { error: "Test send unavailable" } }
-        : { json: { queued: true, serverTimestamp: Date.now() } },
-    );
-  });
+  await routeWithDrain(
+    page,
+    `**/api/sessions/${sessionId}/messages`,
+    async (route) => {
+      sends.push(route.request().postDataJSON());
+      if (holdReply)
+        await new Promise<void>((resolve) => {
+          replyGate.release = resolve;
+        });
+      await route.fulfill(
+        fail
+          ? { status: 503, json: { error: "Test send unavailable" } }
+          : { json: { queued: true, serverTimestamp: Date.now() } },
+      );
+    },
+  );
   await page.routeWebSocket("**/api/ws", (socket) => {
     const upstream = socket.connectToServer();
     socket.onMessage((message) => {
@@ -765,7 +770,7 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
     }
 
     // A populated additive field alone cannot enable a new capability.
-    await page.route("**/api/version*", async (route) => {
+    await routeWithDrain(page, "**/api/version*", async (route) => {
       const response = await route.fetch();
       await route.fulfill({
         json: {
@@ -844,7 +849,11 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
     expect(browserErrors).toEqual([]);
   } finally {
     replyGate.release?.();
-    await page.unrouteAll({ behavior: "wait" });
-    await disposeYaServerProcess(backend);
+    try {
+      await drainManagedRoutes(page);
+      await page.unrouteAll({ behavior: "wait" });
+    } finally {
+      await disposeYaServerProcess(backend);
+    }
   }
 });

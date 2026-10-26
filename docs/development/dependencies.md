@@ -13,9 +13,19 @@ CI runs `pnpm audit --prod` on every pull request and push to `main` (the
 Keep `bn.js` patched (currently via pnpm override) until `web-push` ships an
 upstream fix.
 
+The same job audits both standalone npm lockfiles (`site/` and
+`sharing-worker/`), including development dependencies, and the pinned STT
+recovery snapshot with `pip-audit`. The Python audit queries the complete
+snapshot's indexed versions without installing its CUDA stack. Its exceptions
+must match the Python rows under **Known-unreachable advisories** below.
+The sole commit-pinned Transformers Git requirement has no PyPI version to
+query and is explicitly excluded; changes to that source pin still require
+review. Other unscannable requirements fail the audit. This gate does not audit
+unpinned optional speech environments or qualify installed GPU environments.
+
 When a transitive dep has no direct upgrade path, prefer a pnpm override. Pin it
 exactly if a newer major would escape the parent's declared range — `fast-uri`
-is pinned to `3.1.8` rather than `^3.1.8` because 4.x is published and `ajv`
+is pinned to `3.1.9` rather than `^3.1.9` because 4.x is published and `ajv`
 declares `^3.0.1`. When the parent's declared range already contains the patched
 version, no override is needed: refresh the lockfile with
 `pnpm -r update <pkg> --depth=Infinity` (plain `pnpm update` skips transitive
@@ -97,6 +107,64 @@ range ([GHSA-q3jh-wrc6-jgq8](https://github.com/advisories/GHSA-q3jh-wrc6-jgq8),
 The refresh also re-resolved jsdom 29's `undici` and `tldts` to patch
 releases. No new advisory exclusions are added.
 
+The 2026-10-23 CI audit repair refreshes `mermaid -> dompurify` to 3.4.17
+for the [shadow-root template bypass](https://github.com/advisories/GHSA-cg2g-xh64-v4q7),
+[detached-subtree event handlers](https://github.com/advisories/GHSA-mrv2-3pqr-j5jr)
+and [XHTML SMIL guard bypass](https://github.com/advisories/GHSA-c6gr-qvv4-5v3f),
+and the MCP SDK's `express-rate-limit -> ip-address` edge to 10.7.4 for
+[quadratic IPv6 zone parsing](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5).
+Both patches fit their parents' declared ranges; no new overrides or advisory
+exclusions are needed. Unrelated lockfile resolutions remain unchanged.
+
+The 2026-10-24 security refresh raises the Zod floor to 4.6.7 for
+[oversized constrained collections](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5),
+resolves `express -> body-parser` to 2.4.0 within its declared range for
+[compressed request trailing bytes](https://github.com/advisories/GHSA-27r3-jxmh-p828),
+and moves the existing exact `fast-uri` override to 3.1.9 for its URI
+normalization advisories. Vitest and its mocker move together to 4.1.12 for
+[manual mock injection](https://github.com/advisories/GHSA-qxg6-89mg-rqv8)
+and [Windows redirect traversal](https://github.com/advisories/GHSA-xp26-3454-mjgp).
+Desktop Tokio resolves to 1.51.6 for
+[AsyncFd I/O safety](https://rustsec.org/advisories/RUSTSEC-2026-0386.html).
+No new audit exclusions or install-script permissions are added.
+
+Zod 4.6.7 requires a key whose schema is `z.undefined()` to be present;
+the Write acknowledgement's absent `file` key is explicitly optional so
+captured native and live results retain their existing rich presentation.
+The pnpm patch for Zod changes only explanatory comments in its ESM and
+CommonJS builds: the comments accidentally contain Rollup's pure-annotation
+token, which makes the warning-free client build fail. The executable
+annotation and runtime code remain intact. Drop this patch when an upstream
+release removes the misplaced annotation token.
+
+The same day's mobile security refresh pins `crypto-bigint` to 0.7.6 in
+the production Rust core and refreshes the isolated proof lockfile to match,
+including its `ctutils` 0.4.5 dependency. This addresses
+[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html),
+which identifies secret-dependent branches in operations intended to be
+constant-time. The existing SRP compatibility vectors and live connection
+checks own the unchanged-server boundary. This dependency patch does not
+establish whole-protocol constant-time behavior or a formal crypto audit;
+the accepted limits remain in [mobile SRP](../../topics/security.md#mobile-srp-implementation-decision).
+
+The standalone 2026-10-24 refresh resolves the website's `undici` to 8.12.2,
+`fast-uri` to 3.1.9 and Zod to 4.6.6 within their parents' declared ranges.
+Together these updates address eight website alerts and one sharing-worker
+alert. The worker's Miniflare pins Undici exactly, so its
+scoped npm override raises only `miniflare -> undici` to 7.30.1 for
+[excessive content encodings](https://github.com/advisories/GHSA-xjj6-f33q-929c).
+Drop that override when the pinned Miniflare declares a patched Undici.
+The override names the exact Miniflare beta version: npm 10 does not apply the
+unversioned parent override to this prerelease and rejects the frozen install.
+CI verifies the worker's frozen install before auditing it so the deployment's
+npm 10 boundary stays covered.
+
+The STT recovery snapshot raises `filelock` to 4.2.1 for its SQLite reader/writer
+lock and Windows soft-lock advisories. Linux/Python 3.12 resolution for the
+snapshot and its NeMo constraint consumer preserves the pinned Torch and
+Transformers builds. This secures subsequent installs; live speech environments
+need a separate update and inference qualification.
+
 ### Install-script allowlist
 
 Dependency install scripts (preinstall/install/postinstall) are blocked by
@@ -136,15 +204,16 @@ Anything not on this list is untriaged — treat a new advisory as actionable.
 
 `ignoreGhsas` only quiets `pnpm audit`. GitHub's Dependabot alerts for the
 same advisories are dismissed per alert, as "vulnerable code not used", with
-a comment pointing here. Dependabot also scans manifests outside pnpm; these
-advisories were triaged as not applying and dismissed the same way on
-2026-09-28:
+a comment pointing here. Dependabot also scans manifests outside pnpm. The
+table below records additional non-applicable findings, beginning with the
+2026-09-28 triage:
 
 | Advisory | Manifest | Why it does not apply | Revisit when |
 |---|---|---|---|
 | `accelerate` sharded-checkpoint path traversal (GHSA-4j2p-28q2-5m79) | `requirements/stt-known-good-2026-06-16.txt` | The affected functions are `load_checkpoint_in_model` and `load_checkpoint_and_dispatch`. YA's speech workers load models by operator-configured id through `from_pretrained` and never call either function | A speech worker loads raw accelerate checkpoints, or a patched release lands (then bump the pin) |
 | `torch` `torch.jit.script` memory corruption (GHSA-rrmf-rvhw-rf47) | same snapshot | Needs crafted input to `torch.jit.script` on the local host; YA only runs inference and never scripts code | Moving the snapshot to torch ≥ 2.13, which also frees the setuptools pin |
 | `setuptools` sdist MANIFEST.in bypass (GHSA-h35f-9h28-mq5c) | same snapshot | Affects building sdists on macOS filesystems. The snapshot is a Linux runtime env, and `torch==2.12.0` requires `setuptools<82`, so the patched 83 cannot be pinned | Same torch move |
+| `setuptools` Windows legacy wheel path escape ([GHSA-xmj3-9gf7-h52w](https://github.com/advisories/GHSA-xmj3-9gf7-h52w)) | same snapshot | Needs Windows drive-qualified paths in `namespace_packages.txt` during legacy wheel installation. This snapshot is a Linux runtime environment; Torch 2.12.0 also requires `setuptools<82`, excluding the patched 84.1.0 | Supporting this snapshot on Windows, using legacy wheel installation there, or moving Torch so the patched setuptools can resolve |
 | `pytorch-lightning` `load_from_checkpoint` pickle loading (GHSA-75m9-98v2-hjpm) | `requirements/stt-nemo.txt` | NeMo 2.0.0 needs `pytorch-lightning==2.4.0`. The NeMo worker loads through `ASRModel.from_pretrained`, never `LightningModule.load_from_checkpoint`. The current NeMo env (`stt-nemo-recent.txt`) resolves 2.6.5 | Retiring the in-place NeMo 2.0.0 add-on |
 | `glib` `VariantStrIter` unsoundness (GHSA-wrw7-89jp-8q8g) | `packages/desktop/src-tauri/Cargo.lock` | gtk-rs 0.18 is the last GTK3 binding and Tauri's Linux backend requires it, so no patched `glib` is reachable. Neither the desktop crate nor its Tauri/GTK dependencies iterate string-array variants | Tauri moves its Linux backend off gtk-rs 0.18 |
 | `rand` unsound with a custom logger (GHSA-cq8v-f236-94qc) | same `Cargo.lock` | `rand 0.7.3` is used only by `phf_generator` during the build. The defect requires a custom `log` logger that itself draws random numbers | `phf_generator` moves off rand 0.7 |
@@ -165,63 +234,49 @@ were not updated or qualified by this repository change.
 
 ## Automated Dependency Updates
 
-The hosted Mend Renovate app proposes updates from `renovate.json`, using
-GitHub's Dependabot alerts and OSV as advisory sources. Dependabot security
-and version updates stay off so the same bump never arrives twice. Update
-PRs open weekly, at most five at a time, after a release is 3 days old;
-security fixes skip both waits. The Dependency Dashboard issue lists
-everything pending.
+GitHub Dependabot is the sole automated dependency PR source, with **security
+updates only**. Dependabot alerts and security updates are enabled in the
+repository's GitHub settings. There is no `.github/dependabot.yml` or
+`.github/dependabot.yaml`, so routine version updates are not configured.
+GitHub can [create security updates without that optional file](https://docs.github.com/en/code-security/concepts/supply-chain-security/about-the-dependabot-yml-file).
 
-- Routine runtime updates are grouped for manual review: stable npm
-  web/server dependencies (plus 0.x patches), Android libraries, stable Go
-  bridge modules, and Rust crate patches. Provider SDKs and Tauri retain
-  their separate audit/group boundaries. Android build tools and Go
-  language/toolchain directives stay outside the library groups.
-- Major upgrades and 0.x minor upgrades require dashboard approval before
-  creating a PR and never automerge. Request migrations individually;
-  approving the entire pending queue defeats that boundary.
-- Renovate automerges only non-major devDependency updates at 1.0 or later
-  and non-major GitHub Actions updates and digest pins. Everything else waits
-  for review.
-- `platformAutomerge` is off: `main` has no required status checks, so
-  GitHub's native automerge could merge a PR with failing checks. Renovate
-  merges only after every check on the branch passes.
-- Initial GitHub Action digest pins skip the release-age wait: they freeze
-  references that already float to those commits. Renovate ages pins against
-  the newest matching release, which can otherwise leave a frequently
-  releasing Action unpinned indefinitely. Version upgrades and subsequent
-  digest updates retain the 3-day wait. See
-  [Renovate's pinDigest guidance](https://docs.renovatebot.com/key-concepts/minimum-release-age/#pindigest-updates).
+`renovate.json` explicitly disables Renovate. Its former weekly minor/patch
+updates, automatic development-tool and Action updates, monthly lockfile
+maintenance and Dependency Dashboard queue are retired. Routine upgrades are
+manual work requested by a maintainer.
+
+A security fix may itself require a patch, minor or major version bump; the
+linked vulnerability determines whether it belongs in the automated queue.
+Security PRs still require review and passing CI. The independent CI audits
+remain enabled, including standalone npm manifests and the STT snapshot.
+Dependabot may be unable to generate a fix for some alerts; those require
+manual remediation or a documented applicability review.
+
+When reviewing a security PR or making a requested upgrade:
+
 - Workflow runtime inputs (`node-version`, `go-version`, `toolchain`,
-  `java-version`) are not updated; CI deliberately runs at the supported
-  Node floor.
-- Major updates to `pnpm-workspace.yaml` overrides are disabled; see the
-  exact `fast-uri` pin above.
-- `vite` updates bump the declared ranges instead of updating only the
-  lockfile. The client and desktop declare different vite majors, and a
-  lockfile-only group update passes both versions to one recursive
-  `pnpm update`, which forces a single version onto both importers and
-  fails `--frozen-lockfile`. Apply the same rule to any other package
-  declared at two majors in the workspace.
-- `@playwright/test` is held below 1.61. From 1.61 the runner loads test
-  files through `module.registerHooks`, and on Node 22.16 through 22.22 and
-  on 23.11 that fails to load CommonJS dependencies such as `sanitize-html`
-  with `request for './Parser.js' is not in cache`, so every e2e shard fails
-  at the supported Node floor. Node 22.23 and 24 load them. Lift the hold
-  when the supported floor moves past the fix. Playwright's
-  `PLAYWRIGHT_FORCE_ASYNC_LOADER` avoids the path but is undocumented.
-  The held release also refuses to install browsers on Ubuntu 26.04
-  (`Playwright does not support chromium on ubuntu26.04-x64`; 1.64 knows
-  that image), so every workflow job that runs `playwright install` pins
-  `ubuntu-24.04` instead of `ubuntu-latest`. Return those jobs to
-  `ubuntu-latest` together with lifting the hold.
-- `@anthropic-ai/claude-agent-sdk` and the pixi STT environment update
-  only when requested from the dashboard, because they follow the
-  [provider refresh](../../topics/provider-refresh.md) audit and the
-  known-good STT snapshot respectively.
+  `java-version`) are deliberate; CI runs at the supported Node floor.
+- Preserve the parent's supported range for security overrides. A major bump
+  to the exact `fast-uri` pin can escape ajv's 3.x range.
+- `vite` updates must preserve the client's and desktop's different majors.
+  Bump their declared ranges when necessary instead of forcing one target
+  version across both importers with a recursive lockfile-only update.
+- `@playwright/test` remains below 1.61 until the supported Node floor moves
+  past its loader fix. From 1.61, `module.registerHooks` fails to load CommonJS
+  dependencies on Node 22.16 through 22.22 and on 23.11 with
+  `request for './Parser.js' is not in cache`; Node 22.23 and 24 work.
+  `PLAYWRIGHT_FORCE_ASYNC_LOADER` avoids that path but is undocumented.
+  The held release also cannot install browsers on Ubuntu 26.04, so jobs that
+  run `playwright install` use `ubuntu-24.04`. Lift the runner hold and return
+  those jobs to `ubuntu-latest` together after qualifying the new Node floor.
+- Provider SDK changes follow the [provider refresh](../../topics/provider-refresh.md)
+  audit, including the Claude SDK version marker. The optional pixi STT
+  environment retains its known-good snapshot and separate inference
+  qualification; a passing package resolver is not a GPU runtime test.
 
-Renovate 44's validator requires Node.js `^24.11.0`; use that runtime for
-this tooling even when the application uses another supported Node version.
-Before changing `renovate.json`, run
-`npx --yes --package=renovate@44 -- renovate-config-validator --strict`.
-Revisit the validator major/runtime when the hosted app moves to a new major.
+Renovate 44's validator requires Node.js `^24.11.0`. Before changing the
+explicitly disabled `renovate.json`, validate it with that runtime:
+
+```bash
+npx --yes --package=renovate@44 -- renovate-config-validator --strict
+```

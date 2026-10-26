@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useSessionLiveness } from "../contexts/SessionLivenessContext";
 import { getFunPhrasesEnabled } from "../hooks/useFunPhrases";
 import { useI18n } from "../i18n";
 import { observeViewportActivityAnimation } from "../lib/viewportActivityAnimation";
@@ -39,6 +40,28 @@ const PROCESSING_PHRASES = [
 
 const ROTATION_INTERVAL_MS = 2000;
 const TYPEWRITER_SPEED_MS = 25; // ~40 chars/second = ~240 WPM
+/**
+ * After this long without new output, rotating phrases would read as
+ * progress that is not happening, so the indicator states the silence
+ * instead. See topics/session-liveness.md.
+ */
+const QUIET_STATUS_AFTER_MS = 30_000;
+const QUIET_TICK_MS = 1000;
+
+function parseMs(timestamp: string | null | undefined): number | null {
+  const ms = Date.parse(timestamp ?? "");
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function formatSilence(elapsedMs: number): string {
+  const totalSeconds = Math.floor(Math.max(0, elapsedMs) / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
 
 interface ProcessingAnimationState {
   phraseIndex: number;
@@ -80,6 +103,8 @@ interface Props {
    * expand the full history; from everything-expanded, back to latest-only.
    */
   onToggleThinkingLatestOnly?: () => void;
+  /** Timestamp of the newest transcript message, as user-visible output. */
+  lastMessageAtMs?: number | null;
 }
 
 function ThoughtTranscriptIcon({ muted }: { muted: boolean }) {
@@ -114,8 +139,14 @@ export const ProcessingIndicator = memo(function ProcessingIndicator({
   onToggleThinkingItemsVisible,
   thinkingLatestOnly = false,
   onToggleThinkingLatestOnly,
+  lastMessageAtMs = null,
 }: Props) {
   const { t } = useI18n();
+  const liveness = useSessionLiveness();
+  const [processingStartedAtMs, setProcessingStartedAtMs] = useState<
+    number | null
+  >(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [animationState, setAnimationState] = useState(INITIAL_ANIMATION_STATE);
   const [isAnimationPaused, setIsAnimationPaused] = useState(false);
   const [isInViewport, setIsInViewport] = useState(false);
@@ -233,7 +264,52 @@ export const ProcessingIndicator = memo(function ProcessingIndicator({
     return observeViewportActivityAnimation(root, setIsInViewport);
   }, [isRendered]);
 
-  const shouldAnimateText = isProcessing && isInViewport && !isAnimationPaused;
+  useEffect(() => {
+    setProcessingStartedAtMs(isProcessing ? Date.now() : null);
+  }, [isProcessing]);
+
+  useEffect(() => {
+    if (!isProcessing || !isInViewport) return;
+    setNowMs(Date.now());
+    const interval = setInterval(() => setNowMs(Date.now()), QUIET_TICK_MS);
+    return () => clearInterval(interval);
+  }, [isInViewport, isProcessing]);
+
+  // Newest evidence of user-visible output: a transcript message, streamed
+  // content, or a provider message the server saw. The turn's start floors it
+  // so a fresh turn is never reported as silent since an earlier one.
+  const turnStartedAtMs =
+    liveness?.state === "in-turn"
+      ? parseMs(liveness.lastStateChangeAt)
+      : processingStartedAtMs;
+  const outputCandidates = [
+    turnStartedAtMs,
+    lastMessageAtMs,
+    parseMs(liveness?.lastVerifiedProgressAt),
+    parseMs(liveness?.lastProviderMessageAt),
+  ].filter((ms): ms is number => ms !== null);
+  const lastOutputAtMs =
+    outputCandidates.length > 0 ? Math.max(...outputCandidates) : null;
+  const silenceMs =
+    isProcessing && lastOutputAtMs !== null ? nowMs - lastOutputAtMs : 0;
+  const isQuiet = silenceMs >= QUIET_STATUS_AFTER_MS;
+  const providerActiveCheckedAtMs =
+    liveness?.lastLivenessProbeStatus === "active"
+      ? parseMs(liveness.lastLivenessProbeAt)
+      : null;
+  const quietText = !isQuiet
+    ? null
+    : providerActiveCheckedAtMs !== null &&
+        lastOutputAtMs !== null &&
+        providerActiveCheckedAtMs >= lastOutputAtMs
+      ? t("processingQuietProviderActive", {
+          silence: formatSilence(silenceMs),
+          checked: formatSilence(nowMs - providerActiveCheckedAtMs),
+        })
+      : t("processingQuietNoOutput", { silence: formatSilence(silenceMs) });
+
+  const shouldAnimateText =
+    isProcessing && isInViewport && !isAnimationPaused && !isQuiet;
 
   useEffect(() => {
     if (shouldAnimateText) return;
@@ -358,18 +434,24 @@ export const ProcessingIndicator = memo(function ProcessingIndicator({
           <div className="processing-dot-container">
             <ThinkingIndicator animationVisibilityManaged />
           </div>
-          <span
-            className="processing-text"
-            role="button"
-            tabIndex={0}
-            aria-pressed={isAnimationPaused}
-            aria-label={animationToggleLabel}
-            title={animationToggleLabel}
-            onClick={toggleAnimationPaused}
-            onKeyDown={handleAnimationKeyDown}
-          >
-            {displayedText}
-          </span>
+          {quietText !== null ? (
+            <span className="processing-text" role="status">
+              {quietText}
+            </span>
+          ) : (
+            <span
+              className="processing-text"
+              role="button"
+              tabIndex={0}
+              aria-pressed={isAnimationPaused}
+              aria-label={animationToggleLabel}
+              title={animationToggleLabel}
+              onClick={toggleAnimationPaused}
+              onKeyDown={handleAnimationKeyDown}
+            >
+              {displayedText}
+            </span>
+          )}
         </>
       )}
     </div>

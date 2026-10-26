@@ -5,7 +5,9 @@ import {
   render,
   screen,
 } from "@testing-library/react";
+import type { SessionLivenessSnapshot } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SessionLivenessProvider } from "../../contexts/SessionLivenessContext";
 import { ProcessingIndicator } from "../ProcessingIndicator";
 
 let nextAnimationFrameId = 1;
@@ -21,25 +23,57 @@ function flushAnimationFrames() {
 
 vi.mock("../../i18n", () => ({
   useI18n: () => ({
-    t: (key: string) =>
-      ({
-        processingThinkingTranscriptHide:
-          "Hide thinking transcript rows (display only; the agent keeps working)",
-        processingThinkingTranscriptShowHidden:
-          "Show hidden thinking transcript rows",
-        processingThinkingTranscriptShowWhenAvailable:
-          "Show thinking transcript rows when available",
-        processingThinkingRightClickShowExpandAll:
-          "Right-click: show thinking and expand all blocks",
-        processingThinkingRightClickExpandAll:
-          "Right-click: expand all thinking blocks, including earlier ones",
-        processingThinkingRightClickLatestOnly:
-          "Right-click: auto-expand only the latest thinking block",
-        processingAnimationPause: "Pause processing text animation",
-        processingAnimationResume: "Resume processing text animation",
-      })[key] ?? key,
+    t: (key: string, params: Record<string, string> = {}) =>
+      (
+        ({
+          processingQuietNoOutput: "No new output for {silence}",
+          processingQuietProviderActive:
+            "No new output for {silence} · provider reports the turn active ({checked} ago)",
+          processingThinkingTranscriptHide:
+            "Hide thinking transcript rows (display only; the agent keeps working)",
+          processingThinkingTranscriptShowHidden:
+            "Show hidden thinking transcript rows",
+          processingThinkingTranscriptShowWhenAvailable:
+            "Show thinking transcript rows when available",
+          processingThinkingRightClickShowExpandAll:
+            "Right-click: show thinking and expand all blocks",
+          processingThinkingRightClickExpandAll:
+            "Right-click: expand all thinking blocks, including earlier ones",
+          processingThinkingRightClickLatestOnly:
+            "Right-click: auto-expand only the latest thinking block",
+          processingAnimationPause: "Pause processing text animation",
+          processingAnimationResume: "Resume processing text animation",
+        }) as Record<string, string>
+      )[key]?.replace(/\{(\w+)\}/g, (_, name: string) => params[name] ?? "") ??
+      key,
   }),
 }));
+
+function inTurnLiveness(
+  fields: Partial<SessionLivenessSnapshot>,
+): SessionLivenessSnapshot {
+  return {
+    checkedAt: new Date().toISOString(),
+    derivedStatus: "verified-waiting-provider",
+    activeWorkKind: "agent-turn",
+    state: "in-turn",
+    evidence: [],
+    lastProviderMessageAt: null,
+    lastRawProviderEventAt: null,
+    lastRawProviderEventSource: null,
+    lastStateChangeAt: new Date().toISOString(),
+    lastVerifiedProgressAt: null,
+    lastVerifiedIdleAt: null,
+    lastLivenessProbeAt: null,
+    lastLivenessProbeStatus: null,
+    lastLivenessProbeSource: null,
+    silenceMs: null,
+    longSilenceThresholdMs: 300_000,
+    queueDepth: 0,
+    deferredQueueDepth: 0,
+    ...fields,
+  };
+}
 
 describe("ProcessingIndicator", () => {
   beforeEach(() => {
@@ -205,6 +239,42 @@ describe("ProcessingIndicator", () => {
 
     expect(toggle.getAttribute("aria-pressed")).toBe("false");
     expect(toggle.textContent).not.toBe(pausedText);
+  });
+
+  it("states the silence instead of rotating phrases once output stops", async () => {
+    vi.setSystemTime(new Date("2026-10-23T20:00:00Z"));
+    const liveness = inTurnLiveness({
+      lastStateChangeAt: "2026-10-23T19:55:00Z",
+      lastProviderMessageAt: "2026-10-23T19:57:00Z",
+      lastLivenessProbeStatus: "active",
+      lastLivenessProbeAt: "2026-10-23T19:59:50Z",
+    });
+    const indicator = (lastMessageAtMs: number) => (
+      <SessionLivenessProvider value={liveness}>
+        <ProcessingIndicator
+          isProcessing={true}
+          lastMessageAtMs={lastMessageAtMs}
+        />
+      </SessionLivenessProvider>
+    );
+    const { rerender } = render(indicator(Date.parse("2026-10-23T19:56:00Z")));
+
+    expect(screen.getByRole("status").textContent).toBe(
+      "No new output for 3m 0s · provider reports the turn active (10s ago)",
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(screen.getByRole("status").textContent).toBe(
+      "No new output for 3m 1s · provider reports the turn active (11s ago)",
+    );
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+
+    rerender(indicator(Date.now()));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Pause processing text animation" }),
+    ).toBeDefined();
   });
 
   it("has processing indicator container", () => {

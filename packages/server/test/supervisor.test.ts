@@ -7424,7 +7424,7 @@ describe("Supervisor", () => {
         eventBus.subscribe((event) => events.push(event));
         const supervisorWithNames = new Supervisor({
           sdk: new MockClaudeSDK(),
-          idleTimeoutMs: 100,
+          // Keep the normal lifetime: this checks names, not idle eviction.
           eventBus,
           projectDisplayName: (projectPath) =>
             projectMetadata.getProjectDisplayName(projectPath),
@@ -7435,21 +7435,26 @@ describe("Supervisor", () => {
           { text: "hello" },
         );
 
-        const created = events.find(
-          (e): e is Extract<BusEvent, { type: "session-created" }> =>
-            e.type === "session-created",
-        );
-        expect(created?.session.projectName).toBe("YA");
-        expect(process.getInfo().projectName).toBe("YA");
-        await projectMetadata.setProjectNameOverride(
-          encodeProjectId("/tmp/yepanywhere"),
-          "Yep",
-        );
-        expect(
-          supervisorWithNames
-            .getProcessInfoList()
-            .find((info) => info.id === process.id)?.projectName,
-        ).toBe("Yep");
+        try {
+          const created = events.find(
+            (e): e is Extract<BusEvent, { type: "session-created" }> =>
+              e.type === "session-created",
+          );
+          expect(created?.session.projectName).toBe("YA");
+          expect(process.getInfo().projectName).toBe("YA");
+          await projectMetadata.setProjectNameOverride(
+            encodeProjectId("/tmp/yepanywhere"),
+            "Yep",
+          );
+          expect(
+            supervisorWithNames
+              .getProcessInfoList()
+              .find((info) => info.id === process.id)?.projectName,
+          ).toBe("Yep");
+        } finally {
+          await supervisorWithNames.abortProcess(process.id);
+          await supervisorWithNames.stopBackgroundTasks();
+        }
       } finally {
         await rm(dataDir, { recursive: true });
       }

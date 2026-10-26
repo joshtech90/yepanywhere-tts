@@ -190,6 +190,28 @@ vi.mock("../../hooks/useProjectQueues", () => ({
   },
 }));
 
+// Both hooks run retained supplementary queries whose deferred fetch and
+// retry settle outside act() on a loaded host; the page reads only their data.
+vi.mock("../../hooks/useProcesses", () => ({
+  useProcesses: () => ({
+    processes: [],
+    terminatedProcesses: [],
+    loading: false,
+    error: null,
+    activeCount: 0,
+    refetch: vi.fn(),
+  }),
+}));
+
+vi.mock("../../hooks/usePublicShareStatus", () => ({
+  usePublicShareStatus: () => ({
+    status: null,
+    loading: false,
+    error: null,
+    refresh: vi.fn(),
+  }),
+}));
+
 vi.mock("../../hooks/useVersion", () => ({
   useVersion: () => ({ version: versionState.version }),
 }));

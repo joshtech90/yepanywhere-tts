@@ -26,6 +26,10 @@
 # removes the affected emSign trust root. Linux/Python 3.12 uv resolves pass
 # for this snapshot and the NeMo constraints. Verified HTTPS requests pass
 # with requests and httpx; existing live environments need their own update.
+#
+# Security refresh on 2026-10-24 raises filelock to 4.2.1 for the SQLite
+# ReadWriteLock and Windows soft-lock advisories. Linux/Python 3.12 resolves
+# pass for this snapshot and its NeMo constraints. Live envs were not updated.
 accelerate==1.14.0
 annotated-doc==0.0.4
 anyio==4.14.2
@@ -41,7 +45,7 @@ cuda-pathfinder==1.5.5
 cuda-toolkit==13.0.2
 decorator==5.3.1
 faster-whisper==1.2.1
-filelock==3.29.4
+filelock==4.2.1
 flatbuffers==25.12.19
 fsspec==2026.6.0
 h11==0.16.0

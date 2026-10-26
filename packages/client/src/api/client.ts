@@ -656,6 +656,16 @@ export const api = {
       }),
     }),
 
+  /**
+   * What adding this path as a project would find. Gated by
+   * `project-folder-state`.
+   */
+  getProjectFolderState: (path: string) =>
+    fetchJSON<{
+      path: string;
+      state: "missing" | "empty" | "contents" | "file";
+    }>(`/projects/folder-state?path=${encodeURIComponent(path)}`),
+
   updateProjectName: (projectId: string, name: string | null) =>
     fetchJSON<{ name: string }>(
       `/projects/${encodeURIComponent(projectId)}/name`,

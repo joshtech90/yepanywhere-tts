@@ -34,7 +34,9 @@ sync service is active. Keep that page open until storage works again.
 
 Background writes use a three-second quiet debounce and ten-second maximum
 wait during connected editing. A server change notice does not cut a pending
-debounce short: that save reads the server anyway. Preempting it turned each
+debounce short for ordinary drafts: that save reads the server anyway. A draft
+with rendez captures refreshes immediately so later captures appear during
+typing. Preempting ordinary draft saves turned each
 tab's save into the other tab's immediate save, so two tabs on one draft
 alternated writes on every keystroke (observed 2026-10-05: 682 accepted writes
 in an hour on one session draft). Reconnect, window focus and foregrounding refresh
@@ -88,6 +90,10 @@ keeps its anchor even when another device removed that comment. Attachment sets
 union new IDs and respect removal of a base attachment.
 
 A remote change never replaces a focused input, its selection, or IME input.
+Attachment-only reconciliation may apply while focused when the resulting
+text fields are identical to the local fields. It preserves the input and
+selection while allowing an incoming rendez attachment to appear immediately
+after synchronization. The sibling-tab foreground guard still applies.
 One-sided remote updates, including a cleared draft after another device sends,
 wait quietly while their editor is focused and apply after focus leaves. They
 are not conflicts and do not produce a notice. An input counts as focused only

@@ -32,6 +32,37 @@ export function artifactTabUrl(
   return url.href;
 }
 
+/**
+ * The URL a framed project app may have opened in a new tab: a page of the
+ * app's own origin, the hand-off page's plain address. A private app's view
+ * link carries its access in `ya_access`, which a new tab needs and the
+ * hand-off page drops, so the view's own token is put back.
+ */
+export function appTabUrl(
+  requested: string,
+  viewUrl: string,
+): string | undefined {
+  let url: URL;
+  let view: URL;
+  try {
+    url = new URL(requested);
+    view = new URL(viewUrl);
+  } catch {
+    return;
+  }
+  if (
+    url.origin !== view.origin ||
+    url.username ||
+    url.password ||
+    url.search !== ""
+  )
+    return;
+  url.hash = "";
+  const access = view.searchParams.get("ya_access");
+  if (access) url.searchParams.set("ya_access", access);
+  return url.href;
+}
+
 export function artifactAudience(hostname: string): "local" | "public" {
   return ["localhost", "127.0.0.1", "[::1]"].includes(hostname)
     ? "local"

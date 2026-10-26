@@ -450,7 +450,7 @@ function AccountQuota({ account }: { account: OverviewAccount }) {
       ))}
       {age && <span className={styles.quotaUnknown}>{age}</span>}
       {account.error && (
-        <span className={styles.quotaWarning}>
+        <span className={styles.quotaWarning} title={account.error}>
           {t("routerQuotaRefreshFailed")}
         </span>
       )}
@@ -488,6 +488,9 @@ export function RouterPoolSelector({
   const { t } = useI18n();
   if (!data && !value && !error) return null;
   const pools = data?.pools.filter((p) => p.provider === provider) ?? [];
+  // A router granting no pool for this provider leaves only Direct, so the
+  // provider is not routed. A held selection stays visible as unavailable.
+  if (data && !error && !value && !pools.length) return null;
   const members = value?.poolId
     ? routerPoolMembers(data, value.poolId, provider, model, thinking)
     : [];

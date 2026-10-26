@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toUrlProjectId, type UrlProjectId } from "@yep-anywhere/shared";
@@ -366,6 +366,39 @@ describe("Projects Routes", () => {
     } finally {
       await rm(dataDir, { recursive: true, force: true });
       await rm(otherDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports what a typed project path holds before anything is added", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ya-folder-state-"));
+    try {
+      await mkdir(join(dir, "empty"));
+      await mkdir(join(dir, "repo"));
+      await writeFile(join(dir, "repo", "README.md"), "hi\n");
+      await writeFile(join(dir, "note.txt"), "x\n");
+      const routes = createProjectsRoutes({
+        scanner: new ProjectScanner({
+          projectsDir: join(dir, "no-claude-projects"),
+          enableCodex: false,
+          enableGemini: false,
+        }),
+        readerFactory: vi.fn(),
+      });
+      const stateOf = async (path: string) => {
+        const response = await routes.request(
+          `/folder-state?path=${encodeURIComponent(path)}`,
+        );
+        expect(response.status).toBe(200);
+        return ((await response.json()) as { state: string }).state;
+      };
+
+      expect(await stateOf(join(dir, "missing"))).toBe("missing");
+      expect(await stateOf(join(dir, "empty"))).toBe("empty");
+      expect(await stateOf(`${join(dir, "repo")}/`)).toBe("contents");
+      expect(await stateOf(join(dir, "note.txt"))).toBe("file");
+      expect((await routes.request("/folder-state?path=rel")).status).toBe(400);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 

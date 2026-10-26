@@ -1,5 +1,8 @@
 import { RoutedSessionContext } from "../contexts/RoutedSessionContext";
-import { DRAFT_STORAGE_EVENT } from "../lib/draftSyncStorage";
+import {
+  DRAFT_STORAGE_EVENT,
+  collectSyncedSubmissionAttachments,
+} from "../lib/draftSyncStorage";
 import { SessionIssuesLink } from "../components/SessionIssuesLink";
 import { useNonHumanUserTurnNavigation } from "../hooks/useNonHumanUserTurnNavigation";
 import { useSessionMessageNavigation } from "../hooks/useSessionMessageNavigation";
@@ -134,6 +137,7 @@ import type { ModalAnchorRect } from "../components/ui/Modal";
 import { AgentContentProvider } from "../contexts/AgentContentContext";
 import { GlossaryProjectProvider } from "../contexts/GlossaryContext";
 import { RenderModeProvider } from "../contexts/RenderModeContext";
+import { SessionLivenessProvider } from "../contexts/SessionLivenessContext";
 import { ProjectPathLinkSettingsProvider } from "../contexts/ProjectPathLinkSettingsContext";
 import { SessionMetadataProvider } from "../contexts/SessionMetadataContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
@@ -2647,6 +2651,16 @@ function SessionPageContent({
 
   const collectComposerAttachmentsForSubmission = useCallback(
     async (options?: { pendingMessageId?: string }) => {
+      const collectRendez =
+        !mainComposerForAside &&
+        (attachmentsRef.current.some(
+          (attachment) =>
+            isComposerStagedAttachment(attachment) &&
+            attachment.rendezPath !== undefined,
+        ) ||
+          (serverSettings?.rendez?.projects[project?.path ?? ""] ??
+            serverSettings?.rendez?.enabled ??
+            false));
       return collectComposerAttachmentsForSubmissionHelper({
         currentAttachments: attachmentsRef.current,
         pendingUploads: [...pendingUploadsRef.current.values()],
@@ -2655,9 +2669,20 @@ function SessionPageContent({
         updatePendingMessage,
         uploadingStatus: t("sessionUploading"),
         uploadFailureMessage: t("composerAttachmentUploadFailed"),
+        collectSyncedAttachments: collectRendez
+          ? () => collectSyncedSubmissionAttachments(sessionDraftKey)
+          : undefined,
       });
     },
-    [setComposerAttachments, t, updatePendingMessage],
+    [
+      mainComposerForAside,
+      serverSettings?.rendez,
+      project?.path,
+      sessionDraftKey,
+      setComposerAttachments,
+      t,
+      updatePendingMessage,
+    ],
   );
 
   const handleSyntheticSessionBoundary = useCallback(
@@ -4807,8 +4832,15 @@ function SessionPageContent({
     const changed = (event: Event) => {
       if (
         (event as CustomEvent<{ key: string }>).detail.key === sessionDraftKey
-      )
+      ) {
+        const current =
+          draftControlsRef.current?.getAttachmentState()?.refs ?? [];
+        const shown = attachmentsRef.current
+          .filter(isComposerStagedAttachment)
+          .map(toPersistedStagedAttachmentRef);
+        if (JSON.stringify(current) === JSON.stringify(shown)) return;
         void hydrateDraftAttachments();
+      }
     };
     window.addEventListener(DRAFT_STORAGE_EVENT, changed);
     return () => window.removeEventListener(DRAFT_STORAGE_EVENT, changed);
@@ -6936,144 +6968,156 @@ function SessionPageContent({
                         inactive={isDomLingerParked}
                         quoteReply={quoteFromTranscript}
                       />
-                      <MessageList
-                        messages={messages}
-                        transcriptDisplayObjects={
-                          session?.transcriptDisplayObjects
-                        }
-                        provider={effectiveProvider}
-                        isProcessing={sessionActivityUi.showProcessingIndicator}
-                        isCompacting={isCompacting}
-                        scrollTrigger={scrollTrigger}
-                        scrollToTurnRequest={scrollToTurnRequest}
-                        pendingMessages={pendingMessages}
-                        deferredMessages={deferredMessages}
-                        queuedEffortContext={(() => {
-                          const model = currentProviderInfo?.models?.find(
-                            (candidate) =>
-                              candidate.id ===
-                              (effectiveModelConfig?.requestedModel ??
-                                liveBadgeModel),
-                          );
-                          const normal = getImplicitComposerThinking();
-                          return model && normal
-                            ? { model, normal, provider: effectiveProvider }
-                            : undefined;
-                        })()}
-                        projectQueueMessages={inlineProjectQueueMessages}
-                        projectQueueDispatchPaused={
-                          projectQueues.dispatchState.status === "paused"
-                        }
-                        projectQueueDispatchMutating={
-                          projectQueues.mutatingDispatchState
-                        }
-                        btwAsides={historyBtwAsides}
-                        onFocusBtwAside={setFocusedBtwAsideId}
-                        onDoneBtwAside={handleDoneBtwAside}
-                        onStopBtwAside={handleStopBtwAsideFromTranscript}
-                        onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
-                        onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
-                        onQuoteSelection={insertQuotedSelection}
-                        quoteTextBlockRef={quoteTextBlockRef}
-                        onStartNewSessionFromSelection={
-                          startNewSessionFromSelection
-                        }
-                        composerDraftSignal={composerDraftSignal}
-                        composerEditAvailabilityStore={
-                          composerEditAvailabilityStore
-                        }
-                        quoteClearSignal={quoteClearSignal}
-                        onCancelDeferred={handleCancelDeferred}
-                        onCancelClearloop={handleCancelClearloop}
-                        onEditDeferred={handleEditDeferred}
-                        onCancelUnconfirmedUserMessage={
-                          handleCancelUnconfirmedUserMessage
-                        }
-                        onSteerDeferred={handleSteerDeferred}
-                        onDeliverDeferredWithoutCompaction={
-                          handleDeliverDeferredWithoutCompaction
-                        }
-                        onResumeRecoveredDeferred={
-                          handleResumeRecoveredDeferred
-                        }
-                        onSteerRecoveredDeferred={handleSteerRecoveredDeferred}
-                        onDeleteRecoveredDeferred={
-                          handleDeleteRecoveredDeferred
-                        }
-                        onCancelProjectQueueMessage={
-                          handleCancelProjectQueueItem
-                        }
-                        onEditProjectQueueMessage={handleEditProjectQueueItem}
-                        onSteerProjectQueueMessage={handleSteerProjectQueueItem}
-                        onResumeProjectQueueDispatch={
-                          handleResumeProjectQueueDispatch
-                        }
-                        onCorrectLatestUserMessage={
-                          handleCorrectLatestUserMessage
-                        }
-                        onTrimBeforeUserMessage={trimClientFromUserMessage}
-                        onForkBeforeUserMessage={
-                          supportsForkFromTurn
-                            ? forkBeforeUserMessage
-                            : undefined
-                        }
-                        onForkAfterUserMessage={
-                          supportsForkFromTurn
-                            ? forkAfterUserMessage
-                            : undefined
-                        }
-                        onForkAfterSummaryUserMessage={
-                          supportsForkFromTurn && !routedSession
-                            ? beginForkAfterSummary
-                            : undefined
-                        }
-                        forkAfterUserMessageDisabled={forkAfterDisabled}
-                        forkUnavailableMessage={forkUnavailableMessage}
-                        onCopyUserMessage={copyUserMessage}
-                        onHandoffFromUserMessage={
-                          routedSession ? undefined : handoffFromUserMessage
-                        }
-                        markdownAugments={markdownAugments}
-                        activeToolApproval={activeToolApproval}
-                        hasOlderMessages={pagination?.hasOlderMessages}
-                        totalMessageCount={pagination?.totalMessageCount}
-                        olderMessagesCursor={
-                          pagination?.truncatedBeforeMessageId ?? null
-                        }
-                        activeWindowTrimRevision={activeWindowTrimRevision}
-                        loadingOlder={loadingOlder}
-                        olderLoadContinuationRequired={
-                          olderLoadContinuationRequired
-                        }
-                        onLoadOlderMessages={loadOlderMessages}
-                        onReadOlderSearchPage={readOlderSearchPage}
-                        clientTailActive={clientTailActive}
-                        progressiveRenderEnabled={sessionLoadingProgressEnabled}
-                        progressiveRenderStatusVisible={
-                          sessionLoadingProgressDetailsVisible
-                        }
-                        progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
-                        progressiveRenderPauseSignal={
-                          progressiveRenderPauseSignal
-                        }
-                        conversationViewStateKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
-                        initialScrollSnapshot={initialScrollSnapshot}
-                        onScrollSnapshotChange={updateRouteScrollSnapshot}
-                        onFollowingBottomChange={
-                          updateActiveWindowFollowingBottom
-                        }
-                        onFollowCurrent={handleFollowCurrent}
-                        scrollBehaviorMode={sessionScrollBehaviorMode}
-                        getForkSummaryTargetHref={getForkSummaryTargetHref}
-                        onCancelForkSummary={handleCancelForkSummary}
-                        onToggleForkSummaryAutoOpen={
-                          handleToggleForkSummaryAutoOpen
-                        }
-                        onFollowForkSummary={followForkSummary}
-                        bangCommandHandlers={bangCommandHandlers}
-                        transcriptPositionStore={transcriptPositionStore}
-                        inert={isDomLingerParked}
-                      />
+                      <SessionLivenessProvider value={sessionLiveness}>
+                        <MessageList
+                          messages={messages}
+                          transcriptDisplayObjects={
+                            session?.transcriptDisplayObjects
+                          }
+                          provider={effectiveProvider}
+                          isProcessing={
+                            sessionActivityUi.showProcessingIndicator
+                          }
+                          isCompacting={isCompacting}
+                          scrollTrigger={scrollTrigger}
+                          scrollToTurnRequest={scrollToTurnRequest}
+                          pendingMessages={pendingMessages}
+                          deferredMessages={deferredMessages}
+                          queuedEffortContext={(() => {
+                            const model = currentProviderInfo?.models?.find(
+                              (candidate) =>
+                                candidate.id ===
+                                (effectiveModelConfig?.requestedModel ??
+                                  liveBadgeModel),
+                            );
+                            const normal = getImplicitComposerThinking();
+                            return model && normal
+                              ? { model, normal, provider: effectiveProvider }
+                              : undefined;
+                          })()}
+                          projectQueueMessages={inlineProjectQueueMessages}
+                          projectQueueDispatchPaused={
+                            projectQueues.dispatchState.status === "paused"
+                          }
+                          projectQueueDispatchMutating={
+                            projectQueues.mutatingDispatchState
+                          }
+                          btwAsides={historyBtwAsides}
+                          onFocusBtwAside={setFocusedBtwAsideId}
+                          onDoneBtwAside={handleDoneBtwAside}
+                          onStopBtwAside={handleStopBtwAsideFromTranscript}
+                          onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
+                          onTransferBtwAsideTurn={
+                            transferBtwTurnToMotherComposer
+                          }
+                          onQuoteSelection={insertQuotedSelection}
+                          quoteTextBlockRef={quoteTextBlockRef}
+                          onStartNewSessionFromSelection={
+                            startNewSessionFromSelection
+                          }
+                          composerDraftSignal={composerDraftSignal}
+                          composerEditAvailabilityStore={
+                            composerEditAvailabilityStore
+                          }
+                          quoteClearSignal={quoteClearSignal}
+                          onCancelDeferred={handleCancelDeferred}
+                          onCancelClearloop={handleCancelClearloop}
+                          onEditDeferred={handleEditDeferred}
+                          onCancelUnconfirmedUserMessage={
+                            handleCancelUnconfirmedUserMessage
+                          }
+                          onSteerDeferred={handleSteerDeferred}
+                          onDeliverDeferredWithoutCompaction={
+                            handleDeliverDeferredWithoutCompaction
+                          }
+                          onResumeRecoveredDeferred={
+                            handleResumeRecoveredDeferred
+                          }
+                          onSteerRecoveredDeferred={
+                            handleSteerRecoveredDeferred
+                          }
+                          onDeleteRecoveredDeferred={
+                            handleDeleteRecoveredDeferred
+                          }
+                          onCancelProjectQueueMessage={
+                            handleCancelProjectQueueItem
+                          }
+                          onEditProjectQueueMessage={handleEditProjectQueueItem}
+                          onSteerProjectQueueMessage={
+                            handleSteerProjectQueueItem
+                          }
+                          onResumeProjectQueueDispatch={
+                            handleResumeProjectQueueDispatch
+                          }
+                          onCorrectLatestUserMessage={
+                            handleCorrectLatestUserMessage
+                          }
+                          onTrimBeforeUserMessage={trimClientFromUserMessage}
+                          onForkBeforeUserMessage={
+                            supportsForkFromTurn
+                              ? forkBeforeUserMessage
+                              : undefined
+                          }
+                          onForkAfterUserMessage={
+                            supportsForkFromTurn
+                              ? forkAfterUserMessage
+                              : undefined
+                          }
+                          onForkAfterSummaryUserMessage={
+                            supportsForkFromTurn && !routedSession
+                              ? beginForkAfterSummary
+                              : undefined
+                          }
+                          forkAfterUserMessageDisabled={forkAfterDisabled}
+                          forkUnavailableMessage={forkUnavailableMessage}
+                          onCopyUserMessage={copyUserMessage}
+                          onHandoffFromUserMessage={
+                            routedSession ? undefined : handoffFromUserMessage
+                          }
+                          markdownAugments={markdownAugments}
+                          activeToolApproval={activeToolApproval}
+                          hasOlderMessages={pagination?.hasOlderMessages}
+                          totalMessageCount={pagination?.totalMessageCount}
+                          olderMessagesCursor={
+                            pagination?.truncatedBeforeMessageId ?? null
+                          }
+                          activeWindowTrimRevision={activeWindowTrimRevision}
+                          loadingOlder={loadingOlder}
+                          olderLoadContinuationRequired={
+                            olderLoadContinuationRequired
+                          }
+                          onLoadOlderMessages={loadOlderMessages}
+                          onReadOlderSearchPage={readOlderSearchPage}
+                          clientTailActive={clientTailActive}
+                          progressiveRenderEnabled={
+                            sessionLoadingProgressEnabled
+                          }
+                          progressiveRenderStatusVisible={
+                            sessionLoadingProgressDetailsVisible
+                          }
+                          progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                          progressiveRenderPauseSignal={
+                            progressiveRenderPauseSignal
+                          }
+                          conversationViewStateKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                          initialScrollSnapshot={initialScrollSnapshot}
+                          onScrollSnapshotChange={updateRouteScrollSnapshot}
+                          onFollowingBottomChange={
+                            updateActiveWindowFollowingBottom
+                          }
+                          onFollowCurrent={handleFollowCurrent}
+                          scrollBehaviorMode={sessionScrollBehaviorMode}
+                          getForkSummaryTargetHref={getForkSummaryTargetHref}
+                          onCancelForkSummary={handleCancelForkSummary}
+                          onToggleForkSummaryAutoOpen={
+                            handleToggleForkSummaryAutoOpen
+                          }
+                          onFollowForkSummary={followForkSummary}
+                          bangCommandHandlers={bangCommandHandlers}
+                          transcriptPositionStore={transcriptPositionStore}
+                          inert={isDomLingerParked}
+                        />
+                      </SessionLivenessProvider>
                     </SessionViewerProvider>
                   </SessionRewindProvider>
                 </AgentContentProvider>

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-24
+
+### Added
+- Search cached ticket subjects and descriptions in Issues and PRs, with
+  explicit refresh controls and separate content/status cache lifetimes.
+- Add an existing folder as-is from New project.
+- Capture microphone input with AudioWorklet and preserve composer focus and
+  delivery through dictation and send.
+
+### Changed
+- Refresh Claude, Codex, Grok and Pi integrations, including the Claude Agent
+  SDK and Codex 0.164 protocol compatibility.
+- Keep long silent turns quiet and show provider controls only where supported.
+- Keep turn-fork navigation available on routed sessions.
+
+### Fixed
+- Preserve in-flight Codex generation when steering an active turn.
+- Copy the correct public app file link from local views, preserve embedded
+  styles in scriptless previews, and hand framed PDFs off to a new tab.
+- Flush sandboxed app replies before teardown and improve draft, attachment
+  and connection recovery.
+
+### Security
+- Patch published dependency advisories in server/client packages and tooling,
+  including markdown-it, DOMPurify, Zod, body-parser and fast-uri.
+- Extend CI audits to the standalone website, sharing worker and pinned speech
+  recovery environment. Automated dependency PRs now cover security fixes only.
+
 ## [0.10.2] - 2026-10-20
 
 ### Added

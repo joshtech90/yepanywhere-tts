@@ -1,0 +1,1 @@
+Updated client for Yep Anywhere 0.11.0: ticket-description search, existing-folder project setup and provider controls on supported servers. Improved drafts, viewer navigation and connection recovery. Updated native cryptography and network dependencies. Internal testing build.

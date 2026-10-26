@@ -1586,6 +1586,11 @@ export const MessageList = memo(function MessageList({
   onFollowForkSummary,
   bangCommandHandlers,
 }: Props) {
+  const lastMessageTimestamp = messages.at(-1)?.timestamp;
+  const lastMessageAtMs = useMemo(() => {
+    const ms = Date.parse(lastMessageTimestamp ?? "");
+    return Number.isFinite(ms) ? ms : null;
+  }, [lastMessageTimestamp]);
   const sessionViewerSessionId = useSessionViewerSessionId();
   useSessionViewerResumeRevision();
   const { recentProjectPathLinksEnabled } = useRecentProjectPathLinks();
@@ -5652,6 +5657,7 @@ export const MessageList = memo(function MessageList({
             onToggleThinkingItemsVisible={toggleThinkingItemsVisible}
             thinkingLatestOnly={thinkingLatestOnly}
             onToggleThinkingLatestOnly={toggleThinkingLatestOnly}
+            lastMessageAtMs={lastMessageAtMs}
           />
         </div>
       </QuoteReplyProvider>

@@ -18,6 +18,7 @@ export async function startDraftBrowserServer() {
   migrateDiscoveryDatabase(db);
   const store = new DraftStore(db);
   const staging = new AttachmentStagingService({
+    dataDir: dir,
     stagingRoot: join(dir, "uploads"),
   });
   staging.setDraftProtection((owner, id) => store.protects(owner ?? "", id));
@@ -48,8 +49,11 @@ export async function startDraftBrowserServer() {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No test port");
   return {
+    app,
     url: `http://127.0.0.1:${address.port}`,
     store,
+    staging,
+    dir,
     close: async () => {
       if ("closeAllConnections" in server) server.closeAllConnections();
       await new Promise<void>((resolve, reject) =>

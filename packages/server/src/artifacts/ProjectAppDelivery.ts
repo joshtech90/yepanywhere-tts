@@ -20,6 +20,7 @@ import {
 } from "./ProjectAppFramePage.js";
 import { APP_ACCESS_QUERY, type AppAccessTarget } from "./VhostAccess.js";
 import { configuredVhostNames, hostnameFromHostHeader } from "./vhosts.js";
+import { isFramePdfNavigation, pdfInFrameDocument } from "./pdfInFrame.js";
 import { isUpstreamUnreachable, proxyLoopbackVhost } from "./vhost-proxy.js";
 
 /** Below a tunnel's own origin timeout (Cloudflare's is 100 s). */
@@ -39,6 +40,39 @@ function stillStarting(): Response {
       },
     },
   );
+}
+
+/**
+ * A proxied app's PDF opened inside YA's sandboxed viewer frame gets the
+ * hand-off page, as artifact files do. An attachment downloads rather than
+ * displays, so it passes through; the app may not honor `?download=true`, so
+ * the page offers only Open.
+ */
+async function handOffFramedPdf(
+  request: Request,
+  response: Response,
+): Promise<Response> {
+  if (
+    !response.ok ||
+    /^\s*attachment/i.test(response.headers.get("content-disposition") ?? "") ||
+    !isFramePdfNavigation(request, response.headers.get("content-type"))
+  )
+    return response;
+  await response.body?.cancel();
+  const segment = new URL(request.url).pathname.split("/").pop() ?? "";
+  let name = segment;
+  try {
+    name = decodeURIComponent(segment);
+  } catch {
+    // A malformed escape shows as written.
+  }
+  return new Response(pdfInFrameDocument(name || "PDF", { download: false }), {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 function appEntry(upstream: ProjectServiceUpstream): string {
@@ -236,11 +270,9 @@ export class ProjectAppDelivery {
       body: request.body,
       ...(request.body ? { duplex: "half" } : {}),
     });
-    const response = await proxy(
+    const response = await handOffFramedPdf(
       incoming,
-      upstream.port,
-      undefined,
-      upstream.brokerSocket,
+      await proxy(incoming, upstream.port, undefined, upstream.brokerSocket),
     );
     // Opaque-origin app fetches use their scoped bearer path, never cookies.
     response.headers.delete("set-cookie");
@@ -468,6 +500,7 @@ export class ProjectAppDelivery {
             headers: { "Retry-After": "1" },
           });
       }
+      response = await handOffFramedPdf(authorized.request, response);
     }
     if (authorized.cookie)
       response.headers.append("Set-Cookie", authorized.cookie);

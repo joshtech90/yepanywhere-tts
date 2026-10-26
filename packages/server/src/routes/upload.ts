@@ -26,6 +26,7 @@ import {
 } from "../uploads/index.js";
 import { createUntrustedFileResponseHeaders } from "./untrusted-file-response.js";
 import { actingUsername } from "../auth/limitedLaunchPolicy.js";
+import type { RendezDraftDelivery } from "../services/RendezDraftDelivery.js";
 
 /** Progress update interval in bytes (64KB) */
 const PROGRESS_INTERVAL_BYTES = 64 * 1024;
@@ -40,6 +41,7 @@ export interface UploadDeps {
   maxUploadSizeBytes?: number;
   attachmentStagingService?: AttachmentStagingService;
   storagePolicy?: ProjectStoragePolicy;
+  rendezDraftDelivery?: RendezDraftDelivery;
 }
 
 interface DraftAttachmentRefsBody {
@@ -515,6 +517,7 @@ export function createUploadRoutes(deps: UploadDeps): Hono {
       }
 
       try {
+        if (!actingUsername(c)) deps.rendezDraftDelivery?.claim(body.refs);
         const files = await stagingFor(
           c,
         )!.materializeDraftAttachmentsForSession({

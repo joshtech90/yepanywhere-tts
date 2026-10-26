@@ -35,6 +35,7 @@ import {
   type UserMessageSpeechMetadata,
 } from "@yep-anywhere/shared";
 import {
+  Fragment,
   type ClipboardEvent,
   type KeyboardEvent,
   useCallback,
@@ -154,6 +155,7 @@ import { useFileViewCompletion } from "../hooks/useFileViewCompletion";
 import { useProjectFileCompletion } from "../hooks/useProjectFileCompletion";
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import { FileViewCompletionSheet } from "./FileViewCompletionSheet";
+import { RendezAttachment } from "./RendezAttachment";
 import { ProjectFileCompletionMenu } from "./ProjectFileCompletionMenu";
 import { QuestionAsideHint } from "./QuestionAsideCard";
 
@@ -175,6 +177,8 @@ export interface MessageInputAttachment {
   width?: number;
   height?: number;
   previewUrl?: string;
+  rendezAutoSendAt?: number | null;
+  rendezPath?: string;
 }
 
 export interface FullPaneComposerControls {
@@ -3783,6 +3787,9 @@ export function MessageInput({
   };
   const showMobileKeyboardCompact = mobileKeyboardOpen && canSubmit;
 
+  const latestRendezAttachmentId = [...attachments]
+    .reverse()
+    .find((attachment) => attachment.rendezAutoSendAt !== undefined)?.id;
   const composer = (
     <div
       className={`message-input-wrapper${fullPane ? ` ${styles.fullPane}` : ""}`}
@@ -4346,25 +4353,38 @@ export function MessageInput({
         {!collapsed &&
           (attachments.length > 0 || uploadProgress.length > 0) && (
             <div className="attachment-list">
-              {attachments.map((file) => (
-                <AttachmentChip
-                  key={file.id}
-                  attachmentId={file.id}
-                  originalName={file.originalName}
-                  path={file.path}
-                  mimeType={file.mimeType}
-                  sizeLabel={formatFileSize(file.size)}
-                  imageWidth={file.width}
-                  imageHeight={file.height}
-                  previewUrl={file.previewUrl}
-                  projectId={projectId}
-                  onRemove={
-                    onRemoveAttachment
-                      ? () => onRemoveAttachment(file.id)
-                      : undefined
-                  }
-                />
-              ))}
+              {attachments.map((file) => {
+                const chip = (
+                  <AttachmentChip
+                    key={file.id}
+                    attachmentId={file.id}
+                    originalName={file.originalName}
+                    path={file.path ?? file.rendezPath}
+                    mimeType={file.mimeType}
+                    sizeLabel={formatFileSize(file.size)}
+                    imageWidth={file.width}
+                    imageHeight={file.height}
+                    previewUrl={file.previewUrl}
+                    projectId={projectId}
+                    onRemove={
+                      onRemoveAttachment
+                        ? () => onRemoveAttachment(file.id)
+                        : undefined
+                    }
+                  />
+                );
+                return file.id === latestRendezAttachmentId ? (
+                  <RendezAttachment
+                    key={file.id}
+                    sendAt={file.rendezAutoSendAt ?? null}
+                    hasText={text.length > 0}
+                  >
+                    {chip}
+                  </RendezAttachment>
+                ) : (
+                  <Fragment key={file.id}>{chip}</Fragment>
+                );
+              })}
               {uploadProgress.map((progress) => (
                 <div
                   key={progress.fileId}

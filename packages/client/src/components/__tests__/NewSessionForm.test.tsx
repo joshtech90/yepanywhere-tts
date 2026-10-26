@@ -54,6 +54,7 @@ const {
   mockGetProjectWorkstreams,
   mockReportProjectQueueCollectionSnapshot,
   mockAddProject,
+  mockGetProjectFolderState,
   mockShowToast,
   mockUpload,
   mockUploadStagedAttachment,
@@ -96,6 +97,7 @@ const {
   mockGetProjectWorkstreams: vi.fn(),
   mockReportProjectQueueCollectionSnapshot: vi.fn(),
   mockAddProject: vi.fn(),
+  mockGetProjectFolderState: vi.fn(),
   mockShowToast: vi.fn(),
   mockUpload: vi.fn(),
   mockUploadStagedAttachment: vi.fn(),
@@ -343,6 +345,7 @@ vi.mock("react-router-dom", async () => {
 vi.mock("../../api/client", () => ({
   api: {
     addProject: mockAddProject,
+    getProjectFolderState: mockGetProjectFolderState,
     routerSelection: vi.fn(async () => ({
       accounts: [
         {
@@ -911,6 +914,7 @@ describe("NewSessionForm", () => {
     mockCreateProjectQueueItem.mockReset();
     mockGetProjectWorkstreams.mockReset();
     mockAddProject.mockReset();
+    mockGetProjectFolderState.mockReset();
     mockShowToast.mockReset();
     mockUpload.mockReset();
     mockUploadStagedAttachment.mockReset();
@@ -3955,6 +3959,70 @@ describe("NewSessionForm", () => {
         }) as HTMLInputElement
       ).checked,
     ).toBe(true);
+  });
+
+  it("adds a typed existing folder as it is, offering no starting point", async () => {
+    versionState.version = {
+      capabilities: ["project-creation-git-choice", "project-folder-state"],
+    };
+    mockGetProjectFolderState.mockResolvedValue({
+      path: "/home/u/cub",
+      state: "contents",
+    });
+    mockAddProject.mockResolvedValue({
+      project: {
+        id: "project-cub",
+        name: "cub",
+        path: "/home/u/cub",
+        sessionCount: 0,
+        activeOwnedCount: 0,
+        activeExternalCount: 0,
+      },
+      created: false,
+    });
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText("newSessionProjectPathPlaceholder"),
+      { target: { value: "/home/u/cub" } },
+    );
+    const newProject = screen.getByRole("region", {
+      name: "templateNewProject",
+    });
+    await waitFor(() =>
+      expect(
+        within(newProject).getByText("newProjectExistingFolder"),
+      ).toBeDefined(),
+    );
+    expect(mockGetProjectFolderState).toHaveBeenCalledWith("/home/u/cub");
+    expect(within(newProject).queryByRole("radio")).toBeNull();
+    expect(within(newProject).queryByRole("checkbox")).toBeNull();
+
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionAddAndStartAction" }),
+    );
+    await waitFor(() => {
+      expect(mockAddProject).toHaveBeenCalledWith(
+        "/home/u/cub",
+        expect.any(Object),
+      );
+      expect(mockStartSession).toHaveBeenCalledWith(
+        "project-cub",
+        "hello",
+        expect.any(Object),
+        undefined,
+        expect.any(Number),
+        undefined,
+      );
+    });
   });
 
   it("opens New project from its button and starts an empty folder", async () => {

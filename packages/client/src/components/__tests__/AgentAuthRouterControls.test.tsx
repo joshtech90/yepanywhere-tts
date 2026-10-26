@@ -83,7 +83,9 @@ it("distinguishes saved pairing from reachability and refreshes disabled account
   render(<AgentAuthRouterSettings />);
   await screen.findByText("Start AAR on the YA server, then retry.");
   expect(screen.getByText("Paired with local router")).toBeTruthy();
-  expect(screen.queryByText(english.routerReady)).toBeNull();
+  expect(screen.queryByText(/Router reachable/)).toBeNull();
+  // Trouble shows the socket choice and Retry without asking.
+  expect(screen.getByRole("button", { name: "Retry connection" })).toBeTruthy();
   expect(fixture.api.routerRetryCancellations).not.toHaveBeenCalled();
   recovery.reachable = true;
   delete recovery.issue;
@@ -97,6 +99,34 @@ it("distinguishes saved pairing from reachability and refreshes disabled account
       .disabled,
   ).toBe(true);
   expect(fixture.api.routerRecovery).toHaveBeenCalledTimes(2);
+});
+
+it("keeps a healthy pairing compact and rereads pools on Check status", async () => {
+  fixture.capabilities.push("agent-auth-router-pools");
+  recovery.customSocket = false;
+  fixture.api.routerOverview.mockResolvedValue({
+    pools: [],
+    accounts: [],
+    canManagePools: false,
+  });
+  render(<AgentAuthRouterSettings />);
+  const checked = new Date(recovery.checkedAt).toLocaleTimeString();
+  await screen.findByText(
+    `Router reachable. Granted accounts checked at ${checked}.`,
+  );
+  expect(screen.getByText("~/.agent-auth-router/control.sock")).toBeTruthy();
+  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Retry connection" })).toBeNull();
+  await screen.findByText(english.routerPoolEmptyGranted);
+  const overviews = fixture.api.routerOverview.mock.calls.length;
+  fireEvent.click(screen.getByRole("button", { name: "Check status" }));
+  await waitFor(() =>
+    expect(fixture.api.routerOverview.mock.calls.length).toBeGreaterThan(
+      overviews,
+    ),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Change socket" }));
+  expect(screen.getByRole("textbox")).toBeTruthy();
 });
 
 it("retries only requested failed-launch cleanup, retaining a failed retry until acknowledgement", async () => {
@@ -181,6 +211,7 @@ it("discards old-source mutation results without starting follow-up requests on 
   );
   const view = render(<AgentAuthRouterSettings />);
   await screen.findByText("codex · work");
+  fireEvent.click(screen.getByRole("button", { name: "Change socket" }));
   fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
   fixture.source = "host:second";
   recovery.accounts = [];
@@ -223,20 +254,45 @@ it("reads cached pool usage and refreshes only after an explicit action", async 
           },
         ],
         attemptedAt: null,
-        error: null,
+        error:
+          "Quota refresh unavailable: app-server quota process failed (exit 3)",
       },
     ],
   });
   render(<AgentAuthRouterSettings />);
   await screen.findByText("75% remaining");
+  expect(
+    screen.getByText(/app-server quota process failed \(exit 3\)/),
+  ).toBeTruthy();
   expect(fixture.api.routerRefreshOverview).not.toHaveBeenCalled();
   expect(screen.getByText(/Stale observation/)).toBeTruthy();
+  let finish!: () => void;
+  fixture.api.routerRefreshOverview.mockImplementationOnce(
+    () => new Promise<void>((done) => (finish = done)),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Refresh usage" }));
   await waitFor(() =>
     expect(fixture.api.routerRefreshOverview).toHaveBeenCalledWith({
       accountId: "work",
     }),
   );
+  // A slow account refresh locks only its own button.
+  expect(
+    (
+      screen.getByRole("button", {
+        name: "Refreshing usage…",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  expect(
+    (
+      screen.getByRole("button", {
+        name: "Reload overview",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(false);
+  await act(async () => finish());
+  await screen.findByRole("button", { name: "Refresh usage" });
 });
 
 it("does not follow an old source's pool refresh with a request to the new source", async () => {

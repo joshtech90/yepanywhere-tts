@@ -13,6 +13,32 @@ Result meanings:
   action that was not available during the run.
 - **NOT RUN** — the check was outside the completed scope; the reason is noted.
 
+## 2026-10-24 — coordinated Stable 0.6.0 publication
+
+[Desktop CI 40109396596](https://github.com/kzahel/yepanywhere/actions/runs/40109396596)
+published [Stable 0.6.0](https://github.com/kzahel/yepanywhere/releases/tag/desktop-v0.6.0)
+from `bcdd87c0f0a87193b81c8f7b5f52262960ffb4b0`, the same source as npm
+0.11.0, Chrome extension 0.1.4 and Android internal `0.1.3-ci.567.1` / code
+`66701`. Both Mac architectures passed signing and notarization; Windows
+produced its signed per-user NSIS installer and passed the packaged-runtime
+smoke. The finalizer verified the complete asset set and updater signatures
+before publication.
+
+| Check | Result |
+| --- | --- |
+| All three platform build/source gates | PASS |
+| macOS signing/notarization and Windows signing/runtime smoke | PASS |
+| Complete asset set and updater signatures | PASS |
+| Public `latest.json` | PASS: 0.6.0, both Mac architectures and Windows NSIS, all four updater targets |
+| Stable feed from Latest 0.5.5101 | PASS: HTTP 200 offering 0.6.0 for Apple Silicon, Intel Mac and Windows |
+| Public installer routes | PASS: all three redirect to the matching 0.6.0 installer |
+| General CI / runtime matrix on the shared source | PASS: 24 / 9 jobs, without retries |
+| Fresh native install/update/relaunch and long-idle acceptance | NOT RUN: this publication exercised hosted packaging gates and public metadata; existing native qualification follow-ups remain |
+
+Stable 0.6.0 overtakes the published 0.5.x Latest builds, so selecting Stable
+can offer an update. The release contains both signed DMGs and the per-user
+Windows NSIS installer; no MSI was published.
+
 ## 2026-10-20 — signed Stable 0.4.1 publication
 
 [Desktop CI 39469339008](https://github.com/kzahel/yepanywhere/actions/runs/39469339008)

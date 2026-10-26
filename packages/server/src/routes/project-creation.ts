@@ -181,6 +181,26 @@ export type ProjectDirectoryOutcome =
   | { kind: "error"; status: 400 | 404 | 409 | 500; error: string };
 
 /**
+ * What adding this path as a project would find, so New project can say
+ * whether Start makes a folder, initializes an empty one, or adds one as it
+ * is. Mirrors the branches of `ensureProjectDirectory`.
+ */
+export type ProjectFolderState = "missing" | "empty" | "contents" | "file";
+
+export async function probeProjectFolder(
+  projectPath: string,
+): Promise<ProjectFolderState> {
+  let stats: Awaited<ReturnType<typeof fs.stat>>;
+  try {
+    stats = await fs.stat(projectPath);
+  } catch {
+    return "missing";
+  }
+  if (!stats.isDirectory()) return "file";
+  return (await fs.readdir(projectPath)).length === 0 ? "empty" : "contents";
+}
+
+/**
  * Make a project directory that does not exist yet: create it, `git init`,
  * and leave one empty commit so the project has a root revision to diff
  * against from its very first change, unless the caller declines Git. An

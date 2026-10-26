@@ -522,6 +522,12 @@ Upload behavior preserves the existing relay contract:
 - abort, navigation, process teardown, invalid offset, and queue overflow fail
   the one upload or WebView lease without retaining the remaining file.
 
+The WebView permits four concurrent uploads of at most 100 MiB each. An upload
+fails after 120 seconds without increasing server-acknowledged byte progress;
+active transfers may take longer overall. Duplicate, decreasing, invalid, or
+out-of-range progress does not renew that deadline. Timeout cancels native
+upload work and releases the file reader, just as explicit cancellation does.
+
 Chunked does not mean resumable: loss of the authenticated socket discards the
 server's connection-owned upload state, so the current upload fails and a user
 retry starts again at byte zero. Cross-connection upload resume would require a

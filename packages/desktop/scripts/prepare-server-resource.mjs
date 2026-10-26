@@ -235,6 +235,12 @@ try {
     join(rootDir, "pnpm-workspace.yaml"),
     join(moduleWorkspace, "pnpm-workspace.yaml"),
   );
+  // patchedDependencies paths are relative to the copied workspace file.
+  if (existsSync(join(rootDir, "patches"))) {
+    cpSync(join(rootDir, "patches"), join(moduleWorkspace, "patches"), {
+      recursive: true,
+    });
+  }
   cpSync(
     join(rootDir, "package.json"),
     join(moduleWorkspace, "package.json"),

@@ -5,6 +5,7 @@ import { basename, dirname, extname, join } from "node:path";
 import type { ImagePreparationProfile } from "@yep-anywhere/shared";
 import { getLogger } from "../logging/logger.js";
 import { defaultGitExclude } from "../projects/managedProjectDir.js";
+import { publishComposeLink } from "./rendezComposeLink.js";
 import {
   MAX_ROUTES,
   type RendezTarget,
@@ -61,7 +62,7 @@ export interface RendezRecord {
   version: 1;
   id: string;
   route: string;
-  target: RendezTarget;
+  target: RendezRecipient;
   state:
     | "pending"
     | "attempting"
@@ -99,13 +100,22 @@ export interface RendezSendResult {
 
 /** Where one target's uploads go, chosen when its record is sent. */
 export interface RendezDeliveryRoute {
-  transport: "ya" | "provider-host";
+  transport: "ya" | "provider-host" | "draft";
   profile: ImagePreparationProfile;
-  send(id: string, text: string): Promise<RendezSendResult>;
+  send(
+    id: string,
+    text: string,
+    record?: RendezRecord,
+  ): Promise<RendezSendResult>;
 }
 
+export interface RendezDraftTarget {
+  draft: { claimId: string };
+}
+export type RendezRecipient = RendezTarget | RendezDraftTarget;
+
 export interface RendezSessions {
-  route(project: string, target: RendezTarget): Promise<RendezDeliveryRoute>;
+  route(project: string, target: RendezRecipient): Promise<RendezDeliveryRoute>;
   turnStatus(submissionId: string): Promise<{ accepted?: unknown } | null>;
 }
 
@@ -448,7 +458,7 @@ async function snapshot(
     );
     return undefined;
   }
-  const { target } = await readJson<{ target: RendezTarget }>(
+  const { target } = await readJson<{ target: RendezRecipient }>(
     join(root, "routes", route, "subscription.json"),
   );
   const directory = join(root, "delivered", route);
@@ -649,6 +659,7 @@ export class RendezObserver {
     await acquireObserverMarker(this.root);
     this.markerOwned = true;
     await settleLatest(this.root);
+    await publishComposeLink(this.root, false);
     this.admission = await BurstAdmission.load(
       this.root,
       this.options.windowMs,
@@ -1014,7 +1025,7 @@ export class RendezObserver {
       transport: route.transport,
     });
     try {
-      const result = await route.send(record.id, body(record));
+      const result = await route.send(record.id, body(record), record);
       await this.finish(record, {
         state: result.accepted ? "accepted" : "failed",
         receipt: result.receipt,

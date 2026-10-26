@@ -176,6 +176,32 @@ describe("UserPromptBlock", () => {
     expect(onForkAfter).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps plain forks when fork with summary is unavailable", () => {
+    // Routed sessions refuse fork with summary but still fork transcripts.
+    const onForkBefore = vi.fn();
+    render(
+      <I18nProvider>
+        <UserPromptBlock
+          content="Routed request"
+          onForkBefore={onForkBefore}
+          onForkAfter={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Fork from this turn" }),
+    );
+    expect(
+      screen.getByRole("menuitem", { name: "After this turn" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("menuitem", { name: "After with summary…" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Before this turn" }));
+    expect(onForkBefore).toHaveBeenCalledTimes(1);
+  });
+
   it("renders a disabled fork action with server update guidance", () => {
     render(
       <I18nProvider>

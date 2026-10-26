@@ -56,6 +56,7 @@ export function projectTranscriptMessages(
   const items: RenderItem[] = [];
   const toolCallIndices = new Map<string, number>(); // tool_use_id → index in items
   const pendingToolCalls = new Map<string, number>(); // tool_use_id → index in items
+  const toolResults: { block: ContentBlock; message: Message }[] = [];
   const configAckState = { lastSignature: null as string | null };
 
   const orphanedToolIds = collectOrphanedToolIds(
@@ -69,11 +70,18 @@ export function projectTranscriptMessages(
       items,
       toolCallIndices,
       pendingToolCalls,
+      toolResults,
       orphanedToolIds,
       configAckState,
       augments,
       diagnostics,
     );
+  }
+
+  // Reconciliation can place a result before its call; retain result order
+  // while pairing only after every call in the loaded window is registered.
+  for (const { block, message } of toolResults) {
+    attachToolResult(block, message, items, pendingToolCalls, diagnostics);
   }
 
   return items;
@@ -384,6 +392,7 @@ function processMessage(
   items: RenderItem[],
   toolCallIndices: Map<string, number>,
   pendingToolCalls: Map<string, number>,
+  toolResults: { block: ContentBlock; message: Message }[],
   orphanedToolIds: Set<string>,
   configAckState: { lastSignature: string | null },
   augments?: TranscriptProjectionAugments,
@@ -684,10 +693,10 @@ function processMessage(
     isUserMessage && content.every((b) => b.type === "tool_result");
 
   if (isToolResultMessage) {
-    // Attach results to pending tool calls
+    // Keep result order independent of where calls appear in the window.
     for (const block of content) {
       if (block.type === "tool_result" && block.tool_use_id) {
-        attachToolResult(block, msg, items, pendingToolCalls, diagnostics);
+        toolResults.push({ block, message: msg });
       }
     }
     return;

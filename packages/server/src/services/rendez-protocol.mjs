@@ -17,6 +17,7 @@ const LATEST_PASSES = 8;
 const ROUTE_PATTERN = /^[A-Za-z0-9_-]{1,160}$/;
 const RESERVED_ROUTES = new Set([
   "latest-session",
+  "active-compose",
   "delivered",
   "routes",
   "unrouted",

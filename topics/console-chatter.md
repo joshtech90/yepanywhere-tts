@@ -32,6 +32,12 @@ Every asynchronous write and flush handles storage rejection internally; an
 unhandled-rejection listener never reports its own failed persistence as a new
 unhandled rejection.
 
+Transcript projection pairs tool results with calls anywhere in the loaded
+window, including calls that follow their results after reconciliation. It
+preserves conversation row order and streaming-to-final result order. A paired
+result must not emit an unknown-tool warning when the window is reprojected;
+results whose calls are absent retain the unmatched-result diagnostic.
+
 ## Measurement and ratchet
 
 - `pnpm console:scan` (`scripts/find-console-chatter.mjs`): advisory

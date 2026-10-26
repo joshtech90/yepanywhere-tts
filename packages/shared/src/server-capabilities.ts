@@ -15,6 +15,11 @@ import { SECURITY_CLIENT_AUDIT_CAPABILITY } from "./security-clients.js";
 export type ServerCapabilityKind = "permanent" | "transitional";
 
 export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
+  rendezCompose: {
+    name: "rendez-active-compose",
+    index: CAPABILITY_ID_ALLOCATIONS.rendezCompose.id,
+    introducedIn: "0.11.1",
+  },
   agentAuthRouterMostRemaining: {
     name: "agent-auth-router-most-remaining",
     index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterMostRemaining.id,
@@ -2208,6 +2213,31 @@ export const SERVER_CAPABILITIES = {
       reason: "Older servers cannot monitor rendez uploads.",
     },
   },
+  rendezCompose: {
+    id: CAPABILITY_ID_ALLOCATIONS.rendezCompose.id,
+    name: "rendez-active-compose",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.11.1",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.rendezCompose.id,
+    },
+    description:
+      "Routes active-compose uploads into the server owner's visible new-session draft on POSIX hosts with draft storage.",
+    clientFallback:
+      "Make no compose claim requests; preserve existing rendez session delivery.",
+    serverContract: {
+      routes: ["POST /api/rendez/compose"],
+      routeModules: ["packages/server/src/routes/rendez-compose.ts"],
+      requestFields: ["claimId", "projectId", "acquire"],
+      responseFields: ["active"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Draft routing requires an available watcher and draft store.",
+    },
+  },
   rendezProjectStatus: {
     id: CAPABILITY_ID_ALLOCATIONS.rendezProjectStatus.id,
     name: "rendez-project-status",
@@ -2226,6 +2256,26 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason: "Older servers do not report .rendez observer status.",
+    },
+  },
+  projectFolderState: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectFolderState.id,
+    name: "project-folder-state",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.10.3",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Reports whether a path New project would add is missing, an empty folder, a folder with content, or a file, within the paths the principal may add.",
+    clientFallback:
+      "Show the New project panel without knowing the folder: every starting point and the Git choice, with copy covering both a missing and an existing folder, and make no folder-state request.",
+    serverContract: {
+      routes: ["GET /api/projects/folder-state"],
+      responseFields: ["path", "state"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers cannot report what a typed project path holds.",
     },
   },
   patientTopicShift: {

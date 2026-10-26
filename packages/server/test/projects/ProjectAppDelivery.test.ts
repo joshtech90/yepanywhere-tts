@@ -65,6 +65,10 @@ createServer((req, res) => {
   if (req.url === base + 'health') return res.end('ready');
   if (!req.url.startsWith(base)) { res.writeHead(404); return res.end(); }
   if (req.method === 'DELETE') { res.writeHead(204); return res.end(); }
+  if (req.url.startsWith(base + 'paper.pdf')) {
+    res.setHeader('content-type', 'application/pdf');
+    return res.end('%PDF-1.4');
+  }
   res.setHeader('content-type', 'application/json');
   res.setHeader('set-cookie', 'app-cookie=hidden; Path=/');
   res.end(JSON.stringify({ url: req.url, headers: req.headers, base }));
@@ -286,6 +290,29 @@ createServer((req, res) => {
       expect(await store.reservations("project")).toMatchObject([
         { name: "archer-canvas", owner: "archer", serving: true },
       ]);
+    },
+  );
+  native(
+    "answers the viewer frame's PDF navigation with the new-tab hand-off",
+    async () => {
+      const { delivery, artifacts } = await fixture(false);
+      const view = await delivery.open("project", "local");
+      const pdf = new URL("/paper.pdf", view.url);
+      pdf.search = new URL(view.url).search;
+      const framed = await artifacts.dispatchHost(
+        new Request(pdf, { headers: { "Sec-Fetch-Dest": "iframe" } }),
+      );
+      expect(framed?.headers.get("content-type")).toContain("text/html");
+      const page = await framed!.text();
+      expect(page).toContain("yep-artifact-tab/1");
+      expect(page).toContain("paper.pdf");
+      expect(page).not.toContain('id="download"');
+      // A top-level tab still receives the app's own bytes.
+      const direct = await artifacts.dispatchHost(
+        new Request(pdf, { headers: { "Sec-Fetch-Dest": "document" } }),
+      );
+      expect(direct?.headers.get("content-type")).toBe("application/pdf");
+      expect(await direct!.text()).toBe("%PDF-1.4");
     },
   );
   native(

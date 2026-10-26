@@ -43,6 +43,10 @@ export interface StagedAttachmentRef {
   height?: number;
   /** Creation timestamp */
   createdAt: string;
+  /** Rendez auto-send deadline in epoch milliseconds; null keeps it in draft. */
+  rendezAutoSendAt?: number | null;
+  /** Prepared rendez snapshot, read through the ordinary file-access policy. */
+  rendezPath?: string;
   /** Last update timestamp */
   updatedAt: string;
 }

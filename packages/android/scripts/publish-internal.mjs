@@ -11,6 +11,7 @@ export async function publishInternal({
   bundle,
   versionCode,
   sourceCommit,
+  releaseNotes,
   request = fetch,
 }) {
   if (!token) throw new Error("PLAY_ACCESS_TOKEN is required");
@@ -102,7 +103,9 @@ export async function publishInternal({
           releaseNotes: [
             {
               language: "en-US",
-              text: `Latest tested Android build. Source: ${sourceCommit}`,
+              text:
+                releaseNotes ||
+                `Latest tested Android build. Source: ${sourceCommit}`,
             },
           ],
         },
@@ -128,14 +131,19 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  const [bundlePath, receiptPath] = process.argv.slice(2);
+  const [bundlePath, receiptPath, notesPath] = process.argv.slice(2);
   if (!bundlePath || !receiptPath)
-    throw new Error("Usage: publish-internal.mjs signed.aab receipt.json");
+    throw new Error(
+      "Usage: publish-internal.mjs signed.aab receipt.json [release-notes.txt]",
+    );
   const receipt = await publishInternal({
     token: process.env.PLAY_ACCESS_TOKEN,
     bundle: await readFile(bundlePath),
     versionCode: Number(process.env.ORG_GRADLE_PROJECT_yaVersionCode),
     sourceCommit: process.env.GITHUB_SHA,
+    releaseNotes: notesPath
+      ? (await readFile(notesPath, "utf8")).trim()
+      : undefined,
   });
   await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
   console.log(JSON.stringify(receipt));

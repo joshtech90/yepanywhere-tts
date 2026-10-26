@@ -12,6 +12,7 @@ import "../../src/styles/index.css";
 const state: AgentAuthRouterRecovery = {
   state: "connected",
   routerId: "synthetic-router",
+  customSocket: false,
   reachable: true,
   checkedAt: "2026-10-03T08:00:00Z",
   pendingCancellations: 2,

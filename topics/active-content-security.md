@@ -331,6 +331,14 @@ these constraints before it ships:
   answer. It takes that address from the browser's location, never from the
   request URL the server saw, which behind a TLS-terminating tunnel is plain
   `http://`.
+  A running project app (process service) gets the same hand-off for a
+  frame navigation whose proxied response is a non-attachment PDF, with Open
+  only, since the app need not honor `?download=true`. The project app
+  viewer opens a page of the service's own origin, query-free, and restores
+  the view link's `ya_access` so a private app's tab is authorized. The server
+  cannot tell YA's sandboxed frame from an app's own iframe, so a PDF the app
+  embeds in an iframe on an unsandboxed top-level visit also gets the
+  hand-off page rather than the inline PDF.
 - **Brokered host communication.** `postMessage` is schema-validated,
   capability-scoped, and tied to the expected child window. With an opaque
   origin, `event.origin` is `"null"`, so the parent must verify `event.source`

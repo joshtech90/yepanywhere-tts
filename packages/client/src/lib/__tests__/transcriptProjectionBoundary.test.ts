@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import ts from "typescript";
 
 const projectionDirectory = resolve(process.cwd(), "../shared/src/transcript");
 const legacyFacadePath = resolve(
@@ -89,10 +90,16 @@ describe("transcript projection module boundary", () => {
     expect(moduleFiles).toContain("messageProjection.ts");
 
     for (const fileName of moduleFiles) {
-      const source = readFileSync(
-        resolve(projectionDirectory, fileName),
-        "utf8",
-      );
+      // Check executable source, not prose such as "the loaded window."
+      const source = ts
+        .createPrinter({ removeComments: true })
+        .printFile(
+          ts.createSourceFile(
+            fileName,
+            readFileSync(resolve(projectionDirectory, fileName), "utf8"),
+            ts.ScriptTarget.Latest,
+          ),
+        );
       for (const forbidden of forbiddenDependencies) {
         expect(
           source,
