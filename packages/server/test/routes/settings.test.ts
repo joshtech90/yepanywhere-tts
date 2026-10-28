@@ -50,7 +50,6 @@ describe("Settings Routes", () => {
       approvalAuditLogEnabled: false,
       speechAudioRetention: DEFAULT_SERVER_SETTINGS.speechAudioRetention,
       publicSharesEnabled: false,
-      workstreamsEnabled: false,
       hostProcessObservabilityEnabled: true,
       hostAwakeMode: "off",
       hostAwakeBatteryFloorPercent: 10,
@@ -146,48 +145,6 @@ describe("Settings Routes", () => {
     });
     expect(onFileAccessChanged).toHaveBeenCalledWith(fileAccess);
     expect(completed).toHaveBeenCalledTimes(1);
-  });
-
-  describe("PUT /remote-executors", () => {
-    it("rejects invalid host aliases", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-
-      const response = await routes.request("/remote-executors", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          executors: ["devbox", "-oProxyCommand=touch_/tmp/pwned"],
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      const json = await response.json();
-      expect(json.error).toContain("Invalid remote executor host alias");
-      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
-    });
-
-    it("accepts and normalizes valid aliases", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-
-      const response = await routes.request("/remote-executors", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          executors: ["  devbox  ", "gpu-server", "", "  "],
-        }),
-      });
-
-      expect(response.status).toBe(200);
-      const json = await response.json();
-      expect(json.executors).toEqual(["devbox", "gpu-server"]);
-      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
-        remoteExecutors: ["devbox", "gpu-server"],
-      });
-    });
   });
 
   describe("PUT /", () => {
@@ -938,25 +895,6 @@ describe("Settings Routes", () => {
       expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
     });
 
-    it("rejects invalid aliases in remoteExecutors setting", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-
-      const response = await routes.request("/", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          remoteExecutors: ["devbox", "-oProxyCommand=touch_/tmp/pwned"],
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      const json = await response.json();
-      expect(json.error).toContain("Invalid remote executor host alias");
-      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
-    });
-
     it("accepts and normalizes valid aliases in chromeOsHosts setting", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,
@@ -1057,25 +995,6 @@ describe("Settings Routes", () => {
       expect(response.status).toBe(200);
       expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
         approvalAuditLogEnabled: true,
-      });
-    });
-
-    it("accepts the experimental workstreams gate", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-
-      const response = await routes.request("/", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          workstreamsEnabled: true,
-        }),
-      });
-
-      expect(response.status).toBe(200);
-      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
-        workstreamsEnabled: true,
       });
     });
 
@@ -2505,53 +2424,6 @@ describe("Settings Routes", () => {
       expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
     });
 
-    it("accepts post-compact replay settings", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-
-      const response = await routes.request("/", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          postCompactReplay: {
-            providers: { claude: true, codex: false },
-            replayTurnCount: 3,
-          },
-        }),
-      });
-
-      expect(response.status).toBe(200);
-      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
-        postCompactReplay: {
-          providers: { claude: true },
-          replayTurnCount: 3,
-        },
-      });
-    });
-
-    it("rejects invalid post-compact replay settings", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-
-      const response = await routes.request("/", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          postCompactReplay: {
-            providers: { nope: true },
-            replayTurnCount: 3,
-          },
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      const json = await response.json();
-      expect(json.error).toContain("postCompactReplay must use known provider");
-      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
-    });
-
     it("persists long-context effort warning settings", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,
@@ -2888,7 +2760,7 @@ describe("Settings Routes", () => {
       },
     );
 
-    it("keeps remote-executor persistence behind an in-flight share disable", async () => {
+    it("keeps unrelated setting persistence behind an in-flight share disable", async () => {
       const disableGate = deferred();
       const events: string[] = [];
       mockServerSettingsService.updateSettings = vi.fn(
@@ -2896,7 +2768,7 @@ describe("Settings Routes", () => {
           events.push(
             "publicSharesEnabled" in updates
               ? `persist:shares:${updates.publicSharesEnabled}`
-              : `persist:executors:${updates.remoteExecutors?.join(",")}`,
+              : `persist:instructions:${updates.globalInstructions}`,
           );
           settings = { ...settings, ...updates };
           return settings;
@@ -2923,92 +2795,25 @@ describe("Settings Routes", () => {
       await vi.waitFor(() => {
         expect(events).toEqual(["persist:shares:false", "disable:start"]);
       });
-      const updatingExecutors = routes.request("/remote-executors", {
+      const updatingInstructions = routes.request("/", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ executors: ["worker-one"] }),
+        body: JSON.stringify({ globalInstructions: "Review carefully" }),
       });
       await Promise.resolve();
       expect(events).toEqual(["persist:shares:false", "disable:start"]);
 
       disableGate.resolve();
       await expect(disabling).resolves.toMatchObject({ status: 200 });
-      await expect(updatingExecutors).resolves.toMatchObject({ status: 200 });
+      await expect(updatingInstructions).resolves.toMatchObject({
+        status: 200,
+      });
       expect(events).toEqual([
         "persist:shares:false",
         "disable:start",
         "disable:done",
-        "persist:executors:worker-one",
+        "persist:instructions:Review carefully",
       ]);
-    });
-
-    it("accepts and normalizes helper target settings", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-
-      const response = await routes.request("/", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          helperTargets: [
-            {
-              id: "local-vllm",
-              name: "Local vLLM",
-              kind: "openai-compatible",
-              baseUrl: "localhost:8001",
-              model: "",
-            },
-          ],
-        }),
-      });
-
-      expect(response.status).toBe(200);
-      const json = await response.json();
-      expect(json.settings.helperTargets).toEqual([
-        {
-          id: "local-vllm",
-          name: "Local vLLM",
-          kind: "openai-compatible",
-          baseUrl: "http://localhost:8001/v1",
-        },
-      ]);
-      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
-        helperTargets: [
-          {
-            id: "local-vllm",
-            name: "Local vLLM",
-            kind: "openai-compatible",
-            baseUrl: "http://localhost:8001/v1",
-          },
-        ],
-      });
-    });
-
-    it("rejects invalid helper target settings", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-
-      const response = await routes.request("/", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          helperTargets: [
-            {
-              id: "bad/id",
-              name: "Local vLLM",
-              kind: "openai-compatible",
-              baseUrl: "localhost:8001",
-            },
-          ],
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      const json = await response.json();
-      expect(json.error).toBe("Invalid helperTargets setting");
-      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
     });
   });
 
@@ -3043,71 +2848,6 @@ describe("Settings Routes", () => {
         forceRefresh: true,
       });
       expect(await response.json()).toEqual({ status });
-    });
-  });
-
-  describe("POST /helper-targets/models", () => {
-    it("discovers OpenAI-compatible model ids through the server", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-      const fetchMock = vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              data: [
-                {
-                  id: "Qwen/Qwen3.6-27B",
-                  max_model_len: 161072,
-                },
-              ],
-            }),
-            {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            },
-          ),
-      );
-      vi.stubGlobal("fetch", fetchMock);
-
-      const response = await routes.request("/helper-targets/models", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ baseUrl: "localhost:8001" }),
-      });
-
-      expect(response.status).toBe(200);
-      expect(fetchMock).toHaveBeenCalledWith(
-        "http://localhost:8001/v1/models",
-        expect.objectContaining({ signal: expect.any(Object) }),
-      );
-      const json = await response.json();
-      expect(json).toEqual({
-        baseUrl: "http://localhost:8001/v1",
-        models: [
-          {
-            id: "Qwen/Qwen3.6-27B",
-            name: "Qwen/Qwen3.6-27B",
-            contextWindow: 161072,
-          },
-        ],
-      });
-    });
-
-    it("rejects invalid helper target discovery URLs", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-
-      const response = await routes.request("/helper-targets/models", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ baseUrl: "file:///etc/passwd" }),
-      });
-
-      expect(response.status).toBe(400);
-      const json = await response.json();
-      expect(json.error).toBe("baseUrl must be an http(s) URL");
     });
   });
 
@@ -3167,26 +2907,6 @@ describe("Settings Routes", () => {
     });
   });
 
-  describe("POST /remote-executors/:host/test", () => {
-    it("rejects invalid host path parameters", async () => {
-      const routes = createSettingsRoutes({
-        serverSettingsService: mockServerSettingsService,
-      });
-      const invalidHost = encodeURIComponent("-oProxyCommand=touch_/tmp/pwned");
-
-      const response = await routes.request(
-        `/remote-executors/${invalidHost}/test`,
-        {
-          method: "POST",
-        },
-      );
-
-      expect(response.status).toBe(400);
-      const json = await response.json();
-      expect(json.error).toBe("host must be a valid SSH host alias");
-    });
-  });
-
   describe("GET / by principal", () => {
     const limited: Principal = {
       kind: "limited",
@@ -3228,11 +2948,9 @@ describe("Settings Routes", () => {
         ...settings,
         lifecycleWebhookUrl: "https://hooks.example/yep",
         lifecycleWebhookToken: "bearer-secret",
-        remoteExecutors: ["devbox"],
         chromeOsHosts: ["chromeroot"],
         claudeGatewayStartCommand: "copilot-api start",
         globalInstructions: "private instructions",
-        heartbeatTurnText: "keep going",
         clientDefaults: { steerNowDefault: true },
       };
     });
@@ -3240,14 +2958,12 @@ describe("Settings Routes", () => {
     it("serves a limited user only the fields their client uses", async () => {
       const read = await readAs(limited);
       expect(read).toMatchObject({
-        heartbeatTurnText: "keep going",
         clientDefaults: { steerNowDefault: true },
         serviceWorkerEnabled: true,
       });
       for (const withheld of [
         "lifecycleWebhookUrl",
         "lifecycleWebhookToken",
-        "remoteExecutors",
         "chromeOsHosts",
         "claudeGatewayStartCommand",
         "globalInstructions",
@@ -3262,7 +2978,6 @@ describe("Settings Routes", () => {
       const read = await readAs(SUPERUSER);
       expect(read).toMatchObject({
         lifecycleWebhookToken: "bearer-secret",
-        remoteExecutors: ["devbox"],
       });
       expect(read).toHaveProperty("gatewayServiceExportPaths");
     });

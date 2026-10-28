@@ -1,5 +1,10 @@
 # Managed Runner Execution Targets
 
+**Historical / withdrawn, 2026-10-26:** the managed SSH runtime and its
+workspace/auth/mirroring stack have been removed. The proposal below does not
+authorize continuation or depend on completing the old SSH gates. See the
+[current retirement contract](managed-remote-executors.md).
+
 > A controller-owned YA session may run its provider and project workspace on
 > an explicitly selected subordinate machine or disposable VM without turning
 > that target into an independent YA peer. Target discovery, runner injection,

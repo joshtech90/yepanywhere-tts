@@ -238,6 +238,12 @@ describe("NewSessionPage", () => {
     vi.clearAllMocks();
   });
 
+  it("refuses an old executor URL instead of offering a local composer", () => {
+    renderPage("/new-session?projectId=project-1&executor=old-host");
+    expect(screen.getByText(/sshExecutorsRemoved/)).toBeTruthy();
+    expect(NewSessionForm).not.toHaveBeenCalled();
+  });
+
   it("hides app composing by default even on a capable server", () => {
     versionState.capabilities = ["project-service"];
     localStorage.setItem(UI_KEYS.sessionRightPane, "true");

@@ -81,6 +81,21 @@
   color: var(--text-primary);
   text-decoration: underline;
 }
+.pathActions {
+  flex-shrink: 0;
+}
+.pathActions .copyPath {
+  opacity: 0;
+}
+.title:hover .copyPath,
+.title:focus-within .copyPath {
+  opacity: 1;
+}
+@media (hover: none) {
+  .pathActions .copyPath {
+    display: none;
+  }
+}
 .frame {
   flex: 1;
   width: 100%;

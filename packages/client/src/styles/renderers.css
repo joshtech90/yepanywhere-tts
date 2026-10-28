@@ -2240,12 +2240,6 @@ details[open] .collapsible__icon {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
-.modal:has(.session-heartbeat-modal) {
-  width: min(520px, calc(100dvw - 28px));
-  max-width: min(520px, calc(100dvw - 28px));
-  height: auto;
-}
-
 .modal:has(.providers-additional-models-editor) {
   width: min(32rem, calc(100dvw - 1rem));
   max-width: min(32rem, calc(100dvw - 1rem));
@@ -2302,10 +2296,6 @@ details[open] .collapsible__icon {
   padding: 0.375rem;
 }
 
-.modal:has(.session-heartbeat-modal) .modal-content {
-  padding: 0.75rem 0.75rem 0.875rem;
-}
-
 .modal.modal--image-viewer .modal-content {
   overflow: hidden;
   padding: 0;
@@ -2327,13 +2317,6 @@ details[open] .collapsible__icon {
     border: none;
   }
 
-  .modal:has(.session-heartbeat-modal) {
-    width: min(520px, calc(100dvw - 24px));
-    max-width: min(520px, calc(100dvw - 24px));
-    height: auto;
-    border-radius: var(--radius-md);
-  }
-
   .modal:has(.providers-additional-models-editor) {
     width: 100dvw;
     max-width: 100dvw;
@@ -2347,10 +2330,6 @@ details[open] .collapsible__icon {
 
   .modal-content {
     padding: 0;
-  }
-
-  .modal:has(.session-heartbeat-modal) .modal-content {
-    padding: 0.75rem 0.75rem 0.875rem;
   }
 
   .modal-title {

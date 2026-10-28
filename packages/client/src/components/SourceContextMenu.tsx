@@ -397,7 +397,7 @@ export function SourceRowMenuTrigger({
   );
 }
 
-function SourceContextMenu({
+export function SourceContextMenu({
   actions,
   x,
   y,
@@ -466,9 +466,9 @@ function SourceContextMenu({
 
   const select = (action: SourceContextMenuAction) => {
     if (action.disabled) return;
-    action.onSelect();
     onClose();
     returnFocus?.focus();
+    action.onSelect();
   };
 
   const estimatedHeight =

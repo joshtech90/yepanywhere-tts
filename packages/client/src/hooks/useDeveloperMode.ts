@@ -3,8 +3,6 @@ import { forgetRetainedResumes } from "../lib/rejectedResumeStorage";
 import { UI_KEYS } from "../lib/storageKeys";
 
 interface DeveloperModeSettings {
-  /** Expose the experimental server-scoped YA Hosts preview */
-  crossHostDelegationEnabled: boolean;
   /** Log relay requests/responses to console for debugging */
   relayDebugEnabled: boolean;
   /** Capture connection logs and send to server for debugging */
@@ -15,7 +13,6 @@ interface DeveloperModeSettings {
 }
 
 const DEFAULT_SETTINGS: DeveloperModeSettings = {
-  crossHostDelegationEnabled: false,
   relayDebugEnabled: false,
   remoteLogCollectionEnabled: false,
   showConnectionBars: false,
@@ -38,9 +35,6 @@ function normalizeSettings(raw: unknown): DeveloperModeSettings {
   const parsed = raw as Partial<DeveloperModeSettings>;
   return {
     retainRejectedSrpSessions: parsed.retainRejectedSrpSessions === true,
-    crossHostDelegationEnabled:
-      parsed.crossHostDelegationEnabled ??
-      DEFAULT_SETTINGS.crossHostDelegationEnabled,
     relayDebugEnabled:
       parsed.relayDebugEnabled ?? DEFAULT_SETTINGS.relayDebugEnabled,
     remoteLogCollectionEnabled:
@@ -127,10 +121,6 @@ export function __resetDeveloperModeForTest(): void {
 export function useDeveloperMode() {
   const settings = useSyncExternalStore(subscribe, getSnapshot);
 
-  const setCrossHostDelegationEnabled = useCallback((enabled: boolean) => {
-    updateSettings({ ...currentSettings, crossHostDelegationEnabled: enabled });
-  }, []);
-
   const setRelayDebugEnabled = useCallback((enabled: boolean) => {
     updateSettings({ ...currentSettings, relayDebugEnabled: enabled });
   }, []);
@@ -152,8 +142,6 @@ export function useDeveloperMode() {
   }, []);
 
   return {
-    crossHostDelegationEnabled: settings.crossHostDelegationEnabled,
-    setCrossHostDelegationEnabled,
     relayDebugEnabled: settings.relayDebugEnabled,
     setRelayDebugEnabled,
     remoteLogCollectionEnabled: settings.remoteLogCollectionEnabled,

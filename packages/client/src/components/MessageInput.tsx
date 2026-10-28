@@ -372,14 +372,8 @@ interface Props {
   };
   /** YA model id for the context quick-edit's per-model threshold keying. */
   contextRequestedModel?: string;
-  /** Whether heartbeat turns are currently enabled for this session */
-  heartbeatEnabled?: boolean;
   /** Current quiet-period timeout used by patient queue mode. */
   patientQueuePatienceSeconds?: number | null;
-  /** Quick-toggle session heartbeat */
-  onToggleHeartbeat?: () => void;
-  /** Open heartbeat session settings */
-  onConfigureHeartbeat?: () => void;
   /** Whether the current draft will be sent as a correction to the latest user turn */
   correctionActive?: boolean;
   /** Cancel correction mode and clear the restored draft */
@@ -511,10 +505,7 @@ export function MessageInput({
   thinkingModel,
   liveThinkingSelection,
   contextRequestedModel,
-  heartbeatEnabled = false,
   patientQueuePatienceSeconds,
-  onToggleHeartbeat,
-  onConfigureHeartbeat,
   correctionActive = false,
   onCancelCorrection,
   onRecallLastSubmission,
@@ -3702,9 +3693,6 @@ export function MessageInput({
     thinkingModel,
     liveThinkingSelection,
     contextRequestedModel,
-    heartbeatEnabled,
-    onToggleHeartbeat,
-    onConfigureHeartbeat,
     contextUsage,
     lastActivityAt,
     positionTimestampMs,

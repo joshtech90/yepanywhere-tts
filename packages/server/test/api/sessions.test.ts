@@ -224,7 +224,7 @@ describe("Sessions API", () => {
       expect(json.error).toMatch(/Project not found/);
     });
 
-    it("returns 400 for invalid executor alias", async () => {
+    it("refuses a retired SSH executor before launch", async () => {
       const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
 
       const res = await app.request(`/api/projects/${projectId}/sessions`, {
@@ -241,7 +241,7 @@ describe("Sessions API", () => {
 
       expect(res.status).toBe(400);
       const json = await res.json();
-      expect(json.error).toBe("executor must be a valid SSH host alias");
+      expect(json.error).toBe("SSH executors have been removed");
     });
 
     it("starts a session and returns processId", async () => {
@@ -400,7 +400,7 @@ describe("Sessions API", () => {
       expect(res.status).toBe(404);
     });
 
-    it("returns 400 for invalid executor alias", async () => {
+    it("refuses a retired SSH executor before launch", async () => {
       const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
@@ -420,7 +420,7 @@ describe("Sessions API", () => {
 
       expect(res.status).toBe(400);
       const json = await res.json();
-      expect(json.error).toBe("executor must be a valid SSH host alias");
+      expect(json.error).toBe("SSH executors have been removed");
     });
 
     it("resumes a session and returns processId", async () => {

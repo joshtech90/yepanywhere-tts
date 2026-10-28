@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [site-v1.13.0] - 2026-10-26
+
+### Added
+- Publish a Chrome extension guide with its store link, issue and PR workflows,
+  setup steps, optional site access and badges, and current limitations.
+- Link the guide from the homepage, downloads, feature and distribution
+  catalogs, documentation navigation, and shared footer.
+
 ## [site-v1.12.0] - 2026-10-20
 
 ### Added

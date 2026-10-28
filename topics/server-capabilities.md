@@ -88,7 +88,9 @@ version would otherwise promise. A known denied ID wins over the version,
 positive bits and legacy names. Unknown IDs and IDs for optional/scoped
 capabilities have no effect. The server encoder accepts only registered
 version-implied denials and emits them only when its version would imply support.
-Legacy name-list responses omit a denied capability's name.
+Legacy name-list responses omit a denied capability's name and also carry
+negative override bits when the reported version would imply it. This lets
+modern readers use the same withdrawal rule even without encoding negotiation.
 
 This is for an unforeseen withdrawal. Planned experimental or configurable
 support uses an optional bit. A possible future compression of permanent

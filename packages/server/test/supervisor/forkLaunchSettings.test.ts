@@ -104,6 +104,25 @@ describe("fork launch settings", () => {
     return { supervisor, startSession, forkSession };
   }
 
+  it.each([false, true])(
+    "refuses a retired remote source before forking (frozen settings: %s)",
+    async (frozenSettings) => {
+      await metadata.setExecutor("source", "retired-host");
+      const { supervisor, startSession, forkSession } = owner("claude");
+      await expect(
+        supervisor.forkSession({
+          sessionId: "source",
+          projectPath: dataDir,
+          providerName: "claude",
+          ...(frozenSettings ? { launchSettings: source } : {}),
+        }),
+      ).rejects.toThrow("SSH executors have been removed");
+      expect(forkSession).not.toHaveBeenCalled();
+      expect(startSession).not.toHaveBeenCalled();
+      expect(metadata.getEffectiveLaunchSettings("child")).toBeUndefined();
+    },
+  );
+
   for (const providerName of ["claude", "codex", "pi"] as const) {
     for (const [permissionMode, thinking, effort] of [
       ["bypassPermissions", source.thinking, "high"],

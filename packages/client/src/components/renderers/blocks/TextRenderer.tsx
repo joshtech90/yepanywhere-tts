@@ -7,6 +7,7 @@ import {
 import type { ContentBlock, ContentRenderer } from "../types";
 import { useSessionAppLinksHtml } from "../../SessionAppLinks";
 import { InnerHtml } from "../../ui/InnerHtml";
+import { useInlineCodeActions } from "../../../hooks/useInlineCodeActions";
 
 interface TextBlock extends ContentBlock {
   type: "text";
@@ -19,6 +20,7 @@ interface TextBlock extends ContentBlock {
  * Text renderer - displays text content with markdown rendering
  */
 function TextRendererComponent({ block }: { block: TextBlock }) {
+  const inlineCode = useInlineCodeActions();
   const renderedHtml = useSessionAppLinksHtml(block._renderedHtml ?? "");
   const {
     modal,
@@ -40,7 +42,10 @@ function TextRendererComponent({ block }: { block: TextBlock }) {
       <div
         className="text-block"
         onClick={handleClick}
-        onContextMenu={handleContextMenu}
+        onDoubleClick={inlineCode.handleDoubleClick}
+        onContextMenu={(event) => {
+          if (!inlineCode.handleContextMenu(event)) handleContextMenu(event);
+        }}
       >
         {/* Server-rendered markdown. */}
         <InnerHtml trustedHtml={renderedHtml} />
@@ -69,6 +74,7 @@ function TextRendererComponent({ block }: { block: TextBlock }) {
           />
         )}
         {contextMenuElement}
+        {inlineCode.menu}
       </div>
     );
   }

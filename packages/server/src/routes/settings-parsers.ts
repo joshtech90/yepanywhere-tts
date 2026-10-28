@@ -10,9 +10,7 @@ import {
   type GrokSpeechAudioClientDefault,
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
-  type HelperTargetConfig,
   type HostIdentity,
-  type ModelInfo,
   type NewSessionDefaults,
   type PermissionMode,
   DEFAULT_CACHE_MISS_BILLING_SETTINGS,
@@ -47,10 +45,6 @@ import {
   isValidSshHostAlias,
   normalizeSshHostAlias,
 } from "../utils/sshHostAlias.js";
-
-const HELPER_TARGET_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
-const MAX_HELPER_TARGETS = 20;
-const HELPER_TARGET_MODEL_DISCOVERY_TIMEOUT_MS = 5000;
 const SESSION_TOOLBAR_PRESENCE_CLIENT_DEFAULT_KEYS = [
   "modeSelector",
   "steerNow",
@@ -144,29 +138,6 @@ export function parseHostAliasList(rawHosts: unknown[]): {
   return { hosts };
 }
 
-export function normalizeOpenAiCompatibleBaseUrl(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
-    ? trimmed
-    : `http://${trimmed}`;
-
-  try {
-    const url = new URL(withScheme);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    if (url.pathname === "" || url.pathname === "/") {
-      url.pathname = "/v1";
-    }
-
-    const normalized = url.toString();
-    return normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
-  } catch {
-    return null;
-  }
-}
-
 export function normalizeClaudeGatewayUrl(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
@@ -215,55 +186,6 @@ export function parseClaudeAutoCompactPercentOverride(
     return null;
   }
   return raw;
-}
-
-/**
- * Returns:
- * - `null` when the payload is invalid
- * - `undefined` when the setting should be cleared
- * - an array when valid helper targets should be saved
- */
-export function parseHelperTargets(
-  raw: unknown,
-): HelperTargetConfig[] | undefined | null {
-  if (raw === undefined) return null;
-  if (raw === null || raw === "") return undefined;
-  if (!Array.isArray(raw) || raw.length > MAX_HELPER_TARGETS) return null;
-
-  const seenIds = new Set<string>();
-  const parsed: HelperTargetConfig[] = [];
-
-  for (const entry of raw) {
-    if (!entry || typeof entry !== "object") return null;
-    const input = entry as Record<string, unknown>;
-    const id = typeof input.id === "string" ? input.id.trim() : "";
-    const name = typeof input.name === "string" ? input.name.trim() : "";
-    const baseUrl = normalizeOpenAiCompatibleBaseUrl(input.baseUrl);
-    const model = typeof input.model === "string" ? input.model.trim() : "";
-
-    if (
-      !HELPER_TARGET_ID_PATTERN.test(id) ||
-      seenIds.has(id) ||
-      !name ||
-      name.length > 80 ||
-      input.kind !== "openai-compatible" ||
-      !baseUrl ||
-      model.length > 200
-    ) {
-      return null;
-    }
-
-    seenIds.add(id);
-    parsed.push({
-      id,
-      name,
-      kind: "openai-compatible",
-      baseUrl,
-      ...(model ? { model } : {}),
-    });
-  }
-
-  return parsed;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -409,38 +331,6 @@ export function parseFileAccess(
   });
 }
 
-function parseOpenAiModelsResponse(raw: unknown): ModelInfo[] | null {
-  if (!isRecord(raw) || !Array.isArray(raw.data)) return null;
-
-  const models: ModelInfo[] = [];
-  for (const entry of raw.data) {
-    if (!isRecord(entry) || typeof entry.id !== "string" || !entry.id.trim()) {
-      continue;
-    }
-    const metadata = isRecord(entry.metadata) ? entry.metadata : undefined;
-    const rawContextWindow =
-      typeof entry.max_model_len === "number"
-        ? entry.max_model_len
-        : typeof entry.maxModelLen === "number"
-          ? entry.maxModelLen
-          : typeof metadata?.max_model_len === "number"
-            ? metadata.max_model_len
-            : undefined;
-    const contextWindow =
-      rawContextWindow !== undefined && Number.isFinite(rawContextWindow)
-        ? rawContextWindow
-        : undefined;
-
-    models.push({
-      id: entry.id,
-      name: entry.id,
-      ...(contextWindow ? { contextWindow } : {}),
-    });
-  }
-
-  return models;
-}
-
 export function parseAgentContextHints(
   raw: unknown,
   current: AgentContextHints | undefined,
@@ -470,28 +360,6 @@ export function parseHostIdentity(
   }
   const icon = normalizeHostIdentityIcon(raw.icon);
   return icon ? { icon } : null;
-}
-
-export async function discoverOpenAiCompatibleModels(
-  baseUrl: string,
-): Promise<ModelInfo[] | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    HELPER_TARGET_MODEL_DISCOVERY_TIMEOUT_MS,
-  );
-
-  try {
-    const response = await fetch(`${baseUrl}/models`, {
-      signal: controller.signal,
-    });
-    if (!response.ok) return null;
-    return parseOpenAiModelsResponse(await response.json());
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 /**

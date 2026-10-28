@@ -1,6 +1,5 @@
 import {
   DEFAULT_RECAP_AFTER_SECONDS,
-  POST_COMPACT_REPLAY_CONTINUE,
   POST_COMPACT_REPLAY_PREAMBLE,
 } from "@yep-anywhere/shared";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -1587,113 +1586,132 @@ describe("Supervisor", () => {
       await supervisorWithProvider.abortProcess(started.id);
     });
 
-    it("injects a hidden post-compact continuation when enabled", async () => {
-      const delivered: string[] = [];
-      let compactEmitted = false;
-      const startSession = vi.fn(
-        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
-          const queue = new MessageQueue();
-          let aborted = false;
+    it.each([false, true])(
+      "settles a runtime compact action once and accepts later input (hook throws: %s)",
+      async (hookThrows) => {
+        const actionLog = vi
+          .spyOn(getLogger(), "info")
+          .mockImplementation(() => undefined);
+        const action = vi.fn(() => {
+          if (hookThrows) throw new Error("runtime hook failed");
+          return { text: "runtime compact action", metadata: { hidden: true } };
+        });
+        const delivered: string[] = [];
+        let compactEmitted = false;
+        const startSession = vi.fn(
+          async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+            const queue = new MessageQueue();
+            let aborted = false;
 
-          async function* iterator() {
-            yield {
-              type: "system" as const,
-              subtype: "init" as const,
-              session_id: options.resumeSessionId ?? "post-compact-session",
-            };
-            for await (const sdkMessage of queue) {
-              if (aborted) return;
-              const content = sdkMessage.message.content;
-              const text =
-                typeof content === "string"
-                  ? content
-                  : ((content[0] as { text?: string } | undefined)?.text ?? "");
-              delivered.push(text);
+            async function* iterator() {
               yield {
-                type: "assistant" as const,
-                message: { content: `reply to ${text}` },
+                type: "system" as const,
+                subtype: "init" as const,
+                session_id: options.resumeSessionId ?? "post-compact-session",
               };
-              if (!compactEmitted) {
-                compactEmitted = true;
+              for await (const sdkMessage of queue) {
+                if (aborted) return;
+                const content = sdkMessage.message.content;
+                const text =
+                  typeof content === "string"
+                    ? content
+                    : ((content[0] as { text?: string } | undefined)?.text ??
+                      "");
+                delivered.push(text);
                 yield {
-                  type: "system" as const,
-                  subtype: "compact_boundary" as const,
+                  type: "assistant" as const,
+                  message: { content: `reply to ${text}` },
+                };
+                if (!compactEmitted) {
+                  compactEmitted = true;
+                  yield {
+                    type: "system" as const,
+                    subtype: "compact_boundary" as const,
+                    session_id:
+                      options.resumeSessionId ?? "post-compact-session",
+                  };
+                }
+                yield {
+                  type: "result" as const,
                   session_id: options.resumeSessionId ?? "post-compact-session",
                 };
               }
-              yield {
-                type: "result" as const,
-                session_id: options.resumeSessionId ?? "post-compact-session",
-              };
             }
-          }
 
-          return {
-            iterator: iterator(),
-            queue,
-            abort: () => {
-              aborted = true;
-              queue.push({ text: "__abort__" });
-            },
-          };
-        },
-      );
-      const provider: AgentProvider = {
-        name: "claude",
-        displayName: "Claude",
-        supportsPermissionMode: true,
-        supportsThinkingToggle: true,
-        supportsSlashCommands: true,
-        supportsSteering: true,
-        isInstalled: async () => true,
-        isAuthenticated: async () => true,
-        getAuthStatus: async () => ({
-          installed: true,
-          authenticated: true,
-          enabled: true,
-        }),
-        getAvailableModels: async () => [],
-        startSession,
-      };
-      const supervisorWithProvider = new Supervisor({
-        provider,
-        idleTimeoutMs: 100,
-        getPostCompactReplaySettings: () => ({
-          providers: { claude: true },
-          replayTurnCount: 2,
-        }),
-      });
-
-      const started = await supervisorWithProvider.resumeSession(
-        "post-compact-session",
-        "/tmp/test",
-        { text: "fix the parser" },
-      );
-      if (!("id" in started)) {
-        throw new Error("expected process");
-      }
-
-      await vi.waitFor(() => {
-        expect(delivered[0]).toBe("fix the parser");
-        const replay = delivered.find((text) =>
-          text.startsWith(POST_COMPACT_REPLAY_PREAMBLE),
+            return {
+              iterator: iterator(),
+              queue,
+              abort: () => {
+                aborted = true;
+                queue.push({ text: "__abort__" });
+              },
+            };
+          },
         );
-        expect(replay).toBeDefined();
-        expect(delivered).toHaveLength(2);
-        expect(replay).toContain("> user: fix the parser");
-        expect(replay).toContain("> assistant: reply to fix the parser");
-        expect(replay).toContain(
-          "quotation records before-compaction activity, not a new request",
-        );
-        expect(replay?.trim().endsWith(POST_COMPACT_REPLAY_CONTINUE)).toBe(
-          true,
-        );
-      });
+        const provider: AgentProvider = {
+          name: "claude",
+          displayName: "Claude",
+          supportsPermissionMode: true,
+          supportsThinkingToggle: true,
+          supportsSlashCommands: true,
+          supportsSteering: true,
+          isInstalled: async () => true,
+          isAuthenticated: async () => true,
+          getAuthStatus: async () => ({
+            installed: true,
+            authenticated: true,
+            enabled: true,
+          }),
+          getAvailableModels: async () => [],
+          startSession,
+        };
+        const supervisorWithProvider = new Supervisor({
+          provider,
+          idleTimeoutMs: 100,
+          postCompactAction: action,
+        });
 
-      await supervisorWithProvider.abortProcess(started.id);
-    });
+        const started = await supervisorWithProvider.resumeSession(
+          "post-compact-session",
+          "/tmp/test",
+          { text: "fix the parser" },
+        );
+        if (!("id" in started)) {
+          throw new Error("expected process");
+        }
 
-    it("skips post-compact continuation when the provider is not enabled", async () => {
+        try {
+          const expected = hookThrows
+            ? ["fix the parser"]
+            : ["fix the parser", "runtime compact action"];
+          await vi.waitFor(() => {
+            expect(delivered).toEqual(expected);
+            expect(action).toHaveBeenCalledTimes(1);
+            expect(started.state.type).toBe("idle");
+            if (hookThrows) {
+              expect(actionLog).toHaveBeenCalledWith(
+                expect.objectContaining({
+                  event: "post_compact_action_failed",
+                  error: "runtime hook failed",
+                }),
+                "Post-compact action failed",
+              );
+            }
+          });
+          await supervisorWithProvider.queueProcessMessage(started, {
+            text: "user follow-up",
+          });
+          await vi.waitFor(() =>
+            expect(delivered).toEqual([...expected, "user follow-up"]),
+          );
+          expect(action).toHaveBeenCalledTimes(1);
+        } finally {
+          await supervisorWithProvider.abortProcess(started.id);
+        }
+      },
+    );
+
+    it("does not generate a continuation after compaction by default", async () => {
       const delivered: string[] = [];
       const startSession = vi.fn(
         async (options: Parameters<AgentProvider["startSession"]>[0]) => {
@@ -1760,10 +1778,6 @@ describe("Supervisor", () => {
       const supervisorWithProvider = new Supervisor({
         provider,
         idleTimeoutMs: 100,
-        getPostCompactReplaySettings: () => ({
-          providers: { codex: true },
-          replayTurnCount: 4,
-        }),
       });
 
       const started = await supervisorWithProvider.resumeSession(
@@ -2471,109 +2485,6 @@ describe("Supervisor", () => {
   });
 
   describe("reactivateSession", () => {
-    it("retains managed placement across queueing, shutdown, and resume", async () => {
-      let generation = 0;
-      const delivered: string[] = [];
-      const startSession = vi.fn(
-        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
-          generation += 1;
-          const runnerGeneration = `runner-${generation}`;
-          const queue = new MessageQueue();
-          let alive = true;
-          async function* iterator() {
-            yield {
-              type: "system" as const,
-              subtype: "init" as const,
-              session_id: options.resumeSessionId ?? "managed-native-session",
-            };
-            for await (const message of queue) {
-              if (!alive) return;
-              const text =
-                typeof message.message.content === "string"
-                  ? message.message.content
-                  : "non-text provider message";
-              delivered.push(text);
-              yield {
-                type: "assistant" as const,
-                message: { content: `reply to ${text}` },
-              };
-              yield {
-                type: "result" as const,
-                session_id: options.resumeSessionId ?? "managed-native-session",
-              };
-            }
-          }
-          return {
-            iterator: iterator(),
-            queue,
-            execution: {
-              kind: "managed-ssh" as const,
-              targetId: "linux-testbed",
-              workspaceId: "managed-workspace",
-              runnerGeneration,
-            },
-            abort: () => {
-              alive = false;
-              queue.push({ text: "__abort__" });
-            },
-            isProcessAlive: () => alive,
-          };
-        },
-      );
-      const providerSupervisor = new Supervisor({
-        provider: testProvider(startSession),
-        idleTimeoutMs: 60000,
-      });
-
-      const first = await providerSupervisor.reactivateSession(
-        "/tmp/managed-workspace",
-        "managed-native-session",
-        undefined,
-        { providerName: "claude" },
-      );
-
-      expect(first.execution).toEqual({
-        kind: "managed-ssh",
-        targetId: "linux-testbed",
-        workspaceId: "managed-workspace",
-        runnerGeneration: "runner-1",
-      });
-      expect(first.executor).toBeUndefined();
-      expect(first.queueMessage({ text: "managed queue turn" })).toEqual(
-        expect.objectContaining({ success: true }),
-      );
-      await waitFor(() => {
-        expect(delivered).toContain("managed queue turn");
-        expect(first.state.type).toBe("idle");
-      });
-      await expect(
-        providerSupervisor.abortProcessWithVerification(first.id),
-      ).resolves.toMatchObject({
-        processId: first.id,
-        verifiedStopped: true,
-        verification: "provider",
-      });
-
-      const resumed = await providerSupervisor.reactivateSession(
-        "/tmp/managed-workspace",
-        "managed-native-session",
-        undefined,
-        { providerName: "claude" },
-      );
-
-      expect(resumed.sessionId).toBe("managed-native-session");
-      expect(resumed.execution).toEqual({
-        kind: "managed-ssh",
-        targetId: "linux-testbed",
-        workspaceId: "managed-workspace",
-        runnerGeneration: "runner-2",
-      });
-      await expect(
-        providerSupervisor.abortProcessWithVerification(resumed.id),
-      ).resolves.toMatchObject({ verifiedStopped: true });
-      expect(startSession).toHaveBeenCalledTimes(2);
-    });
-
     it("spawns a live owned process for an existing session with no user turn", async () => {
       const startSession = vi.fn(
         async (options: Parameters<AgentProvider["startSession"]>[0]) => {
@@ -4860,7 +4771,6 @@ describe("Supervisor", () => {
       expect(metadata.writes.updateMetadata).toHaveBeenCalledWith(
         "terminate-session",
         expect.objectContaining({
-          heartbeatTurnsEnabled: false,
           autoResumeDisabled: true,
         }),
       );
@@ -6318,180 +6228,7 @@ describe("Supervisor", () => {
     });
   });
 
-  describe("heartbeat turns", () => {
-    it("requires verified idle liveness before queueing a synthetic turn", async () => {
-      vi.useFakeTimers();
-      let aborted = false;
-
-      try {
-        const realSdk: RealClaudeSDKInterface = {
-          startSession: async () => {
-            const queue = new MessageQueue();
-            async function* iterator() {
-              yield {
-                type: "system",
-                subtype: "init",
-                session_id: "heartbeat-session-1",
-              };
-              await queue[Symbol.asyncIterator]().next();
-              yield { type: "result", session_id: "heartbeat-session-1" };
-
-              while (!aborted) {
-                await new Promise((resolve) => setTimeout(resolve, 10));
-              }
-            }
-
-            return {
-              iterator: iterator(),
-              queue,
-              abort: () => {
-                aborted = true;
-              },
-              isProcessAlive: () => !aborted,
-            };
-          },
-        };
-
-        const supervisorWithHeartbeat = new Supervisor({
-          realSdk,
-          idleTimeoutMs: 100,
-          getHeartbeatTurnSettings: () => ({
-            enabled: true,
-            afterMinutes: 1,
-            text: "heartbeat check",
-          }),
-        });
-
-        const started = await supervisorWithHeartbeat.startSession(
-          "/tmp/test",
-          {
-            text: "start",
-          },
-        );
-        if (!("id" in started)) {
-          throw new Error("expected process");
-        }
-
-        await vi.advanceTimersByTimeAsync(0);
-        expect(started.state.type).toBe("idle");
-
-        const originalSnapshot = started.getLivenessSnapshot.bind(started);
-        const livenessSpy = vi
-          .spyOn(started, "getLivenessSnapshot")
-          .mockImplementation((now?: Date) => ({
-            ...originalSnapshot(now),
-            derivedStatus: "long-silent-unverified",
-            activeWorkKind: "agent-turn",
-            lastVerifiedIdleAt: null,
-          }));
-
-        await vi.advanceTimersByTimeAsync(60_000);
-        expect(started.state.type).toBe("idle");
-        expect(started.queueDepth).toBe(0);
-
-        livenessSpy.mockImplementation((now?: Date) => originalSnapshot(now));
-
-        await vi.advanceTimersByTimeAsync(30_000);
-        expect(started.state.type).toBe("in-turn");
-        expect(started.queueDepth).toBe(1);
-
-        const abortPromise = supervisorWithHeartbeat.abortProcess(started.id);
-        await vi.advanceTimersByTimeAsync(5000);
-        await expect(abortPromise).resolves.toBe(true);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("does not queue heartbeat turns while provider retention is active", async () => {
-      vi.useFakeTimers();
-      let aborted = false;
-
-      try {
-        const realSdk: RealClaudeSDKInterface = {
-          startSession: async () => {
-            const queue = new MessageQueue();
-            async function* iterator() {
-              yield {
-                type: "system",
-                subtype: "init",
-                session_id: "heartbeat-provider-retained-session",
-              };
-              await queue[Symbol.asyncIterator]().next();
-              yield {
-                type: "result",
-                session_id: "heartbeat-provider-retained-session",
-              };
-
-              while (!aborted) {
-                await new Promise((resolve) => setTimeout(resolve, 10));
-              }
-            }
-
-            return {
-              iterator: iterator(),
-              queue,
-              abort: () => {
-                aborted = true;
-              },
-              isProcessAlive: () => !aborted,
-              getProviderRetention: () => ({
-                retained: true,
-                reasons: ["stop-hook-background-tasks:1"],
-                backgroundTaskCount: 1,
-                sessionCronCount: 0,
-                liveTaskCount: 0,
-              }),
-            };
-          },
-        };
-
-        const supervisorWithHeartbeat = new Supervisor({
-          realSdk,
-          idleTimeoutMs: 120_000,
-          getHeartbeatTurnSettings: () => ({
-            enabled: true,
-            afterMinutes: 1,
-            text: "heartbeat check",
-          }),
-        });
-
-        const started = await supervisorWithHeartbeat.startSession(
-          "/tmp/test",
-          {
-            text: "start",
-          },
-        );
-        if (!("id" in started)) {
-          throw new Error("expected process");
-        }
-
-        await vi.advanceTimersByTimeAsync(0);
-        expect(started.state.type).toBe("idle");
-        expect(started.getLivenessSnapshot().derivedStatus).toBe(
-          "verified-waiting-provider",
-        );
-        expect(supervisorWithHeartbeat.getWorkerActivity()).toMatchObject({
-          activeWorkers: 1,
-          interruptibleSessionCount: 1,
-          hasActiveWork: true,
-        });
-
-        await vi.advanceTimersByTimeAsync(60_000);
-        expect(started.state.type).toBe("idle");
-        expect(started.queueDepth).toBe(0);
-        expect(supervisorWithHeartbeat.getWorkerActivity().hasActiveWork).toBe(
-          true,
-        );
-
-        const abortPromise = supervisorWithHeartbeat.abortProcess(started.id);
-        await vi.advanceTimersByTimeAsync(5000);
-        await expect(abortPromise).resolves.toBe(true);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
+  describe("patient scheduling and liveness", () => {
     it("promotes patient deferred messages after verified quiet", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
@@ -6505,12 +6242,12 @@ describe("Supervisor", () => {
               yield {
                 type: "system",
                 subtype: "init",
-                session_id: "patient-deferred-heartbeat-session",
+                session_id: "patient-deferred-maintenance-session",
               };
               await queue[Symbol.asyncIterator]().next();
               yield {
                 type: "result",
-                session_id: "patient-deferred-heartbeat-session",
+                session_id: "patient-deferred-maintenance-session",
               };
 
               while (!aborted) {
@@ -6529,17 +6266,12 @@ describe("Supervisor", () => {
           },
         };
 
-        const supervisorWithHeartbeat = new Supervisor({
+        const supervisorWithPatientQueue = new Supervisor({
           realSdk,
           idleTimeoutMs: 100,
-          getHeartbeatTurnSettings: () => ({
-            enabled: false,
-            afterMinutes: 1,
-            text: "heartbeat check",
-          }),
         });
 
-        const started = await supervisorWithHeartbeat.startSession(
+        const started = await supervisorWithPatientQueue.startSession(
           "/tmp/test",
           {
             text: "start",
@@ -6581,7 +6313,9 @@ describe("Supervisor", () => {
         expect(started.queueDepth).toBe(1);
         expect(started.getDeferredQueueSummary()).toEqual([]);
 
-        const abortPromise = supervisorWithHeartbeat.abortProcess(started.id);
+        const abortPromise = supervisorWithPatientQueue.abortProcess(
+          started.id,
+        );
         await vi.advanceTimersByTimeAsync(5000);
         await expect(abortPromise).resolves.toBe(true);
       } finally {
@@ -6683,430 +6417,22 @@ describe("Supervisor", () => {
       }
     });
 
-    it("visits an opted-in idle session at its deadline, not on an interval", async () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
-      let aborted = false;
-      let resolveAbort!: () => void;
-      const abortSignal = new Promise<void>((resolve) => {
-        resolveAbort = resolve;
-      });
-
-      try {
-        const realSdk: RealClaudeSDKInterface = {
-          startSession: async () => {
-            const queue = new MessageQueue();
-            async function* iterator() {
-              yield {
-                type: "system",
-                subtype: "init",
-                session_id: "heartbeat-deadline-session",
-              };
-              await queue[Symbol.asyncIterator]().next();
-              yield {
-                type: "result",
-                session_id: "heartbeat-deadline-session",
-              };
-
-              await abortSignal;
-            }
-
-            return {
-              iterator: iterator(),
-              queue,
-              abort: () => {
-                aborted = true;
-                resolveAbort();
-              },
-              isProcessAlive: () => !aborted,
-            };
-          },
-        };
-
-        const supervisorWithHeartbeat = new Supervisor({
-          realSdk,
-          idleTimeoutMs: 100,
-          getHeartbeatTurnSettings: () => ({
-            enabled: true,
-            afterMinutes: 10,
-            text: "heartbeat check",
-          }),
-        });
-
-        const started = await supervisorWithHeartbeat.startSession(
-          "/tmp/test",
-          {
-            text: "start",
-          },
-        );
-        if (!("id" in started)) {
-          throw new Error("expected process");
-        }
-        await vi.advanceTimersByTimeAsync(0);
-        expect(started.state.type).toBe("idle");
-
-        // Five minutes of an idle, opted-in session. The fixed tick this
-        // replaced would have swept ten times over the same span.
-        await vi.advanceTimersByTimeAsync(5 * 60_000);
-        expect(started.queueDepth).toBe(0);
-        expect(
-          supervisorWithHeartbeat.getHeartbeatScheduleMetrics().sweeps,
-        ).toBeLessThanOrEqual(2);
-
-        // The deadline itself still fires.
-        await vi.advanceTimersByTimeAsync(5 * 60_000 + 1_000);
-        expect(started.queueDepth).toBe(1);
-
-        const abortPromise = supervisorWithHeartbeat.abortProcess(started.id);
-        await vi.advanceTimersByTimeAsync(5000);
-        await expect(abortPromise).resolves.toBe(true);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("arms no timer at all while nothing is opted in", async () => {
+    it("never sweeps while there is no patient maintenance work", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
 
       try {
         const supervisorWithoutHeartbeat = new Supervisor({
           realSdk: { startSession: async () => ({}) as never },
-          getHeartbeatTurnSettings: () => ({
-            enabled: false,
-            afterMinutes: 5,
-            text: "heartbeat check",
-          }),
         });
 
         await vi.advanceTimersByTimeAsync(10 * 60_000);
 
         const metrics =
-          supervisorWithoutHeartbeat.getHeartbeatScheduleMetrics();
-        expect(metrics.sweeps).toBe(1);
+          supervisorWithoutHeartbeat.getMaintenanceScheduleMetrics();
+        expect(metrics.sweeps).toBe(0);
         expect(metrics.armedAtMs).toBeNull();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("rechecks a settled unowned candidate once per idle threshold", async () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
-      const getCandidates = vi.fn(() => []);
-
-      try {
-        new Supervisor({
-          realSdk: { startSession: async () => ({}) as never },
-          getHeartbeatTurnSettings: () => ({
-            enabled: true,
-            afterMinutes: 5,
-            text: "heartbeat check",
-          }),
-          getHeartbeatTurnCandidates: getCandidates,
-          // Eligible, unowned, and currently settled: an external append can
-          // still make it due, but never sooner than one idle threshold.
-          getHeartbeatWaitingSessionIds: () => ["settled-session"],
-        });
-
-        await vi.advanceTimersByTimeAsync(10 * 60_000);
-
-        // Twenty fixed ticks would have reached storage twenty times.
-        expect(getCandidates.mock.calls.length).toBeLessThanOrEqual(3);
-        expect(getCandidates.mock.calls.length).toBeGreaterThan(0);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("resets the heartbeat timeout on real liveness signals", async () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
-      let aborted = false;
-      let resolveAbort!: () => void;
-      const abortSignal = new Promise<void>((resolve) => {
-        resolveAbort = resolve;
-      });
-
-      try {
-        const realSdk: RealClaudeSDKInterface = {
-          startSession: async () => {
-            const queue = new MessageQueue();
-            async function* iterator() {
-              yield {
-                type: "system",
-                subtype: "init",
-                session_id: "heartbeat-session-2",
-              };
-              await queue[Symbol.asyncIterator]().next();
-              yield { type: "result", session_id: "heartbeat-session-2" };
-
-              await abortSignal;
-            }
-
-            return {
-              iterator: iterator(),
-              queue,
-              abort: () => {
-                aborted = true;
-                resolveAbort();
-              },
-              isProcessAlive: () => !aborted,
-            };
-          },
-        };
-
-        const supervisorWithHeartbeat = new Supervisor({
-          realSdk,
-          idleTimeoutMs: 100,
-          getHeartbeatTurnSettings: () => ({
-            enabled: true,
-            afterMinutes: 1,
-            text: "heartbeat check",
-          }),
-        });
-
-        const started = await supervisorWithHeartbeat.startSession(
-          "/tmp/test",
-          {
-            text: "start",
-          },
-        );
-        if (!("id" in started)) {
-          throw new Error("expected process");
-        }
-
-        await vi.advanceTimersByTimeAsync(0);
-        expect(started.state.type).toBe("idle");
-
-        const originalSnapshot = started.getLivenessSnapshot.bind(started);
-        const rawActivityAtMs = Date.parse("2026-05-06T00:00:45.000Z");
-        const rawActivityAt = new Date(rawActivityAtMs).toISOString();
-        vi.spyOn(started, "getLivenessSnapshot").mockImplementation(
-          (now?: Date) => {
-            const snapshot = originalSnapshot(now);
-            const checkedAtMs = now?.getTime() ?? Date.now();
-            return checkedAtMs >= rawActivityAtMs
-              ? {
-                  ...snapshot,
-                  lastRawProviderEventAt: rawActivityAt,
-                  lastRawProviderEventSource: "test:raw-provider",
-                }
-              : snapshot;
-          },
-        );
-
-        await vi.advanceTimersByTimeAsync(60_000);
-        expect(started.state.type).toBe("idle");
-        expect(started.queueDepth).toBe(0);
-
-        await vi.advanceTimersByTimeAsync(30_000);
-        expect(started.state.type).toBe("idle");
-        expect(started.queueDepth).toBe(0);
-
-        await vi.advanceTimersByTimeAsync(30_000);
-        expect(started.state.type).toBe("in-turn");
-        expect(started.queueDepth).toBe(1);
-
-        const abortPromise = supervisorWithHeartbeat.abortProcess(started.id);
-        await vi.advanceTimersByTimeAsync(5000);
-        await expect(abortPromise).resolves.toBe(true);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("steers heartbeat turns into quiet doubtful active sessions", async () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
-      let aborted = false;
-      const steeredMessages: string[] = [];
-
-      try {
-        const provider: AgentProvider = {
-          name: "codex",
-          displayName: "Codex",
-          supportsPermissionMode: true,
-          supportsThinkingToggle: true,
-          supportsSlashCommands: false,
-          supportsSteering: true,
-          isInstalled: async () => true,
-          isAuthenticated: async () => true,
-          getAuthStatus: async () => ({
-            installed: true,
-            authenticated: true,
-            enabled: true,
-          }),
-          getAvailableModels: async () => [],
-          startSession: async () => {
-            const queue = new MessageQueue();
-            async function* iterator() {
-              yield {
-                type: "system",
-                subtype: "init",
-                session_id: "heartbeat-active-session",
-              };
-              await queue[Symbol.asyncIterator]().next();
-
-              while (!aborted) {
-                await new Promise((resolve) => setTimeout(resolve, 10));
-              }
-            }
-
-            return {
-              iterator: iterator(),
-              queue,
-              abort: () => {
-                aborted = true;
-              },
-              isProcessAlive: () => !aborted,
-              steer: async (message) => {
-                steeredMessages.push(message.text);
-                return true;
-              },
-            };
-          },
-        };
-
-        const supervisorWithHeartbeat = new Supervisor({
-          provider,
-          idleTimeoutMs: 100,
-          getHeartbeatTurnSettings: () => ({
-            enabled: true,
-            afterMinutes: 1,
-            text: "heartbeat check",
-          }),
-        });
-
-        const started = await supervisorWithHeartbeat.startSession(
-          "/tmp/test",
-          {
-            text: "start",
-          },
-        );
-        if (!("id" in started)) {
-          throw new Error("expected process");
-        }
-
-        await vi.advanceTimersByTimeAsync(0);
-        expect(started.state.type).toBe("in-turn");
-
-        await vi.advanceTimersByTimeAsync(60_000);
-        await vi.waitFor(() => {
-          expect(steeredMessages).toEqual(["heartbeat check"]);
-        });
-        expect(started.state.type).toBe("in-turn");
-
-        const abortPromise = supervisorWithHeartbeat.abortProcess(started.id);
-        await vi.advanceTimersByTimeAsync(5000);
-        await expect(abortPromise).resolves.toBe(true);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("resumes unowned stale pending-tool sessions with heartbeat text", async () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
-      let aborted = false;
-      const queues: MessageQueue[] = [];
-      const startSession = vi.fn(
-        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
-          const queue = new MessageQueue();
-          queues.push(queue);
-          async function* iterator() {
-            yield {
-              type: "system",
-              subtype: "init",
-              session_id:
-                options.resumeSessionId ?? "heartbeat-unowned-session",
-            };
-            yield {
-              type: "result",
-              session_id:
-                options.resumeSessionId ?? "heartbeat-unowned-session",
-            };
-
-            while (!aborted) {
-              await new Promise((resolve) => setTimeout(resolve, 10));
-            }
-          }
-
-          return {
-            iterator: iterator(),
-            queue,
-            abort: () => {
-              aborted = true;
-            },
-            isProcessAlive: () => !aborted,
-          };
-        },
-      );
-      const provider: AgentProvider = {
-        name: "codex",
-        displayName: "Codex",
-        supportsPermissionMode: true,
-        supportsThinkingToggle: true,
-        supportsSlashCommands: false,
-        supportsSteering: true,
-        isInstalled: async () => true,
-        isAuthenticated: async () => true,
-        getAuthStatus: async () => ({
-          installed: true,
-          authenticated: true,
-          enabled: true,
-        }),
-        getAvailableModels: async () => [],
-        startSession,
-      };
-
-      try {
-        const supervisorWithHeartbeat = new Supervisor({
-          provider,
-          idleTimeoutMs: 100,
-          getHeartbeatTurnSettings: () => ({
-            enabled: true,
-            afterMinutes: 1,
-            text: "heartbeat check",
-          }),
-          getHeartbeatTurnCandidates: () => [
-            {
-              sessionId: "heartbeat-unowned-session",
-              projectId: encodeProjectId("/tmp/test"),
-              projectPath: "/tmp/test",
-              provider: "codex",
-              model: "gpt-5.5",
-              updatedAt: "2026-05-06T00:00:00.000Z",
-              hasPendingToolCall: true,
-            },
-          ],
-        });
-
-        await vi.advanceTimersByTimeAsync(60_000);
-        await vi.waitFor(() => {
-          expect(startSession).toHaveBeenCalledTimes(1);
-        });
-        expect(startSession.mock.calls[0]?.[0]).toMatchObject({
-          resumeSessionId: "heartbeat-unowned-session",
-          model: "gpt-5.5",
-        });
-        expect(startSession.mock.calls[0]?.[0].initialMessage).toBeUndefined();
-        const heartbeatMessage = await queues[0]
-          ?.[Symbol.asyncIterator]()
-          .next();
-        expect(heartbeatMessage?.value?.message.content).toBe(
-          "heartbeat check",
-        );
-
-        const started = supervisorWithHeartbeat.getProcessForSession(
-          "heartbeat-unowned-session",
-        );
-        expect(started).toBeDefined();
-        if (started) {
-          const abortPromise = supervisorWithHeartbeat.abortProcess(started.id);
-          await vi.advanceTimersByTimeAsync(5000);
-          await expect(abortPromise).resolves.toBe(true);
-        }
+        await supervisorWithoutHeartbeat.stopBackgroundTasks();
       } finally {
         vi.useRealTimers();
       }

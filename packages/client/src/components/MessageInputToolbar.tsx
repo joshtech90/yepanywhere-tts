@@ -300,11 +300,6 @@ export interface MessageInputToolbarProps {
    */
   contextRequestedModel?: string;
 
-  // Session heartbeat
-  heartbeatEnabled?: boolean;
-  onToggleHeartbeat?: () => void;
-  onConfigureHeartbeat?: () => void;
-
   // Context usage
   contextUsage?: ContextUsage;
   /** Last session activity timestamp for stale composer liveness display. */
@@ -585,16 +580,6 @@ interface ToolbarConversationViewControl {
   onToggle: () => void;
 }
 
-interface ToolbarNudgeControl {
-  enabled: boolean;
-  title: string;
-  onClick: () => void;
-  onContextMenu: (e: MouseEvent<HTMLButtonElement>) => void;
-  onTouchStart: () => void;
-  onTouchEnd: (e: TouchEvent<HTMLButtonElement>) => void;
-  onClearTouch: () => void;
-}
-
 type ToolbarVoiceButtonControl =
   | {
       kind: "live";
@@ -774,7 +759,6 @@ export interface MessageInputToolbarViewProps {
   renderModeControl?: ToolbarRenderModeControl | null;
   conversationViewControl?: ToolbarConversationViewControl | null;
   browserDebugControl?: ToolbarBrowserDebugControl | null;
-  nudgeControl?: ToolbarNudgeControl | null;
   doneControl?: ToolbarDoneControl | null;
   speechControl?: ToolbarSpeechControl | null;
   speechWaveformActive?: boolean;
@@ -1354,7 +1338,6 @@ export function MessageInputToolbarView({
   renderModeControl,
   conversationViewControl,
   browserDebugControl,
-  nudgeControl,
   doneControl,
   speechControl,
   speechWaveformActive = false,
@@ -1877,7 +1860,6 @@ export function MessageInputToolbarView({
     (visibility.browserDebug &&
       browserDebugControl &&
       isPriorityCollapsible("browserDebug")) ||
-    (visibility.nudge && nudgeControl && isPriorityCollapsible("nudge")) ||
     (visibility.syntheticDone &&
       doneControl &&
       isPriorityCollapsible("syntheticDone")) ||
@@ -1929,8 +1911,6 @@ export function MessageInputToolbarView({
       visibility.browserDebug && browserDebugControl
         ? effectivePriority("browserDebug")
         : "off",
-    nudge:
-      visibility.nudge && nudgeControl ? effectivePriority("nudge") : "off",
     syntheticDone:
       visibility.syntheticDone && doneControl
         ? effectivePriority("syntheticDone")
@@ -2231,45 +2211,7 @@ export function MessageInputToolbarView({
                 .join(" ")}
             />
           )}
-          {visibility.nudge && nudgeControl && (
-            <button
-              type="button"
-              {...toolbarControlMarker("nudge", true)}
-              className={inlineTierClass(
-                "nudge",
-                "heartbeat-toolbar-button",
-                nudgeControl.enabled ? "active" : "",
-              )}
-              onClick={nudgeControl.onClick}
-              onContextMenu={nudgeControl.onContextMenu}
-              onTouchStart={nudgeControl.onTouchStart}
-              onTouchEnd={nudgeControl.onTouchEnd}
-              onTouchCancel={nudgeControl.onClearTouch}
-              onTouchMove={nudgeControl.onClearTouch}
-              title={nudgeControl.title}
-              aria-label={nudgeControl.title}
-              aria-pressed={nudgeControl.enabled}
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="miter"
-                aria-hidden="true"
-              >
-                <path className="heartbeat-baseline" d="M0.75 15H7" />
-                <path
-                  className="heartbeat-excursion"
-                  d="M7 15l2-5 2 9 4-16 3 12"
-                />
-                <path className="heartbeat-baseline" d="M18 15h5.25" />
-              </svg>
-            </button>
-          )}
+
           {visibility.syntheticDone && doneControl && (
             <button
               type="button"
@@ -2545,48 +2487,7 @@ export function MessageInputToolbarView({
                         .join(" ")}
                     />
                   )}
-                {visibility.nudge &&
-                  nudgeControl &&
-                  isPriorityCollapsible("nudge") && (
-                    <button
-                      type="button"
-                      {...toolbarControlMarker("nudge", true)}
-                      className={menuTierClass(
-                        "nudge",
-                        "heartbeat-toolbar-button",
-                        nudgeControl.enabled ? "active" : "",
-                      )}
-                      onClick={nudgeControl.onClick}
-                      onContextMenu={nudgeControl.onContextMenu}
-                      onTouchStart={nudgeControl.onTouchStart}
-                      onTouchEnd={nudgeControl.onTouchEnd}
-                      onTouchCancel={nudgeControl.onClearTouch}
-                      onTouchMove={nudgeControl.onClearTouch}
-                      title={nudgeControl.title}
-                      aria-label={nudgeControl.title}
-                      role="menuitemcheckbox"
-                      aria-checked={nudgeControl.enabled}
-                    >
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="miter"
-                        aria-hidden="true"
-                      >
-                        <path className="heartbeat-baseline" d="M0.75 15H7" />
-                        <path
-                          className="heartbeat-excursion"
-                          d="M7 15l2-5 2 9 4-16 3 12"
-                        />
-                        <path className="heartbeat-baseline" d="M18 15h5.25" />
-                      </svg>
-                    </button>
-                  )}
+
                 {visibility.syntheticDone &&
                   doneControl &&
                   isPriorityCollapsible("syntheticDone") && (
@@ -3238,9 +3139,6 @@ export function MessageInputToolbar({
   thinkingModel,
   liveThinkingSelection,
   contextRequestedModel,
-  heartbeatEnabled = false,
-  onToggleHeartbeat,
-  onConfigureHeartbeat,
   contextUsage,
   lastActivityAt,
   positionTimestampMs,
@@ -3489,10 +3387,6 @@ export function MessageInputToolbar({
   const livenessSummary = livenessDisplay
     ? describeLivenessSummary(t, livenessDisplay, nowMs)
     : null;
-  const heartbeatLongPressTimerRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
-  const suppressHeartbeatClickRef = useRef(false);
   const renderModeTitle =
     renderMode?.state === "rendered"
       ? t("toolbarRenderModeRendered")
@@ -3917,49 +3811,6 @@ export function MessageInputToolbar({
         handleIsearchGuide,
       );
   }, []);
-
-  const clearHeartbeatLongPress = () => {
-    if (heartbeatLongPressTimerRef.current) {
-      clearTimeout(heartbeatLongPressTimerRef.current);
-      heartbeatLongPressTimerRef.current = null;
-    }
-  };
-
-  const handleHeartbeatClick = () => {
-    if (suppressHeartbeatClickRef.current) {
-      suppressHeartbeatClickRef.current = false;
-      return;
-    }
-    onToggleHeartbeat?.();
-  };
-
-  const handleHeartbeatContextMenu = (e: MouseEvent<HTMLButtonElement>) => {
-    if (!onConfigureHeartbeat) return;
-    e.preventDefault();
-    clearHeartbeatLongPress();
-    suppressHeartbeatClickRef.current = false;
-    onConfigureHeartbeat();
-  };
-
-  const handleHeartbeatTouchStart = () => {
-    if (!onConfigureHeartbeat) return;
-    clearHeartbeatLongPress();
-    suppressHeartbeatClickRef.current = false;
-    heartbeatLongPressTimerRef.current = setTimeout(() => {
-      suppressHeartbeatClickRef.current = true;
-      heartbeatLongPressTimerRef.current = null;
-      onConfigureHeartbeat();
-    }, 450);
-  };
-
-  const handleHeartbeatTouchEnd = (e: TouchEvent<HTMLButtonElement>) => {
-    if (suppressHeartbeatClickRef.current) {
-      e.preventDefault();
-    }
-    clearHeartbeatLongPress();
-  };
-
-  const heartbeatTitle = t("sessionHeartbeatTitle");
   const handleToolbarPendingSpeechChange = useCallback(
     (kind: SpeechPendingKind | null, settlement?: SpeechCycleSettlement) => {
       setSpeechCaptureActive(kind === "listening");
@@ -4052,19 +3903,6 @@ export function MessageInputToolbar({
               onToggle: toggleBrowserDebug,
               onReactivate: reactivateBrowserDebug,
               onReload: reloadWithBrowserDebug,
-            }
-          : null
-      }
-      nudgeControl={
-        onToggleHeartbeat
-          ? {
-              enabled: heartbeatEnabled,
-              title: heartbeatTitle,
-              onClick: handleHeartbeatClick,
-              onContextMenu: handleHeartbeatContextMenu,
-              onTouchStart: handleHeartbeatTouchStart,
-              onTouchEnd: handleHeartbeatTouchEnd,
-              onClearTouch: clearHeartbeatLongPress,
             }
           : null
       }

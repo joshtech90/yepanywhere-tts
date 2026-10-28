@@ -49,8 +49,6 @@ import {
   type SessionSandboxLevel,
   type ThinkingMode,
   type ThinkingOption,
-  type Workstream,
-  type WorkstreamId,
   normalizeRecapAfterSeconds,
   resolveModel,
 } from "@yep-anywhere/shared";
@@ -95,7 +93,6 @@ import {
   useAttachmentUploadQuality,
 } from "../hooks/useAttachmentUploadQuality";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
-import { useRemoteExecutors } from "../hooks/useRemoteExecutors";
 import { useSpeechSourceRuntime } from "../hooks/useSpeechSourceRuntime";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
@@ -134,10 +131,7 @@ import {
   startsAdditionalModelGroup,
   withProviderVisibleModelSelection,
 } from "../lib/modelCatalog";
-import {
-  providerSupportsLocalSessionSandbox,
-  providerSupportsRemoteExecutors,
-} from "../lib/providerCapabilities";
+import { providerSupportsLocalSessionSandbox } from "../lib/providerCapabilities";
 import {
   describeUnavailableSessionSandbox,
   serverHasAvailableSessionSandbox,
@@ -294,12 +288,6 @@ const ROUTER_MODEL_UNAVAILABLE = {
   missing: "routerModelMissing",
 } as const satisfies Record<RouterModelUnavailable, MessageKey>;
 
-interface WorkstreamsLoadState {
-  status: "idle" | "loading" | "ready" | "error";
-  projectId: string | null;
-  workstreams: Workstream[];
-}
-
 interface PendingSpeechFinal {
   timer: ReturnType<typeof setTimeout>;
   transcript: string;
@@ -369,8 +357,6 @@ export interface NewSessionFormProps {
   preferredPermissionMode?: PermissionMode;
   /** One PWA image-share batch claimed by the owning route. */
   incomingShareFiles?: readonly File[];
-  /** Seed the execution host from an existing session. */
-  preferredExecutor?: string;
   /**
    * The route's `prefillToken`. The form reads the token from the address
    * itself; a change here makes an already-mounted form read it again.
@@ -465,7 +451,6 @@ export function NewSessionForm({
   preferredModel,
   preferredThinking,
   preferredPermissionMode,
-  preferredExecutor,
   prefillToken: routedPrefillToken,
   incomingShareFiles,
   launch,
@@ -551,8 +536,6 @@ export function NewSessionForm({
   const [helperSideModel, setHelperSideModel] = useState<string>(
     HELPER_SIDE_MODEL_CHEAPEST,
   );
-  // null = local, string = remote host
-  const [selectedExecutor, setSelectedExecutor] = useState<string | null>(null);
   const [pendingFiles, setPendingFilesState] = useState<PendingFile[]>([]);
   const pendingFilesRef = useRef<PendingFile[]>([]);
   const draftAttachmentBatchIdRef = useRef<string | null>(null);
@@ -613,14 +596,6 @@ export function NewSessionForm({
   const [, setSpeechPreviewRevision] = useState(0);
   const [isProjectChooserExpanded, setIsProjectChooserExpanded] =
     useState(false);
-  const [selectedWorkstreamId, setSelectedWorkstreamId] =
-    useState<WorkstreamId | null>(null);
-  const [workstreamsState, setWorkstreamsState] =
-    useState<WorkstreamsLoadState>({
-      status: "idle",
-      projectId: null,
-      workstreams: [],
-    });
   const requestedProjectPath = useMemo(() => {
     if (!projectId || !isUrlProjectId(projectId)) return "";
     try {
@@ -708,19 +683,14 @@ export function NewSessionForm({
   );
   const supportsSessionSandboxing =
     serverHasAvailableSessionSandbox(versionInfo);
-  const supportsRemoteExecutors =
-    providerSupportsRemoteExecutors(selectedProvider);
-  const effectiveExecutor = supportsRemoteExecutors ? selectedExecutor : null;
   const canConfigureSessionSandbox =
     supportsSessionSandboxing &&
-    effectiveExecutor === null &&
     providerSupportsLocalSessionSandbox(selectedProvider);
   // Where the toggle would sit, say what keeps a supported host from offering
   // it; a limited user cannot change the host, and its fixed launch says so.
   const sessionSandboxUnavailableReason =
     !supportsSessionSandboxing &&
     !launchLock.limited &&
-    effectiveExecutor === null &&
     providerSupportsLocalSessionSandbox(selectedProvider)
       ? describeUnavailableSessionSandbox(versionInfo, t)
       : null;
@@ -1226,9 +1196,6 @@ export function NewSessionForm({
     newSessionDefaultsRef.current = settings?.newSessionDefaults;
   }, [settings?.newSessionDefaults]);
 
-  // Fetch remote executors
-  const { executors: remoteExecutors, loading: executorsLoading } =
-    useRemoteExecutors();
   const resolvedPlaceholder = placeholder ?? t("newSessionPlaceholder");
   const modeLabels: Record<PermissionMode, string> = {
     default: t("modeDefaultLabel"),
@@ -1292,7 +1259,6 @@ export function NewSessionForm({
       SERVER_CAPABILITIES.agentAuthRouter.name,
     ) &&
     !launchLock.limited &&
-    !effectiveExecutor &&
     effectiveSandboxLevel === "none" &&
     (selectedProvider === "claude" || selectedProvider === "codex");
   const routerDiscovery = useRouterDiscovery(selectedProvider, routerEnabled);
@@ -1556,7 +1522,6 @@ export function NewSessionForm({
   );
   const machineControlEligible =
     supportsInstalledMachineControl &&
-    !effectiveExecutor &&
     effectiveSandboxLevel === "none" &&
     !launch &&
     effectivePermissionMode !== "plan" &&
@@ -1788,83 +1753,6 @@ export function NewSessionForm({
     newProjectPanelShown || currentProjectSelection
       ? shortenPath(projectSummaryMeta)
       : projectSummaryMeta;
-  const workstreamSelectionProjectId =
-    !newProjectPanelShown && normalizedProjectInput && currentProjectSelection
-      ? currentProjectSelection.id
-      : null;
-  const workstreamSelectionEnabled = settings?.workstreamsEnabled === true;
-
-  useEffect(() => {
-    setSelectedWorkstreamId(null);
-    if (!workstreamSelectionEnabled || !workstreamSelectionProjectId) {
-      setWorkstreamsState({
-        status: "idle",
-        projectId: null,
-        workstreams: [],
-      });
-      return;
-    }
-
-    let cancelled = false;
-    setWorkstreamsState({
-      status: "loading",
-      projectId: workstreamSelectionProjectId,
-      workstreams: [],
-    });
-
-    api
-      .getProjectWorkstreams(workstreamSelectionProjectId)
-      .then((response) => {
-        if (cancelled) return;
-        setWorkstreamsState({
-          status: "ready",
-          projectId: workstreamSelectionProjectId,
-          workstreams: response.workstreams,
-        });
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setWorkstreamsState({
-          status: "error",
-          projectId: workstreamSelectionProjectId,
-          workstreams: [],
-        });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [workstreamSelectionEnabled, workstreamSelectionProjectId]);
-
-  const workstreamOptions =
-    workstreamsState.status === "ready" &&
-    workstreamsState.projectId === workstreamSelectionProjectId
-      ? workstreamsState.workstreams.filter(
-          (workstream) =>
-            workstream.kind === "main" || workstream.status === "active",
-        )
-      : [];
-  const showWorkstreamChooser =
-    workstreamSelectionEnabled &&
-    workstreamSelectionProjectId !== null &&
-    workstreamOptions.length > 1;
-  const selectedWorkstream =
-    workstreamOptions.find(
-      (workstream) => workstream.id === selectedWorkstreamId,
-    ) ??
-    workstreamOptions.find((workstream) => workstream.kind === "main") ??
-    null;
-  const selectedCheckoutWorkstreamId =
-    selectedWorkstream?.kind === "checkout" ? selectedWorkstream.id : undefined;
-
-  const handleWorkstreamSelect = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => {
-      const nextValue = event.currentTarget.value;
-      setSelectedWorkstreamId(nextValue ? (nextValue as WorkstreamId) : null);
-    },
-    [],
-  );
-
   const handleProjectOptionSelect = useCallback(
     (project: Project) => {
       setProjectInput(project.path);
@@ -2126,7 +2014,6 @@ export function NewSessionForm({
       setMode(
         preferredPermissionMode ?? savedDefaults?.permissionMode ?? "default",
       );
-      setSelectedExecutor(preferredExecutor ?? null);
       // Last, so a saved default never outranks the acting principal's lock.
       applyLaunchLock();
     },
@@ -2141,7 +2028,6 @@ export function NewSessionForm({
       preferredModel,
       preferredThinking,
       preferredPermissionMode,
-      preferredExecutor,
     ],
   );
 
@@ -2948,7 +2834,6 @@ export function NewSessionForm({
             SERVER_CAPABILITIES.agentAuthRouter.name,
           ) ||
           launchLock.limited ||
-          effectiveExecutor ||
           effectiveSandboxLevel !== "none" ||
           launch)
       ) {
@@ -3099,7 +2984,6 @@ export function NewSessionForm({
             ? { serviceTier: effectiveServiceTier }
             : {}),
           provider: selectedProvider ?? undefined,
-          executor: effectiveExecutor ?? undefined,
           ...(supportsSessionSandboxing
             ? {
                 sandboxLevel: effectiveSandboxLevel,
@@ -3114,7 +2998,6 @@ export function NewSessionForm({
           recapAfterSeconds,
           promptSuggestionMode: effectivePromptSuggestionMode,
           helperSideModel,
-          workstreamId: selectedCheckoutWorkstreamId,
           // Last word, so a submit that raced the acting-principal request
           // still launches inside the lock instead of being refused.
           ...launchLockOverrides(launchLock),
@@ -3126,7 +3009,6 @@ export function NewSessionForm({
           model: selectedModel ?? null,
           thinking,
           provider: selectedProvider ?? null,
-          executor: effectiveExecutor,
           sandboxLevel: supportsSessionSandboxing
             ? effectiveSandboxLevel
             : null,
@@ -3381,7 +3263,6 @@ export function NewSessionForm({
       templateProjectBusy,
       historyScope,
       effectiveEffortLevel,
-      effectiveExecutor,
       effectivePermissionMode,
       effectiveServiceTier,
       effectiveThinkingMode,
@@ -3406,7 +3287,6 @@ export function NewSessionForm({
       effectiveSandboxNetworkFirewall,
       resolvePendingAttachmentsForSession,
       resolveProjectIdForSubmission,
-      selectedCheckoutWorkstreamId,
       selectedModel,
       selectedPromptSuggestionMode,
       selectedProvider,
@@ -3520,7 +3400,6 @@ export function NewSessionForm({
           thinking,
           showThinking,
           provider: selectedProvider ?? undefined,
-          executor: effectiveExecutor ?? undefined,
           ...(supportsSessionSandboxing
             ? {
                 sandboxLevel: effectiveSandboxLevel,
@@ -3559,7 +3438,6 @@ export function NewSessionForm({
         model: selectedModel ?? null,
         thinking,
         provider: selectedProvider ?? null,
-        executor: effectiveExecutor,
         sandboxLevel: supportsSessionSandboxing ? effectiveSandboxLevel : null,
         sandboxNetworkFirewall: supportsSessionSandboxing
           ? effectiveSandboxNetworkFirewall
@@ -4730,39 +4608,6 @@ export function NewSessionForm({
       )}
     </section>
   ) : null;
-  const workstreamChooser =
-    showWorkstreamChooser && selectedWorkstream ? (
-      <label className="new-session-workstream-field">
-        <span className="new-session-workstream-label">
-          {t("newSessionWorkstreamLabel")}
-        </span>
-        <select
-          className="new-session-workstream-select"
-          value={selectedCheckoutWorkstreamId ?? ""}
-          onChange={handleWorkstreamSelect}
-          disabled={isStarting}
-          aria-label={t("newSessionWorkstreamLabel")}
-        >
-          {workstreamOptions.map((workstream) => (
-            <option
-              key={workstream.id}
-              value={workstream.kind === "main" ? "" : workstream.id}
-            >
-              {workstream.kind === "main"
-                ? t("newSessionWorkstreamMain")
-                : workstream.label}
-            </option>
-          ))}
-        </select>
-        <span
-          className="new-session-workstream-path"
-          title={selectedWorkstream.path}
-        >
-          {shortenPath(selectedWorkstream.path)}
-        </span>
-      </label>
-    ) : null;
-
   const optionPlaceholder = (
     className: string,
     title: string,
@@ -5475,9 +5320,6 @@ export function NewSessionForm({
     machineControlSelected && machineControlEligible
       ? t("newSessionMachineControlTitle")
       : null,
-    effectiveExecutor
-      ? `${t("newSessionRunOnTitle")}: ${effectiveExecutor}`
-      : null,
   ].filter((label): label is string => label !== null);
 
   const displayDefaultsError =
@@ -5566,7 +5408,6 @@ export function NewSessionForm({
                 }
               />
             )}
-            {workstreamChooser}
           </aside>
         )}
         {newProjectSection}
@@ -5610,11 +5451,9 @@ export function NewSessionForm({
                   ? t("templateAttachmentsUnsupported")
                   : !pendingFilesReadyForProjectQueue
                     ? t("projectQueueNewSessionAttachmentsPreparing")
-                    : effectiveExecutor
-                      ? t("templateLocalOnly")
-                      : !hasSelectedProviderModel
-                        ? t("templateSelectProvider")
-                        : undefined
+                    : !hasSelectedProviderModel
+                      ? t("templateSelectProvider")
+                      : undefined
               }
               sessionSettings={{
                 mode: effectivePermissionMode,
@@ -5725,7 +5564,6 @@ export function NewSessionForm({
             SERVER_CAPABILITIES.agentAuthRouter.name,
           ) &&
             !launchLock.limited &&
-            !effectiveExecutor &&
             effectiveSandboxLevel === "none" &&
             (selectedProvider === "claude" || selectedProvider === "codex") && (
               <RouterPoolSelector
@@ -5765,62 +5603,6 @@ export function NewSessionForm({
             disabled={isStarting}
             showCaption={showOptionCaptions}
           />
-          {/* Executor Selection - only show for providers whose adapter uses it. */}
-          {supportsRemoteExecutors &&
-            !executorsLoading &&
-            remoteExecutors.length > 0 && (
-              <NewSessionOptionSection
-                className="new-session-helper-section"
-                title={t("newSessionRunOnTitle")}
-                showCaption={showOptionCaptions}
-              >
-                <FilterDropdown<string>
-                  label={t("newSessionRunOnTitle")}
-                  options={[
-                    {
-                      value: "local",
-                      label: t("newSessionRunOnLocal"),
-                      icon: (
-                        <span className="executor-option-dot executor-local" />
-                      ),
-                      description: t("newSessionRunOnLocalDesc"),
-                      disabled: isStarting,
-                    },
-                    ...remoteExecutors.map((host) => ({
-                      value: `remote:${host}`,
-                      label: host,
-                      icon: (
-                        <span className="executor-option-dot executor-remote" />
-                      ),
-                      description: t("newSessionRunOnRemoteDesc"),
-                      disabled: isStarting,
-                    })),
-                  ]}
-                  selected={[
-                    selectedExecutor ? `remote:${selectedExecutor}` : "local",
-                  ]}
-                  onChange={([value]) => {
-                    if (isStarting) return;
-                    setSelectedExecutor(
-                      value?.startsWith("remote:") ? value.slice(7) : null,
-                    );
-                  }}
-                  multiSelect={false}
-                  fullWidth
-                  triggerContent={
-                    <span className={styles.selectedChoice}>
-                      <span
-                        className={`executor-option-dot executor-${selectedExecutor ? "remote" : "local"}`}
-                        aria-hidden="true"
-                      />
-                      <span className={styles.selectedChoiceText}>
-                        {selectedExecutor ?? t("newSessionRunOnLocal")}
-                      </span>
-                    </span>
-                  }
-                />
-              </NewSessionOptionSection>
-            )}
         </div>
       </div>
     </div>

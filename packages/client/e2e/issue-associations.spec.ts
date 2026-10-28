@@ -62,10 +62,6 @@ test("automatically discovers Jira and GitHub references from viewed and recent 
     "Index this unopened session: https://jira.example.test/browse/RECENTTEST-345.",
   );
   await write("issues-old", "Do not index this old session: OLDTEST-999.", 21);
-  await page.request.put(`${baseURL}/api/settings`, {
-    headers,
-    data: { workstreamsEnabled: false },
-  });
   await settings(false);
   await page.setViewportSize({ width: 1000, height: 600 });
   await page.goto(`${baseURL}/settings/issues`);

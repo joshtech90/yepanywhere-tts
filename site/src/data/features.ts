@@ -401,6 +401,21 @@ export const features = [
     ],
   },
   {
+    id: "chrome-side-panel",
+    title: "Sessions beside your issues and PRs",
+    summary:
+      "Find conversations mentioning the GitHub issue, pull request, or Jira ticket you are viewing, and start a session with its address ready.",
+    category: "connect",
+    status: "experimental",
+    docsPath: "/docs/chrome-extension",
+    availability:
+      "Chrome extension; requires a server with Remote Access enabled.",
+    sourceRefs: [
+      "topics/trusted-client-packaging.md",
+      "packages/client/src/extension/sidepanel/SidePanel.tsx",
+    ],
+  },
+  {
     id: "direct-access",
     title: "Direct LAN or private-network access",
     summary:

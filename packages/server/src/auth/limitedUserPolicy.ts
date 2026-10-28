@@ -106,7 +106,6 @@ const DENIED_PREFIXES: readonly string[] = [
   "/api/browser-settings-backup",
   "/api/connections",
   "/api/review",
-  "/api/workstreams",
   "/api/supervisor",
   "/api/desktop",
   "/api/onboarding",

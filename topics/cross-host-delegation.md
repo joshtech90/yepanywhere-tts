@@ -104,37 +104,19 @@ is server-owned, so those views must agree. The route or browser origin used to
 reach a server must not create a second apparent host identity or a different
 grant topology.
 
-The first UI slice therefore uses a dedicated experimental YA Hosts route
-rather than changing the existing host switcher:
+The nonfunctional YA Hosts preview was retired during [core house
+cleaning](core-house-cleaning.md) on 2026-10-26. The local `/-/hosts` and
+relay-scoped `/-/relay/:relayUsername/-/hosts` routes, Developer setting and
+preload entry no longer exist. A saved experimental browser preference has
+no effect. There is no pairing or delegation page until a functional contract
+and implementation are separately approved.
 
-- the local client exposes `/-/hosts` and the relay client exposes the same
-  page inside the canonical current-host route,
-  `/-/relay/:relayUsername/-/hosts`;
-- both render one shared component representing the currently connected YA
-  server;
-- the page is linked only from an opt-in control in Developer settings;
-- while that option is off, direct navigation to either local or relay form
-  redirects to the current host's Projects page without rendering the preview;
-- when enabled, the Open action stays inside that setting's card rather than
-  appearing as a separate option;
-- the sidebar **Switch Host** action disconnects the current source and performs
-  a cache-busted reload of the current document, then a client-side open of
-  the host picker. Reloading `/login` directly can leave a Chrome shortcut
-  whose start URL is a session route. The current-document reload stays in
-  that window's scope, a sessionStorage mark skips auto-reconnect, and the
-  fresh client opens `/login` in-app. An updated service worker claims
-  already-open older clients without navigating them, and treats a navigation
-  that carries the cache-bust parameter as a network reload even when that
-  old client's Switch Host action predates the current handler. The host
-  picker and `/-/monitor` otherwise retain their existing behavior; and
-- browser-saved hosts do not appear on the new page because they are
-  browser-origin state rather than server-owned delegation state.
-
-The initial page is intentionally a non-functional preview. It identifies the
-current server without naming its access path, shows the two directional grant
-sections, and renders explicit unavailable states. It does not call an
-unreleased delegation endpoint, pair hosts, create grants, or imply that an
-empty server response was observed.
+The existing host switcher, browser-saved hosts, current-host identity and
+relay pairing remain supported. **Switch Host** disconnects the current source
+and performs a cache-busted reload of the current document before opening the
+host picker. This preserves Chrome shortcut scope; a sessionStorage mark skips
+auto-reconnect. The host picker and `/-/monitor` retain their existing behavior.
+Browser-saved connection records are not server-owned delegation grants.
 
 The eventual server-scoped surface may look like:
 

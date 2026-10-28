@@ -11,7 +11,6 @@ export type RemoteRouteModuleKey =
   | "gitStatusPage"
   | "globalSessionsPage"
   | "hostPickerPage"
-  | "hostsPage"
   | "inboxPage"
   | "issuesPage"
   | "layouts"
@@ -28,8 +27,7 @@ export type RemoteRouteModuleKey =
   | "remoteApp"
   | "sessionCore"
   | "sessionPage"
-  | "settings"
-  | "workstreamsPage";
+  | "settings";
 
 function normalizeRouterPathname(pathname: string, baseUrl: string): string {
   const basePath = baseUrl.replace(/\/$/, "");
@@ -53,9 +51,6 @@ function selectedAppPageModules(pathname: string): RemoteRouteModuleKey[] {
   if (/^\/projects\/[^/]+\/sessions\/[^/]+(?:\/|$)/.test(pathname)) {
     return [...modules, "sessionPage", "sessionCore"];
   }
-  if (/^\/projects\/[^/]+\/workstreams(?:\/|$)/.test(pathname)) {
-    return [...modules, "workstreamsPage"];
-  }
   if (/^\/projects\/[^/]+\/file(?:\/|$)/.test(pathname)) {
     return [...modules, "filePage"];
   }
@@ -69,7 +64,6 @@ function selectedAppPageModules(pathname: string): RemoteRouteModuleKey[] {
   if (pathname === "/agents") return [...modules, "agentsPage"];
   if (pathname === "/inbox") return [...modules, "inboxPage"];
   if (pathname === "/issues") return [...modules, "issuesPage"];
-  if (pathname === "/-/hosts") return [...modules, "hostsPage"];
   if (pathname === "/git-status") return [...modules, "gitStatusPage"];
   if (pathname === "/bang-commands") {
     return [...modules, "bangCommandsPage"];
@@ -122,7 +116,6 @@ export function getInitialRemoteRouteModuleKeys(
   const firstSegment = pathname.split("/")[1];
   if (
     pathname === "/" ||
-    pathname === "/-/hosts" ||
     (firstSegment && isDirectAppRouteSegment(firstSegment))
   ) {
     return ["remoteApp", ...selectedAppPageModules(pathname)];

@@ -67,6 +67,22 @@ export const distributions = [
     sourceRefs: ["README.md", "packages/client/src/remote-main.tsx"],
   },
   {
+    id: "chrome-extension",
+    name: "Chrome extension",
+    platform: "Chrome · connects to your server through the relay",
+    status: "beta",
+    summary:
+      "An experimental packaged client with a side panel for sessions related to GitHub issues, pull requests, and Jira tickets.",
+    docsPath: "/docs/chrome-extension",
+    downloadUrl:
+      "https://chromewebstore.google.com/detail/yep-anywhere/dgeameddpnggdeenoekpiaacfghdodch",
+    actionLabel: "Add to Chrome",
+    sourceRefs: [
+      "docs/distribution/chrome-extension/README.md",
+      "topics/trusted-client-packaging.md",
+    ],
+  },
+  {
     id: "native-mobile",
     name: "Android and iOS apps",
     platform: "Android first; iOS later",

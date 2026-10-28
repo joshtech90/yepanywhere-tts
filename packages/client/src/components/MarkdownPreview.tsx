@@ -16,6 +16,7 @@ import {
 } from "../hooks/useCodeFenceRenderers";
 import { annotateGlossaryHtml } from "../lib/glossary/annotateGlossaryHtml";
 import densityStyles from "./FileViewerDensityControls.module.css";
+import { useInlineCodeActions } from "../hooks/useInlineCodeActions";
 
 const FILE_VIEWER_DENSITY_STORAGE_KEY = "yep-anywhere-file-viewer-density-zoom";
 const FILE_VIEWER_DENSITY_MIN = -4;
@@ -177,13 +178,17 @@ export const MarkdownPreview = memo(
     );
     const renderedRef = useRef<HTMLDivElement>(null);
     useCodeFenceRenderers(renderedRef);
+    const inlineCode = useInlineCodeActions();
     return (
       <div
         className={classes}
         role="region"
         aria-label={ariaLabel ?? "Markdown preview"}
         onClick={onClick}
-        onContextMenu={onContextMenu}
+        onDoubleClick={inlineCode.handleDoubleClick}
+        onContextMenu={(event) => {
+          if (!inlineCode.handleContextMenu(event)) onContextMenu?.(event);
+        }}
         onKeyDown={onKeyDown}
         ref={ref}
         style={getMarkdownPreviewStyle(density)}
@@ -194,6 +199,7 @@ export const MarkdownPreview = memo(
           // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered markdown is sanitized
           dangerouslySetInnerHTML={renderedMarkup}
         />
+        {inlineCode.menu}
       </div>
     );
   }),

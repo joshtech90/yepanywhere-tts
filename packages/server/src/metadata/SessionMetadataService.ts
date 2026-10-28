@@ -26,7 +26,6 @@ import {
   type SlashCommand,
   type TranscriptDisplayObject,
   type UrlProjectId,
-  type WorkstreamId,
   findGoalCommand,
   normalizeRecapAfterSeconds,
   readGoalDetails,
@@ -140,18 +139,10 @@ export interface SessionMetadata {
   executor?: string;
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
   initialPrompt?: string;
-  /** Whether this session is opted in to heartbeat turns */
-  heartbeatTurnsEnabled?: boolean;
   /** Per-session session-wake override; absent inherits the server default. */
   wakeTurnsEnabled?: boolean;
   /** Explicit Kill blocks YA-owned automatic resume without hiding history. */
   autoResumeDisabled?: boolean;
-  /** Optional per-session idle threshold override in minutes */
-  heartbeatTurnsAfterMinutes?: number;
-  /** Optional per-session heartbeat text override */
-  heartbeatTurnText?: string;
-  /** Per-session grace minutes before forcing output; null = off */
-  heartbeatForceAfterMinutes?: number | null;
   /** Per-session prompt-suggestion preference (off | native) */
   promptSuggestionMode?: PromptSuggestionMode;
   /** Browser-away duration before YA asks the live process for a recap. */
@@ -179,8 +170,6 @@ export interface SessionMetadata {
   workingProjectId?: UrlProjectId;
   /** Provider transcript project when it differs from the effective project. */
   transcriptProjectId?: UrlProjectId;
-  /** YA workstream lane for this session. Missing means the implicit main lane. */
-  workstreamId?: WorkstreamId;
 }
 
 export interface SessionMetadataState {
@@ -1008,22 +997,6 @@ export class SessionMetadataService {
   }
 
   /**
-   * Set YA's workstream lane for a session without modifying provider state.
-   *
-   * Undefined means the implicit main workstream for the effective project.
-   */
-  async setWorkstream(
-    sessionId: string,
-    workstreamId: WorkstreamId | undefined,
-  ): Promise<void> {
-    this.updateSessionMetadata(sessionId, (metadata) => ({
-      ...metadata,
-      workstreamId,
-    }));
-    await this.save();
-  }
-
-  /**
    * Set the durable YA host sandbox selection and private provider-state root.
    */
   async setSessionSandbox(
@@ -1216,12 +1189,8 @@ export class SessionMetadataService {
       parentSessionKind?: "btw-aside" | null;
       forkedFromSessionId?: string | null;
       forkLineageRootId?: string | null;
-      heartbeatTurnsEnabled?: boolean;
       wakeTurnsEnabled?: boolean | null;
       autoResumeDisabled?: boolean;
-      heartbeatTurnsAfterMinutes?: number | null;
-      heartbeatTurnText?: string | null;
-      heartbeatForceAfterMinutes?: number | null;
       promptSuggestionMode?: PromptSuggestionMode | null;
       recapAfterSeconds?: number | null;
       recapMode?: RecapMode | null;
@@ -1279,34 +1248,12 @@ export class SessionMetadataService {
           lineageRootId === sessionId ? undefined : lineageRootId;
       }
 
-      if (updates.heartbeatTurnsEnabled !== undefined) {
-        result.heartbeatTurnsEnabled =
-          updates.heartbeatTurnsEnabled || undefined;
-        if (updates.heartbeatTurnsEnabled) {
-          result.autoResumeDisabled = undefined;
-        }
-      }
-
       if (updates.wakeTurnsEnabled !== undefined) {
         result.wakeTurnsEnabled = updates.wakeTurnsEnabled ?? undefined;
       }
 
       if (updates.autoResumeDisabled !== undefined) {
         result.autoResumeDisabled = updates.autoResumeDisabled || undefined;
-      }
-
-      if (updates.heartbeatTurnsAfterMinutes !== undefined) {
-        result.heartbeatTurnsAfterMinutes =
-          updates.heartbeatTurnsAfterMinutes ?? undefined;
-      }
-
-      if (updates.heartbeatTurnText !== undefined) {
-        result.heartbeatTurnText =
-          updates.heartbeatTurnText?.trim() || undefined;
-      }
-
-      if (updates.heartbeatForceAfterMinutes !== undefined) {
-        result.heartbeatForceAfterMinutes = updates.heartbeatForceAfterMinutes;
       }
 
       // null clears the preference (revert to default); "off"/"native" store
@@ -1429,23 +1376,11 @@ export class SessionMetadataService {
     if (updated.routerBinding) cleaned.routerBinding = updated.routerBinding;
     if (updated.executor) cleaned.executor = updated.executor;
     if (updated.initialPrompt) cleaned.initialPrompt = updated.initialPrompt;
-    if (updated.heartbeatTurnsEnabled) {
-      cleaned.heartbeatTurnsEnabled = updated.heartbeatTurnsEnabled;
-    }
     if (updated.wakeTurnsEnabled !== undefined) {
       cleaned.wakeTurnsEnabled = updated.wakeTurnsEnabled;
     }
     if (updated.autoResumeDisabled) {
       cleaned.autoResumeDisabled = updated.autoResumeDisabled;
-    }
-    if (updated.heartbeatTurnsAfterMinutes !== undefined) {
-      cleaned.heartbeatTurnsAfterMinutes = updated.heartbeatTurnsAfterMinutes;
-    }
-    if (updated.heartbeatTurnText) {
-      cleaned.heartbeatTurnText = updated.heartbeatTurnText;
-    }
-    if (updated.heartbeatForceAfterMinutes !== undefined) {
-      cleaned.heartbeatForceAfterMinutes = updated.heartbeatForceAfterMinutes;
     }
     if (updated.promptSuggestionMode) {
       cleaned.promptSuggestionMode = updated.promptSuggestionMode;
@@ -1480,9 +1415,6 @@ export class SessionMetadataService {
     }
     if (updated.transcriptProjectId) {
       cleaned.transcriptProjectId = updated.transcriptProjectId;
-    }
-    if (updated.workstreamId) {
-      cleaned.workstreamId = updated.workstreamId;
     }
 
     if (Object.keys(cleaned).length === 0) {

@@ -5773,65 +5773,6 @@ a.sidebar-nav-item {
   background: currentColor;
 }
 
-.heartbeat-toolbar-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--composer-control-size);
-  height: var(--composer-control-size);
-  padding: 0;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    border-color 0.15s,
-    color 0.15s;
-  flex-shrink: 0;
-  box-sizing: border-box;
-}
-
-.heartbeat-toolbar-button:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-input);
-}
-
-.heartbeat-toolbar-button.active {
-  background: color-mix(in srgb, var(--app-yep-green) 18%, transparent);
-  border-color: color-mix(
-    in srgb,
-    var(--app-yep-green) 60%,
-    var(--border-input)
-  );
-  color: var(--app-yep-green);
-}
-
-.heartbeat-toolbar-button.active:hover {
-  background: color-mix(in srgb, var(--app-yep-green) 26%, transparent);
-}
-
-.heartbeat-toolbar-button svg {
-  stroke-width: 2.7;
-}
-
-.heartbeat-toolbar-button .heartbeat-baseline {
-  opacity: 0.42;
-}
-
-.heartbeat-toolbar-button .heartbeat-excursion {
-  color: color-mix(in srgb, var(--text-muted) 78%, var(--app-yep-green));
-}
-
-.heartbeat-toolbar-button.active .heartbeat-baseline {
-  opacity: 0.58;
-}
-
-.heartbeat-toolbar-button.active .heartbeat-excursion {
-  color: var(--app-yep-green);
-}
-
 .btw-toolbar-button {
   display: inline-flex;
   align-items: center;
@@ -6039,7 +5980,6 @@ a.sidebar-nav-item {
 .composer-bottom-overflow-menu-group .thinking-toggle-button,
 .composer-bottom-overflow-menu-group .render-mode-toolbar-button,
 .composer-bottom-overflow-menu-group .conversation-view-toolbar-button,
-.composer-bottom-overflow-menu-group .heartbeat-toolbar-button,
 .composer-bottom-overflow-menu-group .session-shortcuts-help-button,
 .composer-bottom-overflow-menu-group .context-toolbar-control {
   width: var(--composer-control-size);
@@ -7195,9 +7135,7 @@ a.sidebar-nav-item {
 }
 
 .settings-input,
-.settings-input-small,
-.session-heartbeat-input,
-.session-heartbeat-input-small {
+.settings-input-small {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
@@ -7206,8 +7144,7 @@ a.sidebar-nav-item {
   font-size: var(--font-size-sm);
 }
 
-.settings-input,
-.session-heartbeat-input {
+.settings-input {
   width: 100%;
   margin-top: var(--space-2);
 }
@@ -8217,11 +8154,6 @@ a.sidebar-nav-item {
   background: var(--link-color);
 }
 
-.helper-targets-settings {
-  align-items: stretch;
-  flex-direction: column;
-}
-
 .providers-additional-models-setting {
   padding-left: var(--space-4);
 }
@@ -8310,88 +8242,6 @@ a.sidebar-nav-item {
 
   .providers-additional-models-editor {
     padding: var(--space-3);
-  }
-}
-
-.helper-targets-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  width: 100%;
-}
-
-.helper-target-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.helper-target-row {
-  display: flex;
-  gap: var(--space-3);
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-2);
-  border: 1px solid var(--border-muted);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-}
-
-.helper-target-row-main {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.helper-target-row-main span,
-.helper-target-row-main code {
-  overflow-wrap: anywhere;
-  color: var(--text-muted);
-  font-size: var(--font-size-sm);
-}
-
-.helper-target-row-actions,
-.helper-target-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.helper-target-editor {
-  display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.1fr) minmax(
-      240px,
-      1fr
-    );
-  gap: var(--space-2);
-}
-
-.helper-target-editor label {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-1);
-  color: var(--text-muted);
-  font-size: var(--font-size-sm);
-}
-
-@media (width <= 1050px) {
-  .helper-targets-settings,
-  .helper-target-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .helper-targets-panel {
-    width: 100%;
-  }
-
-  .helper-target-editor {
-    grid-template-columns: 1fr;
   }
 }
 
@@ -8870,8 +8720,7 @@ a.sidebar-nav-item {
   margin-top: 0;
 }
 
-.settings-input-small,
-.session-heartbeat-input-small {
+.settings-input-small {
   width: 96px;
   flex-shrink: 0;
 }
@@ -8884,237 +8733,15 @@ a.sidebar-nav-item {
 }
 
 .settings-input:focus,
-.settings-input-small:focus,
-.session-heartbeat-input:focus,
-.session-heartbeat-input-small:focus {
+.settings-input-small:focus {
   outline: none;
   border-color: var(--app-yep-green);
 }
 
 .settings-input::placeholder,
-.settings-input-small::placeholder,
-.session-heartbeat-input::placeholder,
-.session-heartbeat-input-small::placeholder {
+.settings-input-small::placeholder {
   color: var(--text-muted);
   opacity: 0.6;
-}
-
-.session-heartbeat-modal {
-  width: min(100%, calc(100dvw - 28px));
-  max-width: 100%;
-  margin: 0 auto;
-  container-name: session-heartbeat-modal;
-  container-type: inline-size;
-  position: relative;
-  overflow: visible;
-  --heartbeat-force-outline-color: color-mix(
-    in srgb,
-    var(--error-color) 34%,
-    var(--border-color)
-  );
-  --heartbeat-force-wire-color: color-mix(
-    in srgb,
-    var(--error-color) 62%,
-    var(--text-muted)
-  );
-}
-
-.session-heartbeat-item {
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--space-2);
-}
-
-.session-heartbeat-force-section {
-  margin-left: calc(var(--space-4) + 12px);
-  padding-left: calc(var(--space-2) + 4px);
-  overflow: visible;
-  position: relative;
-}
-
-.session-heartbeat-force-section--active {
-  background: color-mix(in srgb, var(--error-color) 14%, var(--bg-code) 86%);
-  border-color: var(--heartbeat-force-outline-color);
-  border-radius: var(--radius-md);
-}
-
-.session-heartbeat-after-off-button--connected {
-  border-color: var(--heartbeat-force-outline-color);
-}
-
-.session-heartbeat-item-title {
-  margin: 0;
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.session-heartbeat-item-description {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: var(--font-size-sm);
-  line-height: 1.35;
-}
-
-.session-heartbeat-hint {
-  margin: var(--space-2) 0 0;
-  max-width: 75ch;
-}
-
-.session-heartbeat-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
-
-.session-heartbeat-text-row {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  width: 100%;
-}
-
-.session-heartbeat-text-row .session-heartbeat-input {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.session-heartbeat-text-save {
-  flex: 0 0 auto;
-  margin-top: var(--space-2);
-  min-height: 2.25rem;
-}
-
-.session-heartbeat-presets-row {
-  margin-top: var(--space-2);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: flex-start;
-  min-width: 0;
-  gap: var(--space-2);
-  width: 100%;
-}
-
-.session-heartbeat-preset-group {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  flex: 1 1 auto;
-  min-width: 0;
-  gap: var(--space-2);
-  max-width: 100%;
-}
-
-.session-heartbeat-input-small {
-  width: clamp(4.5rem, 20%, 7.5rem);
-  flex-shrink: 1;
-}
-
-.session-heartbeat-preset-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.2rem;
-  padding: 0.33rem 0.72rem;
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease,
-    box-shadow 0.15s ease;
-}
-
-.session-heartbeat-preset-button:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.session-heartbeat-preset-button.active {
-  background: color-mix(in srgb, var(--accent-color) 16%, var(--bg-secondary));
-  border-color: color-mix(
-    in srgb,
-    var(--accent-color) 78%,
-    var(--border-color)
-  );
-  color: var(--text-primary);
-  box-shadow: inset 0 0 0 1px
-    color-mix(in srgb, var(--accent-color) 18%, transparent);
-}
-
-.session-heartbeat-force-section--active .session-heartbeat-item-title,
-.session-heartbeat-force-section--active .session-heartbeat-item-description {
-  color: var(--text-muted);
-}
-
-.session-heartbeat-force-section--active .session-heartbeat-hint {
-  color: color-mix(in srgb, var(--text-muted) 75%, transparent);
-}
-
-.session-heartbeat-force-section--active
-  .session-heartbeat-preset-button.active {
-  box-shadow: inset 0 0 0 1px
-    color-mix(in srgb, var(--error-color) 38%, transparent);
-}
-
-.session-heartbeat-after-off-button--connected.session-heartbeat-preset-button.active {
-  border-color: var(--heartbeat-force-outline-color);
-  background: color-mix(in srgb, var(--error-color) 12%, var(--bg-secondary));
-  color: var(--text-primary);
-  box-shadow: inset 0 0 0 1px var(--heartbeat-force-outline-color);
-}
-
-.session-heartbeat-item .session-heartbeat-presets-row {
-  justify-content: flex-start;
-}
-
-.session-heartbeat-preset-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.session-heartbeat-preset-input.active {
-  border-color: color-mix(
-    in srgb,
-    var(--accent-color) 78%,
-    var(--border-color)
-  );
-  box-shadow: inset 0 0 0 1px
-    color-mix(in srgb, var(--accent-color) 22%, transparent);
-}
-
-@container session-heartbeat-modal (max-width: 32rem) {
-  .session-heartbeat-modal {
-    min-width: 0;
-  }
-
-  .session-heartbeat-item {
-    gap: var(--space-1);
-  }
-
-  .session-heartbeat-presets-row {
-    flex-direction: column;
-    align-items: stretch;
-    justify-content: flex-start;
-    width: 100%;
-  }
-
-  .session-heartbeat-preset-group {
-    width: 100%;
-    justify-content: flex-start;
-    row-gap: var(--space-1);
-  }
-
-  .session-heartbeat-input-small {
-    width: 100%;
-    max-width: none;
-  }
 }
 
 .settings-item-header {
@@ -9382,12 +9009,6 @@ a.sidebar-nav-item {
 .settings-category-icon-speech {
   --settings-category-icon-accent: #059669;
   --settings-category-icon-offset-x: 0.2px;
-}
-
-.settings-category-icon-remote-executors {
-  --settings-category-icon-accent: #4f46e5;
-  --settings-category-icon-offset-x: 0.5px;
-  --settings-category-icon-offset-y: 1px;
 }
 
 .settings-category-icon-environment {
@@ -10585,44 +10206,6 @@ a.sidebar-nav-item {
   box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.14);
 }
 
-.new-session-workstream-field {
-  min-width: 0;
-  display: grid;
-  gap: 0.25rem;
-  padding: 0.45rem 0.55rem;
-  background: color-mix(in srgb, var(--bg-code) 82%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-color) 94%, transparent);
-  border-radius: var(--radius-lg);
-}
-
-.new-session-workstream-label {
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.new-session-workstream-select {
-  width: 100%;
-  min-width: 0;
-  min-height: 2.25rem;
-  padding: 0.35rem 0.5rem;
-  color: var(--text-primary);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-}
-
-.new-session-workstream-path {
-  min-width: 0;
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .new-session-project-field-hint {
   margin: 0 0 var(--space-2);
   color: var(--text-muted);
@@ -11456,75 +11039,6 @@ a.sidebar-nav-item {
   margin: 0 0 var(--space-2);
   font-size: var(--font-size-base);
   font-weight: 500;
-}
-
-.executor-options {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-
-.executor-option {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  padding: 0.55rem 0.65rem;
-  background: var(--bg-code);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition:
-    border-color 0.15s,
-    background 0.15s;
-  text-align: left;
-  width: 100%;
-}
-
-.executor-option:hover:not(:disabled) {
-  background: var(--bg-hover);
-  border-color: var(--text-dimmed);
-}
-
-.executor-option.selected {
-  border-color: var(--app-yep-green);
-  background: rgba(217, 119, 87, 0.08);
-}
-
-.executor-option:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.executor-option-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.executor-option-dot.executor-local {
-  background: var(--success-color);
-}
-
-.executor-option-dot.executor-remote {
-  background: var(--info-color, #3b82f6);
-}
-
-.executor-option-content {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.executor-option-label {
-  font-size: var(--font-size-base);
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.executor-option-desc {
-  font-size: var(--font-size-sm);
-  color: var(--text-muted);
 }
 
 .settings-empty,
@@ -14204,14 +13718,6 @@ body:has(.session-page)
 
 .session-connection-idle {
   background-color: var(--border-subtle);
-}
-
-/* ---- Workstreams Page ---- */
-
-.main-content-constrained.workstreams-main-content .page-content-inner {
-  max-width: 1200px;
-  margin: 0 auto;
-  width: 100%;
 }
 
 /* ---- Git Status Page ---- */

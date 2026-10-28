@@ -162,14 +162,14 @@ inventory; this discussion contains no deployed endpoints or target identities.
 Use this map before starting another spike. `tasks/` was absent when this
 synthesis was written; the related gaps and plans below were inspected.
 
-| Work | Evidence / status as reviewed 2026-09-13 | What it contributes |
+| Work | Evidence / status (reviewed 2026-09-13; retirements updated 2026-10-26) | What it contributes |
 | --- | --- | --- |
-| [Released Remote Executors](../docs/project/remote-executors.md) | Claude-family SSH/rsync implementation; [provider-neutral gap](../gaps/sketches/provider-neutral-remote-executors.md) remains | SSH configuration and process transport experience; historical resume contract |
+| [Released Remote Executors](../docs/project/remote-executors.md) | Removed 2026-10-26; historical Claude-family SSH/rsync implementation | SSH configuration and process transport experience; historical resume contract |
 | [Reload-safe provider runtimes](reload-safe-provider-runtimes.md) and [host API](provider-host-api.md) | Implemented Linux/macOS Node source-checkout scope; distribution/runtime restrictions remain | Complete provider owner survives Hono replacement; local control, event sequencing and recovery |
 | [Core service API](core-service-api.md) | Headless/embeddable service remains a proposal | Candidate boundary for sharing session services without requiring the full UI |
-| [Managed remote executors](managed-remote-executors.md), [tactical 119](../docs/tactical/119-managed-ssh-executor-baseline.md) | Gates A–C and Gate D isolated-transcript proof accepted 2026-08-26; operator-only | Injected provider-neutral runner, manual SSH, exact-commit workspace round trip, Codex auth projection and transcript mirror |
-| [Managed runner targets](managed-runner-execution-targets.md), [tactical 118](../docs/tactical/118-managed-runner-mvp.md) | Broader discovery/lifecycle placement deferred | Machine Control as a target provider around the managed-runner baseline |
-| [Cross-host delegation](cross-host-delegation.md) | Product direction/provisional API; hosts page is a non-functional preview | Separate target-owned worker sessions, directed non-transitive grants, relay-first transport |
+| [Managed remote executors](managed-remote-executors.md), [tactical 119](../docs/tactical/119-managed-ssh-executor-baseline.md) | Removed 2026-10-26; historical operator-only proof | Injected provider-neutral runner, manual SSH, exact-commit workspace round trip, Codex auth projection and transcript mirror |
+| [Managed runner targets](managed-runner-execution-targets.md), [tactical 118](../docs/tactical/118-managed-runner-mvp.md) | Withdrawn with managed SSH retirement | Machine Control as a target provider around the managed-runner baseline |
+| [Cross-host delegation](cross-host-delegation.md) | Product direction/provisional API; nonfunctional hosts preview removed | Separate target-owned worker sessions, directed non-transitive grants, relay-first transport |
 | [Federated super sessions](federated-super-sessions.md) | Proposal with provider portability/ownership gates | Same-session terminal jump, canonical identity and single-writer transfer |
 | [Super-session appliance](../docs/tactical/073-super-session-testbed-appliance.md) | Historical proposed lab/prototype direction, not a shipped federation service | Native OS proving ground and out-of-band recovery; use current Machine Control owners |
 | [Client source runtimes](client-source-runtime-topology.md), [simple client API](simple-client-api.md), [demo plan](../docs/tactical/130-simple-client-api-and-three-client-demo.md) | Source isolation direction plus implemented experimental multi-server web/Android slices | Clients can observe several independent owners without introducing a global server catalog |

@@ -6,8 +6,12 @@ import {
   type SlashCommandGoalDetails,
 } from "@yep-anywhere/shared";
 import { CLAUDE_PROJECTS_DIR } from "../../projects/paths.js";
-import { getProjectDirFromCwd } from "../session-sync.js";
 import type { ProviderCommandResult } from "../types.js";
+
+// Preserve the local transcript-folder spelling independently of retired sync.
+function getProjectDirFromCwd(cwd: string): string {
+  return cwd.replace(/[/\\:]/g, "-");
+}
 
 /**
  * Claude goal state (topics/emulated-slash-commands.md § Claude goal commands).

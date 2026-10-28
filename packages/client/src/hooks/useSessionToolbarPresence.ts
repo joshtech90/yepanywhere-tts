@@ -46,7 +46,6 @@ export interface SessionToolbarPresence {
   shortcutsHelp: ToolbarControlPresence;
   contextUsage: ToolbarControlPresence;
   btw: ToolbarControlPresence;
-  nudge: ToolbarControlPresence;
   sessionStatus: ToolbarControlPresence;
   projectQueue: ToolbarControlPresence;
   projectQueueNewSessionShortcut: ToolbarControlPresence;
@@ -89,7 +88,6 @@ export const DEFAULT_SESSION_TOOLBAR_PRESENCE: SessionToolbarPresence = {
   shortcutsHelp: "last",
   contextUsage: "pin",
   btw: "hidden",
-  nudge: "hidden",
   sessionStatus: "pin",
   projectQueue: "hidden",
   projectQueueNewSessionShortcut: "hidden",
@@ -119,7 +117,6 @@ export const DEFAULT_SESSION_TOOLBAR_PRIORITY: SessionToolbarPriority = {
   shortcutsHelp: "last",
   contextUsage: "pin",
   btw: "pin",
-  nudge: "last",
   sessionStatus: "pin",
   projectQueue: "pin",
   projectQueueNewSessionShortcut: "pin",

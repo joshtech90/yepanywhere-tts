@@ -30,6 +30,10 @@
 # Security refresh on 2026-10-24 raises filelock to 4.2.1 for the SQLite
 # ReadWriteLock and Windows soft-lock advisories. Linux/Python 3.12 resolves
 # pass for this snapshot and its NeMo constraints. Live envs were not updated.
+#
+# Security patch on 2026-10-27 raises msgpack to 1.2.3 for CVE-2026-114613.
+# Linux/Python 3.12 resolves pass for this snapshot and its NeMo constraints.
+# Live environments need a separate update and inference qualification.
 accelerate==1.14.0
 annotated-doc==0.0.4
 anyio==4.14.2
@@ -63,7 +67,7 @@ markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
 mpmath==1.3.0
-msgpack==1.2.1
+msgpack==1.2.3
 narwhals==2.22.1
 networkx==3.6.1
 numba==0.65.1

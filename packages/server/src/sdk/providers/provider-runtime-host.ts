@@ -273,8 +273,7 @@ function applyProviderHostConnection(connection: {
 
 /**
  * When enabled, attach to a live provider host or start one when absent.
- * Remote SSH executor sessions stay allowed either way: they still launch
- * from this YA server. A failed ensure continues in-process and sets the
+ * SSH execution is retired. A failed ensure continues in-process and sets the
  * provider-host degraded notice. A distribution without the host scripts
  * cannot run a host, so it stays in-process without that notice. Whether
  * hosting is enabled is `providerHostEnabled` in those scripts, the rule the

@@ -1,9 +1,9 @@
 # Sessions Route Refactor Ledger
 
-Status: Dormant child ledger as of 2026-07-06. The small helper-oriented
-`sessions.ts` SRR items are done or deferred, and the remaining route registrar
-extractions from doc 058 are deferred while the active campaign works broader,
-higher-value module-boundary slices.
+Status: Dormant again, 2026-10-27: SRR-012 landed as `06cff21d6` under
+[plan 163](163-http-independent-restart-compaction.md). Its separate observer
+cleanup does not extend the move slice. Other deferred items and route
+registrar extractions remain deferred.
 
 See also: `topics/core-service-api.md` — the sessions REST surface this
 ledger refactors is the surface that topic proposes exposing as an
@@ -12,11 +12,10 @@ extraction.
 
 See also: `topics/typescript-module-boundary-refactor.md` and
 `docs/tactical/058-typescript-module-boundary-refactor.md` — the repo-wide
-module-boundary campaign. This ledger is not the active campaign lane; it is
-the revival ledger for future `packages/server/src/routes/sessions.ts`
-refactors. Campaign slices that touch that file should reopen or supersede this
-ledger deliberately, be tracked here as SRR items, and carry both topic
-trailers.
+module-boundary campaign. This ledger owns the limited SRR-012 revival and future
+`packages/server/src/routes/sessions.ts` refactors. Campaign slices touching
+that file should reopen or supersede this ledger deliberately, be tracked here
+as SRR items, and carry both topic trailers.
 
 Scope: this document applies only to the server route file
 `packages/server/src/routes/sessions.ts` and the narrow `routes/session-*.ts`
@@ -80,6 +79,32 @@ boundaries, not necessarily fewer total repository lines.
 - `dropped`: no longer worth tracking.
 
 ## Refactor Items
+
+### SRR-012: Extract Restart Compaction Outside HTTP
+
+Status: done, 2026-10-27, `06cff21d6`.
+
+[Plan 163](163-http-independent-restart-compaction.md) moves the
+restart-compaction attempt into a narrow supervisor module, preserving both
+HTTP callers and existing policy. A separate behavior commit fixes observer
+cleanup after dispatch refusal or throw. This does not select the archived
+core assembly or revive the deferred route-registrar extractions.
+
+Moved `RestartCompactAttempt`, `RESTART_COMPACT_WAIT_MS`,
+`waitForRestartCompactBoundary` and `tryRestartCompact` into
+`supervisor/restart-compaction.ts`. Kept the route's boundary predicate for
+transcript handling and both production call sites unchanged. The module
+imports `Process` only as a type; the helper text matches the baseline except
+for exports. No dependency-parameter conversion or runtime changes.
+
+Direct controlled-event tests cover synchronous completion during dispatch,
+exact compact priority, boundary-only completion, timeout/error/termination
+and normal cleanup. Existing route tests remain unchanged. Full validation
+and runtimes are recorded in plan 163. Observer cleanup repair remains a
+separate behavior commit, not an extension of this move slice.
+
+The extraction carries `core-service-api` and
+`typescript-module-boundary-refactor` topic trailers.
 
 ### SRR-001: Extract Request Parsing Helpers
 

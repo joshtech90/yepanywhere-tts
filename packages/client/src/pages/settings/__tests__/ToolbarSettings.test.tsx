@@ -42,7 +42,6 @@ const state = vi.hoisted(() => {
     shortcutsHelp: "last",
     contextUsage: "pin",
     btw: "hidden",
-    nudge: "hidden",
     sessionStatus: "pin",
     projectQueue: "pin",
     projectQueueNewSessionShortcut: "hidden",
@@ -341,9 +340,9 @@ describe("ToolbarSettings", () => {
   it("shows a presence slider for every control row", () => {
     render(<ToolbarSettings />);
 
-    // 16 control-presence sliders plus Conversation View history, waveform
+    // 15 control-presence sliders plus Conversation View history, waveform
     // button-background opacity, and question reminder duration.
-    expect(screen.getAllByRole("slider")).toHaveLength(19);
+    expect(screen.getAllByRole("slider")).toHaveLength(18);
     expect(
       screen
         .getByRole("slider", { name: "Transcript Search visibility" })

@@ -591,7 +591,10 @@ describe("GET /version", () => {
       headers: { "X-Yep-Client-Version": "0.7.0" },
     });
     const legacyVersion = await legacyResponse.json();
-    expect(legacyVersion.deniedCapabilityBits).toBeUndefined();
+    expect(legacyVersion.deniedCapabilityBits).toBeDefined();
+    expect(
+      serverHasCapability(legacyVersion, PROJECT_SESSION_DEFAULTS_CAPABILITY),
+    ).toBe(false);
     expect(legacyVersion.capabilities).not.toContain(
       PROJECT_SESSION_DEFAULTS_CAPABILITY,
     );

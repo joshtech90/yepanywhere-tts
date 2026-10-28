@@ -1,4 +1,10 @@
-# Workstreams
+# Workstreams (historical implementation plan)
+
+**Retired 2026-10-26:** the maintainer selected managed checkout lanes for
+removal. This document preserves historical investigation only; its unchecked
+steps do not authorize continuation. Current behavior is owned by
+[the retirement contract](../../topics/workstreams.md), with removal tracked in
+[plan 160](160-remove-managed-checkout-lanes.md).
 
 Topic: workstreams
 

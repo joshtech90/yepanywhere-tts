@@ -539,7 +539,7 @@ Existing YA documents already distinguish the alternatives:
   routing is separate from session ownership; the current integration excludes
   remote executors.
 - The [remote file-view gap](../../gaps/remote-session-project-views-use-local-files.md)
-  and [provider-neutral executor gap](../../gaps/sketches/provider-neutral-remote-executors.md)
+  and [SSH executor retirement](../project/remote-executors.md)
   remain relevant constraints, not problems pairing alone solves.
 
 | Question | T3's reviewed answer | Choice still open for YA |

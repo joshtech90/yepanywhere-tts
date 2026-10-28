@@ -48,20 +48,6 @@ export type ProviderName =
   | "pi";
 
 /**
- * Internal provider-process placement. This is deliberately separate from the
- * released Claude-only `executor` string and is not a browser contract.
- */
-export type SessionExecution =
-  | { kind: "local" }
-  | { kind: "legacy-ssh"; executor: string }
-  | {
-      kind: "managed-ssh";
-      targetId: string;
-      workspaceId: string;
-      runnerGeneration: string;
-    };
-
-/**
  * Provider-native address of a completed transcript prefix. These identities
  * stay on the server; browser-facing message and session ids remain YA ids.
  */
@@ -309,9 +295,9 @@ export interface StartSessionOptions {
   claudeSteerBackgroundBash?: ClaudeSteerBackgroundBashSettings;
   /** Tool approval callback */
   onToolApproval?: CanUseTool;
-  /** SSH host for remote execution (undefined = local) */
+  /** Retired executor hint, retained so launch boundaries can refuse it. */
   executor?: string;
-  /** Environment variables to set on remote (for testing: CLAUDE_SESSIONS_DIR) */
+  /** Legacy launch environment overrides, also consumed by local Pi. */
   remoteEnv?: Record<string, string>;
   /** Session-scoped environment resolved for the canonical id and executor. */
   getSessionChildEnv?: (
@@ -367,8 +353,6 @@ export interface AgentSession {
   iterator: AsyncIterableIterator<SDKMessage>;
   /** Message queue for sending messages to the agent */
   queue: AgentMessageQueue;
-  /** Internal placement identity retained by the owning Process. */
-  execution?: SessionExecution;
   /** Configured model endpoint this session is bound to for its lifetime. */
   gatewayServiceId?: string;
   /** Abort function to cancel the session */

@@ -211,8 +211,9 @@ an unrestricted proxy to the main API.
 
 ### 3 — One useful remote review and reconnection
 
-Add the minimal functional pairing/grant controls to the existing YA Hosts
-preview, and show a worker reference/result in the caller. Full transcript and
+Design a minimal functional pairing/grant surface and show a worker
+reference/result in the caller. The earlier YA Hosts placeholder was retired
+during house cleaning; it is not an implementation prerequisite. Full transcript and
 file navigation must retain target identity and authenticate the viewer
 independently; a worker grant must not silently sign the browser in as owner.
 Opening an optional target view can switch hosts; issuing work and reading its

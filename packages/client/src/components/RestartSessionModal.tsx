@@ -76,7 +76,6 @@ export function RestartSessionModal({
   currentModel,
   mode,
   thinking,
-  executor,
   providerRuntimeStatus,
   onRestarted,
   onClose,
@@ -276,7 +275,6 @@ export function RestartSessionModal({
             preferredModel={currentModel}
             preferredThinking={thinking}
             preferredPermissionMode={mode}
-            preferredExecutor={executor}
             launch={{
               draftKey: `draft-handoff:${sessionId}`,
               initialMessage: draft ?? "",

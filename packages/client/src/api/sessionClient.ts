@@ -242,10 +242,6 @@ export function createSessionApi(fetchJSON: typeof FetchJson) {
         starred?: boolean;
         sidebarCategory?: string | null;
         parentSessionId?: string | null;
-        heartbeatTurnsEnabled?: boolean;
-        heartbeatTurnsAfterMinutes?: number | null;
-        heartbeatTurnText?: string | null;
-        heartbeatForceAfterMinutes?: number | null;
         promptSuggestionMode?: PromptSuggestionMode | null;
       },
     ) =>

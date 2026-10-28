@@ -83,6 +83,7 @@ describe("Version Routes", () => {
       .filter(
         (definition) =>
           definition.advertisement.kind === "version-implied" &&
+          definition.name !== SERVER_CAPABILITIES.projectSessionDefaults.name &&
           !advertised.has(definition.name),
       )
       .map((definition) => definition.name);
@@ -279,8 +280,8 @@ describe("Version Routes", () => {
     );
   });
 
-  it("advertises project-scoped session defaults", () => {
-    expect(getServerCapabilities()).toContain(
+  it("withdraws retired project heartbeat defaults", () => {
+    expect(getServerCapabilities()).not.toContain(
       PROJECT_SESSION_DEFAULTS_CAPABILITY,
     );
   });

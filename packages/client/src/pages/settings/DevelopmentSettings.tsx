@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { useSchemaValidationContext } from "../../contexts/SchemaValidationContext";
 import { useOptionalRemoteConnection } from "../../contexts/RemoteConnectionContext";
 import { useDeveloperMode } from "../../hooks/useDeveloperMode";
 import { useReloadNotifications } from "../../hooks/useReloadNotifications";
-import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
 import { useSchemaValidation } from "../../hooks/useSchemaValidation";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useSessionPerformanceSettings } from "../../hooks/useSessionPerformanceSettings";
@@ -51,7 +49,6 @@ const sessionScrollMemoryModeLabelKeys: Record<
 
 export function DevelopmentSettings() {
   const { t } = useI18n();
-  const basePath = useRemoteBasePath();
   const remoteConnection = useOptionalRemoteConnection();
   const currentRelayHost = remoteConnection?.connection
     ? remoteConnection.currentRelayUsername
@@ -78,8 +75,6 @@ export function DevelopmentSettings() {
   const { settings: validationSettings, setEnabled: setValidationEnabled } =
     useSchemaValidation();
   const {
-    crossHostDelegationEnabled,
-    setCrossHostDelegationEnabled,
     relayDebugEnabled,
     setRelayDebugEnabled,
     retainRejectedSrpSessions,
@@ -98,18 +93,15 @@ export function DevelopmentSettings() {
       serverSettings
         ? {
             validationEnabled: validationSettings.enabled,
-            crossHostDelegationEnabled,
             relayDebugEnabled,
             retainRejectedSrpSessions,
             remoteLogCollectionEnabled,
             sessionScrollBehaviorMode,
             serviceWorkerEnabled: serverSettings.serviceWorkerEnabled ?? true,
-            workstreamsEnabled: serverSettings.workstreamsEnabled ?? false,
           }
         : null,
     [
       validationSettings.enabled,
-      crossHostDelegationEnabled,
       relayDebugEnabled,
       retainRejectedSrpSessions,
       remoteLogCollectionEnabled,
@@ -120,7 +112,6 @@ export function DevelopmentSettings() {
   const restoreUndoState = useCallback(
     (snapshot: NonNullable<typeof undoState>) => {
       setValidationEnabled(snapshot.validationEnabled);
-      setCrossHostDelegationEnabled(snapshot.crossHostDelegationEnabled);
       setRelayDebugEnabled(snapshot.relayDebugEnabled);
       setRetainRejectedSrpSessions(snapshot.retainRejectedSrpSessions);
       setRemoteLogCollectionEnabled(snapshot.remoteLogCollectionEnabled);
@@ -129,14 +120,9 @@ export function DevelopmentSettings() {
         "serviceWorkerEnabled",
         snapshot.serviceWorkerEnabled,
       );
-      void updateServerSetting(
-        "workstreamsEnabled",
-        snapshot.workstreamsEnabled,
-      );
     },
     [
       setValidationEnabled,
-      setCrossHostDelegationEnabled,
       setRelayDebugEnabled,
       setRetainRejectedSrpSessions,
       setRemoteLogCollectionEnabled,
@@ -220,33 +206,6 @@ export function DevelopmentSettings() {
             </button>
           </SettingsItem>
         )}
-        <SettingsItem
-          label={t("developmentCrossHostDelegationTitle")}
-          description={t("developmentCrossHostDelegationDescription")}
-          className="settings-item--wide-control"
-        >
-          <div className="settings-item-actions">
-            {crossHostDelegationEnabled && (
-              <Link
-                className="settings-button settings-button-secondary"
-                to={`${basePath}/-/hosts`}
-              >
-                {t("developmentHostsPreviewOpen")}
-              </Link>
-            )}
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                aria-label={t("developmentCrossHostDelegationTitle")}
-                checked={crossHostDelegationEnabled}
-                onChange={(event) =>
-                  setCrossHostDelegationEnabled(event.target.checked)
-                }
-              />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-        </SettingsItem>
         {relayMonitorUrl && (
           <SettingsItem
             label={t("developmentRelayMonitorTitle")}
@@ -313,21 +272,6 @@ export function DevelopmentSettings() {
               checked={serverSettings?.serviceWorkerEnabled ?? true}
               onChange={(e) =>
                 updateServerSetting("serviceWorkerEnabled", e.target.checked)
-              }
-            />
-            <span className="toggle-slider" />
-          </label>
-        </SettingsItem>
-        <SettingsItem
-          label={t("developmentWorkstreamsTitle")}
-          description={t("developmentWorkstreamsDescription")}
-        >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={serverSettings?.workstreamsEnabled ?? false}
-              onChange={(e) =>
-                updateServerSetting("workstreamsEnabled", e.target.checked)
               }
             />
             <span className="toggle-slider" />

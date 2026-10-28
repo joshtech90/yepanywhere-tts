@@ -12,5 +12,4 @@ export {
   type ProjectMetadata,
   type ProjectMetadataServiceOptions,
   type ProjectMetadataState,
-  type ProjectSessionDefaultsMetadata,
 } from "./ProjectMetadataService.js";

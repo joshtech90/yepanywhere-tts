@@ -32,6 +32,7 @@ import type {
 } from "@yep-anywhere/shared";
 import { refusalFields } from "../../api/refusal";
 import { API_REQUEST_DEADLINE_MS } from "../../api/requestDeadline";
+import { getClientSurface } from "../desktopRuntime";
 import { getOrCreateBrowserProfileId } from "../storageKeys";
 import { generateUUID } from "../uuid";
 import type {
@@ -1016,6 +1017,7 @@ export class RelayProtocol {
 
     headers["Content-Type"] = "application/json";
     headers["X-Yep-Anywhere"] = "true";
+    headers["X-Yep-Client-Surface"] = getClientSurface();
 
     const request: RelayRequest = {
       type: "request",

@@ -17,8 +17,7 @@ copies and named the rest a follow-up sweep.
 Two things make the sweep worth doing rather than filing forever:
 
 - Several sites stage to a fixed `<file>.tmp` with no per-write suffix
-  (`services/WorkstreamService.ts:851`,
-  `services/SessionQueuePersistenceService.ts:371`,
+  (`services/SessionQueuePersistenceService.ts:371`,
   `services/DirtyFileEditorService.ts:523`,
   `services/SecurityClientService.ts:1513`,
   `services/ProjectQueueService.ts:1179`,

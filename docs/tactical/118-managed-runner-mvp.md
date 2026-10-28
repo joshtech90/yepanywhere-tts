@@ -1,5 +1,10 @@
 # Managed Runner MVP
 
+**Historical / withdrawn, 2026-10-26:** the managed SSH runtime and its
+workspace/auth/mirroring stack have been removed. The proposal below does not
+authorize continuation or depend on completing the old SSH gates. See the
+[current retirement contract](../../topics/managed-remote-executors.md).
+
 Topic: managed-runner-execution-targets
 
 Status: deferred. Do not start this Machine Control integration until the

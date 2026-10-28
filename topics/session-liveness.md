@@ -1,10 +1,10 @@
 # Session Liveness And Queue Intent
 
 > Session liveness is the provider/session contract for bounded recovery,
-> user-visible progress, heartbeat turns, and queue promotion decisions.
+> user-visible progress and queue promotion decisions.
 
 This topic covers YA's provider/session liveness contract and the features
-that depend on it, especially heartbeat turns, deferred queue promotion, and
+that depend on it, especially deferred queue promotion and
 patient queue intent.
 
 Related topic: [heartbeat ownership and timers](heartbeat.md).
@@ -26,9 +26,9 @@ and why Codex background terminals do not retain a session.
   evidence timestamps and a conservative derived status so clients can show
   uncertainty instead of inventing progress from silence.
 - `verified-idle` is the only liveness status that means YA may safely treat a
-  session as idle for automatic work. Synthetic heartbeat turns may also run as
-  explicit steering-capable doubt probes after their quiet period, but that is
-  a heartbeat-specific contract rather than a general idle claim.
+  session as idle for automatic work. Synthetic heartbeat turns and their
+  steering-capable doubt probes were retired; transport heartbeats remain
+  status signals only.
 - A mounted live-session stream is a session-local resource-retention lease,
   not liveness evidence. It suspends idle reaping only for that provider
   process; global app activity and views of other sessions do not. Active and
@@ -60,12 +60,11 @@ and why Codex background terminals do not retain a session.
   `owner: "none"`, refuses resume/reactivation/configuration replacement, and
   can be released only by a later explicit abort that verifies exit.
 - Once explicit Kill/Terminate persists `autoResumeDisabled`, no automatic
-  work may start that provider session again. Unowned heartbeat and cold
-  fork-recap revival both obey this gate. Explicit user continuation through
+  work may start that provider session again. Wake and cold fork-recap revival obey this gate. Explicit user continuation through
   the full session page may still reactivate the session.
 - Once `/done` persists `automationPausedUntilUserTurn` — at the request,
   including while a turn is still running — no YA-driven provider work may
-  enter that session: live/cold heartbeat, session wake, recap/forked recap,
+  enter that session: session wake, recap/forked recap,
   threshold compaction, prompt-cache keepalive, patient queue promotion, and
   automatic Project Queue revival all stop. The action does not interrupt an
   active turn. Message-less Activate leaves the pause in force; the next real
@@ -185,10 +184,8 @@ and why Codex background terminals do not retain a session.
 - Server restart or hot reload that tears down the provider owner is not passive
   browser refresh. Treat it as owner-loss liveness evidence first, then decide
   whether the process can be safely resumed or must be shown as interrupted.
-- Synthetic heartbeat turn scheduling must reset from the latest real
-  provider/session signal while idle. It must not fire merely because the first
-  idle timestamp is old when the provider/app-server has emitted newer
-  liveness evidence.
+- Patient-queue quiet periods reset from real provider/session evidence,
+  not from transport status frames.
 - If a provider probe says the turn is idle while YA is still blocked in an
   active turn, the adapter should reconcile through the normal provider event
   path whenever possible. That keeps transcript, queue promotion, and client
@@ -246,7 +243,7 @@ methods; no caller directly arms or clears the timer.
 
 - Adding a provider-specific status probe or raw event cadence source.
 - Changing the reducer that derives `SessionLivenessSnapshot.derivedStatus`.
-- Changing heartbeat turn gating, doubt-probe boundaries, or deferred queue
+- Changing liveness probe boundaries or deferred queue
   promotion boundaries.
 - Changing composer queue controls or queued text transformation.
 - Adding user-message timing or delivery-intent metadata.
@@ -270,11 +267,8 @@ methods; no caller directly arms or clears the timer.
   the final `message.part.updated` content.
 - OpenCode completed message POST-body fallback renders assistant text when
   SSE closes without assistant content.
-- Heartbeat turns queue from `verified-idle`, or from the heartbeat topic's
-  explicit steering-capable doubtful-liveness path.
-- Heartbeat turns remain deferred until the configured quiet period has elapsed
-  since the latest real liveness signal, not merely since the first idle
-  boundary.
+- Synthetic heartbeat turns never execute. Patient messages retain their
+  verified-idle and real-activity quiet-period checks.
 - Queueing and steering preserve the user's text.
 - Deferred queue summaries preserve accepted delivery intent and composition
   timestamps for reconnecting clients.

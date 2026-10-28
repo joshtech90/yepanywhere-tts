@@ -1,15 +1,19 @@
 # Session Wake Turns
 
-> Implemented: an authenticated server endpoint lets automation — first
-> client: `agentctl` job completion — queue a real user turn into one specific
-> session, so an agent that ended its turn with detached work in flight is
-> woken by the completion event itself rather than by a timer or by the user
-> noticing the silence.
+> Session wake is addressed event delivery that gives a recipient session
+> another turn, including authorized resumption when needed; it belongs at
+> the provider API boundary, independently of the YA web server.
 
 Topic: session-wake
 
-Related topic: [heartbeat ownership and timers](heartbeat.md) — the
-timer-driven counterpart; wake turns are the event-driven one.
+Status: **keep or redesign; do not remove**, selected 2026-10-27 in
+[core house cleaning](core-house-cleaning.md), row 6. The capability is
+retained; its current YA-server implementation is not the desired owner.
+
+Related topic: [provider host API](provider-host-api.md) — provider-owned
+addressed turns, queueing and receipts independent of Hono.
+Related topic: [heartbeat retirement and retained maintenance](heartbeat.md) —
+synthetic periodic turns are removed; transport health and patient work remain.
 Related topic: [session liveness and queue intent](session-liveness.md).
 Related topic: [session ownership](session-ownership.md) — why a second
 writer on a provider transcript is never acceptable.
@@ -19,22 +23,75 @@ injection channels.
 Related topic: [ask-session](ask-session.md) — proposed ask/reply
 consumer of the wake ladder.
 
-## Motivation
+## Value and retained capability
 
-Codex-class providers give an agent a new turn only when a message
-arrives or a tool call returns; there is no background-job completion
-notification. An agent that ends its turn while a detached GPU job runs
-is dead until the user types (observed 2026-08-09: a queued training
-chain finished 15 minutes after the agent's final status turn, and the
-GPU sat idle ten hours). Synthetic heartbeat turns bound that damage to
-one quiet period; a wake turn removes the latency for the common case —
-a supervised job finishing — and carries the completion facts in the
-turn text.
+A session should be able to continue when an authorized external event gives
+it new information or satisfies a dependency. The sender addresses the
+recipient; the recipient's provider owner delivers the message through its
+normal input queue and resumes the session when permitted. A browser need not
+be open, and a human need not relay the event.
 
-## Contracts
+This is useful in multi-session orchestration:
 
-- A wake turn is an ordinary queued user turn (the same server-side
-  enqueue path heartbeat turns use), not a new message kind. It obeys
+- A worker completes a task and sends its result to the coordinating session.
+- An advisor replies and the requesting session continues its decision.
+- A review finishes, a resource becomes available, or another session releases
+  a dependency, allowing waiting work to continue.
+- An external job completes and reports its outcome to the session that owns
+  the next decision.
+
+Harness-native background-job notifications may handle the last example for
+jobs a harness owns. They do not eliminate the need to address sessions across
+independent agents, tools and event sources. The lasting value is authorized
+delivery and resumption, not compensation for a particular harness defect.
+
+The sender supplies the event or result. The recipient's instructions decide
+what to do with it. Wake delivery does not require a scheduler, recurring
+synthetic prompts, or a general orchestration engine.
+
+## Selected ownership: provider API
+
+Implement this ability at the provider API boundary, owned by the provider
+server/runtime. The YA web server must not own wake-specific queueing,
+resumption or orchestration policy. It may act as an authenticated transport
+adapter or present status, but delivery must not depend on Hono or a browser
+remaining alive.
+
+The existing [provider host API](provider-host-api.md) already exposes
+addressed turns, eventual queueing and submission receipts. Redesign should
+reuse that ownership and admission machinery, rather than add another input
+queue or resume controller. Its current runtime/platform restrictions still
+apply; this direction does not assert that the HTTP wake path has migrated or
+that every provider already supports independent wake delivery.
+
+Preserve these outcomes through redesign:
+
+- Address the intended durable session and deliver through its sole provider
+  owner; never spawn a competing transcript writer or silently fork it.
+- Queue while the recipient is busy according to explicit delivery semantics.
+  Resume an absent recipient only when authorized and eligible; preserve
+  explicit kill, archive and automation-pause protections.
+- Bound sender authority to the intended recipient and operation. Sending a
+  result must not confer general session control.
+- Keep admission, queueing, execution and failure observable, with bounded
+  payloads, retained state and resource use.
+- Use the provider API's submission identity and receipts where applicable;
+  settle retry and duplicate semantics for actual callers rather than imply
+  reliable delivery from the current best-effort HTTP client.
+
+Keep the current path working until consumers can move to the provider API.
+Then retire superseded YA-server routes, credentials, environment injection
+and resume branches together. This is replacement of an implementation, not
+removal of the ability. Detailed migration and protocol choices remain separate
+implementation work; no new scheduler or broad orchestration framework is
+required by this decision.
+
+## Current implementation contracts (YA-server path)
+
+The following describes the existing implementation, pending redesign. Its
+server-owned delivery ladder is not the target architecture above.
+
+- A wake turn uses the ordinary server-owned message enqueue path. It obeys
   the normal queue/steer delivery semantics, resets the same liveness
   anchors, and is visible in the transcript like any user message.
 - Endpoint: a session-scoped wake route accepting
@@ -58,13 +115,12 @@ turn text.
   credentials receive 401 without consulting or revealing the feature gate.
 - Delivery ladder, server-owned:
   - live registered process → queue the turn;
-  - no live process → resume-then-deliver through the same
-    automatic-resume gate as unowned heartbeat candidates — never for
-    archived or `autoResumeDisabled` sessions. Unlike the heartbeat
-    candidate path, a transcript ending in a pending tool call is not
-    required: the wake text is itself the reason to resume.
-  - Explicit Kill semantics are unchanged: `autoResumeDisabled` blocks
-    wake resume exactly as it blocks heartbeat resume.
+  - no live process → resume-then-deliver through the retained automatic-resume
+    gate, never for archived or `autoResumeDisabled` sessions. A transcript
+    ending in a pending tool call is not required: the wake text supplies the
+    reason to resume. Automation-pause protections also remain.
+  - Explicit Kill semantics are unchanged: `autoResumeDisabled` blocks wake
+    resume and other automatic process starts, including cold recaps.
 - Env injection: provider children of a supervised session receive
   `YEP_SESSION_WAKE_URL` and `YEP_SESSION_WAKE_TOKEN` through the same
   channels that carry `AGENTCTL_SESSION_ID` today — spawn env for
@@ -100,34 +156,23 @@ in the agentctl repo, summarized in that repo's `topics/agentctl.md`):
   What to do on receipt (consume the completion, launch the successor)
   is the agent's standing instructions, not the wake text's job.
 - Best-effort: stdlib HTTP, short timeout, one retry; on failure it
-  writes one line to the job log and stops. Heartbeat turns, when
-  enabled, remain the backstop for missed wakes.
+  writes one line to the job log and stops. This does not guarantee delivery;
+  heartbeat removal must not be compensated by adding periodic wake prompts.
 
 ### Provider-CLI injection fallback (not implemented)
 
-The shipped `agentctl` wake plugin does not invoke a provider CLI when the YA
-environment is absent. Any future fallback must obey these ownership rules:
-
-When no wake env is present but a provider session id is known, direct
-CLI injection is permitted only for providers whose CLI can append a
-turn to the same durable session, and only after an unowned check —
-never against a session a live process owns, since a second writer
-forks or corrupts the transcript (session-ownership):
-
-- Codex: a verified same-rollout resume command is safe only when nothing owns
-  the rollout — no YA server supervising the session and no live process
-  writing the file. The exact CLI contract must be re-verified against the
-  pinned Codex version before implementation.
-- Claude: headless `--resume` continues under a new session id, so CLI
-  injection cannot wake the original session; do not use it there. The
-  Claude harness has native wakeup mechanisms instead.
-
-Under YA supervision the POST is strictly preferred: the server keeps
-ownership, delivery, and liveness bookkeeping coherent, and the turn
-lands in the live supervised process instead of a competing one.
+The documented `agentctl` wake plugin does not invoke a provider CLI when the
+YA environment is absent. The earlier direct-CLI fallback proposal is
+superseded by the provider-API direction: a producer submits to the session's
+owner rather than implementing provider-specific resume itself. No caller may
+create a competing writer when the owner is unavailable. Native resume and
+fork behavior belongs in the provider adapter's verified contract; it must not
+be inferred from a missing wake URL.
 
 ## Representative Change Types
 
+- Moving delivery and authorized resumption to the provider API while
+  preserving callers and session ownership.
 - Adding the wake route, token minting, or delivery-time gating.
 - Changing wake env injection channels or names.
 - Changing resume-on-wake eligibility or its interaction with archived
@@ -147,3 +192,17 @@ lands in the live supervised process instead of a competing one.
   logged rather than delivered late.
 - Env injection provides the URL and token to the Codex spawn env and
   the Claude `BASH_ENV` bridge without either value reaching logs.
+
+For the redesigned path, acceptance must also demonstrate delivery without
+the YA web server, safe busy-recipient queueing, and authorized resumption
+without a second owner. Provider API receipts must distinguish acceptance
+from completion and support the selected retry contract. Existing HTTP tests
+alone cannot establish those outcomes.
+
+## Historical motivation
+
+The first implementation followed a 2026-08-09 incident: a detached training
+chain finished after its agent's final turn, and the GPU remained idle for ten
+hours. Job-completion wakeups addressed that missed continuation. This incident
+explains the first consumer; retaining the capability does not depend on the
+same harness limitation persisting.

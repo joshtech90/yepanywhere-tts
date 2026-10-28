@@ -6,7 +6,11 @@ import {
   type ProjectAppView,
   type ProjectAppAddresses,
 } from "@yep-anywhere/shared";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { ComposerInsertContext } from "../contexts/ComposerInsertContext";
+import { useOptionalToastContext } from "../contexts/ToastContext";
+import { writeClipboardText } from "../lib/clipboard";
+import { useSourceContextMenu } from "./SourceContextMenu";
 import { projectAppApi, type ProjectAppTarget } from "../api/projectApp";
 import { useArtifactTabHandoff } from "../hooks/useArtifactTabHandoff";
 import { useLongPress } from "../hooks/useLongPress";
@@ -34,6 +38,18 @@ const APP_LOCATION_MESSAGE = "yep-anywhere:app-location";
 const APP_LOCATION_SHOWN_MESSAGE = "yep-anywhere:app-location-shown";
 /** The access query a view link carries; YA keeps it out of the bar. */
 const ACCESS_QUERY = "ya_access";
+
+function validProjectPath(path: string): boolean {
+  return (
+    path.length > 0 &&
+    path.length <= 8192 &&
+    !/^(?:[\\/]|[a-zA-Z]:)/.test(path) &&
+    Array.from(path).every(
+      (character) => character.charCodeAt(0) >= 32 && character !== "\\",
+    ) &&
+    !path.split("/").includes("..")
+  );
+}
 
 /** A path's directories as crumbs, each ending in "/", then its last segment. */
 function locationCrumbs(pathname: string) {
@@ -115,6 +131,7 @@ export function ProjectAppViewer({
   projectName,
   onInfoChanged,
   onAddressesChanged,
+  onComment,
 }: {
   projectId: string;
   initialTarget?: ProjectAppTarget;
@@ -134,9 +151,49 @@ export function ProjectAppViewer({
   projectName?: string;
   onInfoChanged?: (info: ProjectAppInfo) => void;
   onAddressesChanged?: (addresses: ProjectAppAddresses) => void;
+  onComment?: (text: string) => void;
 }) {
   const { version } = useVersion();
   const { t } = useI18n();
+  const insertDraft = useContext(ComposerInsertContext);
+  const comment = onComment ?? insertDraft;
+  const commentRef = useRef(comment);
+  commentRef.current = comment;
+  const canComment = Boolean(comment);
+  const toast = useOptionalToastContext();
+  const pathMenu = useSourceContextMenu(t, {
+    menu: t("projectPathActions"),
+    dismiss: t("sourceDismissActions"),
+    touchTargets: true,
+  });
+  const [repoLocation, setRepoLocation] = useState<{
+    root: URL;
+    path: string;
+  } | null>(null);
+  const copyPath = (path: string) => {
+    void writeClipboardText(path).then((copied) =>
+      toast?.showToast(
+        t(copied ? "inlineCodeCopied" : "inlineCodeCopyFailed"),
+        copied ? "success" : "error",
+      ),
+    );
+  };
+  const pathActions = (path: string) => [
+    {
+      label: t("fileLinkMenuCopyProjectRelativePath"),
+      onSelect: () => copyPath(path),
+    },
+    ...(comment
+      ? [
+          {
+            label: t("projectPathComment"),
+            onSelect: () => {
+              comment(`${path}\n\n`);
+            },
+          },
+        ]
+      : []),
+  ];
   const viewerRef = useRef<HTMLElement>(null);
   const supported = serverHasCapability(
     version,
@@ -262,11 +319,39 @@ export function ProjectAppViewer({
   // biome-ignore lint/correctness/useExhaustiveDependencies: A reload remounts the frame, whose page reports itself again.
   useEffect(() => {
     setFrameLocation(null);
+    setRepoLocation(null);
     if (!viewUrl) return;
     const origin = new URL(viewUrl, window.location.href).origin;
     const receive = (event: MessageEvent) => {
       if (event.source !== frameRef.current?.contentWindow) return;
-      const data = event.data as { type?: unknown; href?: unknown } | null;
+      if (event.origin !== origin) return;
+      const data = event.data as {
+        type?: unknown;
+        href?: unknown;
+        projectRoot?: unknown;
+        projectPath?: unknown;
+        path?: unknown;
+        quote?: unknown;
+      } | null;
+      if (data?.type === "yep-anywhere:app-comment") {
+        if (
+          !commentRef.current ||
+          typeof data.path !== "string" ||
+          !validProjectPath(data.path)
+        )
+          return;
+        if (
+          data.quote !== undefined &&
+          (typeof data.quote !== "string" || data.quote.length > 100_000)
+        )
+          return;
+        const quote =
+          typeof data.quote === "string" && data.quote
+            ? `> ${data.quote.replace(/\n/g, "\n> ")}\n\n`
+            : "";
+        commentRef.current(`${data.path}\n\n${quote}`);
+        return;
+      }
       if (data?.type !== APP_LOCATION_MESSAGE || typeof data.href !== "string")
         return;
       let next: URL;
@@ -278,10 +363,32 @@ export function ProjectAppViewer({
       if (next.origin !== origin) return;
       next.searchParams.delete(ACCESS_QUERY);
       setFrameLocation(next);
+      if (
+        typeof data.projectRoot === "string" &&
+        typeof data.projectPath === "string" &&
+        validProjectPath(data.projectPath)
+      ) {
+        try {
+          const root = new URL(data.projectRoot, next);
+          if (
+            root.origin === origin &&
+            root.pathname.endsWith("/") &&
+            next.pathname.startsWith(root.pathname)
+          ) {
+            setRepoLocation({ root, path: data.projectPath });
+          } else setRepoLocation(null);
+        } catch {
+          setRepoLocation(null);
+        }
+      } else setRepoLocation(null);
+      frameRef.current?.contentWindow?.postMessage(
+        { type: "yep-anywhere:app-comment-ready", enabled: canComment },
+        origin,
+      );
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [viewUrl, reload]);
+  }, [viewUrl, reload, canComment]);
   // A crumb opens its path in the frame under the view's own access link.
   const openFramePath = (path: string) => {
     if (!viewUrl || !frameRef.current) return;
@@ -538,7 +645,38 @@ export function ProjectAppViewer({
                     its start and keeps the current page visible. */}
                 <span className={styles.crumbTrail}>
                   {crumbs.map((crumb) => (
-                    <span key={crumb.path}>
+                    // biome-ignore lint/a11y/noStaticElementInteractions: Supplemental context action; the adjacent Path actions button provides keyboard access.
+                    <span
+                      key={crumb.path}
+                      onContextMenu={(event) => {
+                        if (event.shiftKey || !repoLocation) return;
+                        let path = repoLocation.path;
+                        if (!crumb.current) {
+                          try {
+                            path = decodeURIComponent(
+                              crumb.path.slice(
+                                repoLocation.root.pathname.length,
+                              ),
+                            );
+                          } catch {
+                            return;
+                          }
+                        }
+                        if (
+                          !crumb.path.startsWith(repoLocation.root.pathname) ||
+                          !validProjectPath(path)
+                        )
+                          return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        pathMenu.openAt(
+                          event.clientX,
+                          event.clientY,
+                          null,
+                          pathActions(path),
+                        );
+                      }}
+                    >
                       <span className={styles.crumbSeparator}>/</span>
                       {crumb.current ? (
                         <span aria-current="page">{crumb.label}</span>
@@ -556,6 +694,32 @@ export function ProjectAppViewer({
                   ))}
                 </span>
               </nav>
+            )}
+            {repoLocation && (
+              <div className={`${actions.actions} ${styles.pathActions}`}>
+                <button
+                  type="button"
+                  className={styles.copyPath}
+                  title={t("fileLinkMenuCopyProjectRelativePath")}
+                  aria-label={t("fileLinkMenuCopyProjectRelativePath")}
+                  onClick={() => copyPath(repoLocation.path)}
+                >
+                  <Glyph path="M9 9h11v12H9zM15 9V3H3v12h6" />
+                </button>
+                <button
+                  type="button"
+                  title={t("projectPathActions")}
+                  aria-label={t("projectPathActions")}
+                  onClick={(event) =>
+                    pathMenu.openFromButton(
+                      event,
+                      pathActions(repoLocation.path),
+                    )
+                  }
+                >
+                  ⋯
+                </button>
+              </div>
             )}
           </span>
           <div className={actions.actions}>
@@ -1202,6 +1366,7 @@ export function ProjectAppViewer({
           referrerPolicy="no-referrer"
         />
       )}
+      {pathMenu.menu}
     </section>
   );
 }

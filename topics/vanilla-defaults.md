@@ -214,12 +214,13 @@ Commands" sidebar section stays default-off. Authorized by graehl
 decision, and canonized here (and in the commit) for kzahel's review
 given the default-disabled preference ([kzahel-disabled](kzahel-disabled.md)).
 
-[prompt-cache-keepalive](prompt-cache-keepalive.md) is a deliberate
-default-on exception for active-enough live clients, but only where a provider
-exposes a no-context-move refresh path. The default must not create visible
-session rows, future-visible provider context, or autonomous server upkeep for
-sessions with no current client viewer; stronger hidden-message keepalive modes
-remain explicit per-provider choices.
+[prompt-cache-keepalive](prompt-cache-keepalive.md) must default off, including
+no-context-move refreshes. The 2026-10-27 decision supersedes its earlier
+default-on exception: enabling it requires at most ten refreshes between real
+uses, a running net-savings UI log and durable per-session loss disablement.
+Live-viewer leases and no-context-pollution constraints remain. The topic's
+implementation checkpoint distinguishes this selected policy from the current
+default-on implementation.
 
 **Handoff from…** on the scrollbar turn-notch menu ships default-on.
 Authorized by graehl on 2026-09-09: it is an explicit successor-session

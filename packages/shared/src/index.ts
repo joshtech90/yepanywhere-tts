@@ -62,24 +62,8 @@ export {
   type ConversationContextReceipt,
 } from "./conversation-context.js";
 export {
-  DEFAULT_POST_COMPACT_REPLAY_SETTINGS,
-  DEFAULT_POST_COMPACT_REPLAY_TURNS,
-  MAX_POST_COMPACT_REPLAY_TURNS,
-  MAX_POST_COMPACT_REPLAY_TURN_CHARS,
-  POST_COMPACT_REPLAY_CONTINUE,
   POST_COMPACT_REPLAY_PREAMBLE,
-  buildPostCompactReplayPrompt,
-  buildPostCompactReplayText,
-  capTurnText,
-  formatPostCompactReplayPrompt,
-  clampPostCompactReplayTurnCount,
-  isPostCompactReplayEnabledForProvider,
   isPostCompactReplayText,
-  parsePostCompactReplaySettings,
-  selectPostCompactReplayTurns,
-  type PostCompactReplaySettings,
-  type PostCompactReplayPrompt,
-  type PostCompactReplayTurn,
 } from "./postCompactReplay.js";
 export {
   DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS,
@@ -472,7 +456,6 @@ export type {
   PromptCacheKeepaliveProviderSetting,
   PromptCacheKeepaliveSettings,
   PromptSuggestionMode,
-  HelperTargetConfig,
   SlashCommand,
   SlashCommandArgumentCompletion,
   SlashCommandGoalDetails,
@@ -555,7 +538,6 @@ export {
   isCodexReasoningSummary,
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
-  HELPER_SIDE_MODEL_TARGET_PREFIX,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   PROMPT_CACHE_KEEPALIVE_MODES,
   PROMPT_SUGGESTION_MODES,
@@ -818,15 +800,6 @@ export {
   parseTurnIndexArgument,
 } from "./session-rewind.js";
 export {
-  DEFAULT_HEARTBEAT_TURN_TEXT,
-  DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES,
-  MAX_HEARTBEAT_TURN_TEXT_LENGTH,
-  MAX_PROJECT_HEARTBEAT_RECENT_TEXTS,
-  type ProjectSessionDefaultOverrides,
-  type ProjectSessionDefaultsResponse,
-  type UpdateProjectSessionDefaultsRequest,
-} from "./heartbeat.js";
-export {
   MAX_PROJECT_CODE_NAME_LENGTH,
   allocateProjectCodeName,
   normalizeProjectCodeName,
@@ -1014,21 +987,6 @@ export {
   type BrowserSettingsBackupResponse,
   type BrowserSettingsBackupValues,
 } from "./browser-settings-backup.js";
-
-export type {
-  CreateProjectWorkstreamRequest,
-  CreateProjectWorkstreamResponse,
-  ProjectWorkstreamsResponse,
-  StoredWorkstream,
-  Workstream,
-  WorkstreamCheckoutPreviewResponse,
-  WorkstreamId,
-  WorkstreamKind,
-  WorkstreamStatus,
-  WorkstreamsChangedEvent,
-  WorkstreamsChangedReason,
-} from "./workstreams.js";
-export { isWorkstreamId, mainWorkstreamId } from "./workstreams.js";
 
 export type {
   StagedAttachmentRef,

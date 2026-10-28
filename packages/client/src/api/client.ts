@@ -29,8 +29,6 @@ import type {
   CreatePublicFileShareRequest,
   ContextBreakdown,
   CreatePublicFileShareResponse,
-  CreateProjectWorkstreamRequest,
-  CreateProjectWorkstreamResponse,
   CreateProjectQueueItemRequest,
   CreatePublicSessionShareRequest,
   CreatePublicSessionShareResponse,
@@ -38,7 +36,6 @@ import type {
   DurableSyntheticDoneMessage,
   FreezePublicSharesResponse,
   FreezePublicSessionLiveSharesResponse,
-  HelperTargetConfig,
   HostAwakeMode,
   HostAwakeStatus,
   HostIdentity,
@@ -51,15 +48,11 @@ import type {
   ProjectQueuePromoteNowResponse,
   ProjectQueueResponse,
   ProjectQueueReadinessCommand,
-  ProjectSessionDefaultsResponse,
-  ProjectWorkstreamsResponse,
   PublicFileShareListResponse,
   PublicShareManagementListResponse,
   PublicShareStorageState,
-  WorkstreamCheckoutPreviewResponse,
   PromptSuggestionMode,
   PromptCacheKeepaliveSettings,
-  PostCompactReplaySettings,
   LongContextEffortWarningSettings,
   ProviderInfo,
   ProviderLoginFlow,
@@ -83,7 +76,6 @@ import type {
   TranscriptDisplayObject,
   UpdateClearloopRequest,
   UpdateProjectQueueItemRequest,
-  UpdateProjectSessionDefaultsRequest,
   EffortLevel,
   GatewayService,
   GatewayServiceExportPaths,
@@ -91,7 +83,6 @@ import type {
   UrlProjectId,
   UserQuestionAnswers,
   UserMessageMetadata,
-  WorkstreamId,
 } from "@yep-anywhere/shared";
 import { PUBLIC_SHARE_MANAGEMENT_FREEZE_CONFIRMATION } from "@yep-anywhere/shared";
 import type {
@@ -327,8 +318,6 @@ export interface SessionOptions {
   helperSideModel?: string;
   /** Existing-session resume strategy. */
   resumeMode?: "full" | "compact-first";
-  /** Experimental project workstream lane for new project sessions. */
-  workstreamId?: WorkstreamId;
 }
 
 export type { UploadedFile } from "@yep-anywhere/shared";
@@ -695,23 +684,6 @@ export const api = {
       },
     ),
 
-  getProjectSessionDefaults: (projectId: string) =>
-    fetchJSON<ProjectSessionDefaultsResponse>(
-      `/projects/${projectId}/session-defaults`,
-    ),
-
-  updateProjectSessionDefaults: (
-    projectId: string,
-    updates: UpdateProjectSessionDefaultsRequest,
-  ) =>
-    fetchJSON<ProjectSessionDefaultsResponse>(
-      `/projects/${projectId}/session-defaults`,
-      {
-        method: "PATCH",
-        body: JSON.stringify(updates),
-      },
-    ),
-
   deleteProject: (projectId: string) =>
     fetchJSON<{ removed: boolean; projectId: string; path: string }>(
       `/projects/${projectId}`,
@@ -747,28 +719,6 @@ export const api = {
 
   getProjectQueue: (projectId: string) =>
     fetchJSON<ProjectQueueResponse>(`/projects/${projectId}/queue`),
-
-  getProjectWorkstreams: (projectId: string) =>
-    fetchJSON<ProjectWorkstreamsResponse>(`/projects/${projectId}/workstreams`),
-
-  getProjectWorkstreamCheckoutPreview: (projectId: string, label: string) => {
-    const params = new URLSearchParams({ label });
-    return fetchJSON<WorkstreamCheckoutPreviewResponse>(
-      `/projects/${projectId}/workstreams/checkout-preview?${params}`,
-    );
-  },
-
-  createProjectWorkstream: (
-    projectId: string,
-    request: CreateProjectWorkstreamRequest,
-  ) =>
-    fetchJSON<CreateProjectWorkstreamResponse>(
-      `/projects/${projectId}/workstreams`,
-      {
-        method: "POST",
-        body: JSON.stringify(request),
-      },
-    ),
 
   getProjectQueueItems: () =>
     fetchJSON<ProjectQueueListResponse>("/project-queue"),
@@ -907,7 +857,6 @@ export const api = {
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
-        workstreamId: options?.workstreamId,
         attachments,
         clientTimestamp,
         messageMetadata,
@@ -951,7 +900,6 @@ export const api = {
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
-        workstreamId: options?.workstreamId,
         creationProvenance: options?.creationProvenance,
       }),
     }),
@@ -1815,15 +1763,6 @@ export const api = {
       body: JSON.stringify({ url }),
     }),
 
-  discoverHelperTargetModels: (baseUrl: string) =>
-    fetchJSON<{ baseUrl: string; models: ModelInfo[] }>(
-      "/settings/helper-targets/models",
-      {
-        method: "POST",
-        body: JSON.stringify({ baseUrl }),
-      },
-    ),
-
   // Codex CLI update checker
   getCodexUpdateStatus: (force?: boolean) =>
     fetchJSON<{ status: CodexUpdateStatus }>(
@@ -1838,22 +1777,6 @@ export const api = {
       error?: string;
       retryable?: boolean;
     }>("/codex/updates/install", { method: "POST" }),
-
-  // Remote executors API
-  getRemoteExecutors: () =>
-    fetchJSON<{ executors: string[] }>("/settings/remote-executors"),
-
-  updateRemoteExecutors: (executors: string[]) =>
-    fetchJSON<{ executors: string[] }>("/settings/remote-executors", {
-      method: "PUT",
-      body: JSON.stringify({ executors }),
-    }),
-
-  testRemoteExecutor: (host: string) =>
-    fetchJSON<RemoteExecutorTestResult>(
-      `/settings/remote-executors/${encodeURIComponent(host)}/test`,
-      { method: "POST" },
-    ),
 
   // Sharing API
   getSharingStatus: () => fetchJSON<{ configured: boolean }>("/sharing/status"),
@@ -2016,20 +1939,6 @@ export const api = {
     }>("/devices/bridge/download", { method: "POST" }),
 };
 
-/** Result of testing an SSH connection to a remote executor */
-export interface RemoteExecutorTestResult {
-  success: boolean;
-  error?: string;
-  /** SSH host that was tested */
-  host?: string;
-  /** Remote home directory */
-  homeDir?: string;
-  /** Whether Claude CLI is available on remote */
-  claudeAvailable?: boolean;
-  /** Claude CLI version on remote (e.g. "1.0.12") */
-  claudeVersion?: string;
-}
-
 /**
  * Which local path prefixes the HTTP file doors (media + project-files routes)
  * may read. See docs/tactical/018-file-access-scoping.md.
@@ -2101,8 +2010,6 @@ export interface ServerSettings {
   /** Whether limited users exist beside the superuser (topics/limited-users.md) */
   limitedUsersEnabled?: boolean;
   limitedUserInstructions?: import("@yep-anywhere/shared").LimitedUserInstructions;
-  /** Whether experimental workstream surfaces and APIs are enabled */
-  workstreamsEnabled?: boolean;
   /** Whether experimental live Source Control filesystem monitoring is enabled. */
   liveWorktreeMonitoringEnabled?: boolean;
   /** Whether captured source-review submissions and outcomes are enabled */
@@ -2121,8 +2028,6 @@ export interface ServerSettings {
   hostAwakeBatteryFloorPercent?: number;
   /** @deprecated Use yaClientBaseUrl. */
   publicShareViewerBaseUrl?: string | null;
-  /** SSH host aliases for remote executors */
-  remoteExecutors?: string[];
   /** SSH host aliases for ChromeOS device bridge targets */
   chromeOsHosts?: string[];
   /** Allowed hostnames for host/origin validation. "*" = allow all, comma-separated = specific hosts. */
@@ -2133,10 +2038,6 @@ export interface ServerSettings {
   globalInstructions?: string;
   /** Optional additive context hints composed with global instructions */
   agentContextHints?: AgentContextHints;
-  /** Default idle minutes before an opted-in session queues a heartbeat turn */
-  heartbeatTurnsAfterMinutes?: number;
-  /** Default text queued as the synthetic heartbeat user turn */
-  heartbeatTurnText?: string;
   /**
    * Configured model-serving endpoints. The default entry is mirrored by the
    * single-gateway settings below, which older clients still read and write.
@@ -2190,7 +2091,6 @@ export interface ServerSettings {
    * After compaction, optionally inject a hidden continuation turn.
    * Absent on older servers; default off.
    */
-  postCompactReplay?: PostCompactReplaySettings;
   instructionRestoration?: import("@yep-anywhere/shared").InstructionRestorationSettings;
   /**
    * Warn before a mid-session effort change on a long-context session and
@@ -2209,8 +2109,6 @@ export interface ServerSettings {
   };
   /** Local STT backends enabled from Speech settings; unioned with env. */
   speechVoiceBackends?: string[];
-  /** OpenAI-compatible helper endpoints for side-session helper work */
-  helperTargets?: HelperTargetConfig[];
   /** Whether lifecycle webhook delivery is enabled */
   lifecycleWebhooksEnabled?: boolean;
   /** External webhook URL that receives lifecycle events */

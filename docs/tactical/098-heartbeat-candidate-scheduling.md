@@ -1,5 +1,10 @@
 # Schedule Heartbeat Candidates Without Fleet Scans
 
+Historical plan: synthetic heartbeat candidates were retired on 2026-10-27.
+The bounded scheduler remains for retained session maintenance; see
+[the current contract](../../topics/heartbeat.md) and
+[plan 164](164-remove-retired-session-automation.md).
+
 > Keep server-owned heartbeat turns active without a browser, but derive exact
 > session candidates and their next deadlines from retained metadata/catalog
 > state instead of searching every project and loading transcripts every 30

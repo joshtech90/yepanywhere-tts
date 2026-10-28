@@ -57,7 +57,7 @@ describe("run-with-safe-home", () => {
       // macOS rejects Unix socket paths over 104 bytes (including NUL).
       const nestedSocket = join(
         childEnvironment.tmp,
-        "managed-runner-socket-XXXXXX",
+        "provider-worker-socket-XXXXXX",
         "provider.sock",
       );
       expect(Buffer.byteLength(nestedSocket)).toBeLessThan(104);

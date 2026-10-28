@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  DEFAULT_HEARTBEAT_TURN_TEXT,
-  DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES,
   LATEX_MATH_RENDERING_CLIENT_CAPABILITY,
   buildEffectiveAgentContext,
 } from "@yep-anywhere/shared";
 import { useServerSettings } from "../../hooks/useServerSettings";
-import { HeartbeatTextArea } from "../../components/HeartbeatTextArea";
 import { useI18n } from "../../i18n";
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
@@ -15,27 +12,12 @@ import { SettingsSection } from "./SettingsSection";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 
 const MAX_LENGTH = 10000;
-const DEFAULT_HEARTBEAT_TEXT = DEFAULT_HEARTBEAT_TURN_TEXT;
-const DEFAULT_HEARTBEAT_AFTER_MINUTES = DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES;
-
-function parseHeartbeatMinutes(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed >= 1
-    ? Math.min(parsed, 1440)
-    : DEFAULT_HEARTBEAT_AFTER_MINUTES;
-}
 
 export function AgentContextSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("agentContextTitle"));
   const { settings, isLoading, error, updateSettings } = useServerSettings();
   const [instructions, setInstructions] = useState("");
-  const [heartbeatTurnsAfterMinutes, setHeartbeatTurnsAfterMinutes] = useState(
-    String(DEFAULT_HEARTBEAT_AFTER_MINUTES),
-  );
-  const [heartbeatTurnText, setHeartbeatTurnText] = useState(
-    DEFAULT_HEARTBEAT_TEXT,
-  );
   const [latexMathRendering, setLatexMathRendering] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
@@ -47,15 +29,6 @@ export function AgentContextSettings() {
   useEffect(() => {
     if (settings) {
       setInstructions(settings.globalInstructions ?? "");
-      setHeartbeatTurnsAfterMinutes(
-        String(
-          settings.heartbeatTurnsAfterMinutes ??
-            DEFAULT_HEARTBEAT_AFTER_MINUTES,
-        ),
-      );
-      setHeartbeatTurnText(
-        settings.heartbeatTurnText ?? DEFAULT_HEARTBEAT_TEXT,
-      );
       setLatexMathRendering(
         settings.agentContextHints?.latexMathRendering ?? false,
       );
@@ -64,10 +37,6 @@ export function AgentContextSettings() {
   }, [settings]);
 
   const serverInstructions = settings?.globalInstructions ?? "";
-  const serverHeartbeatTurnsAfterMinutes =
-    settings?.heartbeatTurnsAfterMinutes ?? DEFAULT_HEARTBEAT_AFTER_MINUTES;
-  const serverHeartbeatTurnText =
-    settings?.heartbeatTurnText ?? DEFAULT_HEARTBEAT_TEXT;
   const serverLatexMathRendering =
     settings?.agentContextHints?.latexMathRendering ?? false;
   const effectiveAgentContext = useMemo(
@@ -85,34 +54,19 @@ export function AgentContextSettings() {
       formSynced
         ? {
             instructions,
-            heartbeatTurnsAfterMinutes,
-            heartbeatTurnText,
             latexMathRendering,
           }
         : null,
-    [
-      formSynced,
-      instructions,
-      heartbeatTurnsAfterMinutes,
-      heartbeatTurnText,
-      latexMathRendering,
-    ],
+    [formSynced, instructions, latexMathRendering],
   );
   const restoreUndoState = useCallback(
     (snapshot: NonNullable<typeof undoState>) => {
       setInstructions(snapshot.instructions);
-      setHeartbeatTurnsAfterMinutes(snapshot.heartbeatTurnsAfterMinutes);
-      setHeartbeatTurnText(snapshot.heartbeatTurnText);
       setLatexMathRendering(snapshot.latexMathRendering);
       setHasChanges(false);
       setSaveError(null);
       void updateSettings({
         globalInstructions: snapshot.instructions.trim() || undefined,
-        heartbeatTurnsAfterMinutes: parseHeartbeatMinutes(
-          snapshot.heartbeatTurnsAfterMinutes,
-        ),
-        heartbeatTurnText:
-          snapshot.heartbeatTurnText.trim() || DEFAULT_HEARTBEAT_TEXT,
         agentContextHints: {
           latexMathRendering: snapshot.latexMathRendering,
         },
@@ -125,33 +79,18 @@ export function AgentContextSettings() {
   useSettingsUndoBaseline(undoState, restoreUndoState);
 
   const recomputeHasChanges = useCallback(
-    (next: {
-      instructions?: string;
-      heartbeatTurnsAfterMinutes?: string;
-      heartbeatTurnText?: string;
-      latexMathRendering?: boolean;
-    }) => {
+    (next: { instructions?: string; latexMathRendering?: boolean }) => {
       const nextInstructions = next.instructions ?? instructions;
-      const nextHeartbeatTurnsAfterMinutes =
-        next.heartbeatTurnsAfterMinutes ?? heartbeatTurnsAfterMinutes;
-      const nextHeartbeatTurnText = next.heartbeatTurnText ?? heartbeatTurnText;
       const nextLatexMathRendering =
         next.latexMathRendering ?? latexMathRendering;
       setHasChanges(
         nextInstructions !== serverInstructions ||
-          nextHeartbeatTurnsAfterMinutes !==
-            String(serverHeartbeatTurnsAfterMinutes) ||
-          nextHeartbeatTurnText !== serverHeartbeatTurnText ||
           nextLatexMathRendering !== serverLatexMathRendering,
       );
     },
     [
-      heartbeatTurnText,
-      heartbeatTurnsAfterMinutes,
       instructions,
       latexMathRendering,
-      serverHeartbeatTurnText,
-      serverHeartbeatTurnsAfterMinutes,
       serverInstructions,
       serverLatexMathRendering,
     ],
@@ -163,10 +102,6 @@ export function AgentContextSettings() {
     try {
       await updateSettings({
         globalInstructions: instructions.trim() || undefined,
-        heartbeatTurnsAfterMinutes: parseHeartbeatMinutes(
-          heartbeatTurnsAfterMinutes,
-        ),
-        heartbeatTurnText: heartbeatTurnText.trim() || DEFAULT_HEARTBEAT_TEXT,
         agentContextHints: { latexMathRendering },
       });
       setHasChanges(false);
@@ -177,14 +112,7 @@ export function AgentContextSettings() {
     } finally {
       setIsSaving(false);
     }
-  }, [
-    heartbeatTurnText,
-    heartbeatTurnsAfterMinutes,
-    instructions,
-    latexMathRendering,
-    t,
-    updateSettings,
-  ]);
+  }, [instructions, latexMathRendering, t, updateSettings]);
 
   if (isLoading) {
     return <SettingsSection description={t("agentContextLoading")} />;
@@ -202,10 +130,6 @@ export function AgentContextSettings() {
         t("agentContextGlobalInstructionsDescription"),
         t("agentContextSuggestedLatexTitle"),
         t("agentContextSuggestedLatexDescription"),
-        t("agentContextHeartbeatAfterTitle"),
-        t("agentContextHeartbeatAfterDescription"),
-        t("agentContextHeartbeatTextTitle"),
-        t("agentContextHeartbeatTextDescription"),
       ]}
     >
       <div className="settings-group">
@@ -312,54 +236,6 @@ export function AgentContextSettings() {
             </pre>
           </details>
         </HideInSettingsSearch>
-      </div>
-
-      <div className="settings-group">
-        <SettingsItem
-          label={t("agentContextHeartbeatAfterTitle")}
-          description={t("agentContextHeartbeatAfterDescription")}
-        >
-          <input
-            type="number"
-            className="settings-input-small"
-            min={1}
-            max={1440}
-            value={heartbeatTurnsAfterMinutes}
-            onChange={(e) => {
-              setHeartbeatTurnsAfterMinutes(e.target.value);
-              recomputeHasChanges({
-                heartbeatTurnsAfterMinutes: e.target.value,
-              });
-              setSaveError(null);
-            }}
-          />
-        </SettingsItem>
-
-        <SettingsItem
-          label={t("agentContextHeartbeatTextTitle")}
-          description={t("agentContextHeartbeatTextDescription")}
-          layout="custom"
-          containerProps={{
-            style: { flexDirection: "column", alignItems: "stretch" },
-          }}
-        >
-          <div className="settings-item-info">
-            <strong>{t("agentContextHeartbeatTextTitle")}</strong>
-            <p>{t("agentContextHeartbeatTextDescription")}</p>
-          </div>
-          <HeartbeatTextArea
-            className="settings-input"
-            value={heartbeatTurnText}
-            onChange={(value) => {
-              setHeartbeatTurnText(value);
-              recomputeHasChanges({
-                heartbeatTurnText: value,
-              });
-              setSaveError(null);
-            }}
-            placeholder={DEFAULT_HEARTBEAT_TEXT}
-          />
-        </SettingsItem>
       </div>
 
       <HideInSettingsSearch>

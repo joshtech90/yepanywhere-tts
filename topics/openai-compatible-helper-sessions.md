@@ -1,44 +1,31 @@
-# OpenAI-Compatible Helper Sessions
-
-> OpenAI-compatible helper sessions are the missing runtime layer that lets YA
-> route simulated helper work, such as tailed recaps, to configured
-> OpenAI-compatible endpoints instead of the parent provider.
+# Retired OpenAI-compatible helper targets
 
 Topic: openai-compatible-helper-sessions
 
-## Current State
+## Disposition
 
-YA can store helper target records as `HelperTargetConfig`, discover
-`/v1/models`, and serialize a target choice as `helper-target:<id>`. That is
-configuration only today.
+Removed 2026-10-27 under [core house cleaning](core-house-cleaning.md), row 4.
+The unfinished target registry, hidden settings editor, model discovery route,
+selector helpers and schemas are retired. No working endpoint execution was
+removed: the registry never supplied that runtime.
 
-The tailed recap path still calls the parent provider's `generateSummary()`
-implementation. `Process.resolveHelperSideModel()` only resolves `Cheapest`
-and `Same as main session`; any other value is returned as a raw model string.
-Claude then passes that string to the Claude SDK as its `model`, and Codex only
-does provider-local `Cheapest` resolution. A `helper-target:<id>` string is
-therefore not a working execution target.
+Saved target configuration is omitted from settings and has no effect. The
+removed discovery route is unavailable; stale settings writes cannot revive
+it. A saved `helper-target:<id>` side-model selection does not become a
+provider model or silently fall back to another endpoint/model: side-session
+recap generation returns a controlled refusal requesting a provider-local
+model, before calling the provider summarizer. Historical sessions remain
+readable. `Cheapest`, `Same as main session` and concrete provider-local models
+continue to work for retained recaps and helpers.
 
-## Visibility Contract
+## Future candidate, upon first need
 
-Do not expose the Providers > Helper Targets editor or `helper-target:<id>`
-entries in Tailed Recap Model pickers until this runtime path exists and has a
-fake-endpoint regression. A visible target selector implies working execution.
+For a concrete prompted UI-helper or text-processing consumer, consider an
+in-house, no-tool provider managed by the provider server: supplied prompts/text
+in, helper output out, without tool execution. Add it only with its first
+consumer. It is not a cleanup or core-refactor prerequisite, and the removed
+registry/selector format does not constrain it.
 
-Provider-local tailed recap model choices stay valid: `Cheapest`, `Same as main
-session`, and concrete models from the selected provider.
-
-## Required Runtime Shape
-
-- Resolve `helper-target:<id>` against `ServerSettings.helperTargets`.
-- Create or call an OpenAI-compatible helper session using the target
-  `baseUrl`, optional model, and configured credentials/env policy.
-- Keep lifecycle bounded: timeout, cancellation, and no leaked helper work after
-  the parent session ends or the client goes away.
-- Reuse the context and catch-up envelope from
-  [side-session-config](side-session-config.md) instead of inventing a
-  per-feature prompt path.
-- Return only the helper feature output. Do not write helper turns into the
-  parent provider transcript.
-- Cover tailed recaps against a fake OpenAI-compatible endpoint before
-  re-exposing helper target controls.
+[Plan 164](../docs/tactical/164-remove-retired-session-automation.md) records
+verification. The saved-setting roundtrip and provider-dispatch regression
+protect retirement; existing recap/model tests protect the retained choices.

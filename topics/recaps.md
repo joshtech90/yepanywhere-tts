@@ -16,6 +16,31 @@ cancellation on activity) and the current trigger/threshold gaps.
 
 ## Contracts
 
+### House-cleaning disposition
+
+**Resolved, 2026-10-27: retain the feature implementation; refine UI only.**
+Recaps are especially useful when supervising many sessions. Keep generation,
+forked/tailed helpers, lifecycle safeguards and durable overlays. Present a
+concise control that expands on click for mode/model/timing configuration,
+with a warning beside Forked about current provider-specific cache economics.
+This UI refinement is pending implementation.
+
+A full-power-model fork is too costly for an ordinary UI recap when it
+reprocesses the parent context. Cheap-model tails, local or cloud, are the
+likely practical choice for most users who configure generation. The future
+[no-tool helper provider](openai-compatible-helper-sessions.md#disposition)
+is a candidate source upon first need, not a prerequisite for retention.
+
+The [Codex fork measurements](../gaps/quick-answer-fork-cache-efficiency.md)
+found 94.2% aggregate uncached input in three Astra Quick Answer forks, with a
+warm parent around one sample. These are related helper-fork measurements,
+not a recap benchmark or evidence about every provider. The maintainer expects
+timely forks, for example just under five minutes, eventually to be economical;
+verify actual cached usage before claiming that timing alone makes them cheap.
+Preserve the fork option with that warning rather than deleting its machinery.
+
+### Existing behavior
+
 - A recap is a server-emitted message with `type: "system"`, `subtype:
   "away_summary"`, and a plain-text `content` field. Provider-emitted
   recaps (e.g., a future SDK that exposes them natively) and YA-emitted
@@ -57,13 +82,11 @@ cancellation on activity) and the current trigger/threshold gaps.
   cancels a recap deferred behind the active turn, aborts an in-flight forked
   recap, and durably rejects later time-based recap requests until YA accepts a
   fresh user-authored turn for that session. The pause survives provider
-  process replacement and server restart; hidden/internal and automatic
-  heartbeat turns do not clear it. This recap pause is separate from heartbeat
-  policy: Interrupt leaves
-  heartbeat eligibility unchanged, while Terminate's existing resume exemption
-  disables heartbeat turns and automatic resume. A fresh user turn clears the
-  recap pause after either action; it does not implicitly re-enable heartbeat
-  turns disabled by Terminate. See [heartbeat.md](heartbeat.md).
+  process replacement and server restart; hidden/internal and automatic turns
+  do not clear it. Interrupt leaves the automatic-resume exemption unchanged;
+  Terminate durably blocks automatic resume for wake and cold recaps. A fresh
+  user turn clears the recap pause independently of that exemption. See
+  [heartbeat.md](heartbeat.md#automatic-resume-exemptions).
 - Recap configuration is durable. `recapAfterSeconds` and `recapMode` are
   persisted in session metadata, so a session's recap preference survives a
   process death, a reactivation, and a resume whose request names no recap
@@ -273,9 +296,9 @@ Remaining probes:
 - Stop/Interrupt and Terminate drop a recap deferred behind the active turn and
   reject later away-timer requests until a fresh visible user turn is accepted,
   including after process replacement or server restart. Hidden control and
-  automatic heartbeat turns do not clear the pause.
-- Interrupt does not change heartbeat eligibility. Terminate clears heartbeat
-  opt-in and blocks automatic resume through its separate durable exemption.
+  automatic turns do not clear the pause.
+- Interrupt leaves the automatic-resume exemption unchanged. Terminate blocks
+  automatic resume through its separate durable exemption.
 - Two persisted overlay recaps with no provider content between them
   render as one row (the newest); with provider content between them,
   both render, the older inline at the point it covered.

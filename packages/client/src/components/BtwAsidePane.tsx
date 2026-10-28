@@ -35,7 +35,7 @@ interface BtwAsidePaneProps {
   onDraftChange: (draft: string) => void;
   onSendFollowup: (text: string) => void;
   onHide: () => void;
-  onDone: (argument: string) => void;
+  onDone: () => void;
   onStop?: () => void;
   onTransferToComposer?: (text: string) => void;
 }
@@ -235,7 +235,7 @@ export function BtwAsidePane({
     onDraftChange("");
     const parsed = parseComposerSlashCommand(text);
     if (parsed?.kind === "custom" && parsed.command === "done") {
-      onDone(parsed.argument);
+      onDone();
       return;
     }
 
@@ -276,7 +276,7 @@ export function BtwAsidePane({
           <button
             type="button"
             className="btw-aside-action"
-            onClick={() => onDone("")}
+            onClick={() => onDone()}
             title={t("btwAsideDoneTitle")}
           >
             Done

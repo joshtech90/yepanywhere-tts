@@ -2,7 +2,6 @@ import type { ProviderInfo } from "@yep-anywhere/shared";
 import { describe, expect, it } from "vitest";
 import {
   providerSupportsLocalSessionSandbox,
-  providerSupportsRemoteExecutors,
   resolveSessionProviderCapabilities,
 } from "../providerCapabilities";
 
@@ -115,26 +114,5 @@ describe("providerSupportsLocalSessionSandbox", () => {
     "pi",
   ] as const)("hides the unimplemented %s backend", (providerName) => {
     expect(providerSupportsLocalSessionSandbox(providerName)).toBe(false);
-  });
-});
-
-describe("providerSupportsRemoteExecutors", () => {
-  it.each(["claude", "claude-gateway", "claude-ollama"] as const)(
-    "supports the SSH-backed %s adapter",
-    (providerName) => {
-      expect(providerSupportsRemoteExecutors(providerName)).toBe(true);
-    },
-  );
-
-  it.each([
-    "codex",
-    "codex-oss",
-    "gemini",
-    "gemini-acp",
-    "grok",
-    "opencode",
-    "pi",
-  ] as const)("rejects the local-only %s adapter", (providerName) => {
-    expect(providerSupportsRemoteExecutors(providerName)).toBe(false);
   });
 });

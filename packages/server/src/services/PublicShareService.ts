@@ -201,12 +201,14 @@ function sanitizeSessionForPublicShare(session: AppSession): AppSession {
     heartbeatTurnsEnabled: _heartbeatTurnsEnabled,
     heartbeatTurnsAfterMinutes: _heartbeatTurnsAfterMinutes,
     heartbeatTurnText: _heartbeatTurnText,
+    heartbeatForceAfterMinutes: _heartbeatForceAfterMinutes,
     transcriptDisplayObjects: _transcriptDisplayObjects,
     ...rest
   } = session as AppSession & {
-    heartbeatTurnsEnabled?: boolean;
-    heartbeatTurnsAfterMinutes?: number;
-    heartbeatTurnText?: string;
+    heartbeatTurnsEnabled?: unknown;
+    heartbeatTurnsAfterMinutes?: unknown;
+    heartbeatTurnText?: unknown;
+    heartbeatForceAfterMinutes?: unknown;
   };
 
   return {

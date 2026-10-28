@@ -19,7 +19,7 @@ export interface SessionDoneCoordinatorOptions {
   notificationService?: NotificationService;
   getProcessForSession(sessionId: string): Process | undefined;
   cancelInFlightForkedRecap(process: Process): void;
-  requestHeartbeatSweep(): void;
+  requestMaintenanceSweep(): void;
 }
 
 export function syntheticDoneMessage(
@@ -160,7 +160,7 @@ export class SessionDoneCoordinator {
         archive,
       );
       if (!process) {
-        this.options.requestHeartbeatSweep();
+        this.options.requestMaintenanceSweep();
         return { message: boundaryMessage, paused: true, queued: true };
       }
       const pending = process.queueYaCommand("done", {
@@ -202,7 +202,7 @@ export class SessionDoneCoordinator {
     if (process) {
       this.pauseLiveProcess(process);
     } else {
-      this.options.requestHeartbeatSweep();
+      this.options.requestMaintenanceSweep();
     }
     await this.options.notificationService?.markSeen(
       sessionId,
@@ -257,7 +257,7 @@ export class SessionDoneCoordinator {
         });
         process.resumeRecapsAfterUserTurn();
         process.handleAutomationPauseChanged();
-        this.options.requestHeartbeatSweep();
+        this.options.requestMaintenanceSweep();
       }
     } catch (error) {
       process.releasePendingYaCommandCompletion(pending.tempId);
@@ -306,7 +306,7 @@ export class SessionDoneCoordinator {
       message.timestamp,
       message.uuid,
     );
-    this.options.requestHeartbeatSweep();
+    this.options.requestMaintenanceSweep();
     return message;
   }
 
@@ -316,7 +316,7 @@ export class SessionDoneCoordinator {
       this.pauseLiveProcess(process);
       return;
     }
-    this.options.requestHeartbeatSweep();
+    this.options.requestMaintenanceSweep();
   }
 
   resumeAfterUserTurn(process: Process): void {
@@ -329,7 +329,7 @@ export class SessionDoneCoordinator {
       })
       .then(() => {
         process.handleAutomationPauseChanged();
-        this.options.requestHeartbeatSweep();
+        this.options.requestMaintenanceSweep();
       })
       .catch((error) => {
         getLogger().warn(
@@ -394,7 +394,7 @@ export class SessionDoneCoordinator {
     process.pauseRecapsUntilUserTurn();
     this.options.cancelInFlightForkedRecap(process);
     process.handleAutomationPauseChanged();
-    this.options.requestHeartbeatSweep();
+    this.options.requestMaintenanceSweep();
   }
 }
 

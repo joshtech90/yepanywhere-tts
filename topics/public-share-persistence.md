@@ -330,8 +330,7 @@ recreates a bearer authorization.
 The Settings **Public Session Sharing** toggle remains a destructive global kill
 switch. The settings routes reserve one shared serial transaction slot on
 request arrival, before parsing, and keep persistence plus each live settings
-effect in that order; the secondary remote-executor persistence route uses the
-same queue. Initialize, enable, and disable are one request-ordered desired-state
+effect in that order. Initialize, enable, and disable are one request-ordered desired-state
 lifecycle; each call records its desired state before waiting. A superseded
 enable cannot publish stale readiness, while every disable records an obligation
 that survives a rejected call and persists the `disabled` migration marker

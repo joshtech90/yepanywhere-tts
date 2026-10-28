@@ -14,10 +14,6 @@ import {
 } from "@yep-anywhere/shared";
 import type { ResumeMode } from "../supervisor/Supervisor.js";
 import { HTTPException } from "hono/http-exception";
-import {
-  isValidSshHostAlias,
-  normalizeSshHostAlias,
-} from "../utils/sshHostAlias.js";
 
 export function parseOptionalExecutor(rawExecutor: unknown): {
   executor: string | undefined;
@@ -30,18 +26,9 @@ export function parseOptionalExecutor(rawExecutor: unknown): {
     return { executor: undefined, error: "executor must be a string" };
   }
 
-  const executor = normalizeSshHostAlias(rawExecutor);
-  if (!executor) {
-    return { executor: undefined };
-  }
-  if (!isValidSshHostAlias(executor)) {
-    return {
-      executor: undefined,
-      error: "executor must be a valid SSH host alias",
-    };
-  }
-
-  return { executor };
+  return rawExecutor.trim()
+    ? { executor: undefined, error: "SSH executors have been removed" }
+    : { executor: undefined };
 }
 
 export function normalizeOptionalServiceTier(

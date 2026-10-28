@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { UrlProjectId, WorkstreamId } from "@yep-anywhere/shared";
+import type { UrlProjectId } from "@yep-anywhere/shared";
 import { getLogger } from "../logging/logger.js";
 import type { PermissionMode, UserMessage } from "../sdk/types.js";
 import type { EventBus } from "../watcher/EventBus.js";
@@ -31,7 +31,6 @@ export interface QueuedRequest {
   projectPath: string;
   projectId: UrlProjectId;
   sessionId?: string; // For resume-session requests
-  workstreamId?: WorkstreamId;
   message: UserMessage;
   permissionMode?: PermissionMode;
   modelSettings?: ModelSettings;
@@ -113,7 +112,6 @@ export class WorkerQueue {
     projectPath: string;
     projectId: UrlProjectId;
     sessionId?: string;
-    workstreamId?: WorkstreamId;
     message: UserMessage;
     permissionMode?: PermissionMode;
     modelSettings?: ModelSettings;
@@ -142,7 +140,6 @@ export class WorkerQueue {
       projectPath: params.projectPath,
       projectId: params.projectId,
       sessionId: params.sessionId,
-      workstreamId: params.workstreamId,
       message: params.message,
       permissionMode: params.permissionMode,
       modelSettings: params.modelSettings,

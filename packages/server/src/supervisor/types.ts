@@ -24,10 +24,8 @@ import type {
   UrlProjectId,
   SessionLivenessSnapshot,
   ToolResultMedia,
-  WorkstreamId,
 } from "@yep-anywhere/shared";
 import type { PermissionMode, SDKMessage } from "../sdk/types.js";
-import type { SessionExecution } from "../sdk/providers/types.js";
 
 export const DEFAULT_IDLE_PREEMPT_THRESHOLD_MS = 10 * 1000; // 10 seconds - workers idle longer than this can be preempted
 
@@ -126,12 +124,6 @@ export interface SessionSummary {
   creationProvenance?: import("@yep-anywhere/shared").SessionCreationProvenance;
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
   initialPrompt?: string;
-  /** Whether this session is opted in to heartbeat turns */
-  heartbeatTurnsEnabled?: boolean;
-  /** Optional per-session idle threshold override in minutes */
-  heartbeatTurnsAfterMinutes?: number;
-  /** Optional per-session heartbeat text override */
-  heartbeatTurnText?: string;
   /** Context usage from the last assistant message */
   contextUsage?: ContextUsage;
   /** AI provider used for this session */
@@ -168,8 +160,6 @@ export interface SessionSummary {
   approvalPolicy?: string;
   /** Sandbox policy from turn_context */
   sandboxPolicy?: SessionSandboxPolicy;
-  /** YA workstream lane for this session. Missing means the implicit main lane. */
-  workstreamId?: WorkstreamId;
   /** Provider-launched child work nested under this parent. Absent on older servers. */
   providerChildren?: ProviderChildSessionSummary[];
 }
@@ -432,8 +422,6 @@ export interface ProcessOptions {
   launchCompactPercentOverride?: number;
   /** SSH host for remote execution (undefined = local) */
   executor?: string;
-  /** Internal placement identity; never inferred from a managed target path. */
-  execution?: SessionExecution;
   /** How this process should answer away-recap requests. */
   recapMode?: RecapMode;
   /** Browser-away duration before YA asks this process for a recap. */

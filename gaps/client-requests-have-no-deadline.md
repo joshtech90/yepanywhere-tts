@@ -12,8 +12,8 @@ reader sits in front of a bare spinner with no indication that anything is
 wrong, no elapsed time, and no retry. `ProjectsPage`
 (`packages/client/src/pages/ProjectsPage.tsx:244`) is the plainest case — a
 loading div, with the error branch immediately below it at `:245`. `SessionPage`
-(`:5123`, `:5727`), `GitStatusPage` (`:928`), `NewSessionPage` (`:182`) and
-`RemoteExecutorsSettings` (`:155`) have the same shape. The 2026-09-10 symptom
+(`:5123`, `:5727`), `GitStatusPage` (`:928`) and `NewSessionPage` (`:182`)
+have the same shape. The 2026-09-10 symptom
 was a black Loading screen and a New Session pane stuck on "Loading..." while
 `GET /health` was taking 4-13 seconds; that server-side cause is fixed
 ([optional SQLite](../topics/optional-sqlite.md) § Data directory placement),

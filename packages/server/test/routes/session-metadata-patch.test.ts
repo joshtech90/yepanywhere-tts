@@ -10,47 +10,11 @@ describe("parseSessionMetadataPatch", () => {
     });
   });
 
-  it("normalizes parent, heartbeat, prompt suggestion, and recap fields", () => {
-    const result = parseSessionMetadataPatch({
-      title: "Session title",
-      archived: true,
-      starred: false,
-      parentSessionId: " parent ",
-      heartbeatTurnsEnabled: true,
-      wakeTurnsEnabled: false,
-      heartbeatTurnsAfterMinutes: 0,
-      heartbeatTurnText: "x".repeat(2050),
-      heartbeatForceAfterMinutes: 5,
-      promptSuggestionMode: "native",
-      recapAfterSeconds: 42,
-    });
-
-    expect(result).toMatchObject({
-      ok: true,
-      patch: {
-        title: "Session title",
-        archived: true,
-        starred: false,
-        parentSessionId: "parent",
-        heartbeatTurnsEnabled: true,
-        wakeTurnsEnabled: false,
-        heartbeatTurnsAfterMinutes: null,
-        heartbeatTurnText: "x".repeat(2000),
-        heartbeatForceAfterMinutes: 5,
-        promptSuggestionMode: "native",
-        recapAfterSeconds: 42,
-      },
-    });
-  });
-
   it("normalizes clear values", () => {
     expect(
       parseSessionMetadataPatch({
         parentSessionId: "",
         wakeTurnsEnabled: null,
-        heartbeatTurnsAfterMinutes: null,
-        heartbeatTurnText: "",
-        heartbeatForceAfterMinutes: 0,
         promptSuggestionMode: "",
         recapAfterSeconds: "",
       }),
@@ -59,9 +23,6 @@ describe("parseSessionMetadataPatch", () => {
       patch: {
         parentSessionId: null,
         wakeTurnsEnabled: null,
-        heartbeatTurnsAfterMinutes: null,
-        heartbeatTurnText: null,
-        heartbeatForceAfterMinutes: null,
         promptSuggestionMode: null,
         recapAfterSeconds: null,
       },
@@ -86,30 +47,11 @@ describe("parseSessionMetadataPatch", () => {
     });
   });
 
-  it("rejects invalid heartbeat intervals", () => {
-    expect(
-      parseSessionMetadataPatch({ heartbeatTurnsAfterMinutes: 1441 }),
-    ).toEqual({
-      ok: false,
-      status: 400,
-      error:
-        "heartbeatTurnsAfterMinutes must be null or an integer between 1 and 1440",
-    });
-    expect(
-      parseSessionMetadataPatch({ heartbeatForceAfterMinutes: 1.5 }),
-    ).toEqual({
-      ok: false,
-      status: 400,
-      error:
-        "heartbeatForceAfterMinutes must be null or an integer between 1 and 1440",
-    });
-  });
-
   it("rejects invalid typed fields with route-compatible messages", () => {
     expect(parseSessionMetadataPatch({ heartbeatTurnText: 1 })).toEqual({
       ok: false,
-      status: 400,
-      error: "heartbeatTurnText must be a string or null",
+      status: 410,
+      error: "Synthetic heartbeat turns have been removed",
     });
     expect(parseSessionMetadataPatch({ parentSessionId: 1 })).toEqual({
       ok: false,

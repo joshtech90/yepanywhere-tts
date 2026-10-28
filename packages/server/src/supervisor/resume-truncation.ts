@@ -3,7 +3,7 @@
  *
  * A rewind arms a pending truncating resume in session metadata; whichever
  * path next starts a Claude process for that session must apply it (the
- * `/resume` route, Project Queue dispatch, heartbeat and wake turns,
+ * `/resume` route, Project Queue dispatch, wake turns,
  * reactivate, a settings restart). Every supervisor launcher, provider or
  * real-SDK, resolves its truncation here before starting the process, so the
  * process can never replay a tail the session view shows as dropped. Contract:

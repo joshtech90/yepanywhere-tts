@@ -122,7 +122,6 @@ export async function readRetainedSessionItems(
       parentSessionKind: metadata?.parentSessionKind,
       forkedFromSessionId: metadata?.forkedFromSessionId,
       creationProvenance: metadata?.creationProvenance,
-      workstreamId: metadata?.workstreamId,
       executor: metadata?.executor,
       ...(row.asyncQuestions ? { asyncQuestions: row.asyncQuestions } : {}),
     };

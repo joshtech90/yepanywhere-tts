@@ -57,7 +57,6 @@ export const settingsCategoryEmojiIcons: Record<string, string> = {
   remote: "🌐",
   providers: "🔌",
   speech: "🎙️",
-  "remote-executors": "🖥️",
   environment: "⚙️",
   about: "ℹ️",
   emulator: "🤖",
@@ -270,15 +269,6 @@ export const settingsCategoryIcons: Record<string, ReactNode> = {
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <line x1="12" y1="19" x2="12" y2="23" />
       <path d="M8 23h8" />
-    </Icon>
-  ),
-
-  "remote-executors": (
-    <Icon>
-      {/* Desktop / monitor */}
-      <rect x="2" y="3" width="20" height="14" rx="2" />
-      <line x1="8" y1="21" x2="16" y2="21" />
-      <line x1="12" y1="17" x2="12" y2="21" />
     </Icon>
   ),
 

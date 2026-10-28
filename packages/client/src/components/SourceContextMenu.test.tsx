@@ -18,6 +18,39 @@ afterEach(() => {
 });
 
 describe("SourceContextMenu", () => {
+  it("lets a selected action move focus to its destination", () => {
+    function FocusHarness() {
+      const controller = useSourceContextMenu(t);
+      return (
+        <>
+          <textarea aria-label="Draft" />
+          <button
+            type="button"
+            onClick={(event) =>
+              controller.openFromButton(event, [
+                {
+                  label: "Comment",
+                  onSelect: () =>
+                    screen.getByRole("textbox", { name: "Draft" }).focus(),
+                },
+              ])
+            }
+          >
+            Actions
+          </button>
+          {controller.menu}
+        </>
+      );
+    }
+    render(<FocusHarness />);
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Comment" }));
+    expect(document.activeElement).toBe(
+      screen.getByRole("textbox", { name: "Draft" }),
+    );
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("opens from touch long-press and consumes its follow-up click", async () => {
     vi.useFakeTimers();
     const onActivate = vi.fn();

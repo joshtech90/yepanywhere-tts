@@ -187,8 +187,8 @@ describe("Process", () => {
       });
 
       process.queueMessage({
-        text: "heartbeat",
-        automaticSource: "heartbeat",
+        text: "wake continuation",
+        automaticSource: "wake",
       });
       await queue[Symbol.asyncIterator]().next();
 

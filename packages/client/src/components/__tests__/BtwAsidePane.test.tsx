@@ -11,7 +11,7 @@ function renderPane(
   callbacks: {
     onSendFollowup?: (text: string) => void;
     onHide?: () => void;
-    onDone?: (argument: string) => void;
+    onDone?: () => void;
     onTransferToComposer?: (text: string) => void;
   } = {},
 ) {
@@ -72,7 +72,7 @@ describe("BtwAsidePane", () => {
     fireEvent.change(textarea, { target: { value: "/done use this" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
 
-    expect(onDone).toHaveBeenCalledWith("use this");
+    expect(onDone).toHaveBeenCalledWith();
     expect(onSendFollowup).toHaveBeenCalledTimes(1);
     expect(textarea.value).toBe("");
 
@@ -81,7 +81,7 @@ describe("BtwAsidePane", () => {
     expect(onDone).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    expect(onDone).toHaveBeenLastCalledWith("");
+    expect(onDone).toHaveBeenLastCalledWith();
     expect(onDone).toHaveBeenCalledTimes(2);
   });
 

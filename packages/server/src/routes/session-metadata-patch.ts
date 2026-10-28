@@ -1,5 +1,4 @@
 import {
-  MAX_HEARTBEAT_TURN_TEXT_LENGTH,
   PROMPT_SUGGESTION_MODES,
   type PromptSuggestionMode,
   clampRecapAfterSeconds,
@@ -13,11 +12,7 @@ export interface SessionMetadataPatch {
   /** Normalized category name; null files the session under no category. */
   sidebarCategory?: string | null;
   parentSessionId?: string | null;
-  heartbeatTurnsEnabled?: boolean;
   wakeTurnsEnabled?: boolean | null;
-  heartbeatTurnsAfterMinutes?: number | null;
-  heartbeatTurnText?: string | null;
-  heartbeatForceAfterMinutes?: number | null;
   promptSuggestionMode?: PromptSuggestionMode | null;
   recapAfterSeconds?: number | null;
 }
@@ -28,11 +23,7 @@ interface SessionMetadataPatchBody {
   starred?: boolean;
   sidebarCategory?: unknown;
   parentSessionId?: string | null;
-  heartbeatTurnsEnabled?: boolean;
   wakeTurnsEnabled?: unknown;
-  heartbeatTurnsAfterMinutes?: number | null;
-  heartbeatTurnText?: string | null;
-  heartbeatForceAfterMinutes?: number | null;
   promptSuggestionMode?: unknown;
   recapAfterSeconds?: unknown;
 }
@@ -44,7 +35,7 @@ type ParseSessionMetadataPatchResult =
     }
   | {
       ok: false;
-      status: 400;
+      status: 400 | 410;
       error: string;
     };
 
@@ -58,34 +49,17 @@ function invalidPatch(error: string): ParseSessionMetadataPatchResult {
   return { ok: false, status: 400, error };
 }
 
-function parseHeartbeatMinutes(
-  value: number | null | undefined,
-  fieldName: "heartbeatForceAfterMinutes" | "heartbeatTurnsAfterMinutes",
-): { value: number | null | undefined; error?: string } {
-  if (value === undefined) {
-    return { value: undefined };
-  }
-  if (value === null || value === 0) {
-    return { value: null };
-  }
-  if (
-    typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= 1 &&
-    value <= 1440
-  ) {
-    return { value };
-  }
-  return {
-    value: undefined,
-    error: `${fieldName} must be null or an integer between 1 and 1440`,
-  };
-}
-
 export function parseSessionMetadataPatch(
   rawBody: unknown,
 ): ParseSessionMetadataPatchResult {
   const body = metadataPatchBody(rawBody);
+  if (Object.keys(body).some((key) => key.startsWith("heartbeat"))) {
+    return {
+      ok: false,
+      status: 410,
+      error: "Synthetic heartbeat turns have been removed",
+    };
+  }
 
   // At least one field must be provided.
   if (
@@ -94,21 +68,12 @@ export function parseSessionMetadataPatch(
     body.starred === undefined &&
     body.sidebarCategory === undefined &&
     body.parentSessionId === undefined &&
-    body.heartbeatTurnsEnabled === undefined &&
     body.wakeTurnsEnabled === undefined &&
-    body.heartbeatTurnsAfterMinutes === undefined &&
-    body.heartbeatTurnText === undefined &&
-    body.heartbeatForceAfterMinutes === undefined &&
     body.promptSuggestionMode === undefined &&
     body.recapAfterSeconds === undefined
   ) {
     return invalidPatch("At least one session metadata field must be provided");
   }
-
-  const parsedHeartbeatForceAfterMinutes = parseHeartbeatMinutes(
-    body.heartbeatForceAfterMinutes,
-    "heartbeatForceAfterMinutes",
-  );
 
   if (
     body.wakeTurnsEnabled !== undefined &&
@@ -117,36 +82,6 @@ export function parseSessionMetadataPatch(
   ) {
     return invalidPatch("wakeTurnsEnabled must be a boolean or null");
   }
-  if (parsedHeartbeatForceAfterMinutes.error) {
-    return invalidPatch(parsedHeartbeatForceAfterMinutes.error);
-  }
-
-  const parsedHeartbeatTurnsAfterMinutes = parseHeartbeatMinutes(
-    body.heartbeatTurnsAfterMinutes,
-    "heartbeatTurnsAfterMinutes",
-  );
-  if (parsedHeartbeatTurnsAfterMinutes.error) {
-    return invalidPatch(parsedHeartbeatTurnsAfterMinutes.error);
-  }
-
-  const heartbeatTurnText =
-    body.heartbeatTurnText === undefined
-      ? undefined
-      : body.heartbeatTurnText === null || body.heartbeatTurnText === ""
-        ? null
-        : typeof body.heartbeatTurnText === "string"
-          ? body.heartbeatTurnText.slice(0, MAX_HEARTBEAT_TURN_TEXT_LENGTH)
-          : null;
-
-  if (
-    body.heartbeatTurnText !== undefined &&
-    body.heartbeatTurnText !== null &&
-    body.heartbeatTurnText !== "" &&
-    typeof body.heartbeatTurnText !== "string"
-  ) {
-    return invalidPatch("heartbeatTurnText must be a string or null");
-  }
-
   if (
     body.parentSessionId !== undefined &&
     body.parentSessionId !== null &&
@@ -216,11 +151,7 @@ export function parseSessionMetadataPatch(
       starred: body.starred,
       sidebarCategory,
       parentSessionId,
-      heartbeatTurnsEnabled: body.heartbeatTurnsEnabled,
       wakeTurnsEnabled: body.wakeTurnsEnabled as boolean | null | undefined,
-      heartbeatTurnsAfterMinutes: parsedHeartbeatTurnsAfterMinutes.value,
-      heartbeatTurnText,
-      heartbeatForceAfterMinutes: parsedHeartbeatForceAfterMinutes.value,
       promptSuggestionMode,
       recapAfterSeconds,
     },

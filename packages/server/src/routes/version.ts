@@ -74,7 +74,6 @@ import {
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
-  PROJECT_SESSION_DEFAULTS_CAPABILITY,
   PROJECT_DIRECTORY_STORAGE_POLICY_CAPABILITY,
   PUBLIC_FILE_SHARES_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
@@ -616,7 +615,6 @@ const BASE_CAPABILITIES: string[] = [
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
-  PROJECT_SESSION_DEFAULTS_CAPABILITY,
   PROJECT_DIRECTORY_STORAGE_POLICY_CAPABILITY,
   PUBLIC_FILE_SHARES_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
@@ -809,7 +807,10 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   capabilities.push(
     ...getCapabilitiesForDeviceBridgeState(deviceBridgeState, enabled),
   );
-  const denied = new Set(options?.deniedCapabilities ?? []);
+  const denied = new Set([
+    SERVER_CAPABILITIES.projectSessionDefaults.name,
+    ...(options?.deniedCapabilities ?? []),
+  ]);
   return capabilities.filter((capability) => !denied.has(capability));
 }
 
@@ -930,7 +931,10 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
       getDeviceBridgeState: () => deviceBridgeStatus.state,
       sessionSandboxAvailability,
     });
-    const deniedCapabilities = options?.deniedCapabilities ?? [];
+    const deniedCapabilities = [
+      SERVER_CAPABILITIES.projectSessionDefaults.name,
+      ...(options?.deniedCapabilities ?? []),
+    ];
     const voiceBackends = getEnabledVoiceBackends(options);
     const voiceBackendStatuses = options?.getVoiceBackendStatuses?.() ?? [];
     const voiceBackendCapabilities = getVoiceBackendCapabilities(options);
@@ -974,7 +978,14 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
               current,
               deniedCapabilities,
             )
-          : { capabilities }),
+          : {
+              capabilities,
+              deniedCapabilityBits: encodeVersionedServerCapabilities(
+                [],
+                current,
+                deniedCapabilities,
+              ).deniedCapabilityBits,
+            }),
       ...(capabilities.includes(
         SERVER_CAPABILITIES.experimentalConversation.name,
       )

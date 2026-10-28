@@ -4,7 +4,6 @@ import {
   PROJECT_CODE_NAMES_CAPABILITY,
   PROJECT_NAMES_CAPABILITY,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
-  PROJECT_SESSION_DEFAULTS_CAPABILITY,
   type ProjectQueueMessage,
   serverHasCapability,
   SERVER_CAPABILITIES,
@@ -49,10 +48,9 @@ export function ProjectsPage() {
     version,
     PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   );
-  const supportsProjectSessionDefaults = serverHasCapability(
-    version,
-    PROJECT_SESSION_DEFAULTS_CAPABILITY,
-  );
+  const supportsProjectSettings =
+    serverHasCapability(version, SERVER_CAPABILITIES.projectService) ||
+    serverHasCapability(version, SERVER_CAPABILITIES.projectAccessSharing);
   const supportsProjectCodeNames = serverHasCapability(
     version,
     PROJECT_CODE_NAMES_CAPABILITY,
@@ -557,9 +555,7 @@ export function ProjectsPage() {
                       : undefined
                   }
                   onOpenSettings={
-                    supportsProjectSessionDefaults
-                      ? setSettingsProject
-                      : undefined
+                    supportsProjectSettings ? setSettingsProject : undefined
                   }
                   onCopy={
                     mayCopy(project)

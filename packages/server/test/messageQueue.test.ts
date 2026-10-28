@@ -58,7 +58,10 @@ describe("concatUserMessages", () => {
 
   it("keeps automatic batches from posing as fresh user intent", () => {
     const combined = concatUserMessages([
-      { ...msg("heartbeat"), automaticSource: "heartbeat" },
+      {
+        ...msg("restore instructions"),
+        automaticSource: "instruction-restoration",
+      },
       { ...msg("queued project work"), automaticSource: "project-queue" },
       { ...msg("wake continuation"), automaticSource: "wake" },
     ]);

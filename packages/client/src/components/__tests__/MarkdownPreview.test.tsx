@@ -2,8 +2,35 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ClipboardEvent } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MarkdownPreview } from "../MarkdownPreview";
+import { I18nProvider } from "../../i18n";
 
 describe("MarkdownPreview", () => {
+  it("selects whole inline items while leaving code blocks and linked menus alone", () => {
+    const contextMenu = vi.fn();
+    const { container } = render(
+      <I18nProvider>
+        <MarkdownPreview
+          html={
+            '<p><code>lo-teacher-v3-test</code> <code>docs/a file.md</code> <a href="/file"><code>linked.md</code></a></p><pre><code>block-word</code></pre>'
+          }
+          onContextMenu={contextMenu}
+        />
+      </I18nProvider>,
+    );
+    const code = container.querySelectorAll("code");
+    fireEvent.doubleClick(code[0]!);
+    expect(document.getSelection()?.toString()).toBe("lo-teacher-v3-test");
+    fireEvent.doubleClick(code[1]!);
+    expect(document.getSelection()?.toString()).toBe("docs/a file.md");
+    fireEvent.doubleClick(code[3]!);
+    expect(document.getSelection()?.toString()).toBe("docs/a file.md");
+    document.getSelection()?.removeAllRanges();
+    fireEvent.contextMenu(code[2]!);
+    expect(contextMenu).toHaveBeenCalledOnce();
+    fireEvent.contextMenu(code[0]!);
+    expect(screen.getByRole("menuitem", { name: "Copy text" })).toBeTruthy();
+    expect(contextMenu).toHaveBeenCalledOnce();
+  });
   afterEach(() => {
     document.getSelection()?.removeAllRanges();
     cleanup();

@@ -1,5 +1,6 @@
 import { authEvents } from "../lib/authEvents";
 import { getClientVersion } from "../lib/clientVersion";
+import { getClientSurface } from "../lib/desktopRuntime";
 import { type ApiRefusalFields, refusalFields } from "./refusal";
 import { requestDeadlineSignal } from "./requestDeadline";
 
@@ -63,6 +64,7 @@ function createPlainFetchHeaders(
       "Content-Type": "application/json",
       "X-Yep-Anywhere": "true",
       "X-Yep-Client-Version": getClientVersion(),
+      "X-Yep-Client-Surface": getClientSurface(),
       ...(token ? { "X-Desktop-Token": token } : {}),
     },
     headers,

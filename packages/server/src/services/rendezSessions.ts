@@ -44,9 +44,7 @@ export function createRendezSessions(
       );
       if (owned) {
         const live = () =>
-          owned.projectPath === project &&
-          owned.execution.kind === "local" &&
-          owned.isProcessAlive === true;
+          owned.projectPath === project && owned.isProcessAlive === true;
         const route: RendezDeliveryRoute = {
           transport: "ya",
           profile: getProviderImageSizing(owned.provider, owned.resolvedModel)

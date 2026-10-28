@@ -9,8 +9,6 @@ vi.mock("../../../hooks/useServerSettings", () => ({
   useServerSettings: () => ({
     settings: {
       globalInstructions: "",
-      heartbeatTurnsAfterMinutes: 15,
-      heartbeatTurnText: "check status and continue",
       agentContextHints: { latexMathRendering: false },
     },
     isLoading: false,

@@ -23,7 +23,6 @@ import type {
   RecentsChangedEvent,
   TranscriptDisplayObject,
   UrlProjectId,
-  WorkstreamsChangedEvent,
 } from "@yep-anywhere/shared";
 import type { SessionOwnership, SessionSummary } from "../supervisor/types.js";
 
@@ -223,14 +222,6 @@ export interface SessionMetadataChangedEvent {
    * rows it grouped are live again and viewers reload the transcript.
    */
   rewindRecordRemoved?: string;
-  /** Updated heartbeat opt-in flag (if changed) */
-  heartbeatTurnsEnabled?: boolean;
-  /** Updated per-session heartbeat interval override (if changed) */
-  heartbeatTurnsAfterMinutes?: number | null;
-  /** Updated per-session heartbeat text override (if changed) */
-  heartbeatTurnText?: string | null;
-  /** Updated per-session heartbeat force timeout (if changed) */
-  heartbeatForceAfterMinutes?: number | null;
   /** Updated per-session prompt-suggestion preference (if changed) */
   promptSuggestionMode?: PromptSuggestionMode;
   /** Updated per-session recap timing override (if changed) */
@@ -394,8 +385,7 @@ export type BusEvent =
   | NetworkBindingChangedEvent
   | BrowserTabConnectedEvent
   | BrowserTabDisconnectedEvent
-  | CacheMissBillingEvent
-  | WorkstreamsChangedEvent;
+  | CacheMissBillingEvent;
 
 export type EventHandler<T = BusEvent> = (event: T) => void;
 

@@ -1690,20 +1690,6 @@ export function useSession(
           ...(event.forkedFromSessionId !== undefined && {
             forkedFromSessionId: event.forkedFromSessionId ?? undefined,
           }),
-          ...(event.heartbeatTurnsEnabled !== undefined && {
-            heartbeatTurnsEnabled: event.heartbeatTurnsEnabled,
-          }),
-          ...(event.heartbeatTurnsAfterMinutes !== undefined && {
-            heartbeatTurnsAfterMinutes:
-              event.heartbeatTurnsAfterMinutes ?? undefined,
-          }),
-          ...(event.heartbeatTurnText !== undefined && {
-            heartbeatTurnText: event.heartbeatTurnText ?? undefined,
-          }),
-          ...(event.heartbeatForceAfterMinutes !== undefined && {
-            heartbeatForceAfterMinutes:
-              event.heartbeatForceAfterMinutes ?? undefined,
-          }),
           ...(event.promptSuggestionMode !== undefined && {
             promptSuggestionMode: event.promptSuggestionMode,
           }),

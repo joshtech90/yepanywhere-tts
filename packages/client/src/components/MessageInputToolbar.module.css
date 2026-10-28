@@ -250,7 +250,6 @@
   :global(.message-input-left .render-mode-toolbar-button),
 .waveformBackdropActive
   :global(.message-input-left .conversation-view-toolbar-button),
-.waveformBackdropActive :global(.message-input-left .heartbeat-toolbar-button),
 .waveformBackdropActive .doneButton,
 .waveformBackdropActive :global(.message-input-left .voice-input-button) {
   background: color-mix(
@@ -278,8 +277,6 @@
   :global(.message-input-left .render-mode-toolbar-button:hover),
 .waveformBackdropActive
   :global(.message-input-left .conversation-view-toolbar-button:hover),
-.waveformBackdropActive
-  :global(.message-input-left .heartbeat-toolbar-button:hover),
 .waveformBackdropActive .doneButton:hover,
 .waveformBackdropActive :global(.message-input-left .voice-input-button:hover) {
   background: color-mix(
@@ -330,16 +327,6 @@
   background: color-mix(
     in srgb,
     color-mix(in srgb, var(--attention-color) 14%, var(--bg-surface))
-      var(--waveform-control-surface-opacity),
-    transparent
-  );
-}
-
-.waveformBackdropActive
-  :global(.message-input-left .heartbeat-toolbar-button.active) {
-  background: color-mix(
-    in srgb,
-    color-mix(in srgb, var(--app-yep-green) 18%, var(--bg-surface))
       var(--waveform-control-surface-opacity),
     transparent
   );

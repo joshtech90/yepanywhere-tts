@@ -39,6 +39,7 @@ import {
   useCodeFenceRenderers,
 } from "../../hooks/useCodeFenceRenderers";
 import { useInnerHtml } from "../../hooks/useInnerHtml";
+import { useInlineCodeActions } from "../../hooks/useInlineCodeActions";
 import { useStreamingMarkdown } from "../../hooks/useStreamingMarkdown";
 import { useI18n } from "../../i18n";
 import { registerMarkdownCopySource } from "../../lib/markdownSelectionCopy";
@@ -156,6 +157,7 @@ export const TextBlock = memo(function TextBlock({
   timelineAction,
 }: Props) {
   const { t } = useI18n();
+  const inlineCode = useInlineCodeActions();
   const { projectPaths, mentionedDirectories } = useProjectPathLinkSettings();
   const [copied, setCopied] = useState(false);
   const [galleryActionHost, setGalleryActionHost] =
@@ -500,7 +502,10 @@ export const TextBlock = memo(function TextBlock({
         ref={copySourceRef}
         className={`text-block-content ${codeFenceRootClass}`}
         onClick={handleContentClick}
-        onContextMenu={handleContextMenu}
+        onDoubleClick={inlineCode.handleDoubleClick}
+        onContextMenu={(event) => {
+          if (!inlineCode.handleContextMenu(event)) handleContextMenu(event);
+        }}
       >
         {/* Always render streaming elements when streaming so refs are ready for augments */}
         {renderStreamingContainer && (
@@ -616,6 +621,7 @@ export const TextBlock = memo(function TextBlock({
         />
       )}
       {contextMenuElement}
+      {inlineCode.menu}
     </div>
   );
 });

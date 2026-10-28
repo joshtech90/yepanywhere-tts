@@ -113,6 +113,15 @@ invalid replacement request cannot sacrifice the live session.
   status is just no longer echoed) and the `- Restart reason:` line (always
   "Manual restart from Yep Anywhere" — no signal).
 
+## Restart compaction observation lifetime
+
+The restart/handoff compaction attempt releases its boundary subscription and
+12-second deadline when it completes, times out, observes process error or
+termination, or dispatch refuses or throws. A dispatch exception still
+propagates; observation setup failure propagates before dispatch. Cleanup
+does not cancel provider work or establish readiness for the next queued turn.
+Restart and resume compaction retain their separate dispatch and result policies.
+
 ## Provider transcript pointer (implemented)
 
 The provider's **reader** — not the runtime `AgentProvider` — owns transcript
@@ -171,6 +180,9 @@ guarantee.
   selected text) in the restart body, alongside the existing `sourceUrl`.
 
 ## Tests
+
+`packages/server/test/supervisor/restart-compaction.test.ts` protects observer
+teardown, dispatch ordering and boundary-only completion independently of HTTP.
 
 `packages/server/test/routes/sessions-metadata.test.ts` — "summarizes fallback
 activity and appends queued turns last" asserts the slim format (URL line,

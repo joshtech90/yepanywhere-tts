@@ -62,8 +62,6 @@ export interface SessionMenuProps {
   onRestartProvider?: () => Promise<void>;
   /** Reload the page (non-swipe alternative for mobile) */
   onReload?: () => void;
-  /** Called to configure session heartbeat settings */
-  onConfigureHeartbeat?: () => void;
   /** Called to configure defaults for this session's project */
   onConfigureProjectSettings?: () => void;
   /** Called to configure session recap settings */
@@ -125,7 +123,6 @@ export function SessionMenu({
   onTerminate,
   onRestartProvider,
   onReload,
-  onConfigureHeartbeat,
   onConfigureProjectSettings,
   onConfigureRecaps,
   promptSuggestionMode,
@@ -609,32 +606,6 @@ export function SessionMenu({
             <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.15.38.36.72.6 1 .3.35.7.55 1.1.6h.09v4h-.09a1.7 1.7 0 0 0-1.7.4Z" />
           </svg>
           {t("sessionMenuProjectSettings")}
-        </button>
-      )}
-      {onConfigureHeartbeat && (
-        <button
-          type="button"
-          onClick={() => handleAction(onConfigureHeartbeat)}
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            aria-hidden="true"
-          >
-            <path d="M12 2v4" />
-            <path d="M12 18v4" />
-            <path d="m4.93 4.93 2.83 2.83" />
-            <path d="m16.24 16.24 2.83 2.83" />
-            <path d="M2 12h4" />
-            <path d="M18 12h4" />
-            <path d="m4.93 19.07 2.83-2.83" />
-            <path d="m16.24 7.76 2.83-2.83" />
-          </svg>
-          {t("sessionMenuHeartbeat")}
         </button>
       )}
       {onConfigureRecaps && (

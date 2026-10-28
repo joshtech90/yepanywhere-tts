@@ -80,14 +80,6 @@ import {
   claudeToolOutputTmpRoots,
   withClaudeToolOutputPreviews,
 } from "./claude-tool-output-preview.js";
-import {
-  checkRemotePath,
-  createRemoteSpawn,
-  getRemoteHome,
-  testSSHConnection,
-  translateHomePath,
-} from "../remote-spawn.js";
-import { getProjectDirFromCwd, syncSessionFile } from "../session-sync.js";
 import type {
   ContentBlock,
   ProviderCommandResult,
@@ -2033,11 +2025,11 @@ export class ClaudeProvider implements AgentProvider {
     effort?: StartSessionOptions["effort"];
     globalInstructions?: string;
     executor?: string;
-    remoteEnv?: Record<string, string>;
     pathToClaudeCodeExecutable?: string;
     env: Record<string, string | undefined>;
     sessionSandbox?: SessionSandboxRuntime;
   }): Promise<PromptCacheRefreshResult> {
+    if (options.executor) throw new Error("SSH executors have been removed");
     const abortController = new AbortController();
     const timeout = setTimeout(
       () => abortController.abort(),
@@ -2062,14 +2054,9 @@ export class ClaudeProvider implements AgentProvider {
       };
     }
 
-    const spawnClaudeCodeProcess = options.executor
-      ? createRemoteSpawn({
-          host: options.executor,
-          remoteEnv: options.remoteEnv,
-        })
-      : options.sessionSandbox
-        ? createSandboxedClaudeSpawn(options.sessionSandbox)
-        : undefined;
+    const spawnClaudeCodeProcess = options.sessionSandbox
+      ? createSandboxedClaudeSpawn(options.sessionSandbox)
+      : undefined;
 
     try {
       const sdkQuery = query({
@@ -2178,19 +2165,18 @@ export class ClaudeProvider implements AgentProvider {
   private async startSessionInternal(
     options: StartSessionOptions,
   ): Promise<AgentSession> {
+    if (options.executor) throw new Error("SSH executors have been removed");
     const log = getLogger();
     const queue = new MessageQueue();
     const abortController = new AbortController();
     const providerSessionOptions = getClaudeSessionLaunchOptions(
       options.sessionOptions,
     );
-    const launchBridge = options.executor
-      ? null
-      : createLaunchAgentctlSessionEnvBridge({
-          initialSessionId: options.resumeSessionId,
-          getSessionEnv: options.getSessionChildEnv,
-          sessionSandbox: options.sessionSandbox,
-        });
+    const launchBridge = createLaunchAgentctlSessionEnvBridge({
+      initialSessionId: options.resumeSessionId,
+      getSessionEnv: options.getSessionChildEnv,
+      sessionSandbox: options.sessionSandbox,
+    });
     const agentctlSessionEnvBridge = launchBridge?.bridge ?? null;
     // Spawns must use this runtime: it also mounts the bridge directory.
     const sessionSandbox = launchBridge
@@ -2215,78 +2201,7 @@ export class ClaudeProvider implements AgentProvider {
     const claudeEnv = agentctlSessionEnvBridge
       ? agentctlSessionEnvBridge.extendEnv(baseClaudeEnv)
       : baseClaudeEnv;
-    const configuredRemoteEnv = options.executor
-      ? {
-          ...options.remoteEnv,
-          ...autoCompactOverrideEnv,
-        }
-      : options.remoteEnv;
-    const remoteEnv =
-      options.executor && options.resumeSessionId
-        ? {
-            ...configuredRemoteEnv,
-            AGENTCTL_SESSION_ID: options.resumeSessionId,
-            ...options.getSessionChildEnv?.(options.resumeSessionId),
-          }
-        : configuredRemoteEnv;
-
-    // Effective cwd for the session (may be translated for remote executors)
-    let effectiveCwd = options.cwd;
-
-    // If remote executor specified, test connection first
-    if (options.executor) {
-      log.info(
-        {
-          event: "remote_session_start",
-          executor: options.executor,
-          cwd: options.cwd,
-        },
-        `Starting remote session on ${options.executor}`,
-      );
-
-      const testResult = await testSSHConnection(options.executor);
-      if (!testResult.success) {
-        throw new Error(
-          `SSH connection to ${options.executor} failed: ${testResult.error}`,
-        );
-      }
-      if (!testResult.claudeAvailable) {
-        throw new Error(
-          `Claude CLI not found on ${options.executor}. Install with: curl -fsSL https://claude.ai/install.sh | bash`,
-        );
-      }
-
-      // Translate the working directory path for the remote host
-      // (e.g., /home/user/... on Linux -> /Users/user/... on macOS)
-      if (options.cwd) {
-        const remoteHome = await getRemoteHome(options.executor);
-        if (remoteHome) {
-          const localHome = homedir();
-          effectiveCwd = translateHomePath(options.cwd, localHome, remoteHome);
-          if (effectiveCwd !== options.cwd) {
-            log.info(
-              {
-                event: "remote_path_translated",
-                executor: options.executor,
-                localPath: options.cwd,
-                remotePath: effectiveCwd,
-                localHome,
-                remoteHome,
-              },
-              `Translated path for ${options.executor}: ${options.cwd} -> ${effectiveCwd}`,
-            );
-          }
-        }
-
-        // Check if the (translated) working directory exists on the remote
-        const pathCheck = await checkRemotePath(options.executor, effectiveCwd);
-        if (!pathCheck.exists) {
-          throw new Error(
-            `Directory does not exist on ${options.executor}: ${effectiveCwd}`,
-          );
-        }
-      }
-    }
+    const effectiveCwd = options.cwd;
 
     // Push the initial message into the queue (if provided)
     // If no message, the agent will wait until one is pushed
@@ -2321,23 +2236,16 @@ export class ClaudeProvider implements AgentProvider {
         }
       : undefined;
 
-    // Create spawn function: remote spawn for SSH executors, local wrapper for liveness checks
+    // Capture the local provider process for liveness checks.
     let spawnClaudeCodeProcess:
       | ((
           opts: import("@anthropic-ai/claude-agent-sdk").SpawnOptions,
         ) => SpawnedProcess)
       | undefined;
     let capturedProcess: SpawnedProcess | null = null;
-    const pathToClaudeCodeExecutable = options.executor
-      ? undefined
-      : resolveLocalClaudeCodeExecutable();
+    const pathToClaudeCodeExecutable = resolveLocalClaudeCodeExecutable();
 
-    if (options.executor) {
-      spawnClaudeCodeProcess = createRemoteSpawn({
-        host: options.executor,
-        remoteEnv,
-      });
-    } else if (USE_SPAWN_WRAPPER || sessionSandbox) {
+    if (USE_SPAWN_WRAPPER || sessionSandbox) {
       // Local spawn wrapper: delegates to child_process.spawn but captures the
       // SpawnedProcess reference so we can check liveness (exitCode) later.
       spawnClaudeCodeProcess = (spawnOpts) => {
@@ -2461,7 +2369,7 @@ export class ClaudeProvider implements AgentProvider {
           );
         });
 
-        // Wire up abort signal → SIGTERM, matching remote-spawn behavior
+        // Forward abort to the owned local provider process.
         const abortHandler = () => {
           proc.kill("SIGTERM");
         };
@@ -2612,12 +2520,7 @@ export class ClaudeProvider implements AgentProvider {
     });
 
     // Wrap the iterator to convert SDK message types to our internal types
-    // Pass executor info for session sync after result messages
-    // Use effectiveCwd (the translated remote path) so sync uses the correct project dir
     const wrappedIterator = this.wrapIterator(sdkQuery, {
-      executor: options.executor,
-      cwd: effectiveCwd,
-      remoteEnv,
       providerRetention,
       goalTracker,
       getCommandInventory: buildCommandInventory,
@@ -2626,23 +2529,19 @@ export class ClaudeProvider implements AgentProvider {
         steerBackgroundController.observe(message);
       },
     });
-    // A remote executor's task output files live on the remote host.
-    const previewedIterator = options.executor
-      ? wrappedIterator
-      : withClaudeToolOutputPreviews(wrappedIterator, {
-          cwd: effectiveCwd,
-          tmpRoots: claudeToolOutputTmpRoots(claudeEnv),
-        });
+    const previewedIterator = withClaudeToolOutputPreviews(wrappedIterator, {
+      cwd: effectiveCwd,
+      tmpRoots: claudeToolOutputTmpRoots(claudeEnv),
+    });
     const iterator = agentctlSessionEnvBridge
       ? withCleanup(previewedIterator, () => agentctlSessionEnvBridge.cleanup())
       : previewedIterator;
-    const isCapturedProcessAlive =
-      USE_SPAWN_WRAPPER && !options.executor
-        ? () =>
-            capturedProcess !== null &&
-            capturedProcess.exitCode === null &&
-            !capturedProcess.killed
-        : undefined;
+    const isCapturedProcessAlive = USE_SPAWN_WRAPPER
+      ? () =>
+          capturedProcess !== null &&
+          capturedProcess.exitCode === null &&
+          !capturedProcess.killed
+      : undefined;
 
     return {
       iterator,
@@ -2695,8 +2594,6 @@ export class ClaudeProvider implements AgentProvider {
           thinking: options.thinking,
           effort: options.effort,
           globalInstructions: options.globalInstructions,
-          executor: options.executor,
-          remoteEnv,
           pathToClaudeCodeExecutable,
           env: claudeEnv,
           sessionSandbox,
@@ -2796,15 +2693,10 @@ export class ClaudeProvider implements AgentProvider {
   /**
    * Wrap the SDK iterator to convert message types.
    * The SDK emits its own message types which we convert to our SDKMessage type.
-   *
-   * For remote sessions, syncs session files after each result message.
    */
   private async *wrapIterator(
     iterator: AsyncIterable<AgentSDKMessage>,
-    remoteOptions?: {
-      executor?: string;
-      cwd: string;
-      remoteEnv?: Record<string, string>;
+    observation?: {
       providerRetention?: ClaudeProviderRetentionTracker;
       goalTracker?: ClaudeGoalTracker;
       /** Current inventory, already carrying goal state, for goal updates. */
@@ -2812,7 +2704,6 @@ export class ClaudeProvider implements AgentProvider {
       onMessage?: (message: SDKMessage) => void | Promise<void>;
     },
   ): AsyncIterableIterator<SDKMessage> {
-    const log = getLogger();
     let sessionId = "unknown";
 
     try {
@@ -2824,55 +2715,17 @@ export class ClaudeProvider implements AgentProvider {
 
         const converted = this.convertMessage(
           message,
-          remoteOptions?.goalTracker?.snapshot,
+          observation?.goalTracker?.snapshot,
         );
-        remoteOptions?.providerRetention?.observeMessage(converted);
-        await remoteOptions?.onMessage?.(converted);
+        observation?.providerRetention?.observeMessage(converted);
+        await observation?.onMessage?.(converted);
         yield converted;
 
         const goalUpdate = await this.observeClaudeGoal(converted, sessionId, {
-          tracker: remoteOptions?.goalTracker,
-          getCommandInventory: remoteOptions?.getCommandInventory,
+          tracker: observation?.goalTracker,
+          getCommandInventory: observation?.getCommandInventory,
         });
         if (goalUpdate) yield goalUpdate;
-
-        // For remote sessions, sync session files after result messages
-        // This keeps the local UI up-to-date with remote progress
-        if (
-          remoteOptions?.executor &&
-          converted.type === "result" &&
-          sessionId !== "unknown"
-        ) {
-          const projectDir = getProjectDirFromCwd(remoteOptions.cwd);
-          log.debug(
-            {
-              event: "remote_session_sync",
-              executor: remoteOptions.executor,
-              sessionId,
-              projectDir,
-            },
-            "Syncing session from remote after turn",
-          );
-
-          // Sync in background - don't block the iterator
-          syncSessionFile(
-            remoteOptions.executor,
-            projectDir,
-            sessionId,
-            undefined,
-            remoteOptions.remoteEnv?.CLAUDE_SESSIONS_DIR,
-          ).catch((error) => {
-            log.warn(
-              {
-                event: "remote_session_sync_error",
-                executor: remoteOptions.executor,
-                sessionId,
-                error: error instanceof Error ? error.message : String(error),
-              },
-              `Failed to sync session from remote: ${error}`,
-            );
-          });
-        }
       }
     } catch (error) {
       // Handle abort errors gracefully

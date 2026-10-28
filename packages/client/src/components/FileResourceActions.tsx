@@ -1,6 +1,8 @@
 import { SERVER_CAPABILITIES, serverHasCapability } from "@yep-anywhere/shared";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useState } from "react";
+import { ComposerInsertContext } from "../contexts/ComposerInsertContext";
+import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { createPortal } from "react-dom";
 import { api } from "../api/client";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
@@ -420,6 +422,14 @@ export function ResourceContextMenu({
   const saveDownload = useSaveResourceDownload();
   const githubLink = useGitHubFileLink(fileTarget);
   const projectAppLink = useProjectFileLink(fileTarget);
+  const insertDraft = useContext(ComposerInsertContext);
+  const session = useOptionalSessionMetadata();
+  const commentPath =
+    insertDraft && fileTarget && session?.projectId === fileTarget.projectId
+      ? () => {
+          insertDraft(`${fileTarget.path}\n\n`);
+        }
+      : null;
   // A declared app presentation outranks the caller's YA file-share fallback;
   // the File Viewer's Share surface still offers both.
   const copyPublicUrl = projectAppLink
@@ -447,6 +457,7 @@ export function ResourceContextMenu({
     window.matchMedia("(hover: hover) and (pointer: fine)").matches;
   const rootItemCount =
     1 +
+    Number(Boolean(commentPath)) +
     Number(Boolean(download)) +
     Number(Boolean(canStartNewSession && onStartNewSession)) +
     Number(Boolean(localSource)) +
@@ -552,6 +563,11 @@ export function ResourceContextMenu({
               t("fileLinkMenuOpen" as never)
             )}
           </FilePathContextMenuItem>
+          {commentPath ? (
+            <FilePathContextMenuItem onSelect={() => select(commentPath)}>
+              {t("projectPathComment")}
+            </FilePathContextMenuItem>
+          ) : null}
           {download ? (
             <FilePathContextMenuItem
               onHover={usesHoverFlyout ? () => setPanel("root") : undefined}

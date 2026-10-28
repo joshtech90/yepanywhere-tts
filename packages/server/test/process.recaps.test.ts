@@ -275,12 +275,6 @@ describe("Process", () => {
       });
 
       process.queueMessage({
-        text: "automatic heartbeat",
-        automaticSource: "heartbeat",
-      });
-      expect(process.isRecapPausedUntilUserTurn).toBe(true);
-
-      process.queueMessage({
         text: "automatic project queue",
         automaticSource: "project-queue",
       });
@@ -352,6 +346,39 @@ describe("Process", () => {
       expect(recaps).toEqual([]);
       controller.finish();
       await process.abort();
+    });
+
+    it("refuses a retired helper target without calling a provider model", async () => {
+      const controller = createControllableIterator();
+      const generateSummary = vi.fn(async () => ({ text: "summary" }));
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "claude",
+        idleTimeoutMs: 100,
+        recapMode: "side-session",
+        helperSideModel: "helper-target:retired-endpoint",
+      });
+      controller.push({
+        type: "assistant",
+        message: { content: "recent work" },
+      });
+      controller.push({ type: "result", session_id: "sess-1" });
+      await waitFor(() => expect(process.state.type).toBe("idle"));
+      try {
+        await expect(
+          process.requestRecap(createRecapProvider(generateSummary)),
+        ).resolves.toMatchObject({
+          emitted: false,
+          reason:
+            "Helper targets were removed; select a provider-local recap model",
+        });
+        expect(generateSummary).not.toHaveBeenCalled();
+      } finally {
+        controller.finish();
+        await process.abort();
+      }
     });
 
     it("resolves same-as-main helper model for recap generation", async () => {

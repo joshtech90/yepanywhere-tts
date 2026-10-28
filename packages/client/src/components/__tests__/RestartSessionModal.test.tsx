@@ -181,7 +181,6 @@ describe("RestartSessionModal", () => {
     renderModal({
       thinking: "on:xhigh",
       mode: "plan",
-      executor: "build-host",
       currentModel: "opus",
     });
 
@@ -191,7 +190,6 @@ describe("RestartSessionModal", () => {
       preferredModel: "opus",
       preferredThinking: "on:xhigh",
       preferredPermissionMode: "plan",
-      preferredExecutor: "build-host",
     });
     const launch = formProps.current?.launch as LaunchStub & {
       fixedProject?: boolean;

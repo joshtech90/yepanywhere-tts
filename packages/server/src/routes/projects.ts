@@ -475,7 +475,6 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
         parentSessionKind,
         forkedFromSessionId,
         creationProvenance: metadata?.creationProvenance,
-        workstreamId: metadata?.workstreamId,
       };
     });
   }

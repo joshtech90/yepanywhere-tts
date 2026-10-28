@@ -4,7 +4,7 @@ import type {
   ProjectQueueItemSummary,
   ProjectQueueRecoveredSessionQueueSummary,
 } from "@yep-anywhere/shared";
-import { PROJECT_SESSION_DEFAULTS_CAPABILITY } from "@yep-anywhere/shared";
+import { SERVER_CAPABILITIES } from "@yep-anywhere/shared";
 import { PROJECT_CODE_NAMES_CAPABILITY } from "@yep-anywhere/shared";
 import { PROJECT_NAMES_CAPABILITY } from "@yep-anywhere/shared";
 import {
@@ -570,7 +570,7 @@ describe("ProjectsPage", () => {
     state.version = {
       capabilities: [
         PROJECT_QUEUE_CAPABILITY,
-        PROJECT_SESSION_DEFAULTS_CAPABILITY,
+        SERVER_CAPABILITIES.projectService.name,
       ],
     };
     rerender(

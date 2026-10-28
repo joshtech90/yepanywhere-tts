@@ -49,9 +49,7 @@ async function waitForAvailable(paths, identity, timeoutMs = 5_000) {
 }
 
 /**
- * Attach to a compatible provider host, or start one when absent.
- * SSH remote-executor sessions are unrelated: they still run through this
- * local host once it is up.
+ * Attach to a compatible same-host provider host, or start one when absent.
  */
 export async function attachOrStartProviderHost({
   env = process.env,

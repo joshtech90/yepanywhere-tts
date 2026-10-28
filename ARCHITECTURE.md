@@ -8,6 +8,14 @@ This file is intentionally short — each link below is the load-bearing
 detailed doc. Update this file when the high-level picture changes; update the
 linked docs when the details change.
 
+The current [core house-cleaning proposal](topics/core-house-cleaning.md)
+selects feature reduction to support a smaller core for reliable queued
+`/compact` and following message delivery. Legacy Gemini is frozen and may be
+removed if it impedes that work; future Antigravity support is a separate
+provider decision. Read the proposal's removal and retained-consumer boundaries
+before extending execution placement, automatic session input/resume, lane
+checkouts or alternate core clients.
+
 For work spanning machines, start with
 [Working Across Machines](topics/multi-machine-architecture.md): a discussion
 map of ownership, deployment, grants, transport and machine lifecycle, linking
@@ -140,16 +148,10 @@ that request's data until they close. Details and the owner table are in
   servers can own their API transport, activity stream, summary stores, and
   session-detail services without hidden current-source globals.
 - [`topics/managed-remote-executors.md`](topics/managed-remote-executors.md)
-  — default-off manual-SSH baseline for controller-owned remote sessions:
-  injected provider-neutral runners, controller-prepared Git workspaces,
-  Codex-first validation, and fetched incoming heads without target upstream
-  credentials; staged implementation is tracked in
-  [`docs/tactical/119-managed-ssh-executor-baseline.md`](docs/tactical/119-managed-ssh-executor-baseline.md).
-- [`topics/managed-runner-execution-targets.md`](topics/managed-runner-execution-targets.md)
-  — broader target-provider proposal extending managed remote execution with
-  Machine Control discovery, claims, VM lifecycle, and location-correct project
-  UI boundaries; its implementation tactical is deferred until the manual-SSH
-  baseline works.
+  — retirement contract for the removed managed SSH runner, target/workspace,
+  credential-projection and transcript-mirroring prototype. Released SSH/rsync
+  executors are also retired. Same-host provider ownership remains supported;
+  future remote work uses the separate target-owned relay/API direction.
 - [`topics/federated-super-sessions.md`](topics/federated-super-sessions.md)
   — proposal for one canonical, single-writer YA session that can transfer a
   provider-specific portable bundle and active ownership between trusted YA

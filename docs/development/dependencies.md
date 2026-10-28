@@ -165,6 +165,18 @@ snapshot and its NeMo constraint consumer preserves the pinned Torch and
 Transformers builds. This secures subsequent installs; live speech environments
 need a separate update and inference qualification.
 
+The 2026-10-27 CI repair raises the snapshot's `msgpack` pin to 1.2.3 for
+[strict-map-key parser memory leaks and stale parser-stack references](https://github.com/msgpack/msgpack-python/security/advisories/GHSA-j586-36cw-2gc2)
+(CVE-2026-114613). This patches subsequent recovery and constrained NeMo
+installs; existing speech environments need a separate update and inference
+qualification. Linux/Python 3.12 resolution passes for both consumers,
+preserving the pinned Torch and Transformers builds. No audit exclusion is added.
+
+The 2026-10-27 CI repair refreshes the MCP SDK's Express and body-parser
+`qs` edges to 6.17.0 within their declared ranges, above the 6.16.1 patch
+floor for [comma-array serialization denial of service](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw).
+No new override or audit exclusion is added.
+
 ### Install-script allowlist
 
 Dependency install scripts (preinstall/install/postinstall) are blocked by

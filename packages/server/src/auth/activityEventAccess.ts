@@ -95,7 +95,6 @@ export function limitedActivityEvent(
     case "session-stop-requested":
     case "session-forked":
     case "session-updated":
-    case "workstreams-changed":
       return inProject(event.projectId);
 
     default:

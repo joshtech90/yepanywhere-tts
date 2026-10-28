@@ -17,7 +17,6 @@ import {
   type UrlProjectId,
 } from "@yep-anywhere/shared";
 import type { ProjectMetadataService } from "../metadata/index.js";
-import type { WorkstreamService } from "../services/WorkstreamService.js";
 import type { Project } from "../supervisor/types.js";
 import type { EventBus, FileChangeEvent } from "../watcher/index.js";
 import { CODEX_SESSIONS_DIR, CodexSessionScanner } from "./codex-scanner.js";
@@ -44,7 +43,6 @@ export interface ScannerOptions {
   enableCodex?: boolean; // whether to include Codex projects (default: true)
   enableGemini?: boolean; // whether to include Gemini projects (default: true)
   projectMetadataService?: ProjectMetadataService; // for persisting added projects
-  workstreamService?: WorkstreamService; // for grouping lane checkouts
   /** Optional EventBus for watcher-driven cache invalidation */
   eventBus?: EventBus;
   /** Project snapshot TTL in milliseconds (default: 5000) */
@@ -67,7 +65,7 @@ export interface GetProjectOptions {
 
 const CLAUDE_PROJECT_SCAN_BATCH_SIZE = 16;
 const CWD_SCAN_BATCH_SIZE = 8;
-const PROJECT_SCAN_CACHE_VERSION = 4;
+const PROJECT_SCAN_CACHE_VERSION = 5;
 
 interface ProjectScanSourceState {
   projectsDir: string;
@@ -83,9 +81,6 @@ interface ProjectScanSourceState {
   projectMetadataFilePath: string | null;
   projectMetadataFileMtimeMs: number | null;
   projectMetadataFileExists: boolean;
-  workstreamFilePath: string | null;
-  workstreamFileMtimeMs: number | null;
-  workstreamFileExists: boolean;
   enableCodex: boolean;
   enableGemini: boolean;
 }
@@ -160,8 +155,6 @@ export class ProjectScanner {
   private enableGemini: boolean;
   private projectMetadataService: ProjectMetadataService | null;
   private projectMetadataFilePath: string | null;
-  private workstreamService: WorkstreamService | null;
-  private workstreamFilePath: string | null;
   private projectScanCachePath: string | null;
   private cacheTtlMs: number;
   private getSandboxSessionDirs:
@@ -215,8 +208,6 @@ export class ProjectScanner {
     this.projectMetadataService = options.projectMetadataService ?? null;
     this.projectMetadataFilePath =
       this.projectMetadataService?.getFilePath?.() ?? null;
-    this.workstreamService = options.workstreamService ?? null;
-    this.workstreamFilePath = this.workstreamService?.getFilePath?.() ?? null;
     this.cacheTtlMs = Math.max(0, options.cacheTtlMs ?? 5000);
     this.projectScanCachePath = options.projectScanCachePath ?? null;
     this.getSandboxSessionDirs = options.getSandboxSessionDirs ?? null;
@@ -226,8 +217,6 @@ export class ProjectScanner {
       this.unsubscribeEventBus = options.eventBus.subscribe((event) => {
         if (event.type === "file-change") {
           this.handleFileChange(event);
-        } else if (event.type === "workstreams-changed") {
-          this.invalidateCache();
         }
       });
     }
@@ -549,7 +538,6 @@ export class ProjectScanner {
           source.codexSessionsDir !== this.codexSessionsDir ||
           source.geminiSessionsDir !== this.geminiSessionsDir ||
           source.projectMetadataFilePath !== this.projectMetadataFilePath ||
-          source.workstreamFilePath !== this.workstreamFilePath ||
           source.enableCodex !== this.enableCodex ||
           source.enableGemini !== this.enableGemini
         )
@@ -674,7 +662,6 @@ export class ProjectScanner {
       codexSessionsState,
       geminiSessionsState,
       metadataState,
-      workstreamState,
     ] = await Promise.all([
       this.getDirectoryEntries(this.projectsDir),
       this.getPathState(this.projectsDir),
@@ -682,9 +669,6 @@ export class ProjectScanner {
       this.getPathState(this.geminiSessionsDir),
       this.projectMetadataFilePath
         ? this.getPathState(this.projectMetadataFilePath)
-        : Promise.resolve({ exists: false, mtimeMs: null }),
-      this.workstreamFilePath
-        ? this.getPathState(this.workstreamFilePath)
         : Promise.resolve({ exists: false, mtimeMs: null }),
     ]);
 
@@ -702,9 +686,6 @@ export class ProjectScanner {
       projectMetadataFilePath: this.projectMetadataFilePath,
       projectMetadataFileMtimeMs: metadataState.mtimeMs,
       projectMetadataFileExists: metadataState.exists,
-      workstreamFilePath: this.workstreamFilePath,
-      workstreamFileMtimeMs: workstreamState.mtimeMs,
-      workstreamFileExists: workstreamState.exists,
       enableCodex: this.enableCodex,
       enableGemini: this.enableGemini,
     };
@@ -755,9 +736,6 @@ export class ProjectScanner {
       current.projectMetadataFileExists === cached.projectMetadataFileExists &&
       current.projectMetadataFileMtimeMs ===
         cached.projectMetadataFileMtimeMs &&
-      current.workstreamFilePath === cached.workstreamFilePath &&
-      current.workstreamFileExists === cached.workstreamFileExists &&
-      current.workstreamFileMtimeMs === cached.workstreamFileMtimeMs &&
       current.enableCodex === cached.enableCodex &&
       current.enableGemini === cached.enableGemini
     );
@@ -801,11 +779,6 @@ export class ProjectScanner {
       (state.projectMetadataFileMtimeMs === null ||
         typeof state.projectMetadataFileMtimeMs === "number") &&
       typeof state.projectMetadataFileExists === "boolean" &&
-      (state.workstreamFilePath === null ||
-        typeof state.workstreamFilePath === "string") &&
-      (state.workstreamFileMtimeMs === null ||
-        typeof state.workstreamFileMtimeMs === "number") &&
-      typeof state.workstreamFileExists === "boolean" &&
       typeof state.enableCodex === "boolean" &&
       typeof state.enableGemini === "boolean"
     );
@@ -980,16 +953,6 @@ export class ProjectScanner {
     }
   }
 
-  private resolveProjectPathForKnownWorkstream(rawProjectPath: string): string {
-    const resolved = this.workstreamService?.resolvePath(rawProjectPath);
-    if (!resolved) return rawProjectPath;
-    try {
-      return decodeProjectId(resolved.projectId);
-    } catch {
-      return rawProjectPath;
-    }
-  }
-
   private async scanProjects(
     reuseUnchangedProviders = false,
   ): Promise<Project[]> {
@@ -1013,9 +976,7 @@ export class ProjectScanner {
       sessionCount: number,
       lastActivity: string | null,
     ) => {
-      const projectPath = canonicalizeProjectPath(
-        this.resolveProjectPathForKnownWorkstream(rawProjectPath),
-      );
+      const projectPath = canonicalizeProjectPath(rawProjectPath);
       if (this.isHiddenProjectPath(projectPath)) return;
       seenPaths.add(projectPath);
       seenIdentityKeys.add(getProjectIdentityKey(projectPath));
@@ -1109,9 +1070,7 @@ export class ProjectScanner {
     // Merge Codex projects if enabled
     if (this.codexScanner) {
       for (const codexProject of codexResult.value) {
-        const projectPath = canonicalizeProjectPath(
-          this.resolveProjectPathForKnownWorkstream(codexProject.path),
-        );
+        const projectPath = canonicalizeProjectPath(codexProject.path);
         if (this.isHiddenProjectPath(projectPath)) continue;
         const existing = findProjectByIdentity(projectPath);
         if (existing) {
@@ -1151,9 +1110,7 @@ export class ProjectScanner {
         allowStaleSnapshot: reuseUnchangedProviders,
       });
       for (const geminiProject of geminiProjects) {
-        const projectPath = canonicalizeProjectPath(
-          this.resolveProjectPathForKnownWorkstream(geminiProject.path),
-        );
+        const projectPath = canonicalizeProjectPath(geminiProject.path);
         if (this.isHiddenProjectPath(projectPath)) continue;
         const existing = findProjectByIdentity(projectPath);
         if (existing) {
@@ -1308,9 +1265,7 @@ export class ProjectScanner {
       return null;
     }
 
-    const canonicalProjectPath = canonicalizeProjectPath(
-      this.resolveProjectPathForKnownWorkstream(projectPath),
-    );
+    const canonicalProjectPath = canonicalizeProjectPath(projectPath);
     if (canonicalProjectPath !== projectPath) {
       const canonicalId = encodeProjectId(canonicalProjectPath);
       const canonicalProject = await this.getProject(canonicalId);

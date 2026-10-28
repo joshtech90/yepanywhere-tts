@@ -441,8 +441,9 @@ defaults enabled and macOS defaults disabled. One rule,
 this for both the dev wrapper and server boot, so the wrapper never starts a
 host that the server declines, or the reverse. Enabled supported server boot
 attaches to a compatible host or starts one
-(`scripts/attach-or-start-provider-host.mjs`). SSH remote executor sessions
-still launch from this YA server and are not a reason to skip the local host.
+(`scripts/attach-or-start-provider-host.mjs`). SSH execution is retired;
+provider hosting preserves same-host provider ownership and does not place
+execution on a remote machine.
 If an enabled supported launch still has no host after that attempt, local
 sessions continue in-process and the UI shows a non-dismissible warning banner.
 Intentional disablement, unsupported platforms, and unsupported runtime

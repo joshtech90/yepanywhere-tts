@@ -23,7 +23,6 @@ describe("busEventChangesSessionCollection", () => {
       "session-aborted",
       "process-state-changed",
       "process-terminated",
-      "workstreams-changed",
     ]) {
       expect(busEventChangesSessionCollection(event(type))).toBe(true);
     }

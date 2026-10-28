@@ -46,6 +46,12 @@ export const docsNavigation: DocsNavSection[] = [
           "Control any host from anything with a modern web browser.",
       },
       {
+        path: "/docs/chrome-extension",
+        title: "Chrome extension",
+        description:
+          "Find sessions beside GitHub issues, pull requests, and Jira tickets.",
+      },
+      {
         path: "/docs/home-screen",
         title: "iPad and iPhone Home Screen",
         description:

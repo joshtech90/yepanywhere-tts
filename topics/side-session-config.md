@@ -14,6 +14,12 @@ Native provider features are different: if the provider emits the helper
 message or suggestion as part of its ordinary session protocol, YA can surface
 that capability without choosing a side model or owning another process.
 
+House cleaning retains the provider-local model controls and existing helper
+lifecycle contracts; it adds no helper runtime. Dormant cross-provider
+helper-target configuration was
+removed on 2026-10-27; see
+[its disposition](openai-compatible-helper-sessions.md#disposition).
+
 ## Contracts
 
 - Native support and YA simulation must be modeled separately. A provider that
@@ -28,17 +34,11 @@ that capability without choosing a side model or owning another process.
   saved provider default.
 - The side model is a session-level helper setting, not a per-feature setting.
   The shipped tailed-recap selector is provider-local only: `Cheapest`, `Same
-  as main session`, and concrete models from the selected provider. Future
-  OpenAI-compatible helper targets may point at a different configured helper
-  provider, including a YA-operator inference server such as vLLM, but those
-  controls must stay hidden until
-  [openai-compatible-helper-sessions](openai-compatible-helper-sessions.md)
-  is implemented. The default token is `Cheapest`, which resolves through the
-  parent provider to an appropriate cheap model such as Haiku for Claude.
-- Once helper targets can cross provider boundaries, stored helper model ids
-  must be provider-qualified or otherwise globally unambiguous. A bare model
-  id such as `haiku` or `qwen` is not enough if more than one helper provider
-  can expose it.
+  as main session`, and concrete models from the selected provider. The default
+  token is `Cheapest`, which resolves through the parent provider to an
+  appropriate cheap model such as Haiku for Claude. Removed endpoint targets
+  are not provider model IDs. Any future cross-provider helper design requires
+  its own explicit identity and lifecycle contract upon first need.
 - The helper model chooser includes `Same as main session`. When a feature's
   execution mode is a provider fork and the helper model equals the parent
   session model, YA should use that fork path. If a provider later supports an
@@ -111,8 +111,8 @@ The same controls should back all simulated helper features:
   such as "simulate recaps for new sessions" or "simulate prompt suggestions
   for new sessions". The side model chooser must include `Cheapest` and
   `Same as main session`, and the feature default must include `Off`, even for
-  native provider features. Do not include helper targets from other providers
-  until the OpenAI-compatible helper-session runtime is implemented.
+  native provider features. Model choices remain provider-local; the dormant
+  cross-provider target registry and editor are removed.
 - New-session form: one session-level side model override, plus per-feature
   toggles for native/simulated/off or feature-specific fork-main-session mode.
   Defaults come from provider settings; native helper support can appear
@@ -124,26 +124,14 @@ The same controls should back all simulated helper features:
 - Implementation config: one shared side-query envelope for context window,
   timeout, cancellation, failure reporting, and close-on-session-end cleanup.
 
-## Helper Target Registry
+## Retired helper-target configuration
 
-YA settings include a helper target registry for operator-run or external
-side-session backends. The first supported target kind is
-`openai-compatible`: a named HTTP base URL such as
-`http://localhost:8001/v1`, plus an optional served model id. A blank model
-means "use the endpoint default" for servers that accept omitted model values;
-when the UI discovers models via `/v1/models`, the user may still leave the
-model blank or choose one of the returned ids.
-
-Stored helper-side selections use `helper-target:<id>` rather than a bare
-model name. That keeps a local vLLM model such as `Qwen/Qwen3.6-27B` distinct
-from a provider-owned model with the same id and lets the parent session keep
-its own provider/model unchanged.
-
-The registry is dormant configuration until the helper execution layer knows
-how to route a given feature to that target. The Providers > Helper Targets
-editor and `helper-target:<id>` entries in shared side-model choosers must stay
-hidden until [openai-compatible-helper-sessions](openai-compatible-helper-sessions.md)
-is implemented and tested for the feature that will use them.
+The target registry, hidden editor and discovery route are removed. Saved
+`helper-target:<id>` selections cannot become a provider model or silently
+fall back: retained side-session recap generation refuses them before calling
+the provider summarizer. Provider-local choices remain available.
+[The owning disposition](openai-compatible-helper-sessions.md) records this
+boundary and the separate no-tool provider candidate for first concrete need.
 
 ## Relationship to Features
 
@@ -154,10 +142,9 @@ is implemented and tested for the feature that will use them.
   natively as `prompt_suggestion` via `promptSuggestions: true`; providers
   without native support should use the same simulated-helper controls as
   recaps rather than a separate hidden model setting. Because suggestions are
-  disposable and user-confirmed, an operator-run weak/open model can be an
-  acceptable helper target for this one feature once helper-target execution is
-  implemented, even when it would be too low quality for recaps or independent
-  re-checks.
+  disposable and user-confirmed, future helper-provider selection can weigh
+  quality and cost differently from recaps or independent re-checks. This does
+  not require restoring the removed target registry.
 - User-authored `doubt` from `github.com/graehl/agents` is the preferred
   fallback vocabulary for an independent re-check helper when no
   provider-native command exists. Native provider commands still win when
@@ -181,12 +168,8 @@ is implemented and tested for the feature that will use them.
 - Enabling simulated recaps and simulated prompt suggestions for the same
   parent session creates at most one helper side session and one catch-up
   cursor.
-- Until OpenAI-compatible helper sessions are implemented, no visible helper
-  model selector exposes `helper-target:<id>` entries.
-- Once OpenAI-compatible helper sessions are implemented, a parent session can
-  choose a helper model from another provider or operator-run backend without
-  changing the parent provider/model and without creating a per-feature helper
-  model override.
+- Helper model selectors expose provider-local choices only. A saved retired
+  target cannot reach a provider summarizer as a model ID or silently fall back.
 - Changing the in-session simulated-helper toggle does not restart the parent
   provider process.
 - A side query canceled by session end, tab disconnect, or timeout does not

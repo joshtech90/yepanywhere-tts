@@ -3909,15 +3909,15 @@ export const SERVER_CAPABILITIES = {
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
     description:
-      "Server persists project-scoped heartbeat defaults and recent heartbeat messages, then seeds new session metadata from the effective project-to-global values.",
+      "Retired: project-scoped synthetic heartbeat defaults and recent messages. The permanent ID remains allocated; current servers withdraw this capability.",
     clientFallback:
-      "Hide Project Settings heartbeat entry points, make no project-default requests, and retain global plus per-session heartbeat behavior.",
+      "Hide heartbeat-default controls and make no project-default requests. Project app and sharing controls use their own retained capabilities.",
     serverContract: {
       routes: [
         "GET /api/projects/:projectId/session-defaults",
         "PATCH /api/projects/:projectId/session-defaults",
       ],
-      routeModules: ["packages/server/src/routes/project-session-defaults.ts"],
+      // Historical contract only: the retired route module no longer exists.
       requestFields: [
         "projectSessionDefaults.heartbeatTurnsAfterMinutes",
         "projectSessionDefaults.heartbeatTurnText",

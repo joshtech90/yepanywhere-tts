@@ -396,20 +396,6 @@ export interface PromptCacheKeepaliveSettings {
 
 export const HELPER_SIDE_MODEL_SAME_AS_MAIN = "same-as-main" as const;
 export const HELPER_SIDE_MODEL_CHEAPEST = "cheapest" as const;
-export const HELPER_SIDE_MODEL_TARGET_PREFIX = "helper-target:" as const;
-
-export interface HelperTargetConfig {
-  /** Stable local id used in helperSideModel values. */
-  id: string;
-  /** User-facing label shown in helper model selectors. */
-  name: string;
-  /** API family for this helper target. */
-  kind: "openai-compatible";
-  /** Base URL for the OpenAI-compatible API, e.g. http://localhost:8001/v1. */
-  baseUrl: string;
-  /** Optional served model id; blank means use the endpoint default if supported. */
-  model?: string;
-}
 
 /**
  * Slash command (skill) available in a session.

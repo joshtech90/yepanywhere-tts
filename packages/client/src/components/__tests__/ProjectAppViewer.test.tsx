@@ -750,6 +750,7 @@ it("shows the page its frame reports and opens a crumb under the view's link", a
       window.dispatchEvent(
         new MessageEvent("message", {
           data: { type: "yep-anywhere:app-location", href },
+          origin: new URL(href).origin,
           source,
         }),
       );
@@ -786,6 +787,70 @@ it("shows the page its frame reports and opens a crumb under the view's link", a
   expect(frame.src).toBe(
     "https://app-x.example/research/papers/?ya_access=view-token",
   );
+});
+it("inserts app path comments only from the displayed frame and origin", async () => {
+  const original = mock.fetch.getMockImplementation()!;
+  mock.fetch.mockImplementation(async (...args) =>
+    String(args[0]).endsWith("/open")
+      ? {
+          id: "service:test",
+          kind: "service",
+          label: "App",
+          url: "https://app-x.example/?ya_access=view-token",
+        }
+      : original(...args),
+  );
+  const insert = vi.fn();
+  const { container, rerender } = render(
+    <I18nProvider>
+      <ProjectAppViewer projectId="test" onComment={insert} />
+    </I18nProvider>,
+  );
+  await waitFor(() => expect(container.querySelector("iframe")).not.toBeNull());
+  await act(async () => {});
+  const frame = container.querySelector("iframe")!;
+  const post = (
+    data: object,
+    origin = "https://app-x.example",
+    source: MessageEventSource | null = frame.contentWindow,
+  ) =>
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", { data, origin, source }),
+      );
+    });
+  const data = { type: "yep-anywhere:app-comment", path: "docs/a file.md" };
+  post(data, "https://unrelated.example");
+  post(data, "https://app-x.example", window);
+  for (const path of [
+    "../secret",
+    "/absolute",
+    "docs/../secret",
+    "x\nforged",
+    "C:\\secret",
+  ])
+    post({ ...data, path });
+  expect(insert).not.toHaveBeenCalled();
+  post({
+    type: "yep-anywhere:app-location",
+    href: "https://app-x.example/docs/a%20file.md",
+    projectRoot: "https://app-x.example/",
+    projectPath: "docs/a file.md",
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Path actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Comment on path" }));
+  expect(insert).toHaveBeenLastCalledWith("docs/a file.md\n\n");
+  post({ ...data, quote: "first line\nsecond line" });
+  expect(insert).toHaveBeenLastCalledWith(
+    "docs/a file.md\n\n> first line\n> second line\n\n",
+  );
+  // Updating the draft callback must not erase the frame's reported path.
+  rerender(
+    <I18nProvider>
+      <ProjectAppViewer projectId="test" onComment={(text) => insert(text)} />
+    </I18nProvider>,
+  );
+  expect(screen.getByRole("button", { name: "Path actions" })).toBeTruthy();
 });
 it.each([true, false])(
   "copies the public link to the shown page from a local view when canShare=%s",
@@ -833,6 +898,7 @@ it.each([true, false])(
             href: "http://app-x.localhost:3400/docs/a.html?q=1#s",
           },
           source: frame.contentWindow,
+          origin: "http://app-x.localhost:3400",
         }),
       );
     });

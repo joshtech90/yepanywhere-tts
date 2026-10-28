@@ -127,7 +127,7 @@ Evidence: [runtime][runtime], [providers][acp], [fork implementation][fork],
 [release notes][changelog]. YA: [inbox](../../topics/inbox.md),
 [Source Control](../../topics/source-control.md),
 [workstreams](../../topics/workstreams.md),
-[remote-executor gap](../../gaps/sketches/provider-neutral-remote-executors.md),
+[SSH executor retirement](../project/remote-executors.md),
 [scheduler gap](../../gaps/sketches/yacron-scheduler.md), and
 [roadmap](../roadmap/README.md).
 
@@ -293,7 +293,7 @@ implications.
    host/environment routing and server-matched daemon distribution. YA's
    [simple-client demo](../tactical/130-simple-client-api-and-three-client-demo.md)
    addresses multiple servers, while the
-   [remote-executor gap](../../gaps/sketches/provider-neutral-remote-executors.md)
+   [SSH executor retirement](../project/remote-executors.md)
    records a different, provider-limited dispatch path.
 4. **Preserve the chosen workspace and source-control direction.** Evaluate
    bb's cleanup and setup contracts when refining

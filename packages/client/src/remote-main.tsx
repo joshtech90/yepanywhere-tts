@@ -88,7 +88,6 @@ const loadGlobalSessionsPageModule = cachedModule(
 const loadHostPickerPageModule = cachedModule(
   () => import("./pages/HostPickerPage"),
 );
-const loadHostsPageModule = cachedModule(() => import("./pages/HostsPage"));
 const loadInboxPageModule = cachedModule(() => import("./pages/InboxPage"));
 const loadIssuesPageModule = cachedModule(() => import("./pages/IssuesPage"));
 const loadLegacyRelayRouteRedirectModule = cachedModule(
@@ -128,9 +127,6 @@ const loadProviderChildSessionPageModule = cachedModule(
   () => import("./pages/ProviderChildSessionPage"),
 );
 const loadSettingsModule = cachedModule(() => import("./pages/settings"));
-const loadWorkstreamsPageModule = cachedModule(
-  () => import("./pages/WorkstreamsPage"),
-);
 
 const ConnectionGate = preloadableComponent(async () => ({
   default: (await loadRemoteAppModule()).ConnectionGate,
@@ -210,11 +206,6 @@ const HostPickerPage = lazy(() =>
     default: HostPickerPage,
   })),
 );
-const HostsRoute = lazy(() =>
-  loadHostsPageModule().then(({ HostsRoute }) => ({
-    default: HostsRoute,
-  })),
-);
 const InboxPage = lazy(() =>
   loadInboxPageModule().then(({ InboxPage }) => ({
     default: InboxPage,
@@ -289,11 +280,6 @@ const ProviderSignInPage = lazy(() =>
     default: m.ProviderSignInPage,
   })),
 );
-const WorkstreamsPage = lazy(() =>
-  loadWorkstreamsPageModule().then(({ WorkstreamsPage }) => ({
-    default: WorkstreamsPage,
-  })),
-);
 
 // Only the Chrome extension's app tab mirrors saved hosts and takes
 // navigation from the side panel (docs/tactical/151).
@@ -316,7 +302,6 @@ const initialRemoteModuleLoaders: Record<
   gitStatusPage: loadGitStatusPageModule,
   globalSessionsPage: loadGlobalSessionsPageModule,
   hostPickerPage: loadHostPickerPageModule,
-  hostsPage: loadHostsPageModule,
   inboxPage: loadInboxPageModule,
   issuesPage: loadIssuesPageModule,
   layouts: loadLayoutsModule,
@@ -333,7 +318,6 @@ const initialRemoteModuleLoaders: Record<
   sessionCore: loadSessionCoreModules,
   sessionPage: loadSessionPageModule,
   settings: loadSettingsModule,
-  workstreamsPage: loadWorkstreamsPageModule,
 };
 
 const initialRouteModuleKeys = getInitialRemoteRouteModuleKeys(
@@ -422,10 +406,6 @@ const APP_ROUTES = (
         element={routeModule(<ProjectAppPage />)}
       />
       <Route
-        path="projects/:projectId/workstreams"
-        element={routeModule(<WorkstreamsPage />)}
-      />
-      <Route
         path="projects/:projectId"
         element={routeModule(<ProjectSessionsRedirect />)}
       />
@@ -433,7 +413,6 @@ const APP_ROUTES = (
       <Route path="agents" element={routeModule(<AgentsPage />)} />
       <Route path="inbox" element={routeModule(<InboxPage />)} />
       <Route path="issues" element={routeModule(<IssuesPage />)} />
-      <Route path="-/hosts" element={routeModule(<HostsRoute />)} />
       <Route path="git-status" element={routeModule(<GitStatusPage />)} />
       <Route path="bang-commands" element={routeModule(<BangCommandsPage />)} />
       <Route path="devices" element={routeModule(<EmulatorPage />)} />

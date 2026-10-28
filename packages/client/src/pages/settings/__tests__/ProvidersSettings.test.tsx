@@ -1101,43 +1101,4 @@ describe("ProvidersSettings additional models", () => {
       screen.queryByText("providersClaudeOllamaDeprecationNotice"),
     ).toBeNull();
   });
-
-  it("hides post-compact continuation on older servers", () => {
-    render(<ProvidersSettings />);
-    expect(screen.queryByText("providersPostCompactReplayTitle")).toBeNull();
-  });
-
-  it("saves a post-compact provider checkbox and replay count", async () => {
-    hookState.settings = {
-      ...hookState.settings,
-      postCompactReplay: { providers: {}, replayTurnCount: 0 },
-    };
-
-    render(<ProvidersSettings />);
-
-    expect(screen.getByText("providersPostCompactReplayTitle")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("checkbox", { name: "Claude" }));
-
-    await waitFor(() => {
-      expect(mockUpdateSetting).toHaveBeenCalledWith("postCompactReplay", {
-        providers: { claude: true },
-        replayTurnCount: 0,
-      });
-    });
-
-    const numberInput = screen
-      .getAllByLabelText("providersPostCompactReplayCountAria")
-      .find((element) => element.getAttribute("type") === "number");
-    expect(numberInput).toBeDefined();
-    fireEvent.change(numberInput!, { target: { value: "4" } });
-    fireEvent.blur(numberInput!);
-
-    await waitFor(() => {
-      expect(mockUpdateSetting).toHaveBeenCalledWith("postCompactReplay", {
-        providers: {},
-        replayTurnCount: 4,
-      });
-    });
-  });
 });

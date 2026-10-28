@@ -474,7 +474,7 @@ proof is operator-only, not a generally exposed placement UI. Warp is ahead on
 published execution-target and environment management; YA should not claim
 equivalent orchestration from the existence of SSH settings.
 [YA execution contract](../../topics/managed-remote-executors.md),
-[provider-neutral gap](../../gaps/sketches/provider-neutral-remote-executors.md),
+[SSH executor retirement](../project/remote-executors.md),
 [placement discussion](../../topics/multi-machine-architecture.md).
 
 ## Developer workflow and test evidence
@@ -634,7 +634,7 @@ execution, collaboration and workspace documents below already own that work.
    The [placement map](../../topics/multi-machine-architecture.md),
    [managed runner contract](../../topics/managed-remote-executors.md),
    [remote project-view gap](../../gaps/remote-session-project-views-use-local-files.md)
-   and [provider-neutral executor gap](../../gaps/sketches/provider-neutral-remote-executors.md)
+   and [SSH executor retirement](../project/remote-executors.md)
    already capture YA's related constraints.
 6. **Preserve deliberate collaboration authority.** Warp provides substantial
    co-control now; YA's public shares remain read-only. Use it as a concrete

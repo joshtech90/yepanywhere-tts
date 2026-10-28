@@ -6,7 +6,6 @@ import type {
   CacheMissBillingRecord,
   DurableLocalCommandMessage,
   SlashCommand,
-  WorkstreamId,
 } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
@@ -900,42 +899,6 @@ describe("SessionMetadataService", () => {
       expect(service.getMetadata("session-1")).toEqual({ isArchived: true });
     });
 
-    it("stores per-session heartbeat settings and preserves other metadata", async () => {
-      await service.initialize();
-      await service.setTitle("session-1", "Heartbeat Session");
-
-      await service.updateMetadata("session-1", {
-        heartbeatTurnsEnabled: true,
-        heartbeatTurnsAfterMinutes: 7,
-        heartbeatTurnText: "session heartbeat override",
-      });
-
-      expect(service.getMetadata("session-1")).toEqual({
-        customTitle: "Heartbeat Session",
-        heartbeatTurnsEnabled: true,
-        heartbeatTurnsAfterMinutes: 7,
-        heartbeatTurnText: "session heartbeat override",
-      });
-    });
-
-    it("clears heartbeat overrides while keeping the session opt-in flag", async () => {
-      await service.initialize();
-
-      await service.updateMetadata("session-1", {
-        heartbeatTurnsEnabled: true,
-        heartbeatTurnsAfterMinutes: 9,
-        heartbeatTurnText: "override",
-      });
-      await service.updateMetadata("session-1", {
-        heartbeatTurnsAfterMinutes: null,
-        heartbeatTurnText: null,
-      });
-
-      expect(service.getMetadata("session-1")).toEqual({
-        heartbeatTurnsEnabled: true,
-      });
-    });
-
     it("persists both session-wake override values and clears to inheritance", async () => {
       await service.initialize();
 
@@ -951,27 +914,6 @@ describe("SessionMetadataService", () => {
 
       await service.updateMetadata("session-1", { wakeTurnsEnabled: null });
       expect(service.getMetadata("session-1")).toBeUndefined();
-    });
-
-    it("persists an automatic-resume block until heartbeat is re-enabled", async () => {
-      await service.initialize();
-      await service.updateMetadata("session-1", {
-        heartbeatTurnsEnabled: false,
-        autoResumeDisabled: true,
-      });
-
-      const reloaded = createTestSessionMetadataService(testDir);
-      await reloaded.initialize();
-      expect(reloaded.getMetadata("session-1")).toEqual({
-        autoResumeDisabled: true,
-      });
-
-      await reloaded.updateMetadata("session-1", {
-        heartbeatTurnsEnabled: true,
-      });
-      expect(reloaded.getMetadata("session-1")).toEqual({
-        heartbeatTurnsEnabled: true,
-      });
     });
 
     it("stores and clears a /btw parent session link", async () => {
@@ -1284,34 +1226,6 @@ describe("SessionMetadataService", () => {
       await service.clearSession("nonexistent-session");
 
       expect(service.getMetadata("nonexistent-session")).toBeUndefined();
-    });
-  });
-
-  describe("setWorkstream", () => {
-    it("sets and clears workstream identity", async () => {
-      await service.initialize();
-
-      await service.setWorkstream("session-1", "ws-feature" as WorkstreamId);
-
-      expect(service.getMetadata("session-1")).toEqual({
-        workstreamId: "ws-feature",
-      });
-
-      await service.setWorkstream("session-1", undefined);
-
-      expect(service.getMetadata("session-1")).toBeUndefined();
-    });
-
-    it("preserves other metadata when updating workstream identity", async () => {
-      await service.initialize();
-      await service.setTitle("session-1", "My Title");
-
-      await service.setWorkstream("session-1", "ws-feature" as WorkstreamId);
-
-      expect(service.getMetadata("session-1")).toEqual({
-        customTitle: "My Title",
-        workstreamId: "ws-feature",
-      });
     });
   });
 

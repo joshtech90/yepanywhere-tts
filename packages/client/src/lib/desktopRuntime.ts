@@ -34,6 +34,11 @@ export function getDesktopRuntimeMetadata(): DesktopRuntimeMetadata | null {
   };
 }
 
+/** The YA UI this client is, sent on API requests as `X-Yep-Client-Surface`. */
+export function getClientSurface(): "web" | "desktop" {
+  return getDesktopRuntimeMetadata() ? "desktop" : "web";
+}
+
 export function formatDesktopBuildVersion(version: string): string {
   const trimmed = version.trim();
   if (/^v\d+\.\d+\.\d+/.test(trimmed)) return trimmed;

@@ -238,10 +238,9 @@ pi's context.
 ### Beyond pi
 
 Only pi is verified tool-light. If a second provider qualifies, the client
-should learn it from a provider capability rather than a hard-coded name set,
-the direction
-[`gaps/sketches/provider-neutral-remote-executors.md`](../gaps/sketches/provider-neutral-remote-executors.md)
-already gives for executor support. Tier 1 is provider-neutral by
+should learn it from a provider capability rather than a hard-coded name set.
+That is independent of the withdrawn provider-neutral SSH expansion sketch
+([SSH executor retirement](../docs/project/remote-executors.md)). Tier 1 is provider-neutral by
 construction; Tier 2 mechanics are pi-specific, and OpenCode or Copilot would
 need their own plugin or MCP route if they ever needed a supplement.
 

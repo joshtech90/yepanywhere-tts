@@ -72,7 +72,6 @@ function usePreviewToolbarControls(previewNowMs: number) {
       | "renderModeControl"
       | "conversationViewControl"
       | "browserDebugControl"
-      | "nudgeControl"
       | "doneControl"
       | "speechControl"
       | "statusControl"
@@ -125,15 +124,6 @@ function usePreviewToolbarControls(previewNowMs: number) {
         onToggle: noop,
         onReactivate: noop,
         onReload: noop,
-      },
-      nudgeControl: {
-        enabled: true,
-        title: t("sessionHeartbeatTitle"),
-        onClick: noop,
-        onContextMenu: (event) => event.preventDefault(),
-        onTouchStart: noop,
-        onTouchEnd: (event) => event.preventDefault(),
-        onClearTouch: noop,
       },
       doneControl: {
         onDone: noop,
@@ -250,7 +240,6 @@ export function SessionToolbarPreview() {
           renderModeControl={controls.renderModeControl}
           conversationViewControl={controls.conversationViewControl}
           browserDebugControl={controls.browserDebugControl}
-          nudgeControl={controls.nudgeControl}
           doneControl={controls.doneControl}
           speechControl={controls.speechControl}
           speechWaveformActive={visibility.waveform}
@@ -351,7 +340,6 @@ export function ToolbarControlPreview({
         renderModeControl={controls.renderModeControl}
         conversationViewControl={controls.conversationViewControl}
         browserDebugControl={controls.browserDebugControl}
-        nudgeControl={controls.nudgeControl}
         doneControl={controls.doneControl}
         speechControl={controls.speechControl}
         speechWaveformActive={controlKey === "waveform"}

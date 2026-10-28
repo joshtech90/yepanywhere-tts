@@ -5,6 +5,12 @@ Topic: typescript-module-boundary-refactor
 Status: Broad low-risk slices in progress; the remaining `sessions.ts`
 route-registrar extractions are deferred.
 
+Accepted 2026-10-27: [plan 163](163-http-independent-restart-compaction.md)
+and doc 053 SRR-012 describe one HTTP-independent restart-compaction
+extraction, followed by a separate observer-lifetime fix. The maintainer
+authorized both after independent plan review; SRR-012 landed as `06cff21d6`.
+This does not reactivate the other deferred route extractions.
+
 ## Contract
 
 The binding rules for this campaign — slice discipline, naming, coordination,
@@ -1598,3 +1604,15 @@ Verification:
 
 Follow-ups recorded:
 - Phase 1.2 still needs a proposed SRR item before implementation.
+
+
+### Restart compaction outside HTTP — 2026-10-27
+
+Doc 053 SRR-012 moves the restart-only compaction attempt to
+`supervisor/restart-compaction.ts`, with a type-only Process dependency and no
+Hono dependency or back-import. Both HTTP callers and existing route tests
+remain unchanged. Verbatim helper comparison passed except exports; no
+parameter conversion. Plan 163 records Tier 1/2 and SDK timer-tripwire evidence.
+Client E2E is unnecessary for this slice: no route registration, UI or wire
+contract changes; unchanged route tests exercise both HTTP callers. Cleanup
+of refused/thrown dispatch is a separate behavior fix, outside the move.

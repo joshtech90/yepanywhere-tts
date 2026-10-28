@@ -233,7 +233,6 @@ const toolbarVisibilityOverrides = vi.hoisted(() => ({
     shortcutsHelp: true,
     contextUsage: true,
     btw: true,
-    nudge: true,
     sessionStatus: true,
     projectQueue: true,
     projectQueueNewSessionShortcut: true,
@@ -677,7 +676,6 @@ const toolbarVisibility: MessageInputToolbarViewProps["visibility"] = {
   transcriptSearch: false,
   contextUsage: false,
   btw: false,
-  nudge: false,
   syntheticDone: false,
   topicShift: false,
   sessionStatus: false,
@@ -6334,7 +6332,6 @@ describe("MessageInput", () => {
     const onBrowserDebugToggle = vi.fn();
     const onBrowserDebugReactivate = vi.fn();
     const onBrowserDebugReload = vi.fn();
-    const onNudgeClick = vi.fn();
     const setShortcutsOpen = vi.fn();
     const onBtwClick = vi.fn();
     const onToggleSteerNow = vi.fn();
@@ -6351,7 +6348,6 @@ describe("MessageInput", () => {
           shortcutsHelp: true,
           contextUsage: true,
           btw: true,
-          nudge: true,
           projectQueue: true,
         }}
         priority={{
@@ -6377,15 +6373,6 @@ describe("MessageInput", () => {
           onToggle: onBrowserDebugToggle,
           onReactivate: onBrowserDebugReactivate,
           onReload: onBrowserDebugReload,
-        }}
-        nudgeControl={{
-          enabled: true,
-          title: "Pulse after quiet",
-          onClick: onNudgeClick,
-          onContextMenu: vi.fn(),
-          onTouchStart: vi.fn(),
-          onTouchEnd: vi.fn(),
-          onClearTouch: vi.fn(),
         }}
         shortcutsControl={{
           open: false,
@@ -6463,7 +6450,6 @@ describe("MessageInput", () => {
     fireEvent.click(
       screen.getAllByLabelText("Disable browser debugging").at(-1)!,
     );
-    fireEvent.click(screen.getAllByLabelText("Pulse after quiet").at(-1)!);
     fireEvent.click(
       screen.getAllByLabelText("Session keyboard shortcuts").at(-1)!,
     );
@@ -6475,7 +6461,6 @@ describe("MessageInput", () => {
 
     expect(onRenderToggle).toHaveBeenCalledTimes(1);
     expect(onBrowserDebugToggle).toHaveBeenCalledTimes(1);
-    expect(onNudgeClick).toHaveBeenCalledTimes(1);
     expect(setShortcutsOpen).toHaveBeenCalledTimes(1);
     expect(onBtwClick).toHaveBeenCalledTimes(1);
     expect(onToggleSteerNow).toHaveBeenCalledTimes(1);
@@ -6528,7 +6513,6 @@ describe("MessageInput", () => {
       renderMode: "last",
       conversationView: "last",
       browserDebug: "last",
-      nudge: "last",
       syntheticDone: "off",
       sessionStatus: "pin",
       shortcutsHelp: "last",

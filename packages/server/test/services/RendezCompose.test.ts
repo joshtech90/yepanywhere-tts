@@ -53,7 +53,6 @@ it.skipIf(process.platform === "win32")(
     const process = {
       sessionId: "session-a",
       projectPath: project,
-      execution: { kind: "local" },
       isProcessAlive: true,
       provider: "claude",
       resolvedModel: "sonnet",

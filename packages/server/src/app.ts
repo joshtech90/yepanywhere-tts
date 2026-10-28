@@ -55,7 +55,6 @@ import {
 } from "./middleware/allowed-hosts.js";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type {
-  AppContentBlock,
   AppSession,
   ProviderName,
   SafeRestartPreservedWork,
@@ -67,15 +66,13 @@ import {
   toUrlProjectId,
 } from "@yep-anywhere/shared";
 import {
-  DEFAULT_HEARTBEAT_TURN_TEXT,
-  DEFAULT_ISSUE_SETTINGS,
-  DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
-  DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   DEFAULT_PROVIDER,
-  DEFAULT_SUBAGENT_MAX_DEPTH,
   buildEffectiveAgentContext,
   clampProjectQueueQuietSeconds,
+  DEFAULT_ISSUE_SETTINGS,
+  DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
+  DEFAULT_SUBAGENT_MAX_DEPTH,
   idleReapHoursToMs,
   idleReapMsToHours,
   isClaudeProviderName,
@@ -255,7 +252,6 @@ import {
 } from "./routes/project-queue.js";
 import { createProjectsRoutes } from "./routes/projects.js";
 import { createDirectoryBrowseRoutes } from "./routes/directory-browse.js";
-import { createProjectSessionDefaultsRoutes } from "./routes/project-session-defaults.js";
 import { createProvidersRoutes } from "./routes/providers.js";
 import { createCodexUpdateRoutes } from "./routes/codex-updates.js";
 import { createPublicFileShareRoutes } from "./routes/public-file-shares.js";
@@ -313,7 +309,6 @@ import {
   type VersionRouteOptions,
 } from "./routes/version.js";
 import { createProviderHostRoutes } from "./routes/provider-host.js";
-import { createWorkstreamRoutes } from "./routes/workstreams.js";
 import { WS_INTERNAL_AUTHENTICATED } from "./middleware/internal-auth.js";
 import {
   configureProviderRuntime,
@@ -344,7 +339,6 @@ import {
 import { CodexUpdateChecker } from "./services/CodexUpdateChecker.js";
 import type { ConnectedBrowsersService } from "./services/ConnectedBrowsersService.js";
 import type { DirtyFileEditorService } from "./services/DirtyFileEditorService.js";
-import { HeartbeatCandidateRegistry } from "./services/HeartbeatCandidateRegistry.js";
 import type { HostAwakeService } from "./services/host-awake/HostAwakeService.js";
 import type { ModelInfoService } from "./services/ModelInfoService.js";
 import type { NetworkBindingService } from "./services/NetworkBindingService.js";
@@ -352,7 +346,6 @@ import { buildProviderProjectCatalog } from "./routes/provider-catalog.js";
 import { AutoSessionTitleService } from "./services/AutoSessionTitleService.js";
 import { PdfjsAssetCache } from "./services/PdfjsAssetCache.js";
 import { ProjectQueueScheduler } from "./services/ProjectQueueScheduler.js";
-import { initializeSessionHeartbeatDefaults } from "./services/sessionHeartbeatDefaults.js";
 import type { ProjectQueueService } from "./services/ProjectQueueService.js";
 import type { RelayClientService } from "./services/RelayClientService.js";
 import type { ServerSettingsService } from "./services/ServerSettingsService.js";
@@ -370,7 +363,6 @@ import {
   type SessionWakeLogger,
 } from "./services/SessionWakeService.js";
 import type { SecurityClientService } from "./services/SecurityClientService.js";
-import type { WorkstreamService } from "./services/WorkstreamService.js";
 import type {
   PersistedSessionQueuedMessage,
   SessionQueuePersistenceService,
@@ -399,10 +391,7 @@ import {
 import { applyRecapOverlayToSummary } from "./sessions/recap-overlays.js";
 import { normalizeSession } from "./sessions/normalization.js";
 import { ClaudeSessionReader } from "./sessions/reader.js";
-import {
-  isAutomaticSessionResumeAllowed,
-  isUnownedHeartbeatResumeEligible,
-} from "./sessions/resume-exemption.js";
+import { isAutomaticSessionResumeAllowed } from "./sessions/resume-exemption.js";
 import type { SummaryParserWorkerMode } from "./sessions/summary-parser-worker-protocol.js";
 import type {
   GetSessionSummaryOptions,
@@ -410,11 +399,8 @@ import type {
 } from "./sessions/types.js";
 import { ClaudePeerStatus } from "./supervisor/claudePeerStatus.js";
 import { ExternalSessionTracker } from "./supervisor/ExternalSessionTracker.js";
-import {
-  Supervisor,
-  type HeartbeatTurnCandidate,
-} from "./supervisor/Supervisor.js";
-import type { Message, Project } from "./supervisor/types.js";
+import { Supervisor } from "./supervisor/Supervisor.js";
+import type { Project } from "./supervisor/types.js";
 import {
   type BusEvent,
   FocusedSessionWatchManager,
@@ -579,8 +565,6 @@ export interface AppOptions {
   projectStoragePolicy?: ProjectStoragePolicy;
   /** Process-global operating-system sleep assertion policy. */
   hostAwakeService?: HostAwakeService;
-  /** WorkstreamService for experimental per-project checkout lanes */
-  workstreamService?: WorkstreamService;
   /** ModelInfoService for cached model metadata (context windows, etc.) */
   modelInfoService?: ModelInfoService;
   /** SharingService for session sharing */
@@ -654,30 +638,6 @@ export interface AppResult {
     username: string | null,
     event: BusEvent,
   ) => BusEvent | null;
-}
-
-function getMessageContentBlocks(message: Message): AppContentBlock[] {
-  const content = message.message?.content ?? message.content;
-  return Array.isArray(content) ? content : [];
-}
-
-function hasPendingToolCall(messages: Message[]): boolean {
-  const pendingToolUseIds = new Set<string>();
-
-  for (const message of messages) {
-    for (const block of getMessageContentBlocks(message)) {
-      if (block.type === "tool_use" && typeof block.id === "string") {
-        pendingToolUseIds.add(block.id);
-      } else if (
-        block.type === "tool_result" &&
-        typeof block.tool_use_id === "string"
-      ) {
-        pendingToolUseIds.delete(block.tool_use_id);
-      }
-    }
-  }
-
-  return pendingToolUseIds.size > 0;
 }
 
 function isRecoveredPatientQueueItem(
@@ -1213,7 +1173,6 @@ export function createApp(options: AppOptions): AppResult {
     geminiSessionsDir,
     projectScanCachePath,
     projectMetadataService: options.projectMetadataService,
-    workstreamService: options.workstreamService,
     eventBus: options.eventBus,
     cacheTtlMs: options.projectScanCacheTtlMs,
   });
@@ -1535,11 +1494,7 @@ export function createApp(options: AppOptions): AppResult {
             const paths = new Set(
               supervisor
                 .getAllProcesses()
-                .filter(
-                  (process) =>
-                    process.execution.kind === "local" &&
-                    process.isProcessAlive === true,
-                )
+                .filter((process) => process.isProcessAlive === true)
                 .map((process) => process.projectPath),
             );
             try {
@@ -1978,7 +1933,7 @@ export function createApp(options: AppOptions): AppResult {
         },
       })
     : undefined;
-  const heartbeatProviderResolutionDeps = () => ({
+  const sessionProviderResolutionDeps = () => ({
     readerFactory,
     codexSessionsDir,
     codexReaderFactory,
@@ -1992,53 +1947,6 @@ export function createApp(options: AppOptions): AppResult {
     piReaderFactory,
     claudeSummaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
   });
-  const heartbeatCandidates = new HeartbeatCandidateRegistry<Project>({
-    listEligible: () =>
-      Object.entries(options.sessionMetadataService?.getAllMetadata() ?? {})
-        .filter(([, metadata]) => isUnownedHeartbeatResumeEligible(metadata))
-        .map(([sessionId, metadata]) => [sessionId, metadata] as const),
-    isOwned: (sessionId) => Boolean(supervisor.getProcessForSession(sessionId)),
-    listProjects: () => scanner.listProjects(),
-    // Indexed lookup, so an already-located candidate never materializes the
-    // whole project fleet just to find its own project.
-    getProject: async (projectId) =>
-      (await scanner.getProject(projectId)) ?? undefined,
-    resolve: async (project, sessionId, provider) => {
-      const resolved = await findSessionListSummaryAcrossProviders(
-        project,
-        sessionId,
-        project.id,
-        heartbeatProviderResolutionDeps(),
-        provider,
-      );
-      if (!resolved) return null;
-      const reader = resolved.source.reader;
-      return {
-        projectId: project.id,
-        projectPath: project.path,
-        provider: resolved.summary.provider,
-        updatedAt: resolved.summary.updatedAt,
-        // The provider's activity timestamp is what an append moves, so it is
-        // the identity a retained pending-tool fact stays valid for.
-        sourceVersion: `${resolved.summary.provider}\0${resolved.summary.updatedAt}`,
-        readPendingToolCall: async () => {
-          const loaded = await reader.getSession(sessionId, project.id);
-          if (!loaded) return false;
-          return hasPendingToolCall(normalizeSession(loaded).messages);
-        },
-      };
-    },
-  });
-  const getHeartbeatTurnCandidates = async (): Promise<
-    HeartbeatTurnCandidate[]
-  > => {
-    if (!options.sessionMetadataService) return [];
-    const rows = await heartbeatCandidates.getCandidates();
-    return rows.map((row) => ({
-      ...row,
-      projectId: row.projectId as UrlProjectId,
-    }));
-  };
   const resolveConfiguredProvider = (
     providerName: ProviderName,
   ): AgentProvider | undefined => {
@@ -2203,36 +2111,6 @@ export function createApp(options: AppOptions): AppResult {
       });
       return reader.getRecoveredLaunchSettings?.(sessionId);
     },
-    getHeartbeatTurnSettings:
-      options.serverSettingsService || options.sessionMetadataService
-        ? (sessionId) => {
-            const sessionHeartbeat =
-              options.sessionMetadataService?.getMetadata(sessionId);
-            return {
-              enabled: sessionHeartbeat?.heartbeatTurnsEnabled ?? false,
-              afterMinutes:
-                sessionHeartbeat?.heartbeatTurnsAfterMinutes ??
-                options.serverSettingsService?.getSetting(
-                  "heartbeatTurnsAfterMinutes",
-                ) ??
-                DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES,
-              forceAfterMinutes:
-                sessionHeartbeat?.heartbeatForceAfterMinutes ?? null,
-              text:
-                sessionHeartbeat?.heartbeatTurnText ??
-                options.serverSettingsService?.getSetting(
-                  "heartbeatTurnText",
-                ) ??
-                DEFAULT_HEARTBEAT_TURN_TEXT,
-            };
-          }
-        : undefined,
-    getHeartbeatTurnCandidates: options.sessionMetadataService
-      ? getHeartbeatTurnCandidates
-      : undefined,
-    getHeartbeatWaitingSessionIds: options.sessionMetadataService
-      ? () => heartbeatCandidates.getWaitingSessionIds()
-      : undefined,
     getPromptCacheKeepaliveSettings: (providerName) => {
       const capability =
         resolveConfiguredProvider(providerName)?.promptCacheKeepalive;
@@ -2256,8 +2134,6 @@ export function createApp(options: AppOptions): AppResult {
         inactivityMinutes,
       };
     },
-    getPostCompactReplaySettings: () =>
-      options.serverSettingsService?.getSetting("postCompactReplay"),
     getInstructionRestorationSettings: () =>
       options.serverSettingsService?.getSetting("instructionRestoration"),
     readInstructionHistory: async (sessionId, projectId, provider) => {
@@ -2490,13 +2366,6 @@ export function createApp(options: AppOptions): AppResult {
             item.createdByUser,
           );
         }
-        await initializeSessionHeartbeatDefaults({
-          sessionId: process.sessionId,
-          projectId: item.projectId,
-          sessionMetadataService: metadata,
-          projectMetadataService: options.projectMetadataService,
-          serverSettingsService: options.serverSettingsService,
-        });
 
         const provider = item.target.provider ?? process.provider;
         if (provider) {
@@ -2818,15 +2687,6 @@ export function createApp(options: AppOptions): AppResult {
       storagePolicy: projectStoragePolicy,
     }),
   );
-  if (options.projectMetadataService) {
-    app.route(
-      "/api/projects",
-      createProjectSessionDefaultsRoutes({
-        scanner,
-        projectMetadataService: options.projectMetadataService,
-      }),
-    );
-  }
   if (options.projectQueueService) {
     app.route(
       "/api/project-queue",
@@ -2924,7 +2784,6 @@ export function createApp(options: AppOptions): AppResult {
       piSessionsDir,
       piReaderFactory,
       serverSettingsService: options.serverSettingsService,
-      workstreamService: options.workstreamService,
       modelInfoService: options.modelInfoService,
       sessionQueuePersistenceService: options.sessionQueuePersistenceService,
       toolResultMediaStore,
@@ -3136,7 +2995,7 @@ export function createApp(options: AppOptions): AppResult {
     ) => {
       const project = await scanner.getProject(projectId);
       if (!project) return null;
-      const deps = heartbeatProviderResolutionDeps();
+      const deps = sessionProviderResolutionDeps();
       if (provider)
         return (
           getSessionSourceForProvider(project, deps, provider)?.reader ?? null
@@ -3265,7 +3124,7 @@ export function createApp(options: AppOptions): AppResult {
         vocabularySessions(
           catalog,
           scanner,
-          heartbeatProviderResolutionDeps(),
+          sessionProviderResolutionDeps(),
           cutoff,
         ),
       { reference: () => keyterms.reference() },
@@ -3550,17 +3409,6 @@ export function createApp(options: AppOptions): AppResult {
     }),
   );
 
-  if (options.serverSettingsService && options.workstreamService) {
-    app.route(
-      "/api/projects",
-      createWorkstreamRoutes({
-        scanner,
-        serverSettingsService: options.serverSettingsService,
-        workstreamService: options.workstreamService,
-      }),
-    );
-  }
-
   // Server-host folder listing for the Cockpit's folder picker
   app.route("/api/directories", createDirectoryBrowseRoutes());
 
@@ -3649,9 +3497,6 @@ export function createApp(options: AppOptions): AppResult {
         },
         onOllamaUrlChanged: (url) => {
           ClaudeOllamaProvider.setOllamaUrl(url);
-        },
-        onHeartbeatSettingsChanged: () => {
-          supervisor.notifyHeartbeatScheduleChanged();
         },
         onProjectQueueReadinessChanged: () => {
           projectQueueScheduler?.readinessSettingsChanged();

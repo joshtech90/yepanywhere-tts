@@ -51,8 +51,8 @@ failure class is entirely in the land-back step, so any variant of this
 sketch that expects an agent to bring a lane's tree home is gated on
 evidence that agents handle that step reliably, or on a human-attended
 landing through Source Control review plus an agent-performed, supervised
-rebase as [workstreams](../../topics/workstreams.md#landing-back-to-main)
-specifies.
+rebase as the historical [workstream landing design](https://github.com/kzahel/yepanywhere/blob/9e31f8ff0/topics/workstreams.md#landing-back-to-main)
+specified. YA-managed lanes have since been retired.
 
 The first candidate is therefore the **disposable lane**: a fork whose tree
 is explicitly throwaway. Try the other approach, run the long verification,

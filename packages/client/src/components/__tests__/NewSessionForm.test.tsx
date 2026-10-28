@@ -51,7 +51,6 @@ const {
   mockCreateDetachedSession,
   mockQueueMessage,
   mockCreateProjectQueueItem,
-  mockGetProjectWorkstreams,
   mockReportProjectQueueCollectionSnapshot,
   mockAddProject,
   mockGetProjectFolderState,
@@ -74,7 +73,6 @@ const {
   providersState,
   providerDescriptorsState,
   providerRowState,
-  remoteExecutorsState,
   serverSettingsState,
   versionState,
   remoteBasePathState,
@@ -94,7 +92,6 @@ const {
   mockCreateDetachedSession: vi.fn(),
   mockQueueMessage: vi.fn(),
   mockCreateProjectQueueItem: vi.fn(),
-  mockGetProjectWorkstreams: vi.fn(),
   mockReportProjectQueueCollectionSnapshot: vi.fn(),
   mockAddProject: vi.fn(),
   mockGetProjectFolderState: vi.fn(),
@@ -189,9 +186,6 @@ const {
     refreshing: false,
     error: null as Error | null,
   },
-  remoteExecutorsState: {
-    executors: [] as string[],
-  },
   serverSettingsState: {
     error: null as string | null,
     refetch: vi.fn(),
@@ -226,14 +220,6 @@ const {
           >
         >;
       };
-      helperTargets?: Array<{
-        id: string;
-        name: string;
-        kind: "openai-compatible";
-        baseUrl: string;
-        model?: string;
-      }>;
-      workstreamsEnabled?: boolean;
     } | null,
     isLoading: true,
   },
@@ -389,7 +375,6 @@ vi.mock("../../api/client", () => ({
     createSession: mockCreateSession,
     queueMessage: mockQueueMessage,
     createProjectQueueItem: mockCreateProjectQueueItem,
-    getProjectWorkstreams: mockGetProjectWorkstreams,
   },
 }));
 
@@ -530,13 +515,6 @@ vi.mock("../../hooks/useProviders", () => ({
 
 vi.mock("../../hooks/useRemoteBasePath", () => ({
   useRemoteBasePath: () => remoteBasePathState.basePath,
-}));
-
-vi.mock("../../hooks/useRemoteExecutors", () => ({
-  useRemoteExecutors: () => ({
-    executors: remoteExecutorsState.executors,
-    loading: false,
-  }),
 }));
 
 vi.mock("../../hooks/useServerSettings", () => ({
@@ -887,7 +865,6 @@ describe("NewSessionForm", () => {
     providerRowState.fresh = true;
     providerRowState.refreshing = false;
     providerRowState.error = null;
-    remoteExecutorsState.executors = [];
     serverSettingsState.settings = null;
     serverSettingsState.error = null;
     serverSettingsState.refetch.mockClear();
@@ -912,7 +889,6 @@ describe("NewSessionForm", () => {
     mockCreateDetachedSession.mockReset();
     mockQueueMessage.mockReset();
     mockCreateProjectQueueItem.mockReset();
-    mockGetProjectWorkstreams.mockReset();
     mockAddProject.mockReset();
     mockGetProjectFolderState.mockReset();
     mockShowToast.mockReset();
@@ -990,10 +966,6 @@ describe("NewSessionForm", () => {
         attachmentCount: 0,
       },
       queue: { projectId: "project-1", items: [] },
-    });
-    mockGetProjectWorkstreams.mockResolvedValue({
-      projectId: "project-1",
-      workstreams: [],
     });
     mockAddProject.mockResolvedValue({
       project: {
@@ -1509,7 +1481,6 @@ describe("NewSessionForm", () => {
         preferredModel="opus"
         preferredThinking="on:xhigh"
         preferredPermissionMode="plan"
-        preferredExecutor="build-host"
         launch={{
           draftKey: "draft-handoff:session-1",
           initialMessage: "Prepared handoff",
@@ -1550,30 +1521,12 @@ describe("NewSessionForm", () => {
           model: "gpt-5.3-codex",
           thinking: "on:xhigh",
           provider: "codex",
-          executor: undefined,
         }),
         clientTimestamp: expect.any(Number),
       });
     });
     expect(mockStartSession).not.toHaveBeenCalled();
     expect((composer as HTMLTextAreaElement).value).toBe("");
-  });
-
-  it("offers configured SSH hosts only to supported providers", async () => {
-    remoteExecutorsState.executors = ["build-host"];
-    serverSettingsState.settings = {};
-    serverSettingsState.isLoading = false;
-
-    render(
-      <NewSessionForm
-        projectId="project-1"
-        selectedProject={chooserProjects[0]}
-      />,
-    );
-
-    expect(await screen.findByText("build-host")).toBeDefined();
-    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
-    await waitFor(() => expect(screen.queryByText("build-host")).toBeNull());
   });
 
   it("groups previous models and keeps an unlisted saved default selected", async () => {
@@ -2999,80 +2952,6 @@ describe("NewSessionForm", () => {
     expect(mockStartSession.mock.calls[0]?.[2]).not.toHaveProperty(
       "computerControl",
     );
-  });
-
-  it("submits the selected workstream when starting a project session", async () => {
-    serverSettingsState.settings = {
-      workstreamsEnabled: true,
-    };
-    serverSettingsState.isLoading = false;
-    mockGetProjectWorkstreams.mockResolvedValue({
-      projectId: "project-1",
-      workstreams: [
-        {
-          id: "main:project-1",
-          projectId: "project-1",
-          label: "Main",
-          kind: "main",
-          path: "/tmp/alpha",
-          branch: "main",
-          baseBranch: "main",
-          baseCommit: null,
-          managedByYa: false,
-          queuePaused: false,
-          status: "active",
-          createdAt: "1970-01-01T00:00:00.000Z",
-          updatedAt: "1970-01-01T00:00:00.000Z",
-        },
-        {
-          id: "ws-lane",
-          projectId: "project-1",
-          label: "tools cleanup",
-          kind: "checkout",
-          path: "/tmp/checkouts/alpha/tools-cleanup",
-          branch: "main",
-          baseBranch: "main",
-          baseCommit: null,
-          managedByYa: true,
-          queuePaused: false,
-          status: "active",
-          createdAt: "2026-07-05T10:00:00.000Z",
-          updatedAt: "2026-07-05T10:00:00.000Z",
-        },
-      ],
-    });
-
-    render(
-      <NewSessionForm
-        projectId="project-1"
-        selectedProject={chooserProjects[0]}
-        projects={[...chooserProjects]}
-      />,
-    );
-
-    const workstreamSelect = (await screen.findByLabelText(
-      "newSessionWorkstreamLabel",
-    )) as HTMLSelectElement;
-    fireEvent.change(workstreamSelect, { target: { value: "ws-lane" } });
-    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
-      target: { value: "hello" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: "newSessionStartAction" }),
-    );
-
-    await waitFor(() => {
-      expect(mockStartSession).toHaveBeenCalledWith(
-        "project-1",
-        "hello",
-        expect.objectContaining({
-          workstreamId: "ws-lane",
-        }),
-        undefined,
-        expect.any(Number),
-        undefined,
-      );
-    });
   });
 
   it.each([
@@ -5064,55 +4943,6 @@ describe("NewSessionForm", () => {
           provider: "codex",
           recapMode: "side-session",
           promptSuggestionMode: "off",
-        }),
-        undefined,
-        expect.any(Number),
-        undefined,
-      );
-    });
-  });
-
-  it("hides configured helper targets until runtime support exists", async () => {
-    serverSettingsState.settings = {
-      helperTargets: [
-        {
-          id: "local-vllm",
-          name: "Local vLLM",
-          kind: "openai-compatible",
-          baseUrl: "http://localhost:8001/v1",
-          model: "Qwen/Qwen3.6-27B",
-        },
-      ],
-    };
-    serverSettingsState.isLoading = false;
-
-    render(
-      <NewSessionForm
-        projectId="project-1"
-        selectedProject={chooserProjects[0]}
-        projects={[...chooserProjects]}
-      />,
-    );
-
-    openAdvancedOptions();
-    fireEvent.click(
-      dropdownOption("newSessionRecapTitle", "recapModeSideSession"),
-    );
-    expect(screen.queryByRole("button", { name: "Local vLLM" })).toBeNull();
-    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
-      target: { value: "hello" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: "newSessionStartAction" }),
-    );
-
-    await waitFor(() => {
-      expect(mockStartSession).toHaveBeenCalledWith(
-        "project-1",
-        "hello",
-        expect.objectContaining({
-          recapMode: "side-session",
-          helperSideModel: "cheapest",
         }),
         undefined,
         expect.any(Number),

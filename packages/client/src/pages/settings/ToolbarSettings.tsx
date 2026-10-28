@@ -96,7 +96,6 @@ const PRIORITY_EDITABLE_CONTROLS = new Set<SessionToolbarVisibilityKey>([
   "renderMode",
   "conversationView",
   "browserDebug",
-  "nudge",
   "syntheticDone",
   "sessionStatus",
   "shortcutsHelp",
@@ -390,12 +389,6 @@ export function ToolbarSettings() {
           ),
         ]
       : []),
-    controlMeta(
-      "nudge",
-      t("appearanceToolbarNudgeTitle"),
-      t("appearanceToolbarNudgeDescription"),
-      "left",
-    ),
     ...(supportsSyntheticDone
       ? [
           controlMeta(

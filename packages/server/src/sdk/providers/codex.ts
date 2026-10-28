@@ -903,24 +903,8 @@ export interface CodexProviderConfig {
   installationCoordinator?: ProviderInstallationCoordinator;
   /** Overload retry timer (injectable for deterministic tests). */
   overloadRetryWait?: CodexOverloadRetryWait;
-  /** Target-local Codex state root for an isolated managed session. */
+  /** Optional local Codex state root, including its config and credentials. */
   codexHome?: string;
-  /** In-memory ChatGPT subscription projection owned by a host application. */
-  externalChatgptAuth?: CodexExternalChatgptAuth;
-}
-
-export interface CodexExternalChatgptAuthProjection {
-  accessToken: string;
-  chatgptAccountId: string;
-  chatgptPlanType: string | null;
-}
-
-export interface CodexExternalChatgptAuth {
-  initialProjection: CodexExternalChatgptAuthProjection;
-  refresh: (request: {
-    reason: string;
-    previousAccountId: string;
-  }) => Promise<CodexExternalChatgptAuthProjection>;
 }
 
 class AsyncQueue<T> {
@@ -1428,11 +1412,6 @@ export class CodexProvider implements AgentProvider {
   private getMcpAppViews: () => boolean = () => false;
 
   constructor(config: CodexProviderConfig = {}) {
-    if (config.externalChatgptAuth && (config.apiKey || config.baseUrl)) {
-      throw new Error(
-        "Managed Codex external authentication cannot use API key or endpoint overrides",
-      );
-    }
     this.config = config;
     this.installationCoordinator =
       config.installationCoordinator ?? providerInstallationCoordinator;
@@ -1524,12 +1503,6 @@ export class CodexProvider implements AgentProvider {
     if (this.config.apiKey) {
       env.OPENAI_API_KEY = this.config.apiKey;
     }
-    if (this.config.externalChatgptAuth) {
-      delete env.OPENAI_API_KEY;
-      delete env.CODEX_API_KEY;
-      delete env.CODEX_ACCESS_TOKEN;
-      delete env.OPENAI_BASE_URL;
-    }
     if (this.config.codexHome) {
       env.CODEX_HOME = this.config.codexHome;
     }
@@ -1553,10 +1526,9 @@ export class CodexProvider implements AgentProvider {
     const installed = codexPath !== null;
     const codexEnv = this.getCodexEnv();
     const hasEnvironmentAuth = Boolean(
-      this.config.externalChatgptAuth ||
-        ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"].some((name) =>
-          codexEnv[name]?.trim(),
-        ),
+      ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"].some((name) =>
+        codexEnv[name]?.trim(),
+      ),
     );
     const authenticated = Boolean(
       codexPath &&
@@ -3144,9 +3116,6 @@ export class CodexProvider implements AgentProvider {
     };
 
     appServer.setServerRequestHandler(async (request) => {
-      if (request.method === "account/chatgptAuthTokens/refresh") {
-        return await this.refreshExternalChatgptAuth(request);
-      }
       return await this.handleServerRequestApproval(
         request,
         options,
@@ -3161,11 +3130,9 @@ export class CodexProvider implements AgentProvider {
       const experimentalApiEnabled = await this.initializeAppServer(
         appServer,
         options.clientName,
-        Boolean(this.config.externalChatgptAuth),
         runtimeState.mcpAppViews,
       );
       appServer.notify("initialized");
-      await this.loginWithExternalChatgptAuth(appServer);
       await this.refreshCodexSkills(
         appServer,
         options.cwd,
@@ -4243,7 +4210,6 @@ export class CodexProvider implements AgentProvider {
   private async initializeAppServer(
     appServer: CodexAppServerClient,
     clientName?: string,
-    requireExperimentalApi = false,
     mcpAppViews = false,
   ): Promise<boolean> {
     try {
@@ -4253,12 +4219,6 @@ export class CodexProvider implements AgentProvider {
       );
       return true;
     } catch (error) {
-      if (requireExperimentalApi) {
-        throw new Error(
-          "Target Codex external-token protocol is incompatible",
-          { cause: error },
-        );
-      }
       log.info(
         {
           event: "codex_experimental_api_unavailable",
@@ -4271,76 +4231,6 @@ export class CodexProvider implements AgentProvider {
         this.createInitializeParams(false, clientName),
       );
       return false;
-    }
-  }
-
-  private async loginWithExternalChatgptAuth(
-    appServer: CodexAppServerClient,
-  ): Promise<void> {
-    const externalAuth = this.config.externalChatgptAuth;
-    if (!externalAuth) return;
-    const projection = externalAuth.initialProjection;
-    this.assertExternalChatgptAuthProjection(projection);
-    try {
-      await appServer.request("account/login/start", {
-        type: "chatgptAuthTokens",
-        accessToken: projection.accessToken,
-        chatgptAccountId: projection.chatgptAccountId,
-        chatgptPlanType: projection.chatgptPlanType,
-      });
-    } catch (error) {
-      throw new Error("Managed Codex external-token login failed", {
-        cause: error,
-      });
-    }
-  }
-
-  private async refreshExternalChatgptAuth(
-    request: JsonRpcServerRequest,
-  ): Promise<CodexExternalChatgptAuthProjection> {
-    const externalAuth = this.config.externalChatgptAuth;
-    if (!externalAuth) {
-      throw new Error("Managed Codex external authentication is unavailable");
-    }
-    const params =
-      request.params && typeof request.params === "object"
-        ? (request.params as Record<string, unknown>)
-        : {};
-    const previousAccountId =
-      typeof params.previousAccountId === "string"
-        ? params.previousAccountId
-        : "";
-    const expectedAccountId = externalAuth.initialProjection.chatgptAccountId;
-    if (!previousAccountId || previousAccountId !== expectedAccountId) {
-      throw new Error("Managed Codex refresh account mismatch");
-    }
-    const projection = await externalAuth.refresh({
-      reason:
-        typeof params.reason === "string" ? params.reason : "unauthorized",
-      previousAccountId,
-    });
-    this.assertExternalChatgptAuthProjection(projection);
-    if (projection.chatgptAccountId !== expectedAccountId) {
-      throw new Error("Managed Codex refresh changed account");
-    }
-    return projection;
-  }
-
-  private assertExternalChatgptAuthProjection(
-    projection: CodexExternalChatgptAuthProjection,
-  ): void {
-    if (
-      !projection ||
-      typeof projection.accessToken !== "string" ||
-      projection.accessToken.length === 0 ||
-      typeof projection.chatgptAccountId !== "string" ||
-      projection.chatgptAccountId.length === 0 ||
-      !(
-        projection.chatgptPlanType === null ||
-        typeof projection.chatgptPlanType === "string"
-      )
-    ) {
-      throw new Error("Managed Codex auth projection is invalid");
     }
   }
 

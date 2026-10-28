@@ -2,9 +2,8 @@
  * A monotonic revision covering every input a global session collection reads.
  *
  * `GET /api/sessions` walks every project, lists every project's sessions, and
- * enriches each row from session metadata, notification read state, supervisor
- * ownership, external-process tracking, and workstream membership. A client
- * that already holds the rows has no cheap way to ask "is any of that
+ * enriches each row from session metadata, notification read state and supervisor
+ * state. A client that already holds the rows has no cheap way to ask "is any of that
  * different?", so every tab's every revalidation repeats the whole walk.
  *
  * This counter answers that question. It is deliberately *coarse*: one number

@@ -71,13 +71,6 @@ export {
   type ProjectQueueServiceOptions,
 } from "./ProjectQueueService.js";
 export {
-  WorkstreamService,
-  WorkstreamValidationError,
-  type CreateWorkstreamInput,
-  type ListProjectWorkstreamsOptions,
-  type WorkstreamServiceOptions,
-} from "./WorkstreamService.js";
-export {
   SessionQueuePersistenceService,
   SessionQueuePersistenceValidationError,
   type PersistedSessionQueuedMessage,

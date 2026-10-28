@@ -1,4 +1,3 @@
-import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -7,6 +6,7 @@ import {
 } from "@yep-anywhere/shared";
 import { createTestViteServer as createServer } from "./support/vite-server";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 
 test.use({ serviceWorkers: "block" });
 
@@ -266,8 +266,6 @@ test("question cards use existing forks, keep main typing, and save on empty", a
     const address = server.httpServer?.address();
     if (!address || typeof address === "string")
       throw new Error("Missing Vite port");
-    const captureDir = process.env.YEP_E2E_UI_CAPTURE_DIR;
-    if (captureDir) mkdirSync(captureDir, { recursive: true });
     const device = await page.context().newCDPSession(page);
     for (const viewport of [
       { name: "desktop", width: 1000, height: 600 },
@@ -295,10 +293,7 @@ test("question cards use existing forks, keep main typing, and save on empty", a
         `${native ? "Enter" : "Send"}: quick answer · Space: keep typing`,
       );
       await expect(hint).toBeVisible();
-      if (captureDir)
-        await page.screenshot({
-          path: join(captureDir, `${viewport.name}-hint.png`),
-        });
+      await recordUiCapture(page, `aside-${viewport.name}-hint`);
       await composer.fill("Why is this still running? ");
       await expect(hint).toHaveCount(0);
       await composer.fill("Why is this still running?");
@@ -346,10 +341,7 @@ test("question cards use existing forks, keep main typing, and save on empty", a
             ),
         )
         .toBeLessThan(3);
-      if (captureDir)
-        await page.screenshot({
-          path: join(captureDir, `${viewport.name}-answer.png`),
-        });
+      await recordUiCapture(page, `aside-${viewport.name}-answer`);
       await card
         .getByRole("button", { name: "Quick answer", exact: true })
         .click();
@@ -382,10 +374,7 @@ test("question cards use existing forks, keep main typing, and save on empty", a
       const steer = card.getByRole("button", { name: "Steer", exact: true });
       await expect(steer).toBeEnabled();
       await composer.fill("Keep my separate main draft");
-      if (captureDir)
-        await page.screenshot({
-          path: join(captureDir, `${viewport.name}-failed.png`),
-        });
+      await recordUiCapture(page, `aside-${viewport.name}-failed`);
       await steer.click();
       await expect(card).toHaveCount(0);
       await expect(composer).toHaveValue("Keep my separate main draft");
@@ -404,6 +393,8 @@ test("question cards use existing forks, keep main typing, and save on empty", a
       await expect(
         card.getByRole("button", { name: "Continue /btw" }),
       ).toBeEnabled({ timeout: 15000 });
+      const motherDraft = "Preserve this separate parent draft";
+      await composer.fill(motherDraft);
       const forksBeforeMove = forks;
       const resumesBeforeMove = childResumes;
       await card.getByRole("button", { name: "Continue /btw" }).click();
@@ -443,10 +434,26 @@ test("question cards use existing forks, keep main typing, and save on empty", a
       expect(followupPrompt).toContain(
         "one-question-only limit no longer applies",
       );
-      if (captureDir)
-        await page.screenshot({
-          path: join(captureDir, `${viewport.name}-continued.png`),
-        });
+      await recordUiCapture(page, `aside-${viewport.name}-continued`);
+      await expect(composer).toHaveAttribute("placeholder", "/btw follow-up");
+      const resumesBeforeClose = childResumes;
+      const promptBeforeClose = followupPrompt;
+      await composer.fill("/done summary");
+      if (native) await composer.press("Enter");
+      else
+        await page
+          .locator(".message-input-wrapper")
+          .getByRole("button", { name: "Send", exact: true })
+          .click();
+      await expect(composer).not.toHaveAttribute(
+        "placeholder",
+        "/btw follow-up",
+      );
+      await expect(composer).toHaveValue(motherDraft);
+      await expect(page.getByText(/Report-back drafting/)).toHaveCount(0);
+      expect(childResumes).toBe(resumesBeforeClose);
+      expect(followupPrompt).toBe(promptBeforeClose);
+      await recordUiCapture(page, `aside-${viewport.name}-closed`);
     }
     expect(forks).toBe(6);
     expect(steers).toHaveLength(2);
@@ -471,10 +478,7 @@ test("question cards use existing forks, keep main typing, and save on empty", a
       );
       await expect(warning).toBeVisible();
       await warning.scrollIntoViewIfNeeded();
-      if (captureDir)
-        await page.screenshot({
-          path: join(captureDir, `${viewport.name}-setting.png`),
-        });
+      await recordUiCapture(page, `aside-${viewport.name}-setting`);
     }
   } finally {
     await page.close();

@@ -26,12 +26,10 @@ import type {
   CodexReasoningSummary,
   GatewayService,
   GatewayServiceExportPaths,
-  HelperTargetConfig,
   HostIdentity,
   HostAwakeMode,
   LongContextEffortWarningSettings,
   NewSessionDefaults,
-  PostCompactReplaySettings,
   PromptCacheKeepaliveSettings,
   ProjectQueueReadinessCommand,
   SessionToolbarPresenceClientDefaults,
@@ -48,14 +46,12 @@ import {
   upgradeUntouchedLimitedUserInstructions,
   DEFAULT_CLAUDE_STEER_BACKGROUND_BASH,
   DEFAULT_CODEX_REASONING_SUMMARY,
-  DEFAULT_HEARTBEAT_TURN_TEXT,
   DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
   DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   normalizeAutoSessionTitleSettings,
   normalizeCockpitProjectFavorites,
   DEFAULT_SUBAGENT_MAX_DEPTH,
-  MAX_HEARTBEAT_TURN_TEXT_LENGTH,
   clampClearloopInactivitySeconds,
   clampProjectQueueQuietSeconds,
   isIdleReapHours,
@@ -71,10 +67,8 @@ import {
   parseClaudeSteerBackgroundBashSettings,
   parseGatewayServices,
   parseLongContextEffortWarningSettings,
-  parsePostCompactReplaySettings,
   parseSpeechVoiceBackends,
   DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS,
-  DEFAULT_POST_COMPACT_REPLAY_SETTINGS,
 } from "@yep-anywhere/shared";
 import { reconcileGatewaySettings } from "./gatewayServiceSettings.js";
 import type { FileAccessSettings } from "../middleware/file-access.js";
@@ -93,10 +87,6 @@ export const DEFAULT_SOURCE_REVIEW_RESPONSE_TURNS = 8;
 export const MIN_SOURCE_REVIEW_RESPONSE_TURNS = 1;
 export const MAX_SOURCE_REVIEW_RESPONSE_TURNS = 32;
 export const MAX_CLAUDE_GATEWAY_START_COMMAND_LENGTH = 10_000;
-const LEGACY_DEFAULT_HEARTBEAT_TURN_TEXTS = new Set([
-  "heartbeat",
-  "yepanywhere heartbeat",
-]);
 const DEFAULT_CLIENT_DEFAULTS: ClientDefaults = {};
 
 export interface SpeechAudioRetentionSettings {
@@ -156,8 +146,6 @@ export interface ServerSettings {
    */
   limitedUsersEnabled?: boolean;
   limitedUserInstructions?: import("@yep-anywhere/shared").LimitedUserInstructions;
-  /** Whether experimental workstream surfaces and APIs are enabled */
-  workstreamsEnabled?: boolean;
   /** Whether experimental live Source Control filesystem monitoring is enabled. */
   liveWorktreeMonitoringEnabled: boolean;
   /** Whether captured source-review submissions and outcomes are enabled. */
@@ -176,8 +164,6 @@ export interface ServerSettings {
   hostAwakeBatteryFloorPercent: number;
   /** @deprecated Use yaClientBaseUrl. Kept to migrate older settings files. */
   publicShareViewerBaseUrl?: string;
-  /** SSH host aliases for remote executors (from ~/.ssh/config) */
-  remoteExecutors?: string[];
   /** SSH host aliases for ChromeOS device-bridge targets */
   chromeOsHosts?: string[];
   /** Allowed hostnames for host/origin validation. "*" = allow all, comma-separated = specific hosts. */
@@ -193,10 +179,6 @@ export interface ServerSettings {
   globalInstructions?: string;
   /** Optional client-context hints composed additively with global instructions */
   agentContextHints?: AgentContextHints;
-  /** Default idle minutes before an opted-in session queues a heartbeat turn */
-  heartbeatTurnsAfterMinutes?: number;
-  /** Default text queued as the synthetic heartbeat user turn */
-  heartbeatTurnText?: string;
   /** Whether authenticated external session-wake turns are enabled by default. */
   wakeTurnsEnabled?: boolean;
   /**
@@ -268,8 +250,6 @@ export interface ServerSettings {
   speechVoiceBackends: string[];
   /** Explicit Whisper device choice; absent preserves WHISPER_DEVICE. */
   speechWhisperGpu?: boolean;
-  /** OpenAI-compatible helper endpoints for side-session helper work */
-  helperTargets?: HelperTargetConfig[];
   /** Per-provider prompt-cache keepalive policy and cadence. */
   promptCacheKeepalive?: PromptCacheKeepaliveSettings;
   /**
@@ -277,7 +257,6 @@ export interface ServerSettings {
    * Default off. Per-provider because some harnesses already continue from
    * their own compact summary.
    */
-  postCompactReplay?: PostCompactReplaySettings;
   instructionRestoration?: InstructionRestorationSettings;
   /**
    * Warn before a mid-session effort change on a long-context session and
@@ -391,15 +370,12 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   publicSharesEnabled: false,
   limitedUsersEnabled: false,
   limitedUserInstructions: defaultLimitedUserInstructions(),
-  workstreamsEnabled: false,
   liveWorktreeMonitoringEnabled: defaultLiveWorktreeMonitoringEnabled(),
   sourceReviewSubmissionsEnabled: true,
   sourceReviewResponseTurns: DEFAULT_SOURCE_REVIEW_RESPONSE_TURNS,
   hostProcessObservabilityEnabled: true,
   hostAwakeMode: "off",
   hostAwakeBatteryFloorPercent: DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
-  heartbeatTurnsAfterMinutes: 15,
-  heartbeatTurnText: DEFAULT_HEARTBEAT_TURN_TEXT,
   wakeTurnsEnabled: false,
   speechAudioRetention: {
     enabled: true,
@@ -423,7 +399,6 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   projectQueueQuietSeconds: DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   autoSessionTitle: DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
   clearloopInactivitySeconds: DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
-  postCompactReplay: DEFAULT_POST_COMPACT_REPLAY_SETTINGS,
   instructionRestoration: DEFAULT_INSTRUCTION_RESTORATION,
   longContextEffortWarning: DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS,
 };
@@ -653,17 +628,6 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
   normalized.subagentMaxDepth = isSubagentMaxDepth(settings.subagentMaxDepth)
     ? settings.subagentMaxDepth
     : DEFAULT_SUBAGENT_MAX_DEPTH;
-  const loadedHeartbeatText = settings.heartbeatTurnText?.trim();
-  if (!loadedHeartbeatText) {
-    normalized.heartbeatTurnText = DEFAULT_SERVER_SETTINGS.heartbeatTurnText;
-  } else if (LEGACY_DEFAULT_HEARTBEAT_TURN_TEXTS.has(loadedHeartbeatText)) {
-    normalized.heartbeatTurnText = DEFAULT_SERVER_SETTINGS.heartbeatTurnText;
-  } else {
-    normalized.heartbeatTurnText = loadedHeartbeatText.slice(
-      0,
-      MAX_HEARTBEAT_TURN_TEXT_LENGTH,
-    );
-  }
   if (!normalized.yaClientBaseUrl && normalized.publicShareViewerBaseUrl) {
     try {
       normalized.yaClientBaseUrl = normalizeYaClientBaseUrlFromShareViewerUrl(
@@ -707,9 +671,12 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
     typeof settings.wakeTurnsEnabled === "boolean"
       ? settings.wakeTurnsEnabled
       : DEFAULT_SERVER_SETTINGS.wakeTurnsEnabled;
-  normalized.postCompactReplay =
-    parsePostCompactReplaySettings(settings.postCompactReplay) ??
-    DEFAULT_POST_COMPACT_REPLAY_SETTINGS;
+  delete (normalized as unknown as Record<string, unknown>)
+    .heartbeatTurnsAfterMinutes;
+  delete (normalized as unknown as Record<string, unknown>).heartbeatTurnText;
+  delete (normalized as unknown as Record<string, unknown>).helperTargets;
+  // Retired policy: omit saved enablement from responses and future writes.
+  delete (normalized as unknown as Record<string, unknown>).postCompactReplay;
   normalized.instructionRestoration =
     parseInstructionRestorationSettings(settings.instructionRestoration) ??
     DEFAULT_INSTRUCTION_RESTORATION;

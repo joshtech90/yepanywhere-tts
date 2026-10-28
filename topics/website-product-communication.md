@@ -129,6 +129,14 @@ instructions.
 ## Current distribution statements
 
 - The npm/server install and browser client are available.
+- The free Chrome extension is public and experimental. Its canonical guide at
+  `/docs/chrome-extension` explains related-session lookup for GitHub issues,
+  pull requests and Jira tickets, new sessions from a ticket, optional per-site
+  automatic lookup and badges, saved hosts and relay-only access. It links to
+  the existing Chrome Web Store item and states the unsupported notification,
+  download, HTML-preview and direct-host features. The homepage, download page,
+  feature and distribution catalogs, docs navigation and shared footer make
+  this guide discoverable without JavaScript.
 - Signed macOS and Windows desktop installers are published through GitHub
   Releases and are publicly labeled **Beta** while release-readiness work
   continues.

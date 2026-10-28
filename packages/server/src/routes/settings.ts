@@ -10,7 +10,6 @@ import {
   type LimitedUserInstructions,
   CODEX_PLAN_TOOL_MODES,
   CODEX_CYBER_ACCESS_PROGRAMS,
-  MAX_HEARTBEAT_TURN_TEXT_LENGTH,
   DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
   MAX_CLEARLOOP_INACTIVITY_SECONDS,
   MIN_CLEARLOOP_INACTIVITY_SECONDS,
@@ -43,7 +42,6 @@ import {
   parseClaudeAdditionalModelSelections,
   parseClaudeSteerBackgroundBashSettings,
   parseLongContextEffortWarningSettings,
-  parsePostCompactReplaySettings,
   parseInstructionRestorationSettings,
   parseSpeechVoiceBackends,
 } from "@yep-anywhere/shared";
@@ -60,7 +58,6 @@ import {
 } from "../middleware/file-access.js";
 import type { SessionMetadataService } from "../metadata/index.js";
 import type { ProjectStoragePolicy } from "../projects/projectStoragePolicy.js";
-import { testSSHConnection } from "../sdk/remote-spawn.js";
 import { defaultGatewayServiceExportPaths } from "../sdk/providers/gatewayServiceExport.js";
 import { detectEndpointEffort } from "../services/GatewayEffortProbe.js";
 import type { PublicShareService } from "../services/PublicShareService.js";
@@ -77,23 +74,16 @@ import {
   MAX_SOURCE_REVIEW_RESPONSE_TURNS,
   MIN_SOURCE_REVIEW_RESPONSE_TURNS,
 } from "../services/ServerSettingsService.js";
-import {
-  isValidSshHostAlias,
-  normalizeSshHostAlias,
-} from "../utils/sshHostAlias.js";
 
 import {
-  discoverOpenAiCompatibleModels,
   mergeClientDefaults,
   normalizeClaudeGatewayUrl,
-  normalizeOpenAiCompatibleBaseUrl,
   parseAgentContextHints,
   parseCacheMissBilling,
   parseClaudeAutoCompactPercentOverride,
   parseClaudeGatewayStartCommand,
   parseClientDefaults,
   parseFileAccess,
-  parseHelperTargets,
   parseHostIdentity,
   parseHostAliasList,
   parseNewSessionDefaults,
@@ -129,8 +119,6 @@ export interface SettingsRoutesDeps {
   }) => Promise<void> | void;
   /** Callback to apply Ollama URL changes at runtime */
   onOllamaUrlChanged?: (url: string | undefined) => void;
-  /** Callback to re-plan heartbeat deadlines when the global quiet period moves. */
-  onHeartbeatSettingsChanged?: () => void;
   onProjectQueueReadinessChanged?: () => void;
   /** Callback to apply Ollama system prompt changes at runtime */
   onOllamaSystemPromptChanged?: (prompt: string | undefined) => void;
@@ -165,12 +153,9 @@ const LIMITED_USER_SETTINGS_FIELDS = [
   "serviceWorkerEnabled",
   "limitedUsersEnabled",
   "publicSharesEnabled",
-  "workstreamsEnabled",
   "sourceReviewSubmissionsEnabled",
   "hostProcessObservabilityEnabled",
   "hostIdentity",
-  "heartbeatTurnsAfterMinutes",
-  "heartbeatTurnText",
   "longContextEffortWarning",
   "deferredJoinWindowSeconds",
   "composeAnchorsEnabled",
@@ -214,7 +199,6 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
     onRemoteSessionPersistenceChanged,
     onClaudeGatewaySettingsChanged,
     onOllamaUrlChanged,
-    onHeartbeatSettingsChanged,
     onOllamaSystemPromptChanged,
     onOllamaUseFullSystemPromptChanged,
     onGrokBuildUseXaiApiKeyChanged,
@@ -397,9 +381,6 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
       }
       if (typeof body.publicSharesEnabled === "boolean") {
         updates.publicSharesEnabled = body.publicSharesEnabled;
-      }
-      if (typeof body.workstreamsEnabled === "boolean") {
-        updates.workstreamsEnabled = body.workstreamsEnabled;
       }
       if (typeof body.limitedUsersEnabled === "boolean") {
         updates.limitedUsersEnabled = body.limitedUsersEnabled;
@@ -712,18 +693,6 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
         updates.hostIdentity = parsedHostIdentity;
       }
 
-      // Handle remoteExecutors array
-      if (Array.isArray(body.remoteExecutors)) {
-        const { hosts, invalidHost } = parseHostAliasList(body.remoteExecutors);
-        if (invalidHost) {
-          return c.json(
-            { error: `Invalid remote executor host alias: ${invalidHost}` },
-            400,
-          );
-        }
-        updates.remoteExecutors = hosts;
-      }
-
       // Handle chromeOsHosts array
       if (Array.isArray(body.chromeOsHosts)) {
         const { hosts, invalidHost } = parseHostAliasList(body.chromeOsHosts);
@@ -789,46 +758,6 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
           return c.json({ error: "Invalid agentContextHints setting" }, 400);
         }
         updates.agentContextHints = parsedHints;
-      }
-
-      if ("heartbeatTurnsAfterMinutes" in body) {
-        if (
-          body.heartbeatTurnsAfterMinutes === undefined ||
-          body.heartbeatTurnsAfterMinutes === null
-        ) {
-          updates.heartbeatTurnsAfterMinutes =
-            DEFAULT_SERVER_SETTINGS.heartbeatTurnsAfterMinutes;
-        } else if (
-          typeof body.heartbeatTurnsAfterMinutes === "number" &&
-          Number.isInteger(body.heartbeatTurnsAfterMinutes) &&
-          body.heartbeatTurnsAfterMinutes >= 1 &&
-          body.heartbeatTurnsAfterMinutes <= 1440
-        ) {
-          updates.heartbeatTurnsAfterMinutes = body.heartbeatTurnsAfterMinutes;
-        } else {
-          return c.json(
-            {
-              error:
-                "heartbeatTurnsAfterMinutes must be an integer between 1 and 1440",
-            },
-            400,
-          );
-        }
-      }
-
-      if ("heartbeatTurnText" in body) {
-        if (
-          body.heartbeatTurnText === undefined ||
-          body.heartbeatTurnText === null ||
-          body.heartbeatTurnText === ""
-        ) {
-          updates.heartbeatTurnText = DEFAULT_SERVER_SETTINGS.heartbeatTurnText;
-        } else if (typeof body.heartbeatTurnText === "string") {
-          updates.heartbeatTurnText = body.heartbeatTurnText.slice(
-            0,
-            MAX_HEARTBEAT_TURN_TEXT_LENGTH,
-          );
-        }
       }
 
       if ("wakeTurnsEnabled" in body) {
@@ -1085,30 +1014,6 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
           );
         }
         updates.speechVoiceBackends = parsedBackends;
-      }
-
-      if ("helperTargets" in body) {
-        const parsedTargets = parseHelperTargets(body.helperTargets);
-        if (parsedTargets === null) {
-          return c.json({ error: "Invalid helperTargets setting" }, 400);
-        }
-        updates.helperTargets = parsedTargets;
-      }
-
-      if ("postCompactReplay" in body) {
-        const parsedReplay = parsePostCompactReplaySettings(
-          body.postCompactReplay,
-        );
-        if (parsedReplay === null) {
-          return c.json(
-            {
-              error:
-                "postCompactReplay must use known provider checkboxes and an integer replayTurnCount from 0 to 20",
-            },
-            400,
-          );
-        }
-        updates.postCompactReplay = parsedReplay;
       }
 
       if ("instructionRestoration" in body) {
@@ -1396,14 +1301,6 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
         onOllamaUrlChanged(settings.ollamaUrl);
       }
       if (
-        "heartbeatTurnsAfterMinutes" in updates &&
-        onHeartbeatSettingsChanged
-      ) {
-        // A shorter global quiet period can make an already-quiet session due
-        // right now, which a scheduled deadline would otherwise not learn.
-        onHeartbeatSettingsChanged();
-      }
-      if (
         ("claudeGatewayUrl" in updates ||
           "claudeGatewayStartCommand" in updates ||
           "claudeGatewayDisableAgent" in updates ||
@@ -1461,34 +1358,6 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
   );
 
   /**
-   * GET /api/settings/remote-executors
-   * Get list of configured remote executors
-   */
-  app.get("/remote-executors", (c) => {
-    const settings = serverSettingsService.getSettings();
-    return c.json({ executors: settings.remoteExecutors ?? [] });
-  });
-
-  /**
-   * POST /api/settings/helper-targets/models
-   * Discover model ids exposed by an OpenAI-compatible helper endpoint.
-   */
-  app.post("/helper-targets/models", async (c) => {
-    const body = await c.req.json<{ baseUrl?: unknown }>();
-    const baseUrl = normalizeOpenAiCompatibleBaseUrl(body.baseUrl);
-    if (!baseUrl) {
-      return c.json({ error: "baseUrl must be an http(s) URL" }, 400);
-    }
-
-    const models = await discoverOpenAiCompatibleModels(baseUrl);
-    if (!models) {
-      return c.json({ error: "Failed to load helper target models" }, 502);
-    }
-
-    return c.json({ baseUrl, models });
-  });
-
-  /**
    * POST /api/settings/gateway-services/effort
    * Ask one model-serving endpoint which thinking efforts it accepts.
    *
@@ -1532,54 +1401,6 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
       noThinking: detection.probe.noThinking,
       defaultLevel: detection.probe.defaultLevel,
     });
-  });
-
-  /**
-   * PUT /api/settings/remote-executors
-   * Update list of remote executors
-   */
-  app.put("/remote-executors", (c) =>
-    serializeSettingsUpdate(async () => {
-      const body = await c.req.json<{ executors: string[] }>();
-
-      if (!Array.isArray(body.executors)) {
-        return c.json({ error: "executors must be an array" }, 400);
-      }
-
-      const { hosts: validExecutors, invalidHost } = parseHostAliasList(
-        body.executors,
-      );
-      if (invalidHost) {
-        return c.json(
-          { error: `Invalid remote executor host alias: ${invalidHost}` },
-          400,
-        );
-      }
-
-      await serverSettingsService.updateSettings({
-        remoteExecutors: validExecutors,
-      });
-
-      return c.json({ executors: validExecutors });
-    }),
-  );
-
-  /**
-   * POST /api/settings/remote-executors/:host/test
-   * Test SSH connection to a remote executor
-   */
-  app.post("/remote-executors/:host/test", async (c) => {
-    const host = normalizeSshHostAlias(c.req.param("host"));
-
-    if (!host) {
-      return c.json({ error: "host is required" }, 400);
-    }
-    if (!isValidSshHostAlias(host)) {
-      return c.json({ error: "host must be a valid SSH host alias" }, 400);
-    }
-
-    const result = await testSSHConnection(host);
-    return c.json(result);
   });
 
   return app;

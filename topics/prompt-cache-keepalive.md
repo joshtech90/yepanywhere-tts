@@ -13,6 +13,13 @@ Related topics: [provider-context-economics](provider-context-economics.md),
 
 ## Motivation
 
+**Resolved, 2026-10-27: retain; explicit opt-in only.** Keepalive has high
+value for a frequently used session with brief breaks and a small UI footprint.
+Long absences can spend more on refreshes than the next use saves. The selected
+policy requires a ten-refresh limit between real uses, a running net-savings
+UI log, and a durable per-session loss cutoff. These safeguards and default-off
+behavior are implementation work, not claims about the current scheduler.
+
 Long provider sessions are cheap and responsive only while their rendered
 prompt prefix remains cache-warm. Once the prompt cache expires, the next
 turn pays the cold-resume cost: full prefix prefill, extra latency, and
@@ -26,12 +33,10 @@ or app window that remains connected. The goal is not to occupy provider cache
 capacity for abandoned sessions or to run recurring provider work after the
 user closed the view.
 
-This topic is a deliberate exception to [vanilla-defaults](vanilla-defaults.md):
-for providers with a literal no-context-move refresh path, YA may default to a
-reasonable expected-cost-saving keepalive for active-enough clients. The user
-benefit is avoiding the much larger cold full-history recompute cost; the
-product risk is bounded by requiring no visible session row and no future
-context noise in the default path.
+Keepalive follows [vanilla-defaults](vanilla-defaults.md): it must default off,
+including for no-context-move refreshes. This supersedes the earlier default-on
+exception. A live viewer lease alone does not establish that continued spend
+will pay off; the user may have left the session open for hours.
 
 ## Provider Ground Truth
 
@@ -84,24 +89,23 @@ Sources:
 Prompt-cache keepalive is a user-visible resource policy, not a hidden
 provider optimization.
 
-- **Default-on exception is no-context-move only.** YA may default keepalive on
-  for active-enough clients only when the provider exposes a literal
-  no-context-move refresh path with bounded cost and cadence. Hidden micro-turns
-  or synthetic messages that become provider-visible conversation context are
-  not part of the default path.
+- **Default off, explicit opt-in.** A capable provider must not enable
+  keepalive implicitly. Enabling it requires bounded cadence, the ten-refresh
+  limit and visible cost accounting. No-context-move is a capability property,
+  not an exemption from opt-in or cost limits.
 - **Configure uniformly per provider.** The persisted user setting should be
   keyed by provider, not by individual session or by one global all-providers
   switch. Each provider row should expose the same shape -- off, provider
-  native/default behavior, default no-context keepalive when supported, and
+  native behavior, explicitly enabled no-context keepalive when supported, and
   stronger user-enabled keepalive modes if they are ever added -- while
   provider capability facts decide which choices are enabled and what copy
   explains them.
-- **Active-enough client lease required.** YA may schedule a default keepalive
+- **Active-enough client lease required.** YA may schedule an opted-in keepalive
   only while at least one client has a live subscription/lease for that session
   and still looks like an active enough tab/app window. A backgrounded tab
   counts if its connection remains alive and healthy. A closed tab,
   disconnected phone, or stale localStorage record does not.
-- **No viewer, no default keepalive.** The server must not autonomously
+- **No viewer, no keepalive.** The server must not autonomously
   maintain prompt-cache warmth for sessions with no current client viewer,
   even if the session is recent, expensive, or likely to be resumed soon.
 - **No provider-owned abandoned cron.** Provider adapters may expose facts and
@@ -113,11 +117,11 @@ provider optimization.
 - **TTL less than or equal to zero means no useful keepalive.** Use this for
   providers with no meaningful prompt cache, no exposed retention window, or a
   retention window long enough that YA should not refresh it proactively.
-- **No transcript or context pollution by default.** A default keepalive must
+- **No transcript or context pollution.** A no-context-move keepalive must
   not appear as a user turn, assistant response, slash command, synthetic system
   row, or hidden provider-visible instruction. If a future provider can only be
   kept warm by sending a small message, that mode must be explicitly named in
-  UI/settings and shown as stronger than the default no-context mode.
+  UI/settings and shown as stronger than the no-context mode.
 - **No activity-age pollution.** Keepalive must not reset UI-facing "last
   activity" ages such as session `updatedAt`, toolbar/session-list relative
   time, real provider-message timestamps, unread cutoffs, or recents ordering.
@@ -167,10 +171,9 @@ with no active client tab must not create repeating server work.
 
 ## Scheduling Rules
 
-If keepalive is implemented, the first scheduler should be conservative:
+The scheduler must enforce the selected limits:
 
-- schedule by default only for providers whose keepalive setting resolves to an
-  enabled no-context-move capability;
+- schedule only after explicit opt-in for a supported capability;
 - require explicit user/provider opt-in before using any hidden-message
   refresh path;
 - require `verified-idle` or another provider-specific safe-idle state before
@@ -183,6 +186,51 @@ If keepalive is implemented, the first scheduler should be conservative:
 - log a bounded event with provider, session id, capability path, and token
   usage summary, not transcript content;
 - stop immediately when the last live session subscription closes.
+
+## Refresh budget and net-savings log
+
+When enabled, allow **at most ten refresh attempts between real uses**; the
+configuration may choose a lower cap. A refresh, viewer reconnect, focus change
+or process restart must not reset the count. Count attempts before dispatch so
+failed or uncertain calls cannot cause unbounded spend. A genuine user-driven
+provider turn starts the next interval; automatic refreshes and other synthetic
+activity are not real use. Persist the interval/count by session so reopening
+the UI or replacing the process cannot evade the cap.
+
+Maintain a bounded, durable per-session log visible from the keepalive control.
+Show refresh count/cap, time, reported usage and cost, cumulative refresh spend,
+estimated avoided cost on subsequent real uses, and the running net saving or
+loss. Keepalive calls themselves incur cost; they do not earn avoided-cost
+credit merely by hitting cache. Credit must not count the same avoided cold
+prefill once per refresh.
+
+Net saving is estimated avoided cost at real use minus all keepalive cost.
+Show the counterfactual assumptions, provider pricing/units and missing usage;
+ordinary cache hits alone do not prove keepalive caused the saving. Do not
+present subscription token/quota estimates as metered dollars. Unknown cost
+or benefit remains unknown, not zero or a fabricated positive balance.
+The ten-attempt cap applies even when economics cannot be estimated.
+
+Support a configured cumulative net-loss threshold that permanently disables
+keepalive for the session when crossed. Persist the disabled state, reason and
+balance; new user activity, a new lease, process replacement and server restart
+must not silently re-enable it. Only an explicit user override may clear it.
+The UI must also offer manual permanent disable for that session. The loss
+amount, accounting basis and handling of uncertain estimates remain to be
+chosen before implementation; do not invent a monetary threshold here.
+
+Ten refreshes is the selected protective ceiling, not a universal provider
+break-even constant. Evaluate the actual benefit over short breaks and expose
+losses during long absences rather than assuming every warm cache pays off.
+
+## Implementation checkpoint
+
+The existing `Process` scheduler has live-viewer leases, safe-idle checks,
+one-shot refresh calls and diagnostic usage logging. Claude currently advertises
+`defaultMode: "auto"`. The scheduler does not yet enforce the ten-attempt cap,
+persist the net-savings UI ledger, or disable a session at a net-loss threshold.
+Changing those behaviors is follow-up implementation; this disposition retains
+the facility without certifying the new safeguards as landed.
 
 The exact margin depends on the provider. For a five-minute TTL, a refresh
 around 3-4 minutes after the last real provider/cache-use signal is plausible.

@@ -231,10 +231,11 @@ throwaway profile with Haiku turns:
 | Remote executor (loopback SSH, remote CLI 2.1.236) | 5/5 after working around two sync gaps, below |
 | Project-write sandbox | Not run: the host sandbox is Linux-only |
 
-The executor run exposed two existing sync defects, recorded as
-[`gaps/remote-executor-sync-needs-gnu-rsync.md`](../../gaps/remote-executor-sync-needs-gnu-rsync.md)
-and
-[`gaps/remote-executor-sync-ignores-claude-config-dir.md`](../../gaps/remote-executor-sync-ignores-claude-config-dir.md).
+The executor run exposed two sync defects, recorded as
+`gaps/remote-executor-sync-needs-gnu-rsync.md` and
+`gaps/remote-executor-sync-ignores-claude-config-dir.md`. Both gaps closed when
+SSH synchronization was retired on 2026-10-26; their evidence remains in Git
+history.
 
 ### Deferral of steps 5–7
 

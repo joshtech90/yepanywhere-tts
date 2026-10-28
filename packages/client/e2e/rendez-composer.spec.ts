@@ -86,6 +86,11 @@ async function upload() {
 test("uploads join begun drafts and typing holds the countdown without losing keys", async ({
   page,
 }) => {
+  // CI 40528845817 exhausted 15s on all three attempts during typing, before
+  // the required 10.5s no-auto-send observation (local full case: 29.4s).
+  // Allow 4x that CI limit and 2x the local completion;
+  // the browser-measured per-keystroke acknowledgement still must stay <100ms.
+  test.setTimeout(60_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.setViewportSize({ width: 1000, height: 600 });

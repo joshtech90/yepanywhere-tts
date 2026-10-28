@@ -638,6 +638,39 @@ already covers whole-paragraph quoting on those platforms.
 - 2026-06-23 — **Right-mouse line-select is a later phase** and may be disabled
   on known-incompatible platforms.
 
+## Inline code and project browser paths
+
+Double-clicking inline fixed-font text in native YA Markdown selects the whole
+item, including hyphens, spaces and path separators. Fenced/multiline code keeps
+ordinary selection. With no live selection, an unlinked inline code item offers
+Copy text on right-click; selected ranges retain the existing copy/quote menu,
+and known file links retain their richer file menu. No inline copy icon is
+added. Known path menus offer Comment on path when the containing session draft
+is available; it inserts the path and focuses the composer without sending.
+
+The repo-view project browser follows the same inline-code selection rule.
+Its breadcrumb copy action copies the current source file/directory's
+project-relative path, without the visual spaces around separators or URL
+access tokens. Desktop reveals the copy button on hover or keyboard focus;
+an overflow menu provides the touch action and Comment on path. A current
+filename remains unlinked while supporting those actions.
+
+An embedded repo-view announces optional `projectRoot` and `projectPath`
+metadata in its existing `yep-anywhere:app-location` message. YA accepts it only
+from the current iframe and its expected origin, and replies with
+`yep-anywhere:app-comment-ready` and an `enabled` flag. Only an available
+containing-session draft enables comments. The frame's explicit path/selection
+actions post `yep-anywhere:app-comment` with a bounded project-relative `path`
+and optional bounded `quote`. YA validates these values, inserts them into the
+existing draft and focuses it. The bridge has no send or session-selection
+operation. Older apps/clients omit or ignore the optional messages and retain
+ordinary browsing/copying; no server API or capability is required.
+
+**Decision:** use the known containing session's existing draft rather than a
+second inline composer. This preserves draft text, undo and send ownership.
+Cross-tab destination discovery and forwarding remain a
+[sketch](../gaps/sketches/project-browser-session-comments.md).
+
 ## Still open
 
 - **Anchor persistence across reload** (follow-up; tint re-attaches to a

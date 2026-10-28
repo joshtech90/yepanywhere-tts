@@ -192,7 +192,9 @@ function SessionSearchPage() {
     () =>
       createdParam
         .split(",")
-        .filter((value) => ["web", "desktop", "unspecified"].includes(value)),
+        .filter((value) =>
+          ["web", "desktop", "api", "unspecified"].includes(value),
+        ),
     [createdParam],
   );
   const filters = useMemo(
@@ -804,6 +806,7 @@ function SessionSearchPage() {
                     value: "desktop",
                     label: t("sessionSearchCreatedDesktop"),
                   },
+                  { value: "api", label: t("sessionSearchCreatedApi") },
                   {
                     value: "unspecified",
                     label: t("sessionSearchCreatedUnspecified"),

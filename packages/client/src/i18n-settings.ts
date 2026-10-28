@@ -230,11 +230,6 @@ export function getSettingsCategories(
       description: t("settingsSpeechDescription"),
     },
     {
-      id: "remote-executors",
-      label: t("settingsRemoteExecutorsTitle"),
-      description: t("settingsRemoteExecutorsDescription"),
-    },
-    {
       id: "environment",
       label: t("settingsEnvironmentTitle"),
       description: t("settingsEnvironmentDescription"),

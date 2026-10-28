@@ -1,14 +1,27 @@
-# Compact-and-handoff state policy (targeted codex mitigation)
+# Compact-and-handoff state policy (retired Spark plan)
 
-This topic records an intentional, temporary mitigation for one specific
-provider/model pairing observed to fail while compacting near context limits.
+> Historical Spark-only compaction mitigation, retired as an active plan;
+> current provider-neutral compaction policies live in resume-compaction.
+
+**Retired as an active plan, 2026-10-27.** The maintainer no longer needs the
+`gpt-5.3-codex-spark` mitigation. The runtime review found the current automatic
+threshold path selects by configured percentage and provider capability, not
+the Spark allow-list below. Do not restore or extend this historical plan.
+
+[Resume compaction](resume-compaction.md) owns current live thresholds,
+explicit compact-before-resume, native provider controls and Claude Gateway
+context-window mapping. Their broader retention decision remains separate in
+[core house cleaning](core-house-cleaning.md), row 16. Retiring this plan does
+not remove those implementations, manual compact, deliberate handoff, queued
+input or shared post-compact hooks. The remainder is historical rationale;
+its provider limitation notes are not current capability guidance.
 
 For the broader action/state contract used by composer controls (`direct`,
 `steer`, `deferred`), and for how compacting should drive the shared
 model-selector replacement text, see
 [`message-control-steer-queue-btw-later-interrupt.md`](./message-control-steer-queue-btw-later-interrupt.md).
-Same-session continuation after a compact boundary, when opted in, is
-[post-compact-replay](post-compact-replay.md).
+The separate [post-compact replay disposition](post-compact-replay.md)
+removes its specific generated message while retaining hook capability.
 
 ## Scope and motivation
 

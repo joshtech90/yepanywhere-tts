@@ -19,7 +19,6 @@ export const COMPOSER_OVERFLOW_ORDER: readonly SessionToolbarVisibilityKey[] = [
   "transcriptSearch",
   "shortcutsHelp",
   "syntheticDone",
-  "nudge",
   "renderMode",
   "conversationView",
   "sessionStatus",
@@ -87,7 +86,6 @@ export interface ComposerToolbarOverflowLayoutSignatureInput {
   renderMode: ComposerToolbarOverflowPriorityInput;
   conversationView: ComposerToolbarOverflowPriorityInput;
   browserDebug: ComposerToolbarOverflowPriorityInput;
-  nudge: ComposerToolbarOverflowPriorityInput;
   syntheticDone: ComposerToolbarOverflowPriorityInput;
   sessionStatus: ComposerToolbarOverflowPriorityInput;
   shortcutsHelp: ComposerToolbarOverflowPriorityInput;
@@ -118,7 +116,6 @@ export function getComposerToolbarOverflowLayoutSignature(
     `renderMode:${input.renderMode}`,
     `conversationView:${input.conversationView}`,
     `browserDebug:${input.browserDebug}`,
-    `nudge:${input.nudge}`,
     `syntheticDone:${input.syntheticDone}`,
     `sessionStatus:${input.sessionStatus}`,
     `shortcutsHelp:${input.shortcutsHelp}`,

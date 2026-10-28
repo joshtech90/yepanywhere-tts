@@ -78,7 +78,7 @@ describe("SessionDoneCoordinator", () => {
       cancelInFlightForkedRecap: () => {
         order.push("cancel-recap");
       },
-      requestHeartbeatSweep: () => {
+      requestMaintenanceSweep: () => {
         order.push("sweep");
       },
     });
@@ -119,7 +119,7 @@ describe("SessionDoneCoordinator", () => {
       } as unknown as SessionMetadataService,
       getProcessForSession: () => process,
       cancelInFlightForkedRecap: () => {},
-      requestHeartbeatSweep: () => {},
+      requestMaintenanceSweep: () => {},
     });
 
     const result = await state.requestSessionDone("session-1", "/archive");
@@ -153,7 +153,7 @@ describe("SessionDoneCoordinator", () => {
       } as unknown as SessionMetadataService,
       getProcessForSession: () => process,
       cancelInFlightForkedRecap: () => {},
-      requestHeartbeatSweep: () => {},
+      requestMaintenanceSweep: () => {},
     });
 
     const done = await state.requestSessionDone("session-1", "/done");
@@ -180,7 +180,7 @@ describe("SessionDoneCoordinator", () => {
       } as unknown as SessionMetadataService,
       getProcessForSession: () => process,
       cancelInFlightForkedRecap: () => {},
-      requestHeartbeatSweep: () => {},
+      requestMaintenanceSweep: () => {},
     });
 
     const done = await state.requestSessionDone("session-1", "/done");
@@ -221,7 +221,7 @@ describe("SessionDoneCoordinator", () => {
       } as unknown as SessionMetadataService,
       getProcessForSession: () => process,
       cancelInFlightForkedRecap: () => {},
-      requestHeartbeatSweep: () => {},
+      requestMaintenanceSweep: () => {},
     });
     await state.requestSessionDone("session-1", "/done");
     (process as unknown as { state: { type: "idle" } }).state = {
@@ -254,7 +254,7 @@ describe("SessionDoneCoordinator", () => {
       } as unknown as SessionMetadataService,
       getProcessForSession: () => undefined,
       cancelInFlightForkedRecap: () => {},
-      requestHeartbeatSweep: () => {},
+      requestMaintenanceSweep: () => {},
     });
 
     const result = await state.requestSessionDone("session-1", "/archive");
@@ -295,7 +295,7 @@ describe("SessionDoneCoordinator", () => {
       } as unknown as SessionMetadataService,
       getProcessForSession: () => undefined,
       cancelInFlightForkedRecap: () => {},
-      requestHeartbeatSweep: () => {},
+      requestMaintenanceSweep: () => {},
     });
 
     await expect(
@@ -351,7 +351,7 @@ describe("SessionDoneCoordinator", () => {
       } as unknown as SessionMetadataService,
       getProcessForSession: () => undefined,
       cancelInFlightForkedRecap: () => {},
-      requestHeartbeatSweep: () => {},
+      requestMaintenanceSweep: () => {},
     });
 
     const result = await state.requestSessionBoundaryForStop(
@@ -395,7 +395,7 @@ describe("SessionDoneCoordinator", () => {
         } as unknown as SessionMetadataService,
         getProcessForSession: () => process,
         cancelInFlightForkedRecap: () => {},
-        requestHeartbeatSweep: () => {},
+        requestMaintenanceSweep: () => {},
       });
 
       state.recoverPendingDone(process);
@@ -454,7 +454,7 @@ describe("SessionDoneCoordinator", () => {
       } as unknown as SessionMetadataService,
       getProcessForSession: () => process,
       cancelInFlightForkedRecap: () => {},
-      requestHeartbeatSweep: () => {},
+      requestMaintenanceSweep: () => {},
     });
 
     state.recoverPendingDone(process);
@@ -485,7 +485,7 @@ describe("SessionDoneCoordinator", () => {
       } as unknown as SessionMetadataService,
       getProcessForSession: () => process,
       cancelInFlightForkedRecap: () => {},
-      requestHeartbeatSweep: () => {},
+      requestMaintenanceSweep: () => {},
     });
 
     await expect(state.requestSessionDone("session-1")).rejects.toThrow(

@@ -103,11 +103,6 @@ const GlobalSessionsPage = lazy(() =>
     default: GlobalSessionsPage,
   })),
 );
-const HostsRoute = lazy(() =>
-  import("./pages/HostsPage").then(({ HostsRoute }) => ({
-    default: HostsRoute,
-  })),
-);
 const InboxPage = lazy(() =>
   import("./pages/InboxPage").then(({ InboxPage }) => ({
     default: InboxPage,
@@ -153,12 +148,6 @@ const ProviderSignInPage = lazy(() =>
     default: m.ProviderSignInPage,
   })),
 );
-const WorkstreamsPage = lazy(() =>
-  import("./pages/WorkstreamsPage").then(({ WorkstreamsPage }) => ({
-    default: WorkstreamsPage,
-  })),
-);
-
 /**
  * Dev-only notice shown when the app is loaded directly from the Vite dev port
  * instead of through the main server. Rendered before theme init, so it uses
@@ -388,10 +377,6 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                     />
                     <Route path="/inbox" element={routeModule(<InboxPage />)} />
                     <Route
-                      path="/-/hosts"
-                      element={routeModule(<HostsRoute />)}
-                    />
-                    <Route
                       path="/settings"
                       element={routeModule(<SettingsLayout />)}
                     />
@@ -403,10 +388,6 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                     <Route
                       path="/projects/:projectId/app"
                       element={routeModule(<ProjectAppPage />)}
-                    />
-                    <Route
-                      path="/projects/:projectId/workstreams"
-                      element={routeModule(<WorkstreamsPage />)}
                     />
                     <Route
                       path="/projects/:projectId"

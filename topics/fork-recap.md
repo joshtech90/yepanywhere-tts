@@ -18,6 +18,11 @@ strategy this reuses), [session-hovercard-recent-activity.md](session-hovercard-
 
 ## Recap modes (recap of recaps.md)
 
+The [recap disposition](recaps.md#house-cleaning-disposition) retains this
+implementation. Cleanup is limited to concise, expandable configuration and a
+provider-specific warning about fork cost; current Codex measurements do not
+justify promising warm-cache economics from a timely fork.
+
 `RecapMode` ∈ `off | native | side-session | fork`. The UI labels them
 **Off / Native / Tailed / Forked** (`side-session` == "Tailed"). Dispatch
 is by mode in `Supervisor.requestRecap` (`Supervisor.ts:3059`):

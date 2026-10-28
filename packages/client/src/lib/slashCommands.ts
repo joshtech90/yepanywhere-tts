@@ -51,7 +51,7 @@ export type ComposerDoneTarget =
 
 export type ComposerSessionOperation =
   | { kind: "provider" }
-  | { kind: "focused-aside"; command: "done"; argument: string }
+  | { kind: "focused-aside"; command: "done" }
   | {
       kind: "session-boundary";
       command: "done" | "archive" | "terminate";
@@ -141,7 +141,6 @@ export function resolveComposerSessionOperation({
       return {
         kind: "focused-aside",
         command: "done",
-        argument: parsed.argument,
       };
     }
     if (syntheticDoneEnabled && !parsed.argument.trim() && !hasAttachments) {

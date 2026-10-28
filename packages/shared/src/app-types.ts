@@ -35,7 +35,6 @@ import type {
   NonHumanUserTurn,
   UserMessageMetadata,
 } from "./user-message-metadata.js";
-import type { WorkstreamId } from "./workstreams.js";
 
 // =============================================================================
 // App Message Extensions
@@ -630,9 +629,12 @@ export interface DurableSyntheticDoneMessage extends AppMessageExtensions {
   yaSyntheticSource: "done";
 }
 
-/** Client-declared UI that first created a YA-owned session. */
+/**
+ * What first created a YA-owned session: a YA UI, or (`api`) an HTTP
+ * request that identified no UI, such as an agent or script.
+ */
 export interface SessionCreationProvenance {
-  surface: "web" | "desktop";
+  surface: "web" | "desktop" | "api";
   /** Browser page origin, which may be a hosted UI rather than the server. */
   clientOrigin?: string;
   /** Version of the frontend bundle that submitted the create request. */
@@ -740,8 +742,6 @@ export interface AppSessionSummary {
   workingProjectId?: UrlProjectId;
   /** Provider transcript project when it differs from the effective project. */
   transcriptProjectId?: UrlProjectId;
-  /** YA workstream lane for this session. Missing means the implicit main lane. */
-  workstreamId?: WorkstreamId;
   /** Provider-launched child work nested under this parent. Absent on older servers. */
   providerChildren?: ProviderChildSessionSummary[];
 }
@@ -780,16 +780,8 @@ export interface SessionMetadataPayload
   effectiveModelSettings?: SessionEffectiveModelSettings;
   /** Optional on older servers and sessions without a durable launch snapshot. */
   effectiveLaunchSettings?: EffectiveSessionLaunchSettings;
-  /** Whether this session is opted in to heartbeat turns */
-  heartbeatTurnsEnabled?: boolean;
   /** Per-session wake-turn override; absent inherits the server default. */
   wakeTurnsEnabled?: boolean;
-  /** Optional per-session idle threshold override in minutes */
-  heartbeatTurnsAfterMinutes?: number;
-  /** Optional per-session heartbeat text override */
-  heartbeatTurnText?: string;
-  /** Optional hard cap before forcing a heartbeat turn */
-  heartbeatForceAfterMinutes?: number;
   /** Per-session prompt-suggestion preference (off | native) */
   promptSuggestionMode?: PromptSuggestionMode;
   /** Browser-away duration before YA asks the live process for a recap. */
@@ -798,8 +790,6 @@ export interface SessionMetadataPayload
   workingProjectId?: UrlProjectId;
   /** Provider transcript project when it differs from the effective project. */
   transcriptProjectId?: UrlProjectId;
-  /** YA workstream lane for this session. Missing means the implicit main lane. */
-  workstreamId?: WorkstreamId;
 }
 
 export type SessionQueuedYaCommand = "done" | "clearloop";
@@ -1343,7 +1333,6 @@ export function isAppSession(value: unknown): value is AppSession {
     "cliVersion",
     "source",
     "approvalPolicy",
-    "workstreamId",
   ]) {
     if (!isOptionalString(value, key)) return false;
   }

@@ -89,10 +89,6 @@ export type SessionSummary = AppSessionSummary;
 export interface SessionMetadata extends SessionSummary {
   effectiveModelSettings?: SessionEffectiveModelSettings;
   effectiveLaunchSettings?: EffectiveSessionLaunchSettings;
-  heartbeatTurnsEnabled?: boolean;
-  heartbeatTurnsAfterMinutes?: number;
-  heartbeatTurnText?: string;
-  heartbeatForceAfterMinutes?: number;
   promptSuggestionMode?: PromptSuggestionMode;
   recapAfterSeconds?: number;
 }

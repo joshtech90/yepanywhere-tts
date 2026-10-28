@@ -22,15 +22,12 @@ import {
   type UserQuestionAnswers,
   type UserMessageMetadata,
   type UrlProjectId,
-  type WorkstreamId,
   SESSION_UNREAD_TIMESTAMP,
   agentHarness,
   buildEffectiveAgentContext,
   getModelContextWindow,
   isThinkingOption,
   isUrlProjectId,
-  isWorkstreamId,
-  mainWorkstreamId,
   truncateSessionTitle,
   readQueuedYaCommand,
   withKnownGoal,
@@ -50,7 +47,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { hostname } from "node:os";
 import { performance } from "node:perf_hooks";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import type { ISessionIndexService } from "../indexes/types.js";
 import { getLogger } from "../logging/logger.js";
 import type { ToolResultMediaStore } from "../media/ToolResultMediaStore.js";
@@ -75,10 +72,9 @@ import {
 import { tryClaimProjectPathIndex } from "../projects/projectPathIndex.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import { resolveCanonicalProjectRedirect } from "./session-project-routing.js";
-import { ensureRemoteDirectory } from "../sdk/remote-spawn.js";
 import { parseSlashCommandSubmission } from "../sdk/slashCommandEmulation.js";
 import { dispatchProviderCommand } from "../supervisor/provider-command.js";
-import { getProjectDirFromCwd, syncSessions } from "../sdk/session-sync.js";
+import { tryRestartCompact } from "../supervisor/restart-compaction.js";
 import type { PermissionMode, SDKMessage, UserMessage } from "../sdk/types.js";
 import { appendApprovalAuditLog } from "../security/approvalAuditLog.js";
 import { getSessionSandboxSettingsError } from "../session-sandbox.js";
@@ -87,8 +83,6 @@ import type { ProjectQueueScheduler } from "../services/ProjectQueueScheduler.js
 import { describeQueuedYaCommandProblem } from "../services/ProjectQueueService.js";
 import type { ServerSettingsService } from "../services/ServerSettingsService.js";
 import type { SessionQueuePersistenceService } from "../services/SessionQueuePersistenceService.js";
-import type { WorkstreamService } from "../services/WorkstreamService.js";
-import { initializeSessionHeartbeatDefaults } from "../services/sessionHeartbeatDefaults.js";
 import { CodexSessionReader } from "../sessions/codex-reader.js";
 import { cloneClaudeSession } from "../sessions/fork.js";
 import type { GeminiSessionReader } from "../sessions/gemini-reader.js";
@@ -329,8 +323,6 @@ export interface SessionsDeps {
   piReaderFactory?: (projectPath: string) => PiSessionReader;
   /** ServerSettingsService for reading global instructions */
   serverSettingsService?: ServerSettingsService;
-  /** WorkstreamService for resolving experimental checkout lanes */
-  workstreamService?: WorkstreamService;
   /** ModelInfoService for context window lookups */
   modelInfoService?: ModelInfoService;
   /** Durable store for recovered patient queued messages */
@@ -468,8 +460,8 @@ interface StartSessionBody {
   helperSideModel?: string;
   /** Resume strategy for existing sessions. */
   resumeMode?: ResumeMode;
-  /** Experimental workstream lane target for new project sessions. */
-  workstreamId?: string;
+  /** Removed lane target: explicit stale-client requests are refused. */
+  workstreamId?: unknown;
 }
 
 function hasSessionMessageContent(body: StartSessionBody): boolean {
@@ -510,8 +502,8 @@ interface CreateSessionBody {
   promptSuggestionMode?: PromptSuggestionMode;
   /** Session-level helper side model for simulated helper features. */
   helperSideModel?: string;
-  /** Experimental workstream lane target for new project sessions. */
-  workstreamId?: string;
+  /** Removed lane target: explicit stale-client requests are refused. */
+  workstreamId?: unknown;
 }
 
 function parseCreationProvenance(
@@ -521,7 +513,11 @@ function parseCreationProvenance(
     return undefined;
   }
   const input = value as Record<string, unknown>;
-  if (input.surface !== "web" && input.surface !== "desktop") {
+  if (
+    input.surface !== "web" &&
+    input.surface !== "desktop" &&
+    input.surface !== "api"
+  ) {
     return undefined;
   }
   const boundedString = (field: unknown): string | undefined => {
@@ -553,6 +549,31 @@ function parseCreationProvenance(
       ? { clientCommit: boundedString(input.clientCommit) }
       : {}),
   };
+}
+
+/**
+ * Provenance of a session this HTTP request creates: what the body declares,
+ * else the UI its headers identify, else `api`. Every YA UI request carries
+ * `X-Yep-Client-Version` (the relay adds it from the connection), so a
+ * request without one came from an agent or script.
+ */
+function requestCreationProvenance(
+  c: Context,
+  declared: unknown,
+): SessionCreationProvenance {
+  const parsed = parseCreationProvenance(declared);
+  if (parsed) return parsed;
+  const surface = c.req.header("X-Yep-Client-Surface");
+  const clientVersion = c.req.header("X-Yep-Client-Version");
+  if (!clientVersion && surface !== "web" && surface !== "desktop") {
+    return { surface: "api" };
+  }
+  return (
+    parseCreationProvenance({
+      surface: surface === "desktop" ? "desktop" : "web",
+      clientVersion,
+    }) ?? { surface: "web" }
+  );
 }
 
 interface InputResponseBody {
@@ -822,7 +843,6 @@ const RESTART_HANDOFF_ACTIVITY_ITEM_MAX_CHARS = 900;
 const RESTART_HANDOFF_QUEUED_MAX_CHARS = 4_000;
 const RESTART_HANDOFF_RECENT_USER_TURNS = 10;
 const RESTART_HANDOFF_RECENT_ACTIVITY_ITEMS = 24;
-const RESTART_COMPACT_WAIT_MS = 12_000;
 
 function parseRestartHandoffText(
   value: unknown,
@@ -1176,102 +1196,8 @@ function getRestartQueuedMessages(
   return process?.getDeferredQueueSummary?.() ?? [];
 }
 
-type RestartCompactAttempt =
-  | { status: "unavailable"; reason: string }
-  | { status: "skipped"; reason: string }
-  | { status: "completed"; command: string }
-  | { status: "timed-out"; command: string }
-  | { status: "failed"; command?: string; reason: string };
-
 function isCompactBoundaryMessage(message: SDKMessage | Message): boolean {
   return message.type === "system" && message.subtype === "compact_boundary";
-}
-
-async function waitForRestartCompactBoundary(
-  process: Process,
-  timeoutMs: number,
-): Promise<boolean> {
-  return new Promise((resolve) => {
-    let finished = false;
-    let unsubscribe: (() => void) | undefined;
-    const finish = (completed: boolean) => {
-      if (finished) {
-        return;
-      }
-      finished = true;
-      clearTimeout(timeout);
-      unsubscribe?.();
-      resolve(completed);
-    };
-    const timeout = setTimeout(() => finish(false), timeoutMs);
-
-    unsubscribe = process.subscribe((event) => {
-      if (event.type === "message" && isCompactBoundaryMessage(event.message)) {
-        finish(true);
-        return;
-      }
-      if (event.type === "terminated" || event.type === "error") {
-        finish(false);
-      }
-    });
-  });
-}
-
-async function tryRestartCompact(
-  process: Process | undefined,
-): Promise<RestartCompactAttempt> {
-  if (!process) {
-    return { status: "unavailable", reason: "no active source process" };
-  }
-  if (process.state.type !== "idle") {
-    return {
-      status: "skipped",
-      reason: `source process was ${process.state.type}`,
-    };
-  }
-  if (!process.supportsDynamicCommands) {
-    return {
-      status: "unavailable",
-      reason: "source process does not advertise slash commands",
-    };
-  }
-
-  let command: string | undefined;
-  try {
-    const commands = await process.supportedCommands();
-    command =
-      commands?.find((candidate) => candidate.name === "compact")?.name ??
-      commands?.find((candidate) => candidate.name === "compress")?.name;
-  } catch (error) {
-    return {
-      status: "failed",
-      reason: error instanceof Error ? error.message : String(error),
-    };
-  }
-
-  if (!command) {
-    return {
-      status: "unavailable",
-      reason: "no compact/compress slash command advertised",
-    };
-  }
-
-  const waitForCompact = waitForRestartCompactBoundary(
-    process,
-    RESTART_COMPACT_WAIT_MS,
-  );
-  const queued = process.queueMessage({ text: `/${command}` });
-  if (!queued.success) {
-    return {
-      status: "failed",
-      command,
-      reason: queued.error ?? "compact command was not accepted",
-    };
-  }
-
-  return (await waitForCompact)
-    ? { status: "completed", command }
-    : { status: "timed-out", command };
 }
 
 function latestCompactSummary(messages: Message[]): string | null {
@@ -2110,6 +2036,26 @@ function extractContextUsageFromSDKMessages(
 
 export function createSessionsRoutes(deps: SessionsDeps): Hono {
   const routes = new Hono();
+  // Historical executor labels are read-only. Never turn a retired remote
+  // session into a local writer through resume, clone, fork or another action.
+  routes.use("/projects/:projectId/sessions/:sessionId/*", async (c, next) => {
+    // Preview refresh only reads the retained transcript; execution stays blocked.
+    if (c.req.method === "POST" && !c.req.path.endsWith("/refresh-preview")) {
+      const sessionId = c.req.param("sessionId");
+      const executor =
+        deps.sessionMetadataService?.getMetadata?.(sessionId)?.executor ??
+        deps.sessionMetadataService?.getExecutor?.(sessionId);
+      if (executor) {
+        return c.json(
+          {
+            error: "SSH executors have been removed; this session is read-only",
+          },
+          410,
+        );
+      }
+    }
+    await next();
+  });
   // Successors of a router-pinned session would launch without its pin and
   // run on the owner's direct provider login; refuse them up front.
   const isRoutedSession = (sessionId: string): boolean =>
@@ -2122,7 +2068,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
   ): Promise<void> => {
     const provenance = parseCreationProvenance(value);
     if (!provenance || !deps.sessionMetadataService) return;
-    await deps.sessionMetadataService.recordCreationProvenance(
+    await deps.sessionMetadataService.recordCreationProvenance?.(
       sessionId,
       provenance,
     );
@@ -2412,58 +2358,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     };
   };
 
-  const initializeProjectHeartbeatDefaults = async (
-    sessionId: string,
-    projectId: UrlProjectId,
-  ): Promise<void> =>
-    initializeSessionHeartbeatDefaults({
-      sessionId,
-      projectId,
-      sessionMetadataService: deps.sessionMetadataService,
-      projectMetadataService: deps.projectMetadataService,
-      serverSettingsService: deps.serverSettingsService,
-    });
-
-  const resolveLaunchWorkstreamTarget = (
-    project: Project,
-    rawWorkstreamId: string | undefined,
-  ):
-    | { projectPath: string; workstreamId?: WorkstreamId }
-    | { error: string; status: 400 | 404 | 409 | 503 } => {
-    if (rawWorkstreamId === undefined) {
-      return { projectPath: project.path };
-    }
-    if (!isWorkstreamId(rawWorkstreamId)) {
-      return { error: "Invalid workstream ID format", status: 400 };
-    }
-    if (deps.serverSettingsService?.getSetting("workstreamsEnabled") !== true) {
-      return { error: "Workstreams are disabled", status: 404 };
-    }
-    if (!deps.workstreamService) {
-      return { error: "Workstreams unavailable", status: 503 };
-    }
-
-    const workstreamId = rawWorkstreamId;
-    if (workstreamId === mainWorkstreamId(project.id)) {
-      return { projectPath: project.path };
-    }
-    if (!deps.sessionMetadataService) {
-      return { error: "Session metadata unavailable", status: 503 };
-    }
-
-    const workstream = deps.workstreamService.getWorkstream(
-      project.id,
-      workstreamId,
-    );
-    if (workstream?.kind !== "checkout") {
-      return { error: "Workstream not found", status: 404 };
-    }
-    if (workstream.status !== "active") {
-      return { error: "Workstream is not active", status: 409 };
-    }
-    return { projectPath: workstream.path, workstreamId };
-  };
-
   const persistLaunchMetadata = async (
     sessionId: string,
     provider: ProviderName | undefined,
@@ -2472,7 +2366,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     requestedModel?: string,
     promptSuggestionMode?: PromptSuggestionMode,
     recapAfterSeconds?: number,
-    workstreamId?: WorkstreamId,
     sandbox?: {
       level: SessionSandboxLevel;
       networkFirewall?: boolean;
@@ -2518,17 +2411,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         recapAfterSeconds,
       });
     }
-    if (workstreamId !== undefined) {
-      await deps.sessionMetadataService.setWorkstream(sessionId, workstreamId);
-    }
     if (sandbox) {
       await deps.sessionMetadataService.setSessionSandbox?.(sessionId, sandbox);
     }
   };
 
   /**
-   * Everything a new session's launch records once it has an id: heartbeat
-   * defaults for a project session, client provenance, the limited user who
+   * Everything a new session's launch records once it has an id: client
+   * provenance, the limited user who
    * started it, and the launch metadata, sandbox included. The session-create
    * routes run it as their `onStarted`, so a start that waited for a free
    * worker records exactly what one that started at once does.
@@ -2536,7 +2426,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
   const recordNewSessionLaunch = async (
     process: Process,
     launch: {
-      heartbeatProjectId?: UrlProjectId;
       creationProvenance: unknown;
       /** The limited user who started it; absent for the superuser. */
       createdByUser?: string;
@@ -2545,17 +2434,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       initialPrompt?: string;
       requestedModel?: string;
       recapAfterSeconds?: number;
-      workstreamId?: WorkstreamId;
       sandbox: { level: SessionSandboxLevel; networkFirewall: boolean };
     },
   ): Promise<void> => {
     const { sessionId } = process;
-    if (launch.heartbeatProjectId) {
-      await initializeProjectHeartbeatDefaults(
-        sessionId,
-        launch.heartbeatProjectId,
-      );
-    }
     await recordCreationProvenance(sessionId, launch.creationProvenance);
     if (launch.createdByUser) {
       // Ownership survives a later grant change: a limited user can always
@@ -2573,7 +2455,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       launch.requestedModel,
       process.promptSuggestionMode,
       launch.recapAfterSeconds,
-      launch.workstreamId,
       {
         level: launch.sandbox.level,
         networkFirewall: launch.sandbox.networkFirewall,
@@ -2793,9 +2674,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       ? limitedDetachedProjectPath(username)
       : DETACHED_PROJECT_PATH;
     await mkdir(projectPath, { recursive: true, mode: 0o700 });
-    if (executor) {
-      await ensureRemoteDirectory(executor, projectPath);
-    }
+    if (executor) throw new Error("SSH executors have been removed");
     return projectPath;
   };
 
@@ -3080,17 +2959,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         routerBinding: metadata?.routerBinding,
         initialPrompt:
           metadata?.initialPrompt ?? sessionSummary?.fullTitle ?? undefined,
-        heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
         wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
-        heartbeatTurnsAfterMinutes: metadata?.heartbeatTurnsAfterMinutes,
-        heartbeatTurnText: metadata?.heartbeatTurnText,
-        heartbeatForceAfterMinutes:
-          metadata?.heartbeatForceAfterMinutes ?? undefined,
         promptSuggestionMode: metadata?.promptSuggestionMode,
         recapAfterSeconds: metadata?.recapAfterSeconds,
         workingProjectId: metadata?.workingProjectId,
         transcriptProjectId: metadata?.transcriptProjectId,
-        workstreamId: metadata?.workstreamId,
         transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
         lastSeenAt,
         hasUnread,
@@ -3626,16 +3499,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             creationProvenance: metadata?.creationProvenance,
             routerBinding: metadata?.routerBinding,
             initialPrompt: metadata?.initialPrompt,
-            heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
             wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
-            heartbeatTurnsAfterMinutes: metadata?.heartbeatTurnsAfterMinutes,
-            heartbeatTurnText: metadata?.heartbeatTurnText,
-            heartbeatForceAfterMinutes: metadata?.heartbeatForceAfterMinutes,
             promptSuggestionMode: metadata?.promptSuggestionMode,
             recapAfterSeconds: metadata?.recapAfterSeconds,
             workingProjectId: metadata?.workingProjectId,
             transcriptProjectId: metadata?.transcriptProjectId,
-            workstreamId: metadata?.workstreamId,
             transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
             lastSeenAt: lastSeenEntry?.timestamp,
             hasUnread,
@@ -4058,16 +3926,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         creationProvenance: metadata?.creationProvenance,
         routerBinding: metadata?.routerBinding,
         initialPrompt: metadata?.initialPrompt ?? session.fullTitle,
-        heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
         wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
-        heartbeatTurnsAfterMinutes: metadata?.heartbeatTurnsAfterMinutes,
-        heartbeatTurnText: metadata?.heartbeatTurnText,
-        heartbeatForceAfterMinutes: metadata?.heartbeatForceAfterMinutes,
         promptSuggestionMode: metadata?.promptSuggestionMode,
         recapAfterSeconds: metadata?.recapAfterSeconds,
         workingProjectId: metadata?.workingProjectId,
         transcriptProjectId: metadata?.transcriptProjectId,
-        workstreamId: metadata?.workstreamId,
         transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
         // Model comes from the session reader (extracted from JSONL)
         model: session.model,
@@ -4163,12 +4026,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     if (sandboxSettingsError) {
       return c.json({ error: sandboxSettingsError }, 400);
     }
-    const workstreamTarget = resolveLaunchWorkstreamTarget(
-      project,
-      body.workstreamId,
-    );
-    if ("error" in workstreamTarget) {
-      return c.json({ error: workstreamTarget.error }, workstreamTarget.status);
+    if (body.workstreamId !== undefined) {
+      return c.json({ error: "Managed checkout lanes have been removed" }, 410);
     }
 
     const serverTimestamp = Date.now();
@@ -4203,7 +4062,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     });
 
     const result = await deps.supervisor.startSession(
-      workstreamTarget.projectPath,
+      project.path,
       userMessage,
       body.mode,
       {
@@ -4238,11 +4097,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       },
       {
         projectId: project.id,
-        workstreamId: workstreamTarget.workstreamId,
         onStarted: (_sessionId, process) =>
           recordNewSessionLaunch(process, {
-            heartbeatProjectId: project.id,
-            creationProvenance: body.creationProvenance,
+            creationProvenance: requestCreationProvenance(
+              c,
+              body.creationProvenance,
+            ),
             createdByUser:
               limitedLaunch.kind === "applied"
                 ? limitedLaunch.username
@@ -4252,7 +4112,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             initialPrompt: body.message,
             requestedModel: body.model,
             recapAfterSeconds: helperSettings.recapAfterSeconds,
-            workstreamId: workstreamTarget.workstreamId,
             sandbox: {
               level: sandboxSelection.sandboxLevel,
               networkFirewall: sandboxSelection.sandboxNetworkFirewall,
@@ -4357,12 +4216,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     if (sandboxSettingsError) {
       return c.json({ error: sandboxSettingsError }, 400);
     }
-    const workstreamTarget = resolveLaunchWorkstreamTarget(
-      project,
-      body.workstreamId,
-    );
-    if ("error" in workstreamTarget) {
-      return c.json({ error: workstreamTarget.error }, workstreamTarget.status);
+    if (body.workstreamId !== undefined) {
+      return c.json({ error: "Managed checkout lanes have been removed" }, 410);
     }
 
     const { thinking, effort } = buildThinkingOptions(body);
@@ -4373,7 +4228,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
 
     const result = await deps.supervisor.createSession(
-      workstreamTarget.projectPath,
+      project.path,
       body.mode,
       {
         model,
@@ -4407,11 +4262,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       },
       {
         projectId: project.id,
-        workstreamId: workstreamTarget.workstreamId,
         onStarted: (_sessionId, process) =>
           recordNewSessionLaunch(process, {
-            heartbeatProjectId: project.id,
-            creationProvenance: body.creationProvenance,
+            creationProvenance: requestCreationProvenance(
+              c,
+              body.creationProvenance,
+            ),
             createdByUser:
               limitedLaunch.kind === "applied"
                 ? limitedLaunch.username
@@ -4420,7 +4276,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             executor,
             requestedModel: body.model,
             recapAfterSeconds: helperSettings.recapAfterSeconds,
-            workstreamId: workstreamTarget.workstreamId,
             sandbox: {
               level: sandboxSelection.sandboxLevel,
               networkFirewall: sandboxSelection.sandboxNetworkFirewall,
@@ -4569,7 +4424,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       {
         onStarted: (_sessionId, process) =>
           recordNewSessionLaunch(process, {
-            creationProvenance: body.creationProvenance,
+            creationProvenance: requestCreationProvenance(
+              c,
+              body.creationProvenance,
+            ),
             createdByUser: actingUsername(c),
             provider: body.provider,
             executor,
@@ -4703,7 +4561,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       {
         onStarted: (_sessionId, process) =>
           recordNewSessionLaunch(process, {
-            creationProvenance: body.creationProvenance,
+            creationProvenance: requestCreationProvenance(
+              c,
+              body.creationProvenance,
+            ),
             createdByUser: actingUsername(c),
             provider: body.provider,
             executor,
@@ -4973,34 +4834,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return c.json({ error: launch.error }, 400);
     }
     const { settings: resumeSettings, projectPath: resumeProjectPath } = launch;
-    const executor = resumeSettings.executor;
     // A limited user resumes only a sandboxed session, on this host, inside
     // their lock (topics/limited-users.md § Delivery v1).
     const limitedResume = applyLimitedResumePolicy(c, resumeSettings, body);
     if (limitedResume.kind === "error") {
       return c.json({ error: limitedResume.error }, 403);
-    }
-
-    // For remote sessions, sync local files TO remote before resuming
-    // This ensures the remote has the latest session state
-    if (executor) {
-      const projectDir = getProjectDirFromCwd(resumeProjectPath);
-      const syncResult = await syncSessions({
-        host: executor,
-        projectDir,
-        direction: "to-remote",
-      });
-      if (!syncResult.success) {
-        console.warn(
-          `[resume] Failed to pre-sync session to ${executor}: ${syncResult.error}`,
-        );
-        // Continue anyway - remote may have the files from before
-      }
-
-      // Save executor to metadata if not already saved (e.g. client provided it)
-      if (deps.sessionMetadataService) {
-        await deps.sessionMetadataService.setExecutor(sessionId, executor);
-      }
     }
 
     let result: Awaited<ReturnType<Supervisor["resumeSession"]>>;
@@ -5947,7 +5785,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       }
 
       void deps.userUsageService?.recordSession(actingUsername(c));
-      await recordCreationProvenance(result.sessionId, body.creationProvenance);
+      await recordCreationProvenance(
+        result.sessionId,
+        requestCreationProvenance(c, body.creationProvenance),
+      );
       await persistLaunchMetadata(
         result.sessionId,
         sourceProvider,
@@ -5956,7 +5797,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         requestedModel ?? undefined,
         result.promptSuggestionMode,
         result.recapAfterSeconds,
-        originalMetadata?.workstreamId,
         {
           level: restartSandboxLevel,
           networkFirewall: restartSandboxNetworkFirewall,
@@ -6089,7 +5929,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     }
 
     void deps.userUsageService?.recordSession(actingUsername(c));
-    await recordCreationProvenance(result.sessionId, body.creationProvenance);
+    await recordCreationProvenance(
+      result.sessionId,
+      requestCreationProvenance(c, body.creationProvenance),
+    );
     await persistLaunchMetadata(
       result.sessionId,
       providerName,
@@ -6098,7 +5941,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       requestedModel ?? undefined,
       result.promptSuggestionMode,
       result.recapAfterSeconds,
-      undefined,
       {
         level: restartSandboxLevel,
         networkFirewall: restartSandboxNetworkFirewall,
@@ -6318,8 +6160,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           projectId: project.id,
           onStarted: (_sessionId, process) =>
             recordNewSessionLaunch(process, {
-              heartbeatProjectId: project.id,
-              creationProvenance: body.creationProvenance,
+              creationProvenance: requestCreationProvenance(
+                c,
+                body.creationProvenance,
+              ),
               createdByUser: limited ? limitedLaunch.username : undefined,
               provider: providerName,
               executor,
@@ -7396,7 +7240,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       inheritedModel,
       originalMetadata?.promptSuggestionMode,
       originalMetadata?.recapAfterSeconds,
-      originalMetadata?.workstreamId,
       {
         level: originalMetadata?.sandboxLevel ?? "none",
         networkFirewall: persistedSandboxNetworkFirewall(originalMetadata),
@@ -7406,7 +7249,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           originalMetadata?.workingProjectId ?? (projectId as UrlProjectId),
       },
     );
-    await recordCreationProvenance(fork.sessionId, body.creationProvenance);
+    await recordCreationProvenance(
+      fork.sessionId,
+      requestCreationProvenance(c, body.creationProvenance),
+    );
     const forkCreator = actingUsername(c);
     if (forkCreator) {
       // A limited user's fork is theirs, like a session they start
@@ -7613,7 +7459,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         requestedModel,
         promptSuggestionMode,
         recapAfterSeconds,
-        sourceMetadata?.workstreamId,
         {
           level: sourceMetadata?.sandboxLevel ?? "none",
           networkFirewall: persistedSandboxNetworkFirewall(sourceMetadata),
@@ -7866,7 +7711,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             requestedModel,
             originalMetadata?.promptSuggestionMode,
             originalMetadata?.recapAfterSeconds,
-            originalMetadata?.workstreamId,
             {
               level: originalMetadata?.sandboxLevel ?? "none",
               networkFirewall:
@@ -7937,7 +7781,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             requestedModel,
             originalMetadata?.promptSuggestionMode,
             originalMetadata?.recapAfterSeconds,
-            originalMetadata?.workstreamId,
             {
               level: originalMetadata?.sandboxLevel ?? "none",
               networkFirewall:
@@ -8000,7 +7843,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             requestedModel,
             result.promptSuggestionMode,
             result.recapAfterSeconds,
-            originalMetadata?.workstreamId,
             {
               level: originalMetadata?.sandboxLevel ?? "none",
               networkFirewall:
@@ -9071,29 +8913,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       await deps.supervisor.abortSessionWithVerification(sessionId);
     }
 
-    if (patch.heartbeatTurnText) {
-      const savedProjectId =
-        deps.sessionMetadataService.getMetadata(sessionId)?.workingProjectId ??
-        deps.supervisor.getProcessForSession(sessionId)?.projectId;
-      if (savedProjectId) {
-        await deps.projectMetadataService?.recordRecentHeartbeatTurnText(
-          savedProjectId,
-          patch.heartbeatTurnText,
-        );
-      }
-    }
-
-    if (
-      patch.heartbeatTurnsEnabled !== undefined ||
-      patch.heartbeatTurnsAfterMinutes !== undefined ||
-      patch.heartbeatForceAfterMinutes !== undefined
-    ) {
-      // Heartbeat deadlines are scheduled, not polled, so a fresh opt-in has
-      // to announce itself; otherwise an already-quiet session would wait for
-      // some unrelated event to re-plan the timer.
-      deps.supervisor.notifyHeartbeatScheduleChanged();
-    }
-
     // Emit SSE event so sidebar and other clients can update
     if (deps.eventBus) {
       deps.eventBus.emit({
@@ -9110,10 +8929,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             : patch.parentSessionId
               ? "btw-aside"
               : null,
-        heartbeatTurnsEnabled: patch.heartbeatTurnsEnabled,
-        heartbeatTurnsAfterMinutes: patch.heartbeatTurnsAfterMinutes,
-        heartbeatTurnText: patch.heartbeatTurnText,
-        heartbeatForceAfterMinutes: patch.heartbeatForceAfterMinutes,
         promptSuggestionMode: patch.promptSuggestionMode ?? undefined,
         recapAfterSeconds: patch.recapAfterSeconds ?? undefined,
         timestamp: new Date().toISOString(),
@@ -9151,6 +8966,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       title?: string;
       provider?: ProviderName;
       parentSessionId?: string | null;
+      creationProvenance?: unknown;
     } = {};
     try {
       body = await c.req.json();
@@ -9330,6 +9146,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         );
       }
       void deps.userUsageService?.recordSession(cloneCreator);
+      await recordCreationProvenance(
+        result.newSessionId,
+        requestCreationProvenance(c, body.creationProvenance),
+      );
       // Set clone metadata. /btw asides pass parentSessionId so the child
       // can jump back into the parent viewport.
       if (deps.sessionMetadataService) {

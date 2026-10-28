@@ -38,7 +38,7 @@ export async function startFakeProviderSession(
   hooks: ProviderSessionStartHooks,
 ): Promise<AgentSession> {
   if (options.failOnStart) throw new Error("Fake provider rejected launch");
-  const sessionId = options.sessionId ?? "fake-managed-runner-session";
+  const sessionId = options.sessionId ?? "fake-provider-session";
   const queue = new MessageQueue();
   const input = queue[Symbol.asyncIterator]();
   let aborted = false;
@@ -56,7 +56,7 @@ export async function startFakeProviderSession(
       type: "system",
       subtype: "init",
       session_id: sessionId,
-      model: "fake-managed-runner",
+      model: "fake-provider",
     };
     while (!aborted) {
       const next = await input.next();
@@ -135,13 +135,13 @@ export async function startFakeProviderSession(
     isProcessAlive: () => !aborted,
     probeLiveness: async (): Promise<ProviderLivenessProbeResult> => ({
       status: aborted ? "not-loaded" : "idle",
-      source: "fake-managed-runner",
+      source: "fake-provider",
       checkedAt: new Date(),
       detail: aborted ? "fake provider stopped" : "fake provider ready",
     }),
     getProviderActivity: (): ProviderActivitySnapshot => ({
       lastRawProviderEventAt: lastActivityAt,
-      lastRawProviderEventSource: "fake-managed-runner",
+      lastRawProviderEventSource: "fake-provider",
     }),
     getProviderRetention: () => retention,
     interrupt: async () => {
@@ -173,11 +173,11 @@ export async function startFakeProviderSession(
       };
     },
     supportedModels: async () => [
-      { id: "fake-managed-runner", name: "Fake managed runner" },
+      { id: "fake-provider", name: "Fake provider" },
     ],
     supportedCommands: async () => [],
     getContextBreakdown: async () => ({
-      model: "fake-managed-runner",
+      model: "fake-provider",
       totalTokens: 10,
       maxTokens: 100,
       categories: [

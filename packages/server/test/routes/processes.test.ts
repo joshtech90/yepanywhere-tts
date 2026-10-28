@@ -223,7 +223,7 @@ describe("Processes Routes", () => {
       verification: "pid" as const,
     }));
     const blockSessionResume = vi.fn(async () => ({
-      heartbeatDisabled: true,
+      heartbeatDisabled: false,
       autoResumeDisabled: true,
     }));
     const routes = createProcessesRoutes({
@@ -254,18 +254,18 @@ describe("Processes Routes", () => {
     await expect(response.json()).resolves.toMatchObject({
       aborted: true,
       resumeExemption: {
-        heartbeatDisabled: true,
+        heartbeatDisabled: false,
         autoResumeDisabled: true,
       },
     });
   });
 
-  it("disables heartbeat turns through the app's terminate policy", async () => {
+  it("blocks automatic resume through the app's terminate policy", async () => {
     const updateMetadata = vi.fn(async () => undefined);
     const { app, supervisor } = createApp({
       sdk: new MockClaudeSDK(),
       sessionMetadataService: {
-        getMetadata: vi.fn(() => ({ heartbeatTurnsEnabled: true })),
+        getMetadata: vi.fn(() => ({})),
         getProvider: vi.fn(() => "codex"),
         updateMetadata,
       } as unknown as SessionMetadataService,
@@ -288,12 +288,11 @@ describe("Processes Routes", () => {
 
     expect(response.status).toBe(200);
     expect(updateMetadata).toHaveBeenCalledWith("sess-1", {
-      heartbeatTurnsEnabled: false,
       autoResumeDisabled: true,
     });
     await expect(response.json()).resolves.toMatchObject({
       resumeExemption: {
-        heartbeatDisabled: true,
+        heartbeatDisabled: false,
         autoResumeDisabled: true,
       },
     });

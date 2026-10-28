@@ -7918,7 +7918,6 @@ describe("Session reactivation route", () => {
       projectId,
       projectPath: project.path,
       provider: "codex" as ProviderName,
-      executor: "build-host",
       permissionMode: "plan",
       appliedPermissionMode: "plan",
       modeVersion: 3,
@@ -7941,7 +7940,6 @@ describe("Session reactivation route", () => {
         getMetadata: vi.fn(() => ({
           provider: "claude" as ProviderName,
           requestedModel: "sonnet",
-          executor: "old-host",
           recapAfterSeconds: 30,
         })),
       } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
@@ -7953,7 +7951,6 @@ describe("Session reactivation route", () => {
       body: JSON.stringify({
         mode: "plan",
         provider: "codex",
-        executor: "build-host",
         sandboxLevel: "none",
         model: "gpt-5.4",
         serviceTier: "priority",
@@ -7973,7 +7970,6 @@ describe("Session reactivation route", () => {
       "plan",
       expect.objectContaining({
         providerName: "codex",
-        executor: "build-host",
         sandboxLevel: "none",
         model: "gpt-5.4",
         requestedModel: "gpt-5.4",
@@ -7995,7 +7991,6 @@ describe("Session reactivation route", () => {
             thinking: { type: "adaptive", display: "summarized" },
             effort: "high",
             providerName: "codex",
-            executor: "build-host",
             permissions: { deny: ["Bash(rm *)"] },
             sandboxLevel: "none",
             sandboxNetworkFirewall: false,

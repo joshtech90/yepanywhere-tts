@@ -78,7 +78,7 @@ reviews. Assistant invocation/context is a compelling optional direction, but
 remains research/docs only: no device investigation or implementation spike is
 authorized. This does not change the incubation order or companion release scope.
 
-Last updated: 2026-10-24.
+Last updated: 2026-10-26.
 
 This is Yep Anywhere's canonical product-priority overview. Keep initiative
 status, the next action, and major blockers here; keep implementation steps in
@@ -462,6 +462,118 @@ the iOS embedded-viewer/download adapters before claiming full UI parity; a new
 SwiftUI transcript/composer design is not required. Desktop release and
 continuous-delivery work continue independently.
 
+## Active maintenance focus: core house cleaning
+
+On 2026-10-26 the maintainer selected substantial
+[core house cleaning](../../topics/core-house-cleaning.md) before further
+session-core expansion. Local `main` was restored to upstream; the expanded
+core experiment remains archived rather than serving as the next baseline.
+The initial selection was rows **1, 2, 3, 11 and 12** of the numbered proposal:
+YA-managed workstream/parallel checkout lanes, both released and managed SSH
+executor stacks, the YA Hosts placeholder and Gemini ACP. The Conversation
+API/preview is deferred from this implementation pass. This pass focuses
+on Kyle/kzahel (`kgraehl@gmail.com`)-led features. Work led by
+`graehl@gmail.com` is deferred, including dormant helper targets, synthetic
+heartbeat automation, wake turns, recaps and post-compact replay. Mixed rows
+identify each contributor's feature separately; shared repairs are not undone
+based on authorship. Subsequent row-specific decisions supersede that initial
+deferral: on 2026-10-27, row **4**'s dormant helper-target plumbing was authorized
+for removal; that cut is now implemented under plan 164. Consider a provider-server-managed,
+no-tool in-house provider for prompted UI-helper/text-processing-only access
+upon first need; building it is not a cleanup prerequisite. The
+[helper-session disposition](../../topics/openai-compatible-helper-sessions.md#disposition)
+records the boundary.
+
+Row **5** synthetic heartbeat automation is removed: configured turns,
+forced nudges and candidate-driven resurrection are gone. Patient/done-action
+maintenance, transport health, provider liveness and shared resume exemptions
+remain. [Plan 164](../tactical/164-remove-retired-session-automation.md) tracks
+this removal pass and its verification.
+
+Row **6** is resolved as **keep or redesign; do not remove**. Addressed event
+delivery and authorized recipient resumption are valuable for multi-session
+coordination independently of harness background-job limitations. The ability
+belongs at the provider API boundary, with provider-server/runtime ownership;
+the YA web server may be a transport adapter. The
+[session-wake direction](../../topics/session-wake.md#selected-ownership-provider-api)
+preserves the existing path pending migration and requires no periodic
+heartbeat machinery. This is a documentation decision, not a landed redesign.
+
+Row **7** is resolved: remove post-compact replay configuration and generation
+of its specific quoted-history/`continue.` message, using explicit `/goal` for
+sustained-task intent. Preserve post-compact hooks/dispatch, their safety gates,
+general hidden injected-message support and historical replay recognition.
+The [replay disposition](../../topics/post-compact-replay.md#selected-disposition)
+records the implemented removal and retained opt-in runtime action hook;
+[plan 164](../tactical/164-remove-retired-session-automation.md) records verification.
+
+Rows **8–9** are retained. Recaps keep their implementation, with a pending
+concise, expandable configuration UI and warnings about current fork economics.
+Keepalive must become default-off and enforce at most ten refreshes between
+real uses, a running net-savings UI log and durable per-session disablement at
+a configured net-loss threshold. The [recap disposition](../../topics/recaps.md#house-cleaning-disposition)
+and [keepalive contract](../../topics/prompt-cache-keepalive.md#refresh-budget-and-net-savings-log)
+record the decisions; UI changes, accounting, limits and the default change
+remain implementation work.
+
+Row **14** now defers `/btw` removal because Quick Question's Continue /btw
+action supplies a useful continuing conversation. Preserve that transition,
+its destination and aside UI/lifecycle, alongside Quick Question and
+fork-from-turn. Row **15** still removes unfinished aside report-back while
+preserving close/return behavior and the built-in `/done` and `/archive`
+commands. A general split-session browser for forks remains a future option. The
+[aside disposition](../../topics/provider-agnostic-btw-asides.md#selected-disposition)
+records the boundary; the unfinished report-back placeholder is removed under plan 164.
+
+Row **16** retires the obsolete Spark-only plan, not the current broader
+compaction implementation; removal of YA idle-threshold policy remains
+undecided. Row **17** retains Pi and Grok based on actual use and adequate
+functionality. Pi's possible future replacement of the Claude Gateway Copilot
+workflow remains a separate evaluation, not a migration decision.
+
+Row **1** is implemented and locally verified: managed lane creation,
+selection, scanner grouping and launch plumbing are removed; existing
+checkouts remain untouched. [Plan 160](../tactical/160-remove-managed-checkout-lanes.md)
+records the verification.
+
+Row **2** removes released SSH/rsync execution and its settings/selector.
+Historical executor records are read-only and cannot fall back to local
+execution; [plan 161](../tactical/161-remove-ssh-executors.md) records evidence.
+
+Row **3** removes the managed SSH runner, remote workspace/auth/mirroring
+stack and placement protocol. Same-host workers remain; plan 161 records
+verification.
+
+The nonfunctional YA Hosts placeholder (11), both routes, preload entry and
+Developer setting are removed; actual host switching and identity remain.
+[Plan 162](../tactical/162-remove-hosts-preview.md) records verification.
+
+**Updated direction, 2026-10-27:** freeze legacy Gemini (row 12) and move
+future Google agent support toward Antigravity (`agy`), preferably through its
+official ACP runtime. Gemini's current mapping remains unchanged for now.
+Retention is conditional: reconsider removing Gemini if it slows the core
+refactor, unless it provides useful evidence that the provider boundary works
+across genuinely different implementations. Useful controlled regressions may
+survive without the legacy runtime. See the
+[freeze and retention criteria](../../topics/core-house-cleaning.md#frozen-gemini-and-future-antigravity-support).
+
+Rows 1, 2, 3 and 11 are the completed removal set. The independent review
+closed direct-fork and background-candidate SSH boundaries; plan 161 records
+the verification. The purpose is a smaller local core that can reliably run
+queued `/compact` followed by message delivery. Choose a reduced plan for
+that outcome; the archived refactor remains paused. Neither Gemini upkeep nor
+shipping AGY is a prerequisite, and API delegation is separate work. Other
+Kyle-led candidates remain follow-ups; graehl-led work is outside this pass.
+Release-delivery work remains independently required; local sessions,
+same-host provider ownership, ordinary queues, direct/relay access and native
+client transport remain retained foundations.
+
+[HTTP-independent restart compaction](../tactical/163-http-independent-restart-compaction.md)
+is implemented: extracted in `06cff21d6`, with observer cleanup fixed in the
+follow-up commit. Workspace checks and independent Opus review passed. This
+standalone hygiene work leaves resume compaction, queued compact delivery,
+Codex native dispatch and deferred automation changes as separate work.
+
 ## Later directions
 
 The [clone and fork settings repair](../tactical/140-clone-session-settings-inheritance.md)
@@ -540,7 +652,10 @@ The side panel now offers per-site access above its content even when the
 current address is hidden or no host is connected; Chrome 133+ handles the
 unknown-site request without broader tab permissions. Older Chrome retains
 toolbar guidance ([site access contract](../../topics/trusted-client-packaging.md#chrome-extension-client)).
-This experiment does not displace release delivery.
+Website 1.13.0 adds a public Chrome extension guide at
+`/docs/chrome-extension`, with the store install link, related-session workflows,
+setup and current limits, linked from the homepage, download page, catalogs,
+docs and footer. This experiment does not displace release delivery.
 
 These remain candidates behind publishing and continuous delivery, not a
 ranked or approved implementation queue. Recheck current code and owning
@@ -575,12 +690,12 @@ displace release delivery.
 
 | Direction | Existing context / decision still needed |
 | --- | --- |
-| Multi-machine experience across the full web and desktop clients | The simple-client demo above now owns the first grouping experiment; broader adoption follows evidence from that work and [source runtimes](../../topics/client-source-runtime-topology.md). |
+| Multi-machine experience across the full web and desktop clients | Preserve independent host access and [source runtimes](../../topics/client-source-runtime-topology.md). The Kyle-led alternate Conversation API/preview is deferred from the current removal pass under [core house cleaning](../../topics/core-house-cleaning.md), row 10; retain its current consumers and behavior. |
 | Agent coordination across installed machines | Direction selected 2026-10-03: persistent, target-owned YA sessions over the public relay, with explicit directional peer grants. The [bounded first-slice plan](../tactical/144-relay-peer-session-coordination.md) proposes the same local/remote worker API for Claude and Codex, existing target projects, and durable reconnect. Runtime implementation and peer protocol review remain pending. Hosted identity issuance, SSH provisioning, and same-conversation migration are not prerequisites; this does not displace release delivery. |
 | Authentication and delegated access | [Limited users](../../topics/limited-users.md) delivers local accounts and project grants. [Principals and grants](../../topics/principals-and-grants.md) coordinates the broader proposed invitation/account and issuer boundaries; it does not approve a universal grant protocol. [Session notes and discussion](../../topics/session-notes-and-discussion.md) and [participatory Live Share](../../topics/relay-origin-and-share-gating.sketches.md#participatory-live-share) propose human-only notes/chat, owner-reviewed suggestions, and later explicit session-input grants. These remain later directions, not a newly ranked implementation queue. |
 | Related work across repositories | [Issues & PRs](../../topics/issue-session-associations.md) now has experimental, default-off automatic ticket/URL discovery from viewed sessions and a configurable recent-session window, durable evidence, search and correction controls. Conservative URL/known-prefix matching, durable Jira project learning, and session-grouped browsing are implemented and locally validated. SQLite migrations and compatibility gating are implemented. Multi-server issue grouping enters the simple-client demo above. GitHub items show their last-read open/draft/merged/closed state, with independent read-only checks, configurable gh/account use, durable merge facts and an expandable extension Merged PRs section ([plan 153](../tactical/153-durable-github-status-and-extension-groups.md)). Refresh remains demand-driven. Workstream/branch inference, Jira status and tracker synchronization remain deferred. |
-| Parallel work within one repository | Follow the [workstreams proposal](../../topics/workstreams.md), which uses ordinary lane clones; do not revive the old automatic-worktree sketch as an approved design. |
-| Scheduling | Follow [yacron](../../topics/yacron.md) and its [open gap](../../gaps/sketches/yacron-scheduler.md); the first management UI remains a design prerequisite. |
+| Parallel work within one repository | YA-managed workstreams/lane checkout creation is removed under [core house cleaning](../../topics/core-house-cleaning.md). Do not continue its unfinished scheduler, sync or landing plan. Ordinary user-created Git worktrees and Source Control are distinct retained concerns. |
+| Scheduling | [Yacron](../../topics/yacron.md) and its [open gap](../../gaps/sketches/yacron-scheduler.md) remain deferred proposals, not prerequisites for house cleaning or the local core. Synthetic heartbeat and related graehl-led automatic-input policies are explicitly deferred for this pass in the [cleanup table](../../topics/core-house-cleaning.md); preserve their current behavior. |
 | Agent command runtime | Opt-in [`ya-agent self`](../../topics/agent-self.md) implements ownership and model/effort evidence reporting. Use operator-managed global instructions initially; defer automatic advertisement, private input, broader session access, and scheduling integration. |
 | Node 22 and built-in SQLite | Follow the approved [runtime cutover plan](../tactical/123-node-22-builtin-sqlite-cutover.md): raise the server runtime floor now, retain older-server hosted frontend support with advisory runtime warnings, and gate new SQLite-backed features by their exact capabilities before considering any separate frontend cutoff. Since 2026-10-11 SQLite is required: session metadata lives there and a server that cannot open it does not start ([plan 150](../tactical/150-ya-owned-session-ids.md) stage 1). New Claude sessions keep YA's id from creation, and clones of router-pinned sessions keep their account; the rest of the YA-owned session id work is deferred. |
 | Source workflow depth and traceability | Build on [Source Control](../../topics/source-control.md), [review handoff](../../topics/source-review-to-session.md), and [commit/session attribution](../../gaps/sketches/committed-change-session-attribution.md). Additional Git or terminal controls need a concrete user workflow. |

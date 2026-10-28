@@ -98,24 +98,23 @@ a jump later reuses some of that infrastructure but transfers the canonical
 session and provider ownership. The two operations must not be presented as
 aliases.
 
-## Distinction From Existing Remote Executors
+## Distinction From Retired SSH Executors
 
-Remote Executors keep one YA server authoritative while that server launches
-Claude through an SSH subprocess and syncs provider files back with `rsync`.
-That is useful for Unix-like remote execution, but it has different semantics:
+The retired Remote Executors kept one YA server authoritative while that
+server launched Claude through an SSH subprocess and synchronized provider
+files back with `rsync`. Their semantics differed from target-owned sessions:
 
-- ordinary process I/O continues to traverse one SSH connection;
-- the local YA server remains the process supervisor;
-- the implementation assumes `bash`, `$HOME`, `test`, `mkdir`, `rsync`, and
+- ordinary process I/O traversed one SSH connection;
+- the local YA server remained the process supervisor;
+- the implementation assumed `bash`, `$HOME`, `test`, `mkdir`, `rsync`, and
   Unix-style remote paths;
-- only the Claude provider is wired to the remote spawn hook; and
-- the session does not become an object jointly understood by registered YA
+- only Claude-family adapters used the remote spawn hook; and
+- the session did not become an object jointly understood by registered YA
   servers.
 
-Federated super sessions instead move provider ownership to a target YA server
-and let that server use its normal local provider adapter. Existing remote
-session-file sync is useful evidence and may provide reusable primitives, but
-Remote Executors are not the federation protocol.
+Federated super sessions instead propose moving provider ownership to a target
+YA server using its normal local provider adapter. Historical file-sync
+experience is evidence, not the federation protocol or a reason to restore SSH.
 
 ## Product Contract
 
@@ -379,9 +378,9 @@ independent normal sessions.
 
 ### Provider posture
 
-- **Claude first.** Existing Remote Executor code already synchronizes Claude
-  session files and resumes by the same session id. That makes Claude the
-  strongest first experiment, not proof that one JSONL is the complete bundle
+- **Claude first.** The retired SSH executor synchronized Claude session files
+  and resumed by the same session id. That historical experience makes Claude a
+  candidate for an experiment, not proof that one JSONL is the complete bundle
   across versions, subagents, compaction, media, or interrupted tools.
 - **Codex unverified.** Codex rollout portability, resume behavior after moving
   between native OS paths, and any account/thread affinity must be established

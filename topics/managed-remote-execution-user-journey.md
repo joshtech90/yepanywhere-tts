@@ -1,5 +1,10 @@
 # Managed Remote Execution User Journey
 
+**Historical / withdrawn, 2026-10-26:** the managed SSH runtime and its
+workspace/auth/mirroring stack have been removed. The proposal below does not
+authorize continuation or depend on completing the old SSH gates. See the
+[current retirement contract](managed-remote-executors.md).
+
 > Run a familiar Codex session on a selected Linux host, preserve its native
 > session and workspace there, and bring committed work back through a durable
 > controller-side inbox without requiring target-side provider or upstream Git

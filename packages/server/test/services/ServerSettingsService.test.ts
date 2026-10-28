@@ -75,12 +75,37 @@ describe("ServerSettingsService", () => {
     });
   });
 
-  it("uses continue as the default heartbeat turn text", async () => {
+  it("makes retired automation enablement inert without changing other settings", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 1,
+        settings: {
+          serviceWorkerEnabled: false,
+          helperTargets: [{ id: "old", baseUrl: "https://example.test/v1" }],
+          heartbeatTurnText: "continue old work",
+          heartbeatTurnsAfterMinutes: 1,
+          postCompactReplay: {
+            providers: { claude: true },
+            replayTurnCount: 20,
+          },
+        },
+      }),
+    );
     const service = new ServerSettingsService({ dataDir: testDir });
-
     await service.initialize();
-
-    expect(service.getSetting("heartbeatTurnText")).toBe("continue");
+    expect(service.getSettings()).not.toHaveProperty("postCompactReplay");
+    expect(service.getSettings()).not.toHaveProperty("helperTargets");
+    expect(service.getSettings()).not.toHaveProperty("heartbeatTurnText");
+    expect(service.getSettings()).not.toHaveProperty(
+      "heartbeatTurnsAfterMinutes",
+    );
+    expect(service.getSetting("serviceWorkerEnabled")).toBe(false);
+    await service.updateSettings({ serviceWorkerEnabled: true });
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSettings()).not.toHaveProperty("postCompactReplay");
+    expect(reloaded.getSetting("serviceWorkerEnabled")).toBe(true);
   });
 
   it("does not fall back to defaults after a committed migration fails to sync", async () => {
@@ -232,14 +257,6 @@ describe("ServerSettingsService", () => {
     await service.initialize();
 
     expect(service.getSetting("subagentMaxDepth")).toBe(1);
-  });
-
-  it("keeps experimental workstreams disabled by default", async () => {
-    const service = new ServerSettingsService({ dataDir: testDir });
-
-    await service.initialize();
-
-    expect(service.getSetting("workstreamsEnabled")).toBe(false);
   });
 
   it("defaults live worktree monitoring on only on Linux", () => {
@@ -795,50 +812,6 @@ describe("ServerSettingsService", () => {
     await service.initialize();
 
     expect(service.getSetting("claudeAdditionalModels")).toBeUndefined();
-  });
-
-  it.each(["heartbeat", "yepanywhere heartbeat"])(
-    "migrates legacy built-in heartbeat turn text default %j",
-    async (heartbeatTurnText) => {
-      await fs.writeFile(
-        path.join(testDir, "server-settings.json"),
-        JSON.stringify({
-          version: 1,
-          settings: {
-            heartbeatTurnText,
-          },
-        }),
-        "utf-8",
-      );
-      const service = new ServerSettingsService({ dataDir: testDir });
-
-      await service.initialize();
-
-      expect(service.getSetting("heartbeatTurnText")).toBe("continue");
-      const persisted = JSON.parse(
-        await fs.readFile(path.join(testDir, "server-settings.json"), "utf-8"),
-      ) as { settings: { heartbeatTurnText?: string }; version: number };
-      expect(persisted.version).toBe(2);
-      expect(persisted.settings.heartbeatTurnText).toBe("continue");
-    },
-  );
-
-  it("preserves custom heartbeat turn text", async () => {
-    await fs.writeFile(
-      path.join(testDir, "server-settings.json"),
-      JSON.stringify({
-        version: 1,
-        settings: {
-          heartbeatTurnText: "checking in",
-        },
-      }),
-      "utf-8",
-    );
-    const service = new ServerSettingsService({ dataDir: testDir });
-
-    await service.initialize();
-
-    expect(service.getSetting("heartbeatTurnText")).toBe("checking in");
   });
 
   it("folds legacy toolbar visibility/priority client defaults into presence", async () => {

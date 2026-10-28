@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DraftRead } from "@yep-anywhere/shared";
+import { SERVER_CAPABILITIES, serverHasCapability } from "@yep-anywhere/shared";
 import type { AppResult } from "../../src/app.js";
 import { MockClaudeSDK } from "../../src/sdk/mock.js";
 import { createApp } from "./create-app.js";
@@ -68,21 +69,24 @@ describe("full-app test fixture storage", () => {
     const app = fixture();
     const response = await app.app.request("/api/version?fresh=true");
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
+    const version = await response.json();
+    expect(version).toMatchObject({
       latest: null,
       updateAvailable: false,
     });
+    expect(
+      serverHasCapability(version, SERVER_CAPABILITIES.projectSessionDefaults),
+    ).toBe(false);
     expect(network).not.toHaveBeenCalled();
   });
 
   it("stops supervisor automation before closing the app's storage", async () => {
     const app = fixture();
     app.stopNotifications();
-    expect(app.supervisor.getHeartbeatScheduleMetrics().armedAtMs).toBeNull();
+    expect(app.supervisor.getMaintenanceScheduleMetrics().armedAtMs).toBeNull();
     await app.disposeSessionReaders();
     apps.splice(apps.indexOf(app), 1);
-    app.supervisor.notifyHeartbeatScheduleChanged();
-    expect(app.supervisor.getHeartbeatScheduleMetrics().armedAtMs).toBeNull();
+    expect(app.supervisor.getMaintenanceScheduleMetrics().armedAtMs).toBeNull();
   });
 
   it("joins concurrent and repeated disposal before removing fixture storage", async () => {

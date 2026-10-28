@@ -236,8 +236,11 @@ export function NewSessionPage() {
 
   // The composer does not wait for the selected project's record: a tab opened
   // here is for typing, and the form holds the start until the project arrives.
-  const renderError =
-    !confirmedSelectedProject && !projectLoading ? error : null;
+  const renderError = preferredExecutor?.trim()
+    ? new Error(t("sshExecutorsRemoved"))
+    : !confirmedSelectedProject && !projectLoading
+      ? error
+      : null;
 
   if (renderError) {
     return (
@@ -291,7 +294,6 @@ export function NewSessionPage() {
             preferredModel={preferredModel}
             preferredThinking={preferredThinking}
             preferredPermissionMode={preferredPermissionMode}
-            preferredExecutor={preferredExecutor || undefined}
           />
         </div>
         {appMounted && projectId && (

@@ -8,6 +8,38 @@ steering, deferred queueing, or provider-native slash-command pass-through.
 Related topic: [side session configuration](side-session-config.md) for
 silent helper queries and lightweight fallback side-query envelopes.
 
+## Selected disposition
+
+**Revised, 2026-10-27: defer `/btw` removal; remove unfinished report-back.**
+This supersedes the earlier same-day `/btw` removal selection in
+[core house cleaning](core-house-cleaning.md), rows 14–15.
+
+Quick Question's **Continue /btw** action gives the answered child a continuing
+conversation without another fork. Preserve that transition, its destination,
+aside routing/UI/lifecycle and the existing question-card behavior while
+removal is deferred. Quick Question, Save Q+A and
+[fork-from-turn](fork-from-turn.md) remain retained. Audit shared consumers
+before deleting helpers merely because their names mention asides.
+
+Remove the unfinished aside `/done` report-back affordances and proposed
+summary/file report modes rather than implementing them. Preserve the built-in
+`/done` and `/archive` commands and their shared done lane under
+[emulated slash commands](emulated-slash-commands.md). Quick Question's explicit
+Save Q+A is a separate retained operation, not unfinished report-back. Keep
+the implemented close/return behavior needed to exit a retained aside.
+
+The current `/btw` split session view has not been tightly tuned. A general
+split-session browser option for ordinary forks may be useful later; it is a
+future UI direction, not a selected replacement for Continue /btw. Existing
+child sessions and transcripts must remain accessible as
+ordinary sessions, with useful fork provenance preserved.
+
+This decision concerns YA-owned `/btw` behavior, not removal of an independent
+provider-native command. The contracts below describe the current
+implementation. Deferral authorizes neither removal nor new `/btw` extension
+work. The unfinished report-back placeholder is removed; aside close/return
+and the retained flows above remain.
+
 ## One-shot question cards
 
 Question cards are a lighter entry than `/btw`: one question, one answer,
@@ -208,7 +240,7 @@ because its rollout filename was not canonical.
 - Clone/Fork rows with fork provenance do not render `/btw` UI, while a renamed
   aside with explicit `parentSessionKind` still does.
 
-## Next Step: Normal Turn Renderer Adapter
+## Earlier Plan: Normal Turn Renderer Adapter (superseded for `/btw`)
 
 Replace the current string-slice aside transcript model with a message-object
 adapter into the normal session turn renderer. `/btw` panes and Mother inline
@@ -266,61 +298,27 @@ Contracts:
   footer to preserve narrow-viewport behavior under the default
   flex-column.
 
-## `/done` close-and-report command (in-aside)
+## `/done` close command (in-aside)
 
-`/done` is a YA-intercepted slash command available in an aside composer. It
-closes the aside and reports back to Mother through the user-mediated draft
-path. It is not sent to the aside agent. Argument shapes:
+`/done` in an aside composer closes the aside and returns to Mother. It is
+intercepted by YA and is not sent to the aside agent. The Done button has the
+same behavior. Legacy arguments are ignored; there are no report-back, summary
+or file modes, no generated handoff turn and no parent-composer draft. The
+unfinished report-back promise was removed on 2026-10-27 under
+[plan 164](../docs/tactical/164-remove-retired-session-automation.md).
 
-- `/done` (no argument) — minimal report. Long-term target: drafts into
-  Mother's composer `> /btw <asideSessionId>: <original side request,
-  truncated>`, no agent invocation. **Initial ship is close-only**: closes
-  the aside with no Mother-composer draft, pending agreement on the value
-  of automatic drafting.
-- `/done <free text>` — long-term target: drafts `> /btw <asideSessionId>:
-  <free text>` into Mother's composer, no agent invocation. **Initial ship**:
-  closes the aside with a toast noting that report-back drafting is not yet
-  implemented.
-- `/done summary` (future) — sends a synthetic instruction to the aside agent
-  ("produce a handoff-light report, 3-5 lines, paste-ready for the parent
-  session"), waits for the response, then drafts that response into Mother's
-  composer prefixed with a fork attribution. The user can cancel during the
-  wait.
-- `/done file [path]` (future) — writes the report (either the minimal form
-  or the summary-mode output) to a temp file under the YA data directory and
-  shows the path; useful for reports too long for a composer draft. Does not
-  populate Mother's composer.
+`/done` follows the composer it is submitted from. The side-pane composer,
+the narrow footer while it routes to an aside, and either one's Done button
+close that aside and return focus to Mother. A wide-layout Mother composer
+continues to target Mother even while an aside pane is open. Existing child
+transcripts remain accessible, and Quick Question's explicit Save Q+A remains.
 
-Contracts:
+In the Mother composer, the separate synthetic-done setting owns only an
+enabled, exact, attachment-free `/done`. When that setting is Off, or the draft
+is otherwise ineligible for the synthetic action, `/done` remains provider text.
+The built-in `/done` and `/archive` command lane is unchanged.
 
-- `/done` follows the composer it is submitted from. The side-pane composer,
-  the narrow footer while it routes to an aside, and either one's Done button
-  close that aside and return focus to Mother. A wide-layout Mother composer
-  continues to target Mother even while an aside pane is open.
-- In the Mother composer, the separate synthetic-done setting owns only an
-  enabled, exact, attachment-free `/done`. When that setting is Off, or the
-  draft is otherwise ineligible for the synthetic action, `/done` remains
-  provider text; YA does not reject it as an aside-only command.
-- Report-back to Mother always goes through the autodraft-if-empty /
-  clipboard-otherwise path; never auto-send a turn to Mother.
-- After report-back is drafted (or copied), the aside is dismissed.
-- The default `/done` and `/done <free text>` modes must not invoke the
-  aside agent — they are pure client-side wind-down.
-- `/done summary` is the only mode that issues a further turn to the aside
-  agent; that turn must be tagged so it is visible in the aside transcript
-  as a YA-initiated handoff request, not as an organic user message.
-
-Open questions deferred until we agree on value:
-
-- Whether the parent agent should be able to read the aside transcript when
-  the user asks it to ("hand off everything that happened in that fork").
-  Today the parent has no awareness of the aside; cross-session read would
-  require new permissions and is intentionally out of scope for the initial
-  `/done` ship.
-- Whether `/done summary` should be available even when the aside provider
-  cannot cheaply produce a short report (e.g., already context-exhausted).
-
-## Future: manual compress-in-place on the forked transcript
+## Earlier Proposal: manual compress-in-place on the forked transcript
 
 Opt-in, user-triggered compression of an aside's cloned transcript (plus the
 pending side request) before the aside agent's first real turn runs. Motivated

@@ -466,3 +466,5 @@
 
 - dependency-security-maintenance - Patch advisories and retain green cross-platform CI.
 - coordinated-releases - Same-source npm, desktop, extension and Android release preparation and delivery.
+- core-house-cleaning - Reduce unused execution, checkout and automatic-input
+  paths before resuming session-core work.

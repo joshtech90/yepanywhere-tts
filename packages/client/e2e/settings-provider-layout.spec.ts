@@ -1,6 +1,5 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 
 test.use({ serviceWorkers: "block" });
 
@@ -55,13 +54,9 @@ for (const width of [375, 1000, 1100, 1200, 1400]) {
     await expect(
       page.getByText("Server changed", { exact: false }),
     ).toHaveCount(0);
-    const directory = process.env.YEP_E2E_UI_CAPTURE_DIR;
-    if (directory) {
-      mkdirSync(directory, { recursive: true });
-      await page.screenshot({
-        animations: "disabled",
-        path: join(directory, `providers-${width}.png`),
-      });
-    }
+    await expect(
+      page.locator('[data-settings-item="providers-post-compact-replay"]'),
+    ).toHaveCount(0);
+    await recordUiCapture(page, `providers-${width}`);
   });
 }

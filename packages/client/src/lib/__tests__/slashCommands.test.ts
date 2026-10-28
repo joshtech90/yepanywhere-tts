@@ -193,7 +193,6 @@ describe("slashCommands", () => {
     expect(resolve("/done report back")).toEqual({
       kind: "focused-aside",
       command: "done",
-      argument: "report back",
     });
   });
 

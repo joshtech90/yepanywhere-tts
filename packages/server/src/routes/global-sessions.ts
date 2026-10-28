@@ -12,7 +12,6 @@ import {
   type ProviderName,
   type NonHumanUserTurn,
   type SessionCreationProvenance,
-  type WorkstreamId,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import { type Principal, PRINCIPAL_VARIABLE } from "../auth/principal.js";
@@ -137,8 +136,6 @@ export interface GlobalSessionItem {
   /** Source session whose provider transcript was cloned or forked. */
   forkedFromSessionId?: string;
   creationProvenance?: SessionCreationProvenance;
-  /** YA workstream lane for this session. Missing means the implicit main lane. */
-  workstreamId?: WorkstreamId;
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
   initialPrompt?: string;
   /** SSH host alias for remote execution (undefined = local) */
@@ -787,7 +784,6 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           forkedFromSessionId,
           creationProvenance: metadata?.creationProvenance,
           clearloop: deps.getClearloopBadge?.(overlaidSession.id),
-          workstreamId: metadata?.workstreamId,
           initialPrompt: initialPrompt ?? undefined,
           executor,
           lastAgentText: overlaidSession.lastAgentText,

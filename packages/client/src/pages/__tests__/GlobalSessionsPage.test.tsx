@@ -420,6 +420,7 @@ describe("GlobalSessionsPage", () => {
       makeSessionRecord("desktop", {
         creationProvenance: { surface: "desktop" },
       }),
+      makeSessionRecord("api", { creationProvenance: { surface: "api" } }),
       makeSessionRecord("unmarked"),
     ];
     filterDropdowns.length = 0;
@@ -427,6 +428,7 @@ describe("GlobalSessionsPage", () => {
 
     expect(screen.getByTestId("session-web")).toBeDefined();
     expect(screen.queryByTestId("session-desktop")).toBeNull();
+    expect(screen.queryByTestId("session-api")).toBeNull();
     expect(screen.queryByTestId("session-unmarked")).toBeNull();
     expect(
       filterDropdowns.find((dropdown) => dropdown.label === "Created from")
@@ -434,6 +436,7 @@ describe("GlobalSessionsPage", () => {
     ).toMatchObject([
       { value: "web" },
       { value: "desktop" },
+      { value: "api" },
       { value: "unspecified" },
     ]);
   });
