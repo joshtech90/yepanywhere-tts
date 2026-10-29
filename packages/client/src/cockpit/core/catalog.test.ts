@@ -141,6 +141,13 @@ describe("Cockpit catalog adapter", () => {
           omitted: false,
         },
       }),
+      session("codex-asks-while-working", "project-1", {
+        activity: "in-turn",
+        asyncQuestions: {
+          questions: [{ messageId: "m3", index: 0, title: "Weiter?", age: 0 }],
+          omitted: false,
+        },
+      }),
       session("codex-answered", "project-1", {
         asyncQuestions: {
           questions: [{ messageId: "m1", index: 0, title: "CAPTCHA?", age: 1 }],
@@ -173,6 +180,7 @@ describe("Cockpit catalog adapter", () => {
       "idle-terminal": "complete",
       "silent-terminal": "external",
       "codex-asks": "question",
+      "codex-asks-while-working": "active",
       "codex-answered": "complete",
     });
 

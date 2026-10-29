@@ -685,7 +685,9 @@ auf den Nutzer (Freigabe oder Frage), rot Fehler, grauer Ring keine Sicht
 Eine Codex-Rueckfrage (`asyncQuestions`) zaehlt nur als wartend, solange nach
 ihr keine Nutzernachricht kam (`age === 0`); die Zusammenfassung fuehrt
 beantwortete Fragen sonst bis zu 32 Runden weiter, und die Sitzung blieb gelb
-(29.10.2026).
+(29.10.2026). Arbeitet die Sitzung (auch extern), bleibt der Punkt gruen, selbst
+mit offener Codex-Zwischenfrage: Codex stellt solche Fragen, waehrend die Runde
+weiterlaeuft, und Gelb bedeutete dann faelschlich Stillstand.
 
 **Anbieter-Logo (Joscha 29.10.2026, Variante A).** Der Punkt zeigt nur den
 Status; wem die Sitzung gehoert, zeigt ein Original-Logo in Textgroesse

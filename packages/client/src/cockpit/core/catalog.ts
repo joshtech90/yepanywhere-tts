@@ -101,10 +101,7 @@ function deriveSessionStatus(
   if (session.pendingInputType === "tool-approval") return "approval";
   if (
     session.pendingInputType === "user-question" ||
-    session.activity === "waiting-input" ||
-    // A Codex question waits only until the user writes again; the summary
-    // keeps it listed for many turns unless the reply quotes it.
-    session.asyncQuestions?.questions.some(({ age }) => age === 0)
+    session.activity === "waiting-input"
   ) {
     return "question";
   }
@@ -120,6 +117,12 @@ function deriveSessionStatus(
       now - timestamp(session.updatedAt) < COCKPIT_EXTERNAL_FRESH_MS)
   ) {
     return "external";
+  }
+  // Codex asks these while its turn keeps running, so a working session
+  // stays green (Joscha 29.10.2026). A question waits only until the user
+  // writes again; the summary keeps it listed for many turns otherwise.
+  if (session.asyncQuestions?.questions.some(({ age }) => age === 0)) {
+    return "question";
   }
   return "complete";
 }
