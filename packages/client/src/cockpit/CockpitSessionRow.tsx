@@ -72,6 +72,10 @@ export const CockpitSessionRow = memo(function CockpitSessionRow({
   const statusLabel = cockpitSessionStatusLabel(session.status, t);
   const brand = cockpitProviderBrand(session.provider);
   const logo = brand ? <CockpitProviderLogo brand={brand} /> : null;
+  // Providers without a logo are still named for screen readers.
+  const providerName = brand
+    ? cockpitProviderBrandName(brand)
+    : session.provider;
   const longPress = useCockpitLongPress((point) => onOpenMenu(session, point));
 
   const handleContextMenu = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -87,7 +91,7 @@ export const CockpitSessionRow = memo(function CockpitSessionRow({
 
   return (
     <Link
-      aria-label={`${title}, ${brand ? `${cockpitProviderBrandName(brand)}, ` : ""}${statusLabel}${time ? `, ${time.label}` : ""}${
+      aria-label={`${title}, ${providerName ? `${providerName}, ` : ""}${statusLabel}${time ? `, ${time.label}` : ""}${
         projectName ? `, ${projectName}` : ""
       }`}
       aria-current={active ? "page" : undefined}

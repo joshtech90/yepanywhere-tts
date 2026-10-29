@@ -687,6 +687,13 @@ ihr keine Nutzernachricht kam (`age === 0`); die Zusammenfassung fuehrt
 beantwortete Fragen sonst bis zu 32 Runden weiter, und die Sitzung blieb gelb
 (29.10.2026).
 
+**Anbieter-Logo (Joscha 29.10.2026, Variante A).** Der Punkt zeigt nur den
+Status; wem die Sitzung gehoert, zeigt ein Original-Logo in Textgroesse
+(`CockpitProviderLogo`): Claude in Anthropic-Orange, OpenAI fuer Codex in der
+gedaempften Textfarbe. Es steht vor dem Projektordner, in Listen ohne
+Projektspalte vor der Uhrzeit. Sitzungen ohne Anbieterangabe gelten als Claude;
+andere Anbieter haben kein Logo, stehen aber im zugaenglichen Namen.
+
 **Kurzbefehle (Blitz).** „Im Terminal oeffnen" setzt die Sitzung mit
 `claude --resume` bzw. `codex resume` im Projektordner fort. In der Mac-App
 (`packages/mac-cockpit`) schickt die Seite nur Anbieter, Projektpfad und

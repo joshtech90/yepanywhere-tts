@@ -7,7 +7,8 @@ export function cockpitProviderBrand(
   provider: string | undefined,
 ): CockpitProviderBrand | null {
   if (provider === "codex") return "openai";
-  if (provider?.startsWith("claude")) return "claude";
+  // Older sessions without a provider are Claude's (DEFAULT_PROVIDER).
+  if (!provider || provider.startsWith("claude")) return "claude";
   return null;
 }
 
