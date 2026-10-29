@@ -66,5 +66,14 @@ describe("cockpit terminal command", () => {
         }),
       ),
     ).toBeNull();
+    expect(
+      buildCockpitResumeCommand(
+        cockpitResumeTarget({
+          provider: "codex",
+          projectId,
+          sessionId: "--dangerously-bypass-approvals-and-sandbox",
+        }),
+      ),
+    ).toBeNull();
   });
 });

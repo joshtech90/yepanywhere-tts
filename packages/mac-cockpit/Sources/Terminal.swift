@@ -13,7 +13,9 @@ func shellZitat(_ wert: String) -> String {
 /// nil bei ungültigen Angaben. Mit `ssh` läuft der Befehl auf jenem Rechner.
 func terminalSkript(anbieter: String, ordner: String, sitzung: String, ssh: String?) -> String? {
     guard ordner.hasPrefix("/"), !ordner.contains("\n"), !ordner.contains("\0"),
-          !sitzung.isEmpty,
+          // Erstes Zeichen kein "-", sonst waere die ID eine Programm-Option
+          // wie --dangerously-bypass-approvals-and-sandbox.
+          let erstes = sitzung.unicodeScalars.first, CharacterSet.alphanumerics.contains(erstes),
           sitzung.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" }),
           sitzung.allSatisfy(\.isASCII)
     else { return nil }

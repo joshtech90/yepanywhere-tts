@@ -368,6 +368,7 @@ final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDe
               let ansicht = nachricht.webView, let index = ansichten.firstIndex(of: ansicht),
               nachricht.frameInfo.securityOrigin.protocol == "https",
               nachricht.frameInfo.securityOrigin.host == rechner[index].host,
+              nachricht.frameInfo.securityOrigin.port == (rechner[index].basis.port ?? 443),
               let daten = nachricht.body as? [String: Any],
               let anbieter = daten["provider"] as? String,
               let ordner = daten["projectPath"] as? String,

@@ -14,6 +14,7 @@ pruefe("Codex auf aihub per SSH",
        "#!/bin/zsh\nexec ssh -t dienste 'bash -ic '\\''cd '\\''\\'\\'''\\''/home/l/AI Worker'\\''\\'\\'''\\'' && codex resume 01a1-ff'\\'''\n")
 pruefe("Fremder Anbieter", terminalSkript(anbieter: "gemini", ordner: "/x", sitzung: "a", ssh: nil), nil)
 pruefe("Sitzung mit Befehl", terminalSkript(anbieter: "claude", ordner: "/x", sitzung: "a;rm", ssh: nil), nil)
+pruefe("Sitzung als Option", terminalSkript(anbieter: "codex", ordner: "/x", sitzung: "--dangerously-bypass-approvals-and-sandbox", ssh: nil), nil)
 pruefe("Relativer Ordner", terminalSkript(anbieter: "claude", ordner: "x", sitzung: "a", ssh: nil), nil)
 pruefe("Ordner mit Zeilenumbruch", terminalSkript(anbieter: "claude", ordner: "/x\nrm", sitzung: "a", ssh: nil), nil)
 pruefe("SSH-Ziel mit Option", terminalSkript(anbieter: "claude", ordner: "/x", sitzung: "a", ssh: "-oProxyCommand=x"), nil)

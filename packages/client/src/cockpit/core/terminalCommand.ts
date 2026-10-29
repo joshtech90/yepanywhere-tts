@@ -31,7 +31,7 @@ export function cockpitResumeTarget(input: {
   sessionId: string;
 }): CockpitResumeTarget | null {
   const projectPath = cockpitProjectPathFromId(input.projectId);
-  if (!projectPath || !/^[\w-]+$/.test(input.sessionId)) return null;
+  if (!projectPath || !/^[A-Za-z0-9][\w-]*$/.test(input.sessionId)) return null;
   if (input.provider === "codex") {
     return { provider: "codex", projectPath, sessionId: input.sessionId };
   }
