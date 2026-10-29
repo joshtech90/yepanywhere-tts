@@ -1,17 +1,10 @@
-/* Original logos at the size of the row's small text. */
+/* Original logos at the size of the row's small text, both in the muted
+   text colour so the list stays calm and the marks stay visible in the dark
+   theme (Joscha 29.10.2026). */
 .logo {
   display: block;
   width: 0.6rem;
   height: 0.6rem;
   flex: 0 0 auto;
-}
-
-/* Anthropic's own Claude colour; the OpenAI mark follows the text colour so
-   it stays visible in the dark theme. */
-.logo[data-brand="claude"] {
-  fill: #d97757;
-}
-
-.logo[data-brand="openai"] {
   fill: var(--cockpit-muted);
 }

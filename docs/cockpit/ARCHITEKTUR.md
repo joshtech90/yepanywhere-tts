@@ -689,8 +689,8 @@ beantwortete Fragen sonst bis zu 32 Runden weiter, und die Sitzung blieb gelb
 
 **Anbieter-Logo (Joscha 29.10.2026, Variante A).** Der Punkt zeigt nur den
 Status; wem die Sitzung gehoert, zeigt ein Original-Logo in Textgroesse
-(`CockpitProviderLogo`): Claude in Anthropic-Orange, OpenAI fuer Codex in der
-gedaempften Textfarbe. Es steht vor dem Projektordner, in Listen ohne
+(`CockpitProviderLogo`), beide einfarbig in der gedaempften Textfarbe, weil
+farbige Logos die Liste zu unruhig machten. Es steht vor dem Projektordner, in Listen ohne
 Projektspalte vor der Uhrzeit. Sitzungen ohne Anbieterangabe gelten als Claude;
 andere Anbieter haben kein Logo, stehen aber im zugaenglichen Namen.
 
