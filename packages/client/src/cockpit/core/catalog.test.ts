@@ -134,6 +134,19 @@ describe("Cockpit catalog adapter", () => {
         ownership: { owner: "external", working: true },
         updatedAt: "2026-09-24T09:40:00.000Z",
       }),
+      // Codex keeps answered questions listed; only an unanswered one waits.
+      session("codex-asks", "project-1", {
+        asyncQuestions: {
+          questions: [{ messageId: "m2", index: 0, title: "Weiter?", age: 0 }],
+          omitted: false,
+        },
+      }),
+      session("codex-answered", "project-1", {
+        asyncQuestions: {
+          questions: [{ messageId: "m1", index: 0, title: "CAPTCHA?", age: 1 }],
+          omitted: false,
+        },
+      }),
     ];
     const online = createCockpitCatalog({
       sourceKey: "local",
@@ -159,6 +172,8 @@ describe("Cockpit catalog adapter", () => {
       terminal: "external",
       "idle-terminal": "complete",
       "silent-terminal": "external",
+      "codex-asks": "question",
+      "codex-answered": "complete",
     });
 
     const offline = createCockpitCatalog({

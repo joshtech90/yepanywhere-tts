@@ -23,7 +23,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -swift-version 5 -target arm64-apple-macos13.3 \
-  -o "$APP/Contents/MacOS/YepCockpit" "$HIER/Sources/main.swift" "$HIER/Sources/Meldungen.swift"
+  -o "$APP/Contents/MacOS/YepCockpit" "$HIER/Sources/main.swift" "$HIER/Sources/Meldungen.swift" \
+  "$HIER/Sources/Terminal.swift"
 
 sed "s/__VERSION__/$(date +%Y%m%d%H%M)/" "$HIER/Info.plist" > "$APP/Contents/Info.plist"
 
@@ -32,7 +33,8 @@ import json, sys
 rollen = json.load(open(sys.argv[1]))["rollen"]
 rechner = [
     {"name": "Mac", "url": f"https://{rollen['arbeitsplatz']['tailnet']}:3400"},
-    {"name": "aihub", "url": f"https://{rollen['dienste']['tailnet']}:3400"},
+    # "Im Terminal oeffnen" erreicht aihub-Sitzungen ueber den SSH-Rollennamen.
+    {"name": "aihub", "url": f"https://{rollen['dienste']['tailnet']}:3400", "ssh": "dienste"},
 ]
 json.dump(rechner, open(sys.argv[2], "w"), indent=2)
 PY

@@ -13,6 +13,8 @@ import WebKit
 struct Rechner: Decodable {
     let name: String
     let url: String
+    /// SSH-Ziel fuer "Im Terminal oeffnen"; fehlt beim Mac selbst.
+    let ssh: String?
 
     var basis: URL { URL(string: url)! }
     var host: String { basis.host ?? "" }
@@ -131,7 +133,7 @@ final class KeineWeiterleitung: NSObject, URLSessionTaskDelegate {
 // MARK: - Fenster
 
 final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDelegate,
-    WKUIDelegate, WKDownloadDelegate, NSToolbarDelegate {
+    WKUIDelegate, WKDownloadDelegate, NSToolbarDelegate, WKScriptMessageHandlerWithReply {
     let rechner: [Rechner]
     private(set) var ansichten: [WKWebView] = []
     private(set) var aktiv = 0
@@ -159,6 +161,10 @@ final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDe
         // Vorlesen startet Audio ohne neuen Klick im Fenster.
         konfiguration.mediaTypesRequiringUserActionForPlayback = []
         konfiguration.preferences.isElementFullscreenEnabled = true
+        // "Im Terminal oeffnen" aus dem Blitz-Menue (Sources/Terminal.swift).
+        let inhalte = WKUserContentController()
+        inhalte.addScriptMessageHandler(self, contentWorld: .page, name: "yepTerminal")
+        konfiguration.userContentController = inhalte
         for eintrag in rechner {
             let ansicht = WKWebView(frame: .zero, configuration: konfiguration)
             ansicht.navigationDelegate = self
@@ -351,6 +357,40 @@ final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDe
 
     // Prozess der WebView abgestuerzt (Speicher): still neu laden statt weiss.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { webView.reload() }
+
+    // MARK: Im Terminal oeffnen
+
+    /// Antwortet true, wenn Terminal die Sitzung oeffnet; sonst kopiert die
+    /// Webseite den Befehl wie im Browser.
+    func userContentController(_ steuerung: WKUserContentController, didReceive nachricht: WKScriptMessage,
+                               replyHandler antworten: @escaping (Any?, String?) -> Void) {
+        guard nachricht.frameInfo.isMainFrame,
+              let ansicht = nachricht.webView, let index = ansichten.firstIndex(of: ansicht),
+              nachricht.frameInfo.securityOrigin.protocol == "https",
+              nachricht.frameInfo.securityOrigin.host == rechner[index].host,
+              let daten = nachricht.body as? [String: Any],
+              let anbieter = daten["provider"] as? String,
+              let ordner = daten["projectPath"] as? String,
+              let sitzung = daten["sessionId"] as? String,
+              let skript = terminalSkript(anbieter: anbieter, ordner: ordner, sitzung: sitzung,
+                                          ssh: rechner[index].ssh)
+        else { return antworten(false, nil) }
+        let datei = FileManager.default.temporaryDirectory
+            .appendingPathComponent("yep-terminal-\(UUID().uuidString).command")
+        do {
+            try skript.write(to: datei, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: datei.path)
+        } catch { return antworten(false, nil) }
+        let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
+        NSWorkspace.shared.open([datei], withApplicationAt: terminal,
+                                configuration: NSWorkspace.OpenConfiguration()) { _, fehler in
+            DispatchQueue.main.async { antworten(fehler == nil, nil) }
+            // Terminal liest die Datei beim Start; danach wird sie nicht mehr gebraucht.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 30) {
+                try? FileManager.default.removeItem(at: datei)
+            }
+        }
+    }
 
     // MARK: Oberflaechen-Dialoge der Webseite
 

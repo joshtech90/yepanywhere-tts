@@ -108,7 +108,9 @@ function deriveSessionStatus(
   if (
     session.pendingInputType === "user-question" ||
     session.activity === "waiting-input" ||
-    Boolean(session.asyncQuestions?.questions.length)
+    // A Codex question waits only until the user writes again; the summary
+    // keeps it listed for many turns unless the reply quotes it.
+    Boolean(session.asyncQuestions?.questions.some(({ age }) => age === 0))
   ) {
     return "question";
   }

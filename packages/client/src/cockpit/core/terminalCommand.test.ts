@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCockpitResumeCommand,
   cockpitProjectPathFromId,
+  cockpitResumeTarget,
 } from "./terminalCommand";
 
 function idFor(path: string): string {
@@ -24,38 +25,38 @@ describe("cockpit terminal command", () => {
   it("builds quoted resume commands for Claude and Codex", () => {
     const projectId = idFor("/home/lilith/Joschas 'Ordner'");
     expect(
-      buildCockpitResumeCommand({
+      buildCockpitResumeCommand(cockpitResumeTarget({
         provider: "claude",
         projectId,
         sessionId: "24e22f93-9d63-44d6-b237-6d765a2b8346",
-      }),
+      })),
     ).toBe(
       "cd '/home/lilith/Joschas '\\''Ordner'\\''' && claude --resume 24e22f93-9d63-44d6-b237-6d765a2b8346",
     );
     expect(
-      buildCockpitResumeCommand({
+      buildCockpitResumeCommand(cockpitResumeTarget({
         provider: "codex",
         projectId,
         sessionId: "019a-thread",
-      }),
+      })),
     ).toContain("&& codex resume 019a-thread");
   });
 
   it("refuses unknown providers and ids with shell syntax", () => {
     const projectId = idFor("/tmp/x");
     expect(
-      buildCockpitResumeCommand({
+      buildCockpitResumeCommand(cockpitResumeTarget({
         provider: "gemini",
         projectId,
         sessionId: "a",
-      }),
+      })),
     ).toBeNull();
     expect(
-      buildCockpitResumeCommand({
+      buildCockpitResumeCommand(cockpitResumeTarget({
         provider: "claude",
         projectId,
         sessionId: "a; echo x",
-      }),
+      })),
     ).toBeNull();
   });
 });
