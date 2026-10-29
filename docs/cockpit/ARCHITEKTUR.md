@@ -682,6 +682,19 @@ Shared-Projektion und alte Oberflaeche bleiben unveraendert.
 auf eine Farbsprache ab: grau ruht, gruen arbeitet (auch extern), gelb wartet
 auf den Nutzer (Freigabe oder Frage), rot Fehler, grauer Ring keine Sicht
 (offline oder Neuverbindung). Die Bedeutung traegt der zugaengliche Name.
+Eine Codex-Rueckfrage (`asyncQuestions`) zaehlt nur als wartend, solange nach
+ihr keine Nutzernachricht kam (`age === 0`); die Zusammenfassung fuehrt
+beantwortete Fragen sonst bis zu 32 Runden weiter, und die Sitzung blieb gelb
+(29.10.2026).
+
+**Kurzbefehle (Blitz).** „Im Terminal oeffnen" setzt die Sitzung mit
+`claude --resume` bzw. `codex resume` im Projektordner fort. In der Mac-App
+(`packages/mac-cockpit`) schickt die Seite nur Anbieter, Projektpfad und
+Sitzungs-ID an den Handler `yepTerminal`; die App baut den Befehl selbst aus
+geprueften Teilen und oeffnet Terminal, fuer den aihub-Reiter per
+`ssh -t dienste` mit interaktiver Bash (wegen `CODEX_HOME`). Ohne Mac-App oder
+wenn sie ablehnt, wird der Befehl wie bisher kopiert. „Sitzungs-ID kopieren"
+kopiert die YA-Sitzungs-ID, um in anderen Chats auf die Sitzung zu verweisen.
 
 **Seitenleiste.** Favoriten fuehren als flache Liste unter einem Stern, darunter
 die uebrigen Sitzungen nach Projekt (`core/catalogSections.ts`). Rechtsklick,

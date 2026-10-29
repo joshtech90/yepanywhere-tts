@@ -84,19 +84,52 @@ beforeEach(() => {
 });
 
 describe("Cockpit quick actions", () => {
-  it("copies the terminal command for the session", async () => {
+  it("copies the terminal command in a browser and the session id", async () => {
     renderActions(false);
     fireEvent.click(screen.getByRole("button", { name: "Quick actions" }));
-
     fireEvent.click(
-      screen.getByRole("menuitem", { name: /Continue in a terminal/ }),
+      screen.getByRole("menuitem", { name: /Open in a terminal/ }),
     );
-
     await vi.waitFor(() =>
       expect(mocks.writeClipboardText).toHaveBeenCalledWith(
         "cd '/tmp/yep-cockpit-test' && claude --resume 24e22f93-9d63-44d6-b237-6d765a2b8346",
       ),
     );
+
+    fireEvent.click(screen.getByRole("button", { name: "Quick actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Copy session ID/ }));
+    await vi.waitFor(() =>
+      expect(mocks.writeClipboardText).toHaveBeenLastCalledWith(
+        "24e22f93-9d63-44d6-b237-6d765a2b8346",
+      ),
+    );
+  });
+
+  it("lets the Mac app open Terminal instead of copying", async () => {
+    const postMessage = vi.fn(async () => true);
+    Object.assign(window, {
+      webkit: { messageHandlers: { yepTerminal: { postMessage } } },
+    });
+    try {
+      renderActions(false);
+      fireEvent.click(screen.getByRole("button", { name: "Quick actions" }));
+      fireEvent.click(
+        screen.getByRole("menuitem", { name: /Open in a terminal/ }),
+      );
+      await vi.waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Quick actions" }).title,
+        ).toBe("Terminal opened"),
+      );
+      expect(postMessage).toHaveBeenCalledWith({
+        provider: "claude",
+        projectPath: "/tmp/yep-cockpit-test",
+        sessionId: "24e22f93-9d63-44d6-b237-6d765a2b8346",
+      });
+      expect(mocks.writeClipboardText).not.toHaveBeenCalled();
+    } finally {
+      delete (window as { webkit?: unknown }).webkit;
+    }
   });
 
   it("offers the handoff only while the session is not working", () => {

@@ -15,7 +15,11 @@ import {
   selectionForProvider,
 } from "./core/newSession";
 import type { CockpitTranscriptEntry } from "./core/sessionDetail";
-import { buildCockpitResumeCommand } from "./core/terminalCommand";
+import {
+  buildCockpitResumeCommand,
+  cockpitResumeTarget,
+  openCockpitTerminal,
+} from "./core/terminalCommand";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import { useCockpitHandoff } from "./useCockpitHandoff";
 
@@ -42,9 +46,18 @@ function BoltIcon() {
   );
 }
 
+/** What the last menu action reported, shown on the trigger for a moment. */
+type QuickActionNotice =
+  | "idle"
+  | "terminal-opened"
+  | "terminal-copied"
+  | "id-copied"
+  | "error";
+
 /**
- * Short commands for the open session: continue it in a terminal, or hand
- * it over to a fresh session with a chosen model and thinking level.
+ * Short commands for the open session: open it in a terminal, copy its id to
+ * mention it elsewhere, or hand it over to a fresh session with a chosen
+ * model and thinking level.
  */
 export function CockpitQuickActions({
   autoReadAloud,
@@ -60,7 +73,7 @@ export function CockpitQuickActions({
   const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [copied, setCopied] = useState<"idle" | "copied" | "error">("idle");
+  const [notice, setNotice] = useState<QuickActionNotice>("idle");
   const rootRef = useRef<HTMLDivElement>(null);
   const handoff = useCockpitHandoff({
     basePath,
@@ -69,11 +82,13 @@ export function CockpitQuickActions({
     projectId,
     sourceTitle: sessionTitle,
   });
-  const command = buildCockpitResumeCommand({
+  const visibleSessionId = port.actualSessionId ?? sessionId;
+  const target = cockpitResumeTarget({
     provider: port.session?.provider,
     projectId,
-    sessionId: port.actualSessionId ?? sessionId,
+    sessionId: visibleSessionId,
   });
+  const command = buildCockpitResumeCommand(target);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -85,16 +100,41 @@ export function CockpitQuickActions({
   }, [menuOpen]);
 
   useEffect(() => {
-    if (copied === "idle") return;
-    const timer = setTimeout(() => setCopied("idle"), 3500);
+    if (notice === "idle") return;
+    const timer = setTimeout(() => setNotice("idle"), 3500);
     return () => clearTimeout(timer);
-  }, [copied]);
+  }, [notice]);
 
-  const copyCommand = async () => {
-    if (!command) return;
-    setCopied((await writeClipboardText(command)) ? "copied" : "error");
+  // The Mac app opens Terminal itself; a browser can only copy the command.
+  const openTerminal = async () => {
+    if (!target || !command) return;
     setMenuOpen(false);
+    if (await openCockpitTerminal(target)) {
+      setNotice("terminal-opened");
+      return;
+    }
+    setNotice(
+      (await writeClipboardText(command)) ? "terminal-copied" : "error",
+    );
   };
+
+  const copySessionId = async () => {
+    setMenuOpen(false);
+    setNotice(
+      (await writeClipboardText(visibleSessionId)) ? "id-copied" : "error",
+    );
+  };
+
+  const noticeText =
+    notice === "terminal-opened"
+      ? t("cockpitQuickTerminalOpened")
+      : notice === "terminal-copied"
+        ? t("cockpitQuickTerminalCopied")
+        : notice === "id-copied"
+          ? t("cockpitQuickSessionIdCopied")
+          : notice === "error"
+            ? t("cockpitQuickCopyFailed")
+            : "";
 
   return (
     <div className={styles.root} ref={rootRef}>
@@ -104,11 +144,13 @@ export function CockpitQuickActions({
         aria-label={t("cockpitQuickActions")}
         className={styles.trigger}
         data-auto-read={autoReadAloud?.enabled ? "on" : undefined}
-        data-state={copied}
+        data-state={
+          notice === "idle" ? "idle" : notice === "error" ? "error" : "copied"
+        }
         onClick={() => setMenuOpen((open) => !open)}
         title={
-          copied === "copied"
-            ? t("cockpitQuickTerminalCopied")
+          noticeText
+            ? noticeText
             : autoReadAloud?.enabled
               ? `${t("cockpitQuickActions")} · ${t("cockpitQuickAutoReadOn")}`
               : t("cockpitQuickActions")
@@ -120,11 +162,7 @@ export function CockpitQuickActions({
           <span aria-hidden="true" className={styles.autoReadBadge} />
         )}
         <span aria-live="polite" className={styles.srOnly}>
-          {copied === "copied"
-            ? t("cockpitQuickTerminalCopied")
-            : copied === "error"
-              ? t("cockpitQuickTerminalCopyFailed")
-              : ""}
+          {noticeText}
         </span>
       </button>
       {menuOpen && (
@@ -143,13 +181,23 @@ export function CockpitQuickActions({
           <button
             className={styles.item}
             disabled={!command}
-            onClick={() => void copyCommand()}
+            onClick={() => void openTerminal()}
             role="menuitem"
             title={command ?? t("cockpitQuickTerminalUnavailable")}
             type="button"
           >
             <strong>{t("cockpitQuickTerminal")}</strong>
             <small>{t("cockpitQuickTerminalHint")}</small>
+          </button>
+          <button
+            className={styles.item}
+            onClick={() => void copySessionId()}
+            role="menuitem"
+            title={visibleSessionId}
+            type="button"
+          >
+            <strong>{t("cockpitQuickSessionId")}</strong>
+            <small>{t("cockpitQuickSessionIdHint")}</small>
           </button>
           <button
             className={styles.item}

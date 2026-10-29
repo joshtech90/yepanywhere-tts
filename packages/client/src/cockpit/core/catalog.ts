@@ -45,10 +45,7 @@ export interface CreateCockpitCatalogInput {
   sourceKey: string;
   projects: readonly ProjectCollectionRecord[];
   sessions: readonly SessionCollectionRecord[];
-  providerRuntimeBySessionId: ReadonlyMap<
-    string,
-    ProviderRuntimeStatusRecord
-  >;
+  providerRuntimeBySessionId: ReadonlyMap<string, ProviderRuntimeStatusRecord>;
   connection: "online" | "offline" | "error";
   orderedSessionIds?: readonly string[];
   /** Clock for judging how fresh external activity is. */
@@ -98,10 +95,7 @@ function deriveSessionStatus(
   now: number,
 ): CockpitSessionStatus {
   if (connection === "offline") return "offline";
-  if (
-    connection === "error" ||
-    providerRuntime?.status.kind === "terminal"
-  ) {
+  if (connection === "error" || providerRuntime?.status.kind === "terminal") {
     return "error";
   }
   if (session.pendingInputType === "tool-approval") return "approval";
@@ -110,7 +104,7 @@ function deriveSessionStatus(
     session.activity === "waiting-input" ||
     // A Codex question waits only until the user writes again; the summary
     // keeps it listed for many turns unless the reply quotes it.
-    Boolean(session.asyncQuestions?.questions.some(({ age }) => age === 0))
+    session.asyncQuestions?.questions.some(({ age }) => age === 0)
   ) {
     return "question";
   }
