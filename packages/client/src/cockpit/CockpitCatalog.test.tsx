@@ -188,7 +188,12 @@ describe("Cockpit catalog", () => {
     const favorites = screen.getByRole("region", { name: "Favorites" });
     expect(favorites.textContent).toContain("Release checklist");
     expect(favorites.textContent).not.toContain("Fixture session 1");
-    expect(favorites.querySelectorAll("svg")).toHaveLength(1);
+    expect(favorites.querySelectorAll("svg:not([data-brand])")).toHaveLength(1);
+    // Every row names its provider by logo and in its accessible name.
+    expect(favorites.querySelector('svg[data-brand="claude"]')).not.toBeNull();
+    expect(
+      screen.getByRole("link", { name: /Release checklist, Claude,/ }),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: /favorites/i })).toBeNull();
     const others = screen.getByRole("list", { name: "All sessions" });
     expect(others.textContent).toContain("Fixture session 1");

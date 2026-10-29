@@ -5,7 +5,7 @@
   min-width: 0;
   min-height: 2.35rem;
   padding: 0.35rem 0.55rem;
-  grid-template-columns: auto minmax(0, 1fr) 2.35rem;
+  grid-template-columns: auto minmax(0, 1fr) 3rem;
   align-items: center;
   column-gap: 0.4rem;
   border: 1px solid transparent;
@@ -46,6 +46,10 @@
 
 .time,
 .project {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.2rem;
   overflow: hidden;
   color: var(--cockpit-faint);
   font-size: var(--cockpit-text-2xs);
@@ -55,7 +59,13 @@
 }
 
 .time {
-  text-align: right;
+  justify-content: flex-end;
+}
+
+.time time,
+.projectName {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .project {
@@ -66,7 +76,7 @@
   .row {
     min-height: 2.65rem;
     padding: 0.4rem;
-    grid-template-columns: auto minmax(0, 1fr) 2.6rem;
+    grid-template-columns: auto minmax(0, 1fr) 3.3rem;
     user-select: none;
   }
 

@@ -1,6 +1,11 @@
 import { type MouseEvent, memo } from "react";
 import { Link } from "react-router-dom";
 import { useI18n, type TranslationFn } from "../i18n";
+import {
+  CockpitProviderLogo,
+  cockpitProviderBrand,
+  cockpitProviderBrandName,
+} from "./CockpitProviderLogo";
 import { CockpitStatusLed } from "./CockpitStatusLed";
 import { formatCockpitActivityTime } from "./core/activityTime";
 import type {
@@ -65,6 +70,8 @@ export const CockpitSessionRow = memo(function CockpitSessionRow({
   const title = session.title || t("cockpitUntitledSession");
   const time = formatCockpitActivityTime(session.lastActivityAt, locale);
   const statusLabel = cockpitSessionStatusLabel(session.status, t);
+  const brand = cockpitProviderBrand(session.provider);
+  const logo = brand ? <CockpitProviderLogo brand={brand} /> : null;
   const longPress = useCockpitLongPress((point) => onOpenMenu(session, point));
 
   const handleContextMenu = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -80,7 +87,7 @@ export const CockpitSessionRow = memo(function CockpitSessionRow({
 
   return (
     <Link
-      aria-label={`${title}, ${statusLabel}${time ? `, ${time.label}` : ""}${
+      aria-label={`${title}, ${brand ? `${cockpitProviderBrandName(brand)}, ` : ""}${statusLabel}${time ? `, ${time.label}` : ""}${
         projectName ? `, ${projectName}` : ""
       }`}
       aria-current={active ? "page" : undefined}
@@ -95,21 +102,20 @@ export const CockpitSessionRow = memo(function CockpitSessionRow({
         tone={cockpitLedToneForStatus(session.status)}
       />
       <span className={styles.title}>{title}</span>
-      {time ? (
-        <time
-          aria-hidden="true"
-          className={styles.time}
-          dateTime={session.lastActivityAt}
-          title={time.title}
-        >
-          {time.label}
-        </time>
-      ) : (
-        <span aria-hidden="true" className={styles.time} />
-      )}
+      {/* The provider logo leads the project folder, or the time in lists
+          grouped by project (Joscha 29.10.2026). */}
+      <span aria-hidden="true" className={styles.time}>
+        {!projectName && logo}
+        {time && (
+          <time dateTime={session.lastActivityAt} title={time.title}>
+            {time.label}
+          </time>
+        )}
+      </span>
       {projectName && (
         <span aria-hidden="true" className={styles.project} title={projectName}>
-          {projectName}
+          {logo}
+          <span className={styles.projectName}>{projectName}</span>
         </span>
       )}
     </Link>
