@@ -387,6 +387,22 @@ Statistik und Kopieraktion. Dadurch bleibt die Datei identifizierbar und das
 Kopierziel ohne Praezisionstap erreichbar; die Desktop-Anordnung bleibt eine
 kompakte Zeile.
 
+### Diktieren im Composer
+
+Das Mikrofon neben der Bueroklammer nimmt per `MediaRecorder` auf und schickt
+die fertige Aufnahme ueber den bestehenden `/api/speech/transcribe` an das
+Server-Backend `ya-groq` (Groq Whisper, Schluesselpool aus
+`YEP_STT_GROQ_API_KEY_FILES`). Der Knopf erscheint nur, wenn der Server
+`ya-groq` in `voiceBackends` meldet; ohne Schluessel gibt es keine tote
+Bedienung. Erster Druck startet, zweiter beendet, waehrend des Abschreibens ist
+er gesperrt. Das Ergebnis landet an der zuletzt bekannten Cursorposition des
+Textfelds (gemerkt ueber `onSelect`, weil der Knopf beim Druecken den Fokus
+nimmt), sonst am Ende. Tippen bleibt waehrend Aufnahme und Abschreiben
+unberuehrt; der Text wird erst beim Eintreffen in den aktuellen Draft
+eingefuegt. Am Handy bleibt der Fokus danach, wo er war, damit die Tastatur
+nicht ueber das Transkript springt. Mac- und Android-App geben das Mikrofon
+nur der eigenen HTTPS-Herkunft frei. Code: `useCockpitDictation.ts`.
+
 ### Composer-Grenze aus Paket 7
 
 Der Cockpit-Composer bleibt ein Blatt unter derselben

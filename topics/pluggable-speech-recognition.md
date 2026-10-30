@@ -23,7 +23,7 @@ behavior across streaming and batch STT.
   setting `speechVoiceBackends` (Speech settings checkboxes). On startup the
   env list is copied into that setting when missing; the env list never
   removes a saved backend. `ya-dummy` remains env-only. Cloud backends
-  (`ya-deepgram`, `ya-grok`) auto-enable when their YA-scoped key is provided,
+  (`ya-deepgram`, `ya-grok`, `ya-groq`) auto-enable when their YA-scoped key is provided,
   since providing a metered key is the operator's explicit opt-in. Configured
   backends appear immediately through `/api/version.voiceBackendStatuses`, but
   only backends that pass startup validation are routable and advertised as
@@ -225,7 +225,7 @@ streaming/confidence surface exists.
   `YEP_STT_XAI_API_KEY` takes precedence for `ya-grok`; `XAI_API_KEY` is a
   convenience fallback that is scrubbed from `process.env` after config load.
 - `SpeechBackendRegistry` supports `ya-dummy`, `ya-deepgram`,
-  `ya-grok`, `ya-whisper`, `ya-parakeet`, `ya-nemo`, and `ya-granite`. It records configured
+  `ya-grok`, `ya-groq` (batch Groq Whisper with a rotating key pool), `ya-whisper`, `ya-parakeet`, `ya-nemo`, and `ya-granite`. It records configured
   backends immediately as pending, validates them asynchronously, and keeps
   pending/disabled entries out of routing. `/api/version` exposes validated ids
   plus capabilities separately from the full pending/enabled/disabled status
