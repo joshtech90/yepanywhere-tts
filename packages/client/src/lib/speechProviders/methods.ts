@@ -21,7 +21,11 @@ export const XAI_DIRECT_STREAMING_SPEECH_METHOD: SpeechMethodId =
 export const XAI_DIRECT_BATCH_SPEECH_METHOD: SpeechMethodId =
   "xai-grok-direct-batch";
 
-const SERVER_BACKEND_PREFERENCE = ["ya-grok", "ya-groq", "ya-deepgram"] as const;
+const SERVER_BACKEND_PREFERENCE = [
+  "ya-grok",
+  "ya-groq",
+  "ya-deepgram",
+] as const;
 const YA_GROK_BACKEND_ID = "ya-grok";
 
 const COMPACT_SPEECH_METHOD_LABELS: Record<string, string> = {

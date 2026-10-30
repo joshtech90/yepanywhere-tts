@@ -3,7 +3,8 @@ import type { SpeechBackend, TranscribeOptions } from "./SpeechBackend.js";
 
 const logger = getLogger();
 
-const TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
+const TRANSCRIPTIONS_URL =
+  "https://api.groq.com/openai/v1/audio/transcriptions";
 const DEFAULT_MODEL = "whisper-large-v3-turbo";
 /** Groq's free tier rejects uploads above 25 MB; stay clearly below it. */
 const MAX_AUDIO_BYTES = 24 * 1024 * 1024;

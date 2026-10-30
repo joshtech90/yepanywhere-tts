@@ -68,9 +68,7 @@ function CockpitComposerSession(props: CockpitComposerProps) {
   );
   // The mic button takes focus when pressed, so the caret is remembered from
   // the textarea's own selection events rather than read at insert time.
-  const lastSelectionRef = useRef<{ start: number; end: number } | null>(
-    null,
-  );
+  const lastSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const dictation = useCockpitDictation((text) => {
     const input = composerInputRef.current;
     const next = insertDictation(

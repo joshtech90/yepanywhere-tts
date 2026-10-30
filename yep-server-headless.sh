@@ -86,6 +86,12 @@ if [ -x "$HOME/.local/bin/rolle" ]; then
   [ -n "$TTS_GEMINI_URL" ] && export TTS_GEMINI_URL
 fi
 
+# Diktieren im Cockpit ueber Groq Whisper (30.10.2026): der Server liest den
+# gemeinsamen Groq-Schluesselpool aus Smartzone OS (wie tools/common/sprache.py)
+# und wechselt bei Ratenlimit zum naechsten Schluessel. Nur die Pfade stehen
+# hier, die Schluessel bleiben in den Dateien. Fehlende Dateien uebergeht er.
+export YEP_STT_GROQ_API_KEY_FILES="$HOME/Projects/Smartzone OS/credentials/groq_api_key.txt:$HOME/Projects/Smartzone OS/credentials/groq_api_keys.txt"
+export YEP_STT_GROQ_LANGUAGE="${YEP_STT_GROQ_LANGUAGE:-de}"
 # Nur Warnungen ins launchd-Protokoll: mit INFO wuchs es auf ueber 200 MB.
 # Beim Start wird ein zu grosses Protokoll geleert (launchd rotiert nicht).
 export LOG_LEVEL="${LOG_LEVEL:-warn}"
