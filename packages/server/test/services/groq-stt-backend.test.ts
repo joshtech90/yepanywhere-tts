@@ -59,6 +59,35 @@ describe("GroqSttBackend", () => {
     );
   });
 
+  it("leaves resting keys alone instead of retrying them at once", async () => {
+    const { calls, impl } = recordingFetch({ a: [429] });
+    const backend = new GroqSttBackend(["a"], undefined, impl);
+
+    await expect(backend.transcribe(Buffer.from("audio"))).rejects.toThrow(
+      /HTTP 429/,
+    );
+    await expect(backend.transcribe(Buffer.from("audio"))).rejects.toThrow(
+      /rate-limited; try again in 120 s/,
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("masks pool keys in Groq's error text", async () => {
+    const impl = (async () =>
+      new Response(
+        JSON.stringify({ error: { message: "Invalid API Key gsk_secret1" } }),
+        { status: 400 },
+      )) as typeof fetch;
+    const backend = new GroqSttBackend(["gsk_secret1"], undefined, impl);
+
+    const failure = await backend
+      .transcribe(Buffer.from("audio"))
+      .catch((error: Error) => error.message);
+    expect(failure).toBe(
+      "Groq transcription failed (HTTP 400): Invalid API Key [key]",
+    );
+  });
+
   it("does not try further keys on a request error", async () => {
     const { calls, impl } = recordingFetch({ a: [400], b: [400] });
     const backend = new GroqSttBackend(["a", "b"], undefined, impl);

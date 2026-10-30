@@ -41,9 +41,14 @@ export function useCockpitDictation(onText: (text: string) => void) {
   const { version } = useVersion();
   const [state, setState] = useState<CockpitDictationState>("idle");
   const [error, setError] = useState<string | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // One recording at a time: the lock is taken synchronously on click, before
+  // the permission prompt, and released only when the attempt ends, so a
+  // double click cannot open a second microphone stream.
+  const busyRef = useRef(false);
+  const recordingRef = useRef<{
+    recorder: MediaRecorder;
+    release: () => void;
+  } | null>(null);
   const aliveRef = useRef(true);
   const onTextRef = useRef(onText);
   onTextRef.current = onText;
@@ -52,85 +57,115 @@ export function useCockpitDictation(onText: (text: string) => void) {
     canRecord() &&
     (version?.voiceBackends ?? []).includes(COCKPIT_DICTATION_BACKEND);
 
-  const releaseMic = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = null;
-    for (const track of streamRef.current?.getTracks() ?? []) track.stop();
-    streamRef.current = null;
-  }, []);
-
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
-      const recorder = recorderRef.current;
-      recorderRef.current = null;
-      if (recorder && recorder.state !== "inactive") recorder.stop();
-      releaseMic();
+      const recording = recordingRef.current;
+      recordingRef.current = null;
+      recording?.release();
     };
-  }, [releaseMic]);
+  }, []);
+
+  const finish = useCallback((message?: string) => {
+    busyRef.current = false;
+    if (!aliveRef.current) return;
+    if (message) setError(message);
+    setState("idle");
+  }, []);
 
   const stop = useCallback(() => {
-    const recorder = recorderRef.current;
+    const recorder = recordingRef.current?.recorder;
     if (recorder && recorder.state !== "inactive") recorder.stop();
   }, []);
 
   const start = useCallback(async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setError(null);
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      if (aliveRef.current) setError(t("cockpitDictationMicDenied"));
+      finish(t("cockpitDictationMicDenied"));
       return;
     }
-    if (!aliveRef.current) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const releaseStream = () => {
+      clearTimeout(timer);
       for (const track of stream.getTracks()) track.stop();
+    };
+    if (!aliveRef.current) {
+      releaseStream();
+      finish();
       return;
     }
-    streamRef.current = stream;
-    const mimeType = recorderMimeType();
-    const recorder = new MediaRecorder(
-      stream,
-      mimeType ? { mimeType } : undefined,
-    );
+
+    let recorder: MediaRecorder;
     const chunks: Blob[] = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunks.push(event.data);
+    try {
+      const mimeType = recorderMimeType();
+      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.push(event.data);
+      };
+      recorder.start();
+    } catch (cause) {
+      releaseStream();
+      finish(
+        t("cockpitDictationFailed", {
+          message: cause instanceof Error ? cause.message : String(cause),
+        }),
+      );
+      return;
+    }
+
+    // Unmount detaches the handlers before stopping, so a late stop event
+    // cannot upload audio for a composer that no longer exists.
+    const release = () => {
+      recorder.onstop = null;
+      recorder.onerror = null;
+      if (recorder.state !== "inactive") recorder.stop();
+      releaseStream();
+    };
+    recordingRef.current = { recorder, release };
+    recorder.onerror = () => {
+      if (recordingRef.current?.recorder === recorder) {
+        recordingRef.current = null;
+      }
+      release();
+      finish(t("cockpitDictationFailed", { message: "recorder error" }));
     };
     recorder.onstop = () => {
-      releaseMic();
-      if (recorderRef.current !== recorder) return;
-      recorderRef.current = null;
+      if (recordingRef.current?.recorder === recorder) {
+        recordingRef.current = null;
+      }
+      releaseStream();
       const audio = new Blob(chunks, {
-        type: recorder.mimeType || mimeType || "audio/webm",
+        type: recorder.mimeType || "audio/webm",
       });
       if (audio.size === 0) {
-        setState("idle");
+        finish();
         return;
       }
-      setState("transcribing");
+      if (aliveRef.current) setState("transcribing");
       transcribeSpeechAudio(audio, COCKPIT_DICTATION_BACKEND)
         .then(({ text }) => {
-          if (!aliveRef.current) return;
           const spoken = text.trim();
-          if (spoken) onTextRef.current(spoken);
+          if (spoken && aliveRef.current) onTextRef.current(spoken);
+          finish();
         })
         .catch((cause: unknown) => {
-          if (!aliveRef.current) return;
           const message =
             cause instanceof Error ? cause.message : String(cause);
-          setError(t("cockpitDictationFailed", { message }));
-        })
-        .finally(() => {
-          if (aliveRef.current) setState("idle");
+          finish(t("cockpitDictationFailed", { message }));
         });
     };
-    recorderRef.current = recorder;
-    recorder.start();
-    timerRef.current = setTimeout(() => recorder.stop(), MAX_RECORDING_MS);
+    timer = setTimeout(() => {
+      if (recorder.state !== "inactive") recorder.stop();
+    }, MAX_RECORDING_MS);
     setState("recording");
-  }, [releaseMic, t]);
+  }, [finish, t]);
 
   const toggle = useCallback(() => {
     if (state === "recording") stop();

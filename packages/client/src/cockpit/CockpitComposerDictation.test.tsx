@@ -162,6 +162,56 @@ describe("Cockpit dictation", () => {
   });
 });
 
+describe("Cockpit dictation microphone ownership", () => {
+  it("opens one microphone for a double click and releases it on unmount", async () => {
+    let grant: () => void = () => {};
+    const getUserMedia = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          grant = () => resolve({ getTracks: () => [{ stop: stopTrack }] });
+        }),
+    );
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    const view = renderComposer();
+    const mic = screen.getByRole("button", { name: "Dictate (Groq)" });
+
+    fireEvent.click(mic);
+    fireEvent.click(mic);
+    await act(async () => grant());
+
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Stop dictation" })).toBeTruthy();
+    view.unmount();
+    expect(stopTrack).toHaveBeenCalledTimes(1);
+    expect(mocks.transcribe).not.toHaveBeenCalled();
+  });
+
+  it("releases the microphone and reports when the recorder cannot start", async () => {
+    vi.stubGlobal(
+      "MediaRecorder",
+      class extends FakeRecorder {
+        override start(): void {
+          throw new Error("encoder unavailable");
+        }
+      },
+    );
+    renderComposer();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dictate (Groq)" }));
+    });
+
+    expect(stopTrack).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert").textContent).toContain(
+      "encoder unavailable",
+    );
+    expect(screen.getByRole("button", { name: "Dictate (Groq)" })).toBeTruthy();
+  });
+});
+
 describe("insertDictation", () => {
   it("pads with single spaces and appends when no caret is known", () => {
     expect(insertDictation("Hallo", "Welt", null)).toEqual({

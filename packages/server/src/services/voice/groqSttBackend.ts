@@ -61,18 +61,36 @@ export class GroqSttBackend implements SpeechBackend {
       : { ok: false, reason: "No Groq API key configured" };
   }
 
-  /** Keys in try order: random start, resting keys moved to the end. */
-  private keyOrder(now: number): string[] {
+  private isResting(key: string): boolean {
+    return (this.restingUntil.get(key) ?? 0) > Date.now();
+  }
+
+  /** Keys in try order from a random start; resting keys are left out. */
+  private keyOrder(): string[] {
     const start = Math.floor(Math.random() * this.apiKeys.length);
-    const rotated = [
+    return [
       ...this.apiKeys.slice(start),
       ...this.apiKeys.slice(0, start),
-    ];
-    const ready = rotated.filter(
-      (key) => (this.restingUntil.get(key) ?? 0) <= now,
-    );
-    const resting = rotated.filter((key) => !ready.includes(key));
-    return [...ready, ...resting];
+    ].filter((key) => !this.isResting(key));
+  }
+
+  /**
+   * Groq's error text is shown to the user and logged by the speech route, so
+   * only its `error.message` survives, bounded and with every pool key masked.
+   */
+  private describeFailure(status: number, body: string): string {
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body) as { error?: { message?: unknown } };
+      if (typeof parsed.error?.message === "string") {
+        detail = parsed.error.message;
+      }
+    } catch {
+      // Not JSON; keep the raw text.
+    }
+    for (const key of this.apiKeys) detail = detail.split(key).join("[key]");
+    detail = detail.replace(/gsk_[A-Za-z0-9]+/g, "[key]").slice(0, 200);
+    return `Groq transcription failed (HTTP ${status})${detail ? `: ${detail}` : ""}`;
   }
 
   async transcribe(
@@ -88,8 +106,18 @@ export class GroqSttBackend implements SpeechBackend {
       audio.byteOffset + audio.byteLength,
     ) as ArrayBuffer;
 
-    let lastError = "No Groq API key configured";
-    for (const key of this.keyOrder(Date.now())) {
+    const order = this.keyOrder();
+    if (order.length === 0) {
+      const wakeAt = Math.min(...this.restingUntil.values());
+      const seconds = Math.max(1, Math.ceil((wakeAt - Date.now()) / 1000));
+      throw new Error(
+        `All Groq keys are rate-limited; try again in ${seconds} s`,
+      );
+    }
+    let lastError = "All Groq keys are rate-limited";
+    for (const key of order) {
+      // A parallel request may have rate-limited this key meanwhile.
+      if (this.isResting(key)) continue;
       const form = new FormData();
       form.append(
         "file",
@@ -112,12 +140,12 @@ export class GroqSttBackend implements SpeechBackend {
       if (res.ok) {
         const data = (await res.json()) as GroqTranscriptionResponse;
         const transcript = (data.text ?? "").trim();
-        logger.debug(`Groq transcript: "${transcript.slice(0, 80)}"`);
+        logger.debug(`Groq transcript: ${transcript.length} chars`);
         return transcript;
       }
 
       const body = await res.text().catch(() => "");
-      lastError = `Groq transcription failed (HTTP ${res.status}): ${body.slice(0, 200)}`;
+      lastError = this.describeFailure(res.status, body);
       if (res.status === 429) {
         this.restingUntil.set(key, Date.now() + retryAfterMs(res));
         continue;
