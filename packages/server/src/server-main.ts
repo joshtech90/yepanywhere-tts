@@ -1077,6 +1077,8 @@ async function startServer() {
     voiceBackends: [...config.voiceBackends, ...populatedSpeechBackends],
     deepgramApiKey: config.deepgramApiKey,
     xaiSttApiKey: config.xaiSttApiKey,
+    groqApiKeys: config.groqApiKeys,
+    groqLanguage: config.groqLanguage,
     whisperModel: config.whisperModel,
     whisperDevice:
       serverSettingsService.getSetting("speechWhisperGpu") === undefined

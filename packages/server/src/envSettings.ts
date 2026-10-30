@@ -462,6 +462,27 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     description: "xAI API key for the ya-grok STT backend.",
   },
   {
+    name: "YEP_STT_GROQ_API_KEY",
+    group: "Speech & transcription",
+    secret: true,
+    description:
+      "Groq API key(s) for the ya-groq STT backend; several keys separated by commas rotate on rate limits.",
+  },
+  {
+    name: "YEP_STT_GROQ_API_KEY_FILES",
+    group: "Speech & transcription",
+    secret: false,
+    description:
+      "Files holding Groq API keys (one per line), separated by the platform path delimiter.",
+  },
+  {
+    name: "YEP_STT_GROQ_LANGUAGE",
+    group: "Speech & transcription",
+    secret: false,
+    description:
+      "Language hint for ya-groq, e.g. de; unset lets Whisper detect the language.",
+  },
+  {
     name: "YEP_STT_SHARE_XAI_KEY_WITH_CLIENTS",
     group: "Speech & transcription",
     secret: false,

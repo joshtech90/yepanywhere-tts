@@ -22,6 +22,7 @@ import {
   parseSummaryParserWorkerMode,
   type SummaryParserWorkerMode,
 } from "./sessions/summary-parser-worker-protocol.js";
+import { loadGroqApiKeys } from "./services/voice/groqApiKeys.js";
 import { getModuleEnv, harvestYaModuleEnv } from "./yaModuleEnv.js";
 
 function parseCodexPlanToolMode(value: string | undefined): CodexPlanToolMode {
@@ -194,6 +195,10 @@ export interface Config {
   deepgramApiKey?: string;
   /** xAI key for the ya-grok backend (from YEP_STT_XAI_API_KEY, or scrubbed XAI_API_KEY fallback). */
   xaiSttApiKey?: string;
+  /** Groq key pool for ya-groq (YEP_STT_GROQ_API_KEY plus YEP_STT_GROQ_API_KEY_FILES). */
+  groqApiKeys: string[];
+  /** Language hint for ya-groq (YEP_STT_GROQ_LANGUAGE). */
+  groqLanguage?: string;
   /** General xAI API key from XAI_API_KEY, scrubbed from process.env after load. */
   ambientXaiApiKey?: string;
   /** Whether authenticated clients may borrow the server's xAI STT key. */
@@ -472,6 +477,16 @@ export function loadConfig(): Config {
     voiceBackends: parseCommaSeparatedList(process.env.YEP_VOICE_BACKENDS),
     deepgramApiKey: sttEnv.DEEPGRAM_API_KEY || undefined,
     xaiSttApiKey: sttEnv.XAI_API_KEY || ambientXaiApiKey,
+    // Key files keep the pool out of the environment; the path list uses the
+    // platform delimiter so folder names with spaces stay intact.
+    groqApiKeys: loadGroqApiKeys(
+      sttEnv.GROQ_API_KEY,
+      (sttEnv.GROQ_API_KEY_FILES ?? "")
+        .split(path.delimiter)
+        .map((file) => file.trim())
+        .filter(Boolean),
+    ),
+    groqLanguage: sttEnv.GROQ_LANGUAGE?.trim() || undefined,
     ambientXaiApiKey,
     shareXaiSttApiKeyWithClients: parseBooleanOrDefault(
       sttEnv.SHARE_XAI_KEY_WITH_CLIENTS,

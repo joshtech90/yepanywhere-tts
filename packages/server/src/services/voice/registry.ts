@@ -1,6 +1,7 @@
 import { getLogger } from "../../logging/logger.js";
 import { DeepgramBackend } from "./deepgramBackend.js";
 import { DummyBackend } from "./dummyBackend.js";
+import { GroqSttBackend } from "./groqSttBackend.js";
 import { LocalGraniteBackend } from "./localGraniteBackend.js";
 import { LocalNemoBackend } from "./localNemoBackend.js";
 import { LocalParakeetBackend } from "./localParakeetBackend.js";
@@ -202,6 +203,13 @@ export interface SpeechRegistryInitOptions {
    * the opt-in signal.
    */
   xaiSttApiKey?: string;
+  /**
+   * Groq keys (from YEP_STT_GROQ_API_KEY and YEP_STT_GROQ_API_KEY_FILES) for
+   * ya-groq. A non-empty pool auto-enables the backend.
+   */
+  groqApiKeys?: string[];
+  /** Language hint for ya-groq, e.g. "de"; unset lets Whisper detect it. */
+  groqLanguage?: string;
   /** Whisper model name (default: distil-large-v3.5). */
   whisperModel?: string;
   /** Whisper device (default: cpu). */
@@ -251,6 +259,9 @@ export function getRequestedSpeechBackendIds(
   if (options.xaiSttApiKey) {
     requested.add("ya-grok");
   }
+  if (options.groqApiKeys?.length) {
+    requested.add("ya-groq");
+  }
 
   return [...requested];
 }
@@ -286,6 +297,18 @@ export async function registerSpeechBackends(
           );
         } else {
           registry.register(new XaiSttBackend(key));
+        }
+        break;
+      }
+
+      case "ya-groq": {
+        const keys = options.groqApiKeys ?? [];
+        if (keys.length === 0) {
+          logger.warn(
+            "[Voice] ya-groq requested but no Groq API key is configured",
+          );
+        } else {
+          registry.register(new GroqSttBackend(keys, options.groqLanguage));
         }
         break;
       }

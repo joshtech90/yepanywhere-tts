@@ -14,6 +14,7 @@ import {
 import { CockpitPromptHistory } from "./CockpitPromptHistory";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import { useCockpitComposer } from "./useCockpitComposer";
+import { insertDictation, useCockpitDictation } from "./useCockpitDictation";
 import styles from "./CockpitComposer.module.css";
 
 export interface CockpitComposerProps {
@@ -65,6 +66,29 @@ function CockpitComposerSession(props: CockpitComposerProps) {
     props.sessionId,
     props.sessionPort,
   );
+  // The mic button takes focus when pressed, so the caret is remembered from
+  // the textarea's own selection events rather than read at insert time.
+  const lastSelectionRef = useRef<{ start: number; end: number } | null>(
+    null,
+  );
+  const dictation = useCockpitDictation((text) => {
+    const input = composerInputRef.current;
+    const next = insertDictation(
+      input?.value ?? composer.draft,
+      text,
+      lastSelectionRef.current,
+    );
+    composer.setDraft(next.value);
+    lastSelectionRef.current = { start: next.caret, end: next.caret };
+    // Phones would pop the keyboard over the transcript; leave focus there.
+    if (hasCoarsePointer() && document.activeElement !== input) return;
+    requestAnimationFrame(() => {
+      const current = composerInputRef.current;
+      if (!current) return;
+      current.focus({ preventScroll: true });
+      current.setSelectionRange(next.caret, next.caret);
+    });
+  });
   const hasBlockedAttachment = composer.attachments.some(
     (attachment) => attachment.status !== "ready",
   );
@@ -151,6 +175,12 @@ function CockpitComposerSession(props: CockpitComposerProps) {
           data-cockpit-shortcut="composer"
           enterKeyHint="send"
           onChange={(event) => composer.setDraft(event.target.value)}
+          onSelect={(event) => {
+            lastSelectionRef.current = {
+              start: event.currentTarget.selectionStart,
+              end: event.currentTarget.selectionEnd,
+            };
+          }}
           onKeyDown={(event) => {
             if (
               event.key === "Enter" &&
@@ -216,6 +246,41 @@ function CockpitComposerSession(props: CockpitComposerProps) {
               <path d="m19 11.5-7.1 7.1a4.6 4.6 0 0 1-6.5-6.5l7.8-7.8a3.1 3.1 0 0 1 4.4 4.4l-7.8 7.8a1.5 1.5 0 0 1-2.1-2.1l7.1-7.1" />
             </svg>
           </button>
+          {dictation.available && (
+            <button
+              aria-label={
+                dictation.state === "recording"
+                  ? t("cockpitDictationStop")
+                  : dictation.state === "transcribing"
+                    ? t("cockpitDictationTranscribing")
+                    : t("cockpitDictationStart")
+              }
+              aria-pressed={dictation.state === "recording"}
+              className={styles.dictationButton}
+              data-state={dictation.state}
+              disabled={dictation.state === "transcribing"}
+              onClick={dictation.toggle}
+              title={
+                dictation.state === "recording"
+                  ? t("cockpitDictationStop")
+                  : dictation.state === "transcribing"
+                    ? t("cockpitDictationTranscribing")
+                    : t("cockpitDictationStart")
+              }
+              type="button"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                {dictation.state === "recording" ? (
+                  <rect height="9" rx="1.5" width="9" x="7.5" y="7.5" />
+                ) : (
+                  <>
+                    <rect height="11" rx="3" width="6" x="9" y="3.5" />
+                    <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5" />
+                  </>
+                )}
+              </svg>
+            </button>
+          )}
           <CockpitPromptHistory
             entries={composer.promptHistory}
             frequent={composer.frequentPrompts}
@@ -272,6 +337,11 @@ function CockpitComposerSession(props: CockpitComposerProps) {
       {composer.error && (
         <p className={styles.error} role="alert">
           {composer.error}
+        </p>
+      )}
+      {dictation.error && (
+        <p className={styles.error} role="alert">
+          {dictation.error}
         </p>
       )}
       <CockpitAttachmentDropCue

@@ -71,6 +71,7 @@
 }
 
 .attachButton,
+.dictationButton,
 .secondaryAction,
 .primaryAction,
 .attachments button {
@@ -85,12 +86,51 @@
   cursor: pointer;
 }
 
-.attachButton {
+.attachButton,
+.dictationButton {
   display: grid;
   width: 2.35rem;
   padding: 0;
   place-items: center;
   color: var(--cockpit-muted);
+}
+
+.dictationButton svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.dictationButton[data-state="recording"] {
+  border-color: var(--cockpit-danger);
+  color: var(--cockpit-danger);
+  animation: dictation-pulse 1.4s ease-in-out infinite;
+}
+
+.dictationButton[data-state="recording"] svg {
+  fill: currentColor;
+}
+
+.dictationButton[data-state="transcribing"] {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+@keyframes dictation-pulse {
+  50% {
+    box-shadow: 0 0 0 3px
+      color-mix(in srgb, var(--cockpit-danger) 25%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dictationButton[data-state="recording"] {
+    animation: none;
+  }
 }
 
 .attachButton svg {
