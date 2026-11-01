@@ -111,6 +111,11 @@ YA metadata, REST/WebSocket payloads, or UI copy. If a provider truly requires
 using its own id as a public/session id, document that exception in the
 provider contract and make the mapping explicit in the UI/debug surfaces.
 
+[YA-owned session identity](topics/session-identity.md) records the selected
+pre-launch session/startup ownership follow-up and its compatibility audit;
+read it before changing session identity, native-id translation or creation
+recovery. The current remap behavior remains until that migration is qualified.
+
 ## Vanilla Defaults
 
 YA-novel user-visible behavior, including changes to submitted provider text,
@@ -129,8 +134,11 @@ and [hosted compatibility](topics/remote-hosted-compatibility.md).
 Present the required release-corpus, gate, and fallback plan and obtain
 maintainer approval before editing the contract. An originating request that
 already approves those decisions satisfies the gate; do not ask twice.
-Never broaden an advertised capability to include a contract older servers lack
-or remove a fallback merely because a support horizon passed.
+Never broaden an advertised capability to include a contract older servers lack.
+The [90-day retirement rule](topics/server-capabilities.md#90-day-retirement-rule)
+is standing authorization to remove expired fixed-version gates and alternate
+compatibility code without asking again. Other support horizons alone do not
+authorize removal.
 
 ## Hard Development Rules
 

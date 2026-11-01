@@ -14,12 +14,6 @@ vi.mock("../../hooks/useGlossaryHints", () => ({
   useGlossaryHints: () => ({ glossaryHintsEnabled: true }),
 }));
 
-vi.mock("../../hooks/useVersion", () => ({
-  useVersion: () => ({
-    version: { capabilities: ["glossary-tooltips"] },
-  }),
-}));
-
 vi.mock("../SourceRuntimeContext", () => ({
   useCurrentSourceRuntime: () => mocks.runtime,
 }));

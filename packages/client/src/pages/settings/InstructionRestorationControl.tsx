@@ -32,6 +32,10 @@ export function InstructionRestorationControl({
       id="providers-instruction-restoration"
       label={t("instructionRestorationTitle")}
       description={t("instructionRestorationDescription")}
+      doc={{
+        path: "topics/agent-context-injection.md#optional-instruction-restoration",
+        label: "instruction restoration",
+      }}
     >
       <form
         className={styles.controls}

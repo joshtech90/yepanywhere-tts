@@ -1,0 +1,49 @@
+/*
+ * Segments sit inside the caller's path text and inherit its font, color and
+ * wrapping; nothing here adds inline space, so the path keeps its plain width.
+ */
+.segment {
+  /* A link segment keeps the path's own color rather than the global link's. */
+  color: inherit;
+  text-decoration: none;
+  border-radius: 3px;
+  cursor: pointer;
+  /* A taller hit area without changing the line box. */
+  padding-block: 3px;
+}
+
+.segment:hover,
+.segment[data-active] {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.segment[data-active] {
+  background: var(--bg-hover);
+}
+
+.segment:focus-visible,
+.name:is([role="button"], [href]):focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+.separator {
+  color: var(--text-muted);
+}
+
+/* The current file is the breadcrumb's current page: not link-colored. */
+.name {
+  color: var(--text-primary);
+}
+
+.name:is([role="button"], [href]) {
+  cursor: pointer;
+  padding-block: 3px;
+  text-decoration: none;
+}
+
+.name:is([role="button"], [href]):hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

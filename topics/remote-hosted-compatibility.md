@@ -47,6 +47,17 @@ const RECOMMENDED_REMOTE_COMPATIBILITY_LEVEL = 10;
 Missing `remoteCompatibilityLevel` means "old server, level 0" for warning
 purposes. Do not infer a hard cutoff from absence alone.
 
+## Current client baseline
+
+Since the maintainer-approved 2026-10-28 retirement, current clients support
+servers from v0.8.0 and the existing backend/API update notice recommends
+that version. Older servers should update or use their co-deployed client.
+This deliberately retires fixed-feature and Codex identity fallbacks outside
+the current stable support corpus. It does not raise the coarse level, change
+SRP/resume negotiation, or block the transport connection. The exact retired
+contracts and release evidence are in
+[server capabilities](server-capabilities.md#october-2026-compatibility-retirement).
+
 ## Client URL compatibility
 
 Hosted and root-built clients share one router-path grammar. Relay-host routes
@@ -206,11 +217,16 @@ two plus 60 days for core functionality. A current hosted client should retain
 usable core behavior throughout that corpus whenever the older server
 advertises the established capability.
 
-Crossing a horizon authorizes a maintainer decision, not an automatic cutoff.
-Any cutoff still records the affected release corpus, user-visible warning,
-fallback that is being removed, and reason continued compatibility is no
-longer safe or practical. Cheap exact-capability fallbacks may remain
-indefinitely.
+The [90-day retirement rule](server-capabilities.md#90-day-retirement-rule)
+provides standing authorization to remove expired fixed-version gates and
+alternate compatibility implementations without another approval, even if an older release remains
+among the latest two. Record the affected release corpus, removed fallback and
+update guidance. Other horizon crossings authorize a maintainer decision,
+not an automatic cutoff. Fixed-version checks expire even when their fallback
+is cheap or their lifecycle says permanent. Runtime-variable availability,
+scoped representations and historical ID reservations retain their separate
+roles. Whole-connection protocol cutoffs retain their separate grace and
+warning requirements.
 
 ## Notice Behavior
 

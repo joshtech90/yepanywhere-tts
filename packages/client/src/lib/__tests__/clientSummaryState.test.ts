@@ -1635,6 +1635,7 @@ describe("clientSummaryState", () => {
           inboxItem("needs", {
             pendingInputType: "tool-approval",
             hasUnread: true,
+            creationProvenance: { surface: "api" },
           }),
         ],
         active: [
@@ -1670,6 +1671,7 @@ describe("clientSummaryState", () => {
     expect(selectInboxResponse(state).needsAttention[0]).toMatchObject({
       sessionId: "needs",
       sessionTitle: "Session needs",
+      creationProvenance: { surface: "api" },
     });
     expect(selectSessionCollectionRecord(state, "active")).toMatchObject({
       id: "active",

@@ -51,7 +51,6 @@
   order: 1;
 }
 
-.compatibilityActions .actionGroup,
 .headerControls.fallbackRow .actionGroup {
   width: 100%;
 }
@@ -63,14 +62,11 @@
     margin-left: 0;
   }
 
-  .compatibilityActions .actionGroup > button,
   .headerControls.fallbackRow .actionGroup > button {
     padding-inline: 6px;
   }
 
-  .compatibilityActions .checkRemote,
   .headerControls.fallbackRow .checkRemote,
-  .compatibilityActions .checkRemote .actionLabel,
   .headerControls.fallbackRow .checkRemote .actionLabel {
     min-width: 0;
     overflow: hidden;

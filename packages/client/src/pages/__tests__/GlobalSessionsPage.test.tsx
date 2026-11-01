@@ -17,7 +17,7 @@ import {
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PROJECT_QUEUE_CAPABILITY } from "../../lib/projectQueueVisibility";
+import { PROJECT_QUEUE_CAPABILITY } from "@yep-anywhere/shared";
 import { GlobalSessionsPage } from "../GlobalSessionsPage";
 import english from "../../i18n/en.json";
 
@@ -910,21 +910,5 @@ describe("GlobalSessionsPage", () => {
     expect(mockUseProjectQueues).toHaveBeenCalledWith(["project-1"]);
     expect(screen.getByTestId("project-queue-queued-session")).toBeDefined();
     expect(screen.queryByTestId("project-queue-plain-session")).toBe(null);
-  });
-
-  it("hides project queue decorations without the server capability", () => {
-    versionState.version = { capabilities: [] };
-    sessionCollectionState.records = [
-      makeSessionRecord("queued-session", {
-        title: "Queued row",
-        fullTitle: "Queued row",
-      }),
-    ];
-    sessionCollectionState.queuedSessionIds = new Set(["queued-session"]);
-
-    renderPage("/sessions");
-
-    expect(mockUseProjectQueues).toHaveBeenCalledWith([]);
-    expect(screen.queryByTestId("project-queue-queued-session")).toBe(null);
   });
 });

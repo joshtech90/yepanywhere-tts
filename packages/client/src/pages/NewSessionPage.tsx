@@ -5,7 +5,6 @@ import type {
 } from "@yep-anywhere/shared";
 import {
   ALL_PERMISSION_MODES,
-  PROJECT_CODE_NAMES_CAPABILITY,
   SERVER_CAPABILITIES,
   serverHasCapability,
 } from "@yep-anywhere/shared";
@@ -102,10 +101,7 @@ export function NewSessionPage() {
   });
   const projectCollectionConfirmed = projectsComplete && !projectsError;
   const { version } = useVersion();
-  const supportsProjectCodeNames = serverHasCapability(
-    version,
-    PROJECT_CODE_NAMES_CAPABILITY,
-  );
+
   const {
     recentProjectIds: liveRecentProjectIds,
     isLoadingVisits: recentSessionsLoading,
@@ -194,7 +190,7 @@ export function NewSessionPage() {
   // Update browser tab title (must be called unconditionally before any early returns)
   useDocumentTitle(
     selectedProject?.name,
-    supportsProjectCodeNames ? selectedProject?.codeName : undefined,
+    selectedProject?.codeName,
     t("newSessionTitle"),
   );
 

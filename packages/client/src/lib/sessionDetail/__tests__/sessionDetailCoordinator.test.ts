@@ -188,7 +188,7 @@ function coordinator(activeWindowTrim?: SessionDetailActiveWindowTrimRuntime) {
 }
 
 describe("SessionDetailCoordinator", () => {
-  it("injects the connected server's Codex identity mode into transcript actions", () => {
+  it("keeps distinct Codex provider IDs without a compatibility-mode switch", () => {
     const durableMessage = {
       ...message("old-durable-id"),
       message: { role: "assistant" as const, content: "Still waiting." },
@@ -202,13 +202,7 @@ describe("SessionDetailCoordinator", () => {
       session: { ...session(), provider: "codex" as const },
     };
 
-    const legacy = coordinator();
-    legacy.applyInitialLoad(response);
-    legacy.applyStreamMessage(liveMessage);
-    expect(legacy.readSelected(selectSessionDetailMessages)).toHaveLength(1);
-
     const aligned = coordinator();
-    aligned.setCodexStreamDurableIdAlignment(true);
     aligned.applyInitialLoad(response);
     aligned.applyStreamMessage(liveMessage);
     expect(aligned.readSelected(selectSessionDetailMessages)).toHaveLength(2);

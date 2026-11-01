@@ -245,7 +245,6 @@ export function WorkingTreeBrowser({
   onBrowseHistory,
   onBlameFile,
   captureReviewProjections = false,
-  supportsLastEditor = false,
   ignoreWhitespace = false,
   onToggleIgnoreWhitespace,
   onProjectionRequestFailure,
@@ -275,7 +274,7 @@ export function WorkingTreeBrowser({
   onBrowseHistory?: () => void;
   onBlameFile?: (path: string) => void;
   captureReviewProjections?: boolean;
-  supportsLastEditor?: boolean;
+
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
   onProjectionRequestFailure?: (error: unknown) => void;
@@ -822,10 +821,9 @@ export function WorkingTreeBrowser({
 
   const fileMenuActions = useCallback(
     (file: WorktreeFileChange): SourceContextMenuAction[] => {
-      const lastEditorSessionHref =
-        supportsLastEditor && file.lastEditor
-          ? `${basePath}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(file.lastEditor.sessionId)}`
-          : undefined;
+      const lastEditorSessionHref = file.lastEditor
+        ? `${basePath}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(file.lastEditor.sessionId)}`
+        : undefined;
       const editorSessionLabel = file.lastEditor
         ? lastEditorSessionLabel(file.lastEditor.sessionId)
         : t("sourceOpenLastEditorSession");
@@ -854,15 +852,7 @@ export function WorkingTreeBrowser({
           : []),
       ];
     },
-    [
-      basePath,
-      lastEditorSessionLabel,
-      navigateTo,
-      onBlameFile,
-      projectId,
-      supportsLastEditor,
-      t,
-    ],
+    [basePath, lastEditorSessionLabel, navigateTo, onBlameFile, projectId, t],
   );
 
   const loadSessionTitle = useCallback(
@@ -906,7 +896,7 @@ export function WorkingTreeBrowser({
         contextKey,
         onOpen: () => {
           const sessionId = file.lastEditor?.sessionId;
-          if (!supportsLastEditor || !sessionId) return;
+          if (!sessionId) return;
           const request = loadSessionTitle(sessionId);
           if (!request) return;
           void request.then((loaded) => {
@@ -917,18 +907,12 @@ export function WorkingTreeBrowser({
         },
       };
     },
-    [
-      fileMenuActions,
-      loadSessionTitle,
-      refreshFileMenuActions,
-      supportsLastEditor,
-    ],
+    [fileMenuActions, loadSessionTitle, refreshFileMenuActions],
   );
 
-  const lastEditorSessionHref =
-    supportsLastEditor && selectedFile?.lastEditor
-      ? `${basePath}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(selectedFile.lastEditor.sessionId)}`
-      : undefined;
+  const lastEditorSessionHref = selectedFile?.lastEditor
+    ? `${basePath}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(selectedFile.lastEditor.sessionId)}`
+    : undefined;
   const selectedLastEditorSessionLabel = selectedFile?.lastEditor
     ? lastEditorSessionLabel(selectedFile.lastEditor.sessionId)
     : undefined;

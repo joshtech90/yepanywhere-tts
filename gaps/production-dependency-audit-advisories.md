@@ -1,6 +1,6 @@
-# Production dependency audit has two documented suppressions
+# Production dependency audit has three documented suppressions
 
-`pnpm audit --prod` currently reports two ignored advisories:
+`pnpm audit --prod` currently reports three ignored advisories:
 
 - high, `react-router@7.18.0`, GHSA-qwww-vcr4-c8h2. The affected behavior is
   React Server Components action handling; YA uses client-side
@@ -8,6 +8,13 @@
 - moderate, transitive `uuid@9.0.1`, GHSA-w5hq-g745-h8pq. The affected API is
   caller-provided buffers for name-based UUID generation; YA does not call the
   transitive package directly.
+- moderate, `@hono/node-server@1.19.17`, GHSA-rmxm-3fg6-px4f. The affected
+  `serveStatic` middleware is not imported or called by YA or its installed
+  `@hono/node-ws` adapter. The server, artifact server, relay and push broker
+  use the HTTP adapter without that helper; file routes own their authorization
+  and serving. Revisit before adopting the helper, when a 1.x backport lands,
+  or when qualifying the 2.x adapter migration. Published in the advisory
+  database on 2026-10-28; it blocked the unchanged upstream CI on October 29.
 Re-audit the exact consuming paths when their triggers fire, then update the
 corresponding dependencies with their own compatibility tests.
 `pnpm-workspace.yaml` `auditConfig.ignoreGhsas` and
@@ -24,4 +31,4 @@ production renderer dependency graph.
 2026-09-30: four newly reported, non-ignored findings blocked the unchanged
 CI campaign lockfile. Compatible patches move `fast-uri` 3.1.7 to 3.1.8 and
 `brace-expansion` 2.1.4 to 2.1.7; the latter needs no override. The production
-audit again exits zero with only the two documented suppressions above.
+audit again exits zero with only the two then-documented suppressions.

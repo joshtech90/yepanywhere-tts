@@ -1059,6 +1059,29 @@ export interface FileMetadata {
   modifiedAt?: number;
 }
 
+/** One entry of a folder listing. */
+export interface FolderEntry {
+  name: string;
+  /** What the entry is after following a symlink; "other" when unresolvable. */
+  kind: "file" | "folder" | "other";
+  /** Size in bytes, for files. */
+  size?: number;
+  /** Last modification time in epoch milliseconds. */
+  modifiedAt?: number;
+}
+
+/**
+ * Response from the folder listing API (`file-folder-listing`): the direct
+ * children of one folder, sorted by name, never recursive.
+ */
+export interface FolderListingResponse {
+  /** The folder as requested. */
+  path: string;
+  entries: FolderEntry[];
+  /** True when entries past the listing limit were omitted. */
+  truncated: boolean;
+}
+
 /**
  * Response from the file content API.
  */

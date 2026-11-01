@@ -10,6 +10,15 @@ import {
   SERVER_CAPABILITIES,
   type ServerCapabilityDefinition,
 } from "../packages/shared/src/server-capabilities.js";
+import {
+  auditCompatibilitySunsets,
+  parseAuditDate,
+} from "./compatibility-sunsets.js";
+import {
+  auditCapabilityInventory,
+  type CapabilitySource,
+  findClientCapabilityReferences,
+} from "./capability-inventory.js";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -36,24 +45,108 @@ const capabilities = Object.values(
   SERVER_CAPABILITIES,
 ) as ServerCapabilityDefinition[];
 const findings: AuditFinding[] = [];
+const clientSources: CapabilitySource[] = [];
+const args = process.argv.slice(2);
+let asOf = new Date().toISOString().slice(0, 10);
+let json = false;
+for (let index = 0; index < args.length; index++) {
+  if (args[index] === "--json") json = true;
+  else if (args[index] === "--as-of" && args[index + 1])
+    asOf = args[++index] ?? asOf;
+  else
+    throw new Error(
+      "Usage: pnpm capabilities:audit [--as-of YYYY-MM-DD] [--json]",
+    );
+}
+parseAuditDate(asOf);
 
 await auditOwnedRouteModules();
 await auditRawCapabilityChecks();
 auditCapabilityAdvertisements();
-auditTransitionalReviewDates();
+const references = findClientCapabilityReferences(
+  SERVER_CAPABILITIES,
+  await readFile(
+    path.join(REPO_ROOT, "packages/shared/src/server-capabilities.ts"),
+    "utf8",
+  ),
+  clientSources,
+);
+const inventory = auditCapabilityInventory(
+  SERVER_CAPABILITIES,
+  JSON.parse(
+    await readFile(
+      path.join(REPO_ROOT, "scripts/capability-releases.json"),
+      "utf8",
+    ),
+  ),
+  references,
+  asOf,
+);
+findings.push(
+  ...inventory.errors.map((message) => ({ kind: "error" as const, message })),
+);
+const sunsets = await auditCompatibilitySunsets(
+  JSON.parse(
+    await readFile(
+      path.join(REPO_ROOT, "scripts/compatibility-sunsets.json"),
+      "utf8",
+    ),
+  ),
+  capabilities,
+  (file) => readFile(path.join(REPO_ROOT, file), "utf8"),
+  asOf,
+);
+findings.push(
+  ...sunsets.errors.map((message) => ({ kind: "error" as const, message })),
+);
 
 const errors = findings.filter((finding) => finding.kind === "error");
 const warnings = findings.filter((finding) => finding.kind === "warning");
-
-for (const finding of findings) {
-  const prefix = finding.kind === "error" ? "ERROR" : "WARN";
-  console.log(`${prefix}: ${finding.message}`);
+if (json) {
+  console.log(
+    JSON.stringify(
+      { asOf, inventory: inventory.rows, sunsets: sunsets.deadlines, findings },
+      null,
+      2,
+    ),
+  );
+} else {
+  for (const row of inventory.rows) {
+    console.log(
+      `${row.expired ? "EXPIRED" : row.classification === "fixed" && row.locations.length === 0 ? "NO-CLIENT-GATE" : "CAPABILITY"} ${row.name} | ${row.lifecycle} | ${row.classification} | ` +
+        `${row.firstRelease ? `v${row.firstRelease}` : "unreleased"} | ` +
+        `${row.ageDays === null ? "age unknown" : `${row.ageDays} days old`} | ` +
+        `${row.expiresOn ? `retire ${row.expiresOn}` : "no fixed-version expiry"} | ` +
+        `${row.locations.length} client reference(s)`,
+    );
+  }
+  for (const deadline of sunsets.deadlines) {
+    console.log(
+      `RETIRE ${deadline.expiresOn}: ${deadline.name} ` +
+        `(${deadline.daysRemaining > 0 ? `${deadline.daysRemaining} days left` : "expired"})`,
+    );
+  }
+  for (const finding of findings) {
+    console.log(
+      `${finding.kind === "error" ? "ERROR" : "WARN"}: ${finding.message}`,
+    );
+  }
+  const counts = inventory.rows.reduce<Record<string, number>>(
+    (result, row) => {
+      result[row.classification] = (result[row.classification] ?? 0) + 1;
+      return result;
+    },
+    {},
+  );
+  console.log(
+    `Capability audit (${asOf}): ${capabilities.length} registered ` +
+      `(${counts.fixed ?? 0} fixed, ${counts.optional ?? 0} optional, ` +
+      `${counts.scoped ?? 0} scoped, ${counts.retired ?? 0} retired), ` +
+      `${inventory.rows.filter((row) => row.expired).length} expired fixed-version gates, ` +
+      `${sunsets.deadlines.length} compatibility sunsets, ` +
+      `${errors.length} error(s), ${warnings.length} warning(s).`,
+  );
 }
-
-console.log(
-  `Capability audit: ${capabilities.length} registered, ` +
-    `${errors.length} error(s), ${warnings.length} warning(s).`,
-);
 
 if (errors.length > 0) {
   process.exitCode = 1;
@@ -122,6 +215,12 @@ async function auditRawCapabilityChecks(): Promise<void> {
     const files = await collectRuntimeFiles(path.join(REPO_ROOT, root));
     for (const file of files) {
       const source = await readFile(file, "utf8");
+      if (root === "packages/client/src") {
+        clientSources.push({
+          path: path.relative(REPO_ROOT, file).split(path.sep).join("/"),
+          source,
+        });
+      }
       for (const name of capabilityNames) {
         const quoted = `["'\`]${escapeRegExp(name)}["'\`]`;
         const rawCheck = new RegExp(
@@ -141,32 +240,9 @@ async function auditRawCapabilityChecks(): Promise<void> {
   }
 }
 
-function auditTransitionalReviewDates(): void {
-  const today = new Date();
-  for (const capability of capabilities) {
-    if (capability.lifecycle.kind !== "transitional") continue;
-    const reviewAfter = new Date(
-      `${capability.lifecycle.reviewAfter}T00:00:00Z`,
-    );
-    if (Number.isNaN(reviewAfter.getTime())) {
-      findings.push({
-        kind: "error",
-        message: `${capability.name} has invalid reviewAfter ${capability.lifecycle.reviewAfter}.`,
-      });
-    } else if (reviewAfter <= today) {
-      findings.push({
-        kind: "warning",
-        message:
-          `${capability.name} transitional review is due ` +
-          `(${capability.lifecycle.reviewAfter}).`,
-      });
-    }
-  }
-}
-
 function auditCapabilityAdvertisements(): void {
   const idAllocations = Object.values(CAPABILITY_ID_ALLOCATIONS);
-  const idAllocationsByName = new Map(
+  const idAllocationsByName = new Map<string, (typeof idAllocations)[number]>(
     idAllocations.map((allocation) => [allocation.name, allocation]),
   );
   const allocatedIds = new Map<number, string>();
@@ -203,7 +279,7 @@ function auditCapabilityAdvertisements(): void {
   }
 
   const allocations = Object.values(OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS);
-  const allocationsByName = new Map(
+  const allocationsByName = new Map<string, (typeof allocations)[number]>(
     allocations.map((allocation) => [allocation.name, allocation]),
   );
   const capabilitiesByName = new Map(

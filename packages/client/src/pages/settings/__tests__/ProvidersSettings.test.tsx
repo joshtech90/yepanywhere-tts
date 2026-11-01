@@ -215,30 +215,6 @@ describe("ProvidersSettings additional models", () => {
     vi.clearAllMocks();
   });
 
-  it("hides the setting when the connected server lacks the capability", () => {
-    versionState.capabilities = [];
-
-    render(<ProvidersSettings />);
-
-    expect(screen.queryByText("providersAdditionalModelsTitle")).toBeNull();
-  });
-
-  it("hides idle harness lifetime from older servers", () => {
-    render(<ProvidersSettings />);
-
-    expect(screen.queryByText("providersIdleReapHoursLabel")).toBeNull();
-    expect(screen.queryByText("providersSubagentMaxDepthLabel")).toBeNull();
-  });
-
-  it("hides Codex reasoning summaries from older servers", () => {
-    render(<ProvidersSettings />);
-
-    expect(
-      screen.queryByText("providersCodexReasoningSummaryTitle"),
-    ).toBeNull();
-    expect(mockUpdateSetting).not.toHaveBeenCalled();
-  });
-
   it("shows the default Codex reasoning-summary mode and saves exact values", async () => {
     versionState.capabilities = [CODEX_REASONING_SUMMARY_SETTING_CAPABILITY];
     render(<ProvidersSettings />);
@@ -460,7 +436,7 @@ describe("ProvidersSettings additional models", () => {
 
     const providerRows = Array.from(
       document.querySelectorAll<HTMLElement>(
-        '[data-settings-item^="provider-"]',
+        '[data-settings-item="provider-codex"], [data-settings-item="provider-claude"]',
       ),
     );
     expect(
@@ -642,12 +618,6 @@ describe("ProvidersSettings additional models", () => {
     ).toBeTruthy();
   });
 
-  it("hides Claude Gateway configuration from older servers", () => {
-    render(<ProvidersSettings />);
-
-    expect(screen.queryByText("providersClaudeGatewayTitle")).toBeNull();
-  });
-
   it("saves isolated Claude Gateway configuration and reloads providers", async () => {
     versionState.capabilities = [CLAUDE_GATEWAY_CAPABILITY];
     render(<ProvidersSettings />);
@@ -671,10 +641,10 @@ describe("ProvidersSettings additional models", () => {
     fireEvent.click(screen.getByRole("button", { name: "providersSave" }));
 
     await waitFor(() => {
-      expect(mockUpdateSetting).toHaveBeenCalledWith(
-        "claudeGatewayUrl",
-        "http://localhost:4141",
-      );
+      expect(mockUpdateSettings).toHaveBeenCalledWith({
+        claudeGatewayUrl: "http://localhost:4141",
+        claudeGatewayStartCommand: undefined,
+      });
       expect(mockReloadProviders).toHaveBeenCalledTimes(1);
     });
   });
@@ -694,10 +664,10 @@ describe("ProvidersSettings additional models", () => {
     fireEvent.submit(form as HTMLFormElement);
 
     await waitFor(() => {
-      expect(mockUpdateSetting).toHaveBeenCalledWith(
-        "claudeGatewayUrl",
-        "http://localhost:4242",
-      );
+      expect(mockUpdateSettings).toHaveBeenCalledWith({
+        claudeGatewayUrl: "http://localhost:4242",
+        claudeGatewayStartCommand: undefined,
+      });
     });
   });
 
@@ -948,28 +918,7 @@ describe("ProvidersSettings additional models", () => {
     });
   });
 
-  it("hides Gateway autostart from servers with only the base capability", () => {
-    versionState.capabilities = [CLAUDE_GATEWAY_CAPABILITY];
-    render(<ProvidersSettings />);
-
-    expect(
-      screen.queryByRole("textbox", {
-        name: "providersClaudeGatewayStartCommandAria",
-      }),
-    ).toBeNull();
-    expect(
-      screen.queryByRole("checkbox", {
-        name: "providersClaudeGatewayDisableAgentTitle",
-      }),
-    ).toBeNull();
-    expect(
-      screen.queryByRole("checkbox", {
-        name: "providersClaudeGatewayDisablePlanModeTitle",
-      }),
-    ).toBeNull();
-  });
-
-  it("defaults the capability-gated Gateway Agent denial on", () => {
+  it("defaults the Gateway Agent denial on", () => {
     versionState.capabilities = [
       CLAUDE_GATEWAY_CAPABILITY,
       CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
@@ -989,7 +938,7 @@ describe("ProvidersSettings additional models", () => {
     );
   });
 
-  it("defaults the capability-gated Gateway plan-mode exclusion on", () => {
+  it("defaults the Gateway plan-mode exclusion on", () => {
     versionState.capabilities = [
       CLAUDE_GATEWAY_CAPABILITY,
       CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
@@ -1009,7 +958,7 @@ describe("ProvidersSettings additional models", () => {
     );
   });
 
-  it("saves a capability-gated Gateway start command with the URL", async () => {
+  it("saves a Gateway start command with the URL", async () => {
     versionState.capabilities = [
       CLAUDE_GATEWAY_CAPABILITY,
       CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,

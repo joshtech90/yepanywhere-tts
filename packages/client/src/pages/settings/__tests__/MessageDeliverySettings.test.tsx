@@ -10,7 +10,6 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  BANG_COMMANDS_CAPABILITY,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   DEFAULT_STEER_NOW_ENABLED,
   PROJECT_QUEUE_CAPABILITY,
@@ -206,16 +205,7 @@ describe("MessageDeliverySettings", () => {
     });
   });
 
-  it("keeps local bang commands default-off behind a server capability", () => {
-    render(<MessageDeliverySettings />);
-    expect(screen.queryByLabelText("messageDeliveryBangCommandsTitle")).toBe(
-      null,
-    );
-
-    cleanup();
-    versionState.version = {
-      capabilities: [PROJECT_QUEUE_CAPABILITY, BANG_COMMANDS_CAPABILITY],
-    };
+  it("keeps bang history default-off while execution is baseline", () => {
     render(<MessageDeliverySettings />);
 
     const toggle = screen.getByLabelText("messageDeliveryBangCommandsTitle");
@@ -224,19 +214,6 @@ describe("MessageDeliverySettings", () => {
     expect(mockUpdateSettings).toHaveBeenCalledWith({
       clientDefaults: { bangCommandsEnabled: true },
     });
-  });
-
-  it("hides Project Queue-only controls without the server capability", () => {
-    versionState.version = { capabilities: [] };
-
-    render(<MessageDeliverySettings />);
-
-    expect(
-      screen.queryByLabelText("messageDeliveryProjectQueueQuietTitle"),
-    ).toBe(null);
-    expect(
-      screen.queryByLabelText("messageDeliveryProjectQueueShortcutTitle"),
-    ).toBe(null);
   });
 
   it("hides the readiness setting on older Project Queue servers", () => {
@@ -350,6 +327,7 @@ describe("MessageDeliverySettings", () => {
       composeAnchorsEnabled: true,
       turnTimestamps: "off",
       clientDefaults: {
+        bangCommandsEnabled: false,
         busyComposerDefaultAction: "steer",
         steerNowDefault: DEFAULT_STEER_NOW_ENABLED,
         patientQueueDefault: false,

@@ -36,6 +36,9 @@ const apiMocks = vi.hoisted(() => ({
   getFileRawUrl: vi.fn(),
 }));
 
+vi.mock("../../../components/FileRevisionLink", () => ({
+  FileRevisionLink: () => null,
+}));
 vi.mock("../../../api/client", () => ({
   api: apiMocks,
 }));

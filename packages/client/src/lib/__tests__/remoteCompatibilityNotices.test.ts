@@ -10,6 +10,7 @@ import {
 } from "../remoteCompatibilityNotices";
 
 const CURRENT_REMOTE_COMPATIBILITY = {
+  recommendedBaselineVersion: "0.4.29",
   remoteCompatibilityLevel: RECOMMENDED_REMOTE_COMPATIBILITY_LEVEL,
 };
 
@@ -262,8 +263,8 @@ describe("remoteCompatibilityNotices", () => {
 
   it("emits a strong warning when the server omits the remote compatibility level", () => {
     const notices = getRemoteCompatibilityNotices({
-      currentVersion: "0.5.2",
-      latestVersion: "0.5.2",
+      currentVersion: "0.8.0",
+      latestVersion: "0.8.0",
       updateAvailable: false,
       resumeProtocolVersion: 3,
       relayUsername: "dev-box",
@@ -283,8 +284,8 @@ describe("remoteCompatibilityNotices", () => {
 
   it("does not warn when the server reports the recommended remote compatibility level", () => {
     const notices = getRemoteCompatibilityNotices({
-      currentVersion: "0.5.2",
-      latestVersion: "0.5.2",
+      currentVersion: "0.8.0",
+      latestVersion: "0.8.0",
       updateAvailable: false,
       resumeProtocolVersion: 3,
       remoteCompatibilityLevel: 10,
@@ -296,8 +297,8 @@ describe("remoteCompatibilityNotices", () => {
 
   it("uses the compatibility-level warning instead of the generic update notice", () => {
     const notices = getRemoteCompatibilityNotices({
-      currentVersion: "0.5.2",
-      latestVersion: "0.5.3",
+      currentVersion: "0.8.0",
+      latestVersion: "0.8.1",
       updateAvailable: true,
       resumeProtocolVersion: 3,
       remoteCompatibilityLevel: 9,
@@ -323,7 +324,7 @@ describe("remoteCompatibilityNotices", () => {
 
     expect(notices.map((notice) => notice.id)).toEqual([
       "remote-compat-level-10",
-      "backend-api-compat-0.4.29",
+      "backend-api-compat-0.8.0",
     ]);
   });
 });

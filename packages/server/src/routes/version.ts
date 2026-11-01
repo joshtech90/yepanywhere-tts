@@ -92,12 +92,10 @@ import {
   SECURITY_CLIENT_AUDIT_CAPABILITY,
   TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY,
   VOICE_INPUT_CAPABILITY,
-  encodeCompactServerCapabilities,
   encodeVersionedServerCapabilities,
   negotiateServerCapabilityEncoding,
   type CapabilityBitset,
   type ClientDefaults,
-  type OptionalServerCapabilityBitset,
   type SessionSandboxAvailability,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
@@ -479,10 +477,6 @@ export interface VersionInfo {
   capabilityBits?: CapabilityBitset;
   /** Version-implied capability IDs this server generation explicitly denies. */
   deniedCapabilityBits?: CapabilityBitset;
-  /** Sparse 32-bit words for optional capabilities in compact-v1 responses. */
-  optionalCapabilityBits?: OptionalServerCapabilityBitset;
-  /** Names not yet implied by the reported release, chiefly source builds. */
-  capabilityExtensions?: readonly string[];
   /** Local host preflight for the optional YA session sandbox backend. */
   sessionSandboxing?: SessionSandboxAvailability;
   /**
@@ -612,6 +606,7 @@ const BASE_CAPABILITIES: string[] = [
   SERVER_CAPABILITIES.patientTopicShift.name,
   SERVER_CAPABILITIES.rendezProjectStatus.name,
   SERVER_CAPABILITIES.projectFolderState.name,
+  SERVER_CAPABILITIES.fileFolderListing.name,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
@@ -692,6 +687,8 @@ export interface VersionRouteOptions {
   installedMachineControlAvailable?: boolean;
   /** Agent self inspection is enabled, so tabs' session views are collected. */
   agentSessionViewAvailable?: boolean;
+  agentApiAvailable?: boolean;
+  peerConnectionsAvailable?: boolean;
   agentAuthRouterAvailable?: boolean;
   /** Whether the operator enabled experimental live worktree monitoring. */
   isLiveWorktreeMonitoringEnabled?: () => boolean;
@@ -757,6 +754,8 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
     capabilities.push(SERVER_CAPABILITIES.vhostAppControl.name);
   if (options?.agentAuthRouterAvailable) {
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouter.name);
+    // Cached older clients still use this bit; current clients use scoped responses.
+    capabilities.push(SERVER_CAPABILITIES.agentAuthRouterServiceTiers.name);
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterRecovery.name);
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterPools.name);
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterOwnedPools.name);
@@ -766,6 +765,14 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
     capabilities.push(SERVER_CAPABILITIES.installedMachineControl.name);
   if (options?.agentSessionViewAvailable)
     capabilities.push(SERVER_CAPABILITIES.agentSessionView.name);
+  if (options?.peerConnectionsAvailable) {
+    capabilities.push(SERVER_CAPABILITIES.peerConnections.name);
+    capabilities.push(SERVER_CAPABILITIES.peerAuthenticationRefresh.name);
+  }
+  if (options?.agentApiAvailable) {
+    capabilities.push(SERVER_CAPABILITIES.agentApiBootstrap.name);
+    capabilities.push(SERVER_CAPABILITIES.agentApiManagement.name);
+  }
   capabilities.push(SERVER_CAPABILITIES.claudeGatewayServices.name);
   if (options?.getExperimentalConversationAvailable?.())
     capabilities.push(SERVER_CAPABILITIES.experimentalConversation.name);
@@ -925,7 +932,6 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
       clientVersion,
       current,
     );
-    const compactCapabilities = c.req.query("capabilities") === "compact-v1";
     const capabilities = getServerCapabilities({
       ...options,
       getDeviceBridgeState: () => deviceBridgeStatus.state,
@@ -972,20 +978,14 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
             current,
             deniedCapabilities,
           )
-        : compactCapabilities
-          ? encodeCompactServerCapabilities(
-              capabilities,
+        : {
+            capabilities,
+            deniedCapabilityBits: encodeVersionedServerCapabilities(
+              [],
               current,
               deniedCapabilities,
-            )
-          : {
-              capabilities,
-              deniedCapabilityBits: encodeVersionedServerCapabilities(
-                [],
-                current,
-                deniedCapabilities,
-              ).deniedCapabilityBits,
-            }),
+            ).deniedCapabilityBits,
+          }),
       ...(capabilities.includes(
         SERVER_CAPABILITIES.experimentalConversation.name,
       )

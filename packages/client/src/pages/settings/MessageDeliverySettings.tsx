@@ -32,8 +32,7 @@ import { useProjects } from "../../hooks/useProjects";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
-import { serverSupportsBangCommands } from "../../lib/bangCommandAvailability";
-import { serverSupportsProjectQueue } from "../../lib/projectQueueVisibility";
+
 import { SettingsItem } from "./SettingsItem";
 import { ProjectQueueReadinessSettings } from "./ProjectQueueReadinessSettings";
 import { RendezSettings, type RendezSettingsValue } from "./RendezSettings";
@@ -230,12 +229,12 @@ export function MessageDeliverySettings() {
   useSettingsPaneTitle(t("messageDeliveryTitle"));
   const { settings, isLoading, error, updateSettings } = useServerSettings();
   const { version } = useVersion();
-  const supportsProjectQueue = serverSupportsProjectQueue(version);
+
   const supportsReadinessCheck = serverHasCapability(
     version,
     PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   );
-  const supportsBangCommands = serverSupportsBangCommands(version);
+
   const supportsRendez = serverHasCapability(
     version,
     RENDEZ_UPLOADS_CAPABILITY,
@@ -412,7 +411,6 @@ export function MessageDeliverySettings() {
   }, [draftJoinWindow, serverJoinWindowSeconds, updateSettings]);
 
   useEffect(() => {
-    if (!supportsProjectQueue) return;
     if (draftProjectQueueQuiet === null) return;
     const parsed = parseProjectQueueQuietSeconds(draftProjectQueueQuiet);
     if (parsed === serverProjectQueueQuietSeconds) return;
@@ -422,12 +420,7 @@ export function MessageDeliverySettings() {
       });
     }, SECONDS_SLIDER_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [
-    draftProjectQueueQuiet,
-    serverProjectQueueQuietSeconds,
-    supportsProjectQueue,
-    updateSettings,
-  ]);
+  }, [draftProjectQueueQuiet, serverProjectQueueQuietSeconds, updateSettings]);
 
   useEffect(() => {
     if (!supportsClearloop || draftClearloopInactivity === null) return;
@@ -528,8 +521,7 @@ export function MessageDeliverySettings() {
   const canUndo =
     !!baseline &&
     (shownJoinWindowSeconds !== baseline.joinWindowSeconds ||
-      (supportsProjectQueue &&
-        shownProjectQueueQuietSeconds !== baseline.projectQueueQuietSeconds) ||
+      shownProjectQueueQuietSeconds !== baseline.projectQueueQuietSeconds ||
       (supportsClearloop &&
         shownClearloopInactivitySeconds !== null &&
         shownClearloopInactivitySeconds !==
@@ -539,8 +531,7 @@ export function MessageDeliverySettings() {
         JSON.stringify(serverReadinessCheck) !==
           JSON.stringify(baseline.projectQueueReadinessCheck)) ||
       shownTurnTimestamps !== baseline.turnTimestamps ||
-      (supportsBangCommands &&
-        shownBangCommands !== baseline.bangCommandsEnabled) ||
+      shownBangCommands !== baseline.bangCommandsEnabled ||
       shownBusyDefaultAction !== baseline.busyComposerDefaultAction ||
       shownSteerNowDefault !== baseline.steerNowDefault ||
       shownPatientQueueDefault !== baseline.patientQueueDefault ||
@@ -549,8 +540,7 @@ export function MessageDeliverySettings() {
           baseline.patientQueueCompactAtPercent ||
           settings?.clientDefaults?.topicShiftCompactAtPercent !==
             baseline.topicShiftCompactAtPercent)) ||
-      (supportsProjectQueue &&
-        shownProjectQueueCtrlEnter !== baseline.projectQueueCtrlEnterEnabled) ||
+      shownProjectQueueCtrlEnter !== baseline.projectQueueCtrlEnterEnabled ||
       keepMobileKeyboardOpenAfterDelivery !==
         baseline.keepMobileKeyboardOpenAfterDelivery ||
       questionAsidesEnabled !== baseline.questionAsidesEnabled ||
@@ -587,9 +577,7 @@ export function MessageDeliverySettings() {
           }
         : {}),
       deferredJoinWindowSeconds: snapshot.joinWindowSeconds,
-      ...(supportsProjectQueue
-        ? { projectQueueQuietSeconds: snapshot.projectQueueQuietSeconds }
-        : {}),
+      ...{ projectQueueQuietSeconds: snapshot.projectQueueQuietSeconds },
       ...(supportsClearloop
         ? { clearloopInactivitySeconds: snapshot.clearloopInactivitySeconds }
         : {}),
@@ -599,9 +587,7 @@ export function MessageDeliverySettings() {
         : {}),
       turnTimestamps: snapshot.turnTimestamps,
       clientDefaults: {
-        ...(supportsBangCommands
-          ? { bangCommandsEnabled: snapshot.bangCommandsEnabled }
-          : {}),
+        ...{ bangCommandsEnabled: snapshot.bangCommandsEnabled },
         busyComposerDefaultAction: snapshot.busyComposerDefaultAction,
         steerNowDefault: snapshot.steerNowDefault,
         patientQueueDefault: snapshot.patientQueueDefault,
@@ -612,12 +598,9 @@ export function MessageDeliverySettings() {
               topicShiftCompactAtPercent: snapshot.topicShiftCompactAtPercent,
             }
           : {}),
-        ...(supportsProjectQueue
-          ? {
-              projectQueueCtrlEnterEnabled:
-                snapshot.projectQueueCtrlEnterEnabled,
-            }
-          : {}),
+        ...{
+          projectQueueCtrlEnterEnabled: snapshot.projectQueueCtrlEnterEnabled,
+        },
       },
     }).catch(() => {
       // surfaced via the hook's error state
@@ -626,9 +609,7 @@ export function MessageDeliverySettings() {
     setAttachmentQuality,
     setKeepMobileKeyboardOpenAfterDelivery,
     setQuestionAsidesEnabled,
-    supportsBangCommands,
     supportsClearloop,
-    supportsProjectQueue,
     supportsReadinessCheck,
     supportsRendez,
     supportsTopicShift,
@@ -743,6 +724,7 @@ export function MessageDeliverySettings() {
           <SettingsItem
             label={t("messageDeliveryClearloopTitle")}
             description={t("messageDeliveryClearloopDescription")}
+            doc="topics/session-rewind.md#clearloop"
             valueText={
               shownClearloopInactivitySeconds === null
                 ? shownClearloopInactivityText
@@ -789,8 +771,11 @@ export function MessageDeliverySettings() {
           </SettingsItem>
         )}
 
-        {supportsProjectQueue && (
-          <SettingsSection title={t("projectQueueTitle")}>
+        {
+          <SettingsSection
+            title={t("projectQueueTitle")}
+            doc="site/src/content/docs/project-queue.md"
+          >
             <SettingsItem
               label={t("messageDeliveryProjectQueueQuietTitle")}
               description={t("messageDeliveryProjectQueueQuietDescription")}
@@ -837,12 +822,13 @@ export function MessageDeliverySettings() {
               />
             )}
           </SettingsSection>
-        )}
+        }
 
         <SettingsItem
           as="label"
           label={t("messageDeliveryComposeAnchorsTitle")}
           description={t("messageDeliveryComposeAnchorsDescription")}
+          doc="topics/compose-time-context-anchors.md#opt-in-staleness-anchors-yep_compose_anchors1"
         >
           <input
             type="checkbox"
@@ -861,6 +847,7 @@ export function MessageDeliverySettings() {
         <SettingsItem
           label={t("messageDeliveryTurnTimestampsTitle")}
           description={t("messageDeliveryTurnTimestampsDescription")}
+          doc="topics/compose-time-context-anchors.md#opt-in-turn-timestamps-turntimestamps--yep_turn_timestamps"
         >
           <select
             className="settings-select"
@@ -898,7 +885,7 @@ export function MessageDeliverySettings() {
           />
         </SettingsItem>
 
-        {supportsBangCommands && (
+        {
           <SettingsItem
             as="label"
             label={t("messageDeliveryBangCommandsTitle")}
@@ -919,7 +906,7 @@ export function MessageDeliverySettings() {
               aria-label={t("messageDeliveryBangCommandsTitle")}
             />
           </SettingsItem>
-        )}
+        }
 
         <SettingsItem
           as="label"
@@ -939,6 +926,7 @@ export function MessageDeliverySettings() {
         <SettingsItem
           label={t("appearanceToolbarDefaultActionTitle")}
           description={t("appearanceToolbarDefaultActionDescription")}
+          doc="site/src/content/docs/sessions-and-approvals.md#steer-queue-and-interrupt"
         >
           <select
             className="settings-select"
@@ -968,6 +956,7 @@ export function MessageDeliverySettings() {
           as="label"
           label={t("messageDeliverySteerNowDefaultTitle")}
           description={t("messageDeliverySteerNowDefaultDescription")}
+          doc="topics/steer-queue-provider-differences.md#levels-of-soon-urgency-ladder-short-of-hard-interrupt"
         >
           <input
             type="checkbox"
@@ -1040,7 +1029,7 @@ export function MessageDeliverySettings() {
           </>
         )}
 
-        {supportsProjectQueue && (
+        {
           <SettingsItem
             as="label"
             label={t("messageDeliveryProjectQueueShortcutTitle")}
@@ -1061,7 +1050,7 @@ export function MessageDeliverySettings() {
               aria-label={t("messageDeliveryProjectQueueShortcutTitle")}
             />
           </SettingsItem>
-        )}
+        }
 
         {error && <p className="settings-warning">{error}</p>}
       </div>

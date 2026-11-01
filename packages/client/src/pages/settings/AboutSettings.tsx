@@ -305,6 +305,10 @@ export function AboutSettings() {
         <SettingsItem
           label={t("developmentRestartTitle")}
           description={t("developmentRestartDescription")}
+          doc={{
+            path: "site/src/content/docs/updating.md#keep-work-running-during-server-reloads",
+            label: "reload-safe hosts",
+          }}
           info={
             <>
               <strong>{t("developmentRestartTitle")}</strong>

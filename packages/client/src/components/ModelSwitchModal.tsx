@@ -52,6 +52,8 @@ import { ModelSubscriptionUsage } from "./ModelSubscriptionUsage";
 import { Modal } from "./ui/Modal";
 
 interface ModelSwitchModalProps {
+  /** Session uses an AAR account pin. */
+  routed?: boolean;
   /** Live owned process id; absent when the session isn't an owned live process. */
   processId?: string;
   sessionId: string;
@@ -119,6 +121,7 @@ function sameSelection(
 }
 
 export function ModelSwitchModal({
+  routed = false,
   processId,
   sessionId,
   currentModel,
@@ -164,6 +167,8 @@ export function ModelSwitchModal({
     null,
   );
   const [savingServiceTier, setSavingServiceTier] = useState(false);
+  const [routedServiceTierSelection, setRoutedServiceTierSelection] =
+    useState(false);
   const { version } = useVersion();
   const supportsServiceTierChange = serverHasCapability(
     version,
@@ -212,6 +217,7 @@ export function ModelSwitchModal({
           process?.effort,
         );
 
+        setRoutedServiceTierSelection(modelsRes.serviceTierSelection === true);
         setModels(
           withVisibleModelSelection(
             modelsRes.models,
@@ -300,7 +306,10 @@ export function ModelSwitchModal({
     return offered;
   }, [currentModelInfo, currentServiceTier, t]);
   const showServiceTierOptions =
-    !!processId && supportsServiceTierChange && serviceTierOptions.length > 0;
+    !!processId &&
+    supportsServiceTierChange &&
+    (!routed || routedServiceTierSelection) &&
+    serviceTierOptions.length > 0;
 
   const dirty =
     !loading &&

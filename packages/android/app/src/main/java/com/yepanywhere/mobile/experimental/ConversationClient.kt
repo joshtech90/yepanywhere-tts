@@ -37,7 +37,7 @@ fun conversationAvailability(version: JSONObject): ConversationAvailability {
         }
     }
     if (version.opt("experimentalSimpleClientApiRevision") !is String) return ConversationAvailability.UPDATE_REQUIRED
-    if (!contains("capabilities") && !contains("capabilityExtensions") && !hasBit("capabilityBits") && !hasBit("optionalCapabilityBits"))
+    if (!contains("capabilities") && !hasBit("capabilityBits"))
         return ConversationAvailability.UPDATE_REQUIRED
     return if (version.opt("experimentalSimpleClientApiRevision") == CONVERSATION_API_REVISION)
         ConversationAvailability.AVAILABLE else ConversationAvailability.REVISION_MISMATCH

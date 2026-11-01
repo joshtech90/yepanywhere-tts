@@ -67,6 +67,8 @@ export interface AgentAuthRouterOverview {
   /** Router display names; absent from routers before 2026-10-11. */
   policies?: AgentAuthRouterPolicyInfo[];
   admissionRefresh?: boolean;
+  /** YA and AAR both validate tier-aware account selection. Absent means unavailable. */
+  serviceTierSelection?: boolean;
   observedAt: string;
   quotaFreshSeconds: number;
   pools: AgentAuthRouterPool[];
@@ -255,4 +257,17 @@ export function resolveRouterModel(
   return models
     .filter((m) => m.id.startsWith(`claude-${model}-`))
     .sort((a, b) => b.id.localeCompare(a.id, "en", { numeric: true }))[0]?.id;
+}
+
+/** Tier availability belongs to the pinned account and exact model. */
+export function routerModelSupportsServiceTier(
+  model: ModelInfo | undefined,
+  tier?: string | null,
+): boolean {
+  return (
+    !!model &&
+    (!tier ||
+      tier === "default" ||
+      !!model.serviceTiers?.some((t) => t.id === tier))
+  );
 }

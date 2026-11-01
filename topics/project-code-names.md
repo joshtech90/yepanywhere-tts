@@ -148,11 +148,11 @@ the browser-local preferences own whether the client renders the assigned value
 and whether activity pulses it.
 
 Capability `project-code-names` (permanent ID 46, version-implied from `0.7.2`)
-owns the response field, edit route, and invalidation event. The reviewed older
-server corpus is `v0.7.0` and `v0.6.2`; without the capability, a current client
-uses full project names, preserves the released title format and activity
-frames, hides editing, and sends no code-name request. Enabling the browser
-preference against such a server does not weaken that fallback.
+owns the response field, edit route, and invalidation event. Since the
+2026-10-29 retirement, current clients assume the complete v0.8.0 contract.
+The browser preference still controls display and editing, and a missing code
+value still falls back to the full project name. Older hosts should update or
+use their bundled client; permanent identity and server advertisement remain.
 
 The edit route accepts only a listed project (404 otherwise, nothing stored),
 and a limited user may edit only a project they own

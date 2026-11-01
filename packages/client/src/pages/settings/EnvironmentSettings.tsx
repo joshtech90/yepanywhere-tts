@@ -62,7 +62,13 @@ export function EnvironmentSettings() {
   const setCount = entries?.filter((entry) => entry.set).length ?? 0;
 
   return (
-    <SettingsSection description={t("environmentSectionDescription")}>
+    <SettingsSection
+      description={t("environmentSectionDescription")}
+      doc={{
+        path: "topics/ya-env-vars.md",
+        label: "YA environment variables",
+      }}
+    >
       <HideInSettingsSearch>
         {error && (
           <p className="settings-warning">{t("environmentLoadError")}</p>

@@ -20,7 +20,7 @@ vi.mock("../../../hooks/useVersion", () => ({
   useVersion: () => ({
     version: {
       current: mock.version,
-      optionalCapabilityBits: mock.deletion ? [[3, 16384]] : undefined,
+      capabilityBits: mock.deletion ? [[3, 16384]] : undefined,
     },
   }),
 }));

@@ -11,6 +11,14 @@ or interaction, read [UI design](../../topics/ui-design.md); for UI tweaks and
 browser verification, read [UI testing](../../topics/ui-testing.md). These
 topics own the detailed procedures, including user-owned visual verification.
 
+## Settings Documentation Links
+
+When adding or changing a setting whose effect is not evident from its title
+and caption, give its section or row a brief **See _document_** link to the
+user guide or owning topic, using the shared `doc` prop. The rules for choosing
+and placing the target are in
+[settings placement](../../topics/settings-ui-placement.md#documentation-links).
+
 ## Client I18n
 
 When adding or changing client UI copy, add English entries in

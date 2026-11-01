@@ -99,3 +99,35 @@ first thinking block appeared. Real Opus 5.5 sessions on this machine think
 early and showed 94-99% cache hit rates, so this does not affect the
 exemption, but it will confound any repeat measurement that uses
 non-thinking turns.
+
+## 2026-10-29 — Codex 0.165.0 measurement
+
+Codex 0.165.0 made `reasoning_effort_override` stable and default-on
+(upstream #56163). A scratch client drove `codex app-server` directly with
+the same `turn/start` `effort` field YA sends for an effort selected between
+turns: four turns per fresh thread, each "Reply with exactly <label>",
+effort low, low, high, high. The prompt was Codex's own ~36-42k-token
+instructions and tools; cached counts are `thread/tokenUsage/updated`
+`last.cachedInputTokens`:
+
+| Model | Same effort (t2) cached / input | Changed to high (t3) cached / input |
+|---|---|---|
+| gpt-6.1-sol | 37,248 / 37,437 | 37,248 / 37,467 |
+| gpt-6.1-terra | 36,352 / 42,636 | 42,496 / 42,666 |
+| gpt-6-astra | 36,352 / 42,150 | 41,984 / 42,180 |
+| gpt-6-sol | 35,968 / 41,701 | 41,600 / 41,731 |
+| gpt-6-luna | 36,096 / 36,259 | 36,096 / 36,289 |
+| gpt-5.6-sol | 35,584 / 41,419 | 6,784 / 41,449 |
+| gpt-daybreak-blue-latest | 35,584 / 41,419 | 6,784 / 41,449 |
+
+The GPT-6 rollouts each contain two `configuration_update` items carrying
+the new effort; the GPT-5.6 Sol rollout has none. The deciding flag is
+`supports_reasoning_effort_updates` in the live catalog Codex downloads
+(`~/.codex/models_cache.json`): true for every GPT-6 model, false for the
+GPT-5.6 family and Daybreak. The bundled catalog in the 0.165.0 source
+marks only Astra and GPT-6.1 Sol/Terra, so read the live cache, not the
+repository file, when re-checking. `model/list` does not expose the flag.
+
+Decision (user-directed): warn on Codex only for the known older
+generations (GPT-5 and earlier, Daybreak) and assume newer models support
+the update, rather than keep an allowlist of measured safe models.

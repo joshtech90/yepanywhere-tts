@@ -9,7 +9,8 @@ import {
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
-import { SessionIssuesLink } from "../SessionIssuesLink";
+import { SessionIssuesLink, SessionIssuesProvider } from "../SessionIssuesLink";
+import { UserPromptLinkedTextContent } from "../blocks/UserPromptLinkedText";
 
 const state = vi.hoisted(() => ({
   fetch: vi.fn(),
@@ -78,6 +79,56 @@ describe("SessionIssuesLink", () => {
     state.fetch.mockReset();
   });
   afterEach(cleanup);
+
+  it("links already displayed prompt mentions when discovery settles, sharing the header read", async () => {
+    vi.useFakeTimers();
+    try {
+      state.fetch.mockResolvedValue(result(0, false, true));
+      const { rerender } = render(
+        <I18nProvider>
+          <MemoryRouter>
+            <SessionIssuesProvider
+              sessionId="s1"
+              projectId="p1"
+              messageCount={3}
+            >
+              <SessionIssuesLink sessionId="s1" projectId="p1" />
+              <UserPromptLinkedTextContent text="Investigate AUTOTEST-1 and UNKNOWN-2." />
+            </SessionIssuesProvider>
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(screen.queryByRole("link", { name: "AUTOTEST-1" })).toBeNull();
+      state.fetch.mockResolvedValue({
+        ...result(1),
+        items: [item(1, { title: null })],
+      });
+      await act(() => vi.advanceTimersByTimeAsync(4000));
+      expect(
+        screen.getByRole("link", { name: "AUTOTEST-1" }).getAttribute("href"),
+      ).toBe("https://example.test/browse/AUTOTEST-1");
+      expect(screen.queryByRole("link", { name: "UNKNOWN-2" })).toBeNull();
+      expect(state.fetch).toHaveBeenCalledTimes(2);
+      state.enabled = false;
+      rerender(
+        <I18nProvider>
+          <MemoryRouter>
+            <SessionIssuesProvider
+              sessionId="s1"
+              projectId="p1"
+              messageCount={3}
+            >
+              <UserPromptLinkedTextContent text="Investigate AUTOTEST-1." />
+            </SessionIssuesProvider>
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+      expect(screen.queryByRole("link")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("shows only the glyph and the count, and opens a menu instead of navigating", async () => {
     state.fetch.mockResolvedValue(result(2));

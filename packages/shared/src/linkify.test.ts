@@ -73,6 +73,18 @@ describe("splitUrlSegments", () => {
     ]);
   });
 
+  it("links loopback hosts named with an explicit scheme", () => {
+    const urls = splitUrlSegments(
+      "open http://localhost:3400/projects/p/sessions/s or http://[::1]:4000/x",
+    )
+      .filter((s) => s.type === "url")
+      .map((s) => s.href);
+    expect(urls).toEqual([
+      "http://localhost:3400/projects/p/sessions/s",
+      "http://[::1]:4000/x",
+    ]);
+  });
+
   it("suppresses a URL touching the end when the text was cut", () => {
     const cut = "read https://example.com/very/long/pa";
     expect(splitUrlSegments(cut, { suppressTrailingUrl: true })).toEqual([

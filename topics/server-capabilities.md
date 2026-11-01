@@ -20,9 +20,9 @@ still uses a named capability constant. This avoids scattered version checks
 without sending a bit for every feature in every released server.
 
 `capabilities:audit` checks some mistakes in those definitions and their use.
-It also reports scheduled reviews of substantial compatibility code. These
-are separate jobs: the consistency checks remain useful indefinitely, while
-a review date asks whether a particular fallback still earns its cost.
+It also enforces a 90-day lifetime for fixed-version client gates and alternate
+compatibility code. These are separate jobs: the consistency checks remain
+useful indefinitely, while compatibility code has a fixed retirement deadline.
 Neither job primarily repairs servers from before capabilities existed.
 
 ## Source of truth
@@ -33,7 +33,10 @@ Neither job primarily repairs servers from before capabilities existed.
 | `packages/shared/src/capability-ids.ts` → `CAPABILITY_ID_ALLOCATIONS` | Permanent numeric ID ledger; also owns sparse-bit encoding |
 | `serverHasCapability` | Shared interpretation of server version, positive/negative bits and legacy representations |
 | `packages/server/src/routes/version.ts` | Chooses supported features and encodes `/api/version` for the client |
-| `scripts/audit-server-capabilities.ts` | Static consistency checks and due-date warnings |
+| `scripts/audit-server-capabilities.ts` | Static consistency checks and enforced retirement deadlines |
+| `scripts/compatibility-sunsets.json` | Dated, source-linked inventory of alternate compatibility code, including protocol paths without a capability |
+| `scripts/capability-releases.json` | Stable release dates and unreleased source introductions used to age every registry entry |
+| `scripts/capability-inventory.ts` | Complete registry inventory and syntax-based client-reference discovery |
 
 Each registry entry records:
 
@@ -45,6 +48,7 @@ Each registry entry records:
 - `clientFallback`: what the client does when support is absent.
 - `kind` and `lifecycle`: whether the check is permanent or has a specific
   compatibility cleanup worth revisiting.
+- `retired`: a historical reservation whose live client consumers are gone.
 
 These are data about capabilities; “registry metadata” does not name another
 layer. Support checks use the identity and advertisement fields. Descriptions,
@@ -112,12 +116,12 @@ The version-bearing handshake introduced encoding 1 in 0.7.1. A source build's
 git-describe version can establish encoding-1 support even when its preceding
 release tag is older. An unparseable server version selects the legacy encoding.
 
-Missing/older client versions select the legacy name list. The shared reader
-also accepts intermediate `optionalCapabilityBits`/`capabilityExtensions`
-responses; new clients do not negotiate that intermediate representation.
-These compatibility readers are existing implementation, not instructions to
-create new name-based gates. Transport `formats` have a separate namespace and
-meaning; see [remote hosted compatibility](remote-hosted-compatibility.md).
+Missing/older client versions select the legacy name list. The intermediate
+`compact-v1` encoding, encoder and readers were removed on 2026-10-28. Its
+former query parameter is ignored, so an unidentified client receives the
+ordinary name list; current client versions receive encoding 1. Transport
+`formats` retain their separate namespace and meaning; see
+[remote hosted compatibility](remote-hosted-compatibility.md).
 
 ## When to add one
 
@@ -156,56 +160,171 @@ instruction or applicable standing approval already covering the decision
 satisfies this requirement. Do not ask for the same approval again.
 
 These windows set the minimum review corpus, not an automatic connection
-cutoff. Preserve inexpensive fallbacks. Removing substantial compatibility
-code requires a deliberate decision about supported servers, its user-visible
-effect and update guidance. Security exceptions follow
+cutoff. The 90-day rule below is standing approval to retire expired
+fixed-version gates and alternate implementations, including when an older
+release remains among the latest two. Record the affected releases,
+user-visible effect and update guidance when removing code; do not request
+another approval for that retirement. Other compatibility changes still
+require the review above. Security exceptions follow
 [hard development rules](hard-development-rules.md).
+
+## October 2026 compatibility retirement
+
+The maintainer approved this cleanup on 2026-10-28. Current clients use
+**v0.8.0 as their supported server baseline**, with the existing hosted update
+notice recommending that baseline. Older installations should update or use
+the client bundled with their server. Transport authentication and resume
+protocols retain their separate grace and warning rules; this cleanup adds no
+connection-protocol cutoff.
+
+The core release corpus is v0.8.0, v0.8.1, v0.9.0, v0.9.1, v0.9.2,
+v0.10.0, v0.10.1, v0.10.2 and v0.11.0. Every release supplies the retired
+fixed contracts and aligned Codex transcript IDs. v0.11.0 and v0.10.2 are the
+latest two; the optional 14-day corpus also includes v0.10.0 and v0.10.1.
+No stable client negotiated the one-day, superseded `compact-v1` experiment.
+
+Current clients no longer gate approval-log editing, additional Claude models,
+host identity, host-awake controls, bang execution, Project Queue or its
+new-session shortcut, enhanced Git status, remote checks, Pull, Push and
+integration options on their old fixed capabilities. The redundant Project
+Queue hosted-generation check is also removed. Persisted opt-ins, permissions,
+platform availability, queue admission and Git operation serialization still
+apply. Capability IDs, introduction versions and server advertisement remain
+available for maintained older clients.
+
+The separately approved Source Control follow-up removes the action-only
+legacy shell and tracked-only Files loader/rendering. Both browse and
+working-tree inventory contracts are present throughout the same core corpus.
+That first pass retained an update-only missing-contract guard; the subsequent
+Source Control slice below retires it. Optional live sections retain their
+static working-tree alternative;
+permanent IDs and server routes needed by older clients remain unchanged.
+
+The 2026-10-29 settings/display slice retires thirteen more fixed-version
+checks: Gateway configuration/autostart and agent/plan controls, Codex reasoning
+summaries, idle harness lifetime, subagent depth, both cache-billing controls,
+both Storage policies, glossary hints and project code names. These contracts
+ship throughout the same v0.8.0+ corpus. Settings writes and Undo retain the
+full supported payload; expected-expiry reads and events no longer wait for
+version metadata. Defaults, opt-ins, provider status, permissions, shared-store
+ownership and subscription cleanup remain authoritative. The later Gateway
+services editor and newer provider settings retain their separate guards.
+
+The subsequent Source Control slice retires ten fixed checks: browse/review,
+working-tree inventory, both diff projection families, inclusive To HEAD, file
+revision and dirty-file provenance, incoming commits, review submissions and
+the live-monitoring setting. All ten ship throughout the same core corpus.
+Current clients remove the update-only entry screen, projection upgrade
+notices and support-prop plumbing. Valid project/source inputs can start reads
+before version metadata arrives. Optional live sections/complete scans, server
+settings, permissions, response-field absence and request cancellation remain
+authoritative. Review visibility retains the server's fresh-install default and
+stored values, with false as the missing-field fallback. The static inventory
+alternative and historical server contracts for older clients remain.
+
+Codex reconciliation always uses the aligned-ID contract, including while
+version metadata is pending: equal content and timestamps cannot collapse
+distinct provider IDs, and replay suppression uses persisted identity.
+Codex OSS, Pi, OpenCode and Claude retain their independently required scoped
+reconciliation. Neither provider formats nor durable user data are migrated.
 
 ## Capability lifecycle classes
 
 Lifecycle is independent of version implication. A permanent capability can
 be version-implied; a transitional capability can also be version-implied.
-“Permanent” means the named check remains useful, not that a positive bit
-must always be sent.
+“Permanent” is not an exemption from fixed-version expiry. Named identities,
+ID reservations and runtime-variable availability can outlive a client gate.
 
 Choose the lifecycle at commit time:
 
-- **Permanent:** “don't show the thing the server can't do and we did not
-  choose to emulate.” Keep that check and document its fallback. It needs no
-  scheduled transitional review or gap merely because older servers exist.
-  Runtime-variable availability also needs a permanent check.
+- **Permanent:** a simple hide/disable check or runtime-variable availability.
+  Document its fallback. All fixed-version checks still receive an automatic
+  90-day deadline, including cheap hide-only checks. Truly optional runtime
+  availability and scoped representation checks remain necessary.
 - **Transitional:** keeping compatibility requires substantial alternate
-  behavior that may eventually be worth deleting: an older parser,
+  behavior that must be deleted within 90 days: an older parser,
   reconciliation algorithm, alternate data-loading path or emulation.
-  Record the actual code/behavior to reconsider and the condition that would
-  make its removal acceptable.
+  Record the actual code and removal instructions in the sunset inventory.
 
-For a transitional entry, `clientFallback` describes the current behavior;
-`reviewAfter` schedules reconsideration; `removeClientGateWhen` states the
-support condition and required decision. `removeServerAdvertisementWhen` can
-record a separate obligation to older clients. Do not schedule a review merely
-because a feature is new or a server older than its introduction exists.
+### 90-day retirement rule
 
-### What “transitional review is due” means
+**Every fixed-version client gate and alternate compatibility path expires
+90 calendar days after its replacement first ships in a stable release.
+Remove it by default, without asking for maintainer approval again.** An
+unreleased experiment starts its clock on the
+date it is superseded. For new code whose replacement is not stable yet, use
+the first source commit exposing that replacement; a later stable release
+does not restart an existing clock. Use actual release or commit evidence,
+not `introducedIn` alone: that field can name an unreleased version. The
+deadline is UTC midnight on
+`supportedSince + 90 days`, independent of release frequency.
 
-The audit has reached the entry's `reviewAfter` date. It does not establish that
-the fallback is obsolete or broken, and it does not prevent a commit. The audit
-emits a warning for a due date and exits nonzero only for errors. A malformed
-date is an error.
+The maintainer authorized this policy on 2026-10-27. `supportedSince` is a
+historical fact, not a renewable lease. Do not advance it, add a grace period,
+relabel code as permanent, or delete an inventory entry to silence expiry.
+There is no per-entry lifetime override or routine extension. Earlier
+retirement remains possible under the normal release-corpus review.
 
-At review, choose among retaining a simple permanent check, retaining a costly
-fallback with a reason and meaningful next review, or removing compatibility
-code after approving the affected support floor. Passing a date or support
-window authorizes no automatic removal. Keep ID reservations and server
-advertisement needed by maintained older clients even if a current client
-branch is removed; current audit rules require allocated server entries to
-remain in the registry.
+The audit enumerates **every** `SERVER_CAPABILITIES` definition; fixed features
+are selected by `advertisement.kind === "version-implied"`, independently of
+`kind` or fallback cost. It ages each from the first actual stable release at
+or above `introducedIn` using `scripts/capability-releases.json`. Append real
+release dates when publishing; dates are historical facts and cannot be moved
+to renew a deadline. New unreleased fixed features require a source introduction
+date in that file. An earlier source introduction continues to win when a
+stable release is added, so publishing cannot reset an existing clock.
 
-Review notices can be swept in one batch, sharing the release-corpus inspection.
-Classify each by its actual fallback code and consequence. Do not clear a batch
-by moving dates or deleting checks without that classification. Existing entries
-may predate the commit-time policy above; reclassifying their lifecycle need
-not change runtime behavior or capability identity.
+The complete text report lists age, first release, classification, deadline
+and client-reference count. `pnpm --silent capabilities:audit --json` additionally
+returns descriptions, lifecycle reasons, exact file/line references and
+fallback prose for every entry, including optional bits, scoped features,
+retired reservations and fixed entries with no remaining client consumers.
+Optional/scoped entries show informational age without a blanket time cutoff.
+`retired: true` preserves the historical definition and ID; any remaining
+client reference to it is an error.
+
+An expired fixed entry with remaining client references fails the audit; a
+definition with no client references is reported as `NO-CLIENT-GATE`, rather
+than treating its reserved ID as compatibility code to delete. The scan follows
+exported constant imports and aliases, registry lookups, namespace imports and
+domain-helper references. Comments, unused imports, type-only imports and
+server advertisements do not count. This is syntax-based discovery, not a
+proof of arbitrary computed lookups or full cross-module data flow; review
+unusual indirection instead of using it to evade expiry.
+
+Every transitional capability must also have an entry in
+`scripts/compatibility-sunsets.json`. Register substantial alternate parsers,
+reconciliation algorithms, loading paths, settings editors and protocol
+encodings even when their current registry classification is permanent or
+they have no capability. Each entry names the capability, first replacement
+release/date evidence, exact file/marker locations and removal instructions.
+Markers must identify the alternate path, not the permanent capability ID or
+common code shared by current consumers. Add entries in the same change as
+new compatibility code; renaming or moving a path must preserve its tracking.
+
+`pnpm capabilities:audit` prints all deadlines, exits nonzero on or after
+expiry while any recorded marker remains, and rejects missing transitional
+entries, invalid dates, future anchors, unknown capabilities and stale
+inventory. It checks tracked code regardless of its lifecycle label. CI
+already runs this command. `pnpm capabilities:audit --as-of 2026-11-08`
+previews a future run without changing the machine clock or source. The script
+reports deletion work; it does not rewrite arbitrary runtime code itself.
+
+At expiry, remove the fixed-version gate or alternate implementation and its
+exclusive tests and plumbing. Unsupported peers get update guidance before
+unsupported requests; document the resulting supported baseline in the owning
+topic. Keep negative overrides, runtime-variable availability, permanent ID
+reservations and server
+advertisement still needed by maintained clients. Remove the inventory entry
+once all alternate paths are gone. Relabelling a remaining fixed-version
+hide/disable gate as permanent does not stop the automatic audit.
+
+Persisted-data imports, old share-link representations and provider formats
+that current supported tools still produce are not time-limited wire
+compatibility. Neither are runtime-dependent optional feature paths. Removing
+an entire core connection protocol must still satisfy the grace/warning
+contract in [hard development rules](hard-development-rules.md); a feature
+fallback deadline is not a silent whole-server cutoff.
 
 ## What the audit checks
 
@@ -219,7 +338,10 @@ and registry data. It checks:
   and the shared helper.
 - Agreement between `serverContract.routes` and declarations in explicitly
   listed `serverContract.routeModules`.
-- Transitional review dates, with due dates reported as warnings.
+- 90-day compatibility deadlines, with expiry reported as an error.
+- Every fixed-version client gate, including permanent hide-only checks, with
+  exact client references and release-based age; optional/scoped/retired
+  entries remain visible in the complete inventory.
 
 For a route file wholly covered by one capability, list it in `routeModules`.
 The audit scans literal `routes.get/post/put/patch/delete` declarations and
@@ -232,7 +354,9 @@ This is a limited static check: unlisted files and other declaration forms are
 not comprehensively discovered. It does not prove that a route is mounted,
 authorized correctly, implemented in the claimed release, or guarded at every
 client call site. Nor does it validate the prose describing fallbacks or detect
-every possible ad-hoc version comparison. Use behavior tests for those claims.
+every possible ad-hoc version comparison. It cannot infer alternate behavior
+from arbitrary source, so inventory coverage still requires review. Use
+behavior tests for those claims.
 
 In particular, adding a route to an old entry can satisfy the audit while still
 breaking old-server compatibility. Review the introduction boundary before
@@ -311,6 +435,11 @@ authorize writes or relax the sessions/Inbox gate. See
 
 ### Other contract owners
 
+- [YA-owned session identity](session-identity.md#compatibility-research--2026-11-01)
+  and [creation/navigation](session-creation.sketches.md): selected pre-launch
+  session ownership, the dated legacy-route/refresh audit, and a proposed exact
+  gate for durable web acceptance/recovery. Internal id translation alone is
+  not a capability; new writes/status semantics are. Implementation is pending.
 - [Public shares](public-share-persistence.md): representation capabilities belong
   to the selected share/revision; global server support cannot prove one
   stored object has chunk integrity data. Live and frozen chunk support are

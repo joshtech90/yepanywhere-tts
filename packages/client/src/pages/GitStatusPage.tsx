@@ -7,21 +7,7 @@ import type {
   GitWorkingTreeFile,
 } from "@yep-anywhere/shared";
 import {
-  PROJECT_CODE_NAMES_CAPABILITY,
-  GIT_DIRTY_FILE_EDITOR_CAPABILITY,
-  GIT_INCLUSIVE_TO_HEAD_CAPABILITY,
-  GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
-  GIT_INCOMING_COMMITS_CAPABILITY,
-  GIT_SOURCE_REVIEW_CAPABILITY,
-  GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
-  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
-  GIT_STATUS_ENHANCED_CAPABILITY,
-  GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
-  GIT_STATUS_PULL_CAPABILITY,
-  GIT_STATUS_PUSH_CAPABILITY,
-  GIT_STATUS_REMOTE_CHECK_CAPABILITY,
   GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
-  GIT_WORKING_TREE_FILES_CAPABILITY,
   GIT_WORKING_TREE_SECTIONS_CAPABILITY,
   serverHasCapability,
 } from "@yep-anywhere/shared";
@@ -186,13 +172,12 @@ function useSourceTab(reviewsEnabled = false): {
 function useHeadCommitLink(
   projectId: string | undefined,
   status: GitStatusInfo | null | undefined,
-  enabled: boolean,
 ): { headCommitHref?: string; onOpenHeadCommit?: () => void } {
   const basePath = useRemoteBasePath();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const headSha = status?.recentCommits?.[0]?.hash;
-  const active = enabled && headSha !== undefined && projectId !== undefined;
+  const active = headSha !== undefined && projectId !== undefined;
   const headCommitHref = useMemo(() => {
     if (!active) return undefined;
     const params = new URLSearchParams(searchParams);
@@ -226,13 +211,11 @@ function SourceHeaderTabs({
   status,
   pendingCount,
   reviewsEnabled,
-  supportsWorkingTreeFiles,
   t,
 }: {
   status: GitStatusInfo;
   pendingCount: number;
   reviewsEnabled: boolean;
-  supportsWorkingTreeFiles: boolean;
   t: TranslationFn;
 }) {
   const { tab, setTab } = useSourceTab(reviewsEnabled);
@@ -243,9 +226,7 @@ function SourceHeaderTabs({
       tabs={reviewsEnabled ? SOURCE_TABS_WITH_REVIEWS : SOURCE_TABS}
       variant="stacked"
       counts={{ changes: changedFileCount, comments: pendingCount }}
-      fileTabLabelKey={
-        supportsWorkingTreeFiles ? "sourceTabWorkingTree" : undefined
-      }
+      fileTabLabelKey="sourceTabWorkingTree"
       onSelect={setTab}
       t={t}
     />
@@ -256,7 +237,6 @@ function SourceHeaderActions({
   status,
   pendingCount,
   reviewsEnabled,
-  supportsWorkingTreeFiles,
   worktreePaused,
   gitActions,
   isWideScreen,
@@ -266,7 +246,6 @@ function SourceHeaderActions({
   status: GitStatusInfo;
   pendingCount: number;
   reviewsEnabled: boolean;
-  supportsWorkingTreeFiles: boolean;
   worktreePaused?: boolean;
   gitActions: GitActionState;
   isWideScreen: boolean;
@@ -351,7 +330,6 @@ function SourceHeaderActions({
           status={status}
           pendingCount={pendingCount}
           reviewsEnabled={reviewsEnabled}
-          supportsWorkingTreeFiles={supportsWorkingTreeFiles}
           t={t}
         />
       </div>
@@ -403,48 +381,42 @@ function SourceHeaderControls({
   });
   return (
     <div className={styles.actionGroup} data-source-action-group>
-      {gitActions.supportsPull && (
-        <SourceActionButton
-          action="pull"
-          label={t("gitStatusPull")}
-          runningLabel={t("gitStatusPulling")}
-          running={gitActions.isPulling}
-          feedback={gitActions.pullFeedback}
-          tone={gitActions.pullFeedbackTone}
-          onClick={gitActions.handlePull}
-          disabled={gitActions.isRunning}
-        />
-      )}
-      {gitActions.supportsPush && (
-        <SourceActionButton
-          action="push"
-          label={t("gitStatusPush")}
-          runningLabel={t("gitStatusPushing")}
-          running={gitActions.isPushing}
-          feedback={gitActions.pushFeedback}
-          tone={gitActions.pushFeedbackTone}
-          onClick={gitActions.handlePush}
-          disabled={gitActions.isRunning}
-        />
-      )}
-      {gitActions.supportsRemoteCheck && (
-        <SourceActionButton
-          action="check"
-          label={t("gitStatusCheckRemote")}
-          runningLabel={t("gitStatusCheckingRemote")}
-          running={gitActions.isCheckingRemote}
-          feedback={gitActions.checkFeedback}
-          tone={gitActions.checkFeedbackTone}
-          title={
-            gitActions.checkFeedback
-              ? `${gitActions.checkFeedback} · ${remoteTitle}`
-              : remoteTitle
-          }
-          className={styles.checkRemote}
-          onClick={gitActions.handleCheckRemote}
-          disabled={gitActions.isRunning}
-        />
-      )}
+      <SourceActionButton
+        action="pull"
+        label={t("gitStatusPull")}
+        runningLabel={t("gitStatusPulling")}
+        running={gitActions.isPulling}
+        feedback={gitActions.pullFeedback}
+        tone={gitActions.pullFeedbackTone}
+        onClick={gitActions.handlePull}
+        disabled={gitActions.isRunning}
+      />
+      <SourceActionButton
+        action="push"
+        label={t("gitStatusPush")}
+        runningLabel={t("gitStatusPushing")}
+        running={gitActions.isPushing}
+        feedback={gitActions.pushFeedback}
+        tone={gitActions.pushFeedbackTone}
+        onClick={gitActions.handlePush}
+        disabled={gitActions.isRunning}
+      />
+      <SourceActionButton
+        action="check"
+        label={t("gitStatusCheckRemote")}
+        runningLabel={t("gitStatusCheckingRemote")}
+        running={gitActions.isCheckingRemote}
+        feedback={gitActions.checkFeedback}
+        tone={gitActions.checkFeedbackTone}
+        title={
+          gitActions.checkFeedback
+            ? `${gitActions.checkFeedback} · ${remoteTitle}`
+            : remoteTitle
+        }
+        className={styles.checkRemote}
+        onClick={gitActions.handleCheckRemote}
+        disabled={gitActions.isRunning}
+      />
       {onToggleWorktreePaused && (
         <button
           type="button"
@@ -677,68 +649,20 @@ export function GitStatusPage() {
     resolvePreferredProjectId(projects, undefined, projectsComplete) ||
     undefined;
   const { project } = useProject(effectiveProjectId);
-  const {
-    version,
-    loading: versionLoading,
-    error: versionError,
-  } = useVersion();
+  const { version } = useVersion();
   const { settings: serverSettings } = useServerSettings();
   const reviewsEnabled =
-    serverHasCapability(version, GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY) &&
-    (serverSettings?.sourceReviewSubmissionsEnabled ?? false);
+    serverSettings?.sourceReviewSubmissionsEnabled ?? false;
   const { setTab: setHeaderTab } = useSourceTab(reviewsEnabled);
-  const supportsEnhancedGitStatus = serverHasCapability(
+
+  const supportsWorkingTreeSections = serverHasCapability(
     version,
-    GIT_STATUS_ENHANCED_CAPABILITY,
+    GIT_WORKING_TREE_SECTIONS_CAPABILITY,
   );
-  const supportsProjectCodeNames = serverHasCapability(
-    version,
-    PROJECT_CODE_NAMES_CAPABILITY,
-  );
-  const supportsLastEditor = serverHasCapability(
-    version,
-    GIT_DIRTY_FILE_EDITOR_CAPABILITY,
-  );
-  const supportsSourceReview = serverHasCapability(
-    version,
-    GIT_SOURCE_REVIEW_CAPABILITY,
-  );
-  const supportsSourceReviewProjections = serverHasCapability(
-    version,
-    GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
-  );
-  const supportsInclusiveToHead = serverHasCapability(
-    version,
-    GIT_INCLUSIVE_TO_HEAD_CAPABILITY,
-  );
-  const supportsWorkingTreeFiles = serverHasCapability(
-    version,
-    GIT_WORKING_TREE_FILES_CAPABILITY,
-  );
-  const supportsLiveWorktreeSetting = serverHasCapability(
-    version,
-    GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
-  );
-  const supportsWorkingTreeSections =
-    supportsLiveWorktreeSetting &&
-    serverHasCapability(version, GIT_WORKING_TREE_SECTIONS_CAPABILITY);
   const supportsCompleteFilesystemScan =
     supportsWorkingTreeSections &&
     serverHasCapability(version, GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY);
-  const supportsIncomingCommits = serverHasCapability(
-    version,
-    GIT_INCOMING_COMMITS_CAPABILITY,
-  );
-  const supportsRemoteCheck = serverHasCapability(
-    version,
-    GIT_STATUS_REMOTE_CHECK_CAPABILITY,
-  );
-  const supportsPull = serverHasCapability(version, GIT_STATUS_PULL_CAPABILITY);
-  const supportsPush = serverHasCapability(version, GIT_STATUS_PUSH_CAPABILITY);
-  const supportsIntegrationOptions = serverHasCapability(
-    version,
-    GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
-  );
+
   const {
     gitStatus: statusMetadata,
     untrackedFiles: legacyUntrackedFiles,
@@ -747,9 +671,9 @@ export function GitStatusPage() {
     loading: statusLoading,
     error: statusError,
     refetch,
-  } = useGitStatus(supportsEnhancedGitStatus ? effectiveProjectId : undefined, {
+  } = useGitStatus(effectiveProjectId, {
     omitUntracked: supportsWorkingTreeSections,
-    useUntrackedCache: supportsWorkingTreeFiles && !supportsWorkingTreeSections,
+    useUntrackedCache: !supportsWorkingTreeSections,
   });
   const liveWorktreeEnabled = Boolean(
     effectiveProjectId &&
@@ -781,14 +705,8 @@ export function GitStatusPage() {
     liveWorktreeEnabled && liveWorktree.generation === null;
   const loading = statusLoading;
   const error = statusError;
-  const reviewComments = useProjectReviewComments(
-    supportsSourceReview ? effectiveProjectId : undefined,
-  );
-  const headCommitLink = useHeadCommitLink(
-    effectiveProjectId,
-    gitStatus,
-    supportsSourceReview,
-  );
+  const reviewComments = useProjectReviewComments(effectiveProjectId);
+  const headCommitLink = useHeadCommitLink(effectiveProjectId, gitStatus);
   const { defaultSession: routeDefaultSession } = useMemo(
     () => parseSourceControlNavigationState(location.state),
     [location.state],
@@ -810,19 +728,11 @@ export function GitStatusPage() {
     projectId: effectiveProjectId,
     status: gitStatus,
     routeRetentionKey,
-    supportsRemoteCheck,
-    supportsPull,
-    supportsPush,
-    supportsIntegrationOptions,
     onRefreshStatus: refetch,
     t,
   });
 
-  useDocumentTitle(
-    project?.name,
-    supportsProjectCodeNames ? project?.codeName : undefined,
-    t("gitStatusTitle"),
-  );
+  useDocumentTitle(project?.name, project?.codeName, t("gitStatusTitle"));
 
   useLayoutEffect(() => {
     void gitStatus?.files.length;
@@ -882,13 +792,8 @@ export function GitStatusPage() {
                 <RepoStatusBar
                   status={gitStatus}
                   projectId={effectiveProjectId}
-                  supportsIncomingCommits={supportsIncomingCommits}
                   className="source-header-repo-status"
-                  onSelectChanges={
-                    supportsSourceReview
-                      ? () => setHeaderTab("changes")
-                      : undefined
-                  }
+                  onSelectChanges={() => setHeaderTab("changes")}
                   {...headCommitLink}
                   t={t}
                 />
@@ -899,12 +804,11 @@ export function GitStatusPage() {
         onOpenSidebar={openSidebar}
         isWideScreen={isWideScreen}
         actions={
-          supportsSourceReview && effectiveProjectId && gitStatus?.isGitRepo ? (
+          effectiveProjectId && gitStatus?.isGitRepo ? (
             <SourceHeaderActions
               status={gitStatus}
               pendingCount={reviewComments.pending.length}
               reviewsEnabled={reviewsEnabled}
-              supportsWorkingTreeFiles={supportsWorkingTreeFiles}
               gitActions={gitActions}
               isWideScreen={isWideScreen}
               worktreePaused={worktreePaused}
@@ -921,15 +825,7 @@ export function GitStatusPage() {
 
       <main className="page-scroll-container" ref={pageScrollRef}>
         <div className="page-content-inner">
-          {versionLoading || projectsLoading ? (
-            <div className="loading">{t("gitStatusLoading")}</div>
-          ) : versionError ? (
-            <div className="error">
-              {t("gitStatusErrorPrefix")} {versionError.message}
-            </div>
-          ) : !supportsEnhancedGitStatus ? (
-            <GitStatusUpgradeRequired t={t} />
-          ) : loading ? (
+          {projectsLoading || loading ? (
             <div className="loading">{t("gitStatusLoading")}</div>
           ) : error ? (
             <div className="error">
@@ -946,7 +842,6 @@ export function GitStatusPage() {
                     projectId={effectiveProjectId}
                     isWideScreen={isWideScreen}
                     status={gitStatus}
-                    supportsWorkingTreeFiles={supportsWorkingTreeFiles}
                     supportsWorktreeSections
                     supportsCompleteFilesystemScan={
                       supportsCompleteFilesystemScan
@@ -958,7 +853,7 @@ export function GitStatusPage() {
             </GlossaryProjectBoundary>
           ) : gitStatus && !gitStatus.isGitRepo ? (
             <div className="git-status-empty">{t("gitStatusNotRepo")}</div>
-          ) : gitStatus && effectiveProjectId && supportsSourceReview ? (
+          ) : gitStatus && effectiveProjectId ? (
             <GlossaryProjectBoundary projectId={effectiveProjectId}>
               <ProjectWorktreePauseContext.Provider value={worktreeLeasePaused}>
                 <SourceReviewDefaultSessionContext.Provider
@@ -969,9 +864,6 @@ export function GitStatusPage() {
                     status={gitStatus}
                     projectId={effectiveProjectId}
                     isWideScreen={isWideScreen}
-                    supportsProjections={supportsSourceReviewProjections}
-                    supportsInclusiveToHead={supportsInclusiveToHead}
-                    supportsWorkingTreeFiles={supportsWorkingTreeFiles}
                     supportsWorkingTreeSections={supportsWorkingTreeSections}
                     supportsCompleteFilesystemScan={
                       supportsCompleteFilesystemScan
@@ -986,7 +878,6 @@ export function GitStatusPage() {
                     inventoryError={
                       liveInventoryPending ? liveWorktree.error : null
                     }
-                    supportsLastEditor={supportsLastEditor}
                     gitActions={gitActions}
                     reviewComments={reviewComments}
                     reviewsEnabled={reviewsEnabled}
@@ -998,12 +889,6 @@ export function GitStatusPage() {
                 </SourceReviewDefaultSessionContext.Provider>
               </ProjectWorktreePauseContext.Provider>
             </GlossaryProjectBoundary>
-          ) : gitStatus && effectiveProjectId ? (
-            <GitStatusCompatibilityContent
-              key={`${sourceKey}:${effectiveProjectId}:compatibility`}
-              gitActions={gitActions}
-              t={t}
-            />
           ) : null}
         </div>
       </main>
@@ -1011,45 +896,10 @@ export function GitStatusPage() {
   );
 }
 
-function GitStatusUpgradeRequired({ t }: { t: TranslationFn }) {
-  return (
-    <div className="git-status-upgrade">
-      <h2>{t("gitStatusUpgradeRequiredTitle")}</h2>
-      <p>{t("gitStatusUpgradeRequiredDescription")}</p>
-    </div>
-  );
-}
-
-function GitStatusCompatibilityContent({
-  gitActions,
-  t,
-}: {
-  gitActions: GitActionState;
-  t: TranslationFn;
-}) {
-  return (
-    <div className="git-status git-status-compatibility">
-      <div
-        className={`source-control-action-row ${styles.compatibilityActions}`}
-      >
-        <SourceHeaderControls gitActions={gitActions} t={t} />
-      </div>
-      <GitActionNotices gitActions={gitActions} t={t} />
-      <section className="git-status-compatibility-notice">
-        <h2>{t("gitStatusCompatibilityTitle")}</h2>
-        <p>{t("gitStatusCompatibilityDescription")}</p>
-      </section>
-    </div>
-  );
-}
-
 function GitStatusContent({
   status,
   projectId,
   isWideScreen,
-  supportsProjections,
-  supportsInclusiveToHead,
-  supportsWorkingTreeFiles,
   supportsWorkingTreeSections,
   supportsCompleteFilesystemScan,
   untrackedFiles,
@@ -1058,7 +908,6 @@ function GitStatusContent({
   inventoryPending,
   inventoryLoading,
   inventoryError,
-  supportsLastEditor,
   gitActions,
   reviewComments,
   reviewsEnabled,
@@ -1070,9 +919,7 @@ function GitStatusContent({
   status: GitStatusInfo;
   projectId: string;
   isWideScreen: boolean;
-  supportsProjections: boolean;
-  supportsInclusiveToHead: boolean;
-  supportsWorkingTreeFiles: boolean;
+
   supportsWorkingTreeSections: boolean;
   supportsCompleteFilesystemScan: boolean;
   untrackedFiles: GitUntrackedFileListResult | null;
@@ -1081,7 +928,7 @@ function GitStatusContent({
   inventoryPending: boolean;
   inventoryLoading: boolean;
   inventoryError: Error | null;
-  supportsLastEditor: boolean;
+
   gitActions: GitActionState;
   reviewComments: ReturnType<typeof useProjectReviewComments>;
   reviewsEnabled: boolean;
@@ -1110,20 +957,10 @@ function GitStatusContent({
         worktreeFile === undefined &&
         sourceControlCleanLanding === "latest-commit"));
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
-  const [showProjectionNotice, setShowProjectionNotice] = useState(false);
   const [projectionRequestError, setProjectionRequestError] = useState<
     string | null
   >(null);
   const projectionNoticeNeedsPortal = useMediaQuery("(max-width: 600px)");
-  const activeIgnoreWhitespace = supportsProjections && ignoreWhitespace;
-  useEffect(() => {
-    if (!supportsProjections) setIgnoreWhitespace(false);
-  }, [supportsProjections]);
-  const handleProjectionUnavailable = useCallback(() => {
-    setIgnoreWhitespace(false);
-    setProjectionRequestError(null);
-    setShowProjectionNotice(true);
-  }, []);
   const handleProjectionRequestFailure = useCallback(
     (error: unknown) => {
       const message =
@@ -1131,7 +968,6 @@ function GitStatusContent({
           ? error.message
           : t("gitStatusLoadDiffFailed");
       setIgnoreWhitespace(false);
-      setShowProjectionNotice(false);
       setProjectionRequestError(
         t("sourceProjectionRequestError", { error: message }),
       );
@@ -1139,26 +975,9 @@ function GitStatusContent({
     [t],
   );
   const handleToggleIgnoreWhitespace = useCallback(() => {
-    if (!ignoreWhitespace && !supportsProjections) {
-      setProjectionRequestError(null);
-      setShowProjectionNotice(true);
-      return;
-    }
     setIgnoreWhitespace(!ignoreWhitespace);
-  }, [ignoreWhitespace, supportsProjections]);
-  const projectionNotice = showProjectionNotice ? (
-    <div className="source-projection-notice" role="status">
-      <span>{t("sourceProjectionUpgradeNotice")}</span>
-      <button
-        type="button"
-        className="source-projection-notice-dismiss"
-        aria-label={t("sourceDismissProjectionNotice")}
-        onClick={() => setShowProjectionNotice(false)}
-      >
-        ×
-      </button>
-    </div>
-  ) : projectionRequestError ? (
+  }, [ignoreWhitespace]);
+  const projectionNotice = projectionRequestError ? (
     <div className="source-projection-notice" role="alert">
       <span>{projectionRequestError}</span>
       <button
@@ -1251,9 +1070,7 @@ function GitStatusContent({
           projectId={projectId}
           status={status}
           isWideScreen={isWideScreen}
-          supportsUntrackedCache={
-            supportsWorkingTreeFiles && !supportsWorkingTreeSections
-          }
+          supportsUntrackedCache={!supportsWorkingTreeSections}
           untrackedFiles={untrackedFiles}
           untrackedLoading={untrackedLoading}
           untrackedError={untrackedError}
@@ -1264,8 +1081,7 @@ function GitStatusContent({
           onBrowseHistory={handleBrowseHistory}
           onBlameFile={handleBlameFile}
           captureReviewProjections={reviewsEnabled}
-          supportsLastEditor={supportsLastEditor}
-          ignoreWhitespace={activeIgnoreWhitespace}
+          ignoreWhitespace={ignoreWhitespace}
           onToggleIgnoreWhitespace={handleToggleIgnoreWhitespace}
           onProjectionRequestFailure={handleProjectionRequestFailure}
           t={t}
@@ -1275,9 +1091,7 @@ function GitStatusContent({
           projectId={projectId}
           status={status}
           isWideScreen={isWideScreen}
-          supportsUntrackedCache={
-            supportsWorkingTreeFiles && !supportsWorkingTreeSections
-          }
+          supportsUntrackedCache={!supportsWorkingTreeSections}
           untrackedFiles={untrackedFiles}
           untrackedLoading={untrackedLoading}
           untrackedError={untrackedError}
@@ -1293,12 +1107,8 @@ function GitStatusContent({
           onBrowseHistory={handleBrowseHistory}
           onBlameFile={handleBlameFile}
           captureReviewProjections={reviewsEnabled}
-          supportsProjections={supportsProjections}
-          supportsInclusiveToHead={supportsInclusiveToHead}
-          supportsLastEditor={supportsLastEditor}
-          ignoreWhitespace={activeIgnoreWhitespace}
+          ignoreWhitespace={ignoreWhitespace}
           onToggleIgnoreWhitespace={handleToggleIgnoreWhitespace}
-          onProjectionUnavailable={handleProjectionUnavailable}
           onProjectionRequestFailure={handleProjectionRequestFailure}
           t={t}
         />
@@ -1325,7 +1135,6 @@ function GitStatusContent({
           isWideScreen={isWideScreen}
           initialPath={blameFile}
           status={status}
-          supportsWorkingTreeFiles={supportsWorkingTreeFiles}
           supportsWorktreeSections={supportsWorkingTreeSections}
           supportsCompleteFilesystemScan={supportsCompleteFilesystemScan}
           onOpenCommit={handleOpenCommit}
@@ -1361,8 +1170,7 @@ function GitActionNotices({
   gitActions: GitActionState;
   t: TranslationFn;
 }) {
-  const showIntegrationOptions =
-    gitActions.divergedActionStatus && gitActions.supportsIntegrationOptions;
+  const showIntegrationOptions = gitActions.divergedActionStatus;
   if (!gitActions.actionFeedback && !showIntegrationOptions) {
     return null;
   }

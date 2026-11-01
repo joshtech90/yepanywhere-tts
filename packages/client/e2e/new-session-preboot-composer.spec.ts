@@ -4,31 +4,10 @@ import { e2ePaths, expect, test } from "./fixtures.js";
 import { recordUiCapture } from "./support/ui-capture.js";
 import { holdNewSessionBootstrap } from "./support/bootstrap.js";
 
-// These cases own no seeded session draft.
+// These cases own no seeded session draft; the fixture still clears the
+// worker's shared new-session draft before each one.
 test.use({ draftSessionIds: [] });
 test.use({ serviceWorkers: "block" });
-
-// A fresh browser context still shares the worker's server-side composer.
-test.beforeEach(async ({ page, baseURL }) => {
-  const slot = { kind: "new-session" };
-  const headers = { "X-Yep-Anywhere": "true" };
-  const read = await page.request.post(`${baseURL}/api/drafts/read`, {
-    headers,
-    data: { slot },
-  });
-  expect(read.ok()).toBe(true);
-  const draftState = await read.json();
-  const cleared = await page.request.post(`${baseURL}/api/drafts/clear`, {
-    headers,
-    data: {
-      slot,
-      baseRevision: draftState.snapshot.revision,
-      ticket: draftState.ticket,
-      operationId: crypto.randomUUID(),
-    },
-  });
-  expect(cleared.ok()).toBe(true);
-});
 
 /** Hold every script request until released, so only inline code runs. */
 async function holdScripts(page: Page): Promise<() => Promise<void>> {

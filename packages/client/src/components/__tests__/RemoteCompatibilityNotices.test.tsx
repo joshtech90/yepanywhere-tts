@@ -34,8 +34,8 @@ const t: TranslationFn = (key, vars) =>
 
 function version(overrides: Partial<VersionInfo> = {}): VersionInfo {
   return {
-    current: "0.4.29",
-    latest: "0.4.29",
+    current: "0.8.0",
+    latest: "0.8.0",
     updateAvailable: false,
     resumeProtocolVersion: 3,
     remoteCompatibilityLevel: 10,
@@ -272,8 +272,8 @@ describe("RemoteCompatibilityNotices", () => {
       <RemoteCompatibilityNotices
         relayUsername="dev-box"
         versionInfo={version({
-          current: "0.5.0",
-          latest: "0.5.1",
+          current: "0.8.0",
+          latest: "0.8.1",
           resumeProtocolVersion: 2,
         })}
       />,
@@ -321,7 +321,7 @@ describe("RemoteCompatibilityNotices", () => {
     );
 
     expect(
-      screen.getByText("Server v0.4.28; recommended v0.4.29"),
+      screen.getByText("Server v0.4.28; recommended v0.8.0+"),
     ).toBeTruthy();
     expect(
       (screen.getByLabelText("Copy npm command text") as HTMLInputElement)

@@ -57,7 +57,6 @@ export function CommitFilesPane({
   loading,
   detailError,
   compareToHead,
-  supportsInclusiveToHead,
   isWideScreen,
   messageView,
   selectedFiles,
@@ -86,7 +85,7 @@ export function CommitFilesPane({
   loading: boolean;
   detailError: string | null;
   compareToHead: boolean;
-  supportsInclusiveToHead: boolean;
+
   isWideScreen: boolean;
   messageView: boolean;
   selectedFiles: GitFileChange[];
@@ -237,19 +236,17 @@ export function CommitFilesPane({
               {detail?.shortHash ?? selectedCommit?.shortHash ?? "…"}
             </span>
           </span>
-          {supportsInclusiveToHead && (
-            <button
-              type="button"
-              className={`source-detail-action source-compare-toggle ${
-                compareToHead ? "active" : ""
-              }`}
-              title={t("sourceCompareToHeadDescription")}
-              aria-pressed={compareToHead}
-              onClick={onToggleComparison}
-            >
-              {t("sourceCompareToHead")}
-            </button>
-          )}
+          <button
+            type="button"
+            className={`source-detail-action source-compare-toggle ${
+              compareToHead ? "active" : ""
+            }`}
+            title={t("sourceCompareToHeadDescription")}
+            aria-pressed={compareToHead}
+            onClick={onToggleComparison}
+          >
+            {t("sourceCompareToHead")}
+          </button>
           <CopyButton
             value={selectedSha}
             title={t("sourceCopyCommitHash")}

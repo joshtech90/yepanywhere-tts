@@ -101,7 +101,7 @@ describe("SourceControlSettings", () => {
     );
   });
 
-  it("keeps submissions default-off and saves an explicit opt-in", () => {
+  it("keeps a missing submission setting off and saves an explicit opt-in", () => {
     render(<SourceControlSettings />);
     const toggle = screen.getByRole("checkbox", {
       name: "sourceReviewSubmissionsSettingTitle",

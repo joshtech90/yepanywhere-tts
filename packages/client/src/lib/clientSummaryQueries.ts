@@ -244,6 +244,7 @@ function sessionRecordToInboxItem(
     projectId: record.projectId,
     projectName: record.projectName ?? "",
     sessionTitle: record.title ?? null,
+    creationProvenance: record.creationProvenance,
     updatedAt: record.updatedAt,
     customTitle: record.customTitle,
     isStarred: record.isStarred,

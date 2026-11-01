@@ -27,9 +27,7 @@ export function useGitHubFileLink(
   const version = useRetainedVersionInfo(sourceKey);
   const publicShare = usePublicShareContext();
   const { projectId, path, origPath, rev } = target ?? {};
-  const supported =
-    publicShare === null &&
-    serverHasCapability(version, SERVER_CAPABILITIES.gitFileRevision.name);
+  const authenticatedView = publicShare === null;
   const canResolveOwner = serverHasCapability(
     version,
     SERVER_CAPABILITIES.fileOwnerProject.name,
@@ -40,7 +38,7 @@ export function useGitHubFileLink(
     value: GitHubFileLink | null;
   } | null>(null);
   useEffect(() => {
-    if (!supported || !projectId || !path) return;
+    if (!authenticatedView || !projectId || !path) return;
     let cancelled = false;
     const load = async () => {
       let owner = { projectId, path };
@@ -73,6 +71,16 @@ export function useGitHubFileLink(
     return () => {
       cancelled = true;
     };
-  }, [supported, canResolveOwner, projectId, path, origPath, rev, identity]);
-  return supported && loaded?.identity === identity ? loaded.value : null;
+  }, [
+    authenticatedView,
+    canResolveOwner,
+    projectId,
+    path,
+    origPath,
+    rev,
+    identity,
+  ]);
+  return authenticatedView && loaded?.identity === identity
+    ? loaded.value
+    : null;
 }

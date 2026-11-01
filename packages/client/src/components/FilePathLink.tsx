@@ -111,7 +111,9 @@ export function FileVersionControlLinks({
   const id = useId();
   const [diffMode, setDiffMode] = useState<GitFileDiffMode>();
   const path = availability.relativePath;
-  if (!availability.supported || !path) return null;
+  if (!path || (!availability.worktreeFile && !availability.cumulativeFile)) {
+    return null;
+  }
   return (
     <>
       <FileDiffViewLinks
@@ -541,6 +543,7 @@ export const FilePathLink = memo(function FilePathLink({
           canStartNewSession={publicShareContext === null}
           onClose={closeContextMenu}
           onOpen={() => openFromMenu()}
+          newTabHref={fileViewUrl ?? undefined}
           download={menuDownload()}
           onOpenSource={
             hasPresentationChoice ? () => openFromMenu("source") : undefined
@@ -613,6 +616,8 @@ type FileViewerModalProps = {
   initialPresentation?: FileViewPresentation;
   source?: FileViewerSource;
   openInNewTabUrl?: string | null;
+  /** The publishing modal's navigation, for the copy a session host renders. */
+  onNavigateFile?: (filePath: string) => void;
 } & (
   | {
       managedViewerId: string;
@@ -634,11 +639,11 @@ function PublishedFileViewerModal(props: FileViewerModalProps) {
 
 export function FileViewerModal({
   projectId,
-  filePath,
-  lineNumber,
-  lineEnd,
-  viewMode = "full",
-  diffMode,
+  filePath: requestedFilePath,
+  lineNumber: requestedLineNumber,
+  lineEnd: requestedLineEnd,
+  viewMode: requestedViewMode = "full",
+  diffMode: requestedDiffMode,
   initialPresentation,
   source: explicitSource,
   openInNewTabUrl,
@@ -647,8 +652,28 @@ export function FileViewerModal({
   rightPane = false,
   nestedViewer = false,
   quoteReply: suppliedQuoteReply,
+  onNavigateFile: navigateFromPublisher,
   onClose,
 }: FileViewerModalProps) {
+  // A file chosen from the path's folder list replaces the shown one until
+  // the caller names a different file. Line, range and diff targets belong to
+  // the file they were given for.
+  const [navigated, setNavigated] = useState<{
+    from: string;
+    path: string;
+  } | null>(null);
+  const navigatedPath =
+    navigated?.from === requestedFilePath ? navigated.path : null;
+  const filePath = navigatedPath ?? requestedFilePath;
+  const lineNumber = navigatedPath ? undefined : requestedLineNumber;
+  const lineEnd = navigatedPath ? undefined : requestedLineEnd;
+  const viewMode = navigatedPath ? "full" : requestedViewMode;
+  const diffMode = navigatedPath ? undefined : requestedDiffMode;
+  const navigateFile = useCallback(
+    (path: string) => setNavigated({ from: requestedFilePath, path }),
+    [requestedFilePath],
+  );
+  const onNavigateFile = navigateFromPublisher ?? navigateFile;
   const publicShareContext = usePublicShareContext();
   // A share viewer has no authenticated project file route, so every modal
   // opened inside one reads through the share's own file endpoint.
@@ -726,12 +751,14 @@ export function FileViewerModal({
                 initialPresentation={initialPresentation}
                 source={source}
                 openInNewTabUrl={openInNewTabUrl}
+                onNavigateFile={navigateFile}
               />
             ),
           }
         : {}),
     });
   }, [
+    navigateFile,
     close,
     filePath,
     lineEnd,
@@ -855,6 +882,7 @@ export function FileViewerModal({
       onMinimize={publicShareContext === null && !nested ? minimize : undefined}
       parentViewerId={managedViewerId}
       scrollMemory={scrollMemory}
+      onNavigateFile={onNavigateFile}
     />
   );
   const viewer = quoteReply ? (

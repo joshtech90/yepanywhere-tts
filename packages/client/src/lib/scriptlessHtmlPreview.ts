@@ -1,4 +1,9 @@
-import { resolveLinkedReference } from "@yep-anywhere/shared";
+import {
+  normalizeTexForKatex,
+  paperKatexMacros,
+  resolveLinkedReference,
+} from "@yep-anywhere/shared";
+import katex from "katex";
 
 const SCRIPTLESS_PREVIEW_CSP = [
   "default-src 'none'",
@@ -33,6 +38,7 @@ export function createScriptlessHtmlPreviewDocument(
 ): string {
   const parsed = new DOMParser().parseFromString(html, "text/html");
   inlineDataStylesheets(parsed);
+  typesetPandocMath(parsed);
   resolveLinksForSrcdoc(parsed, documentPath ?? null);
   const policy = parsed.createElement("meta");
   policy.setAttribute("http-equiv", "Content-Security-Policy");
@@ -86,6 +92,47 @@ function decodeCssDataUrl(href: string): string | null {
     // Malformed percent or base64 encoding: leave the link for CSP to refuse.
     return null;
   }
+}
+
+/**
+ * Pandoc-family exports (Quarto included) leave TeX in
+ * `<span class="math inline|display">` for a page script (MathJax, KaTeX) to
+ * typeset, so the scriptless frame showed raw `\(…\)` source. YA's own KaTeX
+ * typesets it here instead, as MathML: the browser draws that natively, while
+ * KaTeX's HTML output would need its stylesheet and webfonts, which the
+ * preview CSP refuses from YA's origin. `trust: false` keeps TeX commands from
+ * emitting links or images. One macro table per document, as for Markdown,
+ * so a `\gdef` persists across the document's formulas only.
+ */
+function typesetPandocMath(parsed: Document): void {
+  const macros = paperKatexMacros();
+  for (const span of parsed.querySelectorAll(
+    "span.math.inline, span.math.display",
+  )) {
+    const displayMode = span.classList.contains("display");
+    const tex = stripPandocMathDelimiters(span.textContent ?? "", displayMode);
+    try {
+      span.innerHTML = katex.renderToString(normalizeTexForKatex(tex), {
+        displayMode,
+        macros,
+        output: "mathml",
+        strict: "ignore",
+        throwOnError: true,
+        trust: false,
+      });
+    } catch {
+      // Unrenderable TeX (often an author macro): keep the authored source.
+    }
+  }
+}
+
+/** Pandoc's MathJax/KaTeX writers wrap the TeX; its plain writer does not. */
+function stripPandocMathDelimiters(text: string, displayMode: boolean): string {
+  const trimmed = text.trim();
+  const [open, close] = displayMode ? ["\\[", "\\]"] : ["\\(", "\\)"];
+  return trimmed.startsWith(open) && trimmed.endsWith(close)
+    ? trimmed.slice(open.length, -close.length)
+    : trimmed;
 }
 
 /**

@@ -89,7 +89,7 @@ import {
   resetClientSummaryStoreForTests,
   setCurrentClientSummarySourceKey,
 } from "../../lib/clientSummaryStore";
-import { PROJECT_QUEUE_CAPABILITY } from "../../lib/projectQueueVisibility";
+import { PROJECT_QUEUE_CAPABILITY } from "@yep-anywhere/shared";
 import {
   resetProjectQueueBackstopsForTests,
   useProjectQueues,
@@ -198,34 +198,6 @@ afterEach(() => {
 });
 
 describe("useProjectQueues", () => {
-  it("stays idle without the project queue server capability", async () => {
-    versionMock.version = { capabilities: [] };
-
-    const { result } = renderHook(() => useProjectQueues(["project-1"]));
-
-    await waitFor(() => expect(result.current.loading).toBe(false));
-
-    expect(apiMock.getProjectQueue).not.toHaveBeenCalled();
-    expect(apiMock.getProjectQueueItems).not.toHaveBeenCalled();
-    expect(result.current.items).toEqual([]);
-  });
-
-  it("stays idle for hosted remote servers below the compatible level", async () => {
-    connectionMock.isRemoteClient.mockReturnValue(true);
-    versionMock.version = {
-      capabilities: [PROJECT_QUEUE_CAPABILITY],
-      remoteCompatibilityLevel: 0,
-    };
-
-    const { result } = renderHook(() => useProjectQueues(["project-1"]));
-
-    await waitFor(() => expect(result.current.loading).toBe(false));
-
-    expect(apiMock.getProjectQueue).not.toHaveBeenCalled();
-    expect(apiMock.getProjectQueueItems).not.toHaveBeenCalled();
-    expect(result.current.items).toEqual([]);
-  });
-
   it("fetches all queue items once for the supplied projects", async () => {
     apiMock.getProjectQueueItems.mockResolvedValue({
       items: [makeItem("1", PROJECT_ID), makeItem("2", PROJECT_ID_2)],

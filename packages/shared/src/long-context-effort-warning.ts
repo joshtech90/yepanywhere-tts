@@ -29,11 +29,9 @@ export const LONG_CONTEXT_EFFORT_WARNING_SLIDER_MAX_TOKENS = 500_000;
 export const LONG_CONTEXT_EFFORT_WARNING_SLIDER_STEP_TOKENS = 1_000;
 
 /**
- * Providers whose effort change is known to miss the prompt cache: Claude
- * (the cache is keyed by effort; measured in
- * topics/mid-session-effort-change.evidence.md) and Codex (request-level
- * reasoning effort; see gaps/codex-cache-features.md for the Astra exception
- * that is not yet usable).
+ * Providers whose effort change can miss the prompt cache: Claude (the cache
+ * is keyed by effort; measured in topics/mid-session-effort-change.evidence.md)
+ * and Codex on its older models (request-level reasoning effort).
  */
 export const DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS: LongContextEffortWarningSettings =
   {
@@ -105,18 +103,36 @@ function baseClaudeModelId(model: string): string {
 }
 
 /**
+ * Codex models whose effort change re-reads the prompt. From Codex 0.165.0,
+ * models whose catalog sets `supports_reasoning_effort_updates` record an
+ * in-place `configuration_update` and keep the cache; measured 2026-10-29 for
+ * every GPT-6 model and missing on GPT-5.6 Sol and Daybreak, whose catalog
+ * entries do not set it. Newer models are expected to support it, so only
+ * these older generations warn.
+ */
+const CODEX_EFFORT_CACHE_BREAKING_MODELS: readonly RegExp[] = [
+  /^gpt-[0-5](?:[.-]|$)/u,
+  /^gpt-daybreak-/u,
+];
+
+/**
  * Whether a mid-session effort change on this provider and model keeps the
- * provider's prompt cache. On Claude, Opus 5.5 does; Sonnet 5 was measured
- * not to. Codex's `configuration_update` path for GPT-6 Astra exists in the
- * pinned source but is behind a default-off Codex feature YA does not enable
- * (gaps/codex-cache-features.md). Flip the Astra branch once that is enabled
- * and a warm-session measurement confirms the cache survives.
+ * provider's prompt cache. On Claude, only measured ids do (Opus 5.5; Sonnet 5
+ * was measured not to). On Codex, every model except the older generations
+ * above does. An unknown model is assumed not to.
  */
 export function effortChangeKeepsPromptCache(
   provider: ProviderName,
   model: string | undefined,
 ): boolean {
-  if (provider !== "claude" || !model) return false;
+  if (!model) return false;
+  if (provider === "codex") {
+    const id = model.trim().toLowerCase();
+    return !CODEX_EFFORT_CACHE_BREAKING_MODELS.some((pattern) =>
+      pattern.test(id),
+    );
+  }
+  if (provider !== "claude") return false;
   return CLAUDE_EFFORT_CACHE_SAFE_MODELS.includes(baseClaudeModelId(model));
 }
 

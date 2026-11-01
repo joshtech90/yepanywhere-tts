@@ -42,14 +42,8 @@ export function createInitialSessionDetailState(): SessionDetailState {
   };
 }
 
-function usesApproxMessageDedup(
-  provider: string | undefined,
-  codexStreamDurableIdAlignment: boolean,
-): boolean {
-  return (
-    getProvider(provider).capabilities.needsApproxMessageDedup ||
-    (provider === "codex" && !codexStreamDurableIdAlignment)
-  );
+function usesApproxMessageDedup(provider: string | undefined): boolean {
+  return getProvider(provider).capabilities.needsApproxMessageDedup;
 }
 
 function usesQueueOperationEchoDedup(provider?: string): boolean {
@@ -60,14 +54,12 @@ function usesSelfSendUserEchoDedup(provider?: string): boolean {
   return getProvider(provider).capabilities.dedupSelfSendUserEchoes === true;
 }
 
-function approxDedupOptions(
-  provider: string | undefined,
-  codexStreamDurableIdAlignment: boolean,
-): { excludeTools: boolean } {
+function approxDedupOptions(provider: string | undefined): {
+  excludeTools: boolean;
+} {
   return {
     excludeTools:
-      getProvider(provider).capabilities.approxDedupExcludesTools === true ||
-      (provider === "codex" && !codexStreamDurableIdAlignment),
+      getProvider(provider).capabilities.approxDedupExcludesTools === true,
   };
 }
 
@@ -122,25 +114,18 @@ function mergePersistedMessagesForProvider(
   baseMessages: Message[],
   taggedMessages: Message[],
   provider: string | undefined,
-  codexStreamDurableIdAlignment: boolean,
 ): Message[] {
   const result = mergeJSONLMessages(baseMessages, taggedMessages, {
     skipDagOrdering: !getProvider(provider).capabilities.supportsDag,
-    preserveIncomingOrder:
-      provider === "codex" && codexStreamDurableIdAlignment,
+    preserveIncomingOrder: provider === "codex",
   });
-  return maybeReconcileApprox(
-    result.messages,
-    provider,
-    codexStreamDurableIdAlignment,
-  );
+  return maybeReconcileApprox(result.messages, provider);
 }
 
 function replacePersistedTailForProvider(
   previousMessages: Message[],
   taggedMessages: Message[],
   provider: string | undefined,
-  codexStreamDurableIdAlignment: boolean,
 ): Message[] {
   let messages = taggedMessages;
   for (const previousMessage of previousMessages) {
@@ -149,11 +134,7 @@ function replacePersistedTailForProvider(
     }
     messages = mergeStreamMessage(messages, previousMessage).messages;
   }
-  return maybeReconcileApprox(
-    messages,
-    provider,
-    codexStreamDurableIdAlignment,
-  );
+  return maybeReconcileApprox(messages, provider);
 }
 
 export function clearStreamingPlaceholderMessages(
@@ -221,23 +202,16 @@ function isEmptyAssistantContent(message: Message): boolean {
 function maybeReconcileApprox(
   messages: Message[],
   provider: string | undefined,
-  codexStreamDurableIdAlignment: boolean,
 ): Message[] {
   const providerReconciled =
     provider === "codex" || provider === "codex-oss"
       ? reconcileCodexToolMessages(messages)
       : messages;
-  const approx = usesApproxMessageDedup(provider, codexStreamDurableIdAlignment)
-    ? reconcileLinearMessages(
-        providerReconciled,
-        approxDedupOptions(provider, codexStreamDurableIdAlignment),
-      )
+  const approx = usesApproxMessageDedup(provider)
+    ? reconcileLinearMessages(providerReconciled, approxDedupOptions(provider))
     : providerReconciled;
   const steerReconciled =
-    provider === "codex-oss" ||
-    (provider === "codex" && !codexStreamDurableIdAlignment)
-      ? reconcileCodexSteerEchoes(approx)
-      : approx;
+    provider === "codex-oss" ? reconcileCodexSteerEchoes(approx) : approx;
   const selfSendReconciled = usesSelfSendUserEchoDedup(provider)
     ? reconcileSelfSendUserEchoes(steerReconciled)
     : steerReconciled;
@@ -311,7 +285,7 @@ function applyStreamMessage(
     );
   const isPersistedReplay =
     isReplay &&
-    (provider === "codex" && action.codexStreamDurableIdAlignment === true
+    (provider === "codex"
       ? hasPersistedIdentity
       : incomingTimestampMs !== null &&
         incomingTimestampMs <= state.maxPersistedTimestampMs);
@@ -326,11 +300,7 @@ function applyStreamMessage(
   }
 
   const shouldApplyReplayDedupe =
-    (action.fromBufferedReplay || isReplay) &&
-    usesApproxMessageDedup(
-      provider,
-      action.codexStreamDurableIdAlignment === true,
-    );
+    (action.fromBufferedReplay || isReplay) && usesApproxMessageDedup(provider);
   if (shouldApplyReplayDedupe) {
     if (isEmptyAssistantContent(incoming)) {
       return state;
@@ -339,10 +309,7 @@ function applyStreamMessage(
       hasEquivalentJsonlMessage(
         state.messages,
         incoming,
-        approxDedupOptions(
-          provider,
-          action.codexStreamDurableIdAlignment === true,
-        ),
+        approxDedupOptions(provider),
       )
     ) {
       return state;
@@ -350,11 +317,7 @@ function applyStreamMessage(
   }
 
   const result = mergeStreamMessage(state.messages, incoming);
-  const messages = maybeReconcileApprox(
-    result.messages,
-    provider,
-    action.codexStreamDurableIdAlignment === true,
-  );
+  const messages = maybeReconcileApprox(result.messages, provider);
   return messages === state.messages ? state : { ...state, messages };
 }
 
@@ -533,9 +496,8 @@ function findEquivalentJsonlMessageId(
   previousMessage: Message,
   nextMessages: readonly Message[],
   provider: string | undefined,
-  codexStreamDurableIdAlignment: boolean,
 ): string | undefined {
-  if (!usesApproxMessageDedup(provider, codexStreamDurableIdAlignment)) {
+  if (!usesApproxMessageDedup(provider)) {
     return undefined;
   }
 
@@ -551,7 +513,7 @@ function findEquivalentJsonlMessageId(
       hasEquivalentJsonlMessage(
         [candidate],
         previousMessage,
-        approxDedupOptions(provider, codexStreamDurableIdAlignment),
+        approxDedupOptions(provider),
       )
     ) {
       return candidateId;
@@ -565,7 +527,7 @@ function reconcileMarkdownAugmentMessageIds(
   state: SessionDetailState,
   nextMessages: readonly Message[],
   provider: string | undefined,
-  codexStreamDurableIdAlignment: boolean,
+
   markdownAugments: MarkdownAugmentMap = state.markdownAugments,
 ): MarkdownAugmentMap {
   const augmentEntries = Object.entries(markdownAugments);
@@ -597,7 +559,6 @@ function reconcileMarkdownAugmentMessageIds(
       previousMessage,
       nextMessages,
       provider,
-      codexStreamDurableIdAlignment,
     );
     if (!durableMessageId || durableMessageId === messageId) {
       continue;
@@ -641,7 +602,6 @@ export function reduceSessionDetailState(
       const messages = maybeReconcileApprox(
         taggedMessages,
         action.session.provider,
-        action.codexStreamDurableIdAlignment === true,
       );
       const markdownAugments = action.markdownAugments
         ? { ...state.markdownAugments, ...action.markdownAugments }
@@ -656,7 +616,7 @@ export function reduceSessionDetailState(
           state,
           messages,
           action.session.provider,
-          action.codexStreamDurableIdAlignment === true,
+
           markdownAugments,
         ),
         toolUseToAgentEntries: action.toolUseToAgentEntries ?? [],
@@ -763,7 +723,6 @@ export function reduceSessionDetailState(
         state.messages,
         taggedMessages,
         provider,
-        action.codexStreamDurableIdAlignment === true,
       );
       return {
         ...state,
@@ -778,7 +737,6 @@ export function reduceSessionDetailState(
           state,
           messages,
           provider,
-          action.codexStreamDurableIdAlignment === true,
         ),
         lastMessageId: findLastJsonlMessageId(messages),
         maxPersistedTimestampMs: updatePersistedTimestampWatermark(
@@ -794,7 +752,6 @@ export function reduceSessionDetailState(
         state.messages,
         taggedMessages,
         action.session.provider,
-        action.codexStreamDurableIdAlignment === true,
       );
       return {
         ...state,
@@ -805,7 +762,6 @@ export function reduceSessionDetailState(
           state,
           messages,
           action.session.provider,
-          action.codexStreamDurableIdAlignment === true,
         ),
         lastMessageId: findLastJsonlMessageId(messages),
         maxPersistedTimestampMs: updatePersistedTimestampWatermark(
@@ -825,7 +781,6 @@ export function reduceSessionDetailState(
         [...taggedMessages, ...state.messages],
         taggedMessages,
         provider,
-        action.codexStreamDurableIdAlignment === true,
       );
       return {
         ...state,
@@ -835,7 +790,6 @@ export function reduceSessionDetailState(
           state,
           messages,
           provider,
-          action.codexStreamDurableIdAlignment === true,
         ),
         lastMessageId: findLastJsonlMessageId(messages),
         maxPersistedTimestampMs: updatePersistedTimestampWatermark(

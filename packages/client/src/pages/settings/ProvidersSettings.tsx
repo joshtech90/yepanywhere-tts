@@ -11,28 +11,20 @@ import {
 } from "react";
 import {
   SERVER_CAPABILITIES,
-  CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
-  CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
-  CLAUDE_GATEWAY_CAPABILITY,
-  CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
-  CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
   CLAUDE_GATEWAY_SERVICES_CAPABILITY,
   CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
   CODEX_PLAN_TOOL_SETTING_CAPABILITY,
   CODEX_REASONING_SUMMARIES,
-  CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
   DEFAULT_CODEX_REASONING_SUMMARY,
   DEFAULT_IDLE_REAP_HOURS,
   DEFAULT_LONG_CONTEXT_EFFORT_WARNING_TOKENS,
   DEFAULT_SUBAGENT_MAX_DEPTH,
-  IDLE_REAP_HOURS_SETTING_CAPABILITY,
   LONG_CONTEXT_EFFORT_WARNING_SLIDER_MAX_TOKENS,
   LONG_CONTEXT_EFFORT_WARNING_SLIDER_STEP_TOKENS,
   MAX_IDLE_REAP_HOURS,
   MAX_SUBAGENT_MAX_DEPTH,
   MIN_SUBAGENT_MAX_DEPTH,
   NEVER_IDLE_REAP_HOURS,
-  SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
   MAX_CLAUDE_ADDITIONAL_MODEL_ID_LENGTH,
   isCodexReasoningSummary,
   isCodexPlanToolMode,
@@ -65,6 +57,7 @@ import {
   ClaudeAutoCompactPercentOverrideControl,
   YaCompactContextEarlyControl,
 } from "./compactSettingsControls";
+import { SettingsDocLink } from "./SettingsDocLink";
 import { SettingsItem } from "./SettingsItem";
 import { InstructionRestorationControl } from "./InstructionRestorationControl";
 import styles from "./ProvidersSettings.module.css";
@@ -631,6 +624,7 @@ function CodexCyberAccessProgramSetting({
       id="provider-codex-cyber-access"
       label={t("providersCodexCyberAccessTitle")}
       description={t("providersCodexCyberAccessDescription")}
+      doc="topics/codex-sessions.md#per-turn-cyber-access-program"
       keywords={["daybreak", "cyber", "security", "access", "program"]}
       valueText={labels[selection]}
     >
@@ -671,22 +665,19 @@ function OllamaSettings() {
 
 function ClaudeGatewaySettings({
   reloadProviders,
-  supportsAutostart,
 }: {
   reloadProviders: () => Promise<void>;
-  supportsAutostart: boolean;
 }) {
   const exampleUrl = "http://localhost:4141";
   const { t } = useI18n();
-  const { settings, updateSetting, updateSettings } = useServerSettings();
+  const { settings, updateSettings } = useServerSettings();
   const [url, setUrl] = useState("");
   const [startCommand, setStartCommand] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const serverValue = settings?.claudeGatewayUrl ?? "";
   const serverStartCommand = settings?.claudeGatewayStartCommand ?? "";
   const hasChanges =
-    url.trim() !== serverValue ||
-    (supportsAutostart && startCommand.trim() !== serverStartCommand);
+    url.trim() !== serverValue || startCommand.trim() !== serverStartCommand;
 
   useEffect(() => {
     setUrl(settings?.claudeGatewayUrl ?? "");
@@ -699,28 +690,17 @@ function ClaudeGatewaySettings({
   const handleSave = useCallback(async () => {
     setIsSaving(true);
     try {
-      if (supportsAutostart) {
-        await updateSettings({
-          claudeGatewayUrl: url.trim() || undefined,
-          claudeGatewayStartCommand: startCommand.trim() || undefined,
-        });
-      } else {
-        await updateSetting("claudeGatewayUrl", url.trim() || undefined);
-      }
+      await updateSettings({
+        claudeGatewayUrl: url.trim() || undefined,
+        claudeGatewayStartCommand: startCommand.trim() || undefined,
+      });
       await reloadProviders();
     } catch {
       // Error handled by useServerSettings.
     } finally {
       setIsSaving(false);
     }
-  }, [
-    reloadProviders,
-    startCommand,
-    supportsAutostart,
-    updateSetting,
-    updateSettings,
-    url,
-  ]);
+  }, [reloadProviders, startCommand, updateSettings, url]);
 
   return (
     <div
@@ -728,7 +708,10 @@ function ClaudeGatewaySettings({
       className="settings-subsection"
     >
       <h3>{t("providersClaudeGatewayTitle")}</h3>
-      <p className="settings-hint">{t("providersClaudeGatewayDescription")}</p>
+      <p className="settings-hint">
+        {t("providersClaudeGatewayDescription")}{" "}
+        <SettingsDocLink doc="topics/gateway-services.md" />
+      </p>
       <form
         className="claude-gateway-settings-control"
         onSubmit={(event) => {
@@ -756,25 +739,23 @@ function ClaudeGatewaySettings({
             {isSaving ? t("providersSaving") : t("providersSave")}
           </button>
         </div>
-        {supportsAutostart && (
-          <>
-            <label className="claude-gateway-start-command">
-              <span>{t("providersClaudeGatewayStartCommandLabel")}</span>
-              <input
-                type="text"
-                className="settings-input"
-                value={startCommand}
-                maxLength={10_000}
-                onChange={(event) => setStartCommand(event.target.value)}
-                placeholder={t("providersClaudeGatewayStartCommandPlaceholder")}
-                aria-label={t("providersClaudeGatewayStartCommandAria")}
-              />
-            </label>
-            <p className="settings-hint">
-              {t("providersClaudeGatewayStartCommandHint")}
-            </p>
-          </>
-        )}
+
+        <label className="claude-gateway-start-command">
+          <span>{t("providersClaudeGatewayStartCommandLabel")}</span>
+          <input
+            type="text"
+            className="settings-input"
+            value={startCommand}
+            maxLength={10_000}
+            onChange={(event) => setStartCommand(event.target.value)}
+            placeholder={t("providersClaudeGatewayStartCommandPlaceholder")}
+            aria-label={t("providersClaudeGatewayStartCommandAria")}
+          />
+        </label>
+        <p className="settings-hint">
+          {t("providersClaudeGatewayStartCommandHint")}
+        </p>
+
         <p className="settings-hint">
           {t("providersClaudeGatewayIsolationHint")}
         </p>
@@ -1250,14 +1231,7 @@ export function ProvidersSettings() {
   } = useProviders();
   const { settings, updateSetting } = useServerSettings();
   const { version } = useVersion();
-  const supportsAdditionalModels = serverHasCapability(
-    version,
-    CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
-  );
-  const supportsCodexReasoningSummary = serverHasCapability(
-    version,
-    CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
-  );
+
   const supportsCodexPlanToolSetting = serverHasCapability(
     version,
     CODEX_PLAN_TOOL_SETTING_CAPABILITY,
@@ -1266,34 +1240,12 @@ export function ProvidersSettings() {
     version,
     CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
   );
-  const supportsClaudeGateway = serverHasCapability(
-    version,
-    CLAUDE_GATEWAY_CAPABILITY,
-  );
-  const supportsClaudeGatewayAutostart = serverHasCapability(
-    version,
-    CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
-  );
+
   const supportsGatewayServices = serverHasCapability(
     version,
     CLAUDE_GATEWAY_SERVICES_CAPABILITY,
   );
-  const supportsClaudeGatewayDisableAgent = serverHasCapability(
-    version,
-    CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
-  );
-  const supportsClaudeGatewayDisablePlanMode = serverHasCapability(
-    version,
-    CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
-  );
-  const supportsIdleReapHours = serverHasCapability(
-    version,
-    IDLE_REAP_HOURS_SETTING_CAPABILITY,
-  );
-  const supportsSubagentMaxDepth = serverHasCapability(
-    version,
-    SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
-  );
+
   const idleReapHours = settings?.idleReapHours ?? DEFAULT_IDLE_REAP_HOURS;
   const subagentMaxDepth =
     settings?.subagentMaxDepth === undefined
@@ -1326,13 +1278,7 @@ export function ProvidersSettings() {
     if (clientProvider.id === "claude-ollama" && !serverInfo) {
       return [];
     }
-    if (
-      clientProvider.id === "claude-gateway" &&
-      !serverInfo &&
-      !supportsClaudeGateway
-    ) {
-      return [];
-    }
+
     return [
       {
         ...clientProvider,
@@ -1352,7 +1298,13 @@ export function ProvidersSettings() {
   });
 
   return (
-    <SettingsSection description={t("providersSectionDescription")}>
+    <SettingsSection
+      description={t("providersSectionDescription")}
+      doc={{
+        path: "site/src/content/docs/providers.md",
+        label: "providers guide",
+      }}
+    >
       <nav
         className={styles.signInShortcuts}
         aria-label={t("providerSignInShortcuts")}
@@ -1378,104 +1330,100 @@ export function ProvidersSettings() {
       ) && <AgentAuthRouterSettings />}
 
       <div className="settings-group">
-        {supportsSubagentMaxDepth && (
-          <SettingsItem
-            id="providers-subagent-max-depth"
-            label={t("providersSubagentMaxDepthLabel")}
-            description={t("providersSubagentMaxDepthDescription")}
-            className="settings-item--wide-control"
-            valueText={
-              subagentMaxDepth === null
-                ? t("providersSubagentMaxDepthProviderDefault")
-                : subagentMaxDepth === 0
-                  ? t("providersSubagentMaxDepthDisabled")
-                  : t("providersSubagentMaxDepthValue", {
-                      value: subagentMaxDepth,
-                    })
-            }
-          >
-            <div className={styles.limitControls}>
-              <CommittedRangeNumberInput
-                id="providers-subagent-max-depth-control"
-                min={PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH}
-                max={MAX_SUBAGENT_MAX_DEPTH}
-                numberMin={MIN_SUBAGENT_MAX_DEPTH}
-                numberMax={MAX_SUBAGENT_MAX_DEPTH}
-                step={1}
-                list="providers-subagent-max-depth-ticks"
-                value={subagentMaxDepth}
-                unsetSliderValue={PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH}
-                unit={t("providersSubagentMaxDepthUnit")}
-                ariaLabel={t("providersSubagentMaxDepthAria")}
-                onCommit={(value) => {
-                  void updateSetting("subagentMaxDepth", value);
-                }}
-              />
-              <datalist id="providers-subagent-max-depth-ticks">
-                <option
-                  value={PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH}
-                  label={t("providersSubagentMaxDepthProviderDefault")}
-                />
-                <option value={MIN_SUBAGENT_MAX_DEPTH} />
-                <option value="1" />
-                <option value="2" />
-                <option value="3" />
-                <option value={MAX_SUBAGENT_MAX_DEPTH} />
-              </datalist>
-              <p className="settings-hint">
-                {t("providersSubagentMaxDepthCoverage")}
-              </p>
-            </div>
-          </SettingsItem>
-        )}
-        {supportsIdleReapHours && (
-          <SettingsItem
-            id="providers-idle-reap-hours"
-            label={t("providersIdleReapHoursLabel")}
-            description={t("providersIdleReapHoursDescription")}
-            className="settings-item--wide-control"
-            valueText={
-              idleReapHours < 0
-                ? t("providersIdleReapNever")
-                : t("providersIdleReapHoursValue", {
-                    value: idleReapHours,
+        <SettingsItem
+          id="providers-subagent-max-depth"
+          label={t("providersSubagentMaxDepthLabel")}
+          description={t("providersSubagentMaxDepthDescription")}
+          className="settings-item--wide-control"
+          valueText={
+            subagentMaxDepth === null
+              ? t("providersSubagentMaxDepthProviderDefault")
+              : subagentMaxDepth === 0
+                ? t("providersSubagentMaxDepthDisabled")
+                : t("providersSubagentMaxDepthValue", {
+                    value: subagentMaxDepth,
                   })
-            }
-          >
-            <div className={styles.limitControls}>
-              <CommittedRangeNumberInput
-                id="providers-idle-reap-hours-control"
-                min={NEVER_IDLE_REAP_HOURS}
-                max={MAX_IDLE_REAP_HOURS}
-                numberMin={NEVER_IDLE_REAP_HOURS}
-                numberMax={MAX_IDLE_REAP_HOURS}
-                step={1}
-                list="providers-idle-reap-hours-ticks"
-                value={idleReapHours}
-                unit={t("providersIdleReapHoursUnit")}
-                ariaLabel={t("providersIdleReapHoursAria")}
-                snapTextToStep={false}
-                onCommit={(value) => {
-                  void updateSetting(
-                    "idleReapHours",
-                    normalizeIdleReapHours(value),
-                  );
-                }}
+          }
+        >
+          <div className={styles.limitControls}>
+            <CommittedRangeNumberInput
+              id="providers-subagent-max-depth-control"
+              min={PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH}
+              max={MAX_SUBAGENT_MAX_DEPTH}
+              numberMin={MIN_SUBAGENT_MAX_DEPTH}
+              numberMax={MAX_SUBAGENT_MAX_DEPTH}
+              step={1}
+              list="providers-subagent-max-depth-ticks"
+              value={subagentMaxDepth}
+              unsetSliderValue={PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH}
+              unit={t("providersSubagentMaxDepthUnit")}
+              ariaLabel={t("providersSubagentMaxDepthAria")}
+              onCommit={(value) => {
+                void updateSetting("subagentMaxDepth", value);
+              }}
+            />
+            <datalist id="providers-subagent-max-depth-ticks">
+              <option
+                value={PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH}
+                label={t("providersSubagentMaxDepthProviderDefault")}
               />
-              <datalist id="providers-idle-reap-hours-ticks">
-                <option
-                  value={NEVER_IDLE_REAP_HOURS}
-                  label={t("providersIdleReapNever")}
-                />
-                <option value="0" />
-                <option value="24" />
-                <option value="48" />
-                <option value={MAX_IDLE_REAP_HOURS} />
-              </datalist>
-              <p className="settings-hint">{t("providersIdleReapNeverHint")}</p>
-            </div>
-          </SettingsItem>
-        )}
+              <option value={MIN_SUBAGENT_MAX_DEPTH} />
+              <option value="1" />
+              <option value="2" />
+              <option value="3" />
+              <option value={MAX_SUBAGENT_MAX_DEPTH} />
+            </datalist>
+            <p className="settings-hint">
+              {t("providersSubagentMaxDepthCoverage")}
+            </p>
+          </div>
+        </SettingsItem>
+        <SettingsItem
+          id="providers-idle-reap-hours"
+          label={t("providersIdleReapHoursLabel")}
+          description={t("providersIdleReapHoursDescription")}
+          className="settings-item--wide-control"
+          valueText={
+            idleReapHours < 0
+              ? t("providersIdleReapNever")
+              : t("providersIdleReapHoursValue", {
+                  value: idleReapHours,
+                })
+          }
+        >
+          <div className={styles.limitControls}>
+            <CommittedRangeNumberInput
+              id="providers-idle-reap-hours-control"
+              min={NEVER_IDLE_REAP_HOURS}
+              max={MAX_IDLE_REAP_HOURS}
+              numberMin={NEVER_IDLE_REAP_HOURS}
+              numberMax={MAX_IDLE_REAP_HOURS}
+              step={1}
+              list="providers-idle-reap-hours-ticks"
+              value={idleReapHours}
+              unit={t("providersIdleReapHoursUnit")}
+              ariaLabel={t("providersIdleReapHoursAria")}
+              snapTextToStep={false}
+              onCommit={(value) => {
+                void updateSetting(
+                  "idleReapHours",
+                  normalizeIdleReapHours(value),
+                );
+              }}
+            />
+            <datalist id="providers-idle-reap-hours-ticks">
+              <option
+                value={NEVER_IDLE_REAP_HOURS}
+                label={t("providersIdleReapNever")}
+              />
+              <option value="0" />
+              <option value="24" />
+              <option value="48" />
+              <option value={MAX_IDLE_REAP_HOURS} />
+            </datalist>
+            <p className="settings-hint">{t("providersIdleReapNeverHint")}</p>
+          </div>
+        </SettingsItem>
         {settings?.instructionRestoration !== undefined && (
           <InstructionRestorationControl
             value={settings.instructionRestoration}
@@ -1510,7 +1458,6 @@ export function ProvidersSettings() {
               after={
                 <>
                   {provider.id === "claude-gateway" &&
-                    supportsClaudeGateway &&
                     supportsGatewayServices && (
                       <GatewayServicesSettings
                         reloadProviders={reloadProviders}
@@ -1623,39 +1570,31 @@ export function ProvidersSettings() {
                     )}
                   {provider.id === "claude-ollama" && <OllamaSettings />}
                   {provider.id === "grok" && <GrokBuildApiKeySettings />}
-                  {provider.id === "claude-gateway" &&
-                    supportsClaudeGateway && (
-                      <>
-                        {!supportsGatewayServices && (
-                          <ClaudeGatewaySettings
-                            reloadProviders={reloadProviders}
-                            supportsAutostart={supportsClaudeGatewayAutostart}
-                          />
+                  {provider.id === "claude-gateway" && (
+                    <>
+                      {settings && version && !supportsGatewayServices && (
+                        <ClaudeGatewaySettings
+                          reloadProviders={reloadProviders}
+                        />
+                      )}
+                      <ClaudeGatewayToggleSetting
+                        id="provider-claude-gateway-disable-agent"
+                        setting="claudeGatewayDisableAgent"
+                        title={t("providersClaudeGatewayDisableAgentTitle")}
+                        description={t(
+                          "providersClaudeGatewayDisableAgentDescription",
                         )}
-                        {supportsClaudeGatewayDisableAgent && (
-                          <ClaudeGatewayToggleSetting
-                            id="provider-claude-gateway-disable-agent"
-                            setting="claudeGatewayDisableAgent"
-                            title={t("providersClaudeGatewayDisableAgentTitle")}
-                            description={t(
-                              "providersClaudeGatewayDisableAgentDescription",
-                            )}
-                          />
+                      />
+                      <ClaudeGatewayToggleSetting
+                        id="provider-claude-gateway-disable-plan-mode"
+                        setting="claudeGatewayDisablePlanMode"
+                        title={t("providersClaudeGatewayDisablePlanModeTitle")}
+                        description={t(
+                          "providersClaudeGatewayDisablePlanModeDescription",
                         )}
-                        {supportsClaudeGatewayDisablePlanMode && (
-                          <ClaudeGatewayToggleSetting
-                            id="provider-claude-gateway-disable-plan-mode"
-                            setting="claudeGatewayDisablePlanMode"
-                            title={t(
-                              "providersClaudeGatewayDisablePlanModeTitle",
-                            )}
-                            description={t(
-                              "providersClaudeGatewayDisablePlanModeDescription",
-                            )}
-                          />
-                        )}
-                      </>
-                    )}
+                      />
+                    </>
+                  )}
                   {provider.id === "codex" && provider.installed && (
                     <>
                       <div style={{ marginTop: "var(--space-2)" }}>
@@ -1692,7 +1631,7 @@ export function ProvidersSettings() {
                 </a>
               )}
             </SettingsItem>
-            {provider.id === "codex" && supportsCodexReasoningSummary && (
+            {provider.id === "codex" && (
               <CodexReasoningSummarySetting
                 value={
                   settings?.codexReasoningSummary ??
@@ -1728,7 +1667,7 @@ export function ProvidersSettings() {
                 updateSetting={updateSetting}
               />
             )}
-            {provider.id === "claude" && supportsAdditionalModels && (
+            {provider.id === "claude" && (
               <ClaudeAdditionalModelsSettings
                 modelOptions={provider.additionalModelOptions ?? []}
                 selections={settings?.claudeAdditionalModels ?? []}

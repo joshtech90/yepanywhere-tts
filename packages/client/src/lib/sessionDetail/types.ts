@@ -34,15 +34,7 @@ export interface SessionDetailState {
   activeWindowTrimRevision: number;
 }
 
-export interface SessionDetailReconciliationContext {
-  /**
-   * The connected server aligns Codex live and durable message ids. Missing
-   * means legacy server behavior so hosted clients fail toward deduplication.
-   */
-  codexStreamDurableIdAlignment?: boolean;
-}
-
-export type SessionDetailAction = (
+export type SessionDetailAction =
   | {
       type: "restoreRouteSnapshot";
       snapshot: SessionRouteSnapshot;
@@ -132,6 +124,4 @@ export type SessionDetailAction = (
       type: "applyFinalMarkdownAugment";
       messageId: string;
       augment: MarkdownAugment;
-    }
-) &
-  SessionDetailReconciliationContext;
+    };

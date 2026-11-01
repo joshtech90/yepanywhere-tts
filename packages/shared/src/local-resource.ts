@@ -126,6 +126,11 @@ export interface ProjectFileViewerTarget {
   /** A diff view has no line position; it wins over the line fields. */
   diffMode?: GitFileDiffMode;
   viewMode?: "full" | "range";
+  /**
+   * A folder to list over the path header on arrival, in the file path's own
+   * relative or absolute form: how a folder opens in a new tab.
+   */
+  folder?: string;
 }
 
 /**
@@ -151,6 +156,9 @@ export function buildProjectFileViewerHref(
     if (target.viewMode === "range") {
       params.set("view", "range");
     }
+  }
+  if (target.folder !== undefined) {
+    params.set("folder", target.folder);
   }
   return `/projects/${encodeURIComponent(target.projectId)}/file?${params}`;
 }

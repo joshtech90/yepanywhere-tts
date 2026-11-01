@@ -25,13 +25,13 @@ test("Read diff shortcuts reveal once and open without leaving the session", asy
   await diff.click();
   const viewer = page.locator(".file-viewer");
   await expect(viewer).toBeVisible();
-  await expect(viewer.locator('[aria-current="page"]')).toHaveText("Δ");
+  // The path breadcrumb's file-name link also carries aria-current.
+  const activeDiff = '[aria-current="page"][aria-label^="View HEAD"]';
+  await expect(viewer.locator(activeDiff)).toHaveText("Δ");
   await expect(viewer.locator("[data-diff-line]").first()).toBeVisible();
   expect(page.url()).toBe(sessionUrl);
   await page.reload();
-  await expect(page.locator('.file-viewer [aria-current="page"]')).toHaveText(
-    "Δ",
-  );
+  await expect(page.locator(`.file-viewer ${activeDiff}`)).toHaveText("Δ");
   expect(page.url()).toBe(sessionUrl);
   await recordUiCapture(page, "inline-diff-in-session");
 });

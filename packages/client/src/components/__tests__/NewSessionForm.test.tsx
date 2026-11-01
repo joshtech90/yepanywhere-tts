@@ -1266,6 +1266,96 @@ describe("NewSessionForm", () => {
     );
   });
 
+  it("launches routed Codex at the chosen speed only with negotiated support", async () => {
+    const original = vi.mocked(api.routerSelection).getMockImplementation()!;
+    const model = {
+      id: "gpt-5.4",
+      name: "GPT-5.4",
+      serviceTiers: [{ id: "priority", name: "Fast", description: "" }],
+    };
+    const selection = {
+      serviceTierSelection: true,
+      accounts: [
+        {
+          id: "routed-account",
+          provider: "codex",
+          enabled: true,
+          models: [model],
+        },
+      ],
+      pools: [
+        {
+          id: "speed-pool",
+          name: "Speed pool",
+          provider: "codex",
+          policy: "round-robin",
+          accountIds: ["routed-account"],
+        },
+      ],
+    };
+    vi.mocked(api.routerSelection).mockResolvedValue(selection as never);
+    versionState.version = { capabilities: ["agent-auth-router"] };
+    serverSettingsState.isLoading = false;
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "codex",
+        providers: {
+          codex: {
+            model: model.id,
+            serviceTier: "priority",
+            routerPoolId: "speed-pool",
+          },
+        },
+      },
+    };
+    try {
+      const view = render(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+        />,
+      );
+      openAdvancedOptions();
+      await waitFor(() =>
+        expect(selectedDropdownValue("routerPool")).toBe("speed-pool"),
+      );
+      expect(selectedDropdownValue("newSessionServiceTierTitle")).toBe(
+        "priority",
+      );
+      fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+        target: { value: "hello" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "newSessionStartAction" }),
+      );
+      await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+      expect(mockStartSession.mock.calls[0]?.[2]).toMatchObject({
+        routerPoolId: "speed-pool",
+        serviceTier: "priority",
+      });
+      vi.mocked(api.routerSelection).mockResolvedValue({
+        ...selection,
+        serviceTierSelection: undefined,
+      } as never);
+      act(() => window.dispatchEvent(new Event("router-connection-changed")));
+      view.rerender(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+        />,
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("filter-newSessionServiceTierTitle"),
+        ).toBeNull(),
+      );
+    } finally {
+      vi.mocked(api.routerSelection).mockImplementation(original);
+    }
+  });
+
   it("waits for discovery, restores the saved account and saves explicit Direct", async () => {
     const original = vi.mocked(api.routerSelection).getMockImplementation()!;
     const data = await original("claude");
@@ -3470,45 +3560,6 @@ describe("NewSessionForm", () => {
 
   it("hides the new-session Project Queue action when the project is inactive", () => {
     toolbarVisibilityState.projectQueue = true;
-    serverSettingsState.isLoading = false;
-
-    render(
-      <NewSessionForm
-        projectId="project-1"
-        selectedProject={chooserProjects[0]}
-        projects={[...chooserProjects]}
-      />,
-    );
-
-    expect(
-      screen.queryByRole("button", { name: "toolbarProjectQueueLabel" }),
-    ).toBe(null);
-    expect(
-      document.querySelector('[data-new-session-project-queue="true"]'),
-    ).toBeNull();
-  });
-
-  it("hides the new-session Project Queue action without server capability", () => {
-    toolbarVisibilityState.projectQueue = true;
-    versionState.version = { capabilities: [] };
-    projectQueueState.byProject = {
-      "project-1": [
-        {
-          id: "unsupported-queue",
-          projectId: "project-1",
-          target: { type: "new-session", title: "Unsupported queue" },
-          messagePreview: "Unsupported queue",
-          message: { text: "Unsupported queue" },
-          createdAt: "2026-08-15T00:00:00.000Z",
-          updatedAt: "2026-08-15T00:00:00.000Z",
-          status: "queued",
-          attachmentCount: 0,
-        },
-      ],
-    };
-    inboxState.active = [
-      { sessionId: "session-active", projectId: "project-1" },
-    ];
     serverSettingsState.isLoading = false;
 
     render(

@@ -329,12 +329,13 @@ describe("ModelSwitchModal", () => {
       });
     });
 
-    const renderModal = (onClose = vi.fn()) =>
+    const renderModal = (onClose = vi.fn(), routed = false) =>
       render(
         <ModelSwitchModal
           processId="process-1"
           sessionId="session-1"
           currentModel="gpt-5.6-sol"
+          routed={routed}
           onModelChanged={vi.fn()}
           onClose={onClose}
         />,
@@ -399,6 +400,30 @@ describe("ModelSwitchModal", () => {
         });
       });
     });
+
+    it.each([true, false, undefined])(
+      "uses the routed response support signal %s without a global router tier bit",
+      async (supported) => {
+        mockVersion.current = { capabilities: ["process-service-tier-change"] };
+        mockGetProcessModels.mockResolvedValue({
+          ...codexModels,
+          serviceTierSelection: supported,
+        });
+        renderModal(vi.fn(), true);
+        await screen.findByText("GPT-5.6-Luna");
+        if (supported) {
+          fireEvent.click(screen.getByRole("button", { name: "Fast" }));
+          await waitFor(() =>
+            expect(mockSetProcessConfig).toHaveBeenCalledWith("process-1", {
+              serviceTier: "priority",
+            }),
+          );
+        } else {
+          expect(screen.queryByText("modelSwitchSpeedLabel")).toBeNull();
+          expect(mockSetProcessConfig).not.toHaveBeenCalled();
+        }
+      },
+    );
 
     it("hides the control from servers without live tier changes", async () => {
       renderModal();

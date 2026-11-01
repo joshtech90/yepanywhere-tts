@@ -25,6 +25,7 @@ import {
 } from "../supervisor/Supervisor.js";
 import type { ProcessInfo, Project } from "../supervisor/types.js";
 import { normalizeOptionalServiceTier } from "./session-request-helpers.js";
+import type { AgentAuthRouter } from "../services/AgentAuthRouter.js";
 import type { ClearloopBadgeResolver } from "../services/ClearloopService.js";
 
 export interface ProcessesDeps {
@@ -37,6 +38,7 @@ export interface ProcessesDeps {
   ) => { reader: ISessionReader; sessionDir: string };
   sessionIndexService?: SessionIndexService;
   sessionMetadataService?: SessionMetadataService;
+  agentAuthRouter?: Pick<AgentAuthRouter, "supportsServiceTierSelection">;
   getClearloopBadge?: ClearloopBadgeResolver;
   /**
    * Exempt an explicitly killed session from YA-owned auto-resume. Invoked
@@ -480,9 +482,18 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
       return c.json({ error: "Process not found" }, 404);
     }
 
-    const models = await process.supportedModels();
+    const routed = Boolean(
+      deps.sessionMetadataService?.getMetadata(process.sessionId)
+        ?.routerBinding,
+    );
+    const [models, serviceTierSelection] = await Promise.all([
+      process.supportedModels(),
+      routed
+        ? (deps.agentAuthRouter?.supportsServiceTierSelection() ?? false)
+        : undefined,
+    ]);
     if (models !== null) {
-      return c.json({ models });
+      return c.json({ models, serviceTierSelection });
     }
 
     const provider = getProvider(process.provider);
@@ -493,7 +504,10 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
       );
     }
 
-    return c.json({ models: await provider.getAvailableModels() });
+    return c.json({
+      models: await provider.getAvailableModels(),
+      serviceTierSelection,
+    });
   });
 
   // GET /api/processes/:processId/commands - Get available slash commands from SDK

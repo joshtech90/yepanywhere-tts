@@ -144,8 +144,6 @@ for (const release of ["0.8.0", "0.8.1"])
         "capabilityEncoding",
         "capabilityBits",
         "deniedCapabilityBits",
-        "optionalCapabilityBits",
-        "capabilityExtensions",
       ])
         delete version[field];
       await route.fulfill({

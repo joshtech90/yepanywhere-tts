@@ -102,8 +102,22 @@ surface.
 If an incremental implementation keeps composer-restored edits for a while, the
 same escape-hatch invariant still applies: edit mode persists until explicit
 submit or cancel, and empty text is still edit mode rather than a fresh draft.
-Plain `Esc` invokes the same cancel action as the visible control: it ends
-correction mode and clears the restored draft. For plain-Up recall, which only
-starts from an empty composer, that restores the exact pre-recall state.
+The visible `Back to new message ↓` control and plain `Esc` end correction
+mode and restore the draft and attachments that preceded editing. The control
+remains visible with a collapsed composer. For plain-Up recall, which only
+starts from an empty composer, cancellation restores that empty state.
 Correction cancellation takes precedence over the running-turn stop shortcut;
 open composer menus and active speech capture may consume `Esc` first.
+Repeated Escape keydown events never stop agent work; release and press again
+to invoke the normal stop shortcut.
+
+Keyboard recall places the caret at the end. Plain Down cancels an untouched
+recall there, with no selection or attachments; an emptied correction can also
+be cancelled with Down. Editing text or navigating the caret retires the
+untouched-recall shortcut, preserving ordinary Down navigation. Up and Ctrl+P
+do not initiate recall from key repeat or IME composition.
+
+Leaving a cached session cancels a keyboard recall whose text is still unchanged
+and has no attachments. Changed corrections and explicit Edit-button drafts
+remain available on return. Sending an unchanged ordinary correction retains
+the draft and reports that there are no changes; it is not a new mode entry.

@@ -225,8 +225,6 @@ test("older servers show no instruction controls and receive no new user fields"
         current: "0.9.2",
         capabilities: [],
         capabilityBits: [],
-        optionalCapabilityBits: [],
-        capabilityExtensions: [],
       },
     });
   });

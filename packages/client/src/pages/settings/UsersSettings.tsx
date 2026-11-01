@@ -343,6 +343,10 @@ export function UsersSettings() {
         supportsInstructions ? undefined : t("settingsUsersDescription")
       }
       keywords={["limited users", "accounts", "guest", "sandbox", "grants"]}
+      doc={{
+        path: "site/src/content/docs/local-access.md#limited-users-preview",
+        label: "limited users",
+      }}
     >
       {/* First, because it is the decision the rest of the pane depends on.
           Turning it off keeps the records and refuses their logins. */}

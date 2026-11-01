@@ -149,7 +149,6 @@ export interface UseSessionMessagesOptions {
   /** Enable opt-in progress paint yields for large initial transcript loads */
   detailedLoadingProgress?: boolean;
   /** Whether this server aligns Codex stream and durable transcript ids. */
-  codexStreamDurableIdAlignment?: boolean;
   /** Called when initial load completes with session data */
   onLoadComplete?: (result: SessionLoadResult) => void;
   /** Called after versioned REST transcript rows have been applied. */
@@ -325,7 +324,6 @@ export function useSessionMessages(
     tailTurns,
     tailFrom,
     detailedLoadingProgress,
-    codexStreamDurableIdAlignment,
     onLoadComplete,
     onTranscriptReconciled,
     onLoadError,
@@ -366,9 +364,6 @@ export function useSessionMessages(
         activeWindowTrim: { enabled: getSessionActiveWindowTrimEnabled },
       }),
     [runtime, snapshotKey],
-  );
-  coordinator.setCodexStreamDurableIdAlignment(
-    codexStreamDurableIdAlignment === true,
   );
   const sourceApi = coordinator.api;
   const snapshotKeyString = coordinator.entryKeyString;

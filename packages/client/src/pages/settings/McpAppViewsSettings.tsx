@@ -18,6 +18,7 @@ export function McpAppViewsSettings() {
     <SettingsSection
       title={t("mcpAppViewsSettingTitle")}
       description={t("mcpAppViewsSettingDescription")}
+      doc="topics/mcp-apps.md#enablement"
       keywords={["MCP", "MCP Apps", "Codex"]}
     >
       <label

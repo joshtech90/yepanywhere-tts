@@ -1,9 +1,10 @@
+import { Link } from "react-router-dom";
 import {
   buildYaClientPublicShareBaseUrl,
   DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
   DEFAULT_YA_CLIENT_BASE_URL,
-  HOST_AWAKE_CONTROL_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
+  SERVER_CAPABILITIES,
   type HostAwakeStatus,
   type HostIdentity,
   MAX_HOST_IDENTITY_ICON_CODE_UNITS,
@@ -15,7 +16,6 @@ import { useEffect, useState } from "react";
 import type { PublicShareStatusResponse } from "../../api/client";
 import { PublicShareManagerModal } from "../../components/PublicShareManagerModal";
 import { RemoteAccessSetup } from "../../components/RemoteAccessSetup";
-import { useHostIdentity } from "../../contexts/HostIdentityContext";
 import { useOptionalRemoteConnection } from "../../contexts/RemoteConnectionContext";
 import { usePublicShareStatus } from "../../hooks/usePublicShareStatus";
 import { useHostAwakeStatus } from "../../hooks/useHostAwakeStatus";
@@ -350,12 +350,8 @@ export function RemoteAccessSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("settingsRemoteTitle"));
   const remoteConnection = useOptionalRemoteConnection();
-  const { supported: hostIdentitySupported } = useHostIdentity();
   const { version } = useVersion();
-  const hostAwakeSupported = serverHasCapability(
-    version,
-    HOST_AWAKE_CONTROL_CAPABILITY,
-  );
+
   const publicShareManagementSupported = serverHasCapability(
     version,
     PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
@@ -372,7 +368,7 @@ export function RemoteAccessSettings() {
     isLoading: hostAwakeStatusLoading,
     error: hostAwakeStatusError,
     refetch: refetchHostAwakeStatus,
-  } = useHostAwakeStatus(hostAwakeSupported);
+  } = useHostAwakeStatus(true);
   const { settings, isLoading, error, updateSetting, updateSettings } =
     useServerSettings();
   const publicSharesEnabled = settings?.publicSharesEnabled ?? false;
@@ -452,14 +448,14 @@ export function RemoteAccessSettings() {
     await updateSetting("publicSharesEnabled", enabled);
     if (!enabled) setShowPublicShareManagement(false);
   };
-  const hostIdentityItem = hostIdentitySupported ? (
+  const hostIdentityItem = (
     <HostIdentitySettings
       currentIcon={settings?.hostIdentity?.icon ?? ""}
       disabled={isLoading}
       onChange={(identity) => updateSetting("hostIdentity", identity)}
     />
-  ) : null;
-  const hostAwakeConfig = hostAwakeSupported ? (
+  );
+  const hostAwakeConfig = (
     <HostAwakeSettings
       status={hostAwakeStatus}
       statusError={hostAwakeStatusError}
@@ -475,7 +471,7 @@ export function RemoteAccessSettings() {
         await refetchHostAwakeStatus(true);
       }}
     />
-  ) : null;
+  );
 
   // Public read-only share only works once Remote Access (relay) is configured,
   // so its controls live at the top of this tab.
@@ -484,6 +480,7 @@ export function RemoteAccessSettings() {
       <SettingsItem
         label={t("advancedPublicShareTitle")}
         description={t("advancedPublicShareDescription")}
+        doc="site/src/content/docs/security-and-privacy.md#public-session-shares"
         info={
           <>
             <strong>{t("advancedPublicShareTitle")}</strong>
@@ -583,6 +580,7 @@ export function RemoteAccessSettings() {
       <div className="settings-group">
         <SettingsItem
           label={t("developmentPersistRemoteTitle")}
+          doc="topics/mobile-server-pairing.md#current-srp-resume-facts"
           description={`${t("developmentPersistRemoteDescriptionPrefix")} remote-sessions.json ${t("developmentPersistRemoteDescriptionSuffix")}`}
           info={
             <>
@@ -598,7 +596,7 @@ export function RemoteAccessSettings() {
           <label className="toggle-switch">
             <input
               type="checkbox"
-              checked={settings?.persistRemoteSessionsToDisk ?? false}
+              checked={settings?.persistRemoteSessionsToDisk ?? true}
               disabled={isLoading}
               onChange={(e) =>
                 void updateSetting(
@@ -689,6 +687,16 @@ export function RemoteAccessSettings() {
           yaClientInfo={yaClientInfo}
         />
       </HideInSettingsSearch>
+      {serverHasCapability(version, SERVER_CAPABILITIES.peerConnections) && (
+        <SettingsItem
+          label={t("connectionsPairedServers")}
+          description={t("connectionsPasswordChangesHint")}
+        >
+          <Link className="settings-link" to="/settings/server-connections">
+            {t("settingsServerConnectionsTitle")}
+          </Link>
+        </SettingsItem>
+      )}
       {persistSessionsToggle}
     </SettingsSection>
   );

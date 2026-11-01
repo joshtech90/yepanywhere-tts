@@ -680,3 +680,40 @@ it("labels a session pin by saved names and never shows the account id", () => {
       .label,
   ).toBe("routerChipFallback");
 });
+
+it("unions pool tiers but excludes accounts that cannot serve the selected speed", () => {
+  const data = overview();
+  data.accounts[0]!.models[0] = {
+    ...model,
+    serviceTiers: [{ id: "priority", name: "Fast", description: "" }],
+  };
+  data.accounts[1]!.models[0] = {
+    ...model,
+    serviceTiers: [{ id: "ultrafast", name: "Ultra Fast", description: "" }],
+  };
+  expect(
+    routedModels(data, "claude", "work")[0]?.serviceTiers?.map((t) => t.id),
+  ).toEqual(["priority", "ultrafast"]);
+  expect(
+    routerPoolMembers(
+      data,
+      "work",
+      "claude",
+      "opus",
+      "on:high",
+      "priority",
+    ).map((a) => a.id),
+  ).toEqual(["a"]);
+  const t = (key: string) => key;
+  expect(
+    routerAccountIssue(
+      t as never,
+      data.accounts[1]!,
+      "opus",
+      "Opus",
+      data.accounts[1]!.models[0]!.id,
+      "on:high",
+      "priority",
+    )?.text,
+  ).toBe("routerReasonSpeedUnsupported");
+});

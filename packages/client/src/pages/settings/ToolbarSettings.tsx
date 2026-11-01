@@ -45,10 +45,7 @@ import {
   useQuestionReminderTurns,
 } from "../../hooks/useQuestionReminderTurns";
 import { getQuestionReminderThresholds } from "../../lib/asyncQuestions";
-import {
-  serverSupportsProjectQueue,
-  serverSupportsProjectQueueNewSessionShortcutSetting,
-} from "../../lib/projectQueueVisibility";
+
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { SettingsSection } from "./SettingsSection";
@@ -255,7 +252,7 @@ export function ToolbarSettings() {
     waveformButtonBackgroundOpacityPercent,
     setWaveformButtonBackgroundOpacityPercent,
   } = useWaveformButtonBackgroundOpacity();
-  const supportsProjectQueue = serverSupportsProjectQueue(version);
+
   const supportsBrowserDebug = serverHasCapability(
     version,
     REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
@@ -268,8 +265,6 @@ export function ToolbarSettings() {
     version,
     PATIENT_TOPIC_SHIFT_CAPABILITY,
   );
-  const supportsProjectQueueNewSessionShortcutSetting =
-    serverSupportsProjectQueueNewSessionShortcutSetting(version);
 
   const busyComposerDefaultAction =
     settings?.clientDefaults?.busyComposerDefaultAction ?? "steer";
@@ -464,26 +459,22 @@ export function ToolbarSettings() {
       ),
     );
   }
-  if (supportsProjectQueue) {
-    toolbarControls.push(
-      controlMeta(
-        "projectQueue",
-        t("appearanceToolbarProjectQueueTitle"),
-        t("appearanceToolbarProjectQueueDescription"),
-        "right",
-      ),
-    );
-  }
-  if (supportsProjectQueueNewSessionShortcutSetting) {
-    toolbarControls.push(
-      controlMeta(
-        "projectQueueNewSessionShortcut",
-        t("appearanceToolbarProjectQueueNewSessionShortcutTitle"),
-        t("appearanceToolbarProjectQueueNewSessionShortcutDescription"),
-        "right",
-      ),
-    );
-  }
+  toolbarControls.push(
+    controlMeta(
+      "projectQueue",
+      t("appearanceToolbarProjectQueueTitle"),
+      t("appearanceToolbarProjectQueueDescription"),
+      "right",
+    ),
+  );
+  toolbarControls.push(
+    controlMeta(
+      "projectQueueNewSessionShortcut",
+      t("appearanceToolbarProjectQueueNewSessionShortcutTitle"),
+      t("appearanceToolbarProjectQueueNewSessionShortcutDescription"),
+      "right",
+    ),
+  );
 
   const hiddenLeft = toolbarControls.filter(
     (control) =>
@@ -632,6 +623,7 @@ export function ToolbarSettings() {
         <SettingsItem
           label={t("appearanceToolbarDefaultActionTitle")}
           description={t("appearanceToolbarDefaultActionDescription")}
+          doc="site/src/content/docs/sessions-and-approvals.md#steer-queue-and-interrupt"
         >
           <select
             className="settings-select"

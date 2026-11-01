@@ -330,7 +330,10 @@ export function SpeechSettings() {
   );
 
   return (
-    <SettingsSection description={t("speechSettingsDescription")}>
+    <SettingsSection
+      description={t("speechSettingsDescription")}
+      doc="site/src/content/docs/notifications-and-voice.md#browser-voice-input"
+    >
       <div className="settings-group">
         {canAdministerHost && (
           <SettingsItem
@@ -631,6 +634,7 @@ export function SpeechSettings() {
           description={t("speechSettingsSmartTurnDescription", {
             backend: selectedBackendLabel,
           })}
+          doc="topics/mic-button-speech-ui.md#speech-input-ux-overview"
           className="model-settings-item"
         >
           {supportsSelectedSmartTurn ? (

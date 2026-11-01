@@ -15,6 +15,31 @@ import { SECURITY_CLIENT_AUDIT_CAPABILITY } from "./security-clients.js";
 export type ServerCapabilityKind = "permanent" | "transitional";
 
 export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
+  peerAuthenticationRefresh: {
+    name: "peer-authentication-refresh",
+    index: CAPABILITY_ID_ALLOCATIONS.peerAuthenticationRefresh.id,
+    introducedIn: "0.11.1",
+  },
+  peerConnections: {
+    name: "peer-connections",
+    index: CAPABILITY_ID_ALLOCATIONS.peerConnections.id,
+    introducedIn: "0.11.1",
+  },
+  agentApiManagement: {
+    name: "agent-api-management",
+    index: CAPABILITY_ID_ALLOCATIONS.agentApiManagement.id,
+    introducedIn: "0.11.1",
+  },
+  agentApiBootstrap: {
+    name: "agent-api-bootstrap",
+    index: CAPABILITY_ID_ALLOCATIONS.agentApiBootstrap.id,
+    introducedIn: "0.11.1",
+  },
+  agentAuthRouterServiceTiers: {
+    name: "agent-auth-router-service-tiers",
+    index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterServiceTiers.id,
+    introducedIn: "0.11.1",
+  },
   rendezCompose: {
     name: "rendez-active-compose",
     index: CAPABILITY_ID_ALLOCATIONS.rendezCompose.id,
@@ -197,17 +222,9 @@ export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
   },
 } as const;
 
-export type OptionalServerCapabilityBitset = CapabilityBitset;
-
 export interface VersionedServerCapabilityAdvertisement {
   capabilityEncoding: typeof CAPABILITY_ID_ENCODING_VERSION;
   capabilityBits: CapabilityBitset;
-  deniedCapabilityBits?: CapabilityBitset;
-}
-
-export interface CompactServerCapabilityAdvertisement {
-  optionalCapabilityBits: OptionalServerCapabilityBitset;
-  capabilityExtensions?: readonly string[];
   deniedCapabilityBits?: CapabilityBitset;
 }
 
@@ -222,8 +239,6 @@ export interface ServerCapabilitySource {
   capabilityEncoding?: number;
   capabilityBits?: CapabilityBitset;
   deniedCapabilityBits?: CapabilityBitset;
-  optionalCapabilityBits?: OptionalServerCapabilityBitset;
-  capabilityExtensions?: readonly string[];
 }
 
 export interface ServerCapabilityPermanentLifecycle {
@@ -231,11 +246,9 @@ export interface ServerCapabilityPermanentLifecycle {
   reason: string;
 }
 
+/** Alternate code has a hard 90-day deadline in scripts/compatibility-sunsets.json. */
 export interface ServerCapabilityTransitionalLifecycle {
   kind: "transitional";
-  reviewAfter: string;
-  removeClientGateWhen: string;
-  removeServerAdvertisementWhen?: string;
 }
 
 export interface ServerCapabilityDefinition {
@@ -243,6 +256,8 @@ export interface ServerCapabilityDefinition {
   id?: number;
   name: string;
   kind: ServerCapabilityKind;
+  /** Historical reservation only; no live client capability consumers remain. */
+  retired?: boolean;
   area:
     | "deviceBridge"
     | "gitStatus"
@@ -303,6 +318,31 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Advertised only while the operator enables agent self inspection, so clients publish nowhere it is not collected.",
+    },
+  },
+  agentAuthRouterServiceTiers: {
+    id: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterServiceTiers.id,
+    name: "agent-auth-router-service-tiers",
+    introducedIn: "0.11.1",
+    kind: "permanent",
+    retired: true,
+    area: "sessions",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterServiceTiers.id,
+    },
+    description:
+      "Retired client gate: current clients use scoped serviceTierSelection responses. Still advertised for cached older clients; ID reserved.",
+    clientFallback:
+      "Current clients use response-level serviceTierSelection; absence or false hides routed Speed and sends no unsupported tier write.",
+    serverContract: {
+      requestFields: ["serviceTier"],
+      responseFields: ["serviceTierSelection", "models.serviceTiers"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "No current client gate remains. Retain the advertisement for older clients; runtime AAR support belongs to scoped responses.",
     },
   },
   agentAuthRouterMostRemaining: {
@@ -894,6 +934,127 @@ export const SERVER_CAPABILITIES = {
         "Older servers neither store the setting nor accept agent bearer tokens.",
     },
   },
+  peerAuthenticationRefresh: {
+    id: CAPABILITY_ID_ALLOCATIONS.peerAuthenticationRefresh.id,
+    name: "peer-authentication-refresh",
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.11.1",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.peerAuthenticationRefresh.id,
+    },
+    description:
+      "Automatic peer sign-in with short-lived access and sliding inactivity expiry.",
+    clientFallback:
+      "Keep existing directions visible; disable new pairing with update guidance. Do not silently create a fixed-expiry connection.",
+    serverContract: {
+      routes: [
+        "GET /api/peers/connections",
+        "POST /api/peers/connections/connect",
+      ],
+      requestFields: ["automaticSignIn"],
+      responseFields: [
+        "peers.outgoing.authentication",
+        "peers.incoming.authentication",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Requires peer-v1 authentication and server-owned refresh scheduling.",
+    },
+  },
+  peerConnections: {
+    id: CAPABILITY_ID_ALLOCATIONS.peerConnections.id,
+    name: "peer-connections",
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.11.1",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.peerConnections.id,
+    },
+    description:
+      "Owner-only Server Connections settings, server-side SRP pairing, authenticated host identity and directional audit.",
+    clientFallback:
+      "Hide Server Connections and send no peer requests; typed URLs show update guidance.",
+    serverContract: {
+      routes: [
+        "GET /api/peers/connections",
+        "POST /api/peers/connections/connect",
+      ],
+      requestFields: [],
+      responseFields: ["identity", "enabled", "peers", "audit"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Requires dedicated peer credentials and live owner setup authorization.",
+    },
+  },
+  agentApiManagement: {
+    id: CAPABILITY_ID_ALLOCATIONS.agentApiManagement.id,
+    name: "agent-api-management",
+    kind: "permanent",
+    area: "localAccess",
+    introducedIn: "0.11.1",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.agentApiManagement.id,
+    },
+    description:
+      "Separate default-off native v0 session-command enablement, durable retry receipts and trusted creation provenance for qualified operator launches. Existing read leases remain read-only.",
+    clientFallback:
+      "Hide the session-command setting and send no agentApiManagementEnabled. Keep read-only discovery independent.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PUT /api/settings",
+        "POST /v0/servers/:serverId/sessions",
+        "GET /v0/servers/:serverId/receipts/:receiptId",
+        "GET /v0/servers/:serverId/sessions/:sessionId/relationships",
+      ],
+      requestFields: ["agentApiManagementEnabled"],
+      responseFields: ["settings.agentApiManagementEnabled"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older API adapters and provider hosts cannot issue or enforce management grants.",
+    },
+  },
+  agentApiBootstrap: {
+    id: CAPABILITY_ID_ALLOCATIONS.agentApiBootstrap.id,
+    name: "agent-api-bootstrap",
+    kind: "permanent",
+    area: "localAccess",
+    introducedIn: "0.11.1",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.agentApiBootstrap.id,
+    },
+    description:
+      "Opt-in read-only v0 connection and launch identity advertised to eligible local unrestricted Claude/Codex sessions over Unix HTTP or Windows loopback.",
+    clientFallback:
+      "Hide the agent API discovery setting and do not send agentApiEnabled; retain existing operator token behavior.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PATCH /api/settings",
+        "GET /v0/help",
+        "GET /v0/me",
+        "GET /v0/schema",
+      ],
+      requestFields: ["agentApiEnabled"],
+      responseFields: ["settings.agentApiEnabled"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "The local adapter and trusted launch propagation must exist before advertising this connection.",
+    },
+  },
   sessionScopedLocalFiles: {
     id: CAPABILITY_ID_ALLOCATIONS.sessionScopedLocalFiles.id,
     name: "session-scoped-local-files",
@@ -1376,6 +1537,7 @@ export const SERVER_CAPABILITIES = {
     id: CAPABILITY_ID_ALLOCATIONS.computerControlReleases.id,
     name: "computer-control-releases",
     kind: "permanent",
+    retired: true,
     area: "settings",
     introducedIn: "0.8.2",
     advertisement: {
@@ -1420,6 +1582,7 @@ export const SERVER_CAPABILITIES = {
     id: CAPABILITY_ID_ALLOCATIONS.computerControl.id,
     name: "optional-computer-control",
     kind: "permanent",
+    retired: true,
     area: "sessions",
     introducedIn: "0.8.2",
     advertisement: {
@@ -2056,7 +2219,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server resolves governing project glossaries, returns compiled phrase automata, and streams project glossary-path changes.",
     clientFallback:
-      "Hide Glossary hints, make no artifact request or subscription, and render ordinary Markdown.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/projects/:projectId/glossary-artifact"],
       routeModules: ["packages/server/src/routes/glossary-artifacts.ts"],
@@ -2185,11 +2348,6 @@ export const SERVER_CAPABILITIES = {
     },
     lifecycle: {
       kind: "transitional",
-      reviewAfter: "2026-12-09",
-      removeClientGateWhen:
-        "The core 60-day stable support corpus provides descriptors and the Maintainer approves removal.",
-      removeServerAdvertisementWhen:
-        "No maintained client branches on provider-descriptors.",
     },
   },
   rendezUploads: {
@@ -2256,6 +2414,27 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason: "Older servers do not report .rendez observer status.",
+    },
+  },
+  fileFolderListing: {
+    id: CAPABILITY_ID_ALLOCATIONS.fileFolderListing.id,
+    name: "file-folder-listing",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.11.1",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Lists the direct children of one folder for the authenticated File Viewer's clickable path segments; host paths outside the project are superuser-only, and public file shares never list.",
+    clientFallback:
+      "Show the File Viewer path as plain text, with today's file menu on right-click, and make no folder-listing request.",
+    serverContract: {
+      routes: ["GET /api/projects/:projectId/files/list"],
+      requestFields: ["path"],
+      responseFields: ["path", "entries", "truncated"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers have no folder-listing route.",
     },
   },
   projectFolderState: {
@@ -2325,7 +2504,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server defaults project-scoped YA state to its data directory, supports explicit project-local opt-in, and reconciles revisioned mutable state before changing modes.",
     clientFallback:
-      "Show the storage location as unavailable and make no unsupported settings write.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       requestFields: ["settings.projectDirectoryStorage"],
@@ -2347,7 +2526,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server exposes a live-configurable best-effort grace before unviewed, verified-idle provider processes may be reaped.",
     clientFallback:
-      "Hide the idle-reap control and make no unsupported settings write.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       requestFields: ["settings.idleReapHours"],
@@ -2369,7 +2548,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server persists a process-launch limit for supported providers' native subagent nesting depth.",
     clientFallback:
-      "Hide the subagent-depth control and make no unsupported settings write.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       requestFields: ["settings.subagentMaxDepth"],
@@ -2391,7 +2570,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server persists the reasoning-summary mode applied when Codex app-server sessions start, resume, or fork.",
     clientFallback:
-      "Hide the Codex reasoning-summary control and make no unsupported settings write.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       requestFields: ["settings.codexReasoningSummary"],
@@ -2457,7 +2636,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server aligns Codex live and durable transcript rows on provider or client message identity when that identity exists.",
     clientFallback:
-      "Use the legacy Codex non-tool content/timestamp reconciliation, steer pairing, and timestamp-watermark replay suppression.",
+      "Current clients require aligned Codex transcript IDs from the v0.8.0 server baseline; older servers require an update.",
     serverContract: {
       responseFields: [
         "sessionDetail.messages[].uuid",
@@ -2468,7 +2647,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "Hosted clients can outpace installed servers whose Codex stream and durable transcript ids do not align.",
+        "The identity remains advertised for older clients; current clients use aligned IDs unconditionally.",
     },
   },
   codexPaginatedRolloutLineage: {
@@ -2510,7 +2689,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server loads tool-result images on demand by default and can preserve new live results when explicitly enabled.",
     clientFallback:
-      "Show media preservation as unavailable and make no unsupported settings write.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       requestFields: ["settings.toolResultMediaPreservation"],
@@ -2548,7 +2727,8 @@ export const SERVER_CAPABILITIES = {
     advertisement: { kind: "version-implied" },
     description:
       "Server supports the enhanced Source Control page, including file summaries, branch metadata, and recent commits.",
-    clientFallback: "Show the Source Control upgrade/unsupported state.",
+    clientFallback:
+      "Enhanced status is baseline in current clients; repository eligibility still applies.",
     serverContract: {
       routes: [
         "GET /api/projects/:projectId/git",
@@ -2559,7 +2739,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "The enhanced Source Control UI must stay hidden against older servers with only legacy status support.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   gitStatusRemoteCheck: {
@@ -2570,14 +2750,15 @@ export const SERVER_CAPABILITIES = {
     advertisement: { kind: "version-implied" },
     description:
       "Server supports explicit remote fetch/check for Source Control status.",
-    clientFallback: "Hide remote-check controls.",
+    clientFallback:
+      "Remote checks are baseline in current clients; project eligibility and action serialization still apply.",
     serverContract: {
       routes: ["POST /api/projects/:projectId/git/check-remote"],
     },
     lifecycle: {
       kind: "permanent",
       reason:
-        "Remote checking depends on a server-side git operation endpoint and may be unavailable on older servers.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   gitStatusPull: {
@@ -2587,14 +2768,15 @@ export const SERVER_CAPABILITIES = {
     introducedIn: "0.6.0",
     advertisement: { kind: "version-implied" },
     description: "Server supports Source Control pull actions.",
-    clientFallback: "Hide pull controls.",
+    clientFallback:
+      "Pull is baseline in current clients; repository eligibility, fast-forward policy and action serialization still apply.",
     serverContract: {
       routes: ["POST /api/projects/:projectId/git/pull"],
     },
     lifecycle: {
       kind: "permanent",
       reason:
-        "Pull is a mutating server-side git operation and must only be offered when the server advertises it.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   gitStatusPush: {
@@ -2604,14 +2786,15 @@ export const SERVER_CAPABILITIES = {
     introducedIn: "0.6.0",
     advertisement: { kind: "version-implied" },
     description: "Server supports Source Control push/publish actions.",
-    clientFallback: "Hide push controls.",
+    clientFallback:
+      "Push is baseline in current clients; repository eligibility, explicit action and serialization still apply.",
     serverContract: {
       routes: ["POST /api/projects/:projectId/git/push"],
     },
     lifecycle: {
       kind: "permanent",
       reason:
-        "Push is a mutating server-side git operation and must only be offered when the server advertises it.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   gitStatusIntegrationOptions: {
@@ -2622,14 +2805,15 @@ export const SERVER_CAPABILITIES = {
     advertisement: { kind: "version-implied" },
     description:
       "Server supports read-only Source Control integration-option analysis for diverged branches.",
-    clientFallback: "Hide automatic integration-option controls.",
+    clientFallback:
+      "Integration options are baseline in current clients and load only following a diverged result.",
     serverContract: {
       routes: ["GET /api/projects/:projectId/git/integration-options"],
     },
     lifecycle: {
       kind: "permanent",
       reason:
-        "Integration-option analysis depends on server-side route behavior older servers may not expose.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   gitDirtyFileEditor: {
@@ -2642,7 +2826,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server reports the last YA session observed editing each still-dirty Source Control path.",
     clientFallback:
-      "Hide dirty-file session links and make no additional request.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. Settings, permissions, source readiness and runtime availability still apply.",
     serverContract: {
       routes: [
         "GET /api/projects/:projectId/git",
@@ -2666,7 +2850,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server supports the commit/file browser and server-owned source-review workflow.",
     clientFallback:
-      "Keep basic Source Control status and individually capability-gated remote actions; explain that browsing and review require a server update.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. Settings, permissions, source readiness and runtime availability still apply.",
     serverContract: {
       routes: [
         "GET /api/projects/:projectId/git/commits",
@@ -2693,7 +2877,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "Hosted clients can outpace installed servers, while Source Control must retain its released basic status and synchronization path.",
+        "Retains the advertised contract and the update-only guard; the alternate Source Control client implementation is removed.",
     },
   },
   gitSourceReviewSubmissions: {
@@ -2706,7 +2890,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server supports captured source-review sites, durable submissions, outcomes, and unread review responses.",
     clientFallback:
-      "Retain the version-1 source-review comments and submit flow; hide Reviews and make no capture, submission, site, response, or acknowledgement request.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. Settings, permissions, source readiness and runtime availability still apply.",
     serverContract: {
       routes: [
         "GET /api/projects/:projectId/review/submissions",
@@ -2751,7 +2935,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server supports ignore-whitespace rendering and direct selected-revision-to-HEAD comparisons in Source Control.",
     clientFallback:
-      "Keep ordinary working-tree and commit review available; make no projection request and explain that the server must be updated or restarted.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. Settings, permissions, source readiness and runtime availability still apply.",
     serverContract: {
       routes: [
         "GET /api/projects/:projectId/git/compare/:sha",
@@ -2787,7 +2971,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server compares an inclusive selected-commit range from the selected commit's first parent, or the empty tree for a root commit, through pinned HEAD.",
     clientFallback:
-      "Hide inclusive To HEAD and make no range request; retain separately gated direct per-file selected-tree-to-HEAD comparison.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. Settings, permissions, source readiness and runtime availability still apply.",
     serverContract: {
       routes: [
         "GET /api/projects/:projectId/git/range-to-head/:sha",
@@ -2826,7 +3010,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server exposes exact per-file HEAD-to-worktree and first-parent-to-worktree diff projections for the shared file viewer.",
     clientFallback:
-      "Hide file-viewer diff selectors, retain ordinary file viewing and Source Control, and make no file-projection request.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. Settings, permissions, source readiness and runtime availability still apply.",
     serverContract: {
       routes: [
         "GET /api/projects/:projectId/git/file-projections",
@@ -2861,7 +3045,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server resolves a file's last content revision and whether live filesystem content differs from the committed blob.",
     clientFallback:
-      "Omit file-revision provenance and make no metadata request.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. Settings, permissions, source readiness and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/projects/:projectId/git/file-revision"],
       routeModules: ["packages/server/src/routes/git-file-revision.ts"],
@@ -2967,7 +3151,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server exposes current-content inventory plus a persistent, searchable non-ignored untracked cache outside the project.",
     clientFallback:
-      "Keep the tracked-only Files browser and legacy compact untracked expansion, making no working-tree or cache request.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. Settings, permissions, source readiness and runtime availability still apply.",
     serverContract: {
       routes: [
         "GET /api/projects/:projectId/git/working-tree-files",
@@ -2990,7 +3174,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "Older servers expose only tracked paths, so the hosted client must not infer an incomplete current-content inventory from that route.",
+        "Retains the advertised contract and the update-only guard; the alternate Source Control client implementation is removed.",
     },
   },
   gitWorkingTreeSections: {
@@ -3088,7 +3272,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server separates the cache-billing upper idle cutoff from the legacy recent-activity no-alert window.",
     clientFallback:
-      "Keep the legacy recent-activity control and omit the ignore-after field and control.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       requestFields: ["settings.cacheMissBilling.ignoreAfterMinutes"],
@@ -3110,7 +3294,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server records post-freshness cache reads and input costs as expected expiry evidence behind an opt-in query and live event.",
     clientFallback:
-      "Hide the expected-expiry evidence toggle, omit the query field, and listen only for ordinary cache-billing events.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings/cache-miss-billing/events"],
       requestFields: ["includeExpectedExpiry"],
@@ -3162,7 +3346,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server persists the default-off live worktree monitoring setting independently of whether the live protocol is active.",
     clientFallback:
-      "Hide and omit the setting, use static working-tree paths, and do not activate a worktree subscription.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. Settings, permissions, source readiness and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       requestFields: ["settings.liveWorktreeMonitoringEnabled"],
@@ -3184,7 +3368,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server lists commits on the configured upstream tracking ref but not local HEAD without contacting the remote.",
     clientFallback:
-      "Keep the upstream name as inert status text and make no incoming-commit request.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. Settings, permissions, source readiness and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/projects/:projectId/git/incoming-commits"],
       routeModules: ["packages/server/src/routes/git-incoming-commits.ts"],
@@ -3212,7 +3396,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server supports configuring approval audit-log persistence from Local Access settings.",
     clientFallback:
-      "Treat approval audit logging as a legacy read-only enabled setting.",
+      "Approval logging is editable on the current v0.8.0 client baseline; no legacy read-only branch remains.",
     serverContract: {
       routes: ["GET /api/settings", "PATCH /api/settings"],
       responseFields: ["settings.approvalAuditLogEnabled"],
@@ -3220,7 +3404,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "Older servers lack the configurable approval audit-log setting and should not receive writes for it.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   securityClientAudit: {
@@ -3291,7 +3475,8 @@ export const SERVER_CAPABILITIES = {
     advertisement: { kind: "version-implied" },
     description:
       "Server persists opt-in previous/custom Claude model ids and exposes the maintained optional catalog.",
-    clientFallback: "Hide the Additional models provider setting.",
+    clientFallback:
+      "Additional Claude models are available on the current v0.8.0 client baseline without a separate fixed gate.",
     serverContract: {
       routes: [
         "GET /api/settings",
@@ -3308,7 +3493,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "Hosted clients may reach older servers without the additional-model settings/catalog API; the client only hides the setting there.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   claudeGateway: {
@@ -3321,7 +3506,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server can persist a Claude LLM-gateway URL and expose its models as an isolated Claude Gateway provider.",
     clientFallback:
-      "Hide Claude Gateway configuration and make no unsupported settings write.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings", "GET /api/providers"],
       requestFields: ["settings.claudeGatewayUrl"],
@@ -3360,11 +3545,6 @@ export const SERVER_CAPABILITIES = {
     },
     lifecycle: {
       kind: "transitional",
-      reviewAfter: "2027-03-16",
-      removeClientGateWhen:
-        "The hosted-client compatibility floor excludes servers older than the gateway services list.",
-      removeServerAdvertisementWhen:
-        "No maintained client still branches on claude-gateway-services.",
     },
   },
   claudeGatewayAutostart: {
@@ -3377,7 +3557,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server can persist and run an explicit shell command when a configured loopback Claude Gateway has no TCP listener.",
     clientFallback:
-      "Hide the Gateway start-command field and make no unsupported settings write.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings", "GET /api/providers"],
       requestFields: ["settings.claudeGatewayStartCommand"],
@@ -3399,7 +3579,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server can persist whether Claude Gateway launches deny Claude Code's Agent tool.",
     clientFallback:
-      "Hide the Gateway Agent-tool setting and make no unsupported settings write.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       requestFields: ["settings.claudeGatewayDisableAgent"],
@@ -3421,7 +3601,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server can persist whether Claude Gateway launches remove Claude Code's plan-mode tools from model context.",
     clientFallback:
-      "Hide the Gateway plan-mode setting and make no unsupported settings write.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       requestFields: ["settings.claudeGatewayDisablePlanMode"],
@@ -3604,7 +3784,8 @@ export const SERVER_CAPABILITIES = {
     advertisement: { kind: "version-implied" },
     description:
       "Server supports always-on local `!!` shell commands, completions, and persisted bang-command history; the top-level history view stays behind an explicit default-off setting.",
-    clientFallback: "Hide bang-command entry points and composer routing.",
+    clientFallback:
+      "Explicit bang execution is baseline; only the opt-in history view remains hidden by default.",
     serverContract: {
       routes: [
         "GET /api/settings",
@@ -3621,7 +3802,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "Local command execution is an explicit server security boundary and older servers may not expose the routes or setting.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   hostIdentity: {
@@ -3632,7 +3813,8 @@ export const SERVER_CAPABILITIES = {
     advertisement: { kind: "version-implied" },
     description:
       "Server persists an optional visual marker identifying the current YA host.",
-    clientFallback: "Hide host identity settings and render no host marker.",
+    clientFallback:
+      "Show the configured host marker when its optional icon is set; no fixed-version gate remains in current clients.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       responseFields: ["settings.hostIdentity"],
@@ -3640,7 +3822,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "Hosted clients may remain compatible with older servers that cannot persist host identity.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   hostAwakeControl: {
@@ -3651,7 +3833,8 @@ export const SERVER_CAPABILITIES = {
     advertisement: { kind: "version-implied" },
     description:
       "Server supports process-lifetime host-awake settings and status discovery.",
-    clientFallback: "Hide host-awake settings.",
+    clientFallback:
+      "Use host-awake status on the current v0.8.0 client baseline; actual platform support still controls availability.",
     serverContract: {
       routes: [
         "GET /api/settings",
@@ -3666,7 +3849,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "Hosted clients may reach older servers without the host-awake settings/status API; the client only hides host-awake settings there.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   hostAgentProcessObservability: {
@@ -3833,7 +4016,8 @@ export const SERVER_CAPABILITIES = {
     advertisement: { kind: "version-implied" },
     description:
       "Server supports durable project-scoped queue creation, listing, mutation, dispatch pause/resume, and promotion.",
-    clientFallback: "Hide Project Queue entry points.",
+    clientFallback:
+      "Project Queue is baseline in current clients; preserve queue admission, source readiness and configured affordance visibility.",
     serverContract: {
       routes: [
         "GET /api/project-queue",
@@ -3852,7 +4036,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "Project Queue availability remains a server feature boundary for older servers and hosted remote clients.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   projectQueueReadinessCheck: {
@@ -3905,6 +4089,7 @@ export const SERVER_CAPABILITIES = {
     id: CAPABILITY_ID_ALLOCATIONS.projectSessionDefaults.id,
     name: "project-session-defaults",
     kind: "permanent",
+    retired: true,
     area: "settings",
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
@@ -3944,7 +4129,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server allocates, persists, and atomically edits unique project code names for compact project identity in browser titles and session lists.",
     clientFallback:
-      "Use full project names, keep legacy tab-title activity frames, hide code-name editing, and make no code-name request.",
+      "Current clients assume this v0.8.0 baseline contract; older servers should update or use their bundled client. User preferences and runtime availability still apply.",
     serverContract: {
       routes: [
         "GET /api/projects",
@@ -4136,7 +4321,7 @@ export const SERVER_CAPABILITIES = {
     description:
       "Server accepts and persists the active-composer new-session Project Queue shortcut presence setting.",
     clientFallback:
-      "Hide the active-composer new-session shortcut and its Toolbar setting.",
+      "The new-session shortcut setting is baseline; its configured presence still controls visibility.",
     serverContract: {
       routes: ["GET /api/settings", "PUT /api/settings"],
       responseFields: [
@@ -4146,7 +4331,7 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason:
-        "Hosted clients must not save the new toolbar presence key to older servers that reject it.",
+        "The fixed contract remains advertised for older clients; current clients use the supported v0.8.0 baseline.",
     },
   },
   voiceInput: {
@@ -4513,40 +4698,6 @@ const SERVER_CAPABILITY_DEFINITIONS_BY_NAME = new Map<
   ]),
 );
 
-export function encodeOptionalServerCapabilityBits(
-  capabilities: readonly string[],
-): OptionalServerCapabilityBitset {
-  const ids: number[] = [];
-  for (const name of capabilities) {
-    const advertisement =
-      SERVER_CAPABILITY_DEFINITIONS_BY_NAME.get(name)?.advertisement;
-    if (advertisement?.kind !== "optional-bit") continue;
-    ids.push(advertisement.index);
-  }
-  return encodeCapabilityIds(ids);
-}
-
-export function encodeCompactServerCapabilities(
-  capabilities: readonly string[],
-  currentVersion: string,
-  deniedCapabilities: readonly string[] = [],
-): CompactServerCapabilityAdvertisement {
-  const capabilityExtensions = capabilities.filter((name) => {
-    const definition = SERVER_CAPABILITY_DEFINITIONS_BY_NAME.get(name);
-    return (
-      !definition ||
-      (definition.advertisement.kind === "version-implied" &&
-        !isVersionAtLeast(currentVersion, definition.introducedIn)) ||
-      definition.advertisement.kind === "scoped"
-    );
-  });
-  return {
-    optionalCapabilityBits: encodeOptionalServerCapabilityBits(capabilities),
-    ...(capabilityExtensions.length > 0 ? { capabilityExtensions } : {}),
-    ...encodeDeniedServerCapabilities(deniedCapabilities, currentVersion),
-  };
-}
-
 function encodeDeniedServerCapabilities(
   deniedCapabilities: readonly string[],
   currentVersion: string,
@@ -4648,10 +4799,7 @@ export function serverHasCapability(
   ) {
     return false;
   }
-  if (
-    source?.capabilities?.includes(name) ||
-    source?.capabilityExtensions?.includes(name)
-  ) {
+  if (source?.capabilities?.includes(name)) {
     return true;
   }
 
@@ -4665,15 +4813,9 @@ export function serverHasCapability(
     );
   }
   if (definition.advertisement.kind === "optional-bit") {
-    return (
-      capabilityBitIsSet(
-        source?.capabilityBits,
-        definition.advertisement.index,
-      ) ||
-      capabilityBitIsSet(
-        source?.optionalCapabilityBits,
-        definition.advertisement.index,
-      )
+    return capabilityBitIsSet(
+      source?.capabilityBits,
+      definition.advertisement.index,
     );
   }
   return false;
@@ -4686,9 +4828,7 @@ export function hasServerCapabilityAdvertisement(
     source?.capabilities !== undefined ||
     source?.capabilityEncoding !== undefined ||
     source?.capabilityBits !== undefined ||
-    source?.deniedCapabilityBits !== undefined ||
-    source?.optionalCapabilityBits !== undefined ||
-    source?.capabilityExtensions !== undefined
+    source?.deniedCapabilityBits !== undefined
   );
 }
 

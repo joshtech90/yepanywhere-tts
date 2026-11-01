@@ -49,6 +49,24 @@
   z-index: 10012;
 }
 
+/* Names the folder a path segment's menu acts on; long paths keep their end. */
+.heading {
+  /* Within the menu's 230px minimum, which its viewport clamp assumes. */
+  max-width: 206px;
+  overflow: hidden;
+  padding: 0.25rem 0.6rem 0.4rem;
+  margin-bottom: var(--space-1);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
 .branchLabel,
 .backLabel {
   display: flex;

@@ -19,8 +19,8 @@ Parent contracts:
 Settings exposes a first-class **Storage** category immediately after
 **Source Control**. A dedicated category is justified even with only two
 controls because both are server-wide trust and retention decisions, neither
-fits an existing category honestly, and older-server compatibility must remain
-visible. **Performance** would misstate filesystem consent as tuning;
+fits an existing category honestly. **Performance** would misstate filesystem
+consent as tuning;
 **Source Control** would omit attachments and media; **Local Access** and
 **Environment** own different server concerns.
 
@@ -193,8 +193,12 @@ place and readable where safe.
 
 ## Capability Advertisement
 
-The controls are gated independently so later storage features do not broaden
-an older advertised promise.
+The two identities retain their independent server contracts. Since the
+2026-10-29 client retirement, both policies are baseline v0.8.0 contracts:
+current clients show editable choices and preserve both fields in writes and
+Undo. Defaults remain app-data-only and on-demand; neither policy is enabled
+by exposing its control. Older hosts should update or use their bundled client.
+Later storage features still require their own contract.
 
 ### `project-directory-storage-policy`
 
@@ -203,11 +207,6 @@ This permanent capability owns `GET /api/settings`, `PUT /api/settings`, and
 attests that the complete audited YA-managed project/Git writer set obeys the
 setting, absent configuration defaults to `"app-data"`, and revisioned mutable
 Source Review state is reconciled before a mode change is published.
-
-Without it, the client omits the field and shows the location control as
-read-only with an update-required explanation. It does not claim the project
-is protected because older stable servers may still write uploads into
-`.attachments/`.
 
 ### `tool-result-media-preservation-policy`
 
@@ -220,12 +219,6 @@ Advertisement attests to all of the following:
 - historical session-detail reads never preserve media;
 - preserve mode captures only new results from managed sessions; and
 - preserved copies have no automatic expiry, size eviction, or pruning.
-
-Without it, the client omits the field and shows the media control as
-read-only with an update-required explanation. An unadvertised current-source
-server may contain the earlier unconditional materializer, so the client must
-not infer on-demand behavior merely because no stable release shipped that
-implementation.
 
 Each capability's registry `introducedIn` value is the first stable release
 that implements its complete invariant. No stable release through `0.7.0`
@@ -247,8 +240,7 @@ The Settings implementation verifies:
 - equal-revision Source Review divergence and unsafe destinations leave the old
   mode selected;
 - active review writes drain before destination verification and publication;
-- independent gating, saving, loading, search, and undo behavior;
-- read-only missing-capability explanations without unsupported requests;
+- independent policy choices, saving, loading, search, and undo behavior;
 - no project/Git mutation in app-data mode;
 - no durable media write from live or historical sessions in on-demand mode;
 - preserve-mode capture for new managed-session results with no open client;

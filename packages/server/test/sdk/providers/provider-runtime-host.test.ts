@@ -1,3 +1,7 @@
+import { openSqliteOrThrow } from "../../../src/storage/sqlite.js";
+import { migrateDiscoveryDatabase } from "../../../src/storage/discovery-sqlite.js";
+import { ApiReceiptStore } from "../../../src/core-api/receipt-store.js";
+import { SessionCommands } from "../../../src/core-api/session-commands.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
@@ -33,8 +37,11 @@ import {
   ensureProviderRuntimeHost,
   initializeProviderRuntimeHost,
   startHostedProviderSession,
+  revokeHostedAgentApiAccess,
+  revokeHostedPeerAgentApiAccess,
 } from "../../../src/sdk/providers/provider-runtime-host.js";
 import { isProviderHostDegraded } from "../../../src/sdk/providers/provider-host-status.js";
+import { CoreApi, CoreApiError } from "../../../src/core-api/service.js";
 
 const temporaryPaths: string[] = [];
 const fixtureWorker = join(
@@ -521,6 +528,9 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
           "session-turn-idle-timeout",
           "recent-runtime-recovery",
           "provider-session-options",
+          "agent-api-revocation",
+          "agent-api-management",
+          "agent-api-peers",
         ],
         controlSocketPath: paths.controlSocketPath,
         tokenFilePath: paths.tokenPath,
@@ -1949,6 +1959,376 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
 
     await session.abort();
     await host.shutdown("approval cancellation test complete");
+  });
+
+  it("omits API advertisement for ineligible launches against an older host", async () => {
+    const runtimeRoot = await mkdtemp(join(runtimeTmpDir, "old-api-host-"));
+    temporaryPaths.push(runtimeRoot);
+    const controlSocketPath = join(runtimeRoot, "host.sock");
+    const host = new ProviderRuntimeHost({
+      runtimeDir: runtimeRoot,
+      controlSocketPath,
+      token: "old-api-token",
+      workerPath: fixtureWorker,
+    });
+    const handle = host.handleRequest.bind(host);
+    vi.spyOn(host, "handleRequest").mockImplementation(
+      async (request: Record<string, unknown>, owner: unknown) => {
+        const result = await handle(request, owner);
+        return request.op === "status" ? { ...result, features: [] } : result;
+      },
+    );
+    await host.start();
+    process.env.YEP_PROVIDER_RUNTIME_SOCKET = controlSocketPath;
+    process.env.YEP_PROVIDER_RUNTIME_TOKEN = "old-api-token";
+    process.env.YEP_SERVER_GENERATION = "old-api";
+    try {
+      expect(await initializeProviderRuntimeHost()).toBe(true);
+      for (const provider of ["pi", "gemini", "codex"] as const) {
+        const session = await startHostedProviderSession(
+          provider,
+          {
+            cwd: runtimeRoot,
+            permissionMode: "default",
+            agentApi: { serverId: "old-profile" },
+          },
+          {},
+        );
+        await session.abort();
+      }
+      await expect(
+        startHostedProviderSession(
+          "claude",
+          { cwd: runtimeRoot, agentApi: { serverId: "old-profile" } },
+          {},
+        ),
+      ).rejects.toThrow("Restart the provider host");
+    } finally {
+      await host.shutdown("old host qualification complete");
+    }
+  });
+
+  it("routes real agent HTTP reads through the worker socket across controller replacement", async () => {
+    const runtimeRoot = await mkdtemp(join(runtimeTmpDir, "api-host-"));
+    temporaryPaths.push(runtimeRoot);
+    const controlSocketPath = join(runtimeRoot, "host.sock");
+    const host = new ProviderRuntimeHost({
+      runtimeDir: runtimeRoot,
+      controlSocketPath,
+      token: "api-host-token",
+      workerPath: join(dirname(fixtureWorker), "agent-api-runtime-worker.ts"),
+    });
+    await host.start();
+    process.env.YEP_PROVIDER_RUNTIME_SOCKET = controlSocketPath;
+    process.env.YEP_PROVIDER_RUNTIME_TOKEN = "api-host-token";
+    process.env.YEP_SERVER_GENERATION = "api-first";
+    const database = openSqliteOrThrow(":memory:");
+    migrateDiscoveryDatabase(database);
+    const receiptStore = new ApiReceiptStore(database);
+    let launches = 0,
+      inputs = 0;
+    let consumeInput = () => {};
+    const commands = new SessionCommands(
+      "profile-api-host",
+      receiptStore,
+      {
+        async start() {
+          launches++;
+          return { sessionId: "created-native" };
+        },
+        canSend: () => true,
+        send(_id, _request, _receipt, consumed) {
+          inputs++;
+          consumeInput = consumed;
+          return { accepted: true };
+        },
+      },
+      () => true,
+    );
+    const core = new CoreApi("profile-api-host", {
+      commands,
+      projects: async () => ({
+        items: [
+          { id: "worker-project", name: "worker project", path: runtimeRoot },
+        ],
+      }),
+      sessions: async () => ({
+        items: [
+          {
+            id: "api-fixture",
+            projectId: "worker-project",
+            provider: "claude",
+            title: null,
+            updatedAt: "",
+            state: "idle",
+          },
+        ],
+      }),
+      followConversation: async (_id, query) => ({
+        cursor: query.after ?? "c1." + "a".repeat(64),
+        changed: false,
+        reset: false,
+        conversation: null,
+      }),
+      conversation: async (_id, query) => {
+        throw new CoreApiError(
+          query.anchorMessageId
+            ? "anchor_unavailable"
+            : "conversation_unavailable",
+          "History unavailable",
+          query.anchorMessageId ? 404 : 503,
+        );
+      },
+      providers: async () => [
+        {
+          id: "claude",
+          name: "Claude",
+          supportsSteering: true,
+          supportsPermissionMode: true,
+        },
+      ],
+    });
+    const options = {
+      cwd: runtimeRoot,
+      agentApi: {
+        serverId: "profile-api-host",
+        management: true,
+        peerAccess: true,
+        peerGrantId: "87b28c33-f5d7-449a-b698-4f3df72f79ae",
+      },
+      onAgentApiRead: core.read.bind(core),
+    };
+    try {
+      expect(await initializeProviderRuntimeHost()).toBe(true);
+      const first = await startHostedProviderSession("claude", options, {});
+      expect((await first.iterator.next()).value?.session_id).toBe(
+        "api-fixture",
+      );
+      first.queue.push({ text: "/v0/servers/profile-api-host/projects" });
+      const result = (await first.iterator.next()).value!.apiResult as {
+        status: number;
+        body: string;
+      };
+      expect(result.status).toBe(200);
+      expect(JSON.parse(result.body).items[0].id).toBe("worker-project");
+      for (const [suffix, code, status] of [
+        ["", "conversation_unavailable", 503],
+        ["?anchorMessageId=missing", "anchor_unavailable", 404],
+        ["?anchorMessageID=misspelled", "invalid_request", 400],
+        ["?maxMessages=0", "invalid_request", 400],
+        ["?maxMessages=101", "invalid_request", 400],
+      ] as const) {
+        first.queue.push({
+          text:
+            "/v0/servers/profile-api-host/sessions/api-fixture/conversation" +
+            suffix,
+        });
+        const failure = (await first.iterator.next()).value!.apiResult as {
+          status: number;
+          body: string;
+        };
+        expect(failure.status).toBe(status);
+        expect(JSON.parse(failure.body).error.code).toBe(code);
+      }
+      first.queue.push({
+        text:
+          "/v0/servers/profile-api-host/sessions/api-fixture/conversation/follow?after=c1." +
+          "a".repeat(64) +
+          "&waitMs=0",
+      });
+      const followed = (await first.iterator.next()).value!.apiResult as {
+        status: number;
+        body: string;
+      };
+      expect(followed.status).toBe(200);
+      expect(JSON.parse(followed.body)).toMatchObject({
+        changed: false,
+        conversation: null,
+      });
+      const createBody = {
+        requestId: "bridge-create-1",
+        projectId: "worker-project",
+        provider: "claude",
+        message: "Review",
+      };
+      first.queue.push({
+        text: JSON.stringify({
+          path: "/v0/servers/profile-api-host/sessions",
+          body: createBody,
+        }),
+      });
+      const created = (await first.iterator.next()).value!.apiResult as {
+        status: number;
+        body: string;
+      };
+      expect(created.status).toBe(202);
+      const receipt = JSON.parse(created.body);
+      expect(receipt.creator).toMatchObject({
+        sessionId: "api-fixture",
+        serverId: "profile-api-host",
+      });
+      first.queue.push({
+        text: JSON.stringify({
+          path: "/v0/servers/profile-api-host/sessions",
+          body: createBody,
+        }),
+      });
+      const repeated = (await first.iterator.next()).value!.apiResult as {
+        status: number;
+        body: string;
+      };
+      expect(JSON.parse(repeated.body).id).toBe(receipt.id);
+      expect(launches).toBe(1);
+      const sendBody = { requestId: "bridge-message-1", message: "Follow up" };
+      const sendPath =
+        "/v0/servers/profile-api-host/sessions/api-fixture/messages";
+      first.queue.push({
+        text: JSON.stringify({ path: sendPath, body: sendBody }),
+        uuid: "proxy-batch",
+        metadata: { apiSubmissionIds: ["proxy-api-A", "proxy-api-B"] },
+      });
+      const sent = (await first.iterator.next()).value!.apiResult as {
+        status: number;
+        body: string;
+      };
+      expect(sent.status).toBe(202);
+      const inputReceipt = JSON.parse(sent.body);
+      expect(inputReceipt.creator.sessionId).toBe("api-fixture");
+      expect(first.queue.hasYieldedApiInput?.("proxy-api-A")).toBe(true);
+      expect(first.queue.hasYieldedApiInput?.("proxy-api-B")).toBe(true);
+      const receiptPath = `/v0/servers/profile-api-host/receipts/${inputReceipt.id}/follow`;
+      first.queue.push({ text: receiptPath + "?waitMS=0" });
+      expect(
+        ((await first.iterator.next()).value!.apiResult as { status: number })
+          .status,
+      ).toBe(400);
+      first.queue.push({ text: receiptPath + "?waitMs=0" });
+      const beforeInput = JSON.parse(
+        ((await first.iterator.next()).value!.apiResult as { body: string })
+          .body,
+      );
+      expect(beforeInput.receipt.delivery).toBe("unknown");
+      consumeInput();
+      first.queue.push({
+        text: receiptPath + "?waitMs=0&after=" + beforeInput.cursor,
+      });
+      const consumedInput = JSON.parse(
+        ((await first.iterator.next()).value!.apiResult as { body: string })
+          .body,
+      );
+      expect(consumedInput).toMatchObject({
+        changed: true,
+        receipt: {
+          id: inputReceipt.id,
+          delivery: "consumed",
+          completion: "unknown",
+        },
+      });
+      await first.publishAgentctlSessionId?.("api-fixture");
+      const waiting = first.iterator.next();
+      await first.detachForServerReload?.();
+      await waiting;
+      closeProviderRuntimeHostRegistration();
+      process.env.YEP_SERVER_GENERATION = "api-second";
+      expect(await initializeProviderRuntimeHost()).toBe(true);
+      const second = await startHostedProviderSession(
+        "claude",
+        { ...options, resumeSessionId: "api-fixture" },
+        {},
+      );
+      second.queue.push({ text: "/v0/me" });
+      const me = (await second.iterator.next()).value!.apiResult as {
+        status: number;
+        body: string;
+      };
+      expect(me.status).toBe(200);
+      expect(JSON.parse(me.body).session.id).toBe("api-fixture");
+      second.queue.push({ text: "/v0/servers/profile-api-host/projects" });
+      expect(
+        ((await second.iterator.next()).value!.apiResult as { status: number })
+          .status,
+      ).toBe(200);
+      second.queue.push({
+        text: JSON.stringify({ path: sendPath, body: sendBody }),
+      });
+      const replayedInput = JSON.parse(
+        ((await second.iterator.next()).value!.apiResult as { body: string })
+          .body,
+      );
+      expect(replayedInput).toMatchObject({
+        id: inputReceipt.id,
+        delivery: "consumed",
+      });
+      expect(inputs).toBe(1);
+      const localOnly = await startHostedProviderSession(
+        "claude",
+        {
+          ...options,
+          agentApi: {
+            serverId: "profile-api-host",
+            management: false,
+            peerAccess: true,
+            peerGrantId: options.agentApi.peerGrantId,
+          },
+        },
+        {},
+      );
+      await localOnly.iterator.next();
+      expect(second.revokePeerAgentApiAccess).toBeTypeOf("function");
+      expect(localOnly.revokePeerAgentApiAccess).toBeUndefined();
+      await revokeHostedPeerAgentApiAccess(
+        "profile-api-host",
+        "a0f91728-4f90-40b5-a14e-cee011990459",
+      );
+      second.queue.push({ text: "/v0/me" });
+      expect(
+        ((await second.iterator.next()).value!.apiResult as { status: number })
+          .status,
+      ).toBe(200);
+      await revokeHostedPeerAgentApiAccess(
+        "profile-api-host",
+        options.agentApi.peerGrantId,
+      );
+      localOnly.queue.push({ text: "/v0/me" });
+      expect(
+        (
+          (await localOnly.iterator.next()).value!.apiResult as {
+            status: number;
+          }
+        ).status,
+      ).toBe(200);
+      second.queue.push({ text: "/v0/me" });
+      expect([0, 401]).toContain(
+        ((await second.iterator.next()).value!.apiResult as { status: number })
+          .status,
+      );
+      const other = await startHostedProviderSession(
+        "claude",
+        { ...options, agentApi: { serverId: "other-profile" } },
+        {},
+      );
+      await other.iterator.next();
+      await revokeHostedAgentApiAccess("profile-api-host");
+      other.queue.push({ text: "/v0/me" });
+      expect(
+        ((await other.iterator.next()).value!.apiResult as { status: number })
+          .status,
+      ).toBe(200);
+      second.queue.push({ text: "/v0/me" });
+      expect([0, 401]).toContain(
+        ((await second.iterator.next()).value!.apiResult as { status: number })
+          .status,
+      );
+      await second.abort();
+      await localOnly.abort();
+      await other.abort();
+    } finally {
+      commands.close();
+      await commands.idle();
+      receiptStore.close();
+      database.close();
+      await host.shutdown("agent HTTP test complete");
+    }
   });
 
   it("reattaches the AgentSession proxy to the same worker", async () => {

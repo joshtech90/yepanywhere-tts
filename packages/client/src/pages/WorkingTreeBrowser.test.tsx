@@ -24,6 +24,10 @@ vi.mock("react-router-dom", async (orig) => ({
   ...(await orig<typeof import("react-router-dom")>()),
   useNavigate: () => vi.fn(),
 }));
+// Provenance is covered at its own component boundary and in browser tests.
+vi.mock("../components/FileRevisionLink", () => ({
+  FileRevisionLink: () => null,
+}));
 vi.mock("../hooks/useRemoteBasePath", () => ({
   useRemoteBasePath: () => "",
 }));
@@ -420,7 +424,6 @@ describe("WorkingTreeBrowser", () => {
           projectId="p1"
           status={status}
           isWideScreen={true}
-          supportsLastEditor
           t={namedT}
         />
       </MemoryRouter>,
@@ -497,7 +500,6 @@ describe("WorkingTreeBrowser", () => {
             recentCommits: [],
           }}
           isWideScreen={true}
-          supportsLastEditor
           t={namedT}
         />
       </MemoryRouter>,
@@ -582,7 +584,6 @@ describe("WorkingTreeBrowser", () => {
             ],
           }}
           isWideScreen={true}
-          supportsLastEditor
           t={t}
         />
       </MemoryRouter>,

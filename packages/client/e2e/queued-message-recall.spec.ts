@@ -5,6 +5,7 @@ import {
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 
 const projectId = Buffer.from(join(e2ePaths.tempDir, "mockproject")).toString(
   "base64url",
@@ -34,6 +35,10 @@ test("↑ in the emptied composer leaves a queued message queued", async ({
   const queuedText = "Run the remaining checks after this turn.";
   const deferredMessages: Record<string, unknown>[] = [];
   const cancels: string[] = [];
+  let promote = false;
+  await page.addInitScript(() => {
+    localStorage.setItem("yep-anywhere-session-dom-linger-enabled", "true");
+  });
 
   await page.route(
     (url) =>
@@ -63,7 +68,7 @@ test("↑ in the emptied composer leaves a queued message queued", async ({
     await route.fulfill({
       json: {
         queued: true,
-        deferred: true,
+        deferred: !promote,
         deferredMessages,
         serverTimestamp: Date.now(),
       },
@@ -124,4 +129,72 @@ test("↑ in the emptied composer leaves a queued message queued", async ({
   await expect(composer).toHaveValue("");
   await expect(chip).toBeVisible();
   expect(cancels).toEqual([]);
+
+  // Once delivered, recall is a reversible edit, including over a new draft.
+  promote = true;
+  await composer.fill("A delivered message");
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().endsWith(`/api/sessions/${sessionId}/messages`),
+    ),
+    composer.press("Control+Enter"),
+  ]);
+  await expect(composer).toHaveValue("");
+  // The composer clears at submit, and Playwright can see the response before
+  // the app has recorded the delivery. Until then the last submission is the
+  // queued message, which ↑ leaves alone (checked above), so pressing again
+  // is what a user would do.
+  await expect(async () => {
+    await composer.press("ArrowUp");
+    await expect(composer).toHaveValue("A delivered message", {
+      timeout: 500,
+    });
+  }).toPass();
+  const back = page.getByRole("button", { name: "Cancel correction" });
+  await expect(back).toHaveText("Back to new message ↓");
+  for (const viewport of [
+    { width: 1200, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await recordUiCapture(page, `correction-${viewport.width}`, viewport);
+  }
+  await composer.press("ArrowDown");
+  await expect(composer).toHaveValue("");
+  await expect(back).not.toBeVisible();
+
+  await composer.pressSequentially("Keep this new draft", { delay: 20 });
+  await composer.press("Control+p");
+  await expect(composer).toHaveValue("A delivered message");
+  await back.click();
+  await expect(composer).toHaveValue("Keep this new draft");
+
+  await composer.fill("");
+  await composer.press("ArrowUp");
+  await composer.press("ArrowLeft");
+  await composer.press("End");
+  await composer.press("ArrowDown");
+  await expect(composer).toHaveValue("A delivered message");
+  await composer.press("Escape");
+  await expect(composer).toHaveValue("");
+
+  // A cached session must not bring an untouched keyboard recall back.
+  await composer.press("ArrowUp");
+  await expect(back).toBeVisible();
+  await page.getByRole("link", { name: "mockproject", exact: true }).click();
+  await expect(composer).toHaveValue("");
+  await page.goBack();
+  await expect(composer).toHaveValue("");
+  await expect(back).not.toBeVisible();
+
+  await composer.press("ArrowUp");
+  await composer.pressSequentially(" with a correction", { delay: 20 });
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().endsWith(`/api/sessions/${sessionId}/messages`),
+    ),
+    composer.press("Control+Enter"),
+  ]);
+  await expect(composer).toHaveValue("");
+  await expect(back).not.toBeVisible();
 });

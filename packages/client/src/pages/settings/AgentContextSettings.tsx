@@ -121,6 +121,7 @@ export function AgentContextSettings() {
   return (
     <SettingsSection
       description={t("agentContextDescription")}
+      doc="topics/agent-context-injection.md#current-ya-placement"
       onSubmit={(event) => {
         event.preventDefault();
         if (hasChanges && !isSaving) void handleSave();

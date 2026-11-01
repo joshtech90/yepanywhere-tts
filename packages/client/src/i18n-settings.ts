@@ -2,7 +2,6 @@ import {
   DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
-  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
   SERVER_CAPABILITIES,
 } from "@yep-anywhere/shared";
 import { isExtensionPage } from "./extension/chrome";
@@ -133,10 +132,6 @@ export function getSettingsCategories(
       id: "source-control",
       label: t("settingsSourceControlTitle"),
       description: t("settingsSourceControlDescription"),
-      requires: {
-        anyCapability: [GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY],
-        unsupportedMessage: t("sourceControlUnsupportedServer"),
-      },
     },
     {
       id: "issues",
@@ -208,6 +203,15 @@ export function getSettingsCategories(
       id: "apps",
       label: t("settingsAppsTitle"),
       description: t("settingsAppsDescription"),
+    },
+    {
+      id: "server-connections",
+      label: t("settingsServerConnectionsTitle"),
+      description: t("settingsServerConnectionsDescription"),
+      requires: {
+        anyCapability: [SERVER_CAPABILITIES.peerConnections.name],
+        unsupportedMessage: t("serverConnectionsUnsupported"),
+      },
     },
     {
       id: "remote",

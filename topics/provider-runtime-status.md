@@ -108,7 +108,7 @@ provider default and also blocks the stale acknowledgement value.
 
 YA's initial Codex `CodexErrorInfo` normalization maps as follows:
 
-- `serverOverloaded` -> `overloaded`
+- `serverOverloaded` and `policyCapacityUnavailable` -> `overloaded`
 - `usageLimitExceeded`, `sessionBudgetExceeded`, and `rateLimitExceeded` ->
   `rate_limit`
 - `internalServerError` -> `server_error`
@@ -234,7 +234,9 @@ and another manual compact is refused. Successful compaction, terminal failure,
 or an interrupted retry releases the operation. Provider-started work not
 requested by YA does not acquire a manual-compaction retry policy.
 
-This exception matches only the structured `serverOverloaded` category.
+This exception matches only the structured `serverOverloaded` category and
+`policyCapacityUnavailable`, which Codex 0.166 split out of it for capacity on
+a policy-restricted route, with the same retry advice (upstream #57452).
 `usageLimitExceeded`, `sessionBudgetExceeded`, HTTP 429 retry exhaustion, and
 all other terminal failures retain Codex's non-retry behavior. If all 16
 overload retries fail, the last error becomes terminal.
@@ -281,6 +283,7 @@ an event that can no longer arrive.
 | `usageLimitExceeded` | Usage, quota, or plan inclusion limit. | `rate_limit`; retain provider/account guidance. |
 | `rateLimitExceeded` | Upstream rate limit inside the response stream. Codex treats it as retryable, so it normally arrives with `willRetry: true` and is terminal only after Codex gives up. | `rate_limit`; the same account/quota copy as `usageLimitExceeded`. |
 | `serverOverloaded` | Selected model is at capacity. Codex itself does not retry it. | `overloaded`; YA retries the same model under the bounded adapter policy above. |
+| `policyCapacityUnavailable` | Capacity is unavailable on a policy-restricted route (Codex 0.166+; earlier versions reported it as `serverOverloaded`). Same retry advice as `serverOverloaded`. | `overloaded`; same bounded same-model retry. |
 | `cyberPolicy` | Cyber-safety policy ended the turn. | `policy`; mirror the first-party dedicated safety notice. |
 | `misalignmentPolicyViolation` | A misalignment policy blocked the request. | `policy`; the top-level message can be a generic fallback, so show `misalignment.detailedExplanation` as the detail. |
 | `httpConnectionFailed` | HTTP connection failed after retries. | `network`; retain `httpStatusCode`. |

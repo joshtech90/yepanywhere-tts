@@ -38,6 +38,7 @@ test("remembers speed and router choices across clients while discovery preserve
     models: [model],
   };
   const overview: AgentAuthRouterOverview = {
+    serviceTierSelection: true,
     observedAt: new Date().toISOString(),
     quotaFreshSeconds: 120,
     supportedPolicies: ["manual", "round-robin", "weekly-pace"],
@@ -88,7 +89,10 @@ test("remembers speed and router choices across clients while discovery preserve
     );
     await target.route("**/api/version", (route) =>
       route.fulfill({
-        json: { current: "0.9.4", capabilities: ["agent-auth-router"] },
+        json: {
+          current: "0.11.1",
+          capabilities: ["agent-auth-router"],
+        },
       }),
     );
     await target.route("**/api/agent-auth-router/selection", async (route) => {
@@ -159,6 +163,7 @@ test("remembers speed and router choices across clients while discovery preserve
       .poll(async () => (await readDefaults()).providers?.codex?.serviceTier)
       .toBe("priority");
     await pick("Pool", /^Work/);
+    await expect(speed()).toContainText("Fast");
     await pick("Router account", /^Weekly pace/);
     await expect
       .poll(async () => (await readDefaults()).providers?.codex?.routerPolicy)
@@ -225,7 +230,7 @@ test("remembers speed and router choices across clients while discovery preserve
     console.log(
       `New Session typing during 48-account discovery: ${samples.length} keys, maximum ${Math.max(...samples.map((sample) => sample.latency)).toFixed(1)} ms`,
     );
-    await pool().scrollIntoViewIfNeeded();
+    await speed().scrollIntoViewIfNeeded();
     await recordUiCapture(page, "remembered-router-1000");
 
     const phone = await other.newPage();
@@ -243,7 +248,7 @@ test("remembers speed and router choices across clients while discovery preserve
       }),
     ).toContainText("Weekly pace");
     await phone
-      .getByRole("button", { name: "Filter by Pool", exact: true })
+      .getByRole("button", { name: "Filter by Speed", exact: true })
       .scrollIntoViewIfNeeded();
     expect(
       await phone.evaluate(

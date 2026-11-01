@@ -1,9 +1,4 @@
-import {
-  GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
-  serverHasCapability,
-} from "@yep-anywhere/shared";
 import { useCallback, useMemo } from "react";
-import type { ServerSettings } from "../../api/client";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import {
   type SourceControlCleanLanding,
@@ -19,11 +14,8 @@ import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 export function SourceControlSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("sourceControlSettingsTitle"));
-  const { version, refetch: refetchVersion } = useVersion();
-  const liveWorktreeSettingSupported = serverHasCapability(
-    version,
-    GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
-  );
+  const { refetch: refetchVersion } = useVersion();
+
   const { settings, isLoading, error, updateSettings } = useServerSettings();
   const reviewsEnabled = settings?.sourceReviewSubmissionsEnabled ?? false;
   const liveWorktreeMonitoringEnabled =
@@ -37,14 +29,11 @@ export function SourceControlSettings() {
         ? {
             sourceControlCleanLanding,
             sourceReviewSubmissionsEnabled: reviewsEnabled,
-            ...(liveWorktreeSettingSupported
-              ? { liveWorktreeMonitoringEnabled }
-              : {}),
+            liveWorktreeMonitoringEnabled,
           }
         : null,
     [
       liveWorktreeMonitoringEnabled,
-      liveWorktreeSettingSupported,
       reviewsEnabled,
       settings,
       sourceControlCleanLanding,
@@ -53,14 +42,10 @@ export function SourceControlSettings() {
   const restoreUndoState = useCallback(
     (snapshot: NonNullable<typeof undoState>) => {
       setSourceControlCleanLanding(snapshot.sourceControlCleanLanding);
-      const updates: Partial<ServerSettings> = {
+      void updateSettings({
         sourceReviewSubmissionsEnabled: snapshot.sourceReviewSubmissionsEnabled,
-      };
-      if ("liveWorktreeMonitoringEnabled" in snapshot) {
-        updates.liveWorktreeMonitoringEnabled =
-          snapshot.liveWorktreeMonitoringEnabled;
-      }
-      void updateSettings(updates)
+        liveWorktreeMonitoringEnabled: snapshot.liveWorktreeMonitoringEnabled,
+      })
         .then(() => refetchVersion())
         .catch(() => {
           // The hook keeps the actionable error visible in this pane.
@@ -75,7 +60,10 @@ export function SourceControlSettings() {
   }
 
   return (
-    <SettingsSection description={t("sourceControlSettingsDescription")}>
+    <SettingsSection
+      description={t("sourceControlSettingsDescription")}
+      doc="site/src/content/docs/files-and-source-control.md#source-control-page"
+    >
       <div className="settings-group">
         <SettingsItem
           className="settings-item--wide-control"
@@ -126,31 +114,29 @@ export function SourceControlSettings() {
             <span className="toggle-slider" />
           </span>
         </SettingsItem>
-        {liveWorktreeSettingSupported && (
-          <SettingsItem
-            as="label"
-            label={t("liveWorktreeMonitoringSettingTitle")}
-            description={t("liveWorktreeMonitoringSettingDescription")}
-          >
-            <span className="toggle-switch">
-              <input
-                type="checkbox"
-                aria-label={t("liveWorktreeMonitoringSettingTitle")}
-                checked={liveWorktreeMonitoringEnabled}
-                onChange={(event) => {
-                  void updateSettings({
-                    liveWorktreeMonitoringEnabled: event.target.checked,
-                  })
-                    .then(() => refetchVersion())
-                    .catch(() => {
-                      // The hook keeps the actionable error visible in this pane.
-                    });
-                }}
-              />
-              <span className="toggle-slider" />
-            </span>
-          </SettingsItem>
-        )}
+        <SettingsItem
+          as="label"
+          label={t("liveWorktreeMonitoringSettingTitle")}
+          description={t("liveWorktreeMonitoringSettingDescription")}
+        >
+          <span className="toggle-switch">
+            <input
+              type="checkbox"
+              aria-label={t("liveWorktreeMonitoringSettingTitle")}
+              checked={liveWorktreeMonitoringEnabled}
+              onChange={(event) => {
+                void updateSettings({
+                  liveWorktreeMonitoringEnabled: event.target.checked,
+                })
+                  .then(() => refetchVersion())
+                  .catch(() => {
+                    // The hook keeps the actionable error visible in this pane.
+                  });
+              }}
+            />
+            <span className="toggle-slider" />
+          </span>
+        </SettingsItem>
       </div>
       {error && <p className="settings-error">{error}</p>}
     </SettingsSection>

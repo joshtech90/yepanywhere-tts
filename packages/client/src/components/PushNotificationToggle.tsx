@@ -95,6 +95,7 @@ export function PushNotificationToggle() {
       <SettingsItem
         label={t("pushToggleTitle")}
         description={t("pushToggleDescription")}
+        doc="site/src/content/docs/notifications-and-voice.md#browser-push-notifications"
         info={
           <>
             <strong>{t("pushToggleTitle")}</strong>

@@ -1,3 +1,27 @@
+import { localPeerHost } from "./peer-api/connection-contracts.js";
+import { getAuthenticatedSrpTransport } from "./middleware/authenticated-transport.js";
+import type { PeerAccessManager } from "./peer-api/manager.js";
+import { createPeerOwnerBinding } from "./peer-api/owner-proof.js";
+import { createPeerManagementRoutes } from "./peer-api/routes.js";
+import { API_OWNER_VARIABLE } from "./core-api/contracts.js";
+import { ApiReceiptStore } from "./core-api/receipt-store.js";
+import { SessionCommands } from "./core-api/session-commands.js";
+import { nativeSessionCommandOwner } from "./core-api/native-session-commands.js";
+import type { MiddlewareHandler, Context } from "hono";
+import {
+  createConversationRead,
+  createConversationFollow,
+} from "./core-api/conversation.js";
+import {
+  CoreApi,
+  CoreApiError,
+  type ApiReadPort,
+  type CoreApiSources,
+} from "./core-api/service.js";
+import { readServerIdentity } from "./core-api/server-identity.js";
+import { productionApiSources } from "./core-api/production-sources.js";
+import { createV0Routes } from "./routes/v0/index.js";
+import { PRINCIPAL_VARIABLE, SUPERUSER } from "./auth/principal.js";
 import { AgentAuthRouter } from "./services/AgentAuthRouter.js";
 import { createAgentAuthRouterRoutes } from "./routes/agent-auth-router.js";
 import { DraftStore } from "./drafts/DraftStore.js";
@@ -312,6 +336,7 @@ import { createProviderHostRoutes } from "./routes/provider-host.js";
 import { WS_INTERNAL_AUTHENTICATED } from "./middleware/internal-auth.js";
 import {
   configureProviderRuntime,
+  getAllProviders,
   getProvider,
   isProviderRuntimeHostAvailable,
 } from "./sdk/providers/index.js";
@@ -480,6 +505,8 @@ export interface AppOptions {
   maxQueueSize?: number;
   /** AuthService for cookie-based auth (optional) */
   authService?: AuthService;
+  /** Initialized profile-owned peer runtime; absent keeps peer access disabled. */
+  peerAccess?: PeerAccessManager;
   /** Limited-user records; absent disables the second principal class. */
   limitedUsersService?: LimitedUsersService;
   userUsageService?: UserUsageService;
@@ -804,6 +831,17 @@ export function createApp(options: AppOptions): AppResult {
   const discoverySqlite =
     options.discoverySqlite ??
     new DiscoverySqliteService({ dataDir: effectiveDataDir });
+  let publicServerId: string;
+  let agentApiController: { read: ApiReadPort } | undefined;
+  let apiCommands: SessionCommands | undefined;
+  let apiReceipts: ApiReceiptStore | undefined;
+  let releaseApiRemaps: (() => void) | undefined;
+  try {
+    publicServerId = readServerIdentity(discoverySqlite.getDatabase());
+  } catch (error) {
+    if (ownsDiscoverySqlite) discoverySqlite.close();
+    throw error;
+  }
   let draftStore: DraftStore | undefined;
   try {
     draftStore = new DraftStore(discoverySqlite.getDatabase());
@@ -855,6 +893,10 @@ export function createApp(options: AppOptions): AppResult {
   // Accept-Encoding, but public-share links opened directly in a browser DO send
   // it — and /public-api/shares/sessions/* serves the same multi-MB session JSON
   // — so that prefix is covered too. Registered first so it wraps the response.
+  app.use("/v0/*", compress());
+  app.use("/v0/*", hostCheckMiddleware);
+  app.use("/v0/*", corsMiddleware);
+  app.use("/v0/*", requireCustomHeader);
   app.use("/api/*", compress());
   app.use("/public-api/*", compress());
 
@@ -883,16 +925,15 @@ export function createApp(options: AppOptions): AppResult {
   // Auth middleware (if authService is provided)
   // The middleware checks authService.isEnabled() dynamically
   if (options.authService) {
-    app.use(
-      "/api/*",
-      createAuthMiddleware({
-        authService: options.authService,
-        authDisabled: options.authDisabled,
-        desktopAuthToken: options.desktopAuthToken,
-        desktopBootstrapService: options.desktopBootstrapService,
-        agentServerTokens,
-      }),
-    );
+    const apiAuth = createAuthMiddleware({
+      authService: options.authService,
+      authDisabled: options.authDisabled,
+      desktopAuthToken: options.desktopAuthToken,
+      desktopBootstrapService: options.desktopBootstrapService,
+      agentServerTokens,
+    });
+    app.use("/v0/*", apiAuth);
+    app.use("/api/*", apiAuth);
   }
 
   /*
@@ -935,7 +976,14 @@ export function createApp(options: AppOptions): AppResult {
       if (!retainedCollections) {
         throw new Error("Session catalog read before the app was built");
       }
-      const { rows } = await retainedCollections.read();
+      let { rows, catalog } = await retainedCollections.read();
+      // Before the first pass completes, a missing row means "not yet
+      // scanned", not "no such session". Wait for that pass once rather than
+      // refusing every session a client asks about right after startup.
+      if (!catalog.complete) {
+        await retainedCollections.refresh();
+        ({ rows } = await retainedCollections.read());
+      }
       return rows.map((row) => ({
         sessionId: row.sessionId,
         projectId: row.projectId,
@@ -948,22 +996,21 @@ export function createApp(options: AppOptions): AppResult {
   });
   if (limitedUsersService && options.authService) {
     const authService = options.authService;
-    app.use(
-      "/api/*",
-      createLimitedUsersMiddleware({
-        getActiveGrants: getActiveLimitedGrants,
-        getHiddenProjectIds: (username) =>
-          projectAppStore.hiddenProjectIds(username),
-        sessionAccess: sessionAccessResolver,
-        getSuperuserIdentity: () =>
-          options.remoteAccessService?.getUsername() ?? null,
-        getCookieSessionUsername: async (c) =>
-          authService.getSessionUsername(
-            getRequestCookie(c, SESSION_COOKIE_NAME),
-          ),
-        getCookieSecret: () => authService.getCookieSecret(),
-      }),
-    );
+    const v0Principal = createLimitedUsersMiddleware({
+      getActiveGrants: getActiveLimitedGrants,
+      getHiddenProjectIds: (username) =>
+        projectAppStore.hiddenProjectIds(username),
+      sessionAccess: sessionAccessResolver,
+      getSuperuserIdentity: () =>
+        options.remoteAccessService?.getUsername() ?? null,
+      getCookieSessionUsername: async (c) =>
+        authService.getSessionUsername(
+          getRequestCookie(c, SESSION_COOKIE_NAME),
+        ),
+      getCookieSecret: () => authService.getCookieSecret(),
+    });
+    app.use("/v0/*", v0Principal);
+    app.use("/api/*", v0Principal);
     app.route(
       "/api/users",
       createUsersRoutes({
@@ -991,6 +1038,15 @@ export function createApp(options: AppOptions): AppResult {
         },
       }),
     );
+  }
+
+  if (!limitedUsersService || !options.authService) {
+    const operatorPrincipal: MiddlewareHandler = async (c, next) => {
+      c.set(PRINCIPAL_VARIABLE, SUPERUSER);
+      await next();
+    };
+    app.use("/v0/*", operatorPrincipal);
+    app.use("/api/peers/*", operatorPrincipal);
   }
 
   // Mount /api routers only after the security and auth middleware above:
@@ -1525,6 +1581,10 @@ export function createApp(options: AppOptions): AppResult {
     // Cache the promise before asynchronous cleanup can close shared services.
     sessionReadersDisposal ??= (async () => {
       await autoSessionTitleService?.stop();
+      await options.peerAccess?.close();
+      apiCommands?.close();
+      releaseApiRemaps?.();
+      apiReceipts?.close();
       await supervisor.stopBackgroundTasks();
       await rendezCompose?.close();
       await rendezDraftDelivery?.close();
@@ -2017,6 +2077,18 @@ export function createApp(options: AppOptions): AppResult {
   );
   app.route("/api", createAgentAuthRouterRoutes(agentAuthRouter));
 
+  const readAgentApi: ApiReadPort = async (operation, caller, input) => {
+    if (
+      !agentApiController ||
+      options.serverSettingsService?.getSetting("agentApiEnabled") !== true
+    )
+      throw new CoreApiError(
+        "controller_unavailable",
+        "Agent API catalog access is unavailable",
+        503,
+      );
+    return agentApiController.read(operation, caller, input);
+  };
   supervisor = new Supervisor({
     agentAuthRouter,
     projectDisplayName,
@@ -2067,6 +2139,19 @@ export function createApp(options: AppOptions): AppResult {
       : undefined,
     onSuccessfulProviderSession: options.onSuccessfulProviderSession,
     mintAgentServerAccess: () => agentServerTokens.mint(),
+    getAgentApiAccess: () =>
+      options.serverSettingsService?.getSetting("agentApiEnabled") === true
+        ? {
+            serverId: publicServerId,
+            read: readAgentApi,
+            peerAccess: options.peerAccess?.agentAccess().enabled,
+            peerGrantId: options.peerAccess?.agentAccess().grantId,
+            management:
+              options.serverSettingsService?.getSetting(
+                "agentApiManagementEnabled",
+              ) === true,
+          }
+        : undefined,
     getSessionChildEnv: (sessionId, executor) => {
       const wakeBaseUrl = options.getSessionWakeBaseUrl?.(executor);
       const browserDebugConnection =
@@ -2164,9 +2249,25 @@ export function createApp(options: AppOptions): AppResult {
       options.serverSettingsService?.getSetting("claudeSteerBackgroundBash"),
   });
   options.serverSettingsService?.onSettingsChanged((settings, previous) => {
+    if (
+      (previous.agentApiEnabled && !settings.agentApiEnabled) ||
+      (previous.agentApiManagementEnabled &&
+        !settings.agentApiManagementEnabled)
+    )
+      void supervisor
+        .revokeAgentApiAccess(publicServerId)
+        .catch((error) =>
+          getLogger().error({ error }, "Agent API revocation failed"),
+        );
     if (settings.instructionRestoration !== previous.instructionRestoration)
       void supervisor.refreshInstructionRestoration();
   });
+  if (options.serverSettingsService?.getSetting("agentApiEnabled") !== true)
+    void supervisor
+      .revokeAgentApiAccess(publicServerId)
+      .catch((error) =>
+        getLogger().error({ error }, "Agent API startup revocation failed"),
+      );
   if (sessionWakeService) {
     app.use("/session-wake/*", hostCheckMiddleware);
     app.route("/session-wake", createSessionWakeRoutes(sessionWakeService));
@@ -2493,6 +2594,10 @@ export function createApp(options: AppOptions): AppResult {
       getLatestVersion: options.getLatestVersion,
       installedMachineControlAvailable: supportsInstalledMachineControl(),
       agentSessionViewAvailable: agentSelfEnabled(),
+      peerConnectionsAvailable: !!options.peerAccess,
+      agentApiAvailable: ["darwin", "linux", "win32"].includes(
+        process.platform,
+      ),
       agentAuthRouterAvailable:
         process.platform !== "win32" && Boolean(options.sessionMetadataService),
       getExperimentalConversationAvailable: () =>
@@ -2835,6 +2940,7 @@ export function createApp(options: AppOptions): AppResult {
   app.route(
     "/api/processes",
     createProcessesRoutes({
+      agentAuthRouter,
       supervisor,
       scanner,
       readerFactory,
@@ -2951,6 +3057,8 @@ export function createApp(options: AppOptions): AppResult {
   const conversationCatalog = retainedCollections;
   conversationSubscriptions = new ConversationSubscriptions(
     createConversationSource({
+      resolveRolloutPath: (row, id) =>
+        codexReaderFactory(row.projectPath).getSessionFilePath(id),
       resolve: async (sessionId) => {
         const { rows } = await conversationCatalog.read();
         const candidates = rows.filter((row) => row.sessionId === sessionId);
@@ -3182,6 +3290,143 @@ export function createApp(options: AppOptions): AppResult {
       projectDisplayName,
     }),
   );
+
+  apiReceipts = new ApiReceiptStore(discoverySqlite.getDatabase());
+  apiCommands = new SessionCommands(
+    publicServerId,
+    apiReceipts,
+    nativeSessionCommandOwner({
+      supervisor,
+      globalInstructions: () =>
+        buildEffectiveAgentContext({
+          globalInstructions:
+            options.serverSettingsService?.getSetting("globalInstructions"),
+          hints: options.serverSettingsService?.getSetting("agentContextHints"),
+        }),
+    }),
+    () =>
+      options.serverSettingsService?.getSetting("agentApiManagementEnabled") ===
+      true,
+    (error) =>
+      getLogger().error(
+        { error },
+        "Agent API command outcome persistence failed",
+      ),
+  );
+  releaseApiRemaps = supervisor.observeSessionIdRemaps?.((oldId, newId) => {
+    apiReceipts?.remap(oldId, newId);
+    options.peerAccess?.remap(oldId, newId);
+  });
+  const coreSources: CoreApiSources = {
+    peerAuthentication: () => !!options.peerAccess,
+    serverMetadata: () =>
+      localPeerHost(
+        publicServerId,
+        options.serverSettingsService?.getSetting("hostIdentity")?.icon,
+      ),
+    commands: apiCommands,
+    ...productionApiSources({
+      scanner,
+      sessions: retainedCollections,
+      metadata: options.sessionMetadataService,
+      providers: () => {
+        const providers =
+          options.provider === null
+            ? []
+            : options.provider
+              ? [options.provider]
+              : getAllProviders();
+        return options.enabledProviders?.length
+          ? providers.filter((p) => options.enabledProviders!.includes(p.name))
+          : providers;
+      },
+      sessionState: (id) =>
+        supervisor.getProcessForSession(id)?.state.type ?? "not-running",
+      ownedSessions: () =>
+        supervisor
+          .getAllProcesses()
+          .filter((process) => !process.isTerminated)
+          .map((process) => {
+            const info = process.getInfo();
+            const metadata = options.sessionMetadataService?.getMetadata(
+              process.sessionId,
+            );
+            return {
+              id: process.sessionId,
+              projectId: metadata?.workingProjectId ?? process.projectId,
+              provider: process.provider,
+              title: metadata?.customTitle ?? info.sessionTitle,
+              createdByUser: metadata?.createdByUser,
+              updatedAt: info.startedAt,
+              state: process.state.type,
+            };
+          }),
+      hiddenProjects: (username) => projectAppStore.hiddenProjectIds(username),
+    }),
+    conversation: createConversationRead(conversationSubscriptions),
+    followConversation: createConversationFollow(
+      conversationSubscriptions,
+      publicServerId,
+    ),
+  };
+  const localCore = new CoreApi(publicServerId, coreSources);
+  agentApiController = options.peerAccess
+    ? options.peerAccess.bind(
+        localCore,
+        discoverySqlite.getDatabase(),
+        apiReceipts,
+        coreSources.projects,
+      )
+    : localCore;
+  if (options.peerAccess) {
+    if (options.peerAccess.serverId !== publicServerId)
+      throw new Error("Peer runtime profile identity mismatch");
+    options.peerAccess.setRetirementHandler((grantId) =>
+      supervisor.revokePeerAgentApiAccess(publicServerId, grantId),
+    );
+    const ownerBinding = options.authService
+      ? createPeerOwnerBinding({
+          authService: options.authService,
+          desktopAuthToken: options.desktopAuthToken,
+          desktopBootstrapService: options.desktopBootstrapService,
+          remoteAccessService: options.remoteAccessService,
+          agentServerTokens,
+        })
+      : () => null;
+    const ownerProof = async (c: Context) => Boolean(await ownerBinding(c));
+    const peerOwner: MiddlewareHandler = async (c, next) => {
+      // A failed optional owner lookup cannot break existing local API access.
+      if (await ownerProof(c).catch(() => false))
+        c.set(API_OWNER_VARIABLE, true);
+      await next();
+    };
+    app.use("/v0/*", peerOwner);
+    app.route(
+      "/api/peers",
+      createPeerManagementRoutes(
+        options.peerAccess,
+        ownerProof,
+        ownerBinding,
+        async (c) => {
+          const context = getAuthenticatedSrpTransport(c.env);
+          if (
+            !context ||
+            !options.remoteSessionService ||
+            !context.isActive?.()
+          )
+            throw new CoreApiError(
+              "forbidden",
+              "Cleanup requires this authenticated owner SRP session",
+              403,
+            );
+          await options.remoteSessionService.deleteSession(context.sessionId);
+          context.closeAfterResponse();
+        },
+      ),
+    );
+    options.peerAccess.startRoutes();
+  }
+  app.route("/v0", createV0Routes(agentApiController));
 
   // Global sessions route (flat list of all sessions for navigation)
   app.route(

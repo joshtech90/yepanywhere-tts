@@ -1,4 +1,10 @@
 import { randomUUID } from "node:crypto";
+import {
+  agentCatalogRequest,
+  AGENT_CATALOG_TIMEOUT_MS,
+} from "../../agent-api/controller-protocol.js";
+import { CoreApiError, type ApiReadPort } from "../../core-api/service.js";
+import { operations } from "../../core-api/contracts.js";
 import type {
   PermissionMode,
   SessionSandboxEnforcement,
@@ -89,6 +95,8 @@ export interface ProviderSessionReadyMetadata {
   providerActivity: ProviderActivitySnapshot;
   providerRetention: ProviderRetentionSnapshot;
   capabilities: {
+    agentApi?: boolean;
+    peerAgentApi?: boolean;
     publishAgentSelfSelection?: boolean;
     publishAgentSessionViews?: boolean;
     probeLiveness: boolean;
@@ -118,6 +126,7 @@ export interface ProviderSessionReadyMetadata {
 }
 
 export interface ProviderSessionStartHooks {
+  onAgentApiRead: ApiReadPort;
   onToolApproval: CanUseTool;
   onPermissionModeApplied: (mode: PermissionMode) => void;
   onProviderRetentionChange: () => void;
@@ -142,6 +151,7 @@ export type StartOwnedProviderSession = (
 
 export interface ProviderSessionOwnerOptions {
   runtimeId: string;
+  peerGrantId?: string;
   emitSupervisor?: (message: unknown) => void;
   onTerminal?: (reason: string, exitCode: number) => void | Promise<void>;
 }
@@ -173,6 +183,8 @@ function resolvedPid(session: AgentSession): number | undefined {
 }
 
 export class ProviderSessionOwner {
+  private agentApiRevoked = false;
+  private peerAgentApiRevoked = false;
   private attachedController: AttachedController | null = null;
   private session: AgentSession | null = null;
   private sequence = 0;
@@ -181,6 +193,11 @@ export class ProviderSessionOwner {
   private events: BufferedEvent[] = [];
   private snapshotEvents = new Map<string, BufferedEvent>();
   private pendingApprovals = new Map<string, PendingApproval>();
+  /** At most 16 finite catalog requests per active controller attachment. */
+  private pendingAgentReads = new Map<
+    string,
+    { controllerId: string; finish: (error?: Error, result?: unknown) => void }
+  >();
   private queueDepth = 0;
   private providerAlive = true;
   private providerActivity: ProviderActivitySnapshot = {};
@@ -208,6 +225,13 @@ export class ProviderSessionOwner {
 
   constructor(private readonly options: ProviderSessionOwnerOptions) {}
 
+  /** Set once from the immutable launch recipe, before a session exists. */
+  setIssuedPeerGrantId(grantId: string | undefined) {
+    if (this.session || this.options.peerGrantId)
+      throw new Error("Peer launch grant already bound");
+    this.options.peerGrantId = grantId;
+  }
+
   async start(
     startSession: StartOwnedProviderSession,
     initialBrowserDebugEnvironment?: Record<string, string>,
@@ -217,6 +241,8 @@ export class ProviderSessionOwner {
       initialBrowserDebugEnvironment,
     );
     const result = await startSession({
+      onAgentApiRead: (operation, _caller, input = {}) =>
+        this.requestAgentApiRead(operation, input),
       onToolApproval: (toolName, input, approvalOptions) =>
         this.requestApproval(
           toolName,
@@ -233,6 +259,14 @@ export class ProviderSessionOwner {
       getBrowserDebugEnvironment: () => ({ ...this.browserDebugEnvironment }),
     });
     this.session = result.session;
+    if (this.agentApiRevoked)
+      void Promise.resolve(this.session.revokeAgentApiAccess?.()).catch(
+        () => {},
+      );
+    if (this.peerAgentApiRevoked)
+      void Promise.resolve(this.session.revokePeerAgentApiAccess?.()).catch(
+        () => {},
+      );
     this.sandboxMetadata = result.sandbox;
     this.diagnostics = result.diagnostics;
     this.agentctlSessionEnvBridge = result.agentctlSessionEnvBridge ?? null;
@@ -263,6 +297,8 @@ export class ProviderSessionOwner {
       providerActivity: this.providerActivity,
       providerRetention: this.providerRetention,
       capabilities: {
+        agentApi: Boolean(session.revokeAgentApiAccess),
+        peerAgentApi: Boolean(session.revokePeerAgentApiAccess),
         publishAgentSelfSelection: Boolean(session.publishAgentSelfSelection),
         publishAgentSessionViews: Boolean(session.publishAgentSessionViews),
         probeLiveness: Boolean(session.probeLiveness),
@@ -305,7 +341,13 @@ export class ProviderSessionOwner {
     controllerId: string,
     generation: string,
     write: (message: unknown) => void,
-    options: { emitAttached?: boolean; isActive?: () => boolean } = {},
+    options: {
+      emitAttached?: boolean;
+      isActive?: () => boolean;
+      agentApiAllowed?: boolean;
+      agentApiPeersAllowed?: boolean;
+      agentApiPeerGrantId?: string;
+    } = {},
   ): ProviderSessionAttachedState {
     if (!generation) throw new Error("Missing server generation");
     if (
@@ -316,12 +358,29 @@ export class ProviderSessionOwner {
         `Provider worker is already attached to ${this.attachedController.generation}`,
       );
     }
+    if (this.attachedController) this.detach(this.attachedController.id);
     this.attachedController = {
       id: controllerId,
       generation,
       write,
       isActive: options.isActive,
     };
+    this.session?.setAgentApiControllerAttached?.(true);
+    if (options.agentApiAllowed !== true) {
+      this.agentApiRevoked = true;
+      void Promise.resolve(this.session?.revokeAgentApiAccess?.()).catch(
+        () => {},
+      );
+    }
+    if (
+      options.agentApiPeersAllowed !== true ||
+      options.agentApiPeerGrantId !== this.options.peerGrantId
+    ) {
+      this.peerAgentApiRevoked = true;
+      void Promise.resolve(this.session?.revokePeerAgentApiAccess?.()).catch(
+        () => {},
+      );
+    }
     const state = this.attachedState();
     if (options.emitAttached !== false) write(state);
     for (const event of this.events) {
@@ -343,12 +402,35 @@ export class ProviderSessionOwner {
   detach(controllerId: string): void {
     if (this.attachedController?.id !== controllerId) return;
     const generation = this.attachedController.generation;
+    this.session?.setAgentApiControllerAttached?.(false);
+    for (const pending of [...this.pendingAgentReads.values()])
+      pending.finish(
+        new CoreApiError(
+          "controller_unavailable",
+          "Catalog controller detached",
+          503,
+        ),
+      );
     this.attachedController = null;
     this.emitSupervisor({ type: "controllerDetached", generation });
   }
 
   handleSupervisorMessage(message: unknown): void {
     if (!message || typeof message !== "object" || !("type" in message)) return;
+    if (message.type === "revokePeerAgentApi") {
+      this.peerAgentApiRevoked = true;
+      void Promise.resolve(this.session?.revokePeerAgentApiAccess?.()).catch(
+        () => {},
+      );
+      return;
+    }
+    if (message.type === "revokeAgentApi") {
+      this.agentApiRevoked = true;
+      void Promise.resolve(this.session?.revokeAgentApiAccess?.()).catch(
+        () => {},
+      );
+      return;
+    }
     if (message.type === "sessionTurn") {
       void this.acceptAuxiliarySubmission(message as Record<string, unknown>);
       return;
@@ -389,6 +471,19 @@ export class ProviderSessionOwner {
       this.pendingApprovals.delete(pending.requestId);
       pending.removeAbortListener();
       pending.resolve(request.result as ToolApprovalResult);
+      return;
+    }
+    if (request.type === "agentApiResult") {
+      const pending = this.pendingAgentReads.get(String(request.requestId));
+      if (pending?.controllerId === controllerId) {
+        if (request.ok === true) pending.finish(undefined, request.result);
+        else {
+          pending.finish(
+            CoreApiError.restore(request.error) ??
+              new Error("API operation failed"),
+          );
+        }
+      }
       return;
     }
     if (request.type !== "rpc" || typeof request.id !== "number") {
@@ -884,6 +979,14 @@ export class ProviderSessionOwner {
         return await session.publishAgentSelfSelection?.(
           args[0] as import("../../agent-tools/protocol.js").AgentSelfSelection,
         );
+      case "revokePeerAgentApiAccess": {
+        const grantId = typeof args[0] === "string" ? args[0] : undefined;
+        if (grantId && grantId !== this.options.peerGrantId) return;
+        this.peerAgentApiRevoked = true;
+        return await session.revokePeerAgentApiAccess?.(grantId);
+      }
+      case "revokeAgentApiAccess":
+        return await session.revokeAgentApiAccess?.();
       case "publishAgentSessionViews":
         return await session.publishAgentSessionViews?.(
           args[0] as import("@yep-anywhere/shared").SessionClientView[],
@@ -1069,6 +1172,92 @@ export class ProviderSessionOwner {
     });
   }
 
+  private requestAgentApiRead(
+    operation: Parameters<ApiReadPort>[0],
+    input: NonNullable<Parameters<ApiReadPort>[2]>,
+  ): ReturnType<ApiReadPort> {
+    const parsed = agentCatalogRequest.safeParse({
+      operation,
+      input: {
+        serverId: input.serverId,
+        sessionId: input.sessionId,
+        receiptId: input.receiptId,
+        body: input.body,
+        launch: input.launch,
+        query: input.query,
+      },
+    });
+    if (!parsed.success)
+      return Promise.reject(
+        new CoreApiError(
+          "invalid_request",
+          "Invalid API request parameters",
+          400,
+        ),
+      );
+    const attached = this.attachedController;
+    if (!attached || this.pendingAgentReads.size >= 16)
+      return Promise.reject(
+        new CoreApiError(
+          "controller_unavailable",
+          "Catalog controller is unavailable or busy",
+          503,
+        ),
+      );
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => abort(), AGENT_CATALOG_TIMEOUT_MS);
+      const abort = () => {
+        try {
+          if (this.attachedController?.id === attached.id)
+            attached.write({ type: "agentApiCancel", requestId });
+        } catch {
+          /* The detach error below remains authoritative. */
+        }
+        finish(
+          new CoreApiError(
+            "controller_unavailable",
+            "Catalog read cancelled",
+            503,
+          ),
+        );
+      };
+      const finish = (error?: Error, result?: unknown) => {
+        if (!this.pendingAgentReads.delete(requestId)) return;
+        clearTimeout(timeout);
+        input.signal?.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else {
+          const response = operations
+            .find((item) => item.id === parsed.data.operation)!
+            .response.safeParse(result);
+          if (!response.success) reject(new Error("Invalid catalog response"));
+          else resolve(response.data as Awaited<ReturnType<ApiReadPort>>);
+        }
+      };
+      this.pendingAgentReads.set(requestId, {
+        controllerId: attached.id,
+        finish,
+      });
+      input.signal?.addEventListener("abort", abort, { once: true });
+      if (input.signal?.aborted) {
+        abort();
+        return;
+      }
+      try {
+        attached.write({ type: "agentApiRead", requestId, ...parsed.data });
+      } catch {
+        finish(
+          new CoreApiError(
+            "controller_unavailable",
+            "Catalog controller write failed",
+            503,
+          ),
+        );
+      }
+    });
+  }
+
   private refreshRetention(): void {
     const session = this.session;
     if (!session) return;
@@ -1111,6 +1300,15 @@ export class ProviderSessionOwner {
     if (this.shuttingDown) return await this.shuttingDown;
     this.providerAlive = false;
     this.shuttingDown = (async () => {
+      this.session?.setAgentApiControllerAttached?.(false);
+      for (const pending of [...this.pendingAgentReads.values()])
+        pending.finish(
+          new CoreApiError(
+            "controller_unavailable",
+            "Provider owner ended",
+            503,
+          ),
+        );
       for (const pending of this.pendingApprovals.values()) {
         pending.removeAbortListener();
         pending.resolve({

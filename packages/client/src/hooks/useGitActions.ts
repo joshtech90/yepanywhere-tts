@@ -25,20 +25,13 @@ export function useGitActions({
   projectId,
   status,
   routeRetentionKey,
-  supportsRemoteCheck,
-  supportsPull,
-  supportsPush,
-  supportsIntegrationOptions,
   onRefreshStatus,
   t,
 }: {
   projectId: string | undefined;
   status: GitStatusInfo | null | undefined;
   routeRetentionKey: RouteRetentionKeyInput | null;
-  supportsRemoteCheck: boolean;
-  supportsPull: boolean;
-  supportsPush: boolean;
-  supportsIntegrationOptions: boolean;
+
   onRefreshStatus: () => Promise<void>;
   t: TranslationFn;
 }) {
@@ -83,7 +76,7 @@ export function useGitActions({
     : "";
 
   useEffect(() => {
-    if (!projectId || !supportsIntegrationOptions || !divergedActionKey) {
+    if (!projectId || !divergedActionKey) {
       setIntegrationOptions(null);
       setIntegrationOptionsError(null);
       setIsLoadingIntegrationOptions(false);
@@ -114,10 +107,10 @@ export function useGitActions({
     return () => {
       cancelled = true;
     };
-  }, [divergedActionKey, projectId, supportsIntegrationOptions, t]);
+  }, [divergedActionKey, projectId, t]);
 
   const handleCheckRemote = useCallback(async () => {
-    if (!projectId || !supportsRemoteCheck || isRunning) return;
+    if (!projectId || isRunning) return;
     setIsCheckingRemote(true);
     setRemoteCheckResult(null);
     setRemoteCheckError(null);
@@ -140,10 +133,10 @@ export function useGitActions({
     } finally {
       setIsCheckingRemote(false);
     }
-  }, [isRunning, onRefreshStatus, projectId, supportsRemoteCheck, t]);
+  }, [isRunning, onRefreshStatus, projectId, t]);
 
   const handlePull = useCallback(async () => {
-    if (!projectId || !supportsPull || isRunning) return;
+    if (!projectId || isRunning) return;
     setIsPulling(true);
     setPullResult(null);
     setPullError(null);
@@ -169,17 +162,10 @@ export function useGitActions({
     } finally {
       setIsPulling(false);
     }
-  }, [
-    isRunning,
-    onRefreshStatus,
-    projectId,
-    routeRetentionKey,
-    supportsPull,
-    t,
-  ]);
+  }, [isRunning, onRefreshStatus, projectId, routeRetentionKey, t]);
 
   const handlePush = useCallback(async () => {
-    if (!projectId || !supportsPush || isRunning) return;
+    if (!projectId || isRunning) return;
     setIsPushing(true);
     setPushResult(null);
     setPushError(null);
@@ -209,14 +195,7 @@ export function useGitActions({
     } finally {
       setIsPushing(false);
     }
-  }, [
-    isRunning,
-    onRefreshStatus,
-    projectId,
-    routeRetentionKey,
-    supportsPush,
-    t,
-  ]);
+  }, [isRunning, onRefreshStatus, projectId, routeRetentionKey, t]);
 
   const checkFeedback =
     remoteCheckError ?? getRemoteCheckMessage(remoteCheckResult, t);
@@ -263,10 +242,6 @@ export function useGitActions({
     : null;
 
   return {
-    supportsRemoteCheck,
-    supportsPull,
-    supportsPush,
-    supportsIntegrationOptions,
     isRunning,
     isCheckingRemote,
     isPulling,

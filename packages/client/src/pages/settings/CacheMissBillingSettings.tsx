@@ -1,18 +1,14 @@
 import {
-  CACHE_MISS_BILLING_EXPECTED_EXPIRY_CAPABILITY,
-  CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY,
   DEFAULT_CACHE_MISS_BILLING_SETTINGS,
   type CacheMissBillingRecord,
   type CacheMissBillingSettings as CacheMissBillingSettingsValue,
   type ProviderName,
-  serverHasCapability,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api/client";
 import { useRelativeNow } from "../../hooks/useRelativeNow";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
 import { useServerSettings } from "../../hooks/useServerSettings";
-import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import { activityBus } from "../../lib/activityBus";
 import styles from "./CacheMissBillingSettings.module.css";
@@ -67,16 +63,6 @@ function providerFreshWindowMinutes(
   );
 }
 
-export function cacheMissBillingSettingsForServer(
-  settings: CacheMissBillingSettingsValue,
-  supportsIgnoreAfter: boolean,
-): CacheMissBillingSettingsValue {
-  if (supportsIgnoreAfter) return settings;
-  const legacySettings: CacheMissBillingSettingsValue = { ...settings };
-  delete legacySettings.ignoreAfterMinutes;
-  return legacySettings;
-}
-
 export function filterCacheMissEvents(
   events: CacheMissBillingRecord[],
   recencyHours: number | null,
@@ -108,15 +94,7 @@ export function filterCacheMissEvents(
 export function CacheMissBillingSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("cacheMissBillingTitle"));
-  const { version } = useVersion();
-  const supportsIgnoreAfter = serverHasCapability(
-    version,
-    CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY,
-  );
-  const supportsExpectedExpiry = serverHasCapability(
-    version,
-    CACHE_MISS_BILLING_EXPECTED_EXPIRY_CAPABILITY,
-  );
+
   const basePath = useRemoteBasePath();
   const { settings, isLoading, error, updateSettings } = useServerSettings();
   const [events, setEvents] = useState<CacheMissBillingRecord[]>([]);
@@ -136,32 +114,26 @@ export function CacheMissBillingSettings() {
         settings?.cacheMissBilling,
       );
       await updateSettings({
-        cacheMissBilling: cacheMissBillingSettingsForServer(
-          {
-            ...current,
-            ...patch,
-            providerFreshWindowMinutes: {
-              ...current.providerFreshWindowMinutes,
-              ...patch.providerFreshWindowMinutes,
-            },
+        cacheMissBilling: {
+          ...current,
+          ...patch,
+          providerFreshWindowMinutes: {
+            ...current.providerFreshWindowMinutes,
+            ...patch.providerFreshWindowMinutes,
           },
-          supportsIgnoreAfter,
-        ),
+        },
       });
     },
-    [settings?.cacheMissBilling, supportsIgnoreAfter, updateSettings],
+    [settings?.cacheMissBilling, updateSettings],
   );
 
   const restore = useCallback(
     async (snapshot: Required<CacheMissBillingSettingsValue>) => {
       await updateSettings({
-        cacheMissBilling: cacheMissBillingSettingsForServer(
-          snapshot,
-          supportsIgnoreAfter,
-        ),
+        cacheMissBilling: snapshot,
       });
     },
-    [supportsIgnoreAfter, updateSettings],
+    [updateSettings],
   );
   useSettingsUndoBaseline(settings ? effective : null, restore);
   const filteredEvents = filterCacheMissEvents(
@@ -175,7 +147,7 @@ export function CacheMissBillingSettings() {
   useEffect(() => {
     let cancelled = false;
     api
-      .getCacheMissBillingEvents(MAX_EVENTS, supportsExpectedExpiry)
+      .getCacheMissBillingEvents(MAX_EVENTS)
       .then((response) => {
         if (!cancelled) {
           setEvents(response.events);
@@ -194,7 +166,7 @@ export function CacheMissBillingSettings() {
     return () => {
       cancelled = true;
     };
-  }, [supportsExpectedExpiry, t]);
+  }, [t]);
 
   useEffect(() => {
     const addEvent = (event: { record: CacheMissBillingRecord }) => {
@@ -207,14 +179,15 @@ export function CacheMissBillingSettings() {
       });
     };
     const unsubscribe = activityBus.on("cache-miss-billing", addEvent);
-    const unsubscribeExpectedExpiry = supportsExpectedExpiry
-      ? activityBus.on("cache-miss-billing-expected-expiry", addEvent)
-      : undefined;
+    const unsubscribeExpectedExpiry = activityBus.on(
+      "cache-miss-billing-expected-expiry",
+      addEvent,
+    );
     return () => {
       unsubscribe();
-      unsubscribeExpectedExpiry?.();
+      unsubscribeExpectedExpiry();
     };
-  }, [supportsExpectedExpiry]);
+  }, []);
 
   const setRecencyFromSlider = (value: number) => {
     if (value === UNLIMITED_RECENCY_SLIDER_VALUE) {
@@ -260,7 +233,10 @@ export function CacheMissBillingSettings() {
 
   return (
     <>
-      <SettingsSection description={t("cacheMissBillingDescription")}>
+      <SettingsSection
+        description={t("cacheMissBillingDescription")}
+        doc="topics/cache-miss-accounting.md"
+      >
         <div className="settings-group">
           <SettingsItem
             as="label"
@@ -450,43 +426,41 @@ export function CacheMissBillingSettings() {
             </div>
           </SettingsItem>
 
-          {supportsIgnoreAfter && (
-            <SettingsItem
-              label={t("cacheMissBillingIgnoreAfterTitle")}
-              description={t("cacheMissBillingIgnoreAfterDescription")}
-              className="settings-item--wide-control"
-            >
-              <div className="settings-item-actions">
-                <span className="settings-input-unit">
-                  <input
-                    key={`ignore-after-${effective.ignoreAfterMinutes}`}
-                    type="number"
-                    className="settings-input-small"
-                    min={0}
-                    max={1440}
-                    defaultValue={effective.ignoreAfterMinutes}
-                    disabled={!effective.enabled}
-                    onBlur={(event) => {
-                      const value = clampInteger(
-                        event.currentTarget.value,
-                        effective.ignoreAfterMinutes,
-                        0,
-                        1440,
-                      );
-                      event.currentTarget.value = String(value);
-                      if (value !== effective.ignoreAfterMinutes) {
-                        void updateCacheMissBilling({
-                          ignoreAfterMinutes: value,
-                        });
-                      }
-                    }}
-                    aria-label={t("cacheMissBillingIgnoreAfterTitle")}
-                  />
-                  <span>{t("cacheMissBillingMinutesUnit")}</span>
-                </span>
-              </div>
-            </SettingsItem>
-          )}
+          <SettingsItem
+            label={t("cacheMissBillingIgnoreAfterTitle")}
+            description={t("cacheMissBillingIgnoreAfterDescription")}
+            className="settings-item--wide-control"
+          >
+            <div className="settings-item-actions">
+              <span className="settings-input-unit">
+                <input
+                  key={`ignore-after-${effective.ignoreAfterMinutes}`}
+                  type="number"
+                  className="settings-input-small"
+                  min={0}
+                  max={1440}
+                  defaultValue={effective.ignoreAfterMinutes}
+                  disabled={!effective.enabled}
+                  onBlur={(event) => {
+                    const value = clampInteger(
+                      event.currentTarget.value,
+                      effective.ignoreAfterMinutes,
+                      0,
+                      1440,
+                    );
+                    event.currentTarget.value = String(value);
+                    if (value !== effective.ignoreAfterMinutes) {
+                      void updateCacheMissBilling({
+                        ignoreAfterMinutes: value,
+                      });
+                    }
+                  }}
+                  aria-label={t("cacheMissBillingIgnoreAfterTitle")}
+                />
+                <span>{t("cacheMissBillingMinutesUnit")}</span>
+              </span>
+            </div>
+          </SettingsItem>
         </div>
 
         {error && <p className="settings-warning">{error}</p>}
@@ -512,22 +486,20 @@ export function CacheMissBillingSettings() {
                   })}
                 </span>
               </div>
-              {supportsExpectedExpiry && (
-                <label className={styles.expectedExpiryToggle}>
-                  <input
-                    type="checkbox"
-                    checked={includeExpectedExpiry}
-                    onChange={(event) =>
-                      setIncludeExpectedExpiry(event.currentTarget.checked)
-                    }
-                    aria-label={t("cacheMissExpectedExpiryToggleTitle")}
-                  />
-                  <span>
-                    <strong>{t("cacheMissExpectedExpiryToggleTitle")}</strong>
-                    <span>{t("cacheMissExpectedExpiryToggleDescription")}</span>
-                  </span>
-                </label>
-              )}
+              <label className={styles.expectedExpiryToggle}>
+                <input
+                  type="checkbox"
+                  checked={includeExpectedExpiry}
+                  onChange={(event) =>
+                    setIncludeExpectedExpiry(event.currentTarget.checked)
+                  }
+                  aria-label={t("cacheMissExpectedExpiryToggleTitle")}
+                />
+                <span>
+                  <strong>{t("cacheMissExpectedExpiryToggleTitle")}</strong>
+                  <span>{t("cacheMissExpectedExpiryToggleDescription")}</span>
+                </span>
+              </label>
               <div className={styles.recencyInputs}>
                 <div className={styles.sliderStack}>
                   <input

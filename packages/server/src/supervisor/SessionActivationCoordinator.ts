@@ -153,6 +153,11 @@ export interface SessionActivationCoordinatorOptions {
     projectId: UrlProjectId,
     provider: ProviderName | undefined,
   ) => Promise<RecoveredSessionLaunchSettings | null | undefined>;
+  validateSessionSettings?: (
+    sessionId: string,
+    model: string | undefined,
+    settings: ModelSettings,
+  ) => Promise<void>;
   getProcess(processId: string): Process | undefined;
   getProcessForSession(sessionId: string): Process | undefined;
   unregisterProcess(process: Process): void;
@@ -742,6 +747,15 @@ export class SessionActivationCoordinator {
         return current;
       }
 
+      await this.options.validateSessionSettings?.(
+        current.sessionId,
+        configuration.nextModel,
+        {
+          thinking: configuration.nextThinking,
+          effort: configuration.nextEffort,
+          serviceTier: configuration.nextServiceTier,
+        },
+      );
       if (configuration.dynamicChange !== null) {
         const changed = await this.applyDynamicModelConfiguration(
           current,

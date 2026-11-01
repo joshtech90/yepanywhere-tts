@@ -63,6 +63,11 @@ and naming. They must be keyed by provider, and model-sensitive values should be
 resolved against that provider's available model metadata.
 
 - **Model** — model ids are provider-local and cannot be shared across providers.
+  Withdrawn Codex models (`CODEX_WITHDRAWN_MODEL_IDS`, currently `gpt-5.5`
+  and `gpt-5.3-codex-spark`, on which every turn fails) are never offered:
+  they are dropped from the live catalog and upgrade targets, absent from
+  every discovery-failure fallback, and a saved choice of one stays saved but
+  is not preselected. Existing sessions recorded with one keep their history.
 - **Service tier / speed tier** — provider-visible economics and latency knobs.
   New Session remembers explicit choices on the server per provider; an
   unconfigured provider starts Standard ([service tier](service-tier.md)).

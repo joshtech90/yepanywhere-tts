@@ -177,23 +177,13 @@ describe("RepoStatusBar", () => {
       truncated: false,
       limit: 100,
     });
-    const { rerender } = render(
-      <RepoStatusBar status={gitStatus()} projectId="p1" t={t} />,
-    );
-
-    expect(screen.queryByRole("button", { name: "→ origin/main" })).toBeNull();
-    expect(apiMocks.getGitIncomingCommits).not.toHaveBeenCalled();
-
-    rerender(
+    render(
       <I18nProvider>
-        <RepoStatusBar
-          status={gitStatus()}
-          projectId="p1"
-          supportsIncomingCommits
-          t={t}
-        />
+        <RepoStatusBar status={gitStatus()} projectId="p1" t={t} />
       </I18nProvider>,
     );
+    expect(apiMocks.getGitIncomingCommits).not.toHaveBeenCalled();
+
     fireEvent.click(screen.getByRole("button", { name: "→ origin/main" }));
 
     await waitFor(() => {

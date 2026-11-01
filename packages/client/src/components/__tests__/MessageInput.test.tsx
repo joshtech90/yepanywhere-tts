@@ -1957,6 +1957,33 @@ describe("MessageInput", () => {
     expect(onCancelCorrection).toHaveBeenCalledOnce();
     expect(textarea.value).toBe("");
     expect(onStop).not.toHaveBeenCalled();
+    fireEvent.keyDown(textarea, { key: "Escape", repeat: true });
+    expect(onStop).not.toHaveBeenCalled();
+    fireEvent.keyUp(textarea, { key: "Escape" });
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(onStop).toHaveBeenCalledOnce();
+
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.selectionStart).toBe(textarea.value.length);
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("");
+    expect(onCancelCorrection).toHaveBeenCalledTimes(2);
+
+    fireEvent.keyDown(textarea, { key: "ArrowUp", repeat: true });
+    expect(textarea.value).toBe("");
+    fireEvent.keyDown(textarea, { key: "ArrowUp", isComposing: true });
+    expect(textarea.value).toBe("");
+
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    fireEvent.keyDown(textarea, { key: "ArrowLeft" });
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("previous submission");
+    expect(onCancelCorrection).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(textarea, { key: "p", ctrlKey: true });
+    fireEvent.change(textarea, { target: { value: "an actual edit" } });
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("an actual edit");
+    expect(onCancelCorrection).toHaveBeenCalledTimes(2);
   });
 
   it("cancels correction with ArrowDown only once the composer is empty", () => {
@@ -5439,30 +5466,6 @@ describe("MessageInput", () => {
     expectSubmission(onQueue, "patient fallback", "patient");
   });
 
-  it("does not steal Ctrl+Enter from queue when Project Queue is unsupported", () => {
-    versionState.version = {
-      ...versionState.version,
-      capabilities: [VOICE_INPUT_CAPABILITY],
-      clientDefaults: { patientQueueDefault: true },
-    };
-    const onQueue = vi.fn();
-    const onProjectQueue = vi.fn();
-    const textarea = renderMessageInput(
-      vi.fn(() => true),
-      {
-        supportsSteering: true,
-        onQueue,
-        onProjectQueue,
-      },
-    );
-
-    fireEvent.change(textarea, { target: { value: "unsupported fallback" } });
-    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
-
-    expect(onProjectQueue).not.toHaveBeenCalled();
-    expectSubmission(onQueue, "unsupported fallback", "patient");
-  });
-
   it("keeps queue available when the primary steer action downgrades", () => {
     const onQueue = vi.fn();
     const textarea = renderMessageInput(
@@ -5675,30 +5678,6 @@ describe("MessageInput", () => {
       }),
     );
     expectSubmission(onProjectQueueNewSession, "new work", "deferred");
-  });
-
-  it("hides the project queue action without server capability", () => {
-    versionState.version = {
-      ...versionState.version,
-      capabilities: [VOICE_INPUT_CAPABILITY],
-    };
-    const onProjectQueue = vi.fn();
-    const onProjectQueueNewSession = vi.fn();
-    const textarea = renderMessageInput(vi.fn(), {
-      onProjectQueue,
-      onProjectQueueNewSession,
-    });
-
-    fireEvent.change(textarea, { target: { value: "project-wide later" } });
-
-    expect(
-      screen.queryByRole("button", { name: "Queue for Project Queue" }),
-    ).toBe(null);
-    expect(
-      screen.queryByRole("button", {
-        name: "Queue as new session for Project Queue",
-      }),
-    ).toBe(null);
   });
 
   it("keeps the project queue toolbar action hidden by visibility", () => {

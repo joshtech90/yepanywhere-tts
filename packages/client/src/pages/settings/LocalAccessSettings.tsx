@@ -1,6 +1,7 @@
 import {
   AGENT_SERVER_ACCESS_CAPABILITY,
-  APPROVAL_AUDIT_LOG_CAPABILITY,
+  SERVER_CAPABILITIES,
+  agentApiBootstrapInstructions,
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -128,18 +129,22 @@ export function LocalAccessSettings() {
     updateSettings: updateServerSettings,
     updateSetting: updateServerSetting,
   } = useServerSettings();
-  const supportsApprovalAuditLog = serverHasCapability(
-    versionInfo,
-    APPROVAL_AUDIT_LOG_CAPABILITY,
-  );
-  const approvalAuditLogEnabled = supportsApprovalAuditLog
-    ? (serverSettings?.approvalAuditLogEnabled ?? false)
-    : true;
+
+  const approvalAuditLogEnabled =
+    serverSettings?.approvalAuditLogEnabled ?? false;
   const supportsAgentServerAccess = serverHasCapability(
     versionInfo,
     AGENT_SERVER_ACCESS_CAPABILITY,
   );
+  const supportsAgentApi = serverHasCapability(
+    versionInfo,
+    SERVER_CAPABILITIES.agentApiBootstrap,
+  );
 
+  const supportsAgentApiManagement = serverHasCapability(
+    versionInfo,
+    SERVER_CAPABILITIES.agentApiManagement,
+  );
   // Network binding form state
   const [localhostPort, setLocalhostPort] = useState<string>("");
   const [networkEnabled, setNetworkEnabled] = useState(false);
@@ -639,17 +644,13 @@ export function LocalAccessSettings() {
   const renderApprovalAuditSettings = () => (
     <SettingsItem
       label={t("localAccessApprovalAuditTitle")}
-      description={
-        supportsApprovalAuditLog
-          ? t("localAccessApprovalAuditDescription")
-          : t("localAccessApprovalAuditUnsupportedDescription")
-      }
+      description={t("localAccessApprovalAuditDescription")}
     >
       <label className="toggle-switch">
         <input
           type="checkbox"
           checked={approvalAuditLogEnabled}
-          disabled={!supportsApprovalAuditLog || !serverSettings}
+          disabled={!serverSettings}
           onChange={(e) =>
             updateServerSetting("approvalAuditLogEnabled", e.target.checked)
           }
@@ -666,6 +667,7 @@ export function LocalAccessSettings() {
     <SettingsItem
       label={t("localAccessAgentServerAccessTitle")}
       description={t("localAccessAgentServerAccessDescription")}
+      doc="topics/agent-session-access.md#operator-api-token"
     >
       <label className="toggle-switch">
         <input
@@ -1048,6 +1050,7 @@ export function LocalAccessSettings() {
             <SettingsItem
               label={t("localAccessRequirePasswordTitle")}
               description={t("localAccessRequirePasswordDescription")}
+              doc="site/src/content/docs/local-access.md"
             >
               <label className="toggle-switch">
                 <input
@@ -1227,6 +1230,72 @@ export function LocalAccessSettings() {
             auth.authEnabled &&
             renderAgentServerAccessSetting()}
 
+          {supportsAgentApi && (
+            <SettingsItem
+              label={t("localAccessAgentApiTitle")}
+              description={t("localAccessAgentApiDescription")}
+              doc="topics/http-api-v0.md#local-agent-bootstrap"
+              after={
+                <details className={styles.agentApiPreview}>
+                  <summary>{t("localAccessAgentApiPreview")}</summary>
+                  <p>{t("localAccessAgentApiUnix")}</p>
+                  <pre>
+                    {agentApiBootstrapInstructions(
+                      false,
+                      supportsAgentApiManagement &&
+                        serverSettings?.agentApiManagementEnabled === true,
+                    )}
+                  </pre>
+                  <p>{t("localAccessAgentApiWindows")}</p>
+                  <pre>
+                    {agentApiBootstrapInstructions(
+                      true,
+                      supportsAgentApiManagement &&
+                        serverSettings?.agentApiManagementEnabled === true,
+                    )}
+                  </pre>
+                </details>
+              }
+            >
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={serverSettings?.agentApiEnabled ?? false}
+                  disabled={!serverSettings}
+                  onChange={(e) =>
+                    updateServerSetting("agentApiEnabled", e.target.checked)
+                  }
+                  aria-label={t("localAccessAgentApiTitle")}
+                />
+                <span className="toggle-slider" />
+              </label>
+            </SettingsItem>
+          )}
+
+          {supportsAgentApiManagement && (
+            <SettingsItem
+              label={t("localAccessAgentApiManagementTitle")}
+              description={t("localAccessAgentApiManagementDescription")}
+              doc="topics/http-api-v0.md#session-command-authority"
+            >
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={serverSettings?.agentApiManagementEnabled ?? false}
+                  disabled={!serverSettings}
+                  onChange={(event) =>
+                    updateServerSetting(
+                      "agentApiManagementEnabled",
+                      event.target.checked,
+                    )
+                  }
+                  aria-label={t("localAccessAgentApiManagementTitle")}
+                />
+                <span className="toggle-slider" />
+              </label>
+            </SettingsItem>
+          )}
+
           {/* Allow Localhost Access - shown in desktop mode when password auth is off */}
           {auth.hasDesktopToken &&
             !requirePassword &&
@@ -1234,6 +1303,7 @@ export function LocalAccessSettings() {
               <SettingsItem
                 label={t("localAccessLocalhostOpenTitle")}
                 description={t("localAccessLocalhostOpenDescription")}
+                doc="site/src/content/docs/local-access.md#desktop-app-allow-localhost-access"
               >
                 <label className="toggle-switch">
                   <input

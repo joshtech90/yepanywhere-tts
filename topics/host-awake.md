@@ -337,13 +337,11 @@ other sensitive host data. `powerObservedAt` is an epoch-millisecond timestamp
 for the battery and power-source sample, allowing clients to label stale data
 rather than presenting it as a live gauge.
 
-Register one permanent `host-awake-control` string in the existing
-`/api/version` capability array on servers that implement the settings and
-status API, so a newer hosted client does not call those routes on an older
-server. The existing version hook fetches this coarse discovery data on mount
-and again after reconnect; it is not battery telemetry. Follow
-[server-capabilities](server-capabilities.md) for lifecycle metadata rather
-than adding raw capability strings.
+The `host-awake-control` identity and server advertisement remain for older
+clients. Since 2026-10-28 current clients use the v0.8.0 baseline and no longer
+hide the settings or withhold the status read on this fixed capability.
+Actual backend/platform support is still authoritative in the status response;
+retiring the version gate does not enable unavailable host power behavior.
 
 Do not add one capability string per platform behavior. The status support map
 is the authoritative per-installation feature matrix: it tells the client

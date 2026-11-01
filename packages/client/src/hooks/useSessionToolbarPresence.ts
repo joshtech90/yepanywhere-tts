@@ -17,10 +17,7 @@ import {
   resolveDefaultedEnumRecord,
   setDefaultedEnumRecordValue,
 } from "../lib/defaultedStorage";
-import {
-  serverSupportsProjectQueue,
-  serverSupportsProjectQueueNewSessionShortcutSetting,
-} from "../lib/projectQueueVisibility";
+
 import { UI_KEYS } from "../lib/storageKeys";
 import { setConversationViewPreference } from "./useConversationView";
 import { useVersion } from "./useVersion";
@@ -371,13 +368,6 @@ export function useSessionToolbarPresence() {
   const effectivePresence = useMemo<SessionToolbarPresence>(
     () => ({
       ...presence,
-      projectQueue: serverSupportsProjectQueue(version)
-        ? presence.projectQueue
-        : "hidden",
-      projectQueueNewSessionShortcut:
-        serverSupportsProjectQueueNewSessionShortcutSetting(version)
-          ? presence.projectQueueNewSessionShortcut
-          : "hidden",
       syntheticDone: serverHasCapability(
         version,
         SYNTHETIC_DONE_COMMAND_CAPABILITY,

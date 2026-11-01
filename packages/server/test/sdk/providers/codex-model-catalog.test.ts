@@ -34,14 +34,7 @@ describe("Codex model catalog", () => {
       "gpt-5.2",
       "gpt-5.1-codex-mini",
     ]);
-    const gpt55Models = [
-      "gpt-5.5",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.3-codex",
-      "gpt-5.3-codex-spark",
-      "gpt-5.2",
-    ];
+    const gpt55Models = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"];
     expect(
       getFallbackCodexModelsForCliVersion(CODEX_CLI_GPT55_MIN_VERSION).map(
         (model) => model.id,
@@ -56,13 +49,11 @@ describe("Codex model catalog", () => {
     );
     expect(gpt56Models.map((model) => model.id)).toEqual([
       "gpt-5.6-sol",
-      "gpt-5.5",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
       "gpt-5.4",
       "gpt-5.4-mini",
       "gpt-5.3-codex",
-      "gpt-5.3-codex-spark",
       "gpt-5.2",
     ]);
     expect(
@@ -72,25 +63,17 @@ describe("Codex model catalog", () => {
       getFallbackCodexModelsForCliVersion(
         CODEX_CLI_GPT56_REDUCED_CATALOG_MIN_VERSION,
       ).map((model) => model.id),
-    ).toEqual([
-      "gpt-5.6-sol",
-      "gpt-5.5",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
-      "gpt-5.3-codex-spark",
-    ]);
+    ).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
     expect(
       getFallbackCodexModelsForCliVersion(
         CODEX_CLI_GPT56_RESTORED_CATALOG_MIN_VERSION,
       ).map((model) => model.id),
     ).toEqual([
       "gpt-5.6-sol",
-      "gpt-5.5",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
       "gpt-5.4",
       "gpt-5.4-mini",
-      "gpt-5.3-codex-spark",
     ]);
     expect(getFallbackCodexModelsForCliVersion(null)[0]).toMatchObject({
       id: "gpt-5.6-sol",
@@ -211,19 +194,25 @@ describe("Codex model catalog", () => {
         hidden: false,
       },
       {
+        id: "gpt-5.2",
+        model: "gpt-5.2",
+        upgrade: "gpt-5.3-codex-spark",
+      },
+      {
         id: "internal-hidden",
         model: "internal-hidden",
         hidden: true,
       },
     ]);
 
+    // Withdrawn models are dropped whether listed live or named as an upgrade.
     expect(models.map((model) => model.id)).toEqual([
       "gpt-6-astra",
       "gpt-5.6-sol",
-      "gpt-5.5",
       "gpt-daybreak-blue-latest",
       "gpt-5.4",
       "gpt-5.3-codex",
+      "gpt-5.2",
     ]);
     expect(models[0]).toMatchObject({
       name: "GPT-6-Astra",
@@ -259,8 +248,8 @@ describe("Codex model catalog", () => {
         },
       ],
     });
-    expect(models[4]).toMatchObject({ inputModalities: ["text", "image"] });
-    expect(models[3]).toMatchObject({
+    expect(models[3]).toMatchObject({ inputModalities: ["text", "image"] });
+    expect(models[2]).toMatchObject({
       name: "Daybreak Blue",
       description: "Defensive cybersecurity model.",
     });
@@ -272,12 +261,14 @@ describe("Codex model catalog", () => {
       { id: "gpt-6-luna", model: "gpt-6-luna" },
       { id: "gpt-6-sol", model: "gpt-6-sol" },
       { id: "gpt-6-astra", model: "gpt-6-astra" },
+      { id: "gpt-6.1-terra", model: "gpt-6.1-terra" },
       { id: "gpt-6.1-sol", model: "gpt-6.1-sol", isDefault: true },
     ]);
 
     expect(models.map((model) => model.id)).toEqual([
       "gpt-6.1-sol",
       "gpt-6-astra",
+      "gpt-6.1-terra",
       "gpt-6-sol",
       "gpt-6-luna",
       "gpt-5.6-sol",
@@ -290,18 +281,24 @@ describe("Codex model catalog", () => {
   it("honors a provider default even when a preferred model is available", () => {
     const models = normalizeCodexModelList([
       { id: "gpt-5.4", model: "gpt-5.4", isDefault: true },
-      { id: "gpt-5.5", model: "gpt-5.5", isDefault: false },
+      { id: "gpt-5.6-terra", model: "gpt-5.6-terra", isDefault: false },
     ]);
 
-    expect(models.map((model) => model.id)).toEqual(["gpt-5.4", "gpt-5.5"]);
+    expect(models.map((model) => model.id)).toEqual([
+      "gpt-5.4",
+      "gpt-5.6-terra",
+    ]);
   });
 
   it("uses YA's preferred order when the provider marks no default", () => {
     const models = normalizeCodexModelList([
       { id: "gpt-5.4", model: "gpt-5.4", isDefault: false },
-      { id: "gpt-5.5", model: "gpt-5.5", isDefault: false },
+      { id: "gpt-5.6-terra", model: "gpt-5.6-terra", isDefault: false },
     ]);
 
-    expect(models.map((model) => model.id)).toEqual(["gpt-5.5", "gpt-5.4"]);
+    expect(models.map((model) => model.id)).toEqual([
+      "gpt-5.6-terra",
+      "gpt-5.4",
+    ]);
   });
 });

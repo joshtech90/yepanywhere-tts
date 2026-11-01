@@ -11,6 +11,15 @@ import {
   runNativeDisplayLifecycle,
   runNativeDisplayOwnership,
 } from "../../server/test/utils/native-tool-display-lifecycle";
+// This provider corpus has no Git backend; provenance is exercised separately.
+vi.mock("../src/hooks/useFileVersionControl", () => ({
+  useFileVersionControl: () => ({
+    cumulativeFile: null,
+    worktreeFile: null,
+    loading: false,
+    relativePath: null,
+  }),
+}));
 const context = {
   isStreaming: false,
   theme: "dark" as const,

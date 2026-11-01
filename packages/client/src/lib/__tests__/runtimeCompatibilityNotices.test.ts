@@ -75,7 +75,7 @@ describe("advisory runtime notices", () => {
     });
     expect(result.map((notice) => notice.id)).toEqual([
       "server-runtime-node22",
-      "backend-api-compat-0.4.29",
+      "backend-api-compat-0.8.0",
     ]);
   });
   it("preserves security priority and existing update commands", () => {

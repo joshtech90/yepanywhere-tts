@@ -1,6 +1,7 @@
-import { createReadStream, type Stats } from "node:fs";
+import { createReadStream, type Dirent, type Stats } from "node:fs";
 import {
   open,
+  readdir,
   readFile,
   realpath,
   stat,
@@ -11,6 +12,7 @@ import {
   dirname,
   extname,
   isAbsolute,
+  join,
   normalize,
   relative,
   resolve,
@@ -19,10 +21,13 @@ import { createInterface } from "node:readline";
 import {
   type FileContentResponse,
   type FileMetadata,
+  type FolderEntry,
+  type FolderListingResponse,
   isUrlProjectId,
   type PatchHunk,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
+import { PRINCIPAL_VARIABLE, type Principal } from "../auth/principal.js";
 import { computeEditAugment } from "../augments/edit-augments.js";
 import { renderMarkdownFilePreview } from "../augments/markdown-file-preview.js";
 import { highlightFile } from "../highlighting/index.js";
@@ -841,6 +846,31 @@ async function resolveFilePath(
   return realResolved;
 }
 
+/** Most entries one folder listing returns; the rest are reported truncated. */
+const MAX_FOLDER_LISTING_ENTRIES = 2000;
+
+/**
+ * One listed entry, classified after following a symlink so a linked folder
+ * reads as a folder. Whether the target may be opened is decided again when it
+ * is listed or read, by the same containment check as any other path.
+ */
+async function describeFolderEntry(
+  folder: string,
+  name: string,
+): Promise<FolderEntry> {
+  try {
+    const stats = await stat(join(folder, name));
+    const modifiedAt = Math.round(stats.mtimeMs);
+    if (stats.isDirectory()) return { name, kind: "folder", modifiedAt };
+    if (stats.isFile()) {
+      return { name, kind: "file", size: stats.size, modifiedAt };
+    }
+  } catch {
+    // A dangling link or an entry removed since readdir.
+  }
+  return { name, kind: "other" };
+}
+
 function isPathInsideDirectory(filePath: string, directory: string): boolean {
   const relativePath = relative(resolve(directory), resolve(filePath));
   return (
@@ -1261,6 +1291,70 @@ export function createFilesRoutes(deps: FilesDeps): Hono {
       cacheMetadata,
       headers,
     );
+  });
+
+  /**
+   * GET /api/projects/:projectId/files/list?path=<folder>
+   * The direct children of one folder, for the File Viewer's path segments.
+   * Resolution and containment are the file read's: a relative folder stays
+   * inside the project, `""` names its root. A host path outside the project
+   * is the superuser's alone, as for the Working Tree browser's `root=`
+   * listing. A share-scoped instance never lists: a public file grant names
+   * files, not folders.
+   */
+  routes.get("/:projectId/files/list", async (c) => {
+    const projectId = c.req.param("projectId");
+    const requested = c.req.query("path");
+    if (!isUrlProjectId(projectId)) {
+      return c.json({ error: "Invalid project ID format" }, 400);
+    }
+    if (requested === undefined) {
+      return c.json({ error: "Missing path parameter" }, 400);
+    }
+    if (deps.strictProjectFileAccess) {
+      return c.json({ error: "Folder listing is unavailable" }, 404);
+    }
+    const folderPath = requested === "" ? "." : requested;
+    const normalized = normalize(expandHomePath(folderPath));
+    if (isAbsolute(normalized) || /^[a-zA-Z]:/.test(normalized)) {
+      // This router is untyped; the principal middleware sets the variable.
+      const principal = c.get(PRINCIPAL_VARIABLE as never) as
+        | Principal
+        | undefined;
+      if (principal && principal.kind !== "superuser") {
+        return c.json({ error: "Superuser required" }, 403);
+      }
+    }
+    const project = await deps.scanner.getProject(projectId, {
+      allowStaleSnapshot: true,
+    });
+    if (!project) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+    const folder = await resolveFilePath(project.path, folderPath, pathPolicy);
+    if (!folder) {
+      return c.json({ error: "Invalid folder path" }, 400);
+    }
+    let dirents: Dirent[];
+    try {
+      dirents = await readdir(folder, { withFileTypes: true });
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOTDIR"
+        ? c.json({ error: "Path is not a folder" }, 400)
+        : c.json({ error: "Folder not found" }, 404);
+    }
+    dirents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const entries = await Promise.all(
+      dirents
+        .slice(0, MAX_FOLDER_LISTING_ENTRIES)
+        .map((dirent) => describeFolderEntry(folder, dirent.name)),
+    );
+    const response: FolderListingResponse = {
+      path: requested,
+      entries,
+      truncated: dirents.length > MAX_FOLDER_LISTING_ENTRIES,
+    };
+    return c.json(response);
   });
 
   /**

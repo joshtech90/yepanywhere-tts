@@ -138,6 +138,7 @@ export function EmulatorSettings() {
         <SettingsItem
           label={t("emulatorEnableTitle")}
           description={t("emulatorEnableDescription")}
+          doc="site/src/content/docs/files-and-source-control.md#remote-device-control"
         >
           <label className="toggle-switch">
             <input

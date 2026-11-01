@@ -100,6 +100,7 @@ async function main(): Promise<void> {
 
   try {
     const request = await readLaunchRequest();
+    owner.setIssuedPeerGrantId(request.options.agentApi?.peerGrantId);
     const {
       browserDebugEnvironment: initialBrowserDebugEnvironment,
       ...providerOptions
@@ -156,6 +157,7 @@ async function main(): Promise<void> {
           sessionSandbox,
           sessionSandboxOptions: undefined,
           onToolApproval: hooks.onToolApproval,
+          onAgentApiRead: hooks.onAgentApiRead,
           shouldEmitLiveDeltas: hooks.shouldEmitLiveDeltas,
           onPermissionModeApplied: (mode: PermissionMode) =>
             hooks.onPermissionModeApplied(mode),

@@ -74,7 +74,11 @@ function hrefForUrl(url: string): string | null {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return null;
     }
-    if (!parsed.hostname.includes(".")) {
+    // An explicit scheme already marks the text as a URL, so loopback hosts
+    // (`http://localhost:3400/…`, `http://[::1]:4000`) link too; other
+    // dotless hosts stay plain to match the Markdown autolinker.
+    const host = parsed.hostname;
+    if (host !== "localhost" && !host.startsWith("[") && !host.includes(".")) {
       return null;
     }
     return href;

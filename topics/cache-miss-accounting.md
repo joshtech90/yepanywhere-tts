@@ -127,19 +127,15 @@ samples.
 The optional ignore-after cutoff excludes both hits and misses beyond its
 duration so the event list, totals, and probability denominators describe the
 same population. Zero means no upper cutoff. It is serialized separately as
-`ignoreAfterMinutes` and exposed only when the server advertises
-`cache-miss-billing-ignore-after`. Without the capability, the client keeps the
-legacy recent-activity control and omits the new field from writes and undo
-restores.
-
-Expected-expiry evidence is a separately gated optional surface. A capable
-client requests `includeExpectedExpiry=1`, listens for
-`cache-miss-billing-expected-expiry`, and offers a default-off **Include
-expected expiry** toggle that filters the table and every chart together. The
-legacy route response filters these records before applying its limit, and the
-legacy `cache-miss-billing` live event never carries them, so older clients
-keep their prior behavior. Capability `cache-miss-billing-expected-expiry`
-owns this contract.
+`ignoreAfterMinutes`. Since the 2026-10-29 client retirement, the upper cutoff
+and expected-expiry evidence are baseline v0.8.0 contracts. Writes and Undo
+always preserve the cutoff field. The client requests
+`includeExpectedExpiry=1` and listens for `cache-miss-billing-expected-expiry`
+from the first acquisition, while the default-off **Include expected expiry**
+toggle still filters the table and every chart together. The legacy route
+response and `cache-miss-billing` event keep their filtering for maintained
+older clients. Capability identities and server advertisement are unchanged;
+older servers should update or use their bundled client.
 
 The UI's separate recency filter limits records by event timestamp. Its 1–96h
 slider ends in an unlimited notch, and a blank numeric value also means

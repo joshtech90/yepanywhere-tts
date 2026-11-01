@@ -20,7 +20,6 @@ const CODEX_RECAP_MAX_TOTAL_CHARS = 6000;
 const CODEX_RECAP_CHEAPEST_MODEL_PREFERENCES = [
   "gpt-5.4-mini",
   "gpt-5.1-codex-mini",
-  "gpt-5.3-codex-spark",
 ] as const;
 
 export interface CodexSummaryNotification {

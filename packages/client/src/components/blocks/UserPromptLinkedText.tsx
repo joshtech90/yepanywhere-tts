@@ -8,6 +8,7 @@ import { annotateGlossaryHtml } from "../../lib/glossary/annotateGlossaryHtml";
 import { ProjectPathLinkedText } from "../ProjectPathLinkedText";
 import { InnerHtml } from "../ui/InnerHtml";
 import { LinkifiedText } from "../ui/LinkifiedText";
+import { IssueMentionText } from "../IssueMentionText";
 
 function escapePlainTextHtml(text: string): string {
   return text
@@ -45,7 +46,12 @@ export function UserPromptLinkedTextContent({
 }) {
   const renderGlossaryText = useCallback(
     (plainText: string) => (
-      <GlossaryPlainText artifact={artifact} text={plainText} />
+      <IssueMentionText
+        text={plainText}
+        renderText={(text) => (
+          <GlossaryPlainText artifact={artifact} text={text} />
+        )}
+      />
     ),
     [artifact],
   );

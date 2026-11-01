@@ -73,6 +73,16 @@ Provider formats observed so far:
 
 These run unconditionally and are not user-configurable:
 
+- **Visualize artifact references** — a complete Codex
+  `\uE200visualize\uE202{"path":"/absolute/report.html","mode":"wide"}\uE201`
+  marker in rendered prose becomes a filename link to YA's existing file
+  viewer. POSIX and Windows absolute HTML paths retain their exact spelling;
+  the viewer applies its existing file-access checks and isolated HTML preview
+  policy when clicked. The marker does not mint a grant, load an iframe inline
+  in the transcript, or change file authority. Presentation hints such as
+  `mode` are ignored. Incomplete/malformed markers, non-local or non-HTML paths,
+  code examples, existing link labels, and public-share output are not
+  converted into artifact links.
 - **Wrapped lines stay separated** — Appearance line spacing may tighten prose,
   but rendered markdown must never overlap its own wrapped lines. Body prose in
   assistant text, streaming blocks, thinking blocks, and document previews keeps
@@ -84,7 +94,9 @@ These run unconditionally and are not user-configurable:
   never appear as literal characters. (`stripAnsiEscapes` inside `renderFixedFontRichContent`)
 - **Bare URLs in fixed-font text are links** — terminal output, fenced and
   indented blocks, and inline code render a bare `http(s)` URL with a dotted
-  host as an anchor around the unchanged text; other schemes stay plain. One
+  or loopback host (`localhost`, bracketed IPv6) as an anchor around the
+  unchanged text; other schemes and dotless hosts stay plain. User turns use
+  the same rule through `LinkifiedText`. One
   renderer answers this for every such surface (`linkifyToHtml` in
   `packages/shared/src/linkify.ts`). Terminal output opens the link in a new
   tab, since that markup reaches the page unsanitized. A Markdown anchor stays
@@ -187,6 +199,16 @@ combined into a formula that exists on neither side.
 
 Thinking summaries and fenced or inline code remain literal under their
 separate source-preservation contracts; they are not KaTeX-enabled surfaces.
+
+The scriptless HTML preview (`createScriptlessHtmlPreviewDocument`) also
+typesets Pandoc-family exports, Quarto included: their
+`span.math.inline`/`span.math.display` TeX, which the page's own MathJax or
+KaTeX would render, becomes KaTeX MathML. MathML needs no stylesheet or
+webfont, which the preview policy refuses from YA's origin, but the browser
+draws italic identifiers from the Unicode Mathematical Italic block, so a
+viewer with no system math font (Cambria Math, STIX Two Math, Noto Sans Math)
+shows those letters blank. Bare headless Linux hosts are the observed case.
+TeX that KaTeX rejects keeps its authored source.
 
 ## Paper math compatibility
 

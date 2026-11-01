@@ -307,19 +307,14 @@ function renderPage(
   );
 }
 
-const RELEASED_BASIC_GIT_CAPABILITIES = [
+const SOURCE_CONTROL_BASELINE_CAPABILITIES = [
+  GIT_SOURCE_REVIEW_CAPABILITY,
+  GIT_WORKING_TREE_FILES_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
   GIT_STATUS_REMOTE_CHECK_CAPABILITY,
   GIT_STATUS_PULL_CAPABILITY,
   GIT_STATUS_PUSH_CAPABILITY,
   GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
-] as const;
-
-const CORE_GIT_COMPATIBILITY_RELEASES = [
-  { version: "v0.6.0", releasedAt: "2026-07-06" },
-  { version: "v0.6.1", releasedAt: "2026-07-10" },
-  { version: "v0.6.2", releasedAt: "2026-07-11" },
-  { version: "v0.7.0", releasedAt: "2026-07-25" },
 ] as const;
 
 beforeEach(() => {
@@ -450,6 +445,7 @@ describe("GitStatusPage source header", () => {
     mocks.useVersion.mockReturnValue({
       version: {
         capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
           GIT_SOURCE_REVIEW_CAPABILITY,
           GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
           GIT_DIRTY_FILE_EDITOR_CAPABILITY,
@@ -585,6 +581,7 @@ describe("GitStatusPage source header", () => {
     mocks.useVersion.mockReturnValue({
       version: {
         capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
           GIT_SOURCE_REVIEW_CAPABILITY,
           GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
           GIT_STATUS_ENHANCED_CAPABILITY,
@@ -662,34 +659,7 @@ describe("GitStatusPage source header", () => {
     expect(screen.queryByTestId("working-tree-browser")).toBeNull();
   });
 
-  it("gates diff projections without blocking ordinary Source Control", async () => {
-    mocks.useVersion.mockReturnValue({
-      version: {
-        capabilities: [
-          GIT_SOURCE_REVIEW_CAPABILITY,
-          GIT_STATUS_ENHANCED_CAPABILITY,
-        ],
-      },
-      loading: false,
-      error: null,
-    });
-    renderPage();
-
-    await screen.findByTestId("working-tree-browser");
-    fireEvent.click(
-      screen.getByRole("button", { name: "gitStatusIgnoreWhitespace" }),
-    );
-
-    expect(
-      await screen.findByText("sourceProjectionUpgradeNotice"),
-    ).toBeDefined();
-    expect(mocks.renderWorkingTreeBrowser).toHaveBeenLastCalledWith(
-      expect.objectContaining({ ignoreWhitespace: false }),
-    );
-    expect(screen.getByTestId("working-tree-browser")).toBeDefined();
-  });
-
-  it("reports capable projection request failures without an upgrade notice", async () => {
+  it("reports projection request failures and restores the ordinary diff", async () => {
     renderPage();
     await screen.findByTestId("working-tree-browser");
     fireEvent.click(
@@ -704,40 +674,10 @@ describe("GitStatusPage source header", () => {
         'sourceProjectionRequestError {"error":"projection failed"}',
       ),
     ).toBeDefined();
-    expect(screen.queryByText("sourceProjectionUpgradeNotice")).toBeNull();
     expect(mocks.renderWorkingTreeBrowser).toHaveBeenLastCalledWith(
       expect.objectContaining({ ignoreWhitespace: false }),
     );
     expect(screen.getByTestId("working-tree-browser")).toBeDefined();
-  });
-
-  it("gates dirty-file session links independently", async () => {
-    mocks.useVersion.mockReturnValue({
-      version: {
-        capabilities: [
-          GIT_SOURCE_REVIEW_CAPABILITY,
-          GIT_STATUS_ENHANCED_CAPABILITY,
-        ],
-      },
-      loading: false,
-      error: null,
-    });
-
-    renderPage();
-
-    await screen.findByTestId("working-tree-browser");
-    expect(mocks.renderWorkingTreeBrowser).toHaveBeenLastCalledWith(
-      expect.objectContaining({ supportsLastEditor: false }),
-    );
-  });
-
-  it("enables dirty-file session links when advertised", async () => {
-    renderPage();
-
-    await screen.findByTestId("working-tree-browser");
-    expect(mocks.renderWorkingTreeBrowser).toHaveBeenLastCalledWith(
-      expect.objectContaining({ supportsLastEditor: true }),
-    );
   });
 
   it("preserves dirty-file attribution in the live worktree projection", async () => {
@@ -752,6 +692,7 @@ describe("GitStatusPage source header", () => {
     mocks.useVersion.mockReturnValue({
       version: {
         capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
           GIT_SOURCE_REVIEW_CAPABILITY,
           GIT_STATUS_ENHANCED_CAPABILITY,
           GIT_DIRTY_FILE_EDITOR_CAPABILITY,
@@ -812,7 +753,7 @@ describe("GitStatusPage source header", () => {
     );
   });
 
-  it("enables the whitespace projection when the server advertises it", async () => {
+  it("toggles the whitespace projection", async () => {
     renderPage();
     await screen.findByTestId("working-tree-browser");
 
@@ -825,7 +766,6 @@ describe("GitStatusPage source header", () => {
         expect.objectContaining({ ignoreWhitespace: true }),
       ),
     );
-    expect(screen.queryByText("sourceProjectionUpgradeNotice")).toBeNull();
   });
 
   it("opens history inside Changes and keeps legacy commit URLs working", async () => {
@@ -854,18 +794,19 @@ describe("GitStatusPage source header", () => {
     ).toBe("true");
   });
 
-  it("keeps Reviews dormant until the new capability and setting land", async () => {
+  it("keeps Reviews dormant until the persisted opt-in", async () => {
     renderPage("/git-status?projectId=project-a&tab=reviews");
 
     expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
     expect(screen.queryByRole("tab", { name: "sourceTabReviews" })).toBeNull();
   });
 
-  it("shows Reviews only when capability and persisted opt-in are both present", async () => {
+  it("shows Reviews after the persisted opt-in", async () => {
     mocks.serverSettings.sourceReviewSubmissionsEnabled = true;
     mocks.useVersion.mockReturnValue({
       version: {
         capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
           GIT_SOURCE_REVIEW_CAPABILITY,
           GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
           GIT_STATUS_ENHANCED_CAPABILITY,
@@ -899,7 +840,6 @@ describe("GitStatusPage source header", () => {
       expect.objectContaining({
         initialPath: "src/x.ts",
         status: expect.objectContaining({ branch: "main" }),
-        supportsWorkingTreeFiles: true,
       }),
     );
 
@@ -964,6 +904,7 @@ describe("GitStatusPage source header", () => {
     mocks.useVersion.mockReturnValue({
       version: {
         capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
           GIT_SOURCE_REVIEW_CAPABILITY,
           GIT_STATUS_ENHANCED_CAPABILITY,
           GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
@@ -991,6 +932,7 @@ describe("GitStatusPage source header", () => {
     mocks.useVersion.mockReturnValue({
       version: {
         capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
           GIT_SOURCE_REVIEW_CAPABILITY,
           GIT_STATUS_ENHANCED_CAPABILITY,
           GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
@@ -1273,6 +1215,7 @@ describe("GitStatusPage filesystem-only projects", () => {
     mocks.useVersion.mockReturnValue({
       version: {
         capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
           GIT_STATUS_ENHANCED_CAPABILITY,
           GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
           GIT_WORKING_TREE_SECTIONS_CAPABILITY,
@@ -1308,6 +1251,7 @@ describe("GitStatusPage filesystem-only projects", () => {
     mocks.useVersion.mockReturnValue({
       version: {
         capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
           GIT_STATUS_ENHANCED_CAPABILITY,
           GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
           GIT_WORKING_TREE_SECTIONS_CAPABILITY,
@@ -1325,9 +1269,14 @@ describe("GitStatusPage filesystem-only projects", () => {
     );
   });
 
-  it("keeps the not-repository fallback for older servers", async () => {
+  it("keeps the not-repository fallback when optional live sections are off", async () => {
     mocks.useVersion.mockReturnValue({
-      version: { capabilities: [GIT_STATUS_ENHANCED_CAPABILITY] },
+      version: {
+        capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+          GIT_STATUS_ENHANCED_CAPABILITY,
+        ],
+      },
       loading: false,
       error: null,
     });
@@ -1339,7 +1288,7 @@ describe("GitStatusPage filesystem-only projects", () => {
   });
 });
 
-describe("GitStatusPage released-server compatibility", () => {
+describe("GitStatusPage baseline and action feedback", () => {
   const originalClipboard = Object.getOwnPropertyDescriptor(
     navigator,
     "clipboard",
@@ -1352,70 +1301,14 @@ describe("GitStatusPage released-server compatibility", () => {
     }
   });
 
-  it.each(CORE_GIT_COMPATIBILITY_RELEASES)(
-    "keeps basic Source Control for $version ($releasedAt)",
-    async () => {
-      mocks.useVersion.mockReturnValue({
-        version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
-        loading: false,
-        error: null,
-      });
-
-      renderPage();
-
-      expect(
-        await screen.findByText("gitStatusCompatibilityTitle"),
-      ).toBeDefined();
-      expect(
-        screen.getByText("gitStatusCompatibilityDescription"),
-      ).toBeDefined();
-      expect(
-        screen.getByRole("button", { name: "gitStatusPull" }),
-      ).toBeDefined();
-      expect(
-        screen.getByRole("button", { name: "gitStatusPush" }),
-      ).toBeDefined();
-      expect(
-        screen.getByRole("button", { name: "gitStatusCheckRemote" }),
-      ).toBeDefined();
-      expect(screen.queryByTestId("commit-browser")).toBeNull();
-      expect(document.querySelector('[role="tablist"]')).toBeNull();
-      expect(
-        screen.queryByRole("button", { name: "sourceCommentsAction" }),
-      ).toBeNull();
-      expect(mocks.listReviewComments).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(CORE_GIT_COMPATIBILITY_RELEASES)(
-    "keeps generic action feedback for $version ($releasedAt)",
-    async () => {
-      mocks.useVersion.mockReturnValue({
-        version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
-        loading: false,
-        error: null,
-      });
-
-      renderPage();
-      fireEvent.click(
-        await screen.findByRole("button", { name: "gitStatusPull" }),
-      );
-      expect((await screen.findByRole("status")).textContent).toContain(
-        "gitStatusPullSuccess",
-      );
-
-      fireEvent.click(
-        await screen.findByRole("button", { name: "gitStatusPush" }),
-      );
-      expect((await screen.findByRole("status")).textContent).toContain(
-        "gitStatusPushSuccess",
-      );
-    },
-  );
-
   it("shows commit counts supplied by a current server", async () => {
     mocks.useVersion.mockReturnValue({
-      version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+      version: {
+        capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+        ],
+      },
       loading: false,
       error: null,
     });
@@ -1450,7 +1343,12 @@ describe("GitStatusPage released-server compatibility", () => {
 
   it("reports an unchanged pull as already up to date", async () => {
     mocks.useVersion.mockReturnValue({
-      version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+      version: {
+        capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+        ],
+      },
       loading: false,
       error: null,
     });
@@ -1478,7 +1376,12 @@ describe("GitStatusPage released-server compatibility", () => {
     "explains HTTPS failures for %s with safe copyable details",
     async (button, operation) => {
       mocks.useVersion.mockReturnValue({
-        version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+        version: {
+          capabilities: [
+            ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+            ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+          ],
+        },
         loading: false,
         error: null,
       });
@@ -1519,7 +1422,12 @@ describe("GitStatusPage released-server compatibility", () => {
 
   it("retains older-server feedback when detail is absent", async () => {
     mocks.useVersion.mockReturnValue({
-      version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+      version: {
+        capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+        ],
+      },
       loading: false,
       error: null,
     });
@@ -1539,7 +1447,12 @@ describe("GitStatusPage released-server compatibility", () => {
 
   it("exposes unrecognized Git output without an authentication diagnosis", async () => {
     mocks.useVersion.mockReturnValue({
-      version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+      version: {
+        capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+        ],
+      },
       loading: false,
       error: null,
     });
@@ -1566,7 +1479,12 @@ describe("GitStatusPage released-server compatibility", () => {
       isClean: true,
     };
     mocks.useVersion.mockReturnValue({
-      version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+      version: {
+        capabilities: [
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+          ...SOURCE_CONTROL_BASELINE_CAPABILITIES,
+        ],
+      },
       loading: false,
       error: null,
     });

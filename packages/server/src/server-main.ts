@@ -1,3 +1,7 @@
+import { localPeerHost } from "./peer-api/connection-contracts.js";
+import { PeerAccessManager } from "./peer-api/manager.js";
+import { readServerIdentity } from "./core-api/server-identity.js";
+import { revokeHostedPeerAgentApiAccess } from "./sdk/providers/provider-runtime-host.js";
 import "./startupEnv.js";
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
@@ -1135,8 +1139,29 @@ async function startServer() {
       ? config.idleTimeoutMs
       : idleReapHoursToMs(savedIdleReapHours);
 
-  // Create the app first (without WebSocket support initially)
-  // We'll add WebSocket routes after setting up WebSocket support
+  const publicServerId = readServerIdentity(discoverySqlite.getDatabase());
+  const peerAccess = new PeerAccessManager(
+    publicServerId,
+    config.dataDir,
+    (error) => console.error("[Peers] Lease retirement failed:", error),
+    {
+      runtimeControl: {
+        envOverride:
+          process.env.YEP_PEER_API_ENABLED === undefined
+            ? undefined
+            : config.peerApiEnabled,
+      },
+      identity: () =>
+        localPeerHost(
+          publicServerId,
+          serverSettingsService.getSetting("hostIdentity")?.icon,
+        ),
+    },
+  );
+  const { retiredGrantId } = await peerAccess.initialize();
+  if (retiredGrantId)
+    await revokeHostedPeerAgentApiAccess(publicServerId, retiredGrantId);
+
   const {
     app,
     supervisor,
@@ -1154,6 +1179,7 @@ async function startServer() {
     focusedSessionWatchManager,
     safeRestartService,
   } = createApp({
+    peerAccess,
     externalSessionsEnabled: config.externalSessionsEnabled,
     getCatalogFamilies: () => installService.getCatalogFamilies(),
     artifacts: config.artifacts,
@@ -1635,6 +1661,8 @@ async function startServer() {
     });
 
     attachUnifiedUpgradeHandler(server, {
+      peerUpgrade: (request, socket, head) =>
+        peerAccess?.handleUpgrade(request, socket, head) ?? false,
       appUpgrade: (request, socket, head) =>
         artifactServer.handleUpgrade(request, socket, head),
       frontendProxy,

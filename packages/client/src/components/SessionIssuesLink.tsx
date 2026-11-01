@@ -1,9 +1,14 @@
 import type { IssueItem, IssueSearchResult } from "@yep-anywhere/shared";
 import {
+  createContext,
+  type ReactNode,
   useCallback,
+  useContext,
+  useDeferredValue,
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -17,6 +22,8 @@ import { useI18n } from "../i18n";
 import { formatBriefAge } from "../lib/sessionAge";
 import { IssueIcon } from "./IssueIcon";
 import styles from "./SessionIssuesLink.module.css";
+import { IssueMentionLinksContext } from "./IssueMentionText";
+import { createIssueMentionLinks } from "../lib/issueMentionLinks";
 import {
   TRACKER_STATUS_LABELS,
   TrackerStatusBadge,
@@ -49,6 +56,38 @@ interface KnownIssues {
   items: IssueItem[];
   count: number;
   more: boolean;
+}
+
+const SessionIssuesContext = createContext<ReturnType<
+  typeof useSessionIssues
+> | null>(null);
+
+/** One session-owned read supplies both header controls and transcript links. */
+export function SessionIssuesProvider({
+  sessionId,
+  projectId,
+  messageCount,
+  children,
+}: {
+  sessionId: string;
+  projectId: string;
+  messageCount: number;
+  children: ReactNode;
+}) {
+  const enabled = useIssuesEnabled();
+  const state = useSessionIssues(sessionId, projectId, enabled, messageCount);
+  const deferredItems = useDeferredValue(state.known?.items);
+  const links = useMemo(
+    () => (enabled ? createIssueMentionLinks(deferredItems ?? []) : null),
+    [deferredItems, enabled],
+  );
+  return (
+    <SessionIssuesContext value={state}>
+      <IssueMentionLinksContext value={links}>
+        {children}
+      </IssueMentionLinksContext>
+    </SessionIssuesContext>
+  );
 }
 
 /**
@@ -301,12 +340,14 @@ export function SessionIssuesLink({
   const enabled = useIssuesEnabled();
   const base = useRemoteBasePath();
   const { t } = useI18n();
-  const { known, refresh } = useSessionIssues(
+  const shared = useContext(SessionIssuesContext);
+  const standalone = useSessionIssues(
     sessionId,
     projectId,
-    enabled,
+    enabled && !shared,
     messageCount,
   );
+  const { known, refresh } = shared ?? standalone;
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<{ top: number; left: number }>();
   const triggerRef = useRef<HTMLButtonElement>(null);

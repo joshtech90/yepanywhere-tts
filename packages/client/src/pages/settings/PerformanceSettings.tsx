@@ -418,6 +418,10 @@ export function PerformanceSettings() {
         <SettingsItem
           label={t("performanceInitialHistoryTitle")}
           description={t("performanceInitialHistoryDescription")}
+          doc={{
+            path: "topics/session-compact-tail-pagination.md#compact-scope-and-turn-selectors",
+            label: "initial history scope",
+          }}
           valueText={historyLabel}
           className="settings-item--wide-control"
         >

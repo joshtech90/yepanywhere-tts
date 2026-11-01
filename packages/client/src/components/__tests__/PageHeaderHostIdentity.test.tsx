@@ -57,18 +57,6 @@ describe("PageHeader host identity", () => {
     expect(view.getByLabelText("hostIdentityMarkerAria:💻")).toBeTruthy();
   });
 
-  it("renders no marker when the server capability is absent", () => {
-    versionState.capabilities = [];
-
-    const view = render(
-      <HostIdentityProvider>
-        <PageHeader title="Sessions" onOpenSidebar={vi.fn()} />
-      </HostIdentityProvider>,
-    );
-
-    expect(view.container.querySelector(".host-identity-marker")).toBeNull();
-  });
-
   it("exposes the expanded new-session target on the sidebar opener", () => {
     const openSidebar = vi.fn();
     const view = render(

@@ -25,8 +25,6 @@ import {
   PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
   SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
   VOICE_INPUT_CAPABILITY,
-  encodeCompactServerCapabilities,
-  encodeOptionalServerCapabilityBits,
   encodeVersionedServerCapabilities,
   hasServerCapabilityAdvertisement,
   negotiateServerCapabilityEncoding,
@@ -266,14 +264,17 @@ describe("server capability advertisements", () => {
   });
 
   it("encodes optional capability presence in sparse 32-bit words", () => {
-    const optionalCapabilityBits = encodeOptionalServerCapabilityBits([
-      VOICE_INPUT_CAPABILITY,
-      DEVICE_BRIDGE_UPDATE_CAPABILITY,
-      VOICE_INPUT_CAPABILITY,
-    ]);
-    const source = { current: "99.0.0", optionalCapabilityBits };
+    const { capabilityBits } = encodeVersionedServerCapabilities(
+      [
+        VOICE_INPUT_CAPABILITY,
+        DEVICE_BRIDGE_UPDATE_CAPABILITY,
+        VOICE_INPUT_CAPABILITY,
+      ],
+      "99.0.0",
+    );
+    const source = { current: "99.0.0", capabilityBits };
 
-    expect(optionalCapabilityBits).toEqual([[0, 17]]);
+    expect(capabilityBits).toEqual([[0, 17]]);
     expect(serverHasCapability(source, VOICE_INPUT_CAPABILITY)).toBe(true);
     expect(serverHasCapability(source, DEVICE_BRIDGE_UPDATE_CAPABILITY)).toBe(
       true,
@@ -282,41 +283,25 @@ describe("server capability advertisements", () => {
   });
 
   it("keeps provider-host control optional at its permanent id", () => {
-    const optionalCapabilityBits = encodeOptionalServerCapabilityBits([
-      PROVIDER_HOST_CONTROL_CAPABILITY,
-    ]);
-    expect(optionalCapabilityBits).toEqual([
+    const { capabilityBits } = encodeVersionedServerCapabilities(
+      [PROVIDER_HOST_CONTROL_CAPABILITY],
+      "0.7.1",
+    );
+    expect(capabilityBits).toEqual([
       [0, 2 ** CAPABILITY_ID_ALLOCATIONS.providerHostControl.id],
     ]);
     expect(
       serverHasCapability(
-        { current: "0.7.1", optionalCapabilityBits },
+        { current: "0.7.1", capabilityBits },
         PROVIDER_HOST_CONTROL_CAPABILITY,
       ),
     ).toBe(true);
     expect(
       serverHasCapability(
-        { current: "0.7.1", optionalCapabilityBits: [] },
+        { current: "0.7.1", capabilityBits: [] },
         PROVIDER_HOST_CONTROL_CAPABILITY,
       ),
     ).toBe(false);
-  });
-
-  it("keeps only not-yet-released names as compact extensions", () => {
-    const capabilities = [
-      PROJECT_SESSION_DEFAULTS_CAPABILITY,
-      VOICE_INPUT_CAPABILITY,
-    ];
-
-    expect(encodeCompactServerCapabilities(capabilities, "0.7.1")).toEqual({
-      optionalCapabilityBits: [[0, 1]],
-    });
-    expect(
-      encodeCompactServerCapabilities(capabilities, "0.7.0-741-gabcdef"),
-    ).toEqual({
-      optionalCapabilityBits: [[0, 1]],
-      capabilityExtensions: [PROJECT_SESSION_DEFAULTS_CAPABILITY],
-    });
   });
 
   it("encodes source-ahead capabilities by permanent ID", () => {
@@ -576,10 +561,13 @@ describe("server capability advertisements", () => {
       ],
     });
     expect(
-      encodeCompactServerCapabilities([], "0.7.0-741-gabcdef", [
+      encodeVersionedServerCapabilities([], "0.7.0-741-gabcdef", [
         PROJECT_SESSION_DEFAULTS_CAPABILITY,
       ]),
-    ).toEqual({ optionalCapabilityBits: [] });
+    ).toEqual({
+      capabilityEncoding: CAPABILITY_ID_ENCODING_VERSION,
+      capabilityBits: [],
+    });
     expect(() =>
       encodeVersionedServerCapabilities([], "0.7.1", [VOICE_INPUT_CAPABILITY]),
     ).toThrow("Only version-implied server capabilities can be denied");
@@ -613,7 +601,7 @@ describe("server capability advertisements", () => {
       serverHasCapability(
         {
           current: "0.7.0-741-gabcdef",
-          capabilityExtensions: [PROJECT_SESSION_DEFAULTS_CAPABILITY],
+          capabilities: [PROJECT_SESSION_DEFAULTS_CAPABILITY],
         },
         PROJECT_SESSION_DEFAULTS_CAPABILITY,
       ),

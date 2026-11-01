@@ -22,7 +22,7 @@ import queueStyles from "../../components/ProjectQueueSection.module.css";
 import { I18nProvider } from "../../i18n";
 import { invalidateLocalStorageValues } from "../../lib/localStorageValue";
 import { UI_KEYS } from "../../lib/storageKeys";
-import { PROJECT_QUEUE_CAPABILITY } from "../../lib/projectQueueVisibility";
+import { PROJECT_QUEUE_CAPABILITY } from "@yep-anywhere/shared";
 import { ProjectsPage } from "../ProjectsPage";
 
 const state = vi.hoisted(() => ({
@@ -537,23 +537,6 @@ describe("ProjectsPage", () => {
     expect(highlighted?.className).toContain(queueStyles.itemHighlighted);
   });
 
-  it("hides project queue UI without the server capability", () => {
-    state.version = { capabilities: [] };
-
-    render(
-      <I18nProvider>
-        <MemoryRouter>
-          <ProjectsPage />
-        </MemoryRouter>
-      </I18nProvider>,
-    );
-
-    expect(state.mockUseProjectQueues).toHaveBeenCalledWith([]);
-    expect(screen.queryByRole("heading", { name: "Project Queue" })).toBe(null);
-    expect(screen.queryByText("Queued project work")).toBe(null);
-    expect(screen.queryByTitle("Project Queue items: 1")).toBe(null);
-  });
-
   it("gates the project settings button on its server capability", () => {
     const { rerender } = render(
       <I18nProvider>
@@ -585,7 +568,7 @@ describe("ProjectsPage", () => {
     ).toBeTruthy();
   });
 
-  it("gates inline code-name editing on its server capability", async () => {
+  it("keeps inline code-name editing opt-in and saves exact values", async () => {
     const { rerender } = render(
       <I18nProvider>
         <MemoryRouter>
@@ -596,18 +579,6 @@ describe("ProjectsPage", () => {
 
     expect(screen.queryByRole("button", { name: "Edit code name" })).toBe(null);
     expect(screen.queryByText("alp")).toBe(null);
-
-    state.version = {
-      capabilities: [PROJECT_QUEUE_CAPABILITY, PROJECT_CODE_NAMES_CAPABILITY],
-    };
-    rerender(
-      <I18nProvider>
-        <MemoryRouter>
-          <ProjectsPage />
-        </MemoryRouter>
-      </I18nProvider>,
-    );
-    expect(screen.queryByRole("button", { name: "Edit code name" })).toBe(null);
 
     act(() => {
       localStorage.setItem(UI_KEYS.projectCodeNamesEnabled, "true");
@@ -632,26 +603,5 @@ describe("ProjectsPage", () => {
       );
     });
     expect(state.refetch).toHaveBeenCalledOnce();
-  });
-
-  it("hides project queue UI for hosted remote servers below the compatible level", () => {
-    state.isRemoteClient = true;
-    state.version = {
-      capabilities: [PROJECT_QUEUE_CAPABILITY],
-      remoteCompatibilityLevel: 0,
-    };
-
-    render(
-      <I18nProvider>
-        <MemoryRouter>
-          <ProjectsPage />
-        </MemoryRouter>
-      </I18nProvider>,
-    );
-
-    expect(state.mockUseProjectQueues).toHaveBeenCalledWith([]);
-    expect(screen.queryByRole("heading", { name: "Project Queue" })).toBe(null);
-    expect(screen.queryByText("Queued project work")).toBe(null);
-    expect(screen.queryByTitle("Project Queue items: 1")).toBe(null);
   });
 });

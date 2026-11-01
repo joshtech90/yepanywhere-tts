@@ -13,6 +13,11 @@ import {
   useSettingsJumpTarget,
   useSettingsSearchScope,
 } from "./SettingsSearchContext";
+import {
+  SettingsCaption,
+  type SettingsDoc,
+  SettingsDocLink,
+} from "./SettingsDocLink";
 import styles from "./SettingsItem.module.css";
 import { settingsItemSlug, settingsTextMatches } from "./settingsSearchMatch";
 
@@ -38,6 +43,12 @@ export interface SettingsItemProps {
   descriptionLayout?: "default" | "full-width-on-narrow";
   /** Extra search-only terms (synonyms, old names); never rendered. */
   keywords?: string[];
+  /**
+   * Documentation linked after the description; see `SettingsDoc`. Custom
+   * `info` gets the link on its own line; a `custom` layout renders
+   * `SettingsDocLink` itself.
+   */
+  doc?: SettingsDoc;
   /**
    * Current value as display text (e.g. the selected option's label).
    * Matched only when the user enables the search "match values" toggle;
@@ -105,6 +116,7 @@ export function SettingsItem({
   description,
   descriptionLayout = "default",
   keywords,
+  doc,
   valueText,
   className,
   baseClassName = "settings-item",
@@ -157,21 +169,34 @@ export function SettingsItem({
     : false;
   if (scope && !matched) return null;
 
-  const infoBody =
-    info ??
-    (scope ? (
-      <>
-        <strong>{renderSettingsSearchHighlight(label, scope.query)}</strong>
-        {description && (
-          <p>{renderSettingsSearchHighlight(description, scope.query)}</p>
-        )}
-      </>
-    ) : (
-      <>
-        <strong>{label}</strong>
-        {description && <p>{description}</p>}
-      </>
-    ));
+  const infoBody = info ? (
+    <>
+      {info}
+      {doc && (
+        <p>
+          <SettingsDocLink doc={doc} />
+        </p>
+      )}
+    </>
+  ) : (
+    <>
+      <strong>
+        {scope ? renderSettingsSearchHighlight(label, scope.query) : label}
+      </strong>
+      {(description || doc) && (
+        <p>
+          <SettingsCaption
+            text={
+              scope && description
+                ? renderSettingsSearchHighlight(description, scope.query)
+                : description
+            }
+            doc={doc}
+          />
+        </p>
+      )}
+    </>
+  );
 
   const originLabel = scope
     ? scope.sectionTitle

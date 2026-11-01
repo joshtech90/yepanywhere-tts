@@ -113,26 +113,39 @@ describe("shouldWarnLongContextEffortChange", () => {
     }
   });
 
-  it("still warns on other Claude models, an unresolved alias, or another provider", () => {
+  it("still warns on other Claude models or an unresolved alias", () => {
     for (const model of ["claude-sonnet-5", "claude-opus-5-6", "opus"]) {
       expect(shouldWarnLongContextEffortChange({ ...base, model })).toBe(true);
     }
-    expect(
-      shouldWarnLongContextEffortChange({
-        ...base,
-        provider: "codex",
-        model: "claude-opus-5-5",
-      }),
-    ).toBe(true);
   });
 
-  it("warns on Codex Astra until its in-place effort update is usable", () => {
+  it("warns on Codex only for older models without in-place effort updates", () => {
+    const codex = { ...base, provider: "codex" as const };
+    for (const model of [
+      "gpt-5.6-sol",
+      "gpt-5.4",
+      "gpt-5.3-codex",
+      "gpt-5",
+      "gpt-daybreak-blue-latest",
+      "GPT-5.6-Terra",
+    ]) {
+      expect(shouldWarnLongContextEffortChange({ ...codex, model })).toBe(true);
+    }
+    for (const model of [
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
+      "gpt-6.1-sol",
+      "gpt-6.1-terra",
+      "gpt-7-sol",
+      "gpt-50",
+    ]) {
+      expect(shouldWarnLongContextEffortChange({ ...codex, model })).toBe(
+        false,
+      );
+    }
     expect(
-      shouldWarnLongContextEffortChange({
-        ...base,
-        provider: "codex",
-        model: "gpt-6-astra",
-      }),
+      shouldWarnLongContextEffortChange({ ...codex, model: undefined }),
     ).toBe(true);
   });
 });

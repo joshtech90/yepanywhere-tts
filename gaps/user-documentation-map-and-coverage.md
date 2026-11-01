@@ -31,6 +31,28 @@ This is a seed inventory, not a completed documentation audit. Other missing
 paths or material must be established by inspecting current guides and product
 behavior rather than inferred from the size of the topics directory.
 
+### Settings without adequate user documentation
+
+The 2026-10-28 settings documentation-link sweep linked every setting it
+judged not self-evident. These remain debt:
+
+| Setting (pane) | Current link or material | Missing |
+| --- | --- | --- |
+| Allow All Hostnames / Allowed Hostnames (Local Access) | None committed | What the hostname check protects against (DNS rebinding), when a reverse proxy needs extra names, and the risk of allowing all. Unlinked. |
+| Persist Remote Sessions to Disk (Remote Access) | Implementation notes only | The security trade-off of keeping relay resume credentials on disk. Unlinked. |
+| Enable Device Bridge (Emulator) | User guide § Remote device control | Requirements (ADB, runtime download), ChromeOS host aliases, stream-quality trade-offs. |
+| Users pane: instructions, browser defaults, grants | `topics/limited-users.md` (headed as a proposal) | Covered by the limited-users row above. |
+| Learned speech vocabulary (Speech) | `topics/pluggable-speech-recognition.md` | User-level explanation of the scan window, Scan + Learn and Stop + Clear. Unlinked: its caption lives in `SpeechVocabularyControls.tsx`. |
+| Smart Turn and spoken send/cancel/wait (Speech) | `topics/mic-button-speech-ui.md` | A user guide section. |
+| Interactive HTML artifacts (Apps) | `topics/active-content-security.md` | Artifact address, listener port, link expiry, public vhost root, file vhosts, link rewriting and hosted sign-in. |
+| Session Defaults: sandbox, recaps, prompt cache, compaction thresholds; Cache Billing; Agent Context; MCP App views; Agent Auth Router; rendez uploads; Project Queue readiness check; instruction restoration; Environment variables | Linked to owning contract topics | User guides. Agent Context's caption is also wrong for non-Claude providers (see [confusing settings](sketches/confusing-settings.md)). |
+| Codex update policy (Providers) | None found | No caption and no document. |
+| Remote Access relay setup | `site/src/content/docs/remote-access.md` exists | Not linked: its caption lives in `RemoteAccessSetup.tsx`. |
+
+`site/src/content/docs/project-apps.md` also still names the current
+**Hosted apps** table "Vhosts" (lines 11 and 21; line 78 deliberately
+describes older servers).
+
 ## Requested work
 
 - Inventory existing user tasks and guides. Map each to its canonical
@@ -48,9 +70,10 @@ behavior rather than inferred from the size of the topics directory.
   owning topics. Keep user instructions distinct from implementation plans,
   proposals and maintainer procedures; preserve existing canonical ownership
   and vendor-sync relationships.
-- Give [settings-caption links](settings-caption-documentation-links.md) the
-  same stable documentation targets. That gap owns the caption UI facility;
-  this gap owns content coverage and the README-discoverable documentation map.
+- Keep [settings documentation links](../topics/settings-ui-placement.md#documentation-links)
+  pointed at the same stable targets: when a user guide is written for a
+  setting that currently links its owning topic, move the link to the guide.
+  This gap owns content coverage and the README-discoverable documentation map.
 
 Close when the coverage map identifies each reviewed task's real entry path,
 the confirmed omissions are linked or written, and navigation is verified from

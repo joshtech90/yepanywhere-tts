@@ -3,8 +3,6 @@ import {
   projectDisplayName,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
-  GIT_STATUS_ENHANCED_CAPABILITY,
-  PROJECT_CODE_NAMES_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
   type ProjectQueueItemSummary,
   serverHasCapability,
@@ -46,7 +44,7 @@ import {
   SwitchHostMenu,
 } from "./SwitchHostMenu";
 import { isNearScrollEnd } from "../lib/predictiveScroll";
-import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+
 import { sessionCollectionRecordToGlobalSessionItem } from "../lib/sessionCollectionRecords";
 import type { SessionCollectionRecord } from "../lib/clientSummaryCollections";
 import {
@@ -97,14 +95,6 @@ type SidebarPendingProjectQueueItem = ProjectQueueItemSummary & {
 type SidebarSessionItem = GlobalSessionItem & {
   activityInferredFromInboxTier?: boolean;
 };
-
-const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
-const EMPTY_PROJECT_QUEUE_PROJECTS: readonly {
-  id: string;
-  projectQueueCount?: number;
-  snapshotObservedAt?: number;
-}[] = [];
-const EMPTY_PROJECT_QUEUE_SESSION_IDS: ReadonlySet<string> = new Set();
 const EMPTY_RECORDS: readonly SessionCollectionRecord[] = [];
 
 /**
@@ -461,19 +451,11 @@ export function Sidebar({
   // Server capabilities for feature gating
   const { version: versionInfo } = useVersion();
   const bangHistoryVisible = bangHistoryViewEnabled(
-    versionInfo,
     serverSettings?.clientDefaults,
   );
-  const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
-  const supportsProjectCodeNames = serverHasCapability(
-    versionInfo,
-    PROJECT_CODE_NAMES_CAPABILITY,
-  );
+
   const { projectCodeNamesEnabled } = useProjectCodeNamePreferences();
-  const supportsSourceControl = serverHasCapability(
-    versionInfo,
-    GIT_STATUS_ENHANCED_CAPABILITY,
-  );
+
   const publicShareManagementAvailable = serverHasCapability(
     versionInfo,
     PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
@@ -516,9 +498,7 @@ export function Sidebar({
   const sourceControlPath = sourceControlProjectId
     ? `/git-status?projectId=${encodeURIComponent(sourceControlProjectId)}`
     : "/git-status";
-  const projectQueueSidebarCount = useProjectQueueSidebarCount(
-    supportsProjectQueue ? projects : EMPTY_PROJECT_QUEUE_PROJECTS,
-  );
+  const projectQueueSidebarCount = useProjectQueueSidebarCount(projects);
   const newSessionPath = "/new-session";
   const newSessionHref = `${basePath}${newSessionPath}`;
 
@@ -833,42 +813,31 @@ export function Sidebar({
     () => [...new Set([...sidebarProjectIds, ...projectQueueProjectIds])],
     [projectQueueProjectIds, sidebarProjectIds],
   );
-  const supportedSidebarQueueProjectIds = supportsProjectQueue
-    ? sidebarQueueProjectIds
-    : EMPTY_PROJECT_QUEUE_PROJECT_IDS;
-  const supportedSidebarProjectIds = supportsProjectQueue
-    ? sidebarProjectIds
-    : EMPTY_PROJECT_QUEUE_PROJECT_IDS;
+  const supportedSidebarQueueProjectIds = sidebarQueueProjectIds;
+  const supportedSidebarProjectIds = sidebarProjectIds;
   // Keep the queue feed mounted for visible session rows and projects that
   // report queue work. Badge rendering itself uses the shared count selector.
   const projectQueues = useProjectQueues(supportedSidebarQueueProjectIds);
   const rawProjectQueuedSessionIds = useProjectQueuedSessionIds(
     supportedSidebarProjectIds,
   );
-  const projectQueuedSessionIds = supportsProjectQueue
-    ? rawProjectQueuedSessionIds
-    : EMPTY_PROJECT_QUEUE_SESSION_IDS;
+  const projectQueuedSessionIds = rawProjectQueuedSessionIds;
   const knownProjectQueueItems = useKnownProjectQueueItems();
   const projectNameById = useMemo(
     () =>
       new Map(
         projects.map((project) => [
           project.id,
-          supportsProjectCodeNames &&
-          projectCodeNamesEnabled &&
-          project.codeName
+          projectCodeNamesEnabled && project.codeName
             ? project.codeName
             : projectDisplayName(project),
         ]),
       ),
-    [projectCodeNamesEnabled, projects, supportsProjectCodeNames],
+    [projectCodeNamesEnabled, projects],
   );
   const pendingProjectQueueItems = useMemo(
-    () =>
-      supportsProjectQueue
-        ? knownProjectQueueItems.filter(isSidebarPendingProjectQueueItem)
-        : [],
-    [knownProjectQueueItems, supportsProjectQueue],
+    () => knownProjectQueueItems.filter(isSidebarPendingProjectQueueItem),
+    [knownProjectQueueItems],
   );
   const handlePendingProjectQueueClick = useCallback(
     async (
@@ -1318,7 +1287,7 @@ export function Sidebar({
               to="/projects"
               icon={SidebarIcons.projects}
               label={t("sidebarProjects")}
-              badge={supportsProjectQueue ? projectQueueSidebarCount : 0}
+              badge={projectQueueSidebarCount}
               badgeVariant="projectQueue"
               badgeTitle={t("projectCardQueueCount", {
                 count: projectQueueSidebarCount,
@@ -1326,7 +1295,7 @@ export function Sidebar({
               onClick={onNavigate}
               basePath={basePath}
             />
-            {supportsSourceControl && (
+            {
               <SidebarNavItem
                 to={sourceControlPath}
                 icon={SidebarIcons.sourceControl}
@@ -1334,7 +1303,7 @@ export function Sidebar({
                 onClick={onNavigate}
                 basePath={basePath}
               />
-            )}
+            }
             {supportsDeviceBridgeNav && !isLimitedUser && (
               <SidebarNavItem
                 to="/devices"
@@ -1425,7 +1394,7 @@ export function Sidebar({
             )}
           </SidebarNavSection>
 
-          {supportsProjectQueue && pendingProjectQueueItems.length > 0 && (
+          {pendingProjectQueueItems.length > 0 && (
             <div className="sidebar-section">
               <SidebarSectionHeader
                 title={t("sidebarSectionPendingSessions")}

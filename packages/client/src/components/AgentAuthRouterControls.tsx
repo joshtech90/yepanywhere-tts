@@ -10,6 +10,7 @@ import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import { api } from "../api/client";
 import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
+import { SettingsDocLink } from "../pages/settings/SettingsDocLink";
 import styles from "./AgentAuthRouterControls.module.css";
 
 type Account = Awaited<
@@ -135,7 +136,10 @@ function RouterSettingsForSource() {
       aria-busy={busy}
     >
       <strong>{t("routerTitle")}</strong>
-      <p>{t("routerDescription")}</p>
+      <p>
+        {t("routerDescription")}{" "}
+        <SettingsDocLink doc="topics/agent-auth-router.md#set-up-and-use" />
+      </p>
       <div className={styles.status} role="status">
         <strong>
           {!loaded

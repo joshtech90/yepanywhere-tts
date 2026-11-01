@@ -4,6 +4,7 @@ import {
 } from "@yep-anywhere/shared";
 import { useEffect, useState } from "react";
 import { useI18n } from "../../i18n";
+import { SettingsDocLink } from "./SettingsDocLink";
 import { SettingsItem } from "./SettingsItem";
 import styles from "./ProjectQueueReadinessSettings.module.css";
 
@@ -68,7 +69,13 @@ export function ProjectQueueReadinessSettings({ command, onSave }: Props) {
           <strong>{t("projectQueueReadinessSettingTitle")}</strong>
         </label>
         <p className={styles.hint}>
-          {t("projectQueueReadinessSettingDescription")}
+          {t("projectQueueReadinessSettingDescription")}{" "}
+          <SettingsDocLink
+            doc={{
+              path: "topics/project-queue.md#external-readiness-check",
+              label: "external readiness check",
+            }}
+          />
         </p>
         {enabled && (
           <>

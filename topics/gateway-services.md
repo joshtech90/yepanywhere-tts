@@ -19,6 +19,17 @@ Related topics: [claude](claude.md), [provider-abstraction](provider-abstraction
 See also: [Codex OSS](../docs/codex-oss.md) for the Codex CLI side of local
 model serving.
 
+## Client baseline
+
+Since the 2026-10-29 retirement, Gateway configuration, autostart and agent/plan
+controls use their v0.8.0 baseline contracts without per-setting version checks.
+Provider detection and configured values still govern actual execution. The
+older single-Gateway editor continues to serve v0.8 hosts without Gateway
+services; its start command is always editable. The separate services
+capability, persisted-setting migration and old-client server mirrors remain.
+The client waits for settings and version metadata before choosing the legacy
+editor, so late metadata cannot replace an editor while input is underway.
+
 ## Contract
 
 ### Configuration

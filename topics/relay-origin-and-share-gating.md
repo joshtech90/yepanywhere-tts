@@ -431,6 +431,16 @@ for a session share, exposing all linked project files would be a separate
 explicit capability. A live file share differs by design: its root is a file
 the owner chose, and it serves what that file links to (above).
 
+Shares never list folders. The authenticated viewer's clickable path segments
+([media routing](media-rendering-and-routing.md#resource-actions-and-file-presentation-choice))
+come from a listing method that the public viewer source does not have, so a
+share's file page shows its path as plain text and requests nothing; the
+in-process share file routes refuse `files/list` as well. Giving the public
+source a listing would widen every existing share's grant from files to
+folders, so it is a separate product decision rather than viewer parity; the
+opt-in shape is in
+[the project-path sketch](../gaps/sketches/public-share-project-path-access.md).
+
 ## Future E2E Direction
 
 A relay-operator-private public share design needs encryption before relay

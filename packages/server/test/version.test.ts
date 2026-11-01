@@ -89,11 +89,7 @@ describe("GET /version", () => {
         platform: "test",
       }),
     });
-    for (const query of [
-      "/",
-      "/?clientVersion=0.8.1",
-      "/?capabilities=compact-v1",
-    ]) {
+    for (const query of ["/", "/?clientVersion=0.8.1"]) {
       const version = await (await routes.request(query)).json();
       expect(version.current).toBe("5756cfd");
       expect(
@@ -126,11 +122,7 @@ describe("GET /version", () => {
       };
       const legacy = createVersionRoutes(options);
       const routes = createVersionRoutes({ ...options, getSqliteStatus });
-      for (const query of [
-        "/",
-        "/?clientVersion=0.8.1",
-        "/?capabilities=compact-v1",
-      ]) {
+      for (const query of ["/", "/?clientVersion=0.8.1"]) {
         const before = await (await legacy.request(query)).json();
         const after = await (await routes.request(query)).json();
         expect(before.sqlite).toBeUndefined();
@@ -147,18 +139,14 @@ describe("GET /version", () => {
         }
         // Compare other metadata after checking capabilities semantically;
         // their wire representation differs between the negotiated encodings.
-        for (const field of [
-          "capabilities",
-          "capabilityBits",
-          "optionalCapabilityBits",
-        ]) {
+        for (const field of ["capabilities", "capabilityBits"]) {
           delete before[field];
           delete after[field];
         }
         expect(after).toEqual({ ...before, sqlite: { state } });
       }
       // Each response reads retained readiness for capabilities and status.
-      expect(getSqliteStatus).toHaveBeenCalledTimes(6);
+      expect(getSqliteStatus).toHaveBeenCalledTimes(4);
     },
   );
 
@@ -484,7 +472,7 @@ describe("GET /version", () => {
     expect(json.voiceBackendCapabilities).toEqual({ "ya-dummy": {} });
   });
 
-  it("negotiates version-implied and optional-bit capabilities", async () => {
+  it("treats the retired compact query as ordinary legacy negotiation", async () => {
     mockFetch(() => new Response(null, { status: 204 }));
 
     const { createVersionRoutes } = await importVersion();
@@ -501,14 +489,8 @@ describe("GET /version", () => {
     const response = await routes.request("/?capabilities=compact-v1");
     const version = await response.json();
 
-    expect(version.capabilities).toBeUndefined();
-    expect(version.optionalCapabilityBits).toEqual([
-      [0, 1],
-      // Current optional bits remain; retired IDs 70 and 71 are absent.
-      [2, 12288],
-      // Bits 109, 110 and 126: file replacement, app deletion, vhost OAuth.
-      [3, 1073766400],
-    ]);
+    expect(version.capabilities).toContain(VOICE_INPUT_CAPABILITY);
+    expect(version.capabilityEncoding).toBeUndefined();
     expect(
       serverHasCapability(
         version,

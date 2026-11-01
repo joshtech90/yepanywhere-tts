@@ -16,6 +16,11 @@ source review of enrollment, SSH server ownership, target-local credentials and
 worktrees, Git/PR workflows, disconnect/restart recovery, and implications for
 YA's remote-execution choices.
 
+**[T3 and YA provider architecture](t3code-provider-architecture.md)** —
+2026-10-28 source comparison of provider commands, ownership, queues,
+normalization and persistence after YA's house cleaning, with bounded refactor
+recommendations and the revised feature-retention decisions.
+
 ## First-Party Tools
 
 Official apps from AI providers:

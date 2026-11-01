@@ -18,7 +18,6 @@ import styles from "./RepoStatusBar.module.css";
 export function RepoStatusBar({
   status,
   projectId,
-  supportsIncomingCommits = false,
   onSelectChanges,
   headCommitHref,
   onOpenHeadCommit,
@@ -27,7 +26,7 @@ export function RepoStatusBar({
 }: {
   status: GitStatusInfo;
   projectId?: string;
-  supportsIncomingCommits?: boolean;
+
   /** Make a dirty badge open the working-tree Changes mode. */
   onSelectChanges?: () => void;
   /** Standalone URL of the branch tip's commit view, for new-tab opening. */
@@ -50,10 +49,7 @@ export function RepoStatusBar({
     headCommit !== undefined &&
     headCommitHref !== undefined &&
     onOpenHeadCommit !== undefined;
-  const previewsIncoming =
-    supportsIncomingCommits &&
-    projectId !== undefined &&
-    status.upstream !== null;
+  const previewsIncoming = projectId !== undefined && status.upstream !== null;
 
   return (
     <>

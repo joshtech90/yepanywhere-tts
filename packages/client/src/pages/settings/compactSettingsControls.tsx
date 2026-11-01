@@ -61,6 +61,10 @@ export function ClaudeAutoCompactPercentOverrideControl({
       searchable={searchable}
       label={t("providersClaudeAutoCompactTitle")}
       description={description ?? t("providersClaudeAutoCompactDescription")}
+      doc={{
+        path: "topics/resume-compaction.md#claude-global-automatic-threshold-override",
+        label: "Claude auto-compaction override",
+      }}
       keywords={[
         "compact",
         "context",
@@ -160,6 +164,10 @@ export function YaCompactContextEarlyControl({
       searchable={searchable}
       label={t("modelSettingsCompactThresholdTitle")}
       description={description ?? t("modelSettingsCompactThresholdDescription")}
+      doc={{
+        path: "topics/resume-compaction.md#live-threshold-trigger-task-029",
+        label: "early compaction",
+      }}
       keywords={[
         "compact",
         "early compact",

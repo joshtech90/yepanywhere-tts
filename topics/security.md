@@ -39,9 +39,11 @@ when the serving account itself must be isolated from other host state.
 
 Any restricted principal requires its own credential, server-side
 authorization, and an enforced execution boundary. Limited users are the first
-such layer; § Limited Users states the boundary they claim. Delegated guests
-and peer-issued grants remain proposals, and the [[principals-and-grants]]
-sketch records shared vocabulary for them without selecting a protocol. Hiding
+such layer; § Limited Users states the boundary they claim. Delegated guests and general hosted issuance remain proposals. The
+[peer API](peer-access.md) implements a separate immediate-peer principal and
+target-local project/operation grants over distinct SRP credentials; these do
+not enter the legacy operator API. The [[principals-and-grants]] sketch records
+the broader shared vocabulary. Hiding
 controls, selecting a project working directory, or assigning a
 narrower-sounding permission mode would not establish that boundary.
 
@@ -366,8 +368,9 @@ the client's blast radius even though one host does not authorize another.
 The proposed cross-host delegation service is a different boundary. Pairing a
 server must create a distinct server-to-server principal rather than copy a
 browser password, browser resume secret, or relay registration credential.
-Grants remain explicit, directional, non-transitive, inspectable, revocable,
-and default-off for agent use. The relay remains an encrypted transport rather
+Grants remain explicit, directional, non-transitive, inspectable and revocable.
+After enrollment, use by new eligible agent launches defaults on; the owner API
+retains an opt-out. Local API opt-ins and immutable launch grants still apply. The relay remains an encrypted transport rather
 than a peer registry or plaintext API proxy, and a controller must not receive
 an arbitrary proxy to the worker's authenticated `/api/*` surface.
 

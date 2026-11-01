@@ -25,6 +25,12 @@ export function codexRouterArguments(route: RouterLaunch): string[] {
     'model_providers.aar.name="Agent Auth Router"',
     `model_providers.aar.base_url=${JSON.stringify(route.baseUrl)}`,
     'model_providers.aar.wire_api="responses"',
+    ...(route.serviceTierSelection
+      ? [
+          `model_providers.aar.model_catalog_url=${JSON.stringify(`${route.baseUrl}/models`)}`,
+          "features.api_key_model_discovery=true",
+        ]
+      : []),
     'model_providers.aar.env_key="AAR_SESSION_TOKEN"',
     "model_providers.aar.requires_openai_auth=false",
     "model_providers.aar.supports_websockets=false",

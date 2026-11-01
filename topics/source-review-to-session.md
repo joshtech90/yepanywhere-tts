@@ -45,8 +45,8 @@ the source-review feature setting alone is not storage consent.
 
 Existing `.yep` state and `refs/yep/source-review/captures` may remain readable
 for compatibility but are not migrated, refreshed, or deleted during upgrade.
-The current post-`0.7.0` implementation is recorded in the parent topic's audit
-and awaits correction. Wherever later historical prose says the project-local
+The current storage implementation is governed by
+[Storage Settings](storage-settings.md) and its writer audit. Wherever later historical prose says the project-local
 home "stands" or is the established convention, this amendment wins.
 
 Related topics: [selection-comment-ui](selection-comment-ui.md) (the
@@ -454,7 +454,7 @@ without restoring background work.
 Unread state is a server-side outcome revision paired with an acknowledged
 revision. Listing or prefetching submissions never marks anything read; YA
 acknowledges only when the reviewer actually opens the outcome-bearing
-submission. A capability-gated `GET /api/review/inbox` supplies unread review
+submission. The baseline `GET /api/review/inbox` supplies unread review
 outcomes to Inbox before Source Control opens, and acknowledging the visible
 submission uses
 `POST /api/projects/:projectId/review/submissions/:submissionId/acknowledge`.
@@ -536,15 +536,15 @@ selects Reviews. The selector's wrapping contract in
 [Source Control](source-control.md) must be re-verified at phone width rather
 than assumed to still fit.
 
-### Hosted compatibility is additive and separately gated
+### Hosted compatibility baseline
 
-The stable compatibility corpus for this optional feature is v0.7.0 and
-v0.6.2; neither advertises the existing `git-source-review` capability. The
-new server contract is owned by a permanent
-`git-source-review-submissions` capability, not by broadening
-`git-source-review` after it has shipped.
+The separate permanent `git-source-review-submissions` identity owns the
+submission workflow without broadening `git-source-review`. Since the
+2026-10-29 retirement, current clients assume both complete contracts from
+v0.8.0, alongside the other Source Control baseline contracts.
 
-The new capability covers:
+The submission identity covers:
+
 
 - paged `GET /api/projects/:projectId/review/submissions` and detail
   `GET /api/projects/:projectId/review/submissions/:submissionId`;
@@ -558,14 +558,12 @@ The new capability covers:
   `reviewSubmit.submissionId` and `reviewSubmit.name`, and the server settings
   `sourceReviewSubmissionsEnabled` and `sourceReviewResponseTurns`.
 
-Without `git-source-review`, the client keeps the established basic Source
-Control compatibility shell. With `git-source-review` but without the new
-capability, it keeps the shipped version-1 comment/submit behavior and may show
-the client-only editor split and destination picker, but it shows no Reviews
-mode and sends no capture, site, submission, acknowledgement, refresh, or
-outcome request. A new server preserves all old request shapes and response
-fields for old clients. This compatibility plan requires maintainer approval
-before any client/server contract edit.
+Current clients have no basic compatibility shell or Reviews/Inbox gate based
+on a fixed capability. Missing capabilities no longer select a version-1
+compatibility path. The persisted setting below
+still controls capture/history visibility. A new server preserves old request
+shapes and response fields for maintained older clients. Older hosts should
+update or use their bundled client.
 
 ### Review visibility is on by default for new installs
 
@@ -577,8 +575,8 @@ An explicit stored false remains authoritative. Existing installs whose
 persisted default is already false are not silently migrated because the file
 does not distinguish an untouched old default from an intentional choice.
 Missing setting data from an older server still means false in the client. The
-capability says the server can support the workflow; the setting controls its
-visibility, capture history, and outcome tracking. Fixing the existing editor
+baseline contract supplies the workflow; the setting controls its visibility,
+capture history, and outcome tracking. Fixing the existing editor
 overlay and offering a destination for an already-invoked immediate submit do
 not depend on this option.
 
@@ -1058,34 +1056,21 @@ and live YA desktop/phone captures (2026-07-27).
 
 ### Released-server fallback and action feedback
 
-The complete Changes/Files/Comments browser, including commit history inside
-Changes, and source-review workflow requires the permanent
-`git-source-review` capability. That capability owns
-the commit browse, search, blame, commit-diff, review-comment, preview, and
-submit routes plus the extended HEAD-to-filesystem diff fields;
-`git-status-enhanced` retains only its previously released status,
-untracked-folder, and basic working-tree-diff meaning.
+The complete Changes/Files/Comments browser and source-review routes are
+baseline v0.8.0 contracts after the 2026-10-29 retirement. Current clients
+start from valid project/source inputs without awaiting version metadata and
+have no basic compatibility shell or update-only entry screen. The permanent
+`git-source-review`, `git-source-review-projections` and
+`git-inclusive-to-head` identities keep their existing route meanings for
+maintained older clients.
 
-When `git-status-enhanced` exists without `git-source-review`, Source Control
-renders a basic compatibility shell instead of an upgrade-only dead end:
-repository/branch/upstream/ahead-behind/clean state plus Check, Pull, Push, and
-integration analysis according to their existing independent capability
-advertisements. It explains that commit history, file browsing, and source
-review require a server update. It does not mount a new browse/review component
-or call one of its routes.
-
-Ignore whitespace and direct selected-tree-to-HEAD per-file comparison require
-the permanent `git-source-review-projections` capability. Inclusive **To
-HEAD** separately requires permanent `git-inclusive-to-head`; without it, the
-inclusive control is hidden and makes no range request. Without the older
-projection capability, direct/whitespace controls make no projection request,
-remain off, and show a dismissible update-or-restart-server notice; ordinary
-Source Control continues to work. If a server advertises the applicable
-capability but a projection request fails, the client returns to the ordinary
-diff and shows the same notice. It never leaves a projection control active
-over ordinary or stale content. On phone layouts,
-the notice is portaled above the full-screen diff as a dismissible bottom
-banner rather than being hidden behind it.
+Ignore whitespace, direct per-file comparison and inclusive To HEAD use their
+baseline routes. Request failures return to the ordinary diff and show an
+actionable, dismissible error; they never leave a projection control active
+over stale content or turn an execution failure into an upgrade notice. On
+phone layouts the error is portaled above the full-screen diff as a bottom
+banner. Runtime eligibility, source identity, cancellation and actual projection
+content still apply.
 
 Git action outcomes render twice by design: a brief mark on the initiating
 button for immediate attribution and a persistent full-text panel beside the
@@ -1093,8 +1078,10 @@ page content. The panel survives until the next action or project change;
 warnings are alerts and successes are status messages. Touch users never need
 hover to learn why Pull or Push left the branch unchanged.
 
-The core compatibility corpus initially covers released `v0.6.0`, `v0.6.1`,
-`v0.6.2`, and `v0.7.0`. See
+The original compatibility review covered `v0.6.0`, `v0.6.1`, `v0.6.2` and
+`v0.7.0`; the current v0.8.0+ corpus is owned by
+[server capabilities](server-capabilities.md#october-2026-compatibility-retirement).
+For the original review, see
 [`docs/tactical/063-source-control-hosted-compatibility.md`](../docs/tactical/063-source-control-hosted-compatibility.md).
 
 — Done (2026-07-27).

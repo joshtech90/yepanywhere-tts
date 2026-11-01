@@ -40,8 +40,9 @@ Status: implementation authorized 2026-07-25. Tactical plan:
 - Enabled entries are marked and grouped as **Previous models** in choosers.
   Disabling one affects future choices only; a current session or saved default
   remains legible until changed.
-- A transitional server capability hides the control against older compatible
-  servers. No coarse remote compatibility-level increase is required.
+- Current clients offer these settings on the v0.8.0 server baseline. The
+  fixed client capability gate was retired on 2026-10-28; persisted selections
+  remain unchanged. The identity stays advertised for older clients.
 - Provider refreshes own registry additions, deprecations, retirement, and
   remapping review. Paid model probes still require explicit approval.
 

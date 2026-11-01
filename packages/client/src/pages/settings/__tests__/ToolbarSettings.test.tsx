@@ -15,7 +15,7 @@ import {
 import {
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
-} from "../../../lib/projectQueueVisibility";
+} from "@yep-anywhere/shared";
 import {
   DEFAULT_CONVERSATION_VIEW_TURN_LIMIT,
   setConversationViewTurnLimit,
@@ -232,13 +232,6 @@ describe("ToolbarSettings", () => {
     cleanup();
   });
 
-  it("hides the Project Queue option without server capability", () => {
-    render(<ToolbarSettings />);
-
-    expect(screen.queryByText("Project Queue")).toBe(null);
-    expect(screen.queryByText("Queue as New Session Shortcut")).toBe(null);
-  });
-
   it("hides browser debugging unless the server contract is present", () => {
     render(<ToolbarSettings />);
 
@@ -267,15 +260,6 @@ describe("ToolbarSettings", () => {
     fireEvent.pointerUp(slider);
 
     expect(state.presence.browserDebug).toBe("mid");
-  });
-
-  it("shows only the current-session control without shortcut capability", () => {
-    state.version = { capabilities: [PROJECT_QUEUE_CAPABILITY] };
-
-    render(<ToolbarSettings />);
-
-    expect(screen.getByText("Project Queue")).toBeTruthy();
-    expect(screen.queryByText("Queue as New Session Shortcut")).toBe(null);
   });
 
   it("shows the shortcut control hidden when its capability is present", () => {
@@ -340,9 +324,9 @@ describe("ToolbarSettings", () => {
   it("shows a presence slider for every control row", () => {
     render(<ToolbarSettings />);
 
-    // 15 control-presence sliders plus Conversation View history, waveform
+    // 17 control-presence sliders plus Conversation View history, waveform
     // button-background opacity, and question reminder duration.
-    expect(screen.getAllByRole("slider")).toHaveLength(18);
+    expect(screen.getAllByRole("slider")).toHaveLength(20);
     expect(
       screen
         .getByRole("slider", { name: "Transcript Search visibility" })

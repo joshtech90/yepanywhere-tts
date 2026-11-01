@@ -165,12 +165,19 @@ function deriveModelGlyphMatch(
   // GPT-6 shorthand and distinguish newer versions and qualified variants.
   if (baseProviderKey === "codex") {
     const namedModel = normalizedModel.match(
-      /^gpt-(\d+(?:\.\d+)*)-(astra|sol|luna)(?:-(.+))?$/u,
+      /^gpt-(\d+(?:\.\d+)*)-(astra|sol|terra|luna)(?:-(.+))?$/u,
     );
     if (namedModel && Number(namedModel[1]?.split(".")[0]) >= 6) {
       const [, version, family, qualifier] = namedModel;
       return {
-        glyph: family === "astra" ? "As" : family === "sol" ? "So" : "Lu",
+        glyph:
+          family === "astra"
+            ? "As"
+            : family === "sol"
+              ? "So"
+              : family === "terra"
+                ? "Te"
+                : "Lu",
         suffix: [version === "6" ? "" : version, qualifier]
           .filter(Boolean)
           .join("-"),

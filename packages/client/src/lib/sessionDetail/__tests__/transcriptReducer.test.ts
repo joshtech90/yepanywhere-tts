@@ -450,47 +450,12 @@ describe("transcriptReducer", () => {
     expect(state.messages[0]?.uuid).toBe("provider-assistant-1");
   });
 
-  it("reconciles old-server Codex assistant id drift without the capability", () => {
-    const state = reduceSessionDetailActions(
-      [
-        {
-          type: "applyStreamMessage",
-          message: assistantMessage(
-            "old-live-assistant-id",
-            "The task is complete.",
-            "2026-07-01T12:00:00.000Z",
-          ),
-        },
-        {
-          type: "applyCatchupMessages",
-          messages: [
-            assistantMessage(
-              "old-durable-assistant-id",
-              "The task is complete.",
-              "2026-07-01T12:00:00.900Z",
-            ),
-          ],
-        },
-      ],
-      {
-        ...createInitialSessionDetailState(),
-        session: sessionMetadata("codex"),
-      },
-    );
-
-    expect(state.messages).toHaveLength(1);
-    expect(state.messages[0]).toMatchObject({
-      uuid: "old-durable-assistant-id",
-      _source: "jsonl",
-    });
-  });
-
   it("keeps equal Codex assistant rows distinct for an aligned server", () => {
     const state = reduceSessionDetailActions(
       [
         {
           type: "applyStreamMessage",
-          codexStreamDurableIdAlignment: true,
+
           message: assistantMessage(
             "first-provider-assistant-id",
             "Still waiting.",
@@ -499,7 +464,7 @@ describe("transcriptReducer", () => {
         },
         {
           type: "applyCatchupMessages",
-          codexStreamDurableIdAlignment: true,
+
           messages: [
             assistantMessage(
               "second-provider-assistant-id",
@@ -653,7 +618,7 @@ describe("transcriptReducer", () => {
     const timestamp = "2026-07-01T12:00:00.000Z";
     const state = reduceSessionDetailState(createInitialSessionDetailState(), {
       type: "loadPersistedTranscript",
-      codexStreamDurableIdAlignment: true,
+
       session: sessionMetadata("codex"),
       messages: [
         userMessage("user-1", "wait 10 minutes", timestamp),
@@ -710,7 +675,7 @@ describe("transcriptReducer", () => {
       },
       {
         type: "applyStreamMessage",
-        codexStreamDurableIdAlignment: true,
+
         message: {
           ...userMessage("provider-user-2", "again", timestamp),
           isReplay: true,
@@ -721,28 +686,6 @@ describe("transcriptReducer", () => {
     expect(state.messages.map((message) => message.uuid)).toEqual([
       "provider-user-1",
       "provider-user-2",
-    ]);
-  });
-
-  it("suppresses an old-server Codex replay by durable timestamp", () => {
-    const timestamp = "2026-07-01T12:00:00.000Z";
-    const state = reduceSessionDetailActions([
-      {
-        type: "loadPersistedTranscript",
-        session: sessionMetadata("codex"),
-        messages: [userMessage("old-durable-id", "again", timestamp)],
-      },
-      {
-        type: "applyStreamMessage",
-        message: {
-          ...userMessage("old-live-id", "again", timestamp),
-          isReplay: true,
-        },
-      },
-    ]);
-
-    expect(state.messages.map((message) => message.uuid)).toEqual([
-      "old-durable-id",
     ]);
   });
 
@@ -1344,48 +1287,17 @@ describe("codex steer identity", () => {
     });
   });
 
-  it("reconciles an unmatched identical durable steer from an older server", () => {
-    const state = reduceSessionDetailActions(
-      [
-        {
-          type: "applyStreamMessage",
-          message: steerEcho("2026-07-23T03:10:00.000Z"),
-        },
-        {
-          type: "applyCatchupMessages",
-          messages: [
-            {
-              ...durableRow("2026-07-23T03:10:00.000Z"),
-              uuid: "old-server-positional-id",
-            },
-          ],
-        },
-      ],
-      {
-        ...createInitialSessionDetailState(),
-        session: sessionMetadata("codex"),
-      },
-    );
-
-    expect(state.messages).toHaveLength(1);
-    expect(state.messages[0]).toMatchObject({
-      uuid: "old-server-positional-id",
-      tempId: "temp-steer",
-      _source: "jsonl",
-    });
-  });
-
   it("keeps an unmatched identical durable steer for an aligned server", () => {
     const state = reduceSessionDetailActions(
       [
         {
           type: "applyStreamMessage",
-          codexStreamDurableIdAlignment: true,
+
           message: steerEcho("2026-07-23T03:10:00.000Z"),
         },
         {
           type: "applyCatchupMessages",
-          codexStreamDurableIdAlignment: true,
+
           messages: [
             {
               ...durableRow("2026-07-23T03:10:00.000Z"),

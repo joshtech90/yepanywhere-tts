@@ -207,6 +207,7 @@ export function BrowserExtensionSettings() {
       <SettingsSection
         title={t("extensionSettingsLookupTitle")}
         description={t("extensionSettingsLookupDescription")}
+        doc="site/src/content/docs/chrome-extension.md#optional-automatic-lookup-and-badges"
       >
         <SettingsItem
           label={t("extensionSettingsAutomatic")}

@@ -126,6 +126,11 @@ const CATEGORY_COMPONENTS: Record<string, React.ComponentType> = {
   apps: lazy(() =>
     import("./AppsSettings").then((m) => ({ default: m.AppsSettings })),
   ),
+  "server-connections": lazy(() =>
+    import("./ServerConnectionsSettings").then((m) => ({
+      default: m.ServerConnectionsSettings,
+    })),
+  ),
   remote: lazy(() =>
     import("./RemoteAccessSettings").then((m) => ({
       default: m.RemoteAccessSettings,
@@ -298,9 +303,14 @@ export function SettingsLayout() {
     [jumpTarget, consumeJumpTarget],
   );
 
-  const allCategories = getSettingsCategories((key) => t(key as never));
-  const categories = allCategories.filter((item) =>
-    settingsCategoryServed(item, versionInfo),
+  const allCategories = useMemo(
+    () => getSettingsCategories((key) => t(key as never)),
+    [t],
+  );
+  const categories = useMemo(
+    () =>
+      allCategories.filter((item) => settingsCategoryServed(item, versionInfo)),
+    [allCategories, versionInfo],
   );
   // A limited user keeps only the categories they can actually operate; the
   // rest are inert or never finish loading for them. topics/limited-users.md
@@ -308,11 +318,17 @@ export function SettingsLayout() {
   // the superuser, so no category is offered or mounted: a superuser-only
   // pane would otherwise send its refused requests first.
   const actingAsLimitedUser = actingPrincipal.username !== null;
-  const visibleCategories = !principalResolved
-    ? []
-    : actingAsLimitedUser
-      ? categories.filter((item) => limitedUserMaySeeSettingsCategory(item.id))
-      : categories;
+  const visibleCategories = useMemo(
+    () =>
+      !principalResolved
+        ? []
+        : actingAsLimitedUser
+          ? categories.filter((item) =>
+              limitedUserMaySeeSettingsCategory(item.id),
+            )
+          : categories,
+    [principalResolved, actingAsLimitedUser, categories],
+  );
   // The backup slot is server-wide and `/api/browser-settings-backup` is
   // denied for a limited user, so the buttons would only ever fail for them.
   const canBackUpBrowserSettings =
@@ -389,12 +405,14 @@ export function SettingsLayout() {
     />
   );
 
+  // The first key must not mount every settings pane on the urgent input
+  // update. Enter search only once its deferred query is ready as well.
   const searchResults =
-    searchActive && principalResolved ? (
+    searchActive && deferredSearchQuery !== "" && principalResolved ? (
       <SettingsSearchResults
         categories={visibleCategories}
         components={CATEGORY_COMPONENTS}
-        query={deferredSearchQuery || searchQuery.trim()}
+        query={deferredSearchQuery}
         matchValues={matchValues}
         onJumpToItem={handleCategoryClick}
         onOpenCategory={handleCategoryClick}

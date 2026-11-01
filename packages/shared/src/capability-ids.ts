@@ -834,6 +834,42 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "rendez-active-compose",
     introducedIn: "0.11.1",
   },
+  agentAuthRouterServiceTiers: {
+    id: 136,
+    direction: "server",
+    name: "agent-auth-router-service-tiers",
+    introducedIn: "0.11.1",
+  },
+  fileFolderListing: {
+    id: 137,
+    direction: "server",
+    name: "file-folder-listing",
+    introducedIn: "0.11.1",
+  },
+  agentApiBootstrap: {
+    id: 138,
+    direction: "server",
+    name: "agent-api-bootstrap",
+    introducedIn: "0.11.1",
+  },
+  agentApiManagement: {
+    id: 139,
+    direction: "server",
+    name: "agent-api-management",
+    introducedIn: "0.11.1",
+  },
+  peerAuthenticationRefresh: {
+    id: 141,
+    direction: "server",
+    name: "peer-authentication-refresh",
+    introducedIn: "0.11.1",
+  },
+  peerConnections: {
+    id: 140,
+    direction: "server",
+    name: "peer-connections",
+    introducedIn: "0.11.1",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

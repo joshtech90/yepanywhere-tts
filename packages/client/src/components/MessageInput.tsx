@@ -127,7 +127,7 @@ import {
   createSpeechTargetId,
 } from "../lib/speechTargets";
 import { handleVoiceInputShortcutKeyDown } from "../lib/voiceInputShortcut";
-import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+
 import { hasComposerDraftContent } from "../lib/sessionComposerSubmission";
 import type {
   ContextUsage,
@@ -525,6 +525,17 @@ export function MessageInput({
     sessionDraft: draftIndex,
   });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const untouchedRecallRef = useRef<string | null>(null);
+  const positionedRecallVersionRef = useRef(0);
+  const [recallVersion, setRecallVersion] = useState(0);
+  useLayoutEffect(() => {
+    if (!correctionActive) untouchedRecallRef.current = null;
+    if (positionedRecallVersionRef.current !== recallVersion) {
+      positionedRecallVersionRef.current = recallVersion;
+      untouchedRecallRef.current = text;
+      textareaRef.current?.setSelectionRange(text.length, text.length);
+    }
+  }, [text, correctionActive, recallVersion]);
   const [isComposing, setIsComposing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [audioMemoOpen, setAudioMemoOpen] = useState(false);
@@ -897,10 +908,9 @@ export function MessageInput({
   const projectQueueCtrlEnterEnabled =
     version?.clientDefaults?.projectQueueCtrlEnterEnabled ??
     DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED;
-  const projectQueueSupported = serverSupportsProjectQueue(version);
+
   const projectQueueShortcutAvailable =
     projectQueueCtrlEnterEnabled &&
-    projectQueueSupported &&
     toolbarVisibility.projectQueue &&
     !!onProjectQueue &&
     !forkSummaryMode;
@@ -2294,13 +2304,9 @@ export function MessageInput({
   // Render session actions only when they are useful, so a neighboring visible
   // action can absorb their space while the session is inactive.
   const showMobileProjectQueueAction =
-    !forkSummaryMode &&
-    projectQueueSupported &&
-    toolbarVisibility.projectQueue &&
-    !!onProjectQueue;
+    !forkSummaryMode && toolbarVisibility.projectQueue && !!onProjectQueue;
   const showMobileProjectQueueNewSessionAction =
     !forkSummaryMode &&
-    projectQueueSupported &&
     toolbarVisibility.projectQueueNewSessionShortcut &&
     !!onProjectQueueNewSession;
   const showMobileSessionAlternateAction =
@@ -2361,6 +2367,7 @@ export function MessageInput({
       }
       const recalled = onRecallLastSubmission?.() ?? false;
       if (recalled) {
+        setRecallVersion((version) => version + 1);
         setInterimTranscript("");
         textareaRef.current?.focus();
       }
@@ -2608,6 +2615,22 @@ export function MessageInput({
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    // A held dismissal key must never fall through to stopping agent work.
+    if (e.key === "Escape" && e.repeat) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (
+      e.key !== "ArrowDown" &&
+      e.key !== "ArrowUp" &&
+      e.key !== "Control" &&
+      e.key !== "Shift" &&
+      e.key !== "Alt" &&
+      e.key !== "Meta"
+    ) {
+      untouchedRecallRef.current = null;
+    }
     if (e.key === "Enter" && e.repeat && questionAside?.onSave) {
       e.preventDefault();
       return;
@@ -2965,14 +2988,13 @@ export function MessageInput({
       !e.shiftKey &&
       !e.altKey
     ) {
-      if (recallLastSubmission()) {
+      if (!e.repeat && !e.nativeEvent.isComposing && recallLastSubmission()) {
         e.preventDefault();
       }
       return;
     }
 
-    // ↓ on an emptied composer undoes the ↑ recall: leave correction mode
-    // rather than leaving its banner to wrap the next fresh message.
+    // Down undoes untouched recall; selection/navigation retain normal editing.
     if (
       e.key === "ArrowDown" &&
       !e.ctrlKey &&
@@ -2981,7 +3003,11 @@ export function MessageInput({
       !e.altKey &&
       correctionActive &&
       onCancelCorrection &&
-      !text.trim() &&
+      !e.nativeEvent.isComposing &&
+      (!text.trim() ||
+        (untouchedRecallRef.current === text &&
+          textareaRef.current?.selectionStart === text.length &&
+          textareaRef.current?.selectionEnd === text.length)) &&
       attachments.length === 0
     ) {
       e.preventDefault();
@@ -2997,7 +3023,7 @@ export function MessageInput({
       !e.altKey
     ) {
       e.preventDefault();
-      recallLastSubmission(true);
+      if (!e.repeat && !e.nativeEvent.isComposing) recallLastSubmission(true);
       return;
     }
 
@@ -3910,6 +3936,7 @@ export function MessageInput({
                 };
               }}
               onChange={(e) => {
+                untouchedRecallRef.current = null;
                 const nextText = fileCompletion.normalizeInput(e.target.value);
                 const pendingInput = pendingDraftInputRef.current;
                 pendingDraftInputRef.current = null;
@@ -3992,6 +4019,14 @@ export function MessageInput({
               }}
               onKeyDown={handleKeyDown}
               onSelect={() => {
+                const textarea = textareaRef.current;
+                if (
+                  textarea &&
+                  (textarea.selectionStart !== textarea.value.length ||
+                    textarea.selectionEnd !== textarea.value.length)
+                ) {
+                  untouchedRecallRef.current = null;
+                }
                 handleTextareaSelectionTarget();
                 fileCompletion.onSelect();
               }}
@@ -4298,19 +4333,17 @@ export function MessageInput({
           </div>
         )}
 
-        {!collapsed && correctionActive && (
-          <div className="correction-draft">
-            <span className="correction-draft-label">
-              {t("sessionCorrectionActive")}
-            </span>
+        {correctionActive && (
+          <div className={styles.correctionDraft}>
+            <span>{t("sessionCorrectionActive")}</span>
             <button
               type="button"
-              className="correction-draft-cancel"
+              className={styles.correctionCancel}
               onClick={onCancelCorrection}
               aria-label={t("sessionCorrectionCancel")}
               title={t("sessionCorrectionCancel")}
             >
-              ×
+              {t("sessionCorrectionBack")}
             </button>
           </div>
         )}

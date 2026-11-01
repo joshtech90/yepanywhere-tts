@@ -4,6 +4,7 @@ import {
   PUBLIC_FILE_SHARES_CAPABILITY,
   serverHasCapability,
   type FileContentResponse,
+  type FolderListingResponse,
   type GitFileDiffMode,
   type LocalResourceRef,
 } from "@yep-anywhere/shared";
@@ -100,6 +101,7 @@ import {
   type FileViewSelection,
 } from "./FileDiffViewLinks";
 import { FileRevisionLink } from "./FileRevisionLink";
+import { FileViewerPathBreadcrumbs } from "./FileViewerPathBreadcrumbs";
 import { PublicFileShareModal } from "./PublicFileShareModal";
 import { useFileVhostService } from "../hooks/useFileVhostService";
 import {
@@ -162,6 +164,14 @@ export interface FileViewerSource {
     html: string,
     fileData: FileContentResponse,
   ) => string;
+  /**
+   * One folder's entries, for clickable path segments. A public share's
+   * source never has this: its grant names files, not folders.
+   */
+  listFolder?: (
+    projectId: string,
+    folderPath: string,
+  ) => Promise<FolderListingResponse>;
 }
 
 interface FileViewerProps {
@@ -190,6 +200,13 @@ interface FileViewerProps {
   headerLeading?: ReactNode;
   /** Carries the body scroll offset across a reload of the page. */
   scrollMemory?: FileViewerScrollMemory;
+  /**
+   * Shows another file in this viewer's place, for a file chosen from a path
+   * segment's folder list. Without it the file opens in a nested viewer.
+   */
+  onNavigateFile?: (filePath: string) => void;
+  /** A folder whose path-segment list opens on arrival (`folder=` in a URL). */
+  initialFolder?: string;
 }
 
 export interface FileViewerScrollMemory {
@@ -536,6 +553,7 @@ const DEFAULT_FILE_VIEWER_SOURCE: FileViewerSource = {
   getRawFileUrl: (projectId, filePath, download) =>
     api.getFileRawUrl(projectId, filePath, download),
   statFile: (projectId, filePath) => api.getFileMetadata(projectId, filePath),
+  listFolder: (projectId, folderPath) => api.listFolder(projectId, folderPath),
   // Fetch raw bytes through the active source transport so images and downloads
   // work when same-origin /api URLs cannot address the source.
   fetchRawFileBlob: (fileData, _filePath, download) => {
@@ -658,6 +676,8 @@ export const FileViewer = memo(function FileViewer({
   diffMode,
   headerLeading,
   scrollMemory,
+  onNavigateFile,
+  initialFolder,
 }: FileViewerProps) {
   const { t } = useI18n();
   const quoteTextBlock = useQuoteReply();
@@ -1460,6 +1480,9 @@ export const FileViewer = memo(function FileViewer({
     () => makeDisplayPath(filePath, projectPath),
     [filePath, projectPath],
   );
+  // A file chosen from a path segment's folder list, when the host cannot
+  // show it in this viewer's place.
+  const [breadcrumbFile, setBreadcrumbFile] = useState<string | null>(null);
   const absoluteCopyPath = useMemo(() => {
     return getAbsoluteFilePath(filePath, projectPath);
   }, [filePath, projectPath]);
@@ -2064,13 +2087,25 @@ export const FileViewer = memo(function FileViewer({
           )}
         </div>
         <div className={`file-viewer-info ${viewerStyles.info}`}>
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: right-click opens the file action menu; left-click behavior stays on explicit toolbar buttons */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: right-click on the name or a separator opens the file action menu; folder segments own their own clicks and menus */}
           <span
             className={`file-viewer-path ${viewerStyles.path}`}
             title={filePath}
             onContextMenu={handlePathContextMenu}
           >
-            {displayPath}
+            <FileViewerPathBreadcrumbs
+              projectId={projectId}
+              displayPath={displayPath}
+              requestPath={
+                projectRelativeCopyPath ?? absoluteCopyPath ?? filePath
+              }
+              projectPath={projectPath}
+              listFolder={
+                publicShareContext === null ? source.listFolder : undefined
+              }
+              onOpenFile={onNavigateFile ?? setBreadcrumbFile}
+              initialFolder={initialFolder}
+            />
           </span>
           <div
             ref={fileHeaderProvenanceRef}
@@ -2441,6 +2476,13 @@ export const FileViewer = memo(function FileViewer({
           lineEnd={projectFileModal.lineEnd}
           initialPresentation={projectFileModal.initialPresentation}
           onClose={closeProjectFileModal}
+        />
+      ) : null}
+      {breadcrumbFile ? (
+        <FileViewerModal
+          projectId={projectId}
+          filePath={breadcrumbFile}
+          onClose={() => setBreadcrumbFile(null)}
         />
       ) : null}
     </div>

@@ -265,17 +265,15 @@ difference between two otherwise identical buttons.
 The circled plus straddles the upper-right button border, leaving the main
 delivery arrow centered and unobstructed in both toolbar and keyboard rows.
 
-Project Queue UI must also be capability-gated on `/api/version` advertising
-`projectQueue`. The active-composer new-session shortcut and its Toolbar
-setting additionally require
-`project-queue-new-session-shortcut-setting`, so newer clients do not save the
-new presence key to older servers that reject it. Treat missing capabilities
-as unsupported so newer remote clients do not show Project Queue entry points
-against older servers.
-Hosted remote clients must additionally require the current remote
-compatibility generation, because early Project Queue-capable source checkouts
-predate the compatibility marker and can expose partial Project Queue behavior
-to newer hosted clients.
+Project Queue and its active-composer new-session shortcut are baseline
+features in current clients. The fixed `projectQueue` and
+`project-queue-new-session-shortcut-setting` gates and the redundant hosted
+compatibility-generation check were retired on 2026-10-28. Servers below
+v0.8.0 should update or use their co-deployed client. Current clients retain
+all queue blocking/admission conditions, opt-in shortcut presence, source
+readiness and interest-owned request/backstop lifetimes. Newer, separately
+gated features such as attachment editing and readiness checks retain their
+own capability contracts.
 
 Blocked status groups reasons that name the same session so its short id is
 shown once. The group ends with the session's display title as a link to that

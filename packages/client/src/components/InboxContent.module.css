@@ -24,6 +24,10 @@
   padding-top: var(--space-2);
 }
 
+.toolbar {
+  flex-wrap: wrap;
+}
+
 .refreshSpinner {
   animation: spin 1s linear infinite;
 }

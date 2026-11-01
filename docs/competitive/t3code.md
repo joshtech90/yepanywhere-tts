@@ -1,5 +1,11 @@
 # T3 Code
 
+For the focused provider/control/persistence comparison, read
+[T3 and YA provider architecture](t3code-provider-architecture.md), reviewed
+against October 28 source and YA's reduced core. It distinguishes
+recommendations from implemented ownership and does not refresh this entire
+product comparison.
+
 For the current remote-execution analysis, read
 [T3 Code remote environments: ownership, workspaces and recovery](t3code-remote-sessions.md),
 reviewed against freshly fetched upstream source on 2026-10-03. The broader

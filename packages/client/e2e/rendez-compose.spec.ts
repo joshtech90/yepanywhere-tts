@@ -98,20 +98,5 @@ test("active-compose attaches to a new-session draft while real typing continues
         })
       ).ok(),
     ).toBe(true);
-    const read = await (
-      await page.request.post(`${baseURL}/api/drafts/read`, {
-        headers,
-        data: { slot: { kind: "new-session" } },
-      })
-    ).json();
-    await page.request.post(`${baseURL}/api/drafts/clear`, {
-      headers,
-      data: {
-        slot: { kind: "new-session" },
-        ticket: read.ticket,
-        baseRevision: read.snapshot.revision,
-        operationId: crypto.randomUUID(),
-      },
-    });
   }
 });

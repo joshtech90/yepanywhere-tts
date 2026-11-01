@@ -103,3 +103,24 @@ The final removal-series workspace run passed in 139.06 s (6,536 server /
 7,046 client); neither the capture CLI timeout nor the loopback-family
 assertion recurred. This is verification of the removal series, not a
 diagnosis or closure of either intermittent fixture failure.
+
+2026-10-29: AAR speed selection's full workspace rerun passed (6,548 server /
+7,010 client), retaining the fault-path diagnostics listed above. An initial
+Node 26 run timed out the unchanged capture CLI case `runs from another working
+directory and emits parseable JSON plus Markdown files` at 30 s; its 13 cases
+passed in isolation in 3.99 s, then the complete Node 25 workspace run passed.
+Neither capture assertions nor timeouts changed. The separate live Codex
+0.165.0 cold resume completed and preserved its pin, but logged turn-id
+resynchronization first on `thread/tokenUsage/updated`, then `turn/started`.
+This repeats the existing diagnostic category; its event-order ownership is
+outside tier selection and remains unaddressed here.
+
+2026-11-01: CI repair's full Node 25 macOS workspace run passed (6,710
+server / 7,064 client), but repeated the existing fault-path diagnostics above
+and emitted two jsdom `Not implemented: navigation (except hash changes)`
+errors. The same navigation diagnostics appear in hosted unit job
+124792013338. Attribution to the initiating link fixture needs a verbose
+client run; suppressing navigation globally would hide unrelated regressions.
+The touched peer/bootstrap tests pass without runtime warnings in focused
+runs. This repair changes only their measured time budgets and a capability
+registry reference, so the independent diagnostic-fixture audit remains open.

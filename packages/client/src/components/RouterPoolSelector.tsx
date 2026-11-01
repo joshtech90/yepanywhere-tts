@@ -2,6 +2,7 @@ import {
   resolveRouterModel,
   routerAliasTargets,
   routerModelSupportsThinking,
+  routerModelSupportsServiceTier,
   type AgentAuthRouterOverview,
   type AgentAuthRouterPoolPolicy,
   type AppSessionSummary,
@@ -174,6 +175,14 @@ export function routedModels(
               supportsAdaptiveThinking:
                 previous.supportsAdaptiveThinking ||
                 model.supportsAdaptiveThinking,
+              serviceTiers: [
+                ...new Map(
+                  [
+                    ...(previous.serviceTiers ?? []),
+                    ...(model.serviceTiers ?? []),
+                  ].map((t) => [t.id, t]),
+                ).values(),
+              ],
               supportedReasoningEfforts: [
                 ...new Map(
                   [
@@ -212,6 +221,7 @@ export function routerPoolMembers(
   provider: string | null,
   model: string | null,
   thinking: ThinkingOption,
+  serviceTier?: string | null,
 ) {
   const concreteModel = resolveRouterModel(
     model,
@@ -224,6 +234,10 @@ export function routerPoolMembers(
       routerModelSupportsThinking(
         a.models.find((m) => m.id === concreteModel),
         thinking,
+      ) &&
+      routerModelSupportsServiceTier(
+        a.models.find((m) => m.id === concreteModel),
+        serviceTier,
       ),
   );
 }
@@ -281,6 +295,7 @@ export function routerAccountIssue(
   modelLabel: string,
   concreteModel: string | undefined,
   thinking: ThinkingOption,
+  serviceTier?: string | null,
 ): RouterAccountIssue | null {
   if (!account.enabled)
     return { blocking: true, text: t("routerReasonDisabled") };
@@ -298,6 +313,8 @@ export function routerAccountIssue(
         effort: effortLabel(t, thinking),
       }),
     };
+  if (!routerModelSupportsServiceTier(catalogModel, serviceTier))
+    return { blocking: true, text: t("routerReasonSpeedUnsupported") };
   if (account.blocked === "auth-unavailable")
     return { blocking: false, text: t("routerReasonAuthBlocked") };
   if (account.blocked === "cooldown")
@@ -322,6 +339,7 @@ function poolReason(
   modelLabel: string,
   concreteModel: string | undefined,
   thinking: ThinkingOption,
+  serviceTier?: string | null,
 ): string {
   const enabled = accounts.filter((a) => a.enabled);
   if (!enabled.length) return t("routerReasonNoEnabledAccounts");
@@ -331,6 +349,16 @@ function poolReason(
   );
   if (!offering.length)
     return t("routerReasonNoAccountOffers", { model: modelLabel });
+  if (
+    offering.some((a) =>
+      routerModelSupportsThinking(
+        a.models.find((m) => m.id === concreteModel),
+        thinking,
+      ),
+    ) &&
+    serviceTier
+  )
+    return t("routerReasonSpeedUnsupported");
   return t("routerReasonNoAccountSupportsEffort", {
     effort: effortLabel(t, thinking),
   });
@@ -471,6 +499,7 @@ export function RouterPoolSelector({
   retry,
   disabled,
   showCaption = false,
+  serviceTier,
 }: {
   data: AgentAuthRouterOverview | null;
   provider: string;
@@ -484,6 +513,7 @@ export function RouterPoolSelector({
   retry: () => void;
   disabled: boolean;
   showCaption?: boolean;
+  serviceTier?: string | null;
 }) {
   const { t } = useI18n();
   if (!data && !value && !error) return null;
@@ -492,7 +522,14 @@ export function RouterPoolSelector({
   // provider is not routed. A held selection stays visible as unavailable.
   if (data && !error && !value && !pools.length) return null;
   const members = value?.poolId
-    ? routerPoolMembers(data, value.poolId, provider, model, thinking)
+    ? routerPoolMembers(
+        data,
+        value.poolId,
+        provider,
+        model,
+        thinking,
+        serviceTier,
+      )
     : [];
   const pool = pools.find((p) => p.id === value?.poolId);
   const unavailable = !!value && (!pool || !members.length);
@@ -553,6 +590,7 @@ export function RouterPoolSelector({
                 poolAccounts.modelLabel,
                 poolAccounts.concreteModel,
                 thinking,
+                serviceTier,
               );
               return {
                 value: a.id,
@@ -638,6 +676,7 @@ export function RouterPoolSelector({
                 provider,
                 model,
                 thinking,
+                serviceTier,
               );
               const best = compatible
                 .map((a) => tightestRemaining(a, concreteModel))
@@ -660,6 +699,7 @@ export function RouterPoolSelector({
                         modelLabel,
                         concreteModel,
                         thinking,
+                        serviceTier,
                       ),
                   ...(best.length
                     ? [

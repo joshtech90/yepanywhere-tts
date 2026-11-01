@@ -16,6 +16,7 @@ import {
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileVersionControlLinks } from "../../components/FilePathLink";
+import { PublicShareProvider } from "../../contexts/PublicShareContext";
 import { I18nProvider } from "../../i18n";
 import { resetClientQueryControllerForTests } from "../../lib/clientQueryController";
 import {
@@ -159,7 +160,7 @@ beforeEach(() => {
   mocks.getGitStatus.mockReset();
   mocks.getGitFileProjections.mockReset();
   mocks.getVersion.mockResolvedValue({
-    current: "0.7.1",
+    current: "0.8.0",
     latest: null,
     updateAvailable: false,
   });
@@ -177,9 +178,37 @@ afterEach(() => {
 });
 
 describe("useFileVersionControl", () => {
+  it("keeps public shares off authenticated Git routes", async () => {
+    const hook = renderHook(
+      () => useFileVersionControl("project-a", "src/worktree.ts"),
+      {
+        wrapper: ({ children }) => (
+          <PublicShareProvider
+            value={{
+              projectId: "project-a",
+              relayUrl: "wss://relay.test",
+              relayUsername: "owner",
+              secret: "public-share-fixture",
+            }}
+          >
+            {children}
+          </PublicShareProvider>
+        ),
+      },
+    );
+    await settle();
+    expect(mocks.getGitStatus).not.toHaveBeenCalled();
+    expect(mocks.getGitFileProjections).not.toHaveBeenCalled();
+    expect(hook.result.current).toMatchObject({
+      loading: false,
+      worktreeFile: null,
+      cumulativeFile: null,
+    });
+  });
+
   it("uses one static projection without acquiring a live worktree lease", async () => {
     mocks.getVersion.mockResolvedValue({
-      current: "0.7.2",
+      current: "0.8.0",
       latest: null,
       updateAvailable: false,
       capabilities: [
@@ -196,14 +225,12 @@ describe("useFileVersionControl", () => {
 
     expect(transport.getSubscriptions("worktree")).toHaveLength(0);
     expect(hook.result.current[0]).toMatchObject({
-      supported: true,
       loading: false,
       relativePath: "src/worktree.ts",
       worktreeFile: { path: "src/worktree.ts", linesAdded: 1 },
       cumulativeFile: null,
     });
     expect(hook.result.current[1]).toMatchObject({
-      supported: true,
       loading: false,
       relativePath: "src/committed.ts",
       worktreeFile: null,
@@ -216,7 +243,7 @@ describe("useFileVersionControl", () => {
 
   it("does not lease a worktree for a non-Git project", async () => {
     mocks.getVersion.mockResolvedValue({
-      current: "0.7.2",
+      current: "0.8.0",
       latest: null,
       updateAvailable: false,
       capabilities: [
@@ -239,7 +266,6 @@ describe("useFileVersionControl", () => {
     expect(transport.getSubscriptions("worktree")).toHaveLength(0);
     expect(mocks.getGitStatus).toHaveBeenCalledTimes(1);
     expect(hook.result.current).toMatchObject({
-      supported: true,
       loading: false,
       worktreeFile: null,
       cumulativeFile: null,
@@ -256,14 +282,12 @@ describe("useFileVersionControl", () => {
     await settle();
 
     expect(worktree.result.current).toMatchObject({
-      supported: true,
       loading: false,
       relativePath: "src/worktree.ts",
       worktreeFile: { path: "src/worktree.ts" },
       cumulativeFile: null,
     });
     expect(cumulative.result.current).toMatchObject({
-      supported: true,
       loading: false,
       relativePath: "src/committed.ts",
       worktreeFile: null,
@@ -429,7 +453,6 @@ describe("useFileVersionControl", () => {
     await settle();
 
     expect(hook.result.current).toMatchObject({
-      supported: true,
       loading: false,
       worktreeFile: null,
       cumulativeFile: null,

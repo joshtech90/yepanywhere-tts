@@ -16,7 +16,7 @@ import {
   invalidateClientQuery,
 } from "../lib/clientQueryController";
 import { isRemoteClient } from "../lib/connection";
-import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+
 import {
   type ClientSummarySourceKey,
   useProjectQueueDispatchState,
@@ -29,7 +29,6 @@ import {
   type RetainedClientQuerySettlement,
   useRetainedClientQuery,
 } from "./useRetainedClientQuery";
-import { useVersion } from "./useVersion";
 
 export interface UseProjectQueuesResult {
   queuesByProject: Record<string, readonly ProjectQueueItemSummary[]>;
@@ -82,9 +81,6 @@ const PROJECT_QUEUE_REVALIDATE_EVENTS = [
   "project-queue-changed",
   "session-queue-persistence-changed",
 ] as const;
-const RUNNING_DISPATCH_STATE: ProjectQueueDispatchState = {
-  status: "running",
-};
 
 /**
  * How long to wait before re-reading a project the server is actively working
@@ -514,12 +510,11 @@ export function resetProjectQueueBackstopsForTests(): void {
 export function useProjectQueues(
   projectIds: readonly string[],
 ): UseProjectQueuesResult {
-  const { version } = useVersion();
   const runtime = useCurrentSourceRuntime();
   const sourceKey = runtime.sourceKey;
   const sourceSummary = runtime.summary;
   const remoteConnection = useOptionalRemoteConnection();
-  const enabled = serverSupportsProjectQueue(version);
+
   const ready =
     !isRemoteClient() ||
     (remoteConnection !== null && remoteConnection.connection !== null);
@@ -544,7 +539,7 @@ export function useProjectQueues(
     string | null
   >(null);
   const [mutationError, setMutationError] = useState<Error | null>(null);
-  const queryEnabled = enabled && normalizedProjectIds.length > 0;
+  const queryEnabled = normalizedProjectIds.length > 0;
   const hasData = Object.keys(storedQueuesByProject).length > 0;
   const {
     loading,
@@ -757,12 +752,10 @@ export function useProjectQueues(
 
   const items = useMemo(
     () =>
-      enabled
-        ? storedGlobalItems.length > 0
-          ? storedGlobalItems
-          : flattenQueues(storedQueuesByProject)
-        : [],
-    [enabled, storedGlobalItems, storedQueuesByProject],
+      storedGlobalItems.length > 0
+        ? storedGlobalItems
+        : flattenQueues(storedQueuesByProject),
+    [storedGlobalItems, storedQueuesByProject],
   );
   const projectIdSet = useMemo(
     () => new Set(normalizedProjectIds),
@@ -770,32 +763,26 @@ export function useProjectQueues(
   );
   const recoveredSessionQueues = useMemo(
     () =>
-      enabled
-        ? storedRecoveredSessionQueues.filter((item) =>
-            projectIdSet.has(item.projectId),
-          )
-        : [],
-    [enabled, projectIdSet, storedRecoveredSessionQueues],
+      storedRecoveredSessionQueues.filter((item) =>
+        projectIdSet.has(item.projectId),
+      ),
+    [projectIdSet, storedRecoveredSessionQueues],
   );
 
   const hasBacklog = items.length > 0 || recoveredSessionQueues.length > 0;
   const deadline = useMemo(
     () =>
-      enabled && hasBacklog
+      hasBacklog
         ? readProjectQueueDeadline(
             storedProjectStatusesByProject,
             normalizedProjectIds,
           )
         : NO_PROJECT_QUEUE_DEADLINE,
-    [enabled, hasBacklog, normalizedProjectIds, storedProjectStatusesByProject],
+    [hasBacklog, normalizedProjectIds, storedProjectStatusesByProject],
   );
 
   const backstopRef = useRef<ProjectQueueBackstopHandle | null>(null);
   useEffect(() => {
-    if (!enabled) {
-      backstopRef.current = null;
-      return undefined;
-    }
     const handle = retainProjectQueueBackstop(sourceKey);
     backstopRef.current = handle;
     return () => {
@@ -804,16 +791,16 @@ export function useProjectQueues(
       }
       handle.release();
     };
-  }, [enabled, sourceKey]);
+  }, [sourceKey]);
 
   useEffect(() => {
     backstopRef.current?.update(deadline, refetchQueuesWithSettlement);
   }, [deadline, refetchQueuesWithSettlement]);
 
   return {
-    queuesByProject: enabled ? storedQueuesByProject : {},
+    queuesByProject: storedQueuesByProject,
     items,
-    projectStatusesByProject: enabled ? storedProjectStatusesByProject : {},
+    projectStatusesByProject: storedProjectStatusesByProject,
     recoveredSessionQueues,
     loading,
     error: mutationError ?? queryError,
@@ -821,7 +808,7 @@ export function useProjectQueues(
     mutatingRecoveredQueueId,
     mutatingDispatchState,
     mutatingPromoteItemId,
-    dispatchState: enabled ? storedDispatchState : RUNNING_DISPATCH_STATE,
+    dispatchState: storedDispatchState,
     refetch: refetchQueues,
     pauseDispatch,
     resumeDispatch,

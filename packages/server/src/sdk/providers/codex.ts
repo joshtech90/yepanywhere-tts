@@ -226,6 +226,7 @@ import type {
 } from "./types.js";
 import {
   agentServerEnvironmentFor,
+  agentApiEnvironmentFor,
   inactiveProviderSessionOptionsResult,
 } from "./types.js";
 import type { SessionSandboxRuntime } from "../../session-sandbox.js";
@@ -524,7 +525,7 @@ interface CodexTurnRuntimeState {
   >;
 }
 
-type CodexRetryableTurnErrorKind = "serverOverloaded" | "cyberAccessDenied";
+type CodexRetryableTurnErrorKind = "capacityUnavailable" | "cyberAccessDenied";
 
 interface CodexRetryableTurnError {
   kind: CodexRetryableTurnErrorKind;
@@ -576,7 +577,14 @@ function classifyCodexTurnError(
   error: CodexTurnErrorText,
   cyberAccessRequested: boolean,
 ): CodexRetryableTurnErrorKind | null {
-  if (error.codexErrorInfo === "serverOverloaded") return "serverOverloaded";
+  // Codex 0.166 split policy-restricted capacity out of `serverOverloaded`
+  // with the same retry advice, so both take YA's same-model overload retry.
+  if (
+    error.codexErrorInfo === "serverOverloaded" ||
+    error.codexErrorInfo === "policyCapacityUnavailable"
+  ) {
+    return "capacityUnavailable";
+  }
   if (cyberAccessRequested && isCodexCyberAccessDenial(error)) {
     return "cyberAccessDenied";
   }
@@ -3073,6 +3081,7 @@ export class CodexProvider implements AgentProvider {
       ...options.agentEnvironment,
       // Never minted for a sandboxed launch; refuse here too.
       ...agentServerEnvironmentFor(options),
+      ...agentApiEnvironmentFor(options),
     });
     if (options.resumeSessionId) {
       // The bridge only reaches bash tool shells that source BASH_ENV, which
@@ -3635,6 +3644,7 @@ export class CodexProvider implements AgentProvider {
       };
       signal.addEventListener("abort", stopMessageWait, { once: true });
       let isFirstMessage = !options.resumeSessionId;
+      let agentApiInstructions = options.agentApiInstructions;
       const globalContext = withSessionSandboxAgentContext(
         options.sessionSandbox?.instructions?.startFromDefault === false
           ? undefined
@@ -3720,6 +3730,10 @@ export class CodexProvider implements AgentProvider {
           }
 
           // Prepend global instructions to the first message of new sessions
+          if (agentApiInstructions) {
+            userPrompt = `${agentApiInstructions}\n\n${userPrompt}`;
+            agentApiInstructions = undefined;
+          }
           if (isFirstMessage && globalContext) {
             userPrompt = `[Global context]\n${globalContext}\n\n---\n\n${userPrompt}`;
             isFirstMessage = false;
@@ -4450,6 +4464,7 @@ export class CodexProvider implements AgentProvider {
       | "thinking"
       | "model"
       | "routerLaunch"
+      | "agentApiEnvironment"
     >,
   ): NonNullable<ThreadStartParams["config"]> {
     // The OpenAI browser plugin controls a desktop-owned browser backend that
@@ -4467,6 +4482,11 @@ export class CodexProvider implements AgentProvider {
         ],
       },
     };
+    if (options.agentApiEnvironment) {
+      // A policy-admitted Authorization value must not enter Codex shell
+      // snapshot files. This affects only the explicit YA API opt-in.
+      config.features = { shell_snapshot: false, shell_snapshot_v2: false };
+    }
     const planToolMode = this.getConfiguredPlanToolMode();
     if (planToolMode !== "provider-default") {
       config.tools = {

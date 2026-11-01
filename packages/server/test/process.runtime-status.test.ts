@@ -326,6 +326,36 @@ describe("Process", () => {
       controller.finish();
     });
 
+    it("normalizes Codex policyCapacityUnavailable to the overloaded reason", async () => {
+      const controller = createControllableIterator();
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "codex",
+        idleTimeoutMs: 100,
+      });
+
+      controller.push({
+        type: "error",
+        uuid: "codex-error-turn-1",
+        session_id: "sess-1",
+        error:
+          "Policy-restricted capacity is unavailable. Please try again later.",
+        codexErrorInfo: "policyCapacityUnavailable",
+        codexWillRetry: false,
+        codexTurnId: "turn-1",
+      });
+
+      await waitFor(() => {
+        expect(process.getInfo().providerRuntimeStatus).toMatchObject({
+          kind: "terminal",
+          reason: "overloaded",
+        });
+      });
+      controller.finish();
+    });
+
     it.each(["rateLimitExceeded", "flexUnavailable"])(
       "normalizes Codex %s to the rate_limit reason",
       async (codexErrorInfo) => {

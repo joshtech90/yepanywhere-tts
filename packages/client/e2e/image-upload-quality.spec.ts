@@ -8,6 +8,8 @@ test("searchable quality settings control browser resizing before upload", async
   page,
   baseURL,
 }) => {
+  // Canvas resizing a 4000px image twice is slow on a loaded e2e host.
+  test.setTimeout(60_000);
   const projectId = Buffer.from(join(e2ePaths.tempDir, "mockproject")).toString(
     "base64url",
   );
@@ -112,10 +114,11 @@ test("searchable quality settings control browser resizing before upload", async
       mimeType: "image/png",
       buffer: Buffer.from(image, "base64"),
     });
-  await expect.poll(() => pngWidths).toEqual([2300]);
+  // The resized chip waits out the resize; the frame poll then checks bytes.
   await expect(
     page.getByRole("button", { name: "Remove hd-resized.png", exact: true }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 20_000 });
+  await expect.poll(() => pngWidths).toEqual([2300]);
 
   const settings = await page.context().newPage();
   await settings.goto(`${baseURL}/settings`);
@@ -132,8 +135,8 @@ test("searchable quality settings control browser resizing before upload", async
       mimeType: "image/png",
       buffer: Buffer.from(image, "base64"),
     });
-  await expect.poll(() => pngWidths).toEqual([2300, 1900]);
   await expect(
     page.getByRole("button", { name: "Remove sd-resized.png", exact: true }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 20_000 });
+  await expect.poll(() => pngWidths).toEqual([2300, 1900]);
 });

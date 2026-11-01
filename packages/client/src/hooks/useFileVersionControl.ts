@@ -1,12 +1,10 @@
-import {
-  GIT_FILE_DIFF_PROJECTIONS_CAPABILITY,
-  GIT_STATUS_ENHANCED_CAPABILITY,
-  type GitFileChange,
-  type GitFileProjectionManifest,
-  serverHasCapability,
+import type {
+  GitFileChange,
+  GitFileProjectionManifest,
 } from "@yep-anywhere/shared";
 import { useMemo, useRef, useSyncExternalStore } from "react";
 import { api } from "../api/client";
+import { usePublicShareContext } from "../contexts/PublicShareContext";
 import {
   type ClientSummarySourceKey,
   useClientSummarySourceKey,
@@ -20,7 +18,6 @@ import {
 import { normalizePathSeparators } from "../lib/text";
 import { useGitStatus } from "./useGitStatus";
 import { useRetainedClientQuery } from "./useRetainedClientQuery";
-import { useRetainedVersionInfo } from "./useVersion";
 
 const FILE_PROJECTIONS_STALE_MS = 5_000;
 const FILE_PROJECTIONS_TTL_MS = 60_000;
@@ -160,25 +157,16 @@ export function useFileVersionControl(
   cumulativeFile: GitFileChange | null;
   loading: boolean;
   relativePath: string | null;
-  supported: boolean;
   worktreeFile: GitFileChange | null;
 } {
   const sourceKey = useClientSummarySourceKey();
-  const version = useRetainedVersionInfo(sourceKey);
-  const supportsStatus = serverHasCapability(
-    version,
-    GIT_STATUS_ENHANCED_CAPABILITY,
-  );
-  const supported = serverHasCapability(
-    version,
-    GIT_FILE_DIFF_PROJECTIONS_CAPABILITY,
-  );
+  const authenticatedView = usePublicShareContext() === null;
   const relativePath = useMemo(
     () => projectRelativeGitPath(filePath),
     [filePath],
   );
   const enabledStatusProjectId =
-    supportsStatus && supported && relativePath ? projectId : undefined;
+    authenticatedView && relativePath ? projectId : undefined;
   const {
     gitStatus,
     loading: statusLoading,
@@ -201,17 +189,12 @@ export function useFileVersionControl(
       projection.manifest?.cumulativeFiles ?? [],
     ),
     loading: Boolean(
-      projectId &&
-        relativePath &&
-        (version === null ||
-          (supported &&
-            enabledStatusProjectId &&
-            (statusLoading ||
-              (!gitStatus && !statusError) ||
-              (gitStatus?.isGitRepo && projection.loading)))),
+      enabledStatusProjectId &&
+        (statusLoading ||
+          (!gitStatus && !statusError) ||
+          (gitStatus?.isGitRepo && projection.loading)),
     ),
     relativePath,
-    supported,
     worktreeFile: findFile(
       relativePath,
       projection.manifest?.worktreeFiles ?? [],

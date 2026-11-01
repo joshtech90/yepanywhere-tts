@@ -406,7 +406,6 @@ describe("useSessionMessages cache", () => {
       useSessionMessages({
         projectId: "proj-1",
         sessionId: "sess-1",
-        codexStreamDurableIdAlignment: true,
       }),
     );
     await waitFor(() => expect(first.result.current.loading).toBe(false));
@@ -416,7 +415,6 @@ describe("useSessionMessages cache", () => {
       useSessionMessages({
         projectId: "proj-1",
         sessionId: "sess-1",
-        codexStreamDurableIdAlignment: true,
       }),
     );
     await waitFor(() => expect(second.result.current.loading).toBe(false));

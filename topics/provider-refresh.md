@@ -54,7 +54,11 @@ its runtime leases, verification, and cache-generation contract.
 1. Identify the provider-owned sources of truth. Separate generated protocol
    files, live model/command catalogs, package APIs, local CLI docs, and durable
    transcript schemas.
-2. Probe the current install. Capture the exact version, relevant `--help`
+2. Bring the install to the provider's latest stable release, then probe it.
+   A refresh request includes this update (user direction, 2026-10-29). Hold
+   an older release only when it avoids a known regression in the newer one,
+   and record the hold, its reason, and the release to retry in the provider
+   section below. Capture the exact version, relevant `--help`
    output, model list, generated protocol check, and a small session/export
    sample when schema drift is the risk.
 3. Diff YA-visible shape, not raw prose. Prefer normalized fingerprints:
@@ -193,8 +197,15 @@ Routine probes:
 
 ```bash
 codex --version
+npm view @openai/codex version   # latest stable; dist-tag `alpha` is pre-release
 pnpm codex:protocol:check
 ```
+
+On graehl's host `codex` resolves through `~/bin/codex` to the npm global
+install, so `npm install -g @openai/codex@latest` updates it. YA starts every
+Codex worker from the installed CLI and pins no package version, so an update
+takes effect for new sessions without a YA change; the version markers below
+record what was audited, not what runs.
 
 Protocol generation gives each invocation an ephemeral `CODEX_HOME` under the
 repository's `node_modules/.cache`. This keeps Codex's startup-time arg0
@@ -242,7 +253,63 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible ([provider-version-support](provider-version-support.md)).
 
-Current source refresh, 2026-10-23 (0.164.0, generated types only):
+Current source refresh, 2026-10-29 (0.166.0):
+
+- Installed Codex is `codex-cli 0.166.0`, which is npm `latest`; the
+  official `rust-v0.166.0` tag resolves to `6ff1e1ca3`, 1,335 commits after
+  `rust-v0.165.0`. `expectedVersion`, `compatibleThroughVersion`, and the
+  reference checkout record `0.166.0`.
+- The consumed change: `CodexErrorInfo` gains `policyCapacityUnavailable`
+  (upstream #57452). Capacity failures on a policy-restricted route used to
+  arrive as `serverOverloaded`. Codex keeps the same retry advice for both
+  codes. Without an adapter change, a 0.166 install would have dropped
+  YA's bounded same-model retry for these failures and reported reason
+  `unknown`. YA now retries both and maps both to `overloaded`
+  ([provider runtime status](provider-runtime-status.md)).
+- Additive fields YA does not read: `ThreadItem` carries optional
+  `startedAtMs`/`completedAtMs` lifecycle times, `AdditionalContextEntry`
+  an optional `name`, and `ImageGenerationItem` a `generationId`. The
+  `thread/fork` `attachToSource` doc now also requires a paginated source.
+  YA sends none of these.
+- Resume and fork now preserve acknowledged approval and permission
+  settings (#57227). YA sends explicit `approvalPolicy` and `sandbox` on
+  every start, resume, and turn, so its mode stays authoritative
+  ([codex-permission-mode](codex-permission-mode.md)).
+- A zero-token `model/list` returns the same nine models as 0.165.0, in
+  YA's preferred order, `gpt-6.1-sol` default at low effort.
+- No 0.166.0 rollout exists locally and no credentialed smoke ran. Server
+  type checking passes, and the Codex provider and runtime-status suites
+  (158 tests) pass. They include a fake app-server retry run for each
+  capacity code.
+
+Previous source refresh, 2026-10-28 (0.165.0, generated types only):
+
+- Installed Codex is `codex-cli 0.165.0`; the official `rust-v0.165.0` tag
+  resolves to `360319d8d`. `expectedVersion`, `compatibleThroughVersion`,
+  and the reference checkout record `0.165.0`.
+- Regeneration changes two subset files. `CodexErrorInfo` gains
+  `modelNotFound`, which Codex now treats as terminal rather than retrying
+  (upstream #56445). YA has no matching runtime reason, so it normalizes to
+  `unknown` and still shows Codex's message; adding a reason would change
+  the client/server status contract for no visible gain. `thread/fork`
+  gains an experimental `attachToSource`, which YA does not send.
+- `reasoning_effort_override` is now stable and default-on (#56163). For
+  models whose live catalog sets `supports_reasoning_effort_updates`
+  (every GPT-6 model; not GPT-5.6 or Daybreak), a changed turn effort is
+  recorded as an in-place `configuration_update` item instead of changing
+  request-level effort. A warm-session measurement on 2026-10-29 confirmed
+  the cache survives on GPT-6 and is lost on GPT-5.6 Sol and Daybreak, so
+  the effort-change warning now applies only to those older Codex models
+  ([mid-session effort change](mid-session-effort-change.md)).
+- A zero-token `model/list` returns nine models, `gpt-6.1-sol` default,
+  adding `gpt-6.1-terra` (ranked after Astra, rendered `Cd Te 6.1`). OpenAI
+  has withdrawn `gpt-5.5` and `gpt-5.3-codex-spark`; every turn on either
+  fails, so YA never offers them ([session defaults](session-defaults.md)).
+- No 0.165.0 rollout exists locally and no credentialed smoke ran. Server
+  type checking and the provider suites (784 tests) pass on the
+  regenerated types.
+
+Previous source refresh, 2026-10-23 (0.164.0, generated types only):
 
 - Installed Codex is `codex-cli 0.164.0`; the official `rust-v0.164.0` tag
   resolves to `6aaac6948`, 1,004 commits after `rust-v0.163.0`.
@@ -1265,7 +1332,28 @@ Previous-model registry review:
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
 
-Current source refresh, 2026-10-23 (Claude Code 2.1.309 / SDK 0.3.309):
+Current source refresh, 2026-10-28 (Claude Code 2.1.312 / SDK 0.3.312):
+
+- The SDK and matching native packages advance from 0.3.309 to 0.3.312;
+  the bundled Linux executable and the standalone install both report
+  Claude Code 2.1.312. Compatibility markers advance together.
+- The declaration delta is additive and unused by YA: an optional
+  `unanswered` reason and `toolsUsed`/`local_file` fields on tool results,
+  5-minute and 1-hour cache-write splits inside the existing cache-creation
+  token count, an `mcpMount` setting source, auto-mode classifier
+  settings, managed plugin digests, and reworded prewarm/claim semantics.
+  YA calls none of the claim or prewarm APIs.
+- A no-turn handshake against each bundled executable returns the same 13
+  raw model rows for 0.3.309 and 0.3.312, which YA normalizes to the same
+  7 live entries with efforts low through max. `/goal` and `/loop` remain
+  native. Claude provider tests (48), transcript-schema tests (26), and
+  server type checking pass.
+- No assistant turn ran and no 2.1.312 transcript exists locally, so
+  authenticated generation and persisted-schema coverage are not
+  established. Existing provider-host workers must restart to adopt the
+  update.
+
+Previous source refresh, 2026-10-23 (Claude Code 2.1.309 / SDK 0.3.309):
 
 - The SDK and matching native packages advance from 0.3.306 to 0.3.309;
   the bundled Linux executable reports Claude Code 2.1.309, ahead of the

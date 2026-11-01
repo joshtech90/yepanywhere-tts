@@ -1,13 +1,11 @@
-import {
-  GIT_FILE_REVISION_CAPABILITY,
-  type GitFileRevision,
-  type GitFileRevisionCommit,
-  serverHasCapability,
+import type {
+  GitFileRevision,
+  GitFileRevisionCommit,
 } from "@yep-anywhere/shared";
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import { usePublicShareContext } from "../contexts/PublicShareContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
-import { useRetainedVersionInfo } from "../hooks/useVersion";
 import { toBrowserAppHref } from "../lib/appHref";
 import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import styles from "./FileRevisionLink.module.css";
@@ -36,9 +34,8 @@ export function FileRevisionLink({
   className,
 }: FileRevisionLinkProps) {
   const sourceKey = useClientSummarySourceKey();
-  const version = useRetainedVersionInfo(sourceKey);
+  const authenticatedView = usePublicShareContext() === null;
   const basePath = useRemoteBasePath();
-  const supported = serverHasCapability(version, GIT_FILE_REVISION_CAPABILITY);
   const identity = `${sourceKey}\0${projectId}\0${path}\0${rev ?? ""}\0${origPath ?? ""}`;
   const [loaded, setLoaded] = useState<{
     identity: string;
@@ -52,7 +49,7 @@ export function FileRevisionLink({
   } | null>(null);
 
   useEffect(() => {
-    if (!supported || !projectId || !path) return;
+    if (!authenticatedView || !projectId || !path) return;
     let cancelled = false;
     void api
       .getGitFileRevision(projectId, { path, rev, origPath })
@@ -65,9 +62,9 @@ export function FileRevisionLink({
     return () => {
       cancelled = true;
     };
-  }, [identity, origPath, path, projectId, rev, supported]);
+  }, [authenticatedView, identity, origPath, path, projectId, rev]);
 
-  if (!supported || !revision?.isGitRepo) return null;
+  if (!authenticatedView || !revision?.isGitRepo) return null;
   if (!revision.commit) {
     return (
       <span

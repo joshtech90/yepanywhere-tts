@@ -1,10 +1,11 @@
-import type {
-  EffortLevel,
-  ModelInfo,
-  NewSessionDefaults,
-  ProviderName,
-  ProviderSessionDefaults,
-  ThinkingMode,
+import {
+  type EffortLevel,
+  isWithdrawnCodexModel,
+  type ModelInfo,
+  type NewSessionDefaults,
+  type ProviderName,
+  type ProviderSessionDefaults,
+  type ThinkingMode,
 } from "@yep-anywhere/shared";
 
 export function getPreferredModelId(
@@ -31,8 +32,16 @@ export function providerRequiresAdvertisedModel(
 export function getPreferredProviderModelId(
   providerName: ProviderName,
   models: ModelInfo[],
-  preferredModelId?: string | null,
+  savedModelId?: string | null,
 ): string | null {
+  // A saved choice of a withdrawn Codex model stays saved but is not
+  // preselected: every turn on it fails.
+  const preferredModelId =
+    providerName === "codex" &&
+    savedModelId &&
+    isWithdrawnCodexModel(savedModelId)
+      ? null
+      : savedModelId;
   if (providerRequiresAdvertisedModel(providerName)) {
     return (
       models.find((model) => model.id === preferredModelId)?.id ??

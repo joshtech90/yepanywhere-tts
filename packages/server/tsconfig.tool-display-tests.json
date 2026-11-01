@@ -17,6 +17,11 @@
     "test/utils/native-tool-display-corpus.ts",
     "../../scripts/audit-tool-displays.ts",
     "../../scripts/tool-display-audit.ts",
+    "../../scripts/audit-server-capabilities.ts",
+    "../../scripts/compatibility-sunsets.ts",
+    "../../scripts/capability-inventory.ts",
+    "test/scripts/compatibility-sunsets.test.ts",
+    "test/scripts/capability-inventory.test.ts",
     "test/tool-display-audit.test.ts"
   ],
   "exclude": ["node_modules", "dist"]

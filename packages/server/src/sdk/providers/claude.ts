@@ -109,6 +109,7 @@ import type {
 import {
   PROVIDER_SESSION_OPTION_KEYS,
   agentServerEnvironmentFor,
+  agentApiEnvironmentFor,
   resolveProviderSessionOptions,
 } from "./types.js";
 import type { SessionSandboxRuntime } from "../../session-sandbox.js";
@@ -2191,6 +2192,7 @@ export class ClaudeProvider implements AgentProvider {
       // The Supervisor never mints one for a sandboxed or remote launch;
       // refusing here too keeps the token out if that ever changes.
       ...agentServerEnvironmentFor(options),
+      ...agentApiEnvironmentFor(options),
       ...autoCompactOverrideEnv,
     };
     if (options.routerLaunch)

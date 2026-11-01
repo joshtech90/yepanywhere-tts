@@ -103,7 +103,7 @@ import {
   type ProviderRuntimeDisplay,
 } from "../lib/providerRuntimeStatus";
 import { getPermissionModeOptions } from "../lib/permissionModes";
-import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+
 import {
   requestSessionIsearchOpen,
   SESSION_ISEARCH_GUIDE_EVENT,
@@ -3202,7 +3202,7 @@ export function MessageInputToolbar({
   const browserDebugLease = useBrowserDebugLease();
   const { relayTransport, relayedServerSpeechAvailable } =
     useSpeechSourceRuntime();
-  const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
+
   const supportsBrowserDebug = serverHasCapability(
     versionInfo,
     REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
@@ -3518,8 +3518,7 @@ export function MessageInputToolbar({
     versionInfo?.clientDefaults?.projectQueueCtrlEnterEnabled ??
     DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED;
   const showProjectQueueShortcut = Boolean(
-    supportsProjectQueue &&
-      toolbarVisibility.projectQueue &&
+    toolbarVisibility.projectQueue &&
       onProjectQueue &&
       projectQueueCtrlEnterEnabled,
   );
@@ -4035,7 +4034,7 @@ export function MessageInputToolbar({
           : null,
         topicShift: onTopicShift ? { onTopicShift, canSend } : null,
         projectQueue:
-          supportsProjectQueue && (onProjectQueue || onProjectQueueNewSession)
+          onProjectQueue || onProjectQueueNewSession
             ? {
                 onProjectQueue,
                 onProjectQueueNewSession,

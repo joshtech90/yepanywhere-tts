@@ -4,7 +4,7 @@ import { useGitHubFileLink } from "../useGitHubFileLink";
 
 const state = vi.hoisted(() => ({
   source: "local",
-  capabilities: ["git-file-revision", "file-owner-project"],
+  capabilities: ["file-owner-project"],
   publicShare: null as unknown,
   revision: vi.fn(),
   owner: vi.fn(),
@@ -32,7 +32,7 @@ const githubLink = {
 };
 beforeEach(() => {
   state.source = "local";
-  state.capabilities = ["git-file-revision", "file-owner-project"];
+  state.capabilities = ["file-owner-project"];
   state.publicShare = null;
   state.revision.mockReset().mockResolvedValue({ githubLink, dirty: true });
   state.owner.mockReset();
@@ -58,10 +58,9 @@ it("omits the action on older responses without metadata", async () => {
   expect(result.current).toBeNull();
 });
 
-it.each(["no capability", "public share", "no target"])(
+it.each(["public share", "no target"])(
   "makes no request with %s",
   async (kind) => {
-    if (kind === "no capability") state.capabilities = [];
     if (kind === "public share") state.publicShare = {};
     renderHook(() =>
       useGitHubFileLink(kind === "no target" ? undefined : target),
@@ -87,7 +86,7 @@ it("resolves home paths to their owning project", async () => {
 });
 
 it("does not send an unsupported owner lookup", async () => {
-  state.capabilities = ["git-file-revision"];
+  state.capabilities = [];
   renderHook(() => useGitHubFileLink({ ...target, path: "/other/file.txt" }));
   await act(async () => {});
   expect(state.owner).not.toHaveBeenCalled();

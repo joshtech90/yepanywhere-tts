@@ -1,11 +1,5 @@
-import {
-  PROJECT_DIRECTORY_STORAGE_POLICY_CAPABILITY,
-  TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY,
-  serverHasCapability,
-} from "@yep-anywhere/shared";
 import { useCallback, useMemo } from "react";
 import { useServerSettings } from "../../hooks/useServerSettings";
-import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
@@ -19,7 +13,6 @@ interface StorageChoiceProps {
   label: string;
   description: string;
   checked: boolean;
-  disabled: boolean;
   isDefault?: boolean;
   onChange: () => void;
 }
@@ -30,7 +23,6 @@ function StorageChoice({
   label,
   description,
   checked,
-  disabled,
   isDefault = false,
   onChange,
 }: StorageChoiceProps) {
@@ -45,7 +37,6 @@ function StorageChoice({
         value={value}
         aria-label={label}
         checked={checked}
-        disabled={disabled}
         onChange={onChange}
       />
       <span className={styles.choiceText}>
@@ -66,47 +57,21 @@ function StorageChoice({
 export function StorageSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("storageSettingsTitle"));
-  const { version } = useVersion();
-  const supportsProjectLocation = serverHasCapability(
-    version,
-    PROJECT_DIRECTORY_STORAGE_POLICY_CAPABILITY,
-  );
-  const supportsMediaPreservation = serverHasCapability(
-    version,
-    TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY,
-  );
+
   const { settings, isLoading, error, updateSettings } = useServerSettings();
   const projectLocation = settings?.projectDirectoryStorage ?? "app-data";
   const mediaPreservation =
     settings?.toolResultMediaPreservation ?? "on-demand";
 
   const undoState = useMemo(
-    () =>
-      settings
-        ? {
-            projectLocation,
-            mediaPreservation,
-            supportsProjectLocation,
-            supportsMediaPreservation,
-          }
-        : null,
-    [
-      mediaPreservation,
-      projectLocation,
-      settings,
-      supportsMediaPreservation,
-      supportsProjectLocation,
-    ],
+    () => (settings ? { projectLocation, mediaPreservation } : null),
+    [mediaPreservation, projectLocation, settings],
   );
   const restoreUndoState = useCallback(
     (snapshot: NonNullable<typeof undoState>) => {
       void updateSettings({
-        ...(snapshot.supportsProjectLocation
-          ? { projectDirectoryStorage: snapshot.projectLocation }
-          : {}),
-        ...(snapshot.supportsMediaPreservation
-          ? { toolResultMediaPreservation: snapshot.mediaPreservation }
-          : {}),
+        projectDirectoryStorage: snapshot.projectLocation,
+        toolResultMediaPreservation: snapshot.mediaPreservation,
       }).catch(() => {
         // The hook keeps the actionable error visible in this pane.
       });
@@ -123,6 +88,7 @@ export function StorageSettings() {
     <SettingsSection
       description={t("storageSettingsDescription")}
       keywords={[".yep", ".attachments", "YEP_DATA_DIR"]}
+      doc="topics/storage-settings.md"
     >
       <div className="settings-group">
         <SettingsItem
@@ -136,13 +102,6 @@ export function StorageSettings() {
               ? t("projectDataLocationProject")
               : t("projectDataLocationAppData")
           }
-          after={
-            supportsProjectLocation ? null : (
-              <p className="settings-warning">
-                {t("projectDataLocationUpdateRequired")}
-              </p>
-            )
-          }
         >
           <fieldset
             className={styles.choices}
@@ -153,10 +112,7 @@ export function StorageSettings() {
               value="app-data"
               label={t("projectDataLocationAppData")}
               description={t("projectDataLocationAppDataDescription")}
-              checked={
-                supportsProjectLocation && projectLocation === "app-data"
-              }
-              disabled={!supportsProjectLocation}
+              checked={projectLocation === "app-data"}
               isDefault
               onChange={() => {
                 void updateSettings({
@@ -171,8 +127,7 @@ export function StorageSettings() {
               value="project"
               label={t("projectDataLocationProject")}
               description={t("projectDataLocationProjectDescription")}
-              checked={supportsProjectLocation && projectLocation === "project"}
-              disabled={!supportsProjectLocation}
+              checked={projectLocation === "project"}
               onChange={() => {
                 void updateSettings({
                   projectDirectoryStorage: "project",
@@ -195,13 +150,6 @@ export function StorageSettings() {
               ? t("toolResultImagesPreserve")
               : t("toolResultImagesOnDemand")
           }
-          after={
-            supportsMediaPreservation ? null : (
-              <p className="settings-warning">
-                {t("toolResultImagesUpdateRequired")}
-              </p>
-            )
-          }
         >
           <fieldset
             className={styles.choices}
@@ -212,10 +160,7 @@ export function StorageSettings() {
               value="on-demand"
               label={t("toolResultImagesOnDemand")}
               description={t("toolResultImagesOnDemandDescription")}
-              checked={
-                supportsMediaPreservation && mediaPreservation === "on-demand"
-              }
-              disabled={!supportsMediaPreservation}
+              checked={mediaPreservation === "on-demand"}
               isDefault
               onChange={() => {
                 void updateSettings({
@@ -230,10 +175,7 @@ export function StorageSettings() {
               value="preserve"
               label={t("toolResultImagesPreserve")}
               description={t("toolResultImagesPreserveDescription")}
-              checked={
-                supportsMediaPreservation && mediaPreservation === "preserve"
-              }
-              disabled={!supportsMediaPreservation}
+              checked={mediaPreservation === "preserve"}
               onChange={() => {
                 void updateSettings({
                   toolResultMediaPreservation: "preserve",

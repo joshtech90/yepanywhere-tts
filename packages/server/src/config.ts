@@ -74,6 +74,8 @@ export interface Config {
   desktopRuntime: boolean;
   /** Track sessions started outside YA and permit host process inventory. */
   externalSessionsEnabled?: boolean;
+  /** Explicit opt-in for production directional peer enrollment. */
+  peerApiEnabled?: boolean;
   /** Desktop-provided Codex CLI path. When set, it is authoritative. */
   codexCliPath?: string;
   /** Startup fallback for Codex update_plan availability. */
@@ -371,6 +373,10 @@ export function loadConfig(): Config {
     dataDir,
     artifacts: readArtifactConfig(process.env),
     desktopRuntime,
+    peerApiEnabled:
+      process.env.YEP_PEER_API_ENABLED === undefined
+        ? true
+        : parseBooleanOrDefault(process.env.YEP_PEER_API_ENABLED, false),
     externalSessionsEnabled: parseBooleanOrDefault(
       process.env.YEP_EXTERNAL_SESSIONS,
       true,

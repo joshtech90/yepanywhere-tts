@@ -128,6 +128,18 @@ Note: By default, all instances share `~/.claude/projects/` (SDK-managed session
 
 ## Provider & Feature Configuration
 
+Server Connections is available without environment configuration. Pair devices
+in Settings → Server Connections; no separate enable step is needed. Use
+`YEP_PEER_API_ENABLED=false` only to disable all peer routing/pairing (retaining
+saved devices); explicit `true` forces it on. Empty or unrecognized supplied
+values leave it disabled. The existing owner API's saved
+disable setting is respected when the variable is unset. The owner-only
+`/api/peers` API requires actual owner proof even when ordinary localhost/UI
+authentication is open. Agent use of paired devices defaults on, subject to
+existing Agent API launch settings and target grants. See
+[peer access](../../topics/peer-access.md) for ceremony, private state,
+direct/relay routes and revocation. No relay URL/name is inferred or changed.
+
 The optional provider host keeps supported agent turns and pending approvals
 alive across web-server reloads on Linux and macOS Node source checkouts. On
 Linux it also preserves project apps and Live preview, including HMR, with

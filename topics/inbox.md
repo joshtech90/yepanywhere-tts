@@ -18,6 +18,32 @@ See also:
 
 ## Route Contract
 
+### Client view filters
+
+Inbox's **Started via** dropdown combines with the project filter across all
+five session tiers. **All sessions** is the initial default; **YA UI** matches
+web and desktop creation provenance, **API / automation** matches `api`, and
+**Unknown / external** matches absent provenance. These describe creation
+surfaces, not verified human or agent identity. Resuming a session does not
+change its original provenance.
+
+The browser remembers the last choice in localStorage, separately for each
+server connection/source and independently of the project selection. It
+restores the choice on return or reload; invalid stored values fall back to
+All sessions. Unavailable storage does not prevent filtering in memory. The
+selected choice stays visible; filtered empty results say **No matching
+sessions** rather than **All caught up**. Servers without the existing
+`session-creation-provenance` capability hide the dropdown and apply no source
+filter, without overwriting the remembered choice.
+
+Filtering changes displayed session rows and their section counts only. Shared
+Inbox state, global attention badges, non-session Project Queue entries and
+review outcome cards remain unchanged. This is a frontend view over the
+server's returned, capped tiers; it does not fetch additional matching rows
+beyond those caps.
+
+### Server tiering
+
 `createInboxRoutes` returns session rows, not arbitrary project work. The route
 collects non-archived sessions across provider scanners, optionally filtered by
 `projectId`, enriches them with live process state and notification state, then

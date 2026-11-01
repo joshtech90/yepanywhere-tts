@@ -228,6 +228,20 @@ VITE_DISABLE_CLI_UPDATE_NOTIFICATIONS=true \
 pnpm dev
 ```
 
+When the page under test shows seeded transcripts (provider session
+directories passed with `CLAUDE_SESSIONS_DIR` and its siblings), also enroll
+those providers in the fresh data directory before launch. The retained
+session catalog skips providers this install has never launched, so a
+transcript alone renders in the project view but stays unknown to catalog
+consumers such as draft sync. Its `/api/drafts/read` then answers 404 and
+the capture command stops on that error. Name every seeded provider:
+
+```bash
+mkdir -p "$UI_DIR/server"
+printf '{"installId":"ui-testing","createdAt":"2026-01-01T00:00:00Z","catalogFamilies":["claude"]}\n' \
+  >"$UI_DIR/server/install.json"
+```
+
 Once that server is ready, capture from another shell:
 
 ```bash
@@ -297,6 +311,15 @@ unavailable, use another browser automation path or a manual browser session:
 2. Resize viewport to desktop + mobile dimensions.
 3. Capture screenshots via the tool or OS-level capture.
 4. Attach the files where reviewers can review them directly.
+
+### Math needs a font on the capture host
+
+MathML, which the scriptless HTML preview uses for Pandoc math, draws italic
+identifiers from the Unicode Mathematical Italic block. With no font covering
+it, headless Chromium leaves those letters blank, so \(N(r)\) photographs as
+`( )`. This host has STIX Two Math in `~/.local/share/fonts/stix-two`
+(extracted from Ubuntu's `fonts-stix` 2.13 package, then `fc-cache`); check
+with `fc-list ':charset=1d45f' family`.
 
 ### Emoji need a font on the capture host
 

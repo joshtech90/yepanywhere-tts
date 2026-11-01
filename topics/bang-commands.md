@@ -40,6 +40,14 @@ obligations the history view inherits),
 [acli-ui](acli-ui.md) (proposal: acli capability detection and the richer
 completion/help UI for allowlisted tools in this composer).
 
+## Current compatibility baseline
+
+The `bang-commands` fixed client gate was retired on 2026-10-28. Current
+clients route explicit bang execution on the v0.8.0 server baseline without
+waiting for capability discovery. The discoverable history view still requires
+`clientDefaults.bangCommandsEnabled === true`; its default remains off. The
+server keeps the old capability identity and advertisement for older clients.
+
 ## Motivation
 
 YA is a mobile-first supervisor: the operator often has no terminal at hand.
@@ -64,7 +72,7 @@ project directory:
 ## Contracts
 
 - **Execution always-on; the history surface default-off.** Wherever the
-  server advertises the permanent `bang-commands` capability, `!!`
+  current v0.8.0 server baseline is in use, `!!`
   execution, completions, and the per-session object routes are always
   available (vanilla-defaults.md § Known Exceptions: an established,
   deliberately invoked shell-escape adds no default-visible surface).

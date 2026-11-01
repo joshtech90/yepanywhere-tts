@@ -1,6 +1,7 @@
 import type {
   FileContentResponse,
   FileOwnerResponse,
+  FolderListingResponse,
 } from "@yep-anywhere/shared";
 import { fetchJSON } from "./sourceApiFetch";
 
@@ -56,6 +57,14 @@ export const fileApi = {
   },
 
   getFileRawUrl: projectRawFileApiPath,
+
+  /** One folder's direct children; requires `file-folder-listing`. */
+  listFolder: (projectId: string, path: string) => {
+    const params = new URLSearchParams({ path });
+    return fetchJSON<FolderListingResponse>(
+      `/projects/${projectId}/files/list?${params.toString()}`,
+    );
+  },
 
   /**
    * Expand diff context to show full file.

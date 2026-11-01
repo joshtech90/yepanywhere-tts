@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
 import type { Page, Request } from "@playwright/test";
 import { expect, test } from "./fixtures.js";
 
-// These cases own the shared server's new-session draft slot.
+// These cases own the shared server's new-session draft slot, which the
+// fixture clears before each one.
 test.use({ draftSessionIds: [] });
 test.use({ serviceWorkers: "block" });
 // Each case waits out a real save debounce in two windows.
@@ -10,35 +10,6 @@ test.setTimeout(90_000);
 
 const composer = "textarea.new-session-form-textarea";
 const slot = { kind: "new-session" };
-
-async function clearNewSessionDraft(baseURL: string) {
-  const headers = {
-    "Content-Type": "application/json",
-    "X-Yep-Anywhere": "true",
-  };
-  const read = await fetch(`${baseURL}/api/drafts/read`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ slot }),
-  });
-  expect(read.ok).toBe(true);
-  const { snapshot, ticket } = (await read.json()) as {
-    snapshot: { revision: string | null };
-    ticket: string;
-  };
-  if (snapshot.revision === null) return;
-  const clear = await fetch(`${baseURL}/api/drafts/clear`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      slot,
-      baseRevision: snapshot.revision,
-      ticket,
-      operationId: randomUUID(),
-    }),
-  });
-  expect(clear.ok).toBe(true);
-}
 
 /** Type one key at a time after the first character; record any divergence. */
 async function typeMidline(page: Page, words: string) {
@@ -68,14 +39,13 @@ async function typeMidline(page: Page, words: string) {
 }
 
 const isDraftWrite = (request: Request) =>
-  /\/api\/drafts\/write$/.test(new URL(request.url()).pathname);
+  new URL(request.url()).pathname.endsWith("/api/drafts/write");
 
 test("a draft begun in another window continues here without losing keys", async ({
   page,
   browser,
   baseURL,
 }) => {
-  await clearNewSessionDraft(baseURL);
   const elsewhere = await browser.newContext();
   try {
     const other = await elsewhere.newPage();
@@ -118,7 +88,6 @@ test("a background sibling tab never saves over the tab being typed in", async (
   context,
   baseURL,
 }) => {
-  await clearNewSessionDraft(baseURL);
   await page.goto(`${baseURL}/new-session`);
   await page.locator(composer).click();
   await page.keyboard.type("Typed here.", { delay: 20 });

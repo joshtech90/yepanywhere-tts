@@ -1539,6 +1539,8 @@ export const api = {
   getProcessModels: (processId: string) =>
     fetchJSON<{
       models: ModelInfo[];
+      /** Routed tier validation is available for this process; absent means unavailable. */
+      serviceTierSelection?: boolean;
     }>(`/processes/${processId}/models`),
 
   setProcessModel: (processId: string, model?: string) =>
@@ -1653,6 +1655,8 @@ export const api = {
     fileApi.getFileMetadata(...args),
   getFileRawUrl: (...args: Parameters<typeof fileApi.getFileRawUrl>) =>
     fileApi.getFileRawUrl(...args),
+  listFolder: (...args: Parameters<typeof fileApi.listFolder>) =>
+    fileApi.listFolder(...args),
   expandDiffContext: (...args: Parameters<typeof fileApi.expandDiffContext>) =>
     fileApi.expandDiffContext(...args),
 
@@ -1737,11 +1741,11 @@ export const api = {
   // Read-only file-access info (env-pin state + resolved hint paths)
   getFileAccessInfo: () => fetchJSON<FileAccessInfo>("/settings/file-access"),
 
-  getCacheMissBillingEvents: (limit = 200, includeExpectedExpiry = false) =>
+  getCacheMissBillingEvents: (limit = 200) =>
     fetchJSON<{ events: CacheMissBillingRecord[] }>(
       `/settings/cache-miss-billing/events?limit=${encodeURIComponent(
         String(limit),
-      )}${includeExpectedExpiry ? "&includeExpectedExpiry=1" : ""}`,
+      )}&includeExpectedExpiry=1`,
     ),
 
   /** Ask one model-serving endpoint which thinking efforts it accepts. */
@@ -2005,6 +2009,8 @@ export interface ServerSettings {
   approvalAuditLogEnabled?: boolean;
   /** Whether unsandboxed superuser sessions get an in-memory API token */
   agentServerAccessEnabled?: boolean;
+  agentApiEnabled?: boolean;
+  agentApiManagementEnabled?: boolean;
   /** Whether users may create public read-only share links */
   publicSharesEnabled?: boolean;
   /** Whether limited users exist beside the superuser (topics/limited-users.md) */

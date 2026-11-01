@@ -29,6 +29,7 @@ export function buildProjectFileViewUrl({
   basePath = "",
   diffMode,
   filePath,
+  folder,
   lineEnd,
   lineNumber,
   projectId,
@@ -37,6 +38,7 @@ export function buildProjectFileViewUrl({
   basePath?: string;
   diffMode?: GitFileDiffMode;
   filePath: string;
+  folder?: string;
   lineEnd?: number;
   lineNumber?: number;
   projectId: string;
@@ -45,6 +47,7 @@ export function buildProjectFileViewUrl({
   return `${basePath}${buildProjectFileViewerHref({
     diffMode,
     filePath,
+    folder,
     lineEnd,
     lineNumber,
     projectId,
@@ -71,7 +74,6 @@ export function FileDiffViewLinks({
   const basePath = useRemoteBasePath();
   const relativePath = availability.relativePath;
   if (
-    !availability.supported ||
     !relativePath ||
     (!availability.worktreeFile && !availability.cumulativeFile)
   ) {

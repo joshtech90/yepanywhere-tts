@@ -22,6 +22,21 @@ per-call provenance, and an agent needs no cooperation to be told apart.
 Server-internal launches that do not arrive as an HTTP request, such as helper
 side sessions, project queue work, and routines, remain unmarked.
 
+The [launch-path provenance audit](../gaps/session-creation-source-missing-launch-paths.md)
+records known omissions beyond that boundary: UI-requested Project Queue and
+review sessions, the final fork-after-summary target, native v0 API creation,
+maintenance diagnostic creation, and retained forks after a failed restart
+continuation. The HTTP coverage statement above describes the intended contract;
+these paths do not yet satisfy it.
+
+The [admission ownership recommendation](session-creation-provenance.sketches.md)
+explains the shared cause, required creation context and coordination with the
+durable session identity/startup work. It is a proposal, not current behavior.
+[Plan 171](../docs/tactical/171-durable-session-identity-and-creation.md#creation-source-admission-and-coverage)
+now incorporates that recommendation into admission, startup, caller migration
+and qualification. It requires explicit source decisions and preserves legacy
+unknown records; the omissions above remain open until implemented and verified.
+
 The first accepted provenance value remains attached to the YA session across
 provider restarts and later messages. A creation request that waits for a
 worker records it when the session actually starts. Invalid or unknown
@@ -32,7 +47,10 @@ from a missing field. Existing session-creator identity for limited users
 remains a separate authorization fact.
 
 Session detail, project lists, Global Sessions, and Inbox return this metadata
-when present. Global Sessions can filter Web UI, Desktop app, API or agent, and
+when present. Inbox groups these as YA UI, API / automation, and Unknown /
+external, remembers its choice per connection in browser storage, and defaults
+to All sessions; see [Inbox](inbox.md#client-view-filters). Global Sessions can
+filter Web UI, Desktop app, API or agent, and
 Unspecified; the filter is inactive until selected. `session-creation-provenance`
 gates the request field and the filter. On an older server the client omits the
 field and hides the filter. Older servers accept unknown creation JSON fields

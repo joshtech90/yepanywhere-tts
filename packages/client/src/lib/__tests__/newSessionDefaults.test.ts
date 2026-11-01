@@ -27,6 +27,18 @@ describe("getPreferredModelId", () => {
     expect(getPreferredModelId(models, "unlisted")).toBe("unlisted");
   });
 
+  it("does not preselect a saved withdrawn Codex model", () => {
+    expect(getPreferredProviderModelId("codex", models, "gpt-5.5")).toBe(
+      "latest",
+    );
+    expect(
+      getPreferredProviderModelId("codex", models, "gpt-5.3-codex-spark"),
+    ).toBe("latest");
+    expect(getPreferredProviderModelId("codex", models, "unlisted")).toBe(
+      "unlisted",
+    );
+  });
+
   it("uses only models advertised by Claude Gateway", () => {
     expect(
       getPreferredProviderModelId("claude-gateway", models, "gpt-5.5"),

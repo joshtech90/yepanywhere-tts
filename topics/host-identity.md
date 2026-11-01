@@ -7,12 +7,11 @@ Topic: host-identity
 
 ## Contract
 
-- Host identity is server-owned configuration. YA does not store a client-only
-  fallback or attempt to write the setting to servers that do not advertise
-  support.
-- Supporting servers advertise the permanent `host-identity` capability and
-  persist an optional `hostIdentity.icon` setting. Clients hide the setting and
-  render no marker when the capability is absent.
+- Host identity is server-owned configuration. Current clients read and edit
+  the optional `hostIdentity.icon` setting on the v0.8.0 server baseline,
+  independently of version discovery. The former fixed capability gate was
+  retired on 2026-10-28; its identity and server advertisement remain for
+  older clients.
 - The icon is default-off. An unset or cleared icon leaves the existing header
   and browser-tab presentation unchanged.
 - The Remote Access settings pane exposes a compact curated emoji palette plus
@@ -41,8 +40,8 @@ Topic: host-identity
 
 - New client + supporting server: the setting is editable and the saved marker
   is rendered.
-- New client + older server: the missing capability hides both the setting and
-  marker; no fallback persistence or probing write occurs.
+- Servers below the current v0.8.0 client baseline require an update or their
+  co-deployed older client; the old hide-on-missing-capability path is removed.
 - Older client + supporting server: older clients ignore the additional
   settings response field and their partial settings updates do not clear it.
 - This optional feature does not raise `remoteCompatibilityLevel` or alter any

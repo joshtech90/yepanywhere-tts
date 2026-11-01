@@ -1,7 +1,6 @@
 import {
   projectDisplayName,
   PROJECT_CAPTIONS_CAPABILITY,
-  PROJECT_CODE_NAMES_CAPABILITY,
   PROJECT_NAMES_CAPABILITY,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   type ProjectQueueMessage,
@@ -33,17 +32,15 @@ import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { useInboxCountsByProject } from "../lib/clientSummaryStore";
 import { newProjectBaseFor } from "../lib/newProjectPath";
-import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+
 import type { Project } from "../types";
 import styles from "./ProjectsPage.module.css";
-
-const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
 
 export function ProjectsPage() {
   const { t } = useI18n();
   const { projects, loading, error, refetch } = useProjects();
   const { version } = useVersion();
-  const supportsProjectQueue = serverSupportsProjectQueue(version);
+
   const supportsProjectQueueAttachmentEditing = serverHasCapability(
     version,
     PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
@@ -51,10 +48,7 @@ export function ProjectsPage() {
   const supportsProjectSettings =
     serverHasCapability(version, SERVER_CAPABILITIES.projectService) ||
     serverHasCapability(version, SERVER_CAPABILITIES.projectAccessSharing);
-  const supportsProjectCodeNames = serverHasCapability(
-    version,
-    PROJECT_CODE_NAMES_CAPABILITY,
-  );
+
   const supportsProjectCaptions = serverHasCapability(
     version,
     PROJECT_CAPTIONS_CAPABILITY,
@@ -101,14 +95,9 @@ export function ProjectsPage() {
     () => projects.map((project) => project.id),
     [projects],
   );
-  const projectQueueProjectIds = supportsProjectQueue
-    ? projectIds
-    : EMPTY_PROJECT_QUEUE_PROJECT_IDS;
+  const projectQueueProjectIds = projectIds;
   const projectQueues = useProjectQueues(projectQueueProjectIds);
   const queueStateByProject = useMemo(() => {
-    if (!supportsProjectQueue) {
-      return new Map<string, { count: number; hasFailed: boolean }>();
-    }
     const queueState = new Map<string, { count: number; hasFailed: boolean }>();
     for (const [projectId, items] of Object.entries(
       projectQueues.queuesByProject,
@@ -124,7 +113,7 @@ export function ProjectsPage() {
       }
     }
     return queueState;
-  }, [projectQueues.queuesByProject, supportsProjectQueue]);
+  }, [projectQueues.queuesByProject]);
 
   // Sort projects: those needing attention first, then by recency
   const sortedProjects = useMemo(() => {
@@ -425,9 +414,7 @@ export function ProjectsPage() {
                     pathBase={newProjectBase}
                     chooseName={supportsProjectNames}
                     chooseCodeName={
-                      supportsProjectNames &&
-                      supportsProjectCodeNames &&
-                      projectCodeNamesEnabled
+                      supportsProjectNames && projectCodeNamesEnabled
                     }
                     adding={adding || templateProjectBusy}
                     error={addError}
@@ -478,7 +465,7 @@ export function ProjectsPage() {
           </div>
           {deleteError && <div className={formStyles.error}>{deleteError}</div>}
 
-          {supportsProjectQueue && (
+          {
             <ProjectQueueSection
               projects={projects}
               items={projectQueues.items}
@@ -504,7 +491,7 @@ export function ProjectsPage() {
               onMoveItemToTop={handleMoveQueueItemToTop}
               onUpdateItem={handleUpdateQueueItem}
             />
-          )}
+          }
 
           {isEmpty ? (
             !loading &&
@@ -563,7 +550,7 @@ export function ProjectsPage() {
                       : undefined
                   }
                   onUpdateCodeName={
-                    supportsProjectCodeNames && projectCodeNamesEnabled
+                    projectCodeNamesEnabled
                       ? handleUpdateProjectCodeName
                       : undefined
                   }

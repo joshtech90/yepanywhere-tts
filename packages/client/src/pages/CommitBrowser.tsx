@@ -63,12 +63,8 @@ export function CommitBrowser({
   onBrowseHistory,
   onBlameFile,
   captureReviewProjections = false,
-  supportsProjections = false,
-  supportsInclusiveToHead = false,
-  supportsLastEditor = false,
   ignoreWhitespace = false,
   onToggleIgnoreWhitespace = NOOP,
-  onProjectionUnavailable = NOOP,
   onProjectionRequestFailure = NOOP,
   t,
 }: {
@@ -100,12 +96,10 @@ export function CommitBrowser({
   /** Bridge the pinned Working tree revision into the Files blame view. */
   onBlameFile?: (path: string) => void;
   captureReviewProjections?: boolean;
-  supportsProjections?: boolean;
-  supportsInclusiveToHead?: boolean;
-  supportsLastEditor?: boolean;
+
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
-  onProjectionUnavailable?: () => void;
+
   onProjectionRequestFailure?: (error: unknown) => void;
   t: TranslationFn;
 }) {
@@ -170,8 +164,6 @@ export function CommitBrowser({
     isWideScreen,
     initialSha,
     initialPath,
-    supportsInclusiveToHead,
-    onProjectionUnavailable,
     onProjectionRequestFailure,
     t,
   });
@@ -525,7 +517,6 @@ export function CommitBrowser({
             }
             onBlameFile={onBlameFile}
             captureReviewProjections={captureReviewProjections}
-            supportsLastEditor={supportsLastEditor}
             ignoreWhitespace={ignoreWhitespace}
             onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
             onProjectionRequestFailure={handleProjectionRequestFailure}
@@ -542,7 +533,6 @@ export function CommitBrowser({
             loading={loadingDetail || (compareToHead && loadingComparison)}
             detailError={detailError}
             compareToHead={compareToHead}
-            supportsInclusiveToHead={supportsInclusiveToHead}
             isWideScreen={isWideScreen}
             messageView={messageView}
             selectedFiles={selectedFiles}
@@ -566,14 +556,10 @@ export function CommitBrowser({
                   : undefined
             }
             onToggleComparison={toggleComparison}
-            onCompareFileToHead={
-              supportsProjections
-                ? (file) => {
-                    setShowBlame(false);
-                    void openDirectComparison(file);
-                  }
-                : undefined
-            }
+            onCompareFileToHead={(file) => {
+              setShowBlame(false);
+              void openDirectComparison(file);
+            }}
             onShowMessage={() => {
               setShowBlame(false);
               setMessageView(true);

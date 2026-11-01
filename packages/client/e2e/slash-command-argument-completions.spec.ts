@@ -1,13 +1,10 @@
-import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import {
   decodeJsonFrame,
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
-import type { ViteDevServer } from "vite";
-import { createTestViteServer as createServer } from "./support/vite-server";
 import { e2ePaths, expect, test } from "./fixtures.js";
 
 const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
@@ -17,37 +14,8 @@ const objective = "Keep goal changes visible during work and after reload";
 
 test.use({ serviceWorkers: "block" });
 
-let devServer: ViteDevServer;
-let devUrl: string;
-test.beforeAll(async ({ workerServer }) => {
-  void workerServer;
-  const port = Number.parseInt(
-    readFileSync(join(e2ePaths.tempDir, "port"), "utf8"),
-    10,
-  );
-  const baseURL = `http://localhost:${port}`;
-  devServer = await createServer({
-    configFile: join(
-      dirname(fileURLToPath(import.meta.url)),
-      "../vite.config.ts",
-    ),
-    define: { __VITE_DEV_PORT__: "-1" },
-    server: {
-      port: 0,
-      host: "127.0.0.1",
-      proxy: { "/api": { target: baseURL, ws: true } },
-    },
-  });
-  await devServer.listen();
-  const address = devServer.httpServer?.address();
-  if (!address || typeof address === "string")
-    throw new Error("Missing dev-server port");
-  devUrl = `http://127.0.0.1:${address.port}`;
-});
-test.afterAll(async () => {
-  await devServer?.close();
-});
-
+// Provider controls use the invocation's built client. Cold Vite imports in
+// CI 40760723114 consumed 9.6 s before session acquisition even began.
 async function dismissOnboardingIfVisible(page: Page) {
   const dialog = page.getByText("Welcome to yepanywhere");
   const appeared = await dialog
@@ -76,6 +44,7 @@ async function captureMenu(page: Page, name: string) {
 
 test("shows provider-owned slash hints and argument completions", async ({
   page,
+  baseURL,
 }) => {
   test.setTimeout(120_000);
   await page.route(
@@ -123,7 +92,7 @@ test("shows provider-owned slash hints and argument completions", async ({
   );
 
   await page.setViewportSize({ width: 1000, height: 600 });
-  await page.goto(`${devUrl}/projects/${projectId}/sessions/${sessionId}`);
+  await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
   await dismissOnboardingIfVisible(page);
 
   const composer = page.locator("[data-composer-input]");
@@ -220,6 +189,7 @@ test("shows provider-owned slash hints and argument completions", async ({
 
 test("restarts the provider only after verified stop and reloads saved turns", async ({
   page,
+  baseURL,
 }) => {
   test.setTimeout(120_000);
   const requests: string[] = [];
@@ -330,7 +300,7 @@ test("restarts the provider only after verified stop and reloads saved turns", a
     },
   );
   await page.setViewportSize({ width: 1000, height: 600 });
-  await page.goto(`${devUrl}/projects/${projectId}/sessions/${sessionId}`);
+  await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
   const composer = page.locator("[data-composer-input]");
   await expect(composer).toBeVisible({ timeout: 30_000 });
   await composer.fill("Preserve my draft");
@@ -367,6 +337,7 @@ test("restarts the provider only after verified stop and reloads saved turns", a
 
 test("toggles the observed goal during work without consuming the draft", async ({
   page,
+  baseURL,
 }) => {
   test.setTimeout(120_000);
   let goalStatus = "active";
@@ -453,7 +424,7 @@ test("toggles the observed goal during work without consuming the draft", async 
     await route.fulfill({ json: { queued: true } });
   });
   await page.setViewportSize({ width: 1000, height: 600 });
-  await page.goto(`${devUrl}/projects/${projectId}/sessions/${sessionId}`);
+  await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
   const composer = page.locator("[data-composer-input]");
   const flag = page.getByRole("button", { name: `Current goal: ${objective}` });
   await expect(composer).toBeVisible({ timeout: 30_000 });

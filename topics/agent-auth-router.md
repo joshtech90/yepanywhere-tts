@@ -545,3 +545,12 @@ settings remain authoritative for future restoration, while discarded fields
 do not replace a current explicit form selection. Current launch capability
 gates remain unchanged. Release review checked v0.9.0, v0.9.1 and v0.9.2, whose
 provider-default parsers preserve speed and discard the new router fields.
+
+## Codex speed selection
+
+Codex pools support explicit Standard/Fast/other account-advertised tiers when
+both integrations advertise tier-aware selection. Allocation, pinned resume,
+live changes and older-version fallback follow [service tiers](service-tier.md#aar-account-pools).
+The router remains the owner of account eligibility and credentials; YA never
+borrows speed availability from its direct login. This is an additive optional
+feature, not a change to the existing routing or process-configuration capabilities.

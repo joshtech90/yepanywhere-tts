@@ -1,0 +1,28 @@
+[
+  {
+    "name": "single-gateway-settings-editor",
+    "capabilities": ["claude-gateway-services"],
+    "supportedSince": "2026-09-22",
+    "evidence": "v0.9.0: first stable server with Gateway services",
+    "removal": "Remove the old single-Gateway client editor; show update guidance without legacy writes. Preserve persisted-setting import and separately required older-client server behavior.",
+    "locations": [
+      {
+        "path": "packages/client/src/pages/settings/ProvidersSettings.tsx",
+        "marker": "function ClaudeGatewaySettings("
+      }
+    ]
+  },
+  {
+    "name": "providers-before-descriptors",
+    "capabilities": ["provider-descriptors"],
+    "supportedSince": "2026-10-20",
+    "evidence": "v0.10.0: first stable server with provider descriptors",
+    "removal": "Remove the complete-catalog fallback for descriptor choices and show update guidance on unsupported servers. Retain full provider/model discovery for consumers that need it.",
+    "locations": [
+      {
+        "path": "packages/client/src/components/NewSessionForm.tsx",
+        "marker": "providerDescriptors ?? providers"
+      }
+    ]
+  }
+]

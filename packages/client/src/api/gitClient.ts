@@ -5,7 +5,6 @@ import type {
   GitCommitSearchManifest,
   GitCommitSearchRecordsResult,
   GitDiffResult,
-  GitFileListResult,
   GitFileDiffMode,
   GitFileProjectionManifest,
   GitFileRevision,
@@ -233,19 +232,6 @@ export const gitApi = {
     if (rev) query.set("rev", rev);
     return fetchJSON<GitBlameResult>(
       `/projects/${projectId}/git/blame?${query.toString()}`,
-    );
-  },
-
-  listGitFiles: (
-    projectId: string,
-    params?: { q?: string; limit?: number },
-  ) => {
-    const query = new URLSearchParams();
-    if (params?.q) query.set("q", params.q);
-    if (params?.limit !== undefined) query.set("limit", String(params.limit));
-    const suffix = query.toString() ? `?${query.toString()}` : "";
-    return fetchJSON<GitFileListResult>(
-      `/projects/${projectId}/git/files${suffix}`,
     );
   },
 

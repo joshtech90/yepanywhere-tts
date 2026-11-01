@@ -126,7 +126,7 @@ export interface ServerSettings {
   toolResultMediaPreservation: ToolResultMediaPreservation;
   /** Whether clients should register the service worker (for push notifications) */
   serviceWorkerEnabled: boolean;
-  /** Whether remote SRP resume sessions should be persisted to disk (default: false/in-memory only) */
+  /** Whether remote SRP resume sessions survive restarts (default: true). */
   persistRemoteSessionsToDisk: boolean;
   /** Whether the server is requesting browser clients to upload diagnostic logs */
   clientLogCollectionRequested: boolean;
@@ -138,6 +138,10 @@ export interface ServerSettings {
    * (topics/agent-session-access.md § Operator API token).
    */
   agentServerAccessEnabled: boolean;
+  /** Explicit discovery and read-only v0 access for eligible local launches. */
+  agentApiEnabled: boolean;
+  /** Explicit native session command authority for future eligible API launches. */
+  agentApiManagementEnabled: boolean;
   /** Whether users may create public read-only share links */
   publicSharesEnabled: boolean;
   /**
@@ -363,10 +367,12 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   projectDirectoryStorage: "app-data",
   toolResultMediaPreservation: "on-demand",
   serviceWorkerEnabled: true,
-  persistRemoteSessionsToDisk: false,
+  persistRemoteSessionsToDisk: true,
   clientLogCollectionRequested: false,
   approvalAuditLogEnabled: false,
   agentServerAccessEnabled: false,
+  agentApiEnabled: false,
+  agentApiManagementEnabled: false,
   publicSharesEnabled: false,
   limitedUsersEnabled: false,
   limitedUserInstructions: defaultLimitedUserInstructions(),

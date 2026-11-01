@@ -15,6 +15,21 @@ persisted user/assistant text already delivered by the session route, including
 incremental updates and older pages. Manual linking is not an admission step.
 Public shares neither trigger capture nor receive these records.
 
+When enabled, session user prompts and assistant prose link known Jira keys
+and GitHub issue/PR references directly to their tracker destinations. Links
+use discovered destinations without waiting for fetched titles, bodies, or
+authentication. The session owns one shared read for the header and transcript;
+its bounded discovery rechecks update already displayed mentions without reload,
+including on phones where the header control is in the session menu. The same
+latest-reference page (up to 100 items) supplies both surfaces.
+
+Unknown destinations and ambiguous keys remain plain text. GitHub shorthand
+(`repo#42` or `#42`) links only when it has one destination in that page.
+Existing links, project-file links, and rendered Markdown code/math remain
+intact. Links open a separate tab and change presentation only: original prompt,
+transcript, and copied source text remain unchanged. Public shares do not gain
+private issue destinations, and disabling Issues & PRs removes these links.
+
 The default scope is **Viewed session windows**. **Sessions active recently**
 additionally indexes sessions whose catalog activity is within a configurable
 1–90 days, default 7. This selects sessions, not individual message dates: an

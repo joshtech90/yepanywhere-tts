@@ -1,6 +1,7 @@
 import {
   CODEX_GPT6_CONTEXT_WINDOW,
   CODEX_GPT56_CONTEXT_WINDOW,
+  isWithdrawnCodexModel,
   type ModelInfo,
 } from "@yep-anywhere/shared";
 import type { CyberAccessProgram } from "./codex-protocol/generated/v2/CyberAccessProgram.js";
@@ -10,65 +11,26 @@ export const CODEX_CLI_GPT56_MIN_VERSION = "0.144.0";
 export const CODEX_CLI_GPT56_REDUCED_CATALOG_MIN_VERSION = "0.144.6";
 export const CODEX_CLI_GPT56_RESTORED_CATALOG_MIN_VERSION = "0.145.0";
 
+// Withdrawn models (`CODEX_WITHDRAWN_MODEL_IDS`) are absent here and from
+// every fallback list below, and are dropped from the live catalog.
 const PREFERRED_MODEL_ORDER = [
   "gpt-6.1-sol",
   "gpt-6-astra",
+  "gpt-6.1-terra",
   "gpt-6-sol",
   "gpt-6-luna",
   "gpt-5.6-sol",
-  "gpt-5.5",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
   "gpt-daybreak-blue-latest",
   "gpt-5.4",
   "gpt-5.4-mini",
   "gpt-5.3-codex",
-  "gpt-5.3-codex-spark",
   "gpt-5.2-codex",
   "gpt-5.1-codex-max",
   "gpt-5.2",
   "gpt-5.1-codex-mini",
 ] as const;
-
-const GPT55_FALLBACK_CODEX_MODEL: ModelInfo = {
-  id: "gpt-5.5",
-  name: "GPT-5.5",
-  description:
-    "Frontier model for complex coding, research, and real-world work.",
-  defaultReasoningEffort: "medium",
-  supportedReasoningEfforts: [
-    {
-      reasoningEffort: "low",
-      description: "Fast responses with lighter reasoning",
-    },
-    {
-      reasoningEffort: "medium",
-      description: "Balances speed and reasoning depth for everyday tasks",
-    },
-    {
-      reasoningEffort: "high",
-      description: "Greater reasoning depth for complex problems",
-    },
-    {
-      reasoningEffort: "xhigh",
-      description: "Extra high reasoning depth for complex problems",
-    },
-  ],
-  inputModalities: ["text", "image"],
-  supportsPersonality: true,
-  serviceTiers: [
-    {
-      id: "priority",
-      name: "Fast",
-      description: "1.5x speed, increased usage",
-    },
-  ],
-};
-
-const GPT53_SPARK_FALLBACK_CODEX_MODEL: ModelInfo = {
-  id: "gpt-5.3-codex-spark",
-  name: "GPT-5.3-Codex-Spark",
-};
 
 const GPT54_FALLBACK_CODEX_MODEL: ModelInfo = {
   id: "gpt-5.4",
@@ -140,13 +102,7 @@ const GPT54_FALLBACK_CODEX_MODELS: ModelInfo[] = [
 const GPT54_AND_OLDER_FALLBACK_CODEX_MODELS: ModelInfo[] = [
   ...GPT54_FALLBACK_CODEX_MODELS,
   { id: "gpt-5.3-codex", name: "GPT-5.3-Codex" },
-  GPT53_SPARK_FALLBACK_CODEX_MODEL,
   { id: "gpt-5.2", name: "GPT-5.2" },
-];
-
-const GPT55_FALLBACK_CODEX_MODELS: ModelInfo[] = [
-  GPT55_FALLBACK_CODEX_MODEL,
-  ...GPT54_AND_OLDER_FALLBACK_CODEX_MODELS,
 ];
 
 const GPT56_REASONING_EFFORTS: NonNullable<
@@ -232,7 +188,6 @@ const GPT56_LUNA_FALLBACK_CODEX_MODEL: ModelInfo = {
 
 const GPT56_INITIAL_FALLBACK_CODEX_MODELS: ModelInfo[] = [
   GPT56_SOL_FALLBACK_CODEX_MODEL,
-  GPT55_FALLBACK_CODEX_MODEL,
   GPT56_TERRA_FALLBACK_CODEX_MODEL,
   GPT56_LUNA_FALLBACK_CODEX_MODEL,
   ...GPT54_AND_OLDER_FALLBACK_CODEX_MODELS,
@@ -240,19 +195,15 @@ const GPT56_INITIAL_FALLBACK_CODEX_MODELS: ModelInfo[] = [
 
 const GPT56_REDUCED_FALLBACK_CODEX_MODELS: ModelInfo[] = [
   GPT56_SOL_FALLBACK_CODEX_MODEL,
-  GPT55_FALLBACK_CODEX_MODEL,
   GPT56_TERRA_FALLBACK_CODEX_MODEL,
   GPT56_LUNA_FALLBACK_CODEX_MODEL,
-  GPT53_SPARK_FALLBACK_CODEX_MODEL,
 ];
 
 export const FALLBACK_CODEX_MODELS: ModelInfo[] = [
   GPT56_SOL_FALLBACK_CODEX_MODEL,
-  GPT55_FALLBACK_CODEX_MODEL,
   GPT56_TERRA_FALLBACK_CODEX_MODEL,
   GPT56_LUNA_FALLBACK_CODEX_MODEL,
   ...GPT54_FALLBACK_CODEX_MODELS,
-  GPT53_SPARK_FALLBACK_CODEX_MODEL,
 ];
 
 export const LEGACY_FALLBACK_CODEX_MODELS: ModelInfo[] = [
@@ -332,7 +283,7 @@ export function getFallbackCodexModelsForCliVersion(
     return LEGACY_FALLBACK_CODEX_MODELS;
   }
   if (version && compareSemver(version, CODEX_CLI_GPT56_MIN_VERSION) < 0) {
-    return GPT55_FALLBACK_CODEX_MODELS;
+    return GPT54_AND_OLDER_FALLBACK_CODEX_MODELS;
   }
   if (
     version &&
@@ -359,7 +310,7 @@ export function normalizeCodexModelList(models: AppServerModel[]): ModelInfo[] {
     if (model.hidden === true) continue;
 
     const modelId = (model.model || model.id || "").trim();
-    if (!modelId) continue;
+    if (!modelId || isWithdrawnCodexModel(modelId)) continue;
 
     deduped.set(modelId, {
       model: {
@@ -391,7 +342,11 @@ export function normalizeCodexModelList(models: AppServerModel[]): ModelInfo[] {
       (typeof model.upgradeInfo?.model === "string"
         ? model.upgradeInfo.model.trim()
         : "");
-    if (upgradeId && !deduped.has(upgradeId)) {
+    if (
+      upgradeId &&
+      !deduped.has(upgradeId) &&
+      !isWithdrawnCodexModel(upgradeId)
+    ) {
       deduped.set(upgradeId, {
         model: {
           id: upgradeId,

@@ -1473,9 +1473,8 @@ test("edits OAuth email rows without losing sequential input during updates", as
         ...(await response.json()),
         current: "0.9.3",
         capabilities: ["vhost-oauth-access"],
-        capabilityExtensions: [],
+
         capabilityBits: [],
-        optionalCapabilityBits: [],
       },
     });
   });

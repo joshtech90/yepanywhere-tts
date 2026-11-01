@@ -111,6 +111,10 @@ export function LifecycleWebhooksSettings() {
   return (
     <SettingsSection
       description={t("lifecycleWebhooksDescription")}
+      doc={{
+        path: "docs/project/webhook-automation-spec.md",
+        label: "lifecycle webhooks",
+      }}
       onSubmit={(event) => {
         event.preventDefault();
         if (hasChanges && !isSaving) void handleSave();

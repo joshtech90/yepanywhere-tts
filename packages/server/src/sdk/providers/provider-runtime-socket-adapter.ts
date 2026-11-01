@@ -101,7 +101,15 @@ export class ProviderRuntimeSocketAdapter {
       controllerId,
       generation,
       (message) => writeSocket(socket, message),
-      { isActive: () => !socket.destroyed },
+      {
+        isActive: () => !socket.destroyed,
+        agentApiAllowed: request.agentApiAllowed === true,
+        agentApiPeersAllowed: request.agentApiPeersAllowed === true,
+        agentApiPeerGrantId:
+          typeof request.agentApiPeerGrantId === "string"
+            ? request.agentApiPeerGrantId
+            : undefined,
+      },
     );
   }
 

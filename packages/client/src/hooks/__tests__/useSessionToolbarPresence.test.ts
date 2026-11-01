@@ -266,64 +266,6 @@ describe("useSessionToolbarPresence", () => {
     });
   });
 
-  it("masks Project Queue presence without server capability", async () => {
-    stubToolbarLayout(false);
-    mocks.version = {
-      capabilities: [],
-      clientDefaults: {
-        sessionToolbarPresence: {
-          projectQueue: "pin",
-          projectQueueNewSessionShortcut: "pin",
-        },
-      },
-    };
-    const { useSessionToolbarPresence } = await import(
-      "../useSessionToolbarPresence"
-    );
-
-    const { result } = renderHook(() => useSessionToolbarPresence());
-
-    await waitFor(() => {
-      expect(result.current.presence.projectQueue).toBe("hidden");
-      expect(result.current.visibility.projectQueue).toBe(false);
-      expect(result.current.presence.projectQueueNewSessionShortcut).toBe(
-        "hidden",
-      );
-      expect(result.current.visibility.projectQueueNewSessionShortcut).toBe(
-        false,
-      );
-    });
-  });
-
-  it("masks the shortcut without its dedicated settings capability", async () => {
-    stubToolbarLayout(false);
-    mocks.version = {
-      capabilities: [PROJECT_QUEUE_CAPABILITY],
-      clientDefaults: {
-        sessionToolbarPresence: {
-          projectQueue: "pin",
-          projectQueueNewSessionShortcut: "pin",
-        },
-      },
-    };
-    const { useSessionToolbarPresence } = await import(
-      "../useSessionToolbarPresence"
-    );
-
-    const { result } = renderHook(() => useSessionToolbarPresence());
-
-    await waitFor(() => {
-      expect(result.current.presence.projectQueue).toBe("pin");
-      expect(result.current.visibility.projectQueue).toBe(true);
-      expect(result.current.presence.projectQueueNewSessionShortcut).toBe(
-        "hidden",
-      );
-      expect(result.current.visibility.projectQueueNewSessionShortcut).toBe(
-        false,
-      );
-    });
-  });
-
   it("can reveal the new-session Project Queue shortcut explicitly", async () => {
     stubToolbarLayout(false);
     mocks.version = {

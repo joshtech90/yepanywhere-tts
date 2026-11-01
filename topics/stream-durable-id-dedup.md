@@ -73,8 +73,8 @@ all five calls and eliminate the warnings without disabling diagnostics.
    `codex-stream-durable-id-alignment` do not use this: repeated wait/status
    turns and responses are commonly byte-identical, and every provider log row
    is a distinct turn unless a shared provider identity proves otherwise. A
-   current client temporarily enables the same two-second backstop, excluding
-   tools, when that server capability is absent or still unknown. The optional
+   current client uses the aligned-ID baseline unconditionally, including while
+   version discovery is pending. The optional
    provider capability `approxDedupExcludesTools` (codex-oss) removes
    tool_use/tool_result messages from this
    backstop entirely: native tool uuids are deterministic (`call_id`), while
@@ -214,16 +214,14 @@ live thread item and persists those ids in rollout response items. The one
 YA-supplied identity is `clientUserMessageId`, which Codex persists on the
 paired user-turn event.
 
-The permanent server capability `codex-stream-durable-id-alignment` (ID 48,
-version-implied from YA 0.7.2) gates whether the client may rely on these ids.
-Source-ahead servers advertise the ID explicitly. Stable servers `v0.6.0`,
-`v0.6.1`, `v0.6.2`, and `v0.7.0` predate the contract. Against them—or while
-version metadata is pending—the client restores the former two-second
-content/timestamp reconciliation for non-tool rows, legacy steer pairing, and
-timestamp-watermark replay suppression. This avoids routine duplicate rows at
-the deliberate old-server risk of merging genuinely distinct identical turns.
-The fallback makes no new request and remains until a separate
-compatibility-floor review approves its removal.
+The `codex-stream-durable-id-alignment` identity (ID 48, version-implied from
+YA 0.7.2) remains advertised for older clients. On 2026-10-28 the maintainer
+approved retiring the legacy Codex path: every stable server in the current
+core corpus (v0.8.0 through v0.11.0) provides alignment. Current clients use
+that contract unconditionally, including while version metadata is pending.
+They do not restore content/time matching, steer pairing or timestamp replay
+suppression for Codex. Older servers require an update or their bundled client.
+Codex OSS and other providers retain their own required reconciliation.
 
 | Item | Live thread `item.id` | Durable rollout id | Aligned? |
 |---|---|---|---|
@@ -293,11 +291,9 @@ turn — `call_id` is globally unique, so no turn scoping is needed:
   parents cannot be assigned safely to one outer call by id. The explored
   projection may make their default visual group converge, but raw parent
   structure and active-tail collapse identity may replace once rollout lands.
-- General approximate dedup is disabled for Codex when the connected server
-  advertises stream/durable id alignment. Native ids plus the scoped code-mode
+- General approximate dedup is disabled for Codex on the current client baseline. Native ids plus the scoped code-mode
   reconciler carry the known tool exceptions without treating equal content or
-  nearby timestamps as identity. The documented old-server compatibility path
-  is the only exception, and it continues to exclude tools.
+  nearby timestamps as identity. Codex OSS keeps its separately scoped backstop.
 
 ### Done: user-turn id alignment
 
@@ -322,10 +318,8 @@ even when provider startup takes longer than any plausible time window.
 An in-turn steer can remain optimistic for minutes before Codex consumes it.
 `Process` still retains accepted steer echoes through the provider turn
 boundary, but durable confirmation now uses the persisted client id. Against a
-server advertising `codex-stream-durable-id-alignment`, Codex never invokes
-`reconcileCodexSteerEchoes` or any text/timestamp substitute. Against an older
-server that omitted `clientUserMessageId`, the capability-gated legacy path
-pairs the echo and durable row so the hosted client does not show both copies.
+current supported server, Codex never invokes `reconcileCodexSteerEchoes` or
+any text/timestamp substitute. The old-server pairing branch is removed.
 
 ### Historical: first-turn duplicate with attachments
 

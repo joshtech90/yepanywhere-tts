@@ -1,10 +1,10 @@
 # Mid-session effort change
 
-> A mid-session effort change misses the provider's prompt cache on most
-> models (Claude keys its cache by effort except on Opus 5.5; Codex sends
-> effort at request level), so on a long-context session the next request
-> re-reads the whole prompt; YA warns before such a change on enabled
-> providers past a configurable token threshold, skips models measured to
+> A mid-session effort change misses the provider's prompt cache on many
+> models (Claude keys its cache by effort except on Opus 5.5; older Codex
+> models send effort at request level), so on a long-context session the
+> next request re-reads the whole prompt; YA warns before such a change on
+> enabled providers past a configurable token threshold, skips models that
 > keep the cache, and offers a fork at the new effort instead.
 
 Topic: mid-session-effort-change
@@ -32,9 +32,10 @@ system prompt included, and re-read the conversation at cache-write price.
 The request text does not change; only the `output_config.effort` parameter
 does (measured on Sonnet 5; see the
 [evidence companion](mid-session-effort-change.evidence.md)). Opus 5.5 is
-the measured exception: its cache survives the same change. On Codex the
-effort is the request-level `reasoning.effort`, and OpenAI's own guidance
-is to keep that unchanged to preserve the cached prefix. Either way a
+the measured exception: its cache survives the same change. On older Codex
+models the effort is the request-level `reasoning.effort`, and OpenAI's own
+guidance is to keep that unchanged to preserve the cached prefix; GPT-6
+models instead record the change in history and keep the cache. Either way a
 routine-looking control can silently cost a full re-read of a 200k-token
 session, which is the same class of cost the
 [cache-miss-accounting](cache-miss-accounting.md) monitor exists to surface
@@ -54,16 +55,19 @@ after the fact. This topic surfaces it before.
   including cached reads on Claude) is known and at least the threshold, and
   no cache-safe mechanism exists for the provider/model pair
   (`effortChangeKeepsPromptCache` in
-  `packages/shared/src/long-context-effort-warning.ts`). The only cache-safe
-  pair today is the `claude` provider with the concrete id
-  `claude-opus-5-5`, ignoring a trailing `[1m]` or dated-snapshot suffix. The
-  session's resolved model decides; an unresolved selection alias such as
-  `opus` still warns, because it may later resolve to an unmeasured version.
-  Each exemption rests on a warm-session measurement recorded in the
-  evidence companion (`claude-opus-5-5`: 2026-09-24). The behavior belongs to
-  the provider API, not YA or Claude Code, so re-measure on a model or SDK
-  refresh before adding a model to, or keeping one in, that list.
-  Codex Astra is not yet exempt; see § Codex Astra below.
+  `packages/shared/src/long-context-effort-warning.ts`). On Claude the only
+  cache-safe id is `claude-opus-5-5`, ignoring a trailing `[1m]` or
+  dated-snapshot suffix; the session's resolved model decides, and an
+  unresolved selection alias such as `opus` still warns, because it may
+  later resolve to an unmeasured version. On Codex the rule is inverted:
+  only the older generations warn (GPT-5 and earlier, matching `gpt-[0-5]`,
+  and `gpt-daybreak-*`), and every other model, including future ones, is
+  treated as cache-safe; see § Provider notes. A session with no known model
+  still warns. Each exemption rests on a warm-session measurement recorded
+  in the evidence companion (`claude-opus-5-5`: 2026-09-24; Codex GPT-6:
+  2026-10-29). The behavior belongs to the provider API, not YA or the
+  provider CLI, so re-measure on a model or CLI refresh before changing
+  either list.
 - **Dialog.** States the last request size and the from/to efforts, and
   offers three choices: **Change anyway** applies the change exactly as it
   would have without the warning; **Fork at <effort>** creates a
@@ -125,15 +129,16 @@ after the fact. This topic surfaces it before.
   so the fork choice does not save the re-read on Codex today; it only keeps
   the source session unchanged. The dialog states this. The Codex-side
   remedies are tracked in [codex-cache-features](../gaps/codex-cache-features.md).
-- **Codex GPT-6 Astra.** OpenAI documents an in-place effort change for
-  Astra through `configuration_update` items that leave the request-level
-  effort, and so the cached prefix, unchanged. The pinned Codex 0.154.0
-  source implements it (`core/src/session/reasoning_effort.rs`) behind the
-  `reasoning_effort_override` feature, which is under development and
-  default-off, and only for models whose catalog entry sets
-  `use_responses_lite` (Astra and Sol in the local catalog). YA does not
-  enable Codex features, so today an Astra effort change still goes through
-  `thread/settings/update` at request level and the warning applies. Once
-  that feature is enabled and a warm-session measurement shows the cache
-  survives, `effortChangeKeepsPromptCache` exempts Astra; details in
-  [codex-cache-features](../gaps/codex-cache-features.md).
+- **Codex in-place effort updates.** From Codex 0.165.0 the
+  `reasoning_effort_override` feature is default-on: for a model whose live
+  catalog entry sets `supports_reasoning_effort_updates`, a changed turn
+  effort becomes a `configuration_update` item in history while the
+  request-level effort, and so the cached prefix, stays unchanged
+  (`core/src/session/reasoning_effort.rs`). The live catalog sets it for
+  every GPT-6 model and not for the GPT-5.6 family or Daybreak, and a
+  warm-session measurement through YA's `turn/start` effort path confirmed
+  both sides (evidence companion, 2026-10-29). YA therefore warns on Codex
+  only for those older generations, expecting newer models to keep the
+  flag. `model/list` does not expose it, so the split is a model-id rule
+  rather than catalog data; re-check `~/.codex/models_cache.json` on a
+  Codex refresh.

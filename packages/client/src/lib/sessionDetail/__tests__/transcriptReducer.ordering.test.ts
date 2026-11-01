@@ -41,12 +41,10 @@ describe("Codex durable catch-up order", () => {
       type: "loadPersistedTranscript",
       session,
       messages,
-      codexStreamDurableIdAlignment: true,
     });
     const refreshed = reduceSessionDetailState(loaded, {
       type: "applyCatchupMessages",
       messages: [messages[1]!, messages[3]!],
-      codexStreamDurableIdAlignment: true,
     });
     expect(refreshed.messages).toEqual(loaded.messages);
   });
@@ -75,13 +73,11 @@ describe("Codex durable catch-up order", () => {
         type: "loadPersistedTranscript",
         session,
         messages: [prefix],
-        codexStreamDurableIdAlignment: true,
       });
       for (const incoming of [reply, liveTail]) {
         state = reduceSessionDetailState(state, {
           type: "applyStreamMessage",
           message: incoming,
-          codexStreamDurableIdAlignment: true,
         });
       }
       const batches =
@@ -90,7 +86,6 @@ describe("Codex durable catch-up order", () => {
         state = reduceSessionDetailState(state, {
           type: "applyCatchupMessages",
           messages: batch,
-          codexStreamDurableIdAlignment: true,
         });
       }
       expect(state.messages.map((m) => m.uuid)).toEqual([
@@ -117,7 +112,6 @@ describe("Codex durable catch-up order", () => {
           type: "loadPersistedTranscript",
           session,
           messages: [prefix, ...durable],
-          codexStreamDurableIdAlignment: true,
         },
       );
       expect(state.messages.filter((m) => m._source === "jsonl")).toEqual(

@@ -95,6 +95,7 @@ export function RendezSettings({
         as="label"
         label={t("rendezDefaultTitle")}
         description={t("rendezDefaultDescription")}
+        doc={{ path: "topics/rendez.md", label: "rendez uploads" }}
         descriptionLayout="full-width-on-narrow"
         keywords={[
           "rendez",

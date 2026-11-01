@@ -26,6 +26,7 @@ import { api, type ServerSettings } from "../../api/client";
 import { useI18n } from "../../i18n";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import styles from "./GatewayServicesSettings.module.css";
+import { SettingsDocLink } from "./SettingsDocLink";
 
 const EXAMPLE_URL = "http://127.0.0.1:8001";
 
@@ -544,7 +545,8 @@ export function GatewayServicesSettings({
     <div id="provider-gateway-services" className="settings-subsection">
       <h3>{t("providersGatewayServicesTitle")}</h3>
       <p className="settings-hint">
-        {t("providersGatewayServicesDescription")}
+        {t("providersGatewayServicesDescription")}{" "}
+        <SettingsDocLink doc="topics/gateway-services.md" />
       </p>
       {/* What allowing a service means, and what CodexOSS falls back to when
           none is allowed: both are facts about the list rather than about any

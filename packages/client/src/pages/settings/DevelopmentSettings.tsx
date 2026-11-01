@@ -238,6 +238,10 @@ export function DevelopmentSettings() {
         <SettingsItem
           label={t("developmentDiagnosticsTitle")}
           description={t("developmentDiagnosticsDescription")}
+          doc={{
+            path: "docs/development/debugging.md#client-console-logs",
+            label: "client console logs",
+          }}
         >
           <label className="toggle-switch">
             <input
@@ -251,6 +255,10 @@ export function DevelopmentSettings() {
         <SettingsItem
           label={t("developmentRetainRejectedSrpTitle")}
           description={t("developmentRetainRejectedSrpDescription")}
+          doc={{
+            path: "docs/development/debugging.md#rejected-srp-resume-credentials",
+            label: "rejected SRP debugging",
+          }}
         >
           <label className="toggle-switch">
             <input
@@ -338,6 +346,10 @@ export function DevelopmentSettings() {
           <SettingsItem
             label={t("developmentRestartTitle")}
             description={t("developmentRestartDescription")}
+            doc={{
+              path: "site/src/content/docs/updating.md#keep-work-running-during-server-reloads",
+              label: "reload-safe hosts",
+            }}
             info={
               <>
                 <strong>{t("developmentRestartTitle")}</strong>

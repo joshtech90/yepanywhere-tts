@@ -48,6 +48,11 @@ targets a line or bounded range. Source remains an explicit viewer toggle;
 glossary readiness never selects source mode or delays the initial rendered
 content.
 
+Current clients assume the v0.8.0 glossary contract after the 2026-10-29
+retirement. An opted-in project can acquire its shared glossary store without
+waiting for version metadata. The enclosing-store reuse, project validity,
+transport ownership and teardown checks still apply.
+
 The presence of an in-scope `GLOSSARY.md` is the content-level prerequisite;
 the browser preference is the user-level opt-in. Projects without one and
 browsers with the preference disabled render exactly as before. YA does not

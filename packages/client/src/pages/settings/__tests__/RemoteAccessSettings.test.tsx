@@ -159,14 +159,6 @@ describe("RemoteAccessSettings host identity", () => {
     vi.clearAllMocks();
   });
 
-  it("hides the control against servers without the capability", () => {
-    hostIdentityState.supported = false;
-
-    render(<RemoteAccessSettings />);
-
-    expect(screen.queryByText("hostIdentityTitle")).toBeNull();
-  });
-
   it("persists a selected preset through server settings", async () => {
     render(<RemoteAccessSettings />);
 
@@ -217,12 +209,6 @@ describe("RemoteAccessSettings host identity", () => {
     await waitFor(() =>
       expect(mockUpdateSetting).toHaveBeenCalledWith("hostIdentity", undefined),
     );
-  });
-
-  it("hides host-awake controls against servers without the capability", () => {
-    render(<RemoteAccessSettings />);
-
-    expect(screen.queryByText("hostAwakeTitle")).toBeNull();
   });
 
   it("enables host-awake through server settings and refreshes status", async () => {

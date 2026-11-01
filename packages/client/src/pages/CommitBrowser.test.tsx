@@ -16,6 +16,10 @@ vi.mock("react-router-dom", async (orig) => ({
   ...(await orig<typeof import("react-router-dom")>()),
   useNavigate: () => vi.fn(),
 }));
+// Provenance is covered at its own component boundary and in browser tests.
+vi.mock("../components/FileRevisionLink", () => ({
+  FileRevisionLink: () => null,
+}));
 vi.mock("../hooks/useRemoteBasePath", () => ({
   useRemoteBasePath: () => "",
 }));
@@ -365,13 +369,7 @@ describe("CommitBrowser", () => {
     primeApis();
     render(
       <MemoryRouter>
-        <CommitBrowser
-          projectId="p1"
-          isWideScreen={true}
-          supportsProjections
-          supportsInclusiveToHead
-          t={t}
-        />
+        <CommitBrowser projectId="p1" isWideScreen={true} t={t} />
       </MemoryRouter>,
     );
 
@@ -425,13 +423,7 @@ describe("CommitBrowser", () => {
     });
     render(
       <MemoryRouter>
-        <CommitBrowser
-          projectId="p1"
-          isWideScreen={true}
-          supportsProjections
-          supportsInclusiveToHead
-          t={t}
-        />
+        <CommitBrowser projectId="p1" isWideScreen={true} t={t} />
       </MemoryRouter>,
     );
 
@@ -458,13 +450,7 @@ describe("CommitBrowser", () => {
     primeApis();
     render(
       <MemoryRouter>
-        <CommitBrowser
-          projectId="p1"
-          isWideScreen={true}
-          supportsProjections
-          supportsInclusiveToHead
-          t={t}
-        />
+        <CommitBrowser projectId="p1" isWideScreen={true} t={t} />
       </MemoryRouter>,
     );
 
@@ -496,37 +482,18 @@ describe("CommitBrowser", () => {
     expect(getGitInclusiveComparison).not.toHaveBeenCalled();
   });
 
-  it("hides inclusive comparison when the server lacks its capability", async () => {
-    primeApis();
-    render(
-      <MemoryRouter>
-        <CommitBrowser projectId="p1" isWideScreen={true} t={t} />
-      </MemoryRouter>,
-    );
-
-    await findSourcePath("src/x.ts");
-    expect(
-      screen.queryByRole("button", { name: "sourceCompareToHead" }),
-    ).toBeNull();
-    expect(getGitInclusiveComparison).not.toHaveBeenCalled();
-    expect(getGitInclusiveComparisonDiff).not.toHaveBeenCalled();
-  });
-
   it("returns to the ordinary commit diff when a projection request fails", async () => {
     primeApis();
     getGitInclusiveComparison.mockRejectedValueOnce(
       new Error("server is stale"),
     );
-    const onProjectionUnavailable = vi.fn();
+
     const onProjectionRequestFailure = vi.fn();
     render(
       <MemoryRouter>
         <CommitBrowser
           projectId="p1"
           isWideScreen={true}
-          supportsProjections
-          supportsInclusiveToHead
-          onProjectionUnavailable={onProjectionUnavailable}
           onProjectionRequestFailure={onProjectionRequestFailure}
           t={t}
         />
@@ -543,7 +510,7 @@ describe("CommitBrowser", () => {
         expect.objectContaining({ message: "server is stale" }),
       ),
     );
-    expect(onProjectionUnavailable).not.toHaveBeenCalled();
+
     expect(sourcePath("src/x.ts")).toBeDefined();
     expect(
       screen
@@ -555,16 +522,13 @@ describe("CommitBrowser", () => {
   it("returns to the commit diff when a direct per-file projection fails", async () => {
     primeApis();
     getGitComparisonDiff.mockRejectedValueOnce(new Error("server is stale"));
-    const onProjectionUnavailable = vi.fn();
+
     const onProjectionRequestFailure = vi.fn();
     render(
       <MemoryRouter>
         <CommitBrowser
           projectId="p1"
           isWideScreen={true}
-          supportsProjections
-          supportsInclusiveToHead
-          onProjectionUnavailable={onProjectionUnavailable}
           onProjectionRequestFailure={onProjectionRequestFailure}
           t={t}
         />
@@ -592,7 +556,7 @@ describe("CommitBrowser", () => {
         expect.objectContaining({ message: "server is stale" }),
       ),
     );
-    expect(onProjectionUnavailable).not.toHaveBeenCalled();
+
     await waitFor(() => expect(getGitCommitDiff).toHaveBeenCalled());
     expect(getGitInclusiveComparison).not.toHaveBeenCalled();
   });

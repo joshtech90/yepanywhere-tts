@@ -429,6 +429,10 @@ function ArtifactSettingsForm({
     <SettingsSection
       title={t("artifactSettingsTitle")}
       description={t("artifactSettingsDescription")}
+      doc={{
+        path: "topics/active-content-security.md#interactive-html-artifacts",
+        label: "interactive HTML artifacts",
+      }}
       onSubmit={(event) => {
         event.preventDefault();
         void save();

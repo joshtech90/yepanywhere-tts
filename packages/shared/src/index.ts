@@ -182,6 +182,10 @@ export {
 
 export type { AgentContextHints } from "./agent-context.js";
 export {
+  AGENT_API_BOOTSTRAP_ENV,
+  agentApiBootstrapInstructions,
+} from "./agent-api-bootstrap.js";
+export {
   buildEffectiveAgentContext,
   LATEX_MATH_RENDERING_CLIENT_CAPABILITY,
 } from "./agent-context.js";
@@ -491,6 +495,8 @@ export type {
   EffortLevel,
   FileMetadata,
   FileContentResponse,
+  FolderEntry,
+  FolderListingResponse,
   PatchHunk,
   EditAugment,
   MarkdownAugment,
@@ -841,6 +847,10 @@ export {
   type CodexCyberAccessProgram,
 } from "./codex-cyber-access.js";
 export {
+  CODEX_WITHDRAWN_MODEL_IDS,
+  isWithdrawnCodexModel,
+} from "./codex-withdrawn-models.js";
+export {
   APPROVAL_AUDIT_LOG_CAPABILITY,
   ACLI_COMMENTARY_RENDERING_CAPABILITY,
   BANG_COMMANDS_CAPABILITY,
@@ -920,14 +930,10 @@ export {
   OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS,
   TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY,
   VOICE_INPUT_CAPABILITY,
-  encodeCompactServerCapabilities,
-  encodeOptionalServerCapabilityBits,
   encodeVersionedServerCapabilities,
   hasServerCapabilityAdvertisement,
   negotiateServerCapabilityEncoding,
   serverHasCapability,
-  type CompactServerCapabilityAdvertisement,
-  type OptionalServerCapabilityBitset,
   type ServerCapabilityAdvertisement,
   type ServerCapabilityDefinition,
   type ServerCapabilityKey,
@@ -1704,8 +1710,20 @@ export type {
 
 export {
   routerModelSupportsThinking,
+  routerModelSupportsServiceTier,
   resolveRouterModel,
   routerAliasTargets,
   routerCliModelTarget,
   sanitizeRouterCliModels,
 } from "./agent-auth-router.js";
+
+export type {
+  PeerServerIdentity,
+  PeerConnectionRoute,
+  PeerConnectionDirection,
+  PeerConnectionEntry,
+  PeerConnectionAudit,
+  PeerConnectionsResponse,
+  PeerConnectionSetupRequest,
+  PeerConnectionSetupResponse,
+} from "./peer-connections.js";

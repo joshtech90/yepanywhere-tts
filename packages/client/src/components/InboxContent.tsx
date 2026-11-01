@@ -1,6 +1,6 @@
 import {
-  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
+  SESSION_CREATION_PROVENANCE_CAPABILITY,
   type ProjectQueueItemStatus,
   type ProjectQueueItemSummary,
   type ReviewInboxItem,
@@ -10,6 +10,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { type InboxItem, useInboxContext } from "../contexts/InboxContext";
+import {
+  type InboxCreationFilter,
+  useInboxCreationFilter,
+} from "../hooks/useInboxCreationFilter";
 import { useProjectQueues } from "../hooks/useProjectQueues";
 import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
@@ -21,16 +25,13 @@ import {
   useProjectQueuedSessionIds,
 } from "../lib/clientSummaryStore";
 import { activityBus } from "../lib/activityBus";
-import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+
 import type { Project } from "../types";
 import { getSessionDisplayTitle } from "../utils";
 import { FilterDropdown, type FilterOption } from "./FilterDropdown";
 import styles from "./InboxContent.module.css";
 import { SessionListItem } from "./SessionListItem";
 import { SessionAsyncQuestionsButton } from "./SessionAsyncQuestionsButton";
-
-const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
-const EMPTY_PROJECT_QUEUE_SESSION_IDS: ReadonlySet<string> = new Set();
 
 /**
  * Tier configuration for visual styling.
@@ -397,14 +398,27 @@ export interface InboxContentProps {
 }
 
 /**
- * Filter inbox items by project ID.
+ * Apply the two Inbox view filters without changing shared attention state.
  */
-function filterByProject(
+function filterSessions(
   items: InboxItem[],
   projectId: string | undefined,
+  createdVia: InboxCreationFilter,
 ): InboxItem[] {
-  if (!projectId) return items;
-  return items.filter((item) => item.projectId === projectId);
+  return items.filter((item) => {
+    if (projectId && item.projectId !== projectId) return false;
+    const surface = item.creationProvenance?.surface;
+    switch (createdVia) {
+      case "ui":
+        return surface === "web" || surface === "desktop";
+      case "api":
+        return surface === "api";
+      case "unspecified":
+        return !surface;
+      default:
+        return true;
+    }
+  });
 }
 
 /**
@@ -421,14 +435,19 @@ export function InboxContent({
   const basePath = useRemoteBasePath();
   const { settings: serverSettings } = useServerSettings();
   const { version } = useVersion();
-  const supportsProjectQueue = serverSupportsProjectQueue(version);
+  const [savedCreatedVia, setCreatedVia] = useInboxCreationFilter();
+  const creationProvenanceAvailable = serverHasCapability(
+    version,
+    SESSION_CREATION_PROVENANCE_CAPABILITY,
+  );
+  const createdVia = creationProvenanceAvailable ? savedCreatedVia : "all";
+
   const publicShareManagementAvailable = serverHasCapability(
     version,
     PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
   );
-  const supportsSourceReviewInbox =
-    serverHasCapability(version, GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY) &&
-    (serverSettings?.sourceReviewSubmissionsEnabled ?? false);
+  const sourceReviewInboxEnabled =
+    serverSettings?.sourceReviewSubmissionsEnabled ?? false;
   const [reviewInbox, setReviewInbox] = useState<ReviewInboxItem[]>([]);
   const [reviewInboxLoading, setReviewInboxLoading] = useState(false);
   const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
@@ -447,12 +466,19 @@ export function InboxContent({
     refresh,
   } = useInboxContext();
 
-  // Filter by project if specified
-  const needsAttention = filterByProject(allNeedsAttention, projectId);
-  const active = filterByProject(allActive, projectId);
-  const recentActivity = filterByProject(allRecentActivity, projectId);
-  const unread8h = filterByProject(allUnread8h, projectId);
-  const unread24h = filterByProject(allUnread24h, projectId);
+  const needsAttention = filterSessions(
+    allNeedsAttention,
+    projectId,
+    createdVia,
+  );
+  const active = filterSessions(allActive, projectId, createdVia);
+  const recentActivity = filterSessions(
+    allRecentActivity,
+    projectId,
+    createdVia,
+  );
+  const unread8h = filterSessions(allUnread8h, projectId, createdVia);
+  const unread24h = filterSessions(allUnread24h, projectId, createdVia);
 
   const totalSessionItems =
     needsAttention.length +
@@ -464,7 +490,7 @@ export function InboxContent({
   const [refreshing, setRefreshing] = useState(false);
 
   const loadReviewInbox = useCallback(async () => {
-    if (!supportsSourceReviewInbox) {
+    if (!sourceReviewInboxEnabled) {
       setReviewInbox([]);
       setReviewInboxLoading(false);
       return;
@@ -476,19 +502,19 @@ export function InboxContent({
     } finally {
       setReviewInboxLoading(false);
     }
-  }, [supportsSourceReviewInbox]);
+  }, [sourceReviewInboxEnabled]);
 
   useEffect(() => {
     void loadReviewInbox().catch(() => {
       // The ordinary Inbox remains usable if the optional feed fails.
     });
-    if (!supportsSourceReviewInbox) return;
+    if (!sourceReviewInboxEnabled) return;
     return activityBus.on("review-response-changed", () => {
       void loadReviewInbox().catch(() => {
         // Preserve the last accepted outcome cards on transient failures.
       });
     });
-  }, [loadReviewInbox, supportsSourceReviewInbox]);
+  }, [loadReviewInbox, sourceReviewInboxEnabled]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -556,25 +582,14 @@ export function InboxContent({
   // Keep the queue feed mounted for known inbox projects. Badge rendering
   // reads from the shared client summary store selector below, while new-session
   // queue items render as pending Active rows because they have no session yet.
-  const projectQueues = useProjectQueues(
-    supportsProjectQueue
-      ? queueFeedProjectIds
-      : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
-  );
+  const projectQueues = useProjectQueues(queueFeedProjectIds);
   const rawProjectQueuedSessionIds = useProjectQueuedSessionIds(
-    supportsProjectQueue
-      ? visibleSessionProjectIds
-      : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
+    visibleSessionProjectIds,
   );
-  const projectQueuedSessionIds = supportsProjectQueue
-    ? rawProjectQueuedSessionIds
-    : EMPTY_PROJECT_QUEUE_SESSION_IDS;
+  const projectQueuedSessionIds = rawProjectQueuedSessionIds;
   const pendingNewSessionQueueItems = useMemo(
-    () =>
-      supportsProjectQueue
-        ? projectQueues.items.filter(isPendingNewSessionProjectQueueItem)
-        : [],
-    [projectQueues.items, supportsProjectQueue],
+    () => projectQueues.items.filter(isPendingNewSessionProjectQueueItem),
+    [projectQueues.items],
   );
   const filteredReviewInbox = useMemo(
     () =>
@@ -595,7 +610,6 @@ export function InboxContent({
     reviewInboxLoading ||
     (totalSessionItems === 0 &&
       pendingNewSessionQueueItems.length === 0 &&
-      supportsProjectQueue &&
       projectQueues.loading);
   const isEmpty = totalItems === 0 && !pageLoading;
 
@@ -617,8 +631,7 @@ export function InboxContent({
   return (
     <main className="page-scroll-container">
       <div className={`page-content-inner ${styles.root}`}>
-        {/* Toolbar with project filter and refresh button */}
-        <div className="inbox-toolbar">
+        <div className={`inbox-toolbar ${styles.toolbar}`}>
           <SessionAsyncQuestionsButton
             projectId={projectId}
             basePath={basePath}
@@ -631,6 +644,28 @@ export function InboxContent({
               onChange={handleProjectSelect}
               multiSelect={false}
               placeholder={t("inboxAllProjects")}
+            />
+          )}
+          {creationProvenanceAvailable && (
+            <FilterDropdown<InboxCreationFilter>
+              label={t("inboxStartedVia")}
+              placeholder={t("inboxAllSessions")}
+              options={[
+                {
+                  value: "all",
+                  label: t("inboxAllSessions"),
+                  clearSelection: true,
+                },
+                { value: "ui", label: t("inboxStartedViaUi") },
+                { value: "api", label: t("inboxStartedViaApi") },
+                {
+                  value: "unspecified",
+                  label: t("inboxStartedViaUnspecified"),
+                },
+              ]}
+              selected={createdVia === "all" ? [] : [createdVia]}
+              onChange={(selected) => setCreatedVia(selected[0] ?? "all")}
+              multiSelect={false}
             />
           )}
           <button
@@ -681,11 +716,19 @@ export function InboxContent({
               <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
               <polyline points="22 4 12 14.01 9 11.01" />
             </svg>
-            <h3>{t("inboxEmptyTitle")}</h3>
+            <h3>
+              {t(
+                createdVia === "all"
+                  ? "inboxEmptyTitle"
+                  : "inboxFilteredEmptyTitle",
+              )}
+            </h3>
             <p>
-              {projectId
-                ? t("inboxEmptyDescriptionProject")
-                : t("inboxEmptyDescription")}
+              {createdVia !== "all"
+                ? t("inboxFilteredEmptyDescription")
+                : projectId
+                  ? t("inboxEmptyDescriptionProject")
+                  : t("inboxEmptyDescription")}
             </p>
           </div>
         )}

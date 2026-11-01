@@ -1,8 +1,6 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import type { CacheMissBillingRecord } from "@yep-anywhere/shared";
-import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 
 test.use({ serviceWorkers: "block" });
 
@@ -111,16 +109,6 @@ const events: CacheMissBillingRecord[] = [
   }),
 ];
 
-async function capture(page: Page, name: string) {
-  const directory = process.env.YEP_E2E_UI_CAPTURE_DIR;
-  if (!directory) return;
-  mkdirSync(directory, { recursive: true });
-  await page.screenshot({
-    animations: "disabled",
-    path: join(directory, name),
-  });
-}
-
 test("filters cache evidence and links events from the same session", async ({
   page,
   baseURL,
@@ -225,14 +213,14 @@ test("filters cache evidence and links events from the same session", async ({
   await expect(page.getByText("2m–4m", { exact: true })).toHaveCount(2);
   await expect(page.getByText("32m–64m", { exact: true })).toHaveCount(2);
   await expect(page.getByText("64m–128m", { exact: true })).toHaveCount(2);
-  await capture(page, "cache-billing-charts-desktop.png");
+  await recordUiCapture(page, "cache-billing-charts-desktop");
 
   const eventsHeading = page.getByRole("heading", { name: "Events" });
   await eventsHeading.scrollIntoViewIfNeeded();
   await eventsHeading.locator("xpath=following::table[1]").evaluate((table) => {
     if (table.parentElement) table.parentElement.scrollLeft = 0;
   });
-  await capture(page, "cache-billing-events-desktop.png");
+  await recordUiCapture(page, "cache-billing-events-desktop");
 
   await page.setViewportSize({ width: 375, height: 812 });
   await expectedExpiryToggle.check();
@@ -244,7 +232,7 @@ test("filters cache evidence and links events from the same session", async ({
   });
   await expect(mobileChartHeading).toBeVisible();
   await mobileChartHeading.scrollIntoViewIfNeeded();
-  await capture(page, "cache-billing-charts-mobile.png");
+  await recordUiCapture(page, "cache-billing-charts-mobile");
   const mobileEventsHeading = page.getByRole("heading", { name: "Events" });
   await expect(mobileEventsHeading).toBeVisible();
   await mobileEventsHeading.scrollIntoViewIfNeeded();
@@ -255,5 +243,5 @@ test("filters cache evidence and links events from the same session", async ({
       ),
     )
     .toBe(true);
-  await capture(page, "cache-billing-events-mobile.png");
+  await recordUiCapture(page, "cache-billing-events-mobile");
 });

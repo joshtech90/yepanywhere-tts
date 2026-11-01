@@ -494,6 +494,9 @@ export class ProviderRuntimeHost {
             "recent-runtime-recovery",
             "provider-session-options",
             "project-services",
+            "agent-api-revocation",
+            "agent-api-management",
+            "agent-api-peers",
           ],
         };
       case "registerServer": {
@@ -539,6 +542,34 @@ export class ProviderRuntimeHost {
         return this.turnLedger.status(
           this.requireString(request.submissionId, "submissionId"),
         );
+      case "revokePeerAgentApi":
+      case "revokeAgentApi": {
+        const generation = this.requireString(request.generation, "generation");
+        if (!this.registeredServers.has(generation))
+          throw new Error("App controller is not registered");
+        const serverId = this.requireString(request.serverId, "serverId");
+        for (const entry of this.runtimes.values()) {
+          if (entry.launchRecipe.options.agentApi?.serverId !== serverId)
+            continue;
+          const peerOnly = request.op === "revokePeerAgentApi";
+          if (
+            peerOnly &&
+            (!entry.launchRecipe.options.agentApi?.management ||
+              !entry.launchRecipe.options.agentApi?.peerAccess ||
+              entry.launchRecipe.options.agentApi?.peerGrantId !==
+                request.grantId)
+          )
+            continue;
+          if (peerOnly) entry.peerAgentApiRevoked = true;
+          else entry.agentApiRevoked = true;
+          if (entry.child.connected)
+            entry.child.send(
+              { type: peerOnly ? "revokePeerAgentApi" : "revokeAgentApi" },
+              () => {},
+            );
+        }
+        return {};
+      }
       case "interruptSessionTurn":
         return this.turnLedger.interrupt(
           this.requireString(request.submissionId, "submissionId"),
@@ -998,7 +1029,13 @@ export class ProviderRuntimeHost {
         fn();
       };
       const onMessage = (message) => {
-        if (message?.type === "ready") finish(() => resolve(message));
+        if (message?.type === "ready") {
+          if (entry.peerAgentApiRevoked && child.connected)
+            child.send({ type: "revokePeerAgentApi" }, () => {});
+          if (entry.agentApiRevoked && child.connected)
+            child.send({ type: "revokeAgentApi" }, () => {});
+          finish(() => resolve(message));
+        }
         if (message?.type === "startupError") {
           finish(() => reject(new Error(message.error)));
         }
@@ -1670,6 +1707,9 @@ async function main() {
           "session-turn-idle-timeout",
           "recent-runtime-recovery",
           "provider-session-options",
+          "agent-api-revocation",
+          "agent-api-management",
+          "agent-api-peers",
         ],
         controlSocketPath: paths.controlSocketPath,
         tokenFilePath: paths.tokenPath,

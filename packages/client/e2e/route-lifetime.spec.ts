@@ -5,7 +5,11 @@ import {
   routeWithDrain,
 } from "./support/managed-routes.js";
 
-test.use({ baseURL: "http://route-lifetime.test", draftSessionIds: [] });
+test.use({
+  baseURL: "http://route-lifetime.test",
+  draftSessionIds: [],
+  resetNewSessionDraft: false,
+});
 
 let server: Server;
 let requestUrl: string;

@@ -46,7 +46,6 @@ export function LocalSourcePage() {
                   key={requestedPath}
                   projectId={projectId}
                   isWideScreen={isWideScreen}
-                  supportsWorkingTreeFiles
                   localSourcePath={requestedPath}
                   onLocalSourceRoot={setRoot}
                   t={t}

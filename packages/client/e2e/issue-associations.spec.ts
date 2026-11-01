@@ -43,12 +43,44 @@ test("automatically discovers Jira and GitHub references from viewed and recent 
     });
     expect(r.ok()).toBeTruthy();
   };
-  const write = async (id: string, text: string, days = 0) => {
+  const write = async (
+    id: string,
+    text: string,
+    days = 0,
+    assistantText?: string,
+  ) => {
     const timestamp = new Date(Date.now() - days * 86400_000);
     const path = join(dir, `${id}.jsonl`);
+    const common = {
+      sessionId: id,
+      cwd: project,
+      timestamp: timestamp.toISOString(),
+    };
+    const records = [
+      {
+        ...common,
+        type: "user",
+        uuid: `${id}-message`,
+        message: { role: "user", content: text },
+      },
+      ...(assistantText
+        ? [
+            {
+              ...common,
+              type: "assistant",
+              uuid: `${id}-reply`,
+              parentUuid: `${id}-message`,
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: assistantText }],
+              },
+            },
+          ]
+        : []),
+    ];
     await writeFile(
       path,
-      `${JSON.stringify({ type: "user", uuid: `${id}-message`, sessionId: id, cwd: project, timestamp: timestamp.toISOString(), message: { role: "user", content: text } })}\n`,
+      `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
     );
     await utimes(path, timestamp, timestamp);
   };
@@ -56,7 +88,12 @@ test("automatically discovers Jira and GitHub references from viewed and recent 
     "issues-view-one",
     "Working on https://jira.example.test/browse/AUTOTEST-123. [Repair cancellation handling](https://github.com/example/engine/pull/42).",
   );
-  await write("issues-view-two", "Another conversation about AUTOTEST-123.");
+  await write(
+    "issues-view-two",
+    "Another conversation about AUTOTEST-123.",
+    0,
+    "I will investigate AUTOTEST-123 and preserve `AUTOTEST-123` as code.",
+  );
   await write(
     "issues-unopened",
     "Index this unopened session: https://jira.example.test/browse/RECENTTEST-345.",
@@ -100,6 +137,42 @@ test("automatically discovers Jira and GitHub references from viewed and recent 
           return result.items?.[0]?.sessionCount ?? 0;
         })
         .toBe(id === "issues-view-one" ? 1 : 2);
+      if (id === "issues-view-two") {
+        const mentions = page.getByRole("main").getByRole("link", {
+          name: "AUTOTEST-123",
+          exact: true,
+        });
+        await expect(mentions).toHaveCount(2, { timeout: 15_000 });
+        for (const mention of await mentions.all()) {
+          await expect(mention).toHaveAttribute(
+            "href",
+            "https://jira.example.test/browse/AUTOTEST-123",
+          );
+          await expect(mention).toHaveAttribute("target", "_blank");
+        }
+        for (const [name, size] of [
+          ["issue-mentions-desktop", { width: 1200, height: 600 }],
+          ["issue-mentions-phone", { width: 375, height: 812 }],
+        ] as const) {
+          await page.setViewportSize(size);
+          await expect(mentions.first()).toBeVisible();
+          const composer = page
+            .locator("textarea[data-composer-input]")
+            .first();
+          await composer.focus();
+          const draft = "Check the linked ticket while discovery settles.";
+          for (let index = 0; index < draft.length; index++) {
+            await page.keyboard.type(draft[index]!);
+            await expect(composer).toHaveValue(draft.slice(0, index + 1), {
+              timeout: 100,
+            });
+          }
+          await expect(composer).toHaveValue(draft);
+          await composer.fill("");
+          await recordUiCapture(page, name);
+        }
+        await page.setViewportSize({ width: 1000, height: 600 });
+      }
     }
     // The session header counts its own associations: the ticket key and the
     // pull request written in this transcript.

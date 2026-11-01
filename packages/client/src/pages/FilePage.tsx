@@ -16,13 +16,14 @@ export function FilePage() {
   const { openSidebar } = useNavigationLayout();
   const basePath = useRemoteBasePath();
   const { projectId } = useParams<{ projectId: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const filePath = searchParams.get("path");
   const lineNumber = parsePositiveInteger(searchParams.get("line"));
   const lineEnd = parsePositiveInteger(searchParams.get("lineEnd"));
   const diffMode = parseFileDiffMode(searchParams.get("diff"));
   const viewMode =
     searchParams.get("view") === "range" ? ("range" as const) : "full";
+  const initialFolder = searchParams.get("folder") ?? undefined;
 
   if (!projectId) {
     return (
@@ -66,7 +67,12 @@ export function FilePage() {
             lineEnd={lineEnd}
             viewMode={viewMode}
             diffMode={diffMode}
+            initialFolder={initialFolder}
             standalone
+            // A sibling chosen from the path's folder list is a new page
+            // visit: Back returns to this file. Line and diff targets belong
+            // to the file they were given for.
+            onNavigateFile={(path) => setSearchParams({ path })}
             headerLeading={
               <>
                 <SidebarLauncher

@@ -196,6 +196,7 @@ export function ProjectTemplatesSettings() {
     <SettingsSection
       title={t("settingsProjectTemplatesTitle")}
       description={t("settingsProjectTemplatesDescription")}
+      doc="site/src/content/docs/project-templates.md"
     >
       <form
         className={styles.form}

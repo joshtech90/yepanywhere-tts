@@ -11,6 +11,7 @@ import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import styles from "./ProjectAppInventorySection.module.css";
 import { expandableRowProps, SettingsCollection } from "./SettingsCollection";
+import { SettingsDocLink } from "./SettingsDocLink";
 import { ElidedPath } from "../../components/ui/ElidedPath";
 import { SettingsSortHeader, useSettingsTableSort } from "./SettingsTableSort";
 
@@ -170,7 +171,13 @@ export function ProjectAppInventorySection() {
         )}
       </div>
       <p>
-        {t(supported ? "projectAppInventoryHint" : "projectAppInventoryUpdate")}
+        {t(supported ? "projectAppInventoryHint" : "projectAppInventoryUpdate")}{" "}
+        <SettingsDocLink
+          doc={{
+            path: "site/src/content/docs/project-apps.md",
+            label: "project apps and vhosts",
+          }}
+        />
       </p>
       {error && <p role="alert">{error}</p>}
       {loading && <p role="status">{t("projectAppLoading")}</p>}

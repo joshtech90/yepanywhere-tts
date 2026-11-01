@@ -1,9 +1,6 @@
 import type { CacheMissBillingRecord } from "@yep-anywhere/shared";
 import { describe, expect, it } from "vitest";
-import {
-  cacheMissBillingSettingsForServer,
-  filterCacheMissEvents,
-} from "../CacheMissBillingSettings";
+import { filterCacheMissEvents } from "../CacheMissBillingSettings";
 
 function record(
   id: string,
@@ -81,24 +78,5 @@ describe("filterCacheMissEvents", () => {
     expect(
       filterCacheMissEvents(input, null, 0, nowMs, true).map(({ id }) => id),
     ).toEqual(["eligible", "expected-expiry"]);
-  });
-});
-
-describe("cacheMissBillingSettingsForServer", () => {
-  const settings = {
-    enabled: true,
-    recentActivityMinutes: 10,
-    ignoreAfterMinutes: 30,
-  };
-
-  it("omits ignore-after when the server capability is absent", () => {
-    expect(cacheMissBillingSettingsForServer(settings, false)).toEqual({
-      enabled: true,
-      recentActivityMinutes: 10,
-    });
-  });
-
-  it("preserves ignore-after when the server capability is present", () => {
-    expect(cacheMissBillingSettingsForServer(settings, true)).toEqual(settings);
   });
 });

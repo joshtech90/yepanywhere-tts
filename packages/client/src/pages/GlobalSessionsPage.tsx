@@ -68,7 +68,7 @@ import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { setNewSessionPrefill } from "../lib/newSessionPrefill";
 import { groupProjectsForFilter } from "../lib/projectFilterOptions";
-import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+
 import { sessionCollectionRecordsToGlobalSessionItems } from "../lib/sessionCollectionRecords";
 import {
   useClientSummarySourceKey,
@@ -77,9 +77,6 @@ import {
   useSessionCollectionQueryRecords,
 } from "../lib/clientSummaryStore";
 import { getSessionDisplayTitle } from "../utils";
-
-const EMPTY_PROJECTS: readonly string[] = [];
-const EMPTY_IDS: ReadonlySet<string> = new Set();
 
 interface SearchHistoryControls {
   sourceKey: string;
@@ -469,12 +466,10 @@ function SessionSearchPage() {
     () => [...new Set(results.map(({ session }) => session.projectId))],
     [results],
   );
-  const queueSupported = serverSupportsProjectQueue(version);
-  useProjectQueues(queueSupported ? projectIds : EMPTY_PROJECTS);
-  const queuedIds = useProjectQueuedSessionIds(
-    queueSupported ? projectIds : EMPTY_PROJECTS,
-  );
-  const queues = queueSupported ? queuedIds : EMPTY_IDS;
+
+  useProjectQueues(projectIds);
+  const queuedIds = useProjectQueuedSessionIds(projectIds);
+  const queues = queuedIds;
 
   const select = useCallback(
     (id: string, checked: boolean) =>

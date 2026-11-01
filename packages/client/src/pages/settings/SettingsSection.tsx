@@ -1,4 +1,5 @@
 import { type FormEventHandler, type ReactNode, useMemo } from "react";
+import { SettingsCaption, type SettingsDoc } from "./SettingsDocLink";
 import {
   renderSettingsSearchHighlight,
   SettingsSearchScopeProvider,
@@ -13,6 +14,8 @@ export interface SettingsSectionProps {
   description?: string;
   /** Extra search-only terms; never rendered. */
   keywords?: string[];
+  /** Documentation linked after the description; see `SettingsDoc`. */
+  doc?: SettingsDoc;
   /** Extra classes appended to `settings-section`. */
   className?: string;
   /** One explicit-save group; native Enter submission keeps actions with fields. */
@@ -30,6 +33,7 @@ export function SettingsSection({
   title,
   description,
   keywords,
+  doc,
   className,
   onSubmit,
   children,
@@ -76,11 +80,16 @@ export function SettingsSection({
           {scope ? renderSettingsSearchHighlight(title, scope.query) : title}
         </h2>
       )}
-      {description && (
+      {(description || doc) && (
         <p className="settings-section-description">
-          {scope
-            ? renderSettingsSearchHighlight(description, scope.query)
-            : description}
+          <SettingsCaption
+            text={
+              scope && description
+                ? renderSettingsSearchHighlight(description, scope.query)
+                : description
+            }
+            doc={doc}
+          />
         </p>
       )}
       {children}

@@ -34,7 +34,6 @@ describe("bulk transcript snapshots", () => {
         type,
         session,
         messages,
-        codexStreamDurableIdAlignment: true,
       });
       expect(state.messages.map((message) => message.uuid)).toEqual([
         "commentary",
@@ -43,7 +42,6 @@ describe("bulk transcript snapshots", () => {
       state = reduceSessionDetailState(state, {
         type: "prependOlderMessages",
         messages,
-        codexStreamDurableIdAlignment: true,
       });
       expect(state.messages.map((message) => message.uuid)).toEqual([
         "commentary",
@@ -57,7 +55,7 @@ describe("bulk transcript snapshots", () => {
     let state = reduceSessionDetailState(createInitialSessionDetailState(), {
       type: "loadPersistedTranscript",
       session,
-      codexStreamDurableIdAlignment: true,
+
       messages: [
         snapshot("I’ll"),
         snapshot("I’ll open"),
@@ -73,7 +71,7 @@ describe("bulk transcript snapshots", () => {
     expect(view.container.textContent).toBe("I’ll open a Clair sketch.");
     state = reduceSessionDetailState(state, {
       type: "applyCatchupMessages",
-      codexStreamDurableIdAlignment: true,
+
       messages: [
         {
           uuid: "commentary",
@@ -99,12 +97,10 @@ describe("bulk transcript snapshots", () => {
       type: "loadPersistedTranscript",
       session,
       messages: [snapshot("I’ll")],
-      codexStreamDurableIdAlignment: true,
     });
     state = reduceSessionDetailState(state, {
       type: "applyStreamMessage",
       message: snapshot("I’ll open a Clair sketch."),
-      codexStreamDurableIdAlignment: true,
     });
     expect(state.messages[0]?.message?.content).toBe(
       "I’ll open a Clair sketch.",

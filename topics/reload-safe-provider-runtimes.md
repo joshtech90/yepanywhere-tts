@@ -688,13 +688,12 @@ fresh full grace; the periodic check is the backstop for retention sources
 without such a signal. Rechecks use a nonzero interval even when the configured
 grace is zero, avoiding a busy timer loop.
 
-The optional Settings contract is capability-gated. Stable releases `0.7.0`
-and `0.6.2` (the latest two, including every stable server from the preceding
-14 days) have neither the field nor the capability. A new permanent
-`idle-reap-hours-setting` capability owns `GET /api/settings`,
-`PUT /api/settings`, and `settings.idleReapHours`. Without it, a newer client
-omits the Providers row and never sends the field; older server behavior and
-all existing capability meanings remain unchanged.
+The `idle-reap-hours-setting` identity owns `GET /api/settings`,
+`PUT /api/settings`, and `settings.idleReapHours`. Since the 2026-10-29
+retirement, the setting is part of the v0.8.0 client baseline and its Providers
+control no longer waits for a per-setting capability. Stored values and the
+existing unsaved-field environment precedence remain unchanged. Older hosts
+should update or use their bundled client.
 
 Once Hono detaches or disappears for reload, its `Process` no longer owns the
 no-viewer timer. The host's 30-second replacement attach deadline becomes

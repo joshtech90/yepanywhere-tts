@@ -78,11 +78,42 @@ Maintainer has authorized the exact exception.
 
 ## Known Exceptions
 
+**Server Connections availability** defaults on, authorized by the maintainer
+on 2026-11-01. An empty installation needs no separate enable step; each device
+still requires owner-authenticated enrollment and a directional grant. No peer
+is contacted without configuration. Settings offers pairing/removal rather than
+a global enable switch. `YEP_PEER_API_ENABLED=false` remains the optional kill
+switch; explicit owner-API disablement and environment overrides are respected.
+See [peer access](peer-access.md).
+
+**Agent use of paired servers** defaults on, authorized by the maintainer on
+2026-11-01. Server enrollment and local Agent API access remain explicit opt-ins;
+paired servers are intended for agents without another visible enablement step.
+The separate agent-use option remains configurable through the owner API but is
+hidden in Settings. Source and target grants still apply, and existing launches
+are not upgraded. See [peer access](peer-access.md#manual-owner-ceremony-and-management-api).
+
+**Remote SRP resume persistence** defaults on, authorized by the maintainer on
+2026-10-31 so normal direct/relay logins survive server restarts. Saved opt-outs
+remain authoritative, storage uses the existing private resume-credential file,
+and existing expiry/revocation still apply. This does not persist owner
+passwords or change independent peer credentials. See the
+[resume contract](mobile-server-pairing.md#current-srp-resume-facts).
+
 The **session read/unread shortcuts** ([inbox](inbox.md#readunread-keyboard-actions))
 are always available, authorized on 2026-10-18 after the maintainer requested
 single-key session triage. Unmodified `r` and `u` explicitly set read state for
 the focused session; they leave typing, menus, dialogs and viewers alone. Their
 only visible addition is a key hint beside the existing menu action.
+
+The File Viewer's **clickable path segments**
+([media routing](media-rendering-and-routing.md#resource-actions-and-file-presentation-choice))
+are always on, authorized by graehl on 2026-10-29 after approving the mockup.
+Clickable path breadcrumbs are an established file-browser convention; the
+path keeps its width, folders keep its link color, and the visible changes
+are muted separators and a plain-text file name. Right-click on a folder now
+opens a folder menu instead of the file menu, which the name and separators
+keep.
 
 The **managed first-party artifact viewer** is enabled by capability for the
 first-party hosted client, authorized 2026-10-16. Opening agent-generated HTML

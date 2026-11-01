@@ -105,6 +105,32 @@ Server-persisted `clientDefaults` and every other server setting stay out of
 the text: they configure one host, and server-settings transfer is not
 pursued.
 
+## Documentation links
+
+A settings section or row whose effect is not evident from its title and
+one-line caption ends that caption with a brief **See _document_** link.
+Pass the repository path to `SettingsSection` or `SettingsItem` as
+`doc="topics/recaps.md"` (optionally with a `#heading-slug`); `custom`
+layouts render `SettingsDocLink` themselves. The link opens the document's
+published copy at `https://github.com/kzahel/yepanywhere/blob/main/<path>`
+in a new tab, so installed and hosted clients reach the same page without a
+local checkout. The link text names the document after its file, or after
+an explicit `{ path, label }`.
+
+Choose the target a user can act on: the user guide in
+`site/src/content/docs/` when one covers the setting, otherwise the topic
+that owns its behavior contract. Link at section level when one document
+explains the whole section, and do not repeat that link on its rows. Leave
+self-evident settings unlinked: a link on every row is noise. Link only a
+document that is already on upstream `main`; a document added in the same
+change is not published until it lands there.
+
+The link is not search text and does not lengthen the caption past its
+one-line aim. It remains independently operable inside search results:
+the row's jump-on-click ignores links. `SettingsDocLink.test.ts` fails when
+a linked path no longer exists, so renaming or retiring a document must
+update its settings links in the same change.
+
 ## Reviewed settings behavior
 
 **Appearance → Slide animations** is a browser-local preference, enabled by
@@ -186,7 +212,7 @@ UI should state directly.
   credentials, not live sockets and not relay-only connections. Revoke prevents
   that credential from reconnecting; it does not terminate an already-open
   socket. Persist remote login credentials controls whether eligible credentials
-  survive a server restart.
+  survive a server restart. Persistence defaults on; saved opt-outs remain off.
 - **Providers → Compact context early.** Off means YA sends no threshold or
   `/compact` request and leaves provider defaults unchanged. A percentage asks
   YA to initiate compaction at that context-window threshold.
@@ -211,8 +237,8 @@ UI should state directly.
   The saved mode applies when a Codex thread starts, resumes, or forks; an already
   active thread keeps its current mode. Detailed is not supported by every model.
   Hidden recap/title helpers stay on their explicit helper mode, and Codex OSS is
-  unchanged. Without `codex-reasoning-summary-setting`, the client hides the row
-  and sends no unsupported settings write.
+  unchanged. Since the 2026-10-29 retirement, this is a v0.8.0 baseline
+  setting; its former per-control version gate is removed.
 - **Speech → Speech backends.** Chooses speech-recognition routing. Smart Turn
   timeout, command grace, and follow-up listening are durations shown in `ms`.
   Keep Mic Warm is browser-local and default-off; while a visible tab holds the
@@ -244,7 +270,9 @@ UI should state directly.
 - **Local Access → Approval audit log.** Saves explicit approve and deny
   decisions, including the associated tool inputs or commands, to
   `logs/approval-decisions.jsonl`. It does not currently audit bypass-mode
-  selection or transitions.
+  selection or transitions. Current clients edit the persisted logging toggle
+  on the v0.8.0 server baseline; the former legacy read-only fallback was
+  retired on 2026-10-28.
 - **Remote Executors.** This server-wide host list is the sole enablement for
   the New Session **Run via SSH** chooser. Adding or removing a host updates an
   already-mounted New Session form immediately; no page reload or server restart
@@ -454,8 +482,11 @@ so the pane sends that server no request. While the server version is still
 unknown, the typed URL shows loading rather than calling the server
 unsupported. A pane therefore needs no whole-pane capability check of its own;
 capabilities that gate individual rows inside a served pane stay in the pane.
-Today `source-control`, `issues`, `computer-control`, `users`,
-`project-templates` and `emulator` are gated this way.
+Today `issues`, `computer-control`, `users`,
+`project-templates` and `emulator` are gated this way. Source Control settings
+are baseline v0.8.0 after the 2026-10-29 retirement: category navigation and
+search no longer await their former fixed capability. Its settings retain
+their existing defaults, stored values and live-monitoring version refresh.
 
 Placement precedents (the load-bearing ones — choose by *what the user is
 conceptually adjusting*, not where the code lives):
@@ -535,3 +566,11 @@ change and should be documented when it lands.
   Because the auto-open decision is read at the *ready* transition (after a long
   await), read the live toggle value from a ref — like the abort ref — so a flip
   during generation is honored.
+
+
+Server Connections is an owner-only, `peer-connections` capability-gated category
+beside Local/Remote Access. It owns server identity, direct/relay pairing,
+independent control directions and their audit. Supported-but-disabled profiles
+show enablement; absent support hides list/search and typed URLs show update
+guidance without mounting the pane. Remote Access retains the human login and
+links to Server Connections for separately revoking incoming server control.

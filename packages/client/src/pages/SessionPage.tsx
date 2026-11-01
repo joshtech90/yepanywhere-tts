@@ -3,7 +3,10 @@ import {
   DRAFT_STORAGE_EVENT,
   collectSyncedSubmissionAttachments,
 } from "../lib/draftSyncStorage";
-import { SessionIssuesLink } from "../components/SessionIssuesLink";
+import {
+  SessionIssuesLink,
+  SessionIssuesProvider,
+} from "../components/SessionIssuesLink";
 import { useNonHumanUserTurnNavigation } from "../hooks/useNonHumanUserTurnNavigation";
 import { useSessionMessageNavigation } from "../hooks/useSessionMessageNavigation";
 import type {
@@ -22,9 +25,7 @@ import type {
   UserQuestionAnswers,
 } from "@yep-anywhere/shared";
 import {
-  CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY,
   SESSION_CONVERSATION_CONTEXT_CAPABILITY,
-  PROJECT_CODE_NAMES_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
   SIDEBAR_SESSION_RESUME_CAPABILITY,
   SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
@@ -79,7 +80,7 @@ import {
   collectBangHistory,
 } from "../lib/bangCommands";
 import { getBangCommandAnchor } from "../lib/transcriptDisplayObjects";
-import { serverSupportsBangCommands } from "../lib/bangCommandAvailability";
+
 import { BtwAsidePane } from "../components/BtwAsidePane";
 import {
   SessionRightPane,
@@ -296,10 +297,7 @@ import {
 import { isLegacyCodexSetupText } from "@yep-anywhere/shared/transcript/codexLegacySetup";
 import { getMessageId } from "@yep-anywhere/shared/transcript/message";
 import { resolveSessionProviderCapabilities } from "../lib/providerCapabilities";
-import {
-  serverSupportsProjectQueue,
-  shouldShowProjectQueueAffordance,
-} from "../lib/projectQueueVisibility";
+import { shouldShowProjectQueueAffordance } from "../lib/projectQueueVisibility";
 import { createSessionDraftStorageKey } from "../lib/sessionDraftStorage";
 import {
   type ComposerTurnRecallCache,
@@ -413,7 +411,6 @@ function MessageInput(props: ComponentProps<typeof LazyMessageInput>) {
 
 const CLAUDE_HANDOFF_REQUIRED_MESSAGE =
   "Claude session cannot be safely resumed because the Claude SDK recorded an API-error response as the latest assistant message. Start a handoff session instead.";
-const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
 const EMPTY_PROJECT_QUEUE_ITEMS: readonly ProjectQueueItemSummary[] = [];
 
 function messageKey(message: Message | undefined): string | undefined {
@@ -608,23 +605,12 @@ function SessionPageContent({
     versionInfo,
     SYNTHETIC_TERMINATE_COMMAND_CAPABILITY,
   );
-  const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
+
   const supportsProjectSettings =
     serverHasCapability(versionInfo, SERVER_CAPABILITIES.projectService) ||
     serverHasCapability(versionInfo, SERVER_CAPABILITIES.projectAccessSharing);
-  const supportsProjectCodeNames = serverHasCapability(
-    versionInfo,
-    PROJECT_CODE_NAMES_CAPABILITY,
-  );
-  const supportsCodexStreamDurableIdAlignment = serverHasCapability(
-    versionInfo,
-    CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY,
-  );
-  const projectQueueProjectIds = useMemo(
-    () =>
-      supportsProjectQueue ? [projectId] : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
-    [projectId, supportsProjectQueue],
-  );
+
+  const projectQueueProjectIds = useMemo(() => [projectId], [projectId]);
   const projectQueues = useProjectQueues(projectQueueProjectIds);
   const navigate = useNavigate();
   const currentLocation = useLocation();
@@ -691,7 +677,7 @@ function SessionPageContent({
     () => ({
       ...clientTailParams,
       detailedLoadingProgress: sessionLoadingProgressEnabled,
-      codexStreamDurableIdAlignment: supportsCodexStreamDurableIdAlignment,
+
       backgroundEffectsPaused: isDomLingerParked,
       onConfigurationError: (failure: { setting: "effort" }) => {
         if (failure.setting === "effort") {
@@ -704,7 +690,6 @@ function SessionPageContent({
       isDomLingerParked,
       sessionLoadingProgressEnabled,
       showToast,
-      supportsCodexStreamDurableIdAlignment,
       t,
     ],
   );
@@ -919,7 +904,7 @@ function SessionPageContent({
   const { settings: serverSettings } = useServerSettings();
   // Composer `!!` routing is always-on where the server supports it
   // (vanilla-defaults.md § Known Exceptions); no setting gates execution.
-  const bangCommandsSupported = serverSupportsBangCommands(versionInfo);
+
   const speechVocabulary = useSessionSpeechVocabulary(
     `${projectId}/${actualSessionId}`,
     messages,
@@ -942,9 +927,8 @@ function SessionPageContent({
     (sessionLiveness !== null &&
       sessionLiveness.derivedStatus !== "verified-idle") ||
     deferredMessages.length > 0;
-  const projectQueueItemsForProject = supportsProjectQueue
-    ? (projectQueues.queuesByProject[projectId] ?? EMPTY_PROJECT_QUEUE_ITEMS)
-    : EMPTY_PROJECT_QUEUE_ITEMS;
+  const projectQueueItemsForProject =
+    projectQueues.queuesByProject[projectId] ?? EMPTY_PROJECT_QUEUE_ITEMS;
   const projectQueueItemCount = projectQueueItemsForProject.length;
   const inlineProjectQueueMessages = useMemo(
     () =>
@@ -975,17 +959,15 @@ function SessionPageContent({
       }),
     [projectQueueItemsForProject, projectQueues.mutatingItemId, sessionId, t],
   );
-  const showProjectQueueAction =
-    supportsProjectQueue &&
-    shouldShowProjectQueueAffordance({
-      projectId,
-      currentSessionId: sessionId,
-      currentSessionBlocksProjectQueue,
-      currentSessionHasSessionQueueBacklog: deferredMessages.length > 0,
-      activeProjectSessionIds,
-      projectQueueBlockingCount,
-      projectQueueItemCount,
-    });
+  const showProjectQueueAction = shouldShowProjectQueueAffordance({
+    projectId,
+    currentSessionId: sessionId,
+    currentSessionBlocksProjectQueue,
+    currentSessionHasSessionQueueBacklog: deferredMessages.length > 0,
+    activeProjectSessionIds,
+    projectQueueBlockingCount,
+    projectQueueItemCount,
+  });
 
   // Session connection bar state for active session update streams
   const { connectionState } = useActivityBusState();
@@ -1173,6 +1155,11 @@ function SessionPageContent({
   const [correctionDraft, setCorrectionDraft] = useState<{
     messageId: string;
     originalText: string;
+    recalled?: boolean;
+  } | null>(null);
+  const preCorrectionDraftRef = useRef<{
+    text: string;
+    attachments: ComposerAttachment[];
   } | null>(null);
   const { questionAsidesEnabled } = useQuestionAsideSetting();
   const questionSourceApi = useMemo(
@@ -1287,17 +1274,12 @@ function SessionPageContent({
     lastComposerSubmissionRef.current = submission;
   }, []);
 
-  const stagedAttachmentUploadsEnabled = supportsProjectQueue;
   const stagedComposerAttachmentRefs = attachments
     .filter(isComposerStagedAttachment)
     .map(toPersistedStagedAttachmentRef);
   const attachmentNavigationGuardActive = hasAttachmentNavigationRisk({
     pendingUploadCount: uploadProgress.length,
-    transientAttachmentCount: stagedAttachmentUploadsEnabled
-      ? 0
-      : attachments.filter(
-          (attachment) => !isComposerStagedAttachment(attachment),
-        ).length,
+    transientAttachmentCount: 0,
     stagedRefs: stagedComposerAttachmentRefs,
     draftState: draftControlsRef.current?.getAttachmentState() ?? null,
   });
@@ -1350,6 +1332,9 @@ function SessionPageContent({
   useEffect(() => {
     return () => {
       revokeAttachmentPreviewUrls(attachmentsRef.current);
+      revokeAttachmentPreviewUrls(
+        preCorrectionDraftRef.current?.attachments ?? [],
+      );
     };
   }, []);
 
@@ -2419,10 +2404,32 @@ function SessionPageContent({
   }, [resetBtwAsides, sessionId, setComposerAttachments]);
 
   const handleCancelCorrection = useCallback(() => {
+    const previous = preCorrectionDraftRef.current;
+    preCorrectionDraftRef.current = null;
     setCorrectionDraft(null);
-    draftControlsRef.current?.clearDraft();
-    setComposerAttachments([], { revokeRemovedPreviewUrls: true });
+    draftControlsRef.current?.setDraft(previous?.text ?? "");
+    setComposerAttachments(previous?.attachments ?? [], {
+      revokeRemovedPreviewUrls: true,
+    });
   }, [setComposerAttachments]);
+
+  useEffect(() => {
+    if (!correctionDraft && preCorrectionDraftRef.current) {
+      revokeAttachmentPreviewUrls(preCorrectionDraftRef.current.attachments);
+      preCorrectionDraftRef.current = null;
+    }
+  }, [correctionDraft]);
+
+  useEffect(() => {
+    if (
+      isDomLingerParked &&
+      correctionDraft?.recalled &&
+      draftControlsRef.current?.getDraft() === correctionDraft.originalText &&
+      attachmentsRef.current.length === 0
+    ) {
+      handleCancelCorrection();
+    }
+  }, [isDomLingerParked, correctionDraft, handleCancelCorrection]);
 
   const handleCorrectLatestUserMessage = useCallback(
     (messageId: string, content: string) => {
@@ -2437,8 +2444,12 @@ function SessionPageContent({
         return;
       }
 
+      preCorrectionDraftRef.current ??= {
+        text: draftControls.getDraft(),
+        attachments: [...attachmentsRef.current],
+      };
       draftControls.setDraft(content);
-      setComposerAttachments([], { revokeRemovedPreviewUrls: true });
+      setComposerAttachments([]);
       setCorrectionDraft({ messageId, originalText: content });
     },
     [setComposerAttachments, showToast, t],
@@ -4378,6 +4389,10 @@ function SessionPageContent({
       return false;
     }
 
+    preCorrectionDraftRef.current ??= {
+      text: draftControls.getDraft(),
+      attachments: [...attachmentsRef.current],
+    };
     draftControls.setDraft(lastSubmission.text);
     setComposerAttachments([], { revokeRemovedPreviewUrls: true });
     setCorrectionDraft({
@@ -4386,6 +4401,7 @@ function SessionPageContent({
           ? lastSubmission.id
           : lastSubmission.tempId,
       originalText: lastSubmission.text,
+      recalled: true,
     });
     return true;
   }, [deferredMessages, setComposerAttachments]);
@@ -4670,11 +4686,7 @@ function SessionPageContent({
 
   const hydrateDraftAttachments = useCallback(
     async (controls = draftControlsRef.current) => {
-      if (
-        mainComposerForAside ||
-        !controls ||
-        !stagedAttachmentUploadsEnabled
-      ) {
+      if (mainComposerForAside || !controls) {
         return;
       }
 
@@ -4742,7 +4754,6 @@ function SessionPageContent({
       mainComposerForAside,
       setComposerAttachments,
       showToast,
-      stagedAttachmentUploadsEnabled,
       versionInfo,
       t,
     ],
@@ -5125,9 +5136,7 @@ function SessionPageContent({
   const uploadAttachedFiles = useCallback(
     (files: File[]) => {
       const uploads: Promise<ComposerAttachment | null>[] = [];
-      const draftBatchId = stagedAttachmentUploadsEnabled
-        ? ensureDraftAttachmentBatchId()
-        : null;
+      const draftBatchId = ensureDraftAttachmentBatchId();
       for (const file of files) {
         const tempId = generateUUID();
 
@@ -5154,10 +5163,7 @@ function SessionPageContent({
             currentProviderInfo,
             effectiveModelConfig?.model ?? effectiveModel,
           ),
-          stagedBatchId:
-            stagedAttachmentUploadsEnabled && draftBatchId
-              ? draftBatchId
-              : null,
+          stagedBatchId: draftBatchId ? draftBatchId : null,
           onProgress: (bytesUploaded, uploadFile) => {
             setUploadProgress((prev) =>
               prev.map((p) =>
@@ -5254,7 +5260,6 @@ function SessionPageContent({
       sessionId,
       setComposerAttachments,
       showToast,
-      stagedAttachmentUploadsEnabled,
       historyScope,
       project?.name,
       session?.title,
@@ -5367,7 +5372,7 @@ function SessionPageContent({
   // Update browser tab title
   useDocumentTitle(
     project?.name,
-    supportsProjectCodeNames ? project?.codeName : undefined,
+    project?.codeName,
     displayTitle,
     !isDomLingerParked,
   );
@@ -6073,9 +6078,7 @@ function SessionPageContent({
                     aria-label={project.name}
                     onContextMenu={handleProjectBreadcrumbContextMenu}
                   >
-                    {projectCodeNamesEnabled &&
-                    supportsProjectCodeNames &&
-                    project.codeName
+                    {projectCodeNamesEnabled && project.codeName
                       ? project.codeName
                       : project.name}
                   </Link>
@@ -6702,6 +6705,7 @@ function SessionPageContent({
         {/* Model Switch Modal */}
         {showModelSwitchModal && (
           <ModelSwitchModal
+            routed={routedSession}
             processId={status.owner === "self" ? status.processId : undefined}
             sessionId={actualSessionId}
             currentModel={session?.model}
@@ -7246,7 +7250,7 @@ function SessionPageContent({
                       : undefined
                   }
                   onProjectQueueNewSession={
-                    !mainComposerForAside && supportsProjectQueue
+                    !mainComposerForAside
                       ? handleProjectQueueNewSession
                       : undefined
                   }
@@ -7299,9 +7303,7 @@ function SessionPageContent({
                   onDraftControlsReady={handleDraftControlsReady}
                   onDraftTextChange={handleComposerDraftTextChange}
                   bangSupport={
-                    mainComposerForAside || !bangCommandsSupported
-                      ? undefined
-                      : composerBangSupport
+                    mainComposerForAside ? undefined : composerBangSupport
                   }
                   turnRecall={composerTurnRecall}
                   correctionActive={
@@ -7492,7 +7494,14 @@ function SessionPageContent({
     >
       <RoutedSessionContext value={Boolean(session?.routerBinding)}>
         <ComposerInsertContext value={insertQuotedSelection}>
-          {content}
+          <SessionIssuesProvider
+            key={`${clientSummarySourceKey}:${projectId}:${sessionId}`}
+            projectId={projectId}
+            sessionId={sessionId}
+            messageCount={messages.length}
+          >
+            {content}
+          </SessionIssuesProvider>
         </ComposerInsertContext>
       </RoutedSessionContext>
     </AsyncQuestionsProvider>

@@ -916,29 +916,6 @@ describe("Sidebar collapsed toggle", () => {
     expect(onNavigate).toHaveBeenCalledTimes(1);
   });
 
-  it("hides pending Project Queue rows without the server capability", () => {
-    projectsState.projects = [
-      {
-        id: "project-1",
-        name: "Alpha",
-        projectQueueCount: 1,
-      },
-    ];
-    projectQueuesState.queuesByProject = {
-      "project-1": [
-        makeProjectQueueItem("queue-new-session", {
-          target: { type: "new-session", title: "Queued launch" },
-          messagePreview: "Queued launch",
-        }),
-      ],
-    };
-
-    renderSidebar();
-
-    expect(screen.queryByText("Pending Sessions")).toBe(null);
-    expect(screen.queryByRole("link", { name: /Queued launch/i })).toBe(null);
-  });
-
   it("keeps the highest-message duplicate session visible", () => {
     const sharedTitle = "Repeated session";
     const now = Date.now();

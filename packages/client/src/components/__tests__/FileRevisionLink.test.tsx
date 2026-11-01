@@ -2,11 +2,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FileRevisionLink, formatRevisionAge } from "../FileRevisionLink";
 import { I18nProvider } from "../../i18n";
+import { PublicShareProvider } from "../../contexts/PublicShareContext";
 
 const mocks = vi.hoisted(() => ({
   getGitFileRevision: vi.fn(),
   sourceKey: "local",
-  version: { current: "0.7.2" } as { current: string } | null,
 }));
 
 vi.mock("../../api/client", () => ({
@@ -15,10 +15,7 @@ vi.mock("../../api/client", () => ({
 vi.mock("../../hooks/useRemoteBasePath", () => ({
   useRemoteBasePath: () => "",
 }));
-vi.mock("../../hooks/useVersion", () => ({
-  useRetainedVersionInfo: () => mocks.version,
-  useVersion: () => ({ version: mocks.version }),
-}));
+
 vi.mock("../../lib/clientSummaryStore", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/clientSummaryStore")>()),
   useClientSummarySourceKey: () => mocks.sourceKey,
@@ -26,8 +23,28 @@ vi.mock("../../lib/clientSummaryStore", async (importOriginal) => ({
 describe("FileRevisionLink", () => {
   beforeEach(() => {
     mocks.sourceKey = "local";
-    mocks.version = { current: "0.7.2" };
     mocks.getGitFileRevision.mockReset();
+  });
+
+  it("does not acquire private provenance in a public share", () => {
+    render(
+      <PublicShareProvider
+        value={{
+          projectId: "project-1",
+          relayUrl: "wss://relay.test",
+          relayUsername: "owner",
+          secret: "public-share-fixture",
+        }}
+      >
+        <FileRevisionLink
+          projectId="project-1"
+          path="src/file.ts"
+          dirtyLabel="dirty"
+          uncommittedLabel="uncommitted"
+        />
+      </PublicShareProvider>,
+    );
+    expect(mocks.getGitFileRevision).not.toHaveBeenCalled();
   });
 
   it("renders a regular commit diff link with age, dirtiness, and tooltip", async () => {
@@ -79,23 +96,6 @@ describe("FileRevisionLink", () => {
         rev: "1234567890abcdef",
       }),
     );
-  });
-
-  it("makes no request when the server lacks the capability", async () => {
-    mocks.version = { current: "0.7.1" };
-    const { container } = render(
-      <FileRevisionLink
-        projectId="project-1"
-        path="src/file.ts"
-        dirtyLabel="dirty"
-        uncommittedLabel="uncommitted"
-      />,
-    );
-
-    await waitFor(() =>
-      expect(mocks.getGitFileRevision).not.toHaveBeenCalled(),
-    );
-    expect(container.childElementCount).toBe(0);
   });
 
   it("labels a file that has no reachable commit as uncommitted", async () => {

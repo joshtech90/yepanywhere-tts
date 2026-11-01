@@ -70,7 +70,8 @@ contract; their topics own their specifics.
 - **Codex discovery-failure model fallbacks.** `codex-model-catalog.ts`
   `CODEX_CLI_*_MIN_VERSION` constants choose which fallback catalog to show
   when authenticated `model/list` discovery fails, so an older CLI is not
-  offered models it cannot run.
+  offered models it cannot run. No range offers a withdrawn model
+  ([session defaults](session-defaults.md)).
 - **Pi prompt disposition, gated by field presence.** A `handled` prompt
   ends the YA turn only when Pi reports that disposition (0.99+). Older Pi
   omits the field and keeps the settled-event-only behavior.

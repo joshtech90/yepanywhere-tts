@@ -65,6 +65,7 @@ describe("getModelIndicatorModelLabel", () => {
       ["gpt-6-luna", "Cd Lu"],
       ["gpt-6.1-sol", "Cd So 6.1"],
       ["gpt-6.1-astra", "Cd As 6.1"],
+      ["gpt-6.1-terra", "Cd Te 6.1"],
       ["gpt-6.2-luna", "Cd Lu 6.2"],
       ["gpt-7.1-sol", "Cd So 7.1"],
       ["gpt-6.1-sol-preview", "Cd So 6.1-preview"],

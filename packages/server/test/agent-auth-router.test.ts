@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
 import { decideLimitedRoute } from "../src/auth/limitedUserPolicy.js";
+import type { Supervisor } from "../src/supervisor/Supervisor.js";
+import type { ProjectScanner } from "../src/projects/scanner.js";
+import { createProcessesRoutes } from "../src/routes/processes.js";
 import { createSessionsRoutes } from "../src/routes/sessions.js";
 import { createAgentAuthRouterRoutes } from "../src/routes/agent-auth-router.js";
 import { AgentAuthRouter } from "../src/services/AgentAuthRouter.js";
@@ -56,7 +59,8 @@ async function fixture(
     accountName: string | undefined,
     poolName: string | undefined,
     overviewAccounts: unknown[] = [],
-    cliModels = false;
+    cliModels = false,
+    serviceTiers = false;
   const server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -75,6 +79,7 @@ async function fixture(
           inferenceOrigin: "http://127.0.0.1:8417",
           capabilities: [
             "manual-bindings",
+            ...(serviceTiers ? ["service-tiers-v1"] : []),
             ...(pools ? ["pools-v1"] : []),
             ...(mostRemaining
               ? ["most-remaining-v1", "admission-refresh-v1"]
@@ -147,6 +152,13 @@ async function fixture(
           {
             id: "fixture-model",
             name: "Fixture",
+            ...(serviceTiers
+              ? {
+                  serviceTiers: [
+                    { id: "priority", name: "Fast", description: "" },
+                  ],
+                }
+              : {}),
             supportsEffort: true,
             supportedReasoningEfforts: [
               { reasoningEffort: "high", description: "High" },
@@ -184,6 +196,9 @@ async function fixture(
     requests,
     metadata,
     connector,
+    serviceTiers: (supported = true) => {
+      serviceTiers = supported;
+    },
     identity: () => {
       routerId = "replacement";
     },
@@ -284,6 +299,95 @@ describe.skipIf(process.platform === "win32")(
         ).status,
       ).toBe(200);
       await expect(f.connector.selection("arbitrary")).rejects.toThrow();
+    });
+    it("negotiates speed support, retains allocation identity and validates the pinned account on changes", async () => {
+      const f = await fixture(true, true, true);
+      await f.connector.connect(f.socketPath);
+      await expect(
+        f.connector.launch(
+          "old-router",
+          "codex",
+          "fixture-model",
+          undefined,
+          "pool",
+          undefined,
+          { serviceTier: "priority" },
+        ),
+      ).rejects.toThrow("Update AAR");
+      expect(f.requests.some((r) => r.path === "/v1/pools/prepare")).toBe(
+        false,
+      );
+      f.serviceTiers();
+      expect((await f.connector.selection("codex"))?.serviceTierSelection).toBe(
+        true,
+      );
+      const launch = await f.connector.launch(
+        "speed-session",
+        "codex",
+        "fixture-model",
+        undefined,
+        "pool",
+        undefined,
+        { serviceTier: "priority" },
+      );
+      expect(codexRouterArguments(launch)).toContain(
+        "features.api_key_model_discovery=true",
+      );
+      const routes = createProcessesRoutes({
+        supervisor: {
+          getProcess: () => ({
+            sessionId: "speed-session",
+            supportedModels: async () => launch.models,
+          }),
+        } as unknown as Supervisor,
+        scanner: {} as ProjectScanner,
+        readerFactory: () => {
+          throw new Error("Unused reader");
+        },
+        sessionMetadataService: f.metadata,
+        agentAuthRouter: f.connector,
+      });
+      expect(
+        await (await routes.request("/speed-process/models")).json(),
+      ).toMatchObject({ serviceTierSelection: true, models: launch.models });
+      await f.connector.validateSessionSettings(
+        "speed-session",
+        "fixture-model",
+        { serviceTier: "priority" },
+      );
+      await expect(
+        f.connector.validateSessionSettings("speed-session", "fixture-model", {
+          serviceTier: "ultrafast",
+        }),
+      ).rejects.toThrow("speed tier");
+      await f.connector.launch(
+        "speed-session",
+        "codex",
+        "fixture-model",
+        undefined,
+        undefined,
+        undefined,
+        {},
+      );
+      const requests = f.requests.filter((r) => r.path === "/v1/pools/prepare");
+      expect(requests).toHaveLength(2);
+      expect(requests[0]?.body.serviceTier).toBe("priority");
+      expect(requests[1]?.body).toEqual(requests[0]?.body);
+      f.serviceTiers(false);
+      expect(
+        await (await routes.request("/speed-process/models")).json(),
+      ).toMatchObject({ serviceTierSelection: false });
+      await expect(
+        f.connector.launch(
+          "speed-session",
+          "codex",
+          "fixture-model",
+          undefined,
+          undefined,
+          undefined,
+          { serviceTier: "priority" },
+        ),
+      ).rejects.toThrow("Update AAR");
     });
     it("persists requested thinking, returns the pinned model metadata and refuses unsupported changes", async () => {
       const f = await fixture(true, true, true);

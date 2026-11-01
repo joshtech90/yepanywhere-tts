@@ -27,8 +27,6 @@ export function useCommitBrowserModel({
   isWideScreen,
   initialSha,
   initialPath,
-  supportsInclusiveToHead,
-  onProjectionUnavailable,
   onProjectionRequestFailure,
   t,
 }: {
@@ -37,8 +35,7 @@ export function useCommitBrowserModel({
   isWideScreen: boolean;
   initialSha?: string;
   initialPath?: string;
-  supportsInclusiveToHead: boolean;
-  onProjectionUnavailable: () => void;
+
   onProjectionRequestFailure: (error: unknown) => void;
   t: TranslationFn;
 }) {
@@ -251,14 +248,11 @@ export function useCommitBrowserModel({
       setLoadingComparison(false);
       return;
     }
-    if (!supportsInclusiveToHead) {
-      onProjectionUnavailable();
-      return;
-    }
+
     setCompareToHead(true);
     setLoadingComparison(true);
     setMessageView(false);
-  }, [compareToHead, onProjectionUnavailable, supportsInclusiveToHead]);
+  }, [compareToHead]);
 
   useEffect(() => {
     directComparisonRequestRef.current += 1;
@@ -298,13 +292,10 @@ export function useCommitBrowserModel({
   }, [initialPath, projectId, selectedSha, t]);
 
   useEffect(() => {
-    if (!compareToHead || !selectedSha || !supportsInclusiveToHead) {
+    if (!compareToHead || !selectedSha) {
       setComparison(null);
       setLoadingComparison(false);
-      if (compareToHead && !supportsInclusiveToHead) {
-        setCompareToHead(false);
-        onProjectionUnavailable();
-      }
+
       return;
     }
     let cancelled = false;
@@ -324,14 +315,7 @@ export function useCommitBrowserModel({
     return () => {
       cancelled = true;
     };
-  }, [
-    compareToHead,
-    handleProjectionRequestFailure,
-    onProjectionUnavailable,
-    projectId,
-    selectedSha,
-    supportsInclusiveToHead,
-  ]);
+  }, [compareToHead, handleProjectionRequestFailure, projectId, selectedSha]);
 
   const selectedFiles = useMemo(
     () =>

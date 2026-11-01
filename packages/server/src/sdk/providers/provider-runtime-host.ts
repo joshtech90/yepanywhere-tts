@@ -1,4 +1,11 @@
+import { agentApiEligible } from "../../agent-api/eligibility.js";
 import { agentSelfEnabled } from "./agent-self.js";
+import {
+  agentCatalogRequest,
+  AGENT_CATALOG_MAX_BYTES,
+} from "../../agent-api/controller-protocol.js";
+import { CoreApiError } from "../../core-api/service.js";
+import { SUPERUSER } from "../../auth/principal.js";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,7 +21,7 @@ import type {
   EffortLevel,
   ImagePreparationProfile,
 } from "@yep-anywhere/shared";
-import type { AgentMessageQueue } from "../messageQueue.js";
+import { apiInputIds, type AgentMessageQueue } from "../messageQueue.js";
 import type {
   ProviderActivitySnapshot,
   ProviderRetentionSnapshot,
@@ -49,6 +56,8 @@ interface HostResponse<T> {
 }
 
 interface WorkerCapabilities {
+  agentApi?: boolean;
+  peerAgentApi?: boolean;
   publishAgentSelfSelection?: boolean;
   publishAgentSessionViews?: boolean;
   probeLiveness: boolean;
@@ -572,6 +581,43 @@ export function getProviderHostStatus(): Promise<Record<string, unknown>> {
   return requestHost("status");
 }
 
+/**
+ * Features the provider host process advertises in its `status` reply
+ * (scripts/provider-runtime-host.mjs). These describe the running host
+ * build, not server capabilities, though some names coincide.
+ */
+const PROVIDER_HOST_FEATURE = {
+  agentApiRevocation: "agent-api-revocation",
+  agentApiManagement: "agent-api-management",
+  agentApiPeers: "agent-api-peers",
+} as const;
+
+function providerHostHasFeature(
+  status: Record<string, unknown>,
+  feature: (typeof PROVIDER_HOST_FEATURE)[keyof typeof PROVIDER_HOST_FEATURE],
+): boolean {
+  return Array.isArray(status.features) && status.features.includes(feature);
+}
+
+export async function revokeHostedAgentApiAccess(
+  serverId: string,
+): Promise<void> {
+  if (!isProviderRuntimeHostAvailable()) return;
+  const status = await getProviderHostStatus();
+  if (providerHostHasFeature(status, PROVIDER_HOST_FEATURE.agentApiRevocation))
+    await requestHost("revokeAgentApi", { serverId });
+}
+
+export async function revokeHostedPeerAgentApiAccess(
+  serverId: string,
+  grantId: string,
+): Promise<void> {
+  if (!isProviderRuntimeHostAvailable()) return;
+  const status = await getProviderHostStatus();
+  if (providerHostHasFeature(status, PROVIDER_HOST_FEATURE.agentApiPeers))
+    await requestHost("revokePeerAgentApi", { serverId, grantId });
+}
+
 export function requestHostedProjectService(
   service: Record<string, unknown>,
   authorize?: () => Promise<void>,
@@ -668,6 +714,7 @@ function cloneableOptions(
 ): Record<string, unknown> {
   const {
     onToolApproval: _onToolApproval,
+    onAgentApiRead: _onAgentApiRead,
     onPermissionModeApplied: _onPermissionModeApplied,
     shouldEmitLiveDeltas: _shouldEmitLiveDeltas,
     onProviderRetentionChange: _onProviderRetentionChange,
@@ -719,6 +766,33 @@ export async function startHostedProviderSession(
 ): Promise<AgentSession> {
   if (!isProviderRuntimeHostAvailable()) {
     throw new Error("Provider runtime host is unavailable");
+  }
+  if (options.agentApi && !agentApiEligible(providerName, options))
+    options = { ...options, agentApi: undefined, onAgentApiRead: undefined };
+  if (options.agentApi) {
+    const status = await getProviderHostStatus();
+    if (
+      !providerHostHasFeature(status, PROVIDER_HOST_FEATURE.agentApiRevocation)
+    )
+      throw new Error(
+        "Restart the provider host before enabling agent API discovery for this launch",
+      );
+    if (!providerHostHasFeature(status, PROVIDER_HOST_FEATURE.agentApiPeers))
+      options = {
+        ...options,
+        agentApi: {
+          ...options.agentApi,
+          peerAccess: false,
+          peerGrantId: undefined,
+        },
+      };
+    if (
+      options.agentApi!.management &&
+      !providerHostHasFeature(status, PROVIDER_HOST_FEATURE.agentApiManagement)
+    )
+      throw new Error(
+        "Restart the provider host before enabling agent API session commands for this launch",
+      );
   }
   let runtime = options.resumeSessionId
     ? await requestHost<HostedProviderRuntimeInfo | null>("claim", {
@@ -772,6 +846,7 @@ class HostedMessageQueue implements AgentMessageQueue {
   private pending: UserMessage[] = [];
   private remoteDepth: number;
   private yieldedListeners = new Set<(messages: UserMessage[]) => void>();
+  private readonly apiInputs = new Set<string>();
 
   constructor(
     initialDepth: number,
@@ -833,9 +908,19 @@ class HostedMessageQueue implements AgentMessageQueue {
       (message) => message.uuid && yielded.has(message.uuid),
     );
     if (messages.length === 0) return;
+    for (const message of messages) {
+      for (const id of apiInputIds(message)) {
+        this.apiInputs.add(id);
+        while (this.apiInputs.size > 512)
+          this.apiInputs.delete(this.apiInputs.values().next().value!);
+      }
+    }
     for (const listener of this.yieldedListeners) listener(messages);
   }
 
+  hasYieldedApiInput(id: string) {
+    return this.apiInputs.has(id);
+  }
   subscribeYielded(listener: (messages: UserMessage[]) => void): () => void {
     this.yieldedListeners.add(listener);
     return () => this.yieldedListeners.delete(listener);
@@ -873,6 +958,8 @@ class HostedAgentSession {
   private handledApprovals = new Set<string>();
   private queuedApprovals = new Map<string, Record<string, unknown>>();
   private approvalControllers = new Map<string, AbortController>();
+  /** Bound by the worker's 16-request agent catalog window. */
+  private agentApiControllers = new Map<string, AbortController>();
   private callbacksActive = false;
   private pendingAppliedPermissionMode: PermissionMode | undefined;
   private initializedSessionId: string | undefined;
@@ -949,6 +1036,15 @@ class HostedAgentSession {
           token: environment.token,
           generation: environment.generation,
           protocolVersion: WORKER_PROTOCOL_VERSION,
+          agentApiPeerGrantId: this.options.agentApi?.peerGrantId,
+          agentApiPeersAllowed: Boolean(
+            this.options.agentApi?.peerAccess &&
+              this.options.agentApi?.peerGrantId &&
+              this.options.onAgentApiRead,
+          ),
+          agentApiAllowed: Boolean(
+            this.options.agentApi && this.options.onAgentApiRead,
+          ),
         });
       });
       this.socket.on("data", (chunk) => {
@@ -1094,6 +1190,13 @@ class HostedAgentSession {
         return;
       case "approval":
         void this.handleApproval(message);
+        return;
+      case "agentApiRead":
+        void this.handleAgentApiRead(message);
+        return;
+      case "agentApiCancel":
+        this.agentApiControllers.get(String(message.requestId))?.abort();
+        this.agentApiControllers.delete(String(message.requestId));
         return;
       case "approvalCancelled":
         this.cancelApproval(String(message.requestId));
@@ -1254,6 +1357,9 @@ class HostedAgentSession {
   }
 
   private cancelApprovals(): void {
+    for (const controller of this.agentApiControllers.values())
+      controller.abort();
+    this.agentApiControllers.clear();
     this.queuedApprovals.clear();
     for (const controller of this.approvalControllers.values()) {
       controller.abort();
@@ -1268,6 +1374,109 @@ class HostedAgentSession {
     this.done = true;
     this.socket.end();
     this.finishIterator();
+  }
+
+  private async handleAgentApiRead(
+    message: Record<string, unknown>,
+  ): Promise<void> {
+    const requestId = String(message.requestId);
+    const parsed = agentCatalogRequest.safeParse({
+      operation: message.operation,
+      input: message.input,
+    });
+    const controller = new AbortController();
+    if (
+      this.agentApiControllers.has(requestId) ||
+      this.agentApiControllers.size >= 16
+    )
+      return;
+    this.agentApiControllers.set(requestId, controller);
+    let reply: Record<string, unknown>;
+    try {
+      if (!parsed.success)
+        throw new CoreApiError(
+          "invalid_request",
+          "Invalid catalog request",
+          400,
+        );
+      if (!this.options.agentApi || !this.options.onAgentApiRead)
+        throw new CoreApiError(
+          "controller_unavailable",
+          "Agent API access is disabled",
+          503,
+        );
+      if (
+        parsed.data.input.launch &&
+        (!this.options.agentApi.peerAccess ||
+          parsed.data.input.launch.peerGrantId !==
+            this.options.agentApi.peerGrantId)
+      ) {
+        delete parsed.data.input.launch.peerAccess;
+        delete parsed.data.input.launch.peerGrantId;
+      }
+      let cancel!: () => void;
+      const cancelled = new Promise<never>((_, reject) => {
+        cancel = () =>
+          reject(
+            new CoreApiError(
+              "controller_unavailable",
+              "Catalog read cancelled",
+              503,
+            ),
+          );
+      });
+      controller.signal.addEventListener("abort", cancel, { once: true });
+      let result: Awaited<
+        ReturnType<NonNullable<StartSessionOptions["onAgentApiRead"]>>
+      >;
+      try {
+        if (controller.signal.aborted) cancel();
+        result = await Promise.race([
+          this.options.onAgentApiRead(parsed.data.operation, SUPERUSER, {
+            ...parsed.data.input,
+            signal: controller.signal,
+          }),
+          cancelled,
+        ]);
+      } finally {
+        controller.signal.removeEventListener("abort", cancel);
+      }
+      if (Buffer.byteLength(JSON.stringify(result)) > AGENT_CATALOG_MAX_BYTES)
+        throw new CoreApiError(
+          "invalid_request",
+          "Catalog response exceeds the transport limit; reduce page size",
+          400,
+        );
+      reply = { type: "agentApiResult", requestId, ok: true, result };
+    } catch (error) {
+      reply = {
+        type: "agentApiResult",
+        requestId,
+        ok: false,
+        error:
+          error instanceof CoreApiError
+            ? { code: error.code, message: error.message, status: error.status }
+            : {
+                code: "internal_error",
+                message: "Catalog read failed",
+                status: 500,
+              },
+      };
+    } finally {
+      if (this.agentApiControllers.get(requestId) === controller)
+        this.agentApiControllers.delete(requestId);
+    }
+    if (
+      !this.detaching &&
+      !this.socket.destroyed &&
+      !controller.signal.aborted
+    ) {
+      try {
+        this.send(reply);
+      } catch {
+        // The controller socket may close between the guard and the write.
+      }
+    }
   }
 
   private activateCallbacks(): void {
@@ -1383,6 +1592,15 @@ class HostedAgentSession {
             publishAgentSessionViews: (views) =>
               this.rpc<void>("publishAgentSessionViews", [views]),
           }
+        : {}),
+      ...(capabilities.peerAgentApi
+        ? {
+            revokePeerAgentApiAccess: (grantId?: string) =>
+              this.rpc<void>("revokePeerAgentApiAccess", [grantId]),
+          }
+        : {}),
+      ...(capabilities.agentApi
+        ? { revokeAgentApiAccess: () => this.rpc<void>("revokeAgentApiAccess") }
         : {}),
       publishAgentctlSessionId: async (sessionId, browserDebugEnvironment) => {
         // Make the routing decision synchronous with Process learning the YA

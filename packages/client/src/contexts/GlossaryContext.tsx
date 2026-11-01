@@ -1,9 +1,4 @@
-import {
-  GLOSSARY_TOOLTIPS_CAPABILITY,
-  fromUrlProjectId,
-  isUrlProjectId,
-  serverHasCapability,
-} from "@yep-anywhere/shared";
+import { fromUrlProjectId, isUrlProjectId } from "@yep-anywhere/shared";
 import {
   createContext,
   type ReactNode,
@@ -15,7 +10,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useGlossaryHints } from "../hooks/useGlossaryHints";
-import { useVersion } from "../hooks/useVersion";
 import {
   GlossaryArtifactStore,
   type GlossaryArtifactSnapshot,
@@ -63,17 +57,12 @@ export function GlossaryProjectProvider({
   const enclosing = useContext(GlossaryStoreContext);
   const sourceRuntime = useCurrentSourceRuntime();
   const { glossaryHintsEnabled } = useGlossaryHints();
-  const { version } = useVersion();
   const ownedStore = useMemo(() => new GlossaryArtifactStore(), []);
   const enclosingStore =
     enclosing?.projectId === projectId ? enclosing.store : null;
   const ownsStore = enclosingStore === null;
   const ownedStoreActive =
-    ownsStore &&
-    enabled &&
-    glossaryHintsEnabled &&
-    isUrlProjectId(projectId) &&
-    serverHasCapability(version, GLOSSARY_TOOLTIPS_CAPABILITY);
+    ownsStore && enabled && glossaryHintsEnabled && isUrlProjectId(projectId);
 
   useLayoutEffect(() => {
     if (!ownedStoreActive || !isUrlProjectId(projectId)) {

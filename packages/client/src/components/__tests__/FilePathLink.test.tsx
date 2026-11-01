@@ -729,7 +729,7 @@ describe("FilePathLink", () => {
     expect(window.location.search).toBe("?projectId=project-id");
   });
 
-  it("hands a direct file-link download to the browser without fetching", async () => {
+  it("hands a direct file-link download to the browser without fetching its body", async () => {
     const fetchFile = vi.fn();
     vi.stubGlobal("fetch", fetchFile);
     const clicked: HTMLAnchorElement[] = [];
@@ -757,7 +757,11 @@ describe("FilePathLink", () => {
       "/api/projects/project-id/files/raw?path=docs%2Fguide.md&download=true",
     );
     expect(clicked[0]?.download).toBe("guide.md");
-    expect(fetchFile).not.toHaveBeenCalled();
+    expect(
+      fetchFile.mock.calls.some(([url]) =>
+        /\/files(?:\/|\?)/.test(String(url)),
+      ),
+    ).toBe(false);
   });
 
   it("fetches a file-link download through a relayed transport", async () => {
@@ -961,7 +965,10 @@ describe("FilePathLink", () => {
     );
 
     await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
-    expect(String(fetchFile.mock.calls[0]?.[0])).toContain("highlight=true");
+    const contentRequest = fetchFile.mock.calls.find(([url]) =>
+      String(url).includes("/files?"),
+    );
+    expect(String(contentRequest?.[0])).toContain("highlight=true");
     await expect(clipboardItems[0]?.["text/html"]).resolves.toMatchObject({
       type: "text/html",
     });

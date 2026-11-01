@@ -269,6 +269,7 @@ export async function waitForRelayStatus(
 // Extended test fixtures
 interface TestFixtures {
   draftSessionIds: string[];
+  resetNewSessionDraft: boolean;
   resetSeededDrafts: undefined;
   baseURL: string;
   maintenanceURL: string;
@@ -330,17 +331,22 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     { scope: "worker", timeout: 45_000 },
   ],
   draftSessionIds: [["mock-session-001"], { option: true }],
+  resetNewSessionDraft: [true, { option: true }],
   resetSeededDrafts: [
-    async ({ baseURL, draftSessionIds }, use) => {
+    async ({ baseURL, draftSessionIds, resetNewSessionDraft }, use) => {
       // The shared server survives between cases, while browser contexts start
-      // empty. Clear the seeded session's synced draft before another case uses it.
+      // empty. Clear the seeded sessions' synced drafts, and the worker's one
+      // new-session draft, before another case uses them.
       const serverURL = baseURL;
       const headers = {
         "Content-Type": "application/json",
         "X-Yep-Anywhere": "true",
       };
-      for (const sessionId of draftSessionIds) {
-        const slot = { kind: "session", sessionId };
+      const slots: Array<
+        { kind: "session"; sessionId: string } | { kind: "new-session" }
+      > = draftSessionIds.map((sessionId) => ({ kind: "session", sessionId }));
+      if (resetNewSessionDraft) slots.push({ kind: "new-session" });
+      for (const slot of slots) {
         const read = await fetch(`${serverURL}/api/drafts/read`, {
           method: "POST",
           headers,

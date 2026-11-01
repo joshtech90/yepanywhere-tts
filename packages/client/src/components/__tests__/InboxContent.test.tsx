@@ -1,11 +1,26 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
-import { PROJECT_QUEUE_CAPABILITY } from "@yep-anywhere/shared";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
+import {
+  PROJECT_QUEUE_CAPABILITY,
+  SESSION_CREATION_PROVENANCE_CAPABILITY,
+} from "@yep-anywhere/shared";
 import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InboxContent } from "../InboxContent";
+import {
+  createClientSummaryHostSourceKey,
+  LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+  setCurrentClientSummarySourceKey,
+} from "../../lib/clientSummarySourceKey";
+import { invalidateLocalStorageValues } from "../../lib/localStorageValue";
 
 const {
   draftSessionIds,
@@ -141,10 +156,6 @@ vi.mock("../../hooks/usePublicShareStatus", () => ({
   }),
 }));
 
-vi.mock("../FilterDropdown", () => ({
-  FilterDropdown: () => <div data-testid="filter-dropdown" />,
-}));
-
 vi.mock("../SessionListItem", () => ({
   SessionListItem: ({
     activity,
@@ -234,6 +245,9 @@ function renderInbox(ui: ReactElement) {
 
 describe("InboxContent", () => {
   beforeEach(() => {
+    localStorage.clear();
+    invalidateLocalStorageValues();
+    setCurrentClientSummarySourceKey(LOCAL_CLIENT_SUMMARY_SOURCE_KEY);
     inboxState.needsAttention = [];
     inboxState.active = [];
     inboxState.recentActivity = [];
@@ -258,6 +272,130 @@ describe("InboxContent", () => {
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
+  });
+
+  function selectCreatedVia(option: string) {
+    fireEvent.click(screen.getByRole("button", { name: "filterByLabel" }));
+    fireEvent.click(screen.getByRole("button", { name: option }));
+  }
+
+  it("combines creation and project filters across tiers and remembers each source", () => {
+    versionState.version = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        SESSION_CREATION_PROVENANCE_CAPABILITY,
+      ],
+    };
+    for (const tier of [
+      "needsAttention",
+      "active",
+      "recentActivity",
+      "unread8h",
+      "unread24h",
+    ] as const) {
+      inboxState[tier] = [
+        {
+          ...makeInboxItem(`${tier}-web`, "one"),
+          creationProvenance: { surface: "web" },
+        },
+        {
+          ...makeInboxItem(`${tier}-desktop`, "one"),
+          creationProvenance: { surface: "desktop" },
+        },
+        {
+          ...makeInboxItem(`${tier}-api`, "one"),
+          creationProvenance: { surface: "api" },
+        },
+        makeInboxItem(`${tier}-unknown`, "one"),
+        {
+          ...makeInboxItem(`${tier}-other-project`, "two"),
+          creationProvenance: { surface: "web" },
+        },
+      ];
+    }
+    const first = renderInbox(<InboxContent projectId="one" />);
+    selectCreatedVia("inboxStartedViaUi");
+    expect(screen.getAllByTestId(/^session-/)).toHaveLength(10);
+    expect(screen.queryByTestId("session-active-other-project")).toBeNull();
+    expect(screen.queryByTestId("session-active-api")).toBeNull();
+    expect(screen.getByTestId("session-active-desktop")).toBeTruthy();
+    first.unmount();
+    renderInbox(<InboxContent projectId="one" />);
+    expect(screen.getAllByTestId(/^session-/)).toHaveLength(10);
+    expect(localStorage.getItem("yep-anywhere-inbox-created-via:local")).toBe(
+      "ui",
+    );
+
+    act(() =>
+      setCurrentClientSummarySourceKey(
+        createClientSummaryHostSourceKey("second"),
+      ),
+    );
+    expect(screen.getAllByTestId(/^session-/)).toHaveLength(20);
+    selectCreatedVia("inboxStartedViaApi");
+    expect(screen.getAllByTestId(/^session-/)).toHaveLength(5);
+    expect(screen.getByTestId("session-active-api")).toBeTruthy();
+    act(() =>
+      setCurrentClientSummarySourceKey(LOCAL_CLIENT_SUMMARY_SOURCE_KEY),
+    );
+    expect(screen.getAllByTestId(/^session-/)).toHaveLength(10);
+    selectCreatedVia("inboxStartedViaUnspecified");
+    expect(screen.getAllByTestId(/^session-/)).toHaveLength(5);
+    expect(screen.getByTestId("session-active-unknown")).toBeTruthy();
+    selectCreatedVia("inboxAllSessions");
+    expect(screen.getAllByTestId(/^session-/)).toHaveLength(20);
+  });
+
+  it("ignores a saved filter on unsupported servers without overwriting it", () => {
+    localStorage.setItem("yep-anywhere-inbox-created-via:local", "api");
+    invalidateLocalStorageValues();
+    inboxState.active = [makeInboxItem("external", "one")];
+    const view = renderInbox(<InboxContent />);
+    expect(screen.getByTestId("session-external")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "filterByLabel" })).toBeNull();
+    expect(localStorage.getItem("yep-anywhere-inbox-created-via:local")).toBe(
+      "api",
+    );
+    versionState.version = {
+      capabilities: [SESSION_CREATION_PROVENANCE_CAPABILITY],
+    };
+    view.rerender(
+      <MemoryRouter>
+        <InboxContent />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId("session-external")).toBeNull();
+    expect(screen.getByText("inboxFilteredEmptyTitle")).toBeTruthy();
+  });
+
+  it("defaults invalid storage to All and keeps filtering when storage fails", () => {
+    localStorage.setItem(
+      "yep-anywhere-inbox-created-via:local",
+      "future-filter",
+    );
+    invalidateLocalStorageValues();
+    versionState.version = {
+      capabilities: [SESSION_CREATION_PROVENANCE_CAPABILITY],
+    };
+    inboxState.active = [makeInboxItem("external", "one")];
+    const first = renderInbox(<InboxContent />);
+    expect(screen.getByTestId("session-external")).toBeTruthy();
+    first.unmount();
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage blocked");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage blocked");
+    });
+    invalidateLocalStorageValues();
+    renderInbox(<InboxContent />);
+    expect(screen.getByTestId("session-external")).toBeTruthy();
+    selectCreatedVia("inboxStartedViaUi");
+    expect(screen.queryByTestId("session-external")).toBeNull();
+    expect(screen.getByText("inboxFilteredEmptyTitle")).toBeTruthy();
+    selectCreatedVia("inboxAllSessions");
+    expect(screen.getByTestId("session-external")).toBeTruthy();
   });
 
   it("marks inbox rows with Project Queue items from store decorations", () => {
@@ -469,25 +607,6 @@ describe("InboxContent", () => {
         /\binbox-project-queue-item__status\b/,
       );
     }
-  });
-
-  it("hides project queue rows and decorations without the server capability", () => {
-    versionState.version = { capabilities: [] };
-    inboxState.needsAttention = [makeInboxItem("queued-session", "project-1")];
-    queuedSessionIds.add("queued-session");
-    projectQueueItems.push(
-      makeProjectQueueItem("queue-new-session", "project-1", "Build the docs"),
-    );
-
-    renderInbox(<InboxContent projects={[makeProject("project-1")]} />);
-
-    expect(mockUseProjectQueues).toHaveBeenCalledWith([]);
-    expect(mockUseProjectQueuedSessionIds).toHaveBeenCalledWith([]);
-    expect(
-      screen.getByTestId("session-queued-session").textContent,
-    ).not.toContain("Q");
-    expect(screen.queryByText("Build the docs")).toBe(null);
-    expect(mockListReviewInbox).not.toHaveBeenCalled();
   });
 
   it("renders capability-gated unread review outcome cards", async () => {

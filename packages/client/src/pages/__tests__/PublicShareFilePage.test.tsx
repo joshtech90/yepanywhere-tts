@@ -55,6 +55,7 @@ describe("PublicShareFilePage", () => {
   it("uses the shared file viewer and embedded Markdown media", async () => {
     const getVersion = vi.spyOn(api, "getVersion");
     const getPublicShareStatus = vi.spyOn(api, "getPublicShareStatus");
+    const listFolder = vi.spyOn(api, "listFolder");
     const projectRoot = "/local/graehl/yepanywhere";
     const projectId = toUrlProjectId(projectRoot);
     const imagePath = `${projectRoot}/docs/diagram.png`;
@@ -126,5 +127,9 @@ describe("PublicShareFilePage", () => {
     expect(fetchPublicShareBlobViaRelayMock).not.toHaveBeenCalled();
     expect(getVersion).not.toHaveBeenCalled();
     expect(getPublicShareStatus).not.toHaveBeenCalled();
+    // A public file grant names files, not folders: the path stays plain text
+    // and nothing asks for a listing.
+    expect(screen.queryByRole("button", { name: "docs" })).toBeNull();
+    expect(listFolder).not.toHaveBeenCalled();
   });
 });
