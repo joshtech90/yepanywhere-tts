@@ -134,6 +134,11 @@ export class GeminiACPProvider implements AgentProvider {
       };
     }
 
+    // An explicitly configured API gateway uses the CLI's API-key auth path.
+    if (process.env.GEMINI_API_KEY?.trim()) {
+      return { installed: true, authenticated: true, enabled: true };
+    }
+
     // Read OAuth credentials from ~/.gemini/oauth_creds.json
     const credsPath = join(homedir(), ".gemini", "oauth_creds.json");
     if (!existsSync(credsPath)) {
@@ -194,6 +199,41 @@ export class GeminiACPProvider implements AgentProvider {
    * Returns standard models plus preview models if previewFeatures is enabled.
    */
   async getAvailableModels(): Promise<ModelInfo[]> {
+    // Custom gateways expose their own model ids; CLI aliases may resolve to
+    // models the gateway cannot serve. Do not substitute the OAuth catalog.
+    const baseUrl = process.env.GOOGLE_GEMINI_BASE_URL?.trim();
+    const apiKey = process.env.GEMINI_API_KEY?.trim();
+    if (baseUrl && apiKey) {
+      try {
+        const response = await fetch(
+          `${baseUrl.replace(/\/$/, "")}/v1beta/models`,
+          {
+            headers: { "x-goog-api-key": apiKey },
+            signal: AbortSignal.timeout(10_000),
+            redirect: "error",
+          },
+        );
+        if (!response.ok) return [];
+        const body = (await response.json()) as {
+          models?: { name?: string; displayName?: string }[];
+        };
+        return (body.models ?? [])
+          .filter((model) => model.name?.startsWith("models/gemini-"))
+          .sort(
+            (a, b) =>
+              Number(b.name === "models/gemini-flash-high") -
+              Number(a.name === "models/gemini-flash-high"),
+          )
+          .map((model) => ({
+            id: (model.name ?? "").slice("models/".length),
+            name:
+              model.displayName ?? (model.name ?? "").slice("models/".length),
+          }));
+      } catch {
+        this.log.warn("Gemini gateway model discovery failed");
+        return [];
+      }
+    }
     const models = [...GEMINI_MODELS];
 
     // Check if preview features are enabled
