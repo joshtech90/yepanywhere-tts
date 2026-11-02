@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { AuthService } from "../src/auth/AuthService.js";
 import { spawn } from "node:child_process";
 import { terminateChildProcess } from "../../client/e2e/support/process-lifecycle.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -24,6 +26,13 @@ test("starts speech backends when bound via CLI host override", async () => {
     mkdirSync(join(tempDir, d), { recursive: true });
   }
 
+  const auth = new AuthService({ dataDir: join(tempDir, "data") });
+  await auth.initialize();
+  await auth.enableAuth(randomUUID());
+  const session = await auth.createSession("speech-startup-test");
+  await auth.flushPendingWrites();
+  const headers = { Cookie: `yep-anywhere-session=${session}` };
+
   const serverRoot = fileURLToPath(new URL("..", import.meta.url));
   const child = spawn(
     process.execPath,
@@ -47,7 +56,7 @@ test("starts speech backends when bound via CLI host override", async () => {
         CLI_HOST_OVERRIDE: "true",
         PORT: String(port),
         MAINTENANCE_PORT: "0",
-        AUTH_DISABLED: "true",
+        AUTH_DISABLED: "false",
         TLS_CERT_PATH: "",
         TLS_KEY_PATH: "",
         YEP_PROVIDER_HOST_ENABLED: "false",
@@ -95,11 +104,13 @@ test("starts speech backends when bound via CLI host override", async () => {
     }
     expect(healthy).toBe(true);
 
+    expect((await fetch(`${base}/api/version`)).status).toBe(401);
     let voiceBackends: string[] = [];
     const voiceDeadline = Date.now() + 3_000;
     while (Date.now() < voiceDeadline) {
       try {
         const res = await fetch(`${base}/api/version`, {
+          headers,
           signal: AbortSignal.timeout(1000),
         });
         if (res.ok) {
