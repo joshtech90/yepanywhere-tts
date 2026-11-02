@@ -105,7 +105,8 @@ export function launchChoices(
   translate?: EffortLevelTranslate,
 ): CockpitLaunchChoices {
   const models = provider?.models ?? [];
-  const modelInfo = models.find((model) => model.id === selection.model) ?? null;
+  const modelInfo =
+    models.find((model) => model.id === selection.model) ?? null;
   const effortOptions = getEffortLevelOptions({
     provider: provider ?? selection.provider,
     model: modelInfo,
@@ -166,7 +167,7 @@ export function rememberLaunch(
   selection: CockpitLaunchSelection,
   legacy: CockpitLegacyThinking,
 ): NewSessionDefaults | null {
-  if (!selection.provider) return null;
+  if (!selection.provider || defaults?.selectionMode === "fixed") return null;
   return withProviderSessionDefaults(
     {
       ...defaults,

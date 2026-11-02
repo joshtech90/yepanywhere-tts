@@ -870,6 +870,12 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "peer-connections",
     introducedIn: "0.11.1",
   },
+  newSessionSelectionMode: {
+    id: 142,
+    direction: "server",
+    name: "new-session-selection-mode",
+    introducedIn: "0.11.1",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

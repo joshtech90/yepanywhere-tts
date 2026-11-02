@@ -1,4 +1,4 @@
-import type { ProviderInfo } from "@yep-anywhere/shared";
+import type { NewSessionDefaults, ProviderInfo } from "@yep-anywhere/shared";
 import { describe, expect, it } from "vitest";
 import {
   initialLaunchSelection,
@@ -57,19 +57,29 @@ describe("Cockpit new-session selection", () => {
   });
 
   it("prefers Claude and the provider default model without saved defaults", () => {
-    expect(initialLaunchSelection(undefined, [codex, claude], legacy)).toMatchObject({
+    expect(
+      initialLaunchSelection(undefined, [codex, claude], legacy),
+    ).toMatchObject({
       provider: "claude",
       model: "sonnet",
       permissionMode: "default",
     });
     expect(
       selectionForProvider(undefined, codex, legacy, "plan"),
-    ).toMatchObject({ provider: "codex", model: "gpt-b", permissionMode: "plan" });
+    ).toMatchObject({
+      provider: "codex",
+      model: "gpt-b",
+      permissionMode: "plan",
+    });
   });
 
   it("ignores providers that are not installed", () => {
     expect(
-      initialLaunchSelection(undefined, [provider({ installed: false })], legacy),
+      initialLaunchSelection(
+        undefined,
+        [provider({ installed: false })],
+        legacy,
+      ),
     ).toBeNull();
   });
 
@@ -116,6 +126,34 @@ describe("Cockpit new-session selection", () => {
       },
     });
   });
+
+  it.each(["fixed", "last-used", undefined] as const)(
+    "keeps fixed provider/model/effort defaults after an alternate launch (%s)",
+    (selectionMode) => {
+      const defaults: NewSessionDefaults = {
+        selectionMode,
+        provider: "claude",
+        providers: {
+          claude: { model: "opus", thinkingMode: "on", effortLevel: "medium" },
+        },
+      };
+      const selection = {
+        provider: "codex" as const,
+        model: "gpt-a",
+        thinkingMode: "on" as const,
+        effortLevel: "low" as const,
+        permissionMode: "plan" as const,
+      };
+      const next = rememberLaunch(defaults, selection, legacy) ?? defaults;
+      expect(
+        initialLaunchSelection(next, [claude, codex], legacy),
+      ).toMatchObject(
+        selectionMode === "fixed"
+          ? { provider: "claude", model: "opus", effortLevel: "medium" }
+          : { provider: "codex", model: "gpt-a", effortLevel: "low" },
+      );
+    },
+  );
 
   it("trims typed folders but keeps the root", () => {
     expect(normalizeProjectPath("  ~/Projects/demo/ ")).toBe("~/Projects/demo");

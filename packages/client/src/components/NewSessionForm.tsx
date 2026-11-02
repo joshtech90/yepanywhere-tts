@@ -1180,6 +1180,7 @@ export function NewSessionForm({
     updateSetting: updateServerSetting,
   } = useServerSettings();
   const displayDefaultsPending = displayDefaults !== undefined;
+  const defaultsReady = !settingsLoading && settings !== null;
   const newSessionDefaultsRef = useRef(settings?.newSessionDefaults);
   useEffect(() => {
     newSessionDefaultsRef.current = settings?.newSessionDefaults;
@@ -2537,6 +2538,8 @@ export function NewSessionForm({
   useEffect(() => {
     if (
       !hasUserCustomizedDefaultsRef.current ||
+      !defaultsReady ||
+      settings?.newSessionDefaults?.selectionMode === "fixed" ||
       !selectedProvider ||
       displayDefaultsPending
     )
@@ -2592,6 +2595,8 @@ export function NewSessionForm({
   }, [
     getLegacyProviderDefaultSeed,
     helperSideModel,
+    defaultsReady,
+    settings?.newSessionDefaults?.selectionMode,
     displayDefaultsPending,
     mode,
     recapAfterSeconds,

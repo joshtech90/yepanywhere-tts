@@ -725,6 +725,8 @@ export interface ProviderSessionDefaults {
 }
 
 export interface NewSessionDefaults {
+  /** Absent preserves automatic remembering; fixed values change only in Settings. */
+  selectionMode?: "last-used" | "fixed";
   provider?: ProviderName;
   /** @deprecated Use providers[provider].model. Preserved for migration. */
   model?: string;

@@ -1,4 +1,6 @@
 import {
+  SERVER_CAPABILITIES,
+  serverHasCapability,
   AUTO_SESSION_TITLE_MAX_LENGTH,
   AUTO_SESSION_TITLE_MIN_LENGTH,
   DEFAULT_RECAP_AFTER_SECONDS,
@@ -231,6 +233,10 @@ export function ModelSettings() {
 
   const availableProviders = getAvailableProviders(providers);
   const savedDefaults = settings?.newSessionDefaults;
+  const supportsSelectionMode = serverHasCapability(
+    version,
+    SERVER_CAPABILITIES.newSessionSelectionMode.name,
+  );
   // Normalize before render so the controls always have in-range values, even
   // for a settings file written by an older build.
   const autoSessionTitle = normalizeAutoSessionTitleSettings(
@@ -496,6 +502,7 @@ export function ModelSettings() {
         delete nextDefaults.sandboxLevel;
         delete nextDefaults.sandboxNetworkFirewall;
       }
+      if (!supportsSelectionMode) delete nextDefaults.selectionMode;
       await updateSetting("newSessionDefaults", nextDefaults);
       showToast(t("newSessionDefaultsSaved"), "success");
     } catch (err) {
@@ -615,6 +622,38 @@ export function ModelSettings() {
           <p className={styles.intro}>
             {t("modelSettingsNewSessionDefaultsIntro")}
           </p>
+
+          {supportsSelectionMode && (
+            <SettingsItem
+              id="session-default-selection-mode"
+              className={styles.selectionPolicy}
+              label={t("newSessionSelectionModeTitle")}
+              description={t("newSessionSelectionModeDescription")}
+              keywords={["fixed", "last used", "remember", "defaults"]}
+              valueText={savedDefaults?.selectionMode ?? "last-used"}
+            >
+              <select
+                aria-label={t("newSessionSelectionModeTitle")}
+                value={savedDefaults?.selectionMode ?? "last-used"}
+                disabled={settingsLoading}
+                onChange={(event) => {
+                  const selectionMode = event.target.value;
+                  if (
+                    selectionMode === "fixed" ||
+                    selectionMode === "last-used"
+                  )
+                    void updateNewSessionDefaults({ selectionMode });
+                }}
+              >
+                <option value="last-used">
+                  {t("newSessionSelectionModeLastUsed")}
+                </option>
+                <option value="fixed">
+                  {t("newSessionSelectionModeFixed")}
+                </option>
+              </select>
+            </SettingsItem>
+          )}
 
           <SettingsItem
             id="session-default-provider"

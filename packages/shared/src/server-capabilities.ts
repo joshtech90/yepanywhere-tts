@@ -292,6 +292,27 @@ export interface ServerCapabilityDefinition {
 }
 
 export const SERVER_CAPABILITIES = {
+  newSessionSelectionMode: {
+    id: CAPABILITY_ID_ALLOCATIONS.newSessionSelectionMode.id,
+    name: "new-session-selection-mode",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.11.1",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Persists fixed or last-used new-session selection preferences.",
+    clientFallback:
+      "Hide the selection policy control and preserve automatic remembering without sending selectionMode.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings"],
+      requestFields: ["settings.newSessionDefaults.selectionMode"],
+      responseFields: ["settings.newSessionDefaults.selectionMode"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older settings parsers discard the selection policy field.",
+    },
+  },
   agentSessionView: {
     id: CAPABILITY_ID_ALLOCATIONS.agentSessionView.id,
     name: "agent-session-view",

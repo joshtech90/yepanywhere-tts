@@ -2116,6 +2116,43 @@ describe("Settings Routes", () => {
       expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
     });
 
+    it.each(["fixed", "last-used", "unexpected", true, null])(
+      "validates new-session selection policy %j",
+      async (selectionMode) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            newSessionDefaults: {
+              selectionMode,
+              provider: "claude",
+              providers: { claude: { model: "opus", effortLevel: "medium" } },
+            },
+          }),
+        });
+        const valid =
+          selectionMode === "fixed" || selectionMode === "last-used";
+        expect(response.status).toBe(valid ? 200 : 400);
+        if (valid)
+          expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith(
+            {
+              newSessionDefaults: {
+                selectionMode,
+                provider: "claude",
+                providers: { claude: { model: "opus", effortLevel: "medium" } },
+              },
+            },
+          );
+        else
+          expect(
+            mockServerSettingsService.updateSettings,
+          ).not.toHaveBeenCalled();
+      },
+    );
+
     it("accepts provider-scoped new-session defaults", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,

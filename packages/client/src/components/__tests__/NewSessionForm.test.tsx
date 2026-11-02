@@ -194,6 +194,7 @@ const {
       | undefined,
     settings: null as {
       newSessionDefaults?: {
+        selectionMode?: "last-used" | "fixed";
         provider?: "claude" | "claude-gateway" | "codex" | "opencode";
         model?: string;
         serviceTier?: string;
@@ -1216,6 +1217,59 @@ describe("NewSessionForm", () => {
       );
     });
   });
+
+  it.each([false, true])(
+    "keeps fixed defaults even when they arrive after a provider change (loaded=%s)",
+    async (loaded) => {
+      const fixed = {
+        newSessionDefaults: {
+          selectionMode: "fixed" as const,
+          provider: "claude" as const,
+          providers: {
+            claude: {
+              model: "opus",
+              thinkingMode: "on" as const,
+              effortLevel: "medium" as const,
+            },
+          },
+        },
+      };
+      serverSettingsState.isLoading = !loaded;
+      serverSettingsState.settings = loaded ? fixed : null;
+      const view = render(<NewSessionForm projectId="project-1" />);
+      openAdvancedOptions();
+      fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+      await waitFor(() =>
+        expect(selectedDropdownValue("newSessionModelTitle")).not.toBe("opus"),
+      );
+      expect(
+        mockUpdateSetting.mock.calls.filter(
+          ([key]) => key === "newSessionDefaults",
+        ),
+      ).toEqual([]);
+      if (!loaded) {
+        serverSettingsState.isLoading = false;
+        serverSettingsState.settings = fixed;
+        view.rerender(<NewSessionForm projectId="project-1" />);
+        await waitFor(() =>
+          expect(selectedDropdownValue("newSessionModelTitle")).not.toBe(
+            "opus",
+          ),
+        );
+        expect(
+          mockUpdateSetting.mock.calls.filter(
+            ([key]) => key === "newSessionDefaults",
+          ),
+        ).toEqual([]);
+      }
+      view.unmount();
+      render(<NewSessionForm projectId="project-1" />);
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe("opus");
+      expect(selectedDropdownValue("newSessionThinkingEffortTitle")).toBe(
+        "on:medium",
+      );
+    },
+  );
 
   it("remembers speed across mounts and clears legacy Fast when Standard is chosen", async () => {
     providersState.providers[1]!.models![0]!.serviceTiers = [
@@ -3592,41 +3646,46 @@ describe("NewSessionForm", () => {
     ).toBe(null);
   });
 
-  it("shows and updates the initial provider effort selector", async () => {
-    modelSettingsState.thinkingMode = "on";
-    modelSettingsState.effortLevel = "medium";
-    serverSettingsState.isLoading = false;
+  it.each([null, "previous save failed"])(
+    "shows and persists effort after a loaded settings snapshot (error=%s)",
+    async (error) => {
+      modelSettingsState.thinkingMode = "on";
+      modelSettingsState.effortLevel = "medium";
+      serverSettingsState.isLoading = false;
+      serverSettingsState.error = error;
+      serverSettingsState.settings = {}; // A successfully loaded server returns an object.
 
-    render(
-      <NewSessionForm
-        projectId="project-1"
-        selectedProject={chooserProjects[0]}
-        projects={[...chooserProjects]}
-      />,
-    );
+      render(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+        />,
+      );
 
-    expect(selectedDropdownValue("newSessionThinkingEffortTitle")).toBe(
-      "on:medium",
-    );
+      expect(selectedDropdownValue("newSessionThinkingEffortTitle")).toBe(
+        "on:medium",
+      );
 
-    fireEvent.click(dropdownOption("newSessionThinkingEffortTitle", "Low"));
+      fireEvent.click(dropdownOption("newSessionThinkingEffortTitle", "Low"));
 
-    await waitFor(() => {
-      expect(mockUpdateSetting).toHaveBeenCalledWith(
-        "newSessionDefaults",
-        expect.objectContaining({
-          provider: "claude",
-          providers: expect.objectContaining({
-            claude: expect.objectContaining({
-              model: "opus",
-              thinkingMode: "on",
-              effortLevel: "low",
+      await waitFor(() => {
+        expect(mockUpdateSetting).toHaveBeenCalledWith(
+          "newSessionDefaults",
+          expect.objectContaining({
+            provider: "claude",
+            providers: expect.objectContaining({
+              claude: expect.objectContaining({
+                model: "opus",
+                thinkingMode: "on",
+                effortLevel: "low",
+              }),
             }),
           }),
-        }),
-      );
-    });
-  });
+        );
+      });
+    },
+  );
 
   it("shows the Show-thinking control in session setup", () => {
     modelSettingsState.thinkingMode = "on";

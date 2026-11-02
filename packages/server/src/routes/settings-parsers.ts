@@ -378,6 +378,12 @@ export function parseNewSessionDefaults(
   const input = raw as Record<string, unknown>;
   const parsed: NewSessionDefaults = {};
 
+  if ("selectionMode" in input) {
+    if (input.selectionMode !== "last-used" && input.selectionMode !== "fixed")
+      return null;
+    parsed.selectionMode = input.selectionMode;
+  }
+
   if ("provider" in input) {
     if (
       input.provider !== undefined &&

@@ -456,3 +456,16 @@ authorize writes or relax the sessions/Inbox gate. See
   reserved; Installed Machine Control uses distinct ID 112.
 - [Hosted compatibility](remote-hosted-compatibility.md): broad protocol/floor
   decisions, transient client/server skew and separate transport formats.
+
+## New-session selection policy (2026-11-02)
+
+`new-session-selection-mode` adds the optional
+`settings.newSessionDefaults.selectionMode` field (`last-used` or `fixed`) on
+the existing GET/PUT settings routes. No existing capability changes meaning.
+The reviewed core corpus is v0.8.0, v0.8.1, v0.9.0-v0.9.2,
+v0.10.0-v0.10.2 and v0.11.0; the optional corpus is v0.10.0-v0.10.2
+and v0.11.0. These stable servers lack the new capability. The client hides
+the policy control and strips selectionMode from settings updates when it is
+absent, retaining last-used behavior and sending no unsupported field.
+The originating request explicitly asks for fixed versus last-used settings;
+this implements that bounded opt-in without changing other installations.
