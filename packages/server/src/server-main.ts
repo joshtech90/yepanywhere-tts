@@ -1794,6 +1794,9 @@ async function startServer() {
               console.log(
                 `[NetworkBinding] Network socket listening on ${bindConfig.host}:${info.port}`,
               );
+              // An all-interface bind can close localhost before its ready
+              // callback runs. Initialize speech on either successful bind.
+              startSpeechBackendInitialization();
             },
           );
           // Only set this flag after successful binding

@@ -31,6 +31,10 @@ behavior across streaming and batch STT.
   YA; removing a running backend or changing the process environment takes
   effect on the next YA restart. Existing workers and in-flight speech remain
   intact while new backends validate.
+- Configured speech backends initialize after a listener becomes available,
+  including a CLI or saved all-interface bind that replaces the initial
+  localhost listener. Network exposure must not leave an otherwise healthy
+  server advertising no configured speech methods.
 - Browser-native Web Speech recognition is a selectable local escape hatch,
   not a YA server backend. The browser still owns its recognizer, credentials,
   latency, and failure modes.
