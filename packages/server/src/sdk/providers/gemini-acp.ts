@@ -418,7 +418,10 @@ export class GeminiACPProvider implements AgentProvider {
       } as SDKMessage;
 
       // Process messages from the queue
-      const messageGen = queue;
+      const messageGen = queue[Symbol.asyncIterator]();
+      const stopWaitingForMessage = () => void messageGen.return();
+      signal.addEventListener("abort", stopWaitingForMessage, { once: true });
+      if (signal.aborted) stopWaitingForMessage();
       let isFirstNewMessage = true;
       for await (const message of messageGen) {
         if (signal.aborted) break;
