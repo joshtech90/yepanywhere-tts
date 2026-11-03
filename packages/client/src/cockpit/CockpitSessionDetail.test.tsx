@@ -157,7 +157,7 @@ describe("Cockpit session detail", () => {
     const entry = detailMocks.data?.entries.find(
       (entry) => entry.kind === "assistant",
     );
-    if (!entry || entry.kind !== "assistant" || !entry.text[0])
+    if (entry?.kind !== "assistant" || !entry.text[0])
       throw new Error("Missing answer");
     entry.text[0].augmentHtml =
       '<p><a data-ya-resource="project-file" href="/projects/project-1/file?path=report.md">Full report</a></p>';
