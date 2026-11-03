@@ -260,6 +260,17 @@ final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDe
 
     // MARK: Navigation
 
+    private func oeffneImBrowser(_ url: URL) {
+        guard ["http", "https", "mailto"].contains(url.scheme ?? "") else { return }
+        if url.scheme != "mailto",
+           let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
+            NSWorkspace.shared.open([url], withApplicationAt: chrome,
+                                    configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     private func istEigen(_ url: URL?) -> Bool {
         guard let url else { return false }
         if url.scheme == "about" || url.scheme == "blob" || url.scheme == "data" { return true }
@@ -277,7 +288,7 @@ final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDe
         // nicht in ein Fenster mit Cockpit-Anmeldung.
         if aktion.targetFrame?.isMainFrame != false, !istEigen(url) {
             if ["http", "https", "mailto"].contains(url.scheme ?? "") {
-                NSWorkspace.shared.open(url)
+                oeffneImBrowser(url)
             }
             return decisionHandler(.cancel)
         }
@@ -397,9 +408,10 @@ final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDe
 
     func webView(_ webView: WKWebView, createWebViewWith konfiguration: WKWebViewConfiguration,
                  for aktion: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        // target=_blank: eigene Seiten im selben Fenster, fremde im Browser.
+        // Auch eigene Dokumentlinks gehoeren bei target=_blank in Chrome.
+        // Sonst ersetzt die alte Dateiansicht den gerade offenen Chat.
         if let url = aktion.request.url {
-            if istEigen(url) { webView.load(aktion.request) } else { NSWorkspace.shared.open(url) }
+            oeffneImBrowser(url)
         }
         return nil
     }

@@ -9,6 +9,11 @@ import {
 } from "react";
 import { Link, Outlet, useLocation, useOutletContext } from "react-router-dom";
 import { ProviderHostDegradedBanner } from "../components/ProviderHostDegradedBanner";
+import {
+  createCockpitNavigation,
+  readCockpitReturn,
+} from "../cockpit/core/navigation";
+import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import styles from "./NavigationLayout.module.css";
 import { Sidebar, SidebarToggleIcon } from "../components/Sidebar";
 import { GlossaryProjectProvider } from "../contexts/GlossaryContext";
@@ -167,6 +172,16 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
   const { panelSlideDurationMs } = usePanelSlideAnimations();
 
   const location = useLocation();
+  const basePath = useRemoteBasePath();
+  const cockpitNavigation = createCockpitNavigation(basePath);
+  const rememberedCockpit = readCockpitReturn();
+  const cockpitHref =
+    rememberedCockpit &&
+    (rememberedCockpit.path === cockpitNavigation.cockpit ||
+      rememberedCockpit.path.startsWith(`${cockpitNavigation.cockpit}/`) ||
+      rememberedCockpit.path.startsWith(`${cockpitNavigation.cockpit}?`))
+      ? rememberedCockpit.path
+      : cockpitNavigation.cockpit;
   const sidebarSessionMatch = useMemo(
     () => readSidebarSessionRouteFromPathname(location.pathname),
     [location.pathname],
@@ -379,6 +394,11 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
       {({ onSessionNavigate, renderRouteStack }) => (
         <SidebarSessionFeedsProvider enabled={sidebarFeedsEnabled}>
           <div className={styles.shell}>
+            <nav className={styles.cockpitBar} aria-label="Yep Cockpit">
+              <Link className={styles.cockpitLink} to={cockpitHref}>
+                Yep Cockpit
+              </Link>
+            </nav>
             <ProviderHostDegradedBanner />
             <div
               ref={layoutFrameRef}

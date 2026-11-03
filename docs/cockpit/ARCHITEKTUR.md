@@ -10,6 +10,19 @@ Basis dieses Umsetzungsschritts:
 
 ## Ziel und Leitplanken
 
+Dokumentlinks in abgeschlossenen Cockpit-Antworten oeffnen die bestehende
+Dateiansicht in einem separaten Browser-Tab. Der offene Chat samt Eingabe bleibt
+stehen. Die Mac-App reicht solche neuen Tabs auch fuer eigene Serveradressen
+an Google Chrome weiter; fehlt Chrome, nimmt sie den Standardbrowser. Es werden
+nur HTTP-, HTTPS- und Mailto-Adressen extern geoeffnet. Dateizugriffspruefungen
+und die isolierte HTML-Vorschau bleiben bei der bestehenden Dateiansicht.
+Markdown-Berichte bleiben Markdown und werden dort lesbar dargestellt.
+
+Die klassische Oberflaeche bietet oberhalb ihres Inhalts dauerhaft den Link
+„Yep Cockpit“, auch auf Dateiseiten und schmalen Bildschirmen. Er fuehrt zum
+gemerkten Cockpit-Ziel desselben Rechners bzw. Relay-Kontexts oder zum
+Cockpit-Einstieg, wenn kein passendes Ziel gespeichert ist.
+
 Das Cockpit ist eine neue, ruhige Bedienoberflaeche fuer Joschas persoenlichen
 Workflow. Es ersetzt nicht den Yep-Anywhere-Core und vorerst auch nicht die
 bisherige Oberflaeche. Claude-/Codex-Integration, Sitzungslebenszyklus,

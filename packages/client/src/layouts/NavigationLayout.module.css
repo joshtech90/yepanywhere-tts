@@ -5,6 +5,37 @@
   overflow: hidden;
 }
 
+.cockpitBar {
+  flex-shrink: 0;
+  display: flex;
+  padding: 4px 12px;
+  padding-top: max(4px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.cockpitLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.cockpitLink:hover {
+  background: var(--bg-secondary);
+}
+
+.cockpitLink:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
+
 @media (width < 1100px) {
   :global(body):has(.shell) {
     /* The frame owns safe-area spacing. Body padding plus the startup root's

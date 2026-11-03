@@ -104,6 +104,31 @@ import {
   SessionDomLingerRouteMarker,
   useNavigationLayout,
 } from "../NavigationLayout";
+import { rememberCockpitReturn } from "../../cockpit/core/navigation";
+
+it("returns from classic pages to the remembered Cockpit chat", () => {
+  rememberCockpitReturn("/cockpit/projects/project-1/sessions/session-1");
+  render(
+    <I18nProvider>
+      <MemoryRouter initialEntries={["/projects/project-1/file"]}>
+        <Routes>
+          <Route element={<NavigationLayout />}>
+            <Route
+              path="/projects/:projectId/file"
+              element={<div>Report</div>}
+            />
+          </Route>
+          <Route
+            path="/cockpit/projects/:projectId/sessions/:sessionId"
+            element={<div>Original chat</div>}
+          />
+        </Routes>
+      </MemoryRouter>
+    </I18nProvider>,
+  );
+  fireEvent.click(screen.getByRole("link", { name: "Yep Cockpit" }));
+  expect(screen.getByText("Original chat")).toBeTruthy();
+});
 
 function ContentFrameRoute() {
   const { openSidebar } = useNavigationLayout();

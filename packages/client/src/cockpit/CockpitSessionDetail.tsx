@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { InnerHtml } from "../components/ui/InnerHtml";
+import { CockpitMarkdown } from "./CockpitMarkdown";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n, type TranslationFn } from "../i18n";
 import {
@@ -142,9 +142,9 @@ function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
       {entry.text.map((segment) => (
         <div className={contentStyles.responseSegment} key={segment.id}>
           {segment.augmentHtml && !segment.isStreaming ? (
-            <InnerHtml
+            <CockpitMarkdown
               className={contentStyles.renderedMarkdown}
-              trustedHtml={segment.augmentHtml}
+              html={segment.augmentHtml}
             />
           ) : (
             <div className={contentStyles.plainText}>{segment.text}</div>
