@@ -14,6 +14,10 @@ settings stay in the native WebView, preserving their app-local preferences.
 Mailto links use the system handler. Other external schemes are not opened
 by the native new-window delegate.
 
+If the external browser needs a fresh login, successful authentication returns
+to the complete requested viewer URL, including its file query and fragment.
+Authentication credentials, principals and server-side file grants are unchanged.
+
 The classic navigation shell always displays a visible **Yep Cockpit** link
 above the content, on desktop and phone, including standalone file pages.
 It returns to the stored Cockpit destination for the same direct/relay base,

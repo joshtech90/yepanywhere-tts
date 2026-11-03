@@ -127,7 +127,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
       !authDisabledByEnv &&
       location.pathname !== "/login"
     ) {
-      navigate("/login", { state: { from: location.pathname } });
+      navigate("/login", {
+        state: {
+          from: `${location.pathname}${location.search}${location.hash}`,
+        },
+      });
     }
   }, [
     isLoading,
@@ -135,6 +139,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     authEnabled,
     authDisabledByEnv,
     location.pathname,
+    location.search,
+    location.hash,
     navigate,
   ]);
 
@@ -157,7 +163,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     setAuthEnabled(true);
     setIsAuthenticated(false);
     setIsSetupMode(false);
-    // The useEffect will redirect to /login with { from: location.pathname }
+    // The effect redirects to /login, preserving the complete requested URL.
   }, []);
 
   const disableAuth = useCallback(async () => {
