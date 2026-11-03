@@ -104,7 +104,12 @@ import {
   SessionDomLingerRouteMarker,
   useNavigationLayout,
 } from "../NavigationLayout";
-import { rememberCockpitReturn } from "../../cockpit/core/navigation";
+import {
+  rememberCockpitReturn,
+  clearCockpitReturn,
+} from "../../cockpit/core/navigation";
+
+afterEach(clearCockpitReturn);
 
 it("returns from classic pages to the remembered Cockpit chat", () => {
   rememberCockpitReturn("/cockpit/projects/project-1/sessions/session-1");

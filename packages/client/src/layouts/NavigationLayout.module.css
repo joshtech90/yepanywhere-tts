@@ -50,6 +50,10 @@
     inset: 0;
     height: auto;
   }
+
+  .frame:global(.session-page) {
+    padding-top: 0;
+  }
 }
 
 .frame:global(.session-page) {

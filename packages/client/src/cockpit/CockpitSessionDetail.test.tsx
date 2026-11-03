@@ -124,14 +124,14 @@ function detailData(
   };
 }
 
-function detailTree() {
+function detailTree(basePath = "") {
   return (
     <MemoryRouter
       initialEntries={["/cockpit/projects/project-1/sessions/session-1"]}
     >
       <I18nProvider>
         <CockpitSessionDetail
-          basePath=""
+          basePath={basePath}
           projectId="project-1"
           sessionId="session-1"
           shellKind="empty"
@@ -141,8 +141,8 @@ function detailTree() {
   );
 }
 
-function renderDetail() {
-  return render(detailTree());
+function renderDetail(basePath = "") {
+  return render(detailTree(basePath));
 }
 
 afterEach(cleanup);
@@ -153,23 +153,49 @@ beforeEach(() => {
 });
 
 describe("Cockpit session detail", () => {
-  it("opens report files separately without replacing the chat", () => {
-    const entry = detailMocks.data?.entries.find(
-      (entry) => entry.kind === "assistant",
-    );
-    if (entry?.kind !== "assistant" || !entry.text[0])
-      throw new Error("Missing answer");
-    entry.text[0].augmentHtml =
-      '<p><a data-ya-resource="project-file" href="/projects/project-1/file?path=report.md">Full report</a></p>';
-    renderDetail();
-    const link = screen.getByRole("link", { name: "Full report" });
-    expect(link.getAttribute("target")).toBe("_blank");
-    expect(link.getAttribute("rel")).toContain("noopener");
-    expect(link.getAttribute("href")).toBe(
-      "/projects/project-1/file?path=report.md",
-    );
-    expect(screen.getByTestId("cockpit-composer")).toBeTruthy();
-  });
+  it.each([
+    {
+      basePath: "",
+      kind: "project-file",
+      href: "/projects/project-1/file?path=report.md",
+      expected: "/projects/project-1/file?path=report.md",
+    },
+    {
+      basePath: "/-/relay/studio",
+      kind: "project-file",
+      href: "/projects/project-1/file?path=report.md",
+      expected: "/-/relay/studio/projects/project-1/file?path=report.md",
+    },
+    {
+      basePath: "",
+      kind: "local-file",
+      href: "/api/local-file?path=%2Ftmp%2Freport.md&render=1&line=12",
+      expected: "/projects/project-1/file?path=%2Ftmp%2Freport.md&line=12",
+    },
+    {
+      basePath: "/-/relay/studio",
+      kind: "local-file",
+      href: "/api/local-file?path=%2Ftmp%2Freport.md&render=1&line=12",
+      expected:
+        "/-/relay/studio/projects/project-1/file?path=%2Ftmp%2Freport.md&line=12",
+    },
+  ])(
+    "opens $kind reports separately on '$basePath' without replacing the chat",
+    ({ basePath, kind, href, expected }) => {
+      const entry = detailMocks.data?.entries.find(
+        (entry) => entry.kind === "assistant",
+      );
+      if (entry?.kind !== "assistant" || !entry.text[0])
+        throw new Error("Missing answer");
+      entry.text[0].augmentHtml = `<p><a data-ya-resource="${kind}" href="${href}">Full report</a></p>`;
+      renderDetail(basePath);
+      const link = screen.getByRole("link", { name: "Full report" });
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toContain("noopener");
+      expect(link.getAttribute("href")).toBe(expected);
+      expect(screen.getByTestId("cockpit-composer")).toBeTruthy();
+    },
+  );
 
   it("keeps provider errors and retry warnings visible after a later answer", () => {
     const renderItems = buildSessionDetailRenderItems({

@@ -408,10 +408,13 @@ final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDe
 
     func webView(_ webView: WKWebView, createWebViewWith konfiguration: WKWebViewConfiguration,
                  for aktion: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        // Auch eigene Dokumentlinks gehoeren bei target=_blank in Chrome.
-        // Sonst ersetzt die alte Dateiansicht den gerade offenen Chat.
+        // Dokumentlinks gehoeren in Chrome. Einstellungen und andere eigene
+        // App-Seiten behalten ihren WebView-Speicher und die Anmeldung.
         if let url = aktion.request.url {
-            oeffneImBrowser(url)
+            let dokument = url.path.range(of: #"^/(?:-/relay/[^/]+/)?projects/[^/]+/file/?$"#,
+                                         options: .regularExpression) != nil || url.path == "/api/local-file"
+            if istEigen(url) && !dokument { webView.load(aktion.request) }
+            else { oeffneImBrowser(url) }
         }
         return nil
     }

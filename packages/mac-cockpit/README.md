@@ -15,9 +15,10 @@ packages/mac-cockpit/build.sh --nur-bauen # nur nach packages/mac-cockpit/build/
   `hosts/cockpit-icons/randlos.py` (randlos, Apple-Raster).
 - Je Rechner eine eigene WebView; ⌘1/⌘2 oder der Umschalter oben wechseln,
   ohne neu zu laden. Der Rechnerwechsel-Knopf im Cockpit springt ebenfalls
-  auf den passenden Reiter. Fremde Links und explizit neue Browser-Tabs
-  (auch eigene Dokumentlinks) öffnen in Google Chrome; fehlt Chrome, wird
-  der Standardbrowser verwendet. Der offene Chat bleibt dabei stehen.
+  auf den passenden Reiter. Fremde Links und eigene Dokumentlinks öffnen in
+  Google Chrome; fehlt Chrome, wird der Standardbrowser verwendet. Der offene
+  Chat bleibt dabei stehen. Eigene App-Seiten wie die Einstellungen bleiben
+  in der App und verwenden deren Anmeldung und lokale Voreinstellungen.
 - Fenster schließen versteckt nur; Mitteilungen und Dock-Zähler laufen
   weiter, bis die App mit ⌘Q beendet wird.
 

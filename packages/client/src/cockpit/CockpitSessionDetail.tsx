@@ -122,7 +122,15 @@ function findTranscriptEntryElement(container: HTMLElement, entryKey: string) {
   ].find((element) => element.dataset.cockpitEntryKey === entryKey);
 }
 
-function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
+function AssistantContent({
+  entry,
+  basePath,
+  projectId,
+}: {
+  entry: CockpitAssistantEntry;
+  basePath: string;
+  projectId: string;
+}) {
   const { t } = useI18n();
   return (
     <>
@@ -145,6 +153,8 @@ function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
             <CockpitMarkdown
               className={contentStyles.renderedMarkdown}
               html={segment.augmentHtml}
+              basePath={basePath}
+              projectId={projectId}
             />
           ) : (
             <div className={contentStyles.plainText}>{segment.text}</div>
@@ -293,11 +303,15 @@ const TranscriptEntry = memo(function TranscriptEntry({
   locale,
   onToggleFold,
   sessionWorking,
+  basePath,
+  projectId,
 }: {
   entry: CockpitDisplayEntry;
   locale: string;
   onToggleFold: (key: string) => void;
   sessionWorking: boolean;
+  basePath: string;
+  projectId: string;
 }) {
   const { t } = useI18n();
   if (entry.kind === "fold") {
@@ -400,7 +414,11 @@ const TranscriptEntry = memo(function TranscriptEntry({
         </header>
       )}
       <div className={thinkingOnly ? undefined : styles.assistantBody}>
-        <AssistantContent entry={entry} />
+        <AssistantContent
+          entry={entry}
+          basePath={basePath}
+          projectId={projectId}
+        />
       </div>
       {entry.spokenText && !entry.isStreaming && (
         <footer className={styles.entryFooter} data-align="start">
@@ -584,9 +602,11 @@ export function CockpitSessionDetail({
         locale={locale}
         onToggleFold={toggleFold}
         sessionWorking={sessionWorking}
+        basePath={basePath}
+        projectId={projectId}
       />
     ),
-    [locale, sessionWorking, toggleFold],
+    [locale, sessionWorking, toggleFold, basePath, projectId],
   );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: A source/session identity change resets local interaction state.
