@@ -68,6 +68,8 @@ import {
   removeFavorite,
 } from "./core/projectFavorites";
 import { COCKPIT_UPLOAD_STALL_MS } from "./useCockpitComposer";
+import { insertDictation, useCockpitDictation } from "./useCockpitDictation";
+import { CockpitDictationButton } from "./CockpitDictationButton";
 
 function FolderIcon() {
   return (
@@ -240,6 +242,21 @@ export function CockpitNewSession({
   const [error, setError] = useState<string | null>(null);
   const [attachmentQuality] = useAttachmentUploadQuality();
   const messageRef = useRef<HTMLTextAreaElement>(null);
+  // The mic button takes focus when pressed, so the caret is remembered from
+  // the textarea's own selection events rather than read at insert time.
+  const messageSelectionRef = useRef<{ start: number; end: number } | null>(
+    null,
+  );
+  const dictation = useCockpitDictation((text) => {
+    const input = messageRef.current;
+    const next = insertDictation(
+      input?.value ?? "",
+      text,
+      messageSelectionRef.current,
+    );
+    setMessage(next.value);
+    messageSelectionRef.current = { start: next.caret, end: next.caret };
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Files stay local until the start: an upload needs the session's folder.
   const attachFiles = (picked: File[]) => {
@@ -723,6 +740,12 @@ export function CockpitNewSession({
             id={messageFieldId}
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={onMessageKeyDown}
+            onSelect={(event) => {
+              messageSelectionRef.current = {
+                start: event.currentTarget.selectionStart,
+                end: event.currentTarget.selectionEnd,
+              };
+            }}
             placeholder={t("newSessionPlaceholder")}
             ref={messageRef}
             rows={5}
@@ -750,6 +773,10 @@ export function CockpitNewSession({
               <PaperClipIcon />
               {t("toolbarAttachFiles")}
             </button>
+            <CockpitDictationButton
+              className={styles.dictationButton}
+              dictation={dictation}
+            />
             {files.length > 0 && (
               <ul
                 aria-label={t("toolbarAttachFiles")}

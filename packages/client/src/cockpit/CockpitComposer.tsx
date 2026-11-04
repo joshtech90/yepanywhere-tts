@@ -11,6 +11,7 @@ import {
   CockpitAttachmentDropCue,
   useCockpitAttachmentDropTarget,
 } from "./CockpitAttachmentDropTarget";
+import { CockpitDictationButton } from "./CockpitDictationButton";
 import { CockpitPromptHistory } from "./CockpitPromptHistory";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import { useCockpitComposer } from "./useCockpitComposer";
@@ -244,41 +245,10 @@ function CockpitComposerSession(props: CockpitComposerProps) {
               <path d="m19 11.5-7.1 7.1a4.6 4.6 0 0 1-6.5-6.5l7.8-7.8a3.1 3.1 0 0 1 4.4 4.4l-7.8 7.8a1.5 1.5 0 0 1-2.1-2.1l7.1-7.1" />
             </svg>
           </button>
-          {dictation.available && (
-            <button
-              aria-label={
-                dictation.state === "recording"
-                  ? t("cockpitDictationStop")
-                  : dictation.state === "transcribing"
-                    ? t("cockpitDictationTranscribing")
-                    : t("cockpitDictationStart")
-              }
-              aria-pressed={dictation.state === "recording"}
-              className={styles.dictationButton}
-              data-state={dictation.state}
-              disabled={dictation.state === "transcribing"}
-              onClick={dictation.toggle}
-              title={
-                dictation.state === "recording"
-                  ? t("cockpitDictationStop")
-                  : dictation.state === "transcribing"
-                    ? t("cockpitDictationTranscribing")
-                    : t("cockpitDictationStart")
-              }
-              type="button"
-            >
-              <svg aria-hidden="true" viewBox="0 0 24 24">
-                {dictation.state === "recording" ? (
-                  <rect height="9" rx="1.5" width="9" x="7.5" y="7.5" />
-                ) : (
-                  <>
-                    <rect height="11" rx="3" width="6" x="9" y="3.5" />
-                    <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5" />
-                  </>
-                )}
-              </svg>
-            </button>
-          )}
+          <CockpitDictationButton
+            className={styles.dictationButton}
+            dictation={dictation}
+          />
           <CockpitPromptHistory
             entries={composer.promptHistory}
             frequent={composer.frequentPrompts}

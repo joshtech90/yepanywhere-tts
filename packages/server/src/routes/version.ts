@@ -882,6 +882,43 @@ function warnIfSlow<T>(probe: string, request: Promise<T>): Promise<T> {
   return request.finally(() => clearTimeout(timer));
 }
 
+/**
+ * Capability IDs are only safe when the server's own version is right. A source
+ * checkout without upstream's tags describes itself as an old release, so
+ * baseline capabilities stop being version-implied and retired ones have no ID
+ * to send. Falling back to names keeps /api/version answering instead of leaving
+ * every client without capabilities or speech backends.
+ */
+function advertiseServerCapabilities(
+  useIdEncoding: boolean,
+  capabilities: string[],
+  current: string,
+  deniedCapabilities: readonly string[],
+) {
+  if (useIdEncoding) {
+    try {
+      return encodeVersionedServerCapabilities(
+        capabilities,
+        current,
+        deniedCapabilities,
+      );
+    } catch (error) {
+      getLogger().warn(
+        { err: error, version: current },
+        "[API] Advertising capabilities by name: ID encoding failed",
+      );
+    }
+  }
+  return {
+    capabilities,
+    deniedCapabilityBits: encodeVersionedServerCapabilities(
+      [],
+      current,
+      deniedCapabilities,
+    ).deniedCapabilityBits,
+  };
+}
+
 export function createVersionRoutes(options?: VersionRouteOptions): Hono {
   const routes = new Hono();
 
@@ -973,20 +1010,12 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
         ? { nativePush: options.nativePush }
         : {}),
       remoteCompatibilityLevel: REMOTE_COMPATIBILITY_LEVEL,
-      ...(capabilityEncoding
-        ? encodeVersionedServerCapabilities(
-            capabilities,
-            current,
-            deniedCapabilities,
-          )
-        : {
-            capabilities,
-            deniedCapabilityBits: encodeVersionedServerCapabilities(
-              [],
-              current,
-              deniedCapabilities,
-            ).deniedCapabilityBits,
-          }),
+      ...advertiseServerCapabilities(
+        capabilityEncoding !== null,
+        capabilities,
+        current,
+        deniedCapabilities,
+      ),
       ...(capabilities.includes(
         SERVER_CAPABILITIES.experimentalConversation.name,
       )

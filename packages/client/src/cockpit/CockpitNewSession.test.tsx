@@ -13,6 +13,8 @@ import { CockpitNewSession } from "./CockpitNewSession";
 import { COCKPIT_APP_SHARE_EVENT } from "./useCockpitAppShare";
 
 const state = vi.hoisted(() => ({
+  voiceBackends: [] as string[],
+  transcribe: vi.fn(),
   projects: [] as Array<{ id: string; name: string; path: string }>,
   providers: [] as unknown[],
   loaded: true,
@@ -64,6 +66,14 @@ vi.mock("../contexts/SourceRuntimeContext", () => ({
   }),
 }));
 
+vi.mock("../hooks/useVersion", () => ({
+  useVersion: () => ({ version: { voiceBackends: state.voiceBackends } }),
+}));
+
+vi.mock("../lib/speechProviders/YaServerProvider", () => ({
+  transcribeSpeechAudio: state.transcribe,
+}));
+
 vi.mock("../hooks/useProjects", () => ({
   useProjects: () => ({ projects: state.projects }),
 }));
@@ -97,6 +107,8 @@ afterEach(() => {
 });
 beforeEach(() => {
   localStorage.setItem(UI_KEYS.locale, "en");
+  state.voiceBackends = [];
+  state.transcribe.mockReset();
   state.projects = [];
   state.loaded = true;
   state.serverFavorites = [
@@ -159,6 +171,59 @@ function renderPage() {
     </MemoryRouter>,
   );
 }
+
+describe("Cockpit new session dictation", () => {
+  it("offers no mic when the server has no Groq backend", () => {
+    state.voiceBackends = [];
+    renderPage();
+    expect(screen.queryByRole("button", { name: "Dictate (Groq)" })).toBeNull();
+  });
+
+  it("dictates the first message at the end of what was typed", async () => {
+    class FakeRecorder {
+      static isTypeSupported = () => true;
+      state: "inactive" | "recording" = "inactive";
+      mimeType = "audio/webm;codecs=opus";
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      start() {
+        this.state = "recording";
+      }
+      stop() {
+        this.state = "inactive";
+        this.ondataavailable?.({ data: new Blob(["voice"]) });
+        this.onstop?.();
+      }
+    }
+    vi.stubGlobal("MediaRecorder", FakeRecorder);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => ({
+          getTracks: () => [{ stop: vi.fn() }],
+        })),
+      },
+    });
+    state.voiceBackends = ["ya-groq"];
+    state.transcribe.mockResolvedValue({ text: "hello from the phone" });
+    renderPage();
+    const message = screen.getByRole("textbox", {
+      name: "First message",
+    }) as HTMLTextAreaElement;
+    fireEvent.change(message, { target: { value: "Note:" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dictate (Groq)" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
+    });
+
+    await vi.waitFor(() =>
+      expect(message.value).toBe("Note: hello from the phone"),
+    );
+  });
+});
 
 describe("Cockpit new session favourites", () => {
   it("picks a favourite's project and saves the star", async () => {

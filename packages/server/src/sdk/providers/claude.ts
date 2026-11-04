@@ -1234,6 +1234,17 @@ export class ClaudeProvider implements AgentProvider {
       return this.withLoginCommand(cliAuthStatus);
     }
 
+    // `claude auth status` can fail transiently (slow start, CLI being updated)
+    // and the route retains this row until an explicit refresh. A setup token
+    // leaves no credentials file behind, so it must count here on its own.
+    if (process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()) {
+      return {
+        installed: true,
+        authenticated: true,
+        enabled: true,
+      };
+    }
+
     const credentialsPath = join(homedir(), ".claude", ".credentials.json");
     if (!existsSync(credentialsPath)) {
       return this.withLoginCommand({

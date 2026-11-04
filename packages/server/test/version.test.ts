@@ -582,6 +582,32 @@ describe("GET /version", () => {
     );
   });
 
+  it("answers by name when a mistagged checkout cannot encode capabilities", async () => {
+    mockFetch(() => new Response(null, { status: 204 }));
+
+    const { createVersionRoutes } = await importVersion();
+    const routes = createVersionRoutes({
+      getCurrentVersionInfo: async () => ({
+        version: "0.5.0-5040-g601e8efb2",
+        installSource: "source",
+      }),
+      getSessionSandboxAvailability: async () => ({
+        state: "unsupported-platform",
+        platform: "darwin",
+      }),
+      getEnabledVoiceBackends: () => ["ya-groq"],
+    });
+    const response = await routes.request("/", {
+      headers: { "X-Yep-Client-Version": "0.5.0-5040-g601e8efb2" },
+    });
+    const version = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(version.capabilityEncoding).toBeUndefined();
+    expect(version.capabilities).toContain(PROJECT_QUEUE_CAPABILITY);
+    expect(version.voiceBackends).toContain("ya-groq");
+  });
+
   it("keeps legacy names for a pre-ID client version", async () => {
     mockFetch(() => new Response(null, { status: 204 }));
 

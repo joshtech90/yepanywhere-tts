@@ -23,6 +23,7 @@ describe("Claude catalog authentication discovery", () => {
   beforeEach(() => {
     vi.stubEnv("CLAUDE_CODE_EXECUTABLE", process.execPath);
     vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "");
     // Hosted runners have no shell Claude; login discovery probes --version.
     vi.stubEnv("PATH", "");
     authCommand.mockReset();
@@ -61,6 +62,15 @@ describe("Claude catalog authentication discovery", () => {
     expect((await provider.getAuthStatus()).authenticated).toBe(false);
     expect((await provider.getAuthStatus()).authenticated).toBe(true);
     expect(authCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a setup-token login authenticated when the status check fails", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fixture-token");
+    authCommand.mockRejectedValue(new Error("authentication command timed out"));
+
+    const status = await new ClaudeProvider().getAuthStatus();
+
+    expect(status).toMatchObject({ authenticated: true, enabled: true });
   });
 
   it("releases a failed shared subprocess so a later check can recover", async () => {
