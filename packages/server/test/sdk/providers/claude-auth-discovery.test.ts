@@ -66,7 +66,9 @@ describe("Claude catalog authentication discovery", () => {
 
   it("keeps a setup-token login authenticated when the status check fails", async () => {
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fixture-token");
-    authCommand.mockRejectedValue(new Error("authentication command timed out"));
+    authCommand.mockRejectedValue(
+      new Error("authentication command timed out"),
+    );
 
     const status = await new ClaudeProvider().getAuthStatus();
 
