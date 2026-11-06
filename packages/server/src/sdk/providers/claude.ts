@@ -1096,6 +1096,19 @@ export async function probeClaudeControlLiveness(
  * - AbortController for cancellation
  * - Tool approval callbacks
  */
+function loggedOutStatusFromFailedCheck(error: unknown): AuthStatus | null {
+  const stdout = (error as { stdout?: unknown } | null)?.stdout;
+  if (typeof stdout !== "string") return null;
+  try {
+    const parsed = JSON.parse(stdout) as { loggedIn?: unknown };
+    return parsed.loggedIn === false
+      ? { installed: true, authenticated: false, enabled: false }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export class ClaudeProvider implements AgentProvider {
   readonly name: ProviderName = "claude";
   readonly displayName: string = "Claude";
@@ -1357,8 +1370,10 @@ export class ClaudeProvider implements AgentProvider {
         enabled: parsed.loggedIn,
         user: parsed.email ? { email: parsed.email } : undefined,
       };
-    } catch {
-      return null;
+    } catch (error) {
+      // A logged-out CLI exits 1 but still answers on stdout. Only a check that
+      // gave no answer at all is unknown.
+      return loggedOutStatusFromFailedCheck(error);
     }
   }
 

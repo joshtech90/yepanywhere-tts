@@ -173,6 +173,53 @@ function renderPage() {
 }
 
 describe("Cockpit new session dictation", () => {
+  class FakeRecorder {
+    static isTypeSupported = () => true;
+    state: "inactive" | "recording" = "inactive";
+    mimeType = "audio/webm;codecs=opus";
+    ondataavailable: ((event: { data: Blob }) => void) | null = null;
+    onstop: (() => void) | null = null;
+    start() {
+      this.state = "recording";
+    }
+    stop() {
+      this.state = "inactive";
+      this.ondataavailable?.({ data: new Blob(["voice"]) });
+      this.onstop?.();
+    }
+  }
+
+  function enableDictation(
+    getUserMedia = vi.fn(async () => ({
+      getTracks: () => [{ stop: vi.fn() }],
+    })) as () => Promise<unknown>,
+  ) {
+    vi.stubGlobal("MediaRecorder", FakeRecorder);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    state.voiceBackends = ["ya-groq"];
+  }
+
+  function messageField() {
+    return screen.getByRole("textbox", {
+      name: "First message",
+    }) as HTMLTextAreaElement;
+  }
+
+  async function record() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dictate (Groq)" }));
+    });
+  }
+
+  async function stopRecording() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
+    });
+  }
+
   it("offers no mic when the server has no Groq backend", () => {
     state.voiceBackends = [];
     renderPage();
@@ -180,47 +227,100 @@ describe("Cockpit new session dictation", () => {
   });
 
   it("dictates the first message at the end of what was typed", async () => {
-    class FakeRecorder {
-      static isTypeSupported = () => true;
-      state: "inactive" | "recording" = "inactive";
-      mimeType = "audio/webm;codecs=opus";
-      ondataavailable: ((event: { data: Blob }) => void) | null = null;
-      onstop: (() => void) | null = null;
-      start() {
-        this.state = "recording";
-      }
-      stop() {
-        this.state = "inactive";
-        this.ondataavailable?.({ data: new Blob(["voice"]) });
-        this.onstop?.();
-      }
-    }
-    vi.stubGlobal("MediaRecorder", FakeRecorder);
-    Object.defineProperty(navigator, "mediaDevices", {
-      configurable: true,
-      value: {
-        getUserMedia: vi.fn(async () => ({
-          getTracks: () => [{ stop: vi.fn() }],
-        })),
-      },
-    });
-    state.voiceBackends = ["ya-groq"];
+    enableDictation();
     state.transcribe.mockResolvedValue({ text: "hello from the phone" });
     renderPage();
-    const message = screen.getByRole("textbox", {
-      name: "First message",
-    }) as HTMLTextAreaElement;
+    const message = messageField();
     fireEvent.change(message, { target: { value: "Note:" } });
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Dictate (Groq)" }));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
-    });
+    await record();
+    await stopRecording();
 
     await vi.waitFor(() =>
       expect(message.value).toBe("Note: hello from the phone"),
+    );
+  });
+
+  it("holds the start until the recording has become text", async () => {
+    enableDictation();
+    state.projects = [{ id: "os", name: "Smartzone OS", path: "/work/os" }];
+    state.providers = [claudeProvider];
+    let answer: (value: { text: string }) => void = () => {};
+    state.transcribe.mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
+    renderPage();
+    const message = messageField();
+    fireEvent.change(message, { target: { value: "Note:" } });
+    const start = screen.getByRole("button", {
+      name: "Start session",
+    }) as HTMLButtonElement;
+    expect(start.disabled).toBe(false);
+
+    await record();
+    expect(start.disabled).toBe(true);
+    await stopRecording();
+    expect(start.disabled).toBe(true);
+
+    await act(async () => {
+      answer({ text: "the rest" });
+    });
+    expect(message.value).toBe("Note: the rest");
+    expect(start.disabled).toBe(false);
+  });
+
+  it("keeps a share that lands in the same render as the transcript", async () => {
+    enableDictation();
+    let answer: (value: { text: string }) => void = () => {};
+    state.transcribe.mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
+    renderPage();
+    const message = messageField();
+    fireEvent.change(message, { target: { value: "Base" } });
+    await record();
+    await stopRecording();
+
+    await act(async () => {
+      window.__yepAppShare = [{ text: "Shared" }];
+      window.dispatchEvent(new Event(COCKPIT_APP_SHARE_EVENT));
+      answer({ text: "spoken" });
+    });
+
+    expect(message.value).toContain("Shared");
+    expect(message.value).toContain("spoken");
+    expect(message.value).toContain("Base");
+  });
+
+  it("leaves the caret after text dictated into the middle", async () => {
+    enableDictation();
+    state.transcribe.mockResolvedValue({ text: "middle" });
+    renderPage();
+    const message = messageField();
+    fireEvent.change(message, { target: { value: "before after" } });
+    message.setSelectionRange(6, 6);
+    fireEvent.select(message);
+
+    await record();
+    await stopRecording();
+
+    await vi.waitFor(() => expect(message.value).toBe("before middle after"));
+    expect(message.selectionStart).toBe("before middle".length);
+    expect(message.selectionEnd).toBe("before middle".length);
+  });
+
+  it("says so when the microphone is refused", async () => {
+    enableDictation(() => Promise.reject(new Error("denied")));
+    renderPage();
+
+    await record();
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Microphone access was denied.",
     );
   });
 });

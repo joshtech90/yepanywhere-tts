@@ -75,6 +75,20 @@ describe("Claude catalog authentication discovery", () => {
     expect(status).toMatchObject({ authenticated: true, enabled: true });
   });
 
+  it("believes a logged-out answer even when the CLI exits non-zero", async () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "fixture-token");
+    authCommand.mockRejectedValue(
+      Object.assign(new Error("exit 1"), {
+        code: 1,
+        stdout: JSON.stringify({ loggedIn: false }),
+      }),
+    );
+
+    const status = await new ClaudeProvider().getAuthStatus();
+
+    expect(status).toMatchObject({ authenticated: false, enabled: false });
+  });
+
   it("releases a failed shared subprocess so a later check can recover", async () => {
     const pending = Promise.withResolvers<{ stdout: string }>();
     authCommand.mockReturnValueOnce(pending.promise);

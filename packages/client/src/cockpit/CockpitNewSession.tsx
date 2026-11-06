@@ -5,6 +5,7 @@ import type {
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -28,6 +29,7 @@ import {
   revokeAttachmentPreviewUrls,
   type ComposerUploadedAttachment,
 } from "../lib/sessionComposerAttachments";
+import { hasCoarsePointer } from "../lib/deviceDetection";
 import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
 import { createSessionNavigationState } from "../lib/sessionNavigationState";
 import type { SourceTransport } from "../lib/transport";
@@ -247,15 +249,30 @@ export function CockpitNewSession({
   const messageSelectionRef = useRef<{ start: number; end: number } | null>(
     null,
   );
+  const dictatedCaretRef = useRef<number | null>(null);
   const dictation = useCockpitDictation((text) => {
+    const selection = messageSelectionRef.current;
+    // A share can land in the same render as the transcript, so the insert has
+    // to build on the queued message rather than on what the DOM shows.
+    setMessage((current) => {
+      const next = insertDictation(current, text, selection);
+      dictatedCaretRef.current = next.caret;
+      messageSelectionRef.current = { start: next.caret, end: next.caret };
+      return next.value;
+    });
+  });
+  // Runs after every render: the ref is only set by the update that inserts.
+  useLayoutEffect(() => {
+    const caret = dictatedCaretRef.current;
+    if (caret === null) return;
+    dictatedCaretRef.current = null;
     const input = messageRef.current;
-    const next = insertDictation(
-      input?.value ?? "",
-      text,
-      messageSelectionRef.current,
-    );
-    setMessage(next.value);
-    messageSelectionRef.current = { start: next.caret, end: next.caret };
+    // Phones would pop the keyboard over the form; leave focus where it was.
+    if (!input || (hasCoarsePointer() && document.activeElement !== input)) {
+      return;
+    }
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(caret, caret);
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Files stay local until the start: an upload needs the session's folder.
@@ -363,6 +380,8 @@ export function CockpitNewSession({
   const canStart =
     choices !== null &&
     !starting &&
+    // Starting now would throw away the recording or its pending transcript.
+    dictation.state === "idle" &&
     message.trim().length > 0 &&
     (customFolder ? folderPath.length > 0 : projectChoice !== null);
 
@@ -816,6 +835,11 @@ export function CockpitNewSession({
           {error && (
             <p className={styles.error} role="alert">
               {error}
+            </p>
+          )}
+          {dictation.error && (
+            <p className={styles.error} role="alert">
+              {dictation.error}
             </p>
           )}
           <div className={styles.actions}>
