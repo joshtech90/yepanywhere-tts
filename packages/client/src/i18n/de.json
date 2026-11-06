@@ -224,6 +224,7 @@
   "cockpitDictationTranscribing": "Wird abgeschrieben…",
   "cockpitDictationMicDenied": "Kein Zugriff auf das Mikrofon.",
   "cockpitDictationFailed": "Diktat fehlgeschlagen: {message}",
+  "cockpitDictationRetry": "Nochmal versuchen",
   "cockpitSessionReadAloudRetry": "Antwort erneut vorlesen",
   "cockpitSessionReadAloudFailed": "Audio nicht verfügbar — erneut versuchen",
   "cockpitSessionStopping": "Wird gestoppt...",

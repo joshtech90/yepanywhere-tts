@@ -310,6 +310,14 @@ function CockpitComposerSession(props: CockpitComposerProps) {
       {dictation.error && (
         <p className={styles.error} role="alert">
           {dictation.error}
+          {dictation.canRetry && (
+            <>
+              {" "}
+              <button type="button" onClick={dictation.retry}>
+                {t("cockpitDictationRetry")}
+              </button>
+            </>
+          )}
         </p>
       )}
       <CockpitAttachmentDropCue

@@ -850,6 +850,7 @@
   "cockpitDictationTranscribing": "Transcribing…",
   "cockpitDictationMicDenied": "Microphone access was denied.",
   "cockpitDictationFailed": "Dictation failed: {message}",
+  "cockpitDictationRetry": "Try again",
   "cockpitSessionReadAloudRetry": "Try reading response aloud again",
   "cockpitSessionReadAloudFailed": "Audio unavailable — try again",
   "cockpitSessionCopyResponse": "Copy response",

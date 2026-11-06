@@ -1,4 +1,9 @@
 import { getLogger } from "../../logging/logger.js";
+import {
+  type DictationFallback,
+  grokWebFallback,
+  isSilentRecording,
+} from "./grokWebStt.js";
 import type { SpeechBackend, TranscribeOptions } from "./SpeechBackend.js";
 
 const logger = getLogger();
@@ -51,6 +56,10 @@ export class GroqSttBackend implements SpeechBackend {
     private readonly apiKeys: readonly string[],
     private readonly language?: string,
     private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fallback: DictationFallback = grokWebFallback(),
+    private readonly isSilent: (
+      audio: Buffer,
+    ) => Promise<boolean> = isSilentRecording,
   ) {}
 
   async validate(): Promise<{ ok: true } | { ok: false; reason: string }> {
@@ -93,9 +102,40 @@ export class GroqSttBackend implements SpeechBackend {
     return `Groq transcription failed (HTTP ${status})${detail ? `: ${detail}` : ""}`;
   }
 
+  /**
+   * Groq first, then once the Grok web login (Joscha 06.11.2026). The stand-in
+   * is named in the text because its figures were wrong in the comparison.
+   */
   async transcribe(
     audio: Buffer,
     options: TranscribeOptions = {},
+  ): Promise<string> {
+    if (await this.isSilent(audio)) return "";
+    let groqError: unknown;
+    try {
+      return await this.transcribeWithGroq(audio, options);
+    } catch (error) {
+      groqError = error;
+    }
+    logger.warn(
+      `Groq dictation failed, trying Grok: ${groqError instanceof Error ? groqError.message : "unknown"}`,
+    );
+    let text: string;
+    try {
+      text = await this.fallback(audio, options);
+    } catch (grokError) {
+      throw new Error(
+        `${groqError instanceof Error ? groqError.message : "Groq failed"}; ${
+          grokError instanceof Error ? grokError.message : "Grok failed"
+        }`,
+      );
+    }
+    return text ? `(abgeschrieben von Grok) ${text}` : "";
+  }
+
+  private async transcribeWithGroq(
+    audio: Buffer,
+    options: TranscribeOptions,
   ): Promise<string> {
     if (audio.length > MAX_AUDIO_BYTES) {
       throw new Error("Recording is too long for Groq (25 MB limit)");

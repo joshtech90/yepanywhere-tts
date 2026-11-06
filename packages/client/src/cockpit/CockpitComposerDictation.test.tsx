@@ -120,6 +120,32 @@ describe("Cockpit dictation", () => {
     expect(screen.queryByRole("button", { name: "Dictate (Groq)" })).toBeNull();
   });
 
+  it("keeps a failed recording for a retry without re-recording", async () => {
+    mocks.transcribe.mockRejectedValueOnce(new Error("Groq down; Grok down"));
+    renderComposer();
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dictate (Groq)" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
+    });
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    expect(screen.getByRole("alert").textContent).toContain("Grok down");
+
+    mocks.transcribe.mockResolvedValueOnce({ text: "gerettet" });
+    await act(async () => {
+      fireEvent.click(retry);
+    });
+    await waitFor(() => expect(input.value).toContain("gerettet"));
+    expect(mocks.transcribe).toHaveBeenCalledTimes(2);
+    expect(mocks.transcribe.mock.calls[1]?.[0]).toBe(
+      mocks.transcribe.mock.calls[0]?.[0],
+    );
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
   it("keeps keystrokes typed while Groq transcribes and inserts at the caret", async () => {
     let answer: (value: { text: string }) => void = () => {};
     mocks.transcribe.mockReturnValue(

@@ -31,7 +31,7 @@ function canRecord(): boolean {
 }
 
 /**
- * Press-to-toggle dictation through the server's Groq backend. The button is
+ * Press-to-toggle dictation through the server's Groq backend (Grok stands in). The button is
  * offered only when the server advertises `ya-groq`, so hosts without a key
  * pool show no dead control. Typing stays untouched while recording or
  * transcribing: the text lands at the caret only once Groq answers.
@@ -41,6 +41,7 @@ export function useCockpitDictation(onText: (text: string) => void) {
   const { version } = useVersion();
   const [state, setState] = useState<CockpitDictationState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [failedAudio, setFailedAudio] = useState<Blob | null>(null);
   // One recording at a time: the lock is taken synchronously on click, before
   // the permission prompt, and released only when the attempt ends, so a
   // double click cannot open a second microphone stream.
@@ -79,10 +80,41 @@ export function useCockpitDictation(onText: (text: string) => void) {
     if (recorder && recorder.state !== "inactive") recorder.stop();
   }, []);
 
+  // A failed recording stays until the next one, so nothing has to be re-spoken.
+  const send = useCallback(
+    (audio: Blob) => {
+      if (aliveRef.current) {
+        setFailedAudio(null);
+        setError(null);
+        setState("transcribing");
+      }
+      transcribeSpeechAudio(audio, COCKPIT_DICTATION_BACKEND)
+        .then(({ text }) => {
+          const spoken = text.trim();
+          if (spoken && aliveRef.current) onTextRef.current(spoken);
+          finish();
+        })
+        .catch((cause: unknown) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          if (aliveRef.current) setFailedAudio(audio);
+          finish(t("cockpitDictationFailed", { message }));
+        });
+    },
+    [finish, t],
+  );
+
+  const retry = useCallback(() => {
+    if (busyRef.current || !failedAudio) return;
+    busyRef.current = true;
+    send(failedAudio);
+  }, [failedAudio, send]);
+
   const start = useCallback(async () => {
     if (busyRef.current) return;
     busyRef.current = true;
     setError(null);
+    setFailedAudio(null);
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -148,31 +180,27 @@ export function useCockpitDictation(onText: (text: string) => void) {
         finish();
         return;
       }
-      if (aliveRef.current) setState("transcribing");
-      transcribeSpeechAudio(audio, COCKPIT_DICTATION_BACKEND)
-        .then(({ text }) => {
-          const spoken = text.trim();
-          if (spoken && aliveRef.current) onTextRef.current(spoken);
-          finish();
-        })
-        .catch((cause: unknown) => {
-          const message =
-            cause instanceof Error ? cause.message : String(cause);
-          finish(t("cockpitDictationFailed", { message }));
-        });
+      send(audio);
     };
     timer = setTimeout(() => {
       if (recorder.state !== "inactive") recorder.stop();
     }, MAX_RECORDING_MS);
     setState("recording");
-  }, [finish, t]);
+  }, [finish, send, t]);
 
   const toggle = useCallback(() => {
     if (state === "recording") stop();
     else if (state === "idle") void start();
   }, [start, state, stop]);
 
-  return { available, error, state, toggle };
+  return {
+    available,
+    canRetry: failedAudio !== null,
+    error,
+    retry,
+    state,
+    toggle,
+  };
 }
 
 /**
