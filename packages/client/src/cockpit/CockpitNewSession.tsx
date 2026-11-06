@@ -267,11 +267,9 @@ export function CockpitNewSession({
     if (caret === null) return;
     dictatedCaretRef.current = null;
     const input = messageRef.current;
+    if (!input) return;
     // Phones would pop the keyboard over the form; leave focus where it was.
-    if (!input || (hasCoarsePointer() && document.activeElement !== input)) {
-      return;
-    }
-    input.focus({ preventScroll: true });
+    if (!hasCoarsePointer()) input.focus({ preventScroll: true });
     input.setSelectionRange(caret, caret);
   });
   const fileInputRef = useRef<HTMLInputElement>(null);

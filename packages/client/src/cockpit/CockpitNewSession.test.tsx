@@ -313,6 +313,32 @@ describe("Cockpit new session dictation", () => {
     expect(message.selectionEnd).toBe("before middle".length);
   });
 
+  it("moves the caret on a phone without opening the keyboard", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: query.includes("coarse"),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    enableDictation();
+    state.transcribe.mockResolvedValue({ text: "middle" });
+    renderPage();
+    const message = messageField();
+    fireEvent.change(message, { target: { value: "before after" } });
+    message.setSelectionRange(6, 6);
+    fireEvent.select(message);
+    message.blur();
+
+    await record();
+    await stopRecording();
+
+    await vi.waitFor(() => expect(message.value).toBe("before middle after"));
+    expect(message.selectionStart).toBe("before middle".length);
+    expect(document.activeElement).not.toBe(message);
+  });
+
   it("says so when the microphone is refused", async () => {
     enableDictation(() => Promise.reject(new Error("denied")));
     renderPage();
