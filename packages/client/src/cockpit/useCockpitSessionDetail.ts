@@ -39,6 +39,8 @@ export interface CockpitSessionDetailData {
   outgoing: CockpitOutgoingEntry[];
   processState: "idle" | "in-turn" | "waiting-input";
   reloadSession: () => void;
+  /** Refetches only the session metadata (creation status), not the transcript. */
+  refreshSessionMetadata: () => Promise<void>;
   restoredFromSnapshot: boolean;
   session: SessionMetadata | null;
   setSessionModel: (model: string) => void;
@@ -189,6 +191,7 @@ export function useCockpitSessionDetail(
     outgoing,
     processState: detail.processState,
     reloadSession: detail.reloadSession,
+    refreshSessionMetadata: detail.refreshSessionMetadata,
     restoredFromSnapshot: detail.restoredFromSnapshot,
     session: detail.session,
     setSessionModel: detail.setSessionModel,

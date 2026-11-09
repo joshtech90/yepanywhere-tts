@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
     serverTimestamp: 1,
   })),
   navigate: vi.fn(),
+  fetch: vi.fn(),
 }));
 
 vi.mock("./cockpitSend", () => ({ sendCockpitDirectMessage: mocks.send }));
@@ -20,7 +21,10 @@ vi.mock("./core/sessionCreation", () => ({
   requestCockpitSessionCreation: mocks.startSession,
 }));
 vi.mock("../contexts/SourceRuntimeContext", () => ({
-  useCurrentSourceRuntime: () => ({ sourceKey: "local", transport: {} }),
+  useCurrentSourceRuntime: () => ({
+    sourceKey: "local",
+    transport: { fetch: mocks.fetch },
+  }),
 }));
 vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
@@ -86,7 +90,76 @@ beforeEach(() => {
 });
 afterEach(() => vi.clearAllMocks());
 
+const handoffEntries: CockpitTranscriptEntry[] = [
+  { kind: "user", key: "u", text: COCKPIT_HANDOFF_PROMPT },
+  {
+    kind: "assistant",
+    key: "a",
+    text: [
+      {
+        id: "t",
+        text: "1. Ziel: Tastatur",
+        isStreaming: false,
+        abortedMidStream: false,
+      },
+    ],
+    thinking: [],
+    spokenText: "1. Ziel: Tastatur",
+    isStreaming: false,
+  },
+];
+
 describe("useCockpitHandoff", () => {
+  it("opens the earlier session on retry when its reply was lost", async () => {
+    mocks.startSession.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    mocks.fetch.mockReset();
+    let props = {
+      basePath: "",
+      entries: [] as CockpitTranscriptEntry[],
+      port: port("idle"),
+      projectId: "project-1",
+      sourceTitle: "Gboard APK patchen",
+    };
+    const { result, rerender } = renderHook(() => useCockpitHandoff(props), {
+      wrapper,
+    });
+    const runHandoff = async () => {
+      await act(() => result.current.start(choices));
+      props = { ...props, entries: [], port: port("in-turn") };
+      rerender();
+      props = { ...props, port: port("idle"), entries: handoffEntries };
+      await act(async () => {
+        rerender();
+      });
+    };
+
+    await runHandoff();
+    await vi.waitFor(() => expect(result.current.phase).toBe("error"));
+    const [, , firstRequest] = mocks.startSession.mock.calls[0] as unknown as [
+      unknown,
+      string,
+      { requestId: string },
+    ];
+    mocks.fetch.mockResolvedValueOnce({
+      requestId: firstRequest.requestId,
+      projectId: "project-1",
+      sessionId: "saved-session",
+    });
+
+    act(() => result.current.reset());
+    await runHandoff();
+    await vi.waitFor(() =>
+      expect(mocks.navigate).toHaveBeenCalledWith(
+        "/cockpit/projects/project-1/sessions/saved-session",
+        expect.anything(),
+      ),
+    );
+    expect(mocks.fetch).toHaveBeenCalledWith(
+      `/session-creations/${firstRequest.requestId}`,
+    );
+    expect(mocks.startSession).toHaveBeenCalledTimes(1);
+  });
+
   it("asks the session for a handoff, then starts a new session with it", async () => {
     let props = {
       basePath: "",

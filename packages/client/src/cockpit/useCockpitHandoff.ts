@@ -1,4 +1,7 @@
-import type { ProviderName } from "@yep-anywhere/shared";
+import type {
+  ProviderName,
+  SessionCreationReceipt,
+} from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
@@ -12,7 +15,10 @@ import {
   extractCockpitHandoffSummary,
 } from "./core/handoff";
 import { createCockpitNavigation } from "./core/navigation";
-import { requestCockpitSessionCreation } from "./core/sessionCreation";
+import {
+  isFinalCreationRefusal,
+  requestCockpitSessionCreation,
+} from "./core/sessionCreation";
 import { type CockpitLaunchChoices, launchOptions } from "./core/newSession";
 import type { CockpitTranscriptEntry } from "./core/sessionDetail";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
@@ -56,6 +62,16 @@ export function useCockpitHandoff({
   const [error, setError] = useState<string | null>(null);
   const choicesRef = useRef<CockpitLaunchChoices | null>(null);
   const sawTurnRef = useRef(false);
+  /**
+   * A handoff creation the host never answered. A retry writes a new summary,
+   * so it cannot reuse the request; it first asks whether the earlier one was
+   * saved and opens that session instead of starting a second one.
+   */
+  const unconfirmedRef = useRef<{
+    sourceKey: string;
+    projectId: string;
+    requestId: string;
+  } | null>(null);
   // Set before the first await so a second click cannot start a second run.
   const inFlightRef = useRef(false);
   const [waitExpired, setWaitExpired] = useState(false);
@@ -141,17 +157,47 @@ export function useCockpitHandoff({
     }
     setPhase("starting");
     const message = buildCockpitHandoffMessage({ summary, sourceTitle });
-    void requestCockpitSessionCreation(runtime.transport, projectId, {
-      requestId: generateUUID(),
-      message,
-      options: {
-        ...launchOptions(choices),
-        ...(choices.supportsPermissionMode
-          ? { mode: port.permissionMode }
-          : {}),
-      },
-      clientTimestamp: Date.now(),
-    })
+    const transport = runtime.transport;
+    const sourceKey = runtime.sourceKey;
+    const create = async (): Promise<SessionCreationReceipt> => {
+      const earlier = unconfirmedRef.current;
+      if (earlier?.sourceKey === sourceKey && earlier.projectId === projectId) {
+        const saved = await transport
+          .fetch<SessionCreationReceipt>(
+            `/session-creations/${encodeURIComponent(earlier.requestId)}`,
+          )
+          .catch(() => null);
+        if (saved?.requestId === earlier.requestId && saved.sessionId) {
+          unconfirmedRef.current = null;
+          return saved;
+        }
+      }
+      const requestId = generateUUID();
+      unconfirmedRef.current = { sourceKey, projectId, requestId };
+      try {
+        const receipt = await requestCockpitSessionCreation(
+          transport,
+          projectId,
+          {
+            requestId,
+            message,
+            options: {
+              ...launchOptions(choices),
+              ...(choices.supportsPermissionMode
+                ? { mode: port.permissionMode }
+                : {}),
+            },
+            clientTimestamp: Date.now(),
+          },
+        );
+        unconfirmedRef.current = null;
+        return receipt;
+      } catch (error) {
+        if (isFinalCreationRefusal(error)) unconfirmedRef.current = null;
+        throw error;
+      }
+    };
+    void create()
       .then((result) => {
         if (!mountedRef.current) return;
         const navigation = createCockpitNavigation(basePath);
@@ -182,6 +228,7 @@ export function useCockpitHandoff({
     port.permissionMode,
     port.processState,
     projectId,
+    runtime.sourceKey,
     runtime.transport,
     sourceTitle,
     t,
