@@ -27,8 +27,14 @@ import {
 } from "../../api/peerConnections";
 import { useI18n } from "../../i18n";
 import { SettingsSection } from "./SettingsSection";
+import { Button, ButtonBase, IconButton } from "../../components/ui/Button";
+import { Checkbox } from "../../components/ui/Checkbox";
+import { Field, Select, TextInput } from "../../components/ui/Field";
 import { Modal } from "../../components/ui/Modal";
 import styles from "./ServerConnectionsSettings.module.css";
+
+// Retain the existing wire discriminator for account-managed credentials.
+const IDENTITY_SERVICE_CREDENTIAL_ORIGIN = "fleet";
 
 // These owner dialogs keep keyboard navigation within the current action.
 function ConnectionDialog({
@@ -331,7 +337,9 @@ export function ServerConnectionsSettings() {
           ? t("connectionsRevoked")
           : t("connectionsStopped");
       setNotice(
-        peer[direction].some((p) => p.origin === "fleet")
+        peer[direction].some(
+          (p) => p.origin === IDENTITY_SERVICE_CREDENTIAL_ORIGIN,
+        )
           ? t("connectionsManualRemoved")
           : result,
       );
@@ -359,9 +367,8 @@ export function ServerConnectionsSettings() {
             <span>{data.identity.hostname}</span>
           </p>
         </div>
-        <button
-          type="button"
-          className="btn btn-primary"
+        <Button
+          variant="primary"
           ref={addButtonRef}
           disabled={
             busy || !supportsRefresh || data.environmentOverride === false
@@ -369,7 +376,7 @@ export function ServerConnectionsSettings() {
           onClick={() => openForm()}
         >
           {t("connectionsAdd")}
-        </button>
+        </Button>
       </header>
       {!data.enabled && (
         <div className={styles.feedback}>
@@ -400,24 +407,20 @@ export function ServerConnectionsSettings() {
         >
           <h3>{renew ? t("connectionsRenewTitle") : t("connectionsAdd")}</h3>
           <p className={styles.muted}>{t("connectionsTrustHint")}</p>
-          <label className={styles.check}>
-            <input
-              type="checkbox"
-              checked={automatic}
-              onChange={(e) => setAutomatic(e.target.checked)}
-              disabled={busy}
-            />
-            {t("connectionsAutomatic")}
-          </label>
+          <Checkbox
+            label={t("connectionsAutomatic")}
+            checked={automatic}
+            onCheckedChange={setAutomatic}
+            disabled={busy}
+          />
           <p className={styles.muted}>
             {automatic
               ? t("connectionsAutomaticHint")
               : t("connectionsFixedHint")}
           </p>
           {renew && <p className={styles.muted}>{t("connectionsRenewHint")}</p>}
-          <label>
-            {t("connectionsRoute")}
-            <select
+          <Field label={t("connectionsRoute")}>
+            <Select
               value={kind}
               disabled={busy}
               onChange={(e) => {
@@ -427,14 +430,17 @@ export function ServerConnectionsSettings() {
             >
               <option value="relay">{t("connectionsRelay")}</option>
               <option value="direct">{t("connectionsDirect")}</option>
-            </select>
-          </label>
-          <label>
-            {kind === "relay"
-              ? t("connectionsRelayUrl")
-              : t("connectionsServerAddress")}
-            <input
-              type="text"
+            </Select>
+          </Field>
+          <Field
+            label={
+              kind === "relay"
+                ? t("connectionsRelayUrl")
+                : t("connectionsServerAddress")
+            }
+            required
+          >
+            <TextInput
               value={address}
               onChange={(e) => setAddress(e.target.value)}
               placeholder={
@@ -443,75 +449,67 @@ export function ServerConnectionsSettings() {
                   : "http://192.168.1.20:3400"
               }
               maxLength={2048}
-              required
               disabled={busy}
               autoComplete="off"
             />
-          </label>
-          <label>
-            {t("connectionsUsername")}
-            <input
+          </Field>
+          <Field label={t("connectionsUsername")} required>
+            <TextInput
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              required
               maxLength={128}
               disabled={busy}
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
             />
-          </label>
-          <label>
-            {t("connectionsPassword")}
-            <input
+          </Field>
+          <Field label={t("connectionsPassword")} required>
+            <TextInput
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              required
               maxLength={4096}
               disabled={busy}
               autoComplete="off"
             />
-          </label>
+          </Field>
           <p className={styles.muted}>{t("connectionsSrpHint")}</p>
-          <label>
-            {t("connectionsLabel")}
-            <input
+          <Field label={t("connectionsLabel")}>
+            <TextInput
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               maxLength={128}
               disabled={busy}
             />
-          </label>
+          </Field>
           {reverseOnly ? (
             <p>{t("connectionsReverseOnly")}</p>
           ) : (
-            <label className={styles.check}>
-              <input
-                type="checkbox"
-                checked={both}
-                onChange={(e) => setBoth(e.target.checked)}
-                disabled={busy}
-              />
-              <span>{t("connectionsBoth")}</span>
-            </label>
+            <Checkbox
+              label={t("connectionsBoth")}
+              checked={both}
+              onCheckedChange={setBoth}
+              disabled={busy}
+            />
           )}
           {both && kind === "direct" && !data.relay?.enabled && (
-            <label>
-              {t("connectionsReturnAddress")}
-              <input
+            <Field
+              label={t("connectionsReturnAddress")}
+              hint={t("connectionsReturnHint")}
+              required
+            >
+              <TextInput
                 value={returnAddress}
                 onChange={(e) => setReturnAddress(e.target.value)}
                 placeholder="ws://192.168.1.10:3400/peer/ws"
-                required
                 disabled={busy}
               />
-              <span className={styles.muted}>{t("connectionsReturnHint")}</span>
-            </label>
+            </Field>
           )}
           <p className={styles.muted}>{t("connectionsOwnerSessionHint")}</p>
           <div className={styles.actions}>
-            <button type="submit" className="btn btn-primary" disabled={busy}>
+            <Button type="submit" variant="primary" disabled={busy}>
               {busy
                 ? t("connectionsConnecting")
                 : reverseOnly
@@ -519,10 +517,8 @@ export function ServerConnectionsSettings() {
                   : renew
                     ? t("connectionsRenew")
                     : t("connectionsConnect")}
-            </button>
-            <button
-              type="button"
-              className="btn"
+            </Button>
+            <Button
               disabled={busy}
               onClick={() => {
                 setForm(false);
@@ -530,7 +526,7 @@ export function ServerConnectionsSettings() {
               }}
             >
               {t("cancel")}
-            </button>
+            </Button>
           </div>
         </form>
       )}
@@ -559,7 +555,7 @@ export function ServerConnectionsSettings() {
                       (p) => p.origin === "manual",
                     );
                     const managed = peer[direction].some(
-                      (p) => p.origin === "fleet",
+                      (p) => p.origin === IDENTITY_SERVICE_CREDENTIAL_ORIGIN,
                     );
                     const needsSignIn =
                       credential.authentication?.status ===
@@ -578,8 +574,7 @@ export function ServerConnectionsSettings() {
                     return (
                       <li key={peer.serverId} className={styles.deviceRow}>
                         <div className={styles.deviceContent}>
-                          <button
-                            type="button"
+                          <ButtonBase
                             className={styles.deviceName}
                             disabled={busy}
                             aria-label={t("connectionsViewDevice", {
@@ -596,11 +591,10 @@ export function ServerConnectionsSettings() {
                             ) : (
                               <strong>{nameOf(peer)}</strong>
                             )}
-                          </button>
+                          </ButtonBase>
                           {needsSignIn && !unselected ? (
-                            <button
-                              type="button"
-                              className={`btn ${styles.signIn}`}
+                            <Button
+                              className={styles.signIn}
                               disabled={
                                 busy ||
                                 !supportsRefresh ||
@@ -611,17 +605,16 @@ export function ServerConnectionsSettings() {
                               }
                             >
                               {t("connectionsSignInAgain")}
-                            </button>
+                            </Button>
                           ) : problem ? (
                             <p className={styles.problem}>{problem}</p>
                           ) : null}
                         </div>
                         {manual && !managed ? (
-                          <button
-                            type="button"
+                          <IconButton
                             className={styles.remove}
                             disabled={busy}
-                            aria-label={
+                            label={
                               direction === "incoming"
                                 ? t("connectionsRemoveIncomingLabel", {
                                     name: nameOf(peer),
@@ -635,7 +628,7 @@ export function ServerConnectionsSettings() {
                             }
                           >
                             ×
-                          </button>
+                          </IconButton>
                         ) : (
                           <span className={styles.managed}>
                             {t("connectionsManaged")}
@@ -660,24 +653,14 @@ export function ServerConnectionsSettings() {
       })}
       <div className={styles.actions}>
         {cursor !== "0" && (
-          <button
-            type="button"
-            className="btn"
-            disabled={busy}
-            onClick={() => setCursor("0")}
-          >
+          <Button disabled={busy} onClick={() => setCursor("0")}>
             {t("connectionsFirstPage")}
-          </button>
+          </Button>
         )}
         {data.nextCursor && (
-          <button
-            type="button"
-            className="btn"
-            disabled={busy}
-            onClick={() => setCursor(data.nextCursor!)}
-          >
+          <Button disabled={busy} onClick={() => setCursor(data.nextCursor!)}>
             {t("connectionsMore")}
-          </button>
+          </Button>
         )}
       </div>
       <details className={styles.settings}>
@@ -685,16 +668,14 @@ export function ServerConnectionsSettings() {
         <p className={styles.muted}>
           {t("settingsServerConnectionsDescription")}
         </p>
-        <button
-          type="button"
-          className="btn"
+        <Button
           disabled={busy}
           onClick={() =>
             void load().catch(() => setError(t("connectionsLoadError")))
           }
         >
           {t("connectionsRefresh")}
-        </button>
+        </Button>
       </details>
       {selectedPeer && (
         <ConnectionDialog
@@ -729,19 +710,21 @@ export function ServerConnectionsSettings() {
                 );
               }}
             >
-              <label>
-                {t("connectionsLabel")}
-                <input
+              <Field
+                label={t("connectionsLabel")}
+                className={styles.labelField}
+              >
+                <TextInput
                   value={newLabel}
                   onChange={(e) => setNewLabel(e.target.value)}
                   required
                   maxLength={128}
                   disabled={busy}
                 />
-              </label>
-              <button type="submit" className="btn" disabled={busy}>
+              </Field>
+              <Button variant="primary" type="submit" disabled={busy}>
                 {t("connectionsSave")}
-              </button>
+              </Button>
             </form>
             {(["outgoing", "incoming"] as const).map((direction) =>
               selectedPeer[direction].map((credential) => (
@@ -755,8 +738,8 @@ export function ServerConnectionsSettings() {
                       : t("connectionsIncoming")}
                   </strong>
                   <p className={styles.muted}>
-                    {credential.origin === "fleet"
-                      ? t("connectionsFleet")
+                    {credential.origin === IDENTITY_SERVICE_CREDENTIAL_ORIGIN
+                      ? t("connectionsAccountCredential")
                       : credential.allProjects
                         ? t("connectionsTrustedControl")
                         : t("connectionsScoped")}{" "}
@@ -810,9 +793,8 @@ export function ServerConnectionsSettings() {
                     </p>
                   )}
                   {credential.origin === "manual" && (
-                    <button
-                      type="button"
-                      className="btn"
+                    <Button
+                      variant="danger-outline"
                       disabled={busy}
                       onClick={() =>
                         requestRemoval(selectedPeer, direction, credential)
@@ -821,14 +803,12 @@ export function ServerConnectionsSettings() {
                       {direction === "incoming"
                         ? t("connectionsRevoke")
                         : t("connectionsStop")}
-                    </button>
+                    </Button>
                   )}
                 </div>
               )),
             )}
-            <button
-              type="button"
-              className="btn"
+            <Button
               disabled={busy || !selectedPeer.outgoing.some((p) => p.active)}
               onClick={() =>
                 void act(
@@ -838,27 +818,23 @@ export function ServerConnectionsSettings() {
               }
             >
               {t("connectionsTest")}
-            </button>
-            <button
-              type="button"
-              className="btn"
+            </Button>
+            <Button
               disabled={
                 busy || !supportsRefresh || data.environmentOverride === false
               }
               onClick={() => openForm(selectedPeer)}
             >
               {t("connectionsRenew")}
-            </button>
-            <button
-              type="button"
-              className="btn"
+            </Button>
+            <Button
               disabled={
                 busy || !supportsRefresh || data.environmentOverride === false
               }
               onClick={() => openForm(selectedPeer, true)}
             >
               {t("connectionsReverse")}
-            </button>
+            </Button>
             <h4>{t("connectionsSessions")}</h4>
             {activityError ? (
               <p role="alert">{t("connectionsActivityError")}</p>
@@ -937,7 +913,7 @@ export function ServerConnectionsSettings() {
           <div className={styles.confirmation}>
             <p>
               {removing.peer[removing.direction].some(
-                (p) => p.origin === "fleet",
+                (p) => p.origin === IDENTITY_SERVICE_CREDENTIAL_ORIGIN,
               )
                 ? t("connectionsRemoveManualConfirm", {
                     name: nameOf(removing.peer),
@@ -953,7 +929,9 @@ export function ServerConnectionsSettings() {
                     })}
             </p>
             {removing.direction === "outgoing" &&
-              removing.peer.outgoing.some((p) => p.origin === "fleet") && (
+              removing.peer.outgoing.some(
+                (p) => p.origin === IDENTITY_SERVICE_CREDENTIAL_ORIGIN,
+              ) && (
                 <p className={styles.muted}>
                   {t("connectionsRemoteGrantRemains")}
                 </p>
@@ -975,32 +953,30 @@ export function ServerConnectionsSettings() {
                 </p>
               )}
             {removing.peer[removing.direction].some(
-              (p) => p.origin === "fleet",
-            ) && <p className={styles.muted}>{t("connectionsKeepFleet")}</p>}
+              (p) => p.origin === IDENTITY_SERVICE_CREDENTIAL_ORIGIN,
+            ) && (
+              <p className={styles.muted}>
+                {t("connectionsKeepAccountAccess")}
+              </p>
+            )}
             {removalError && (
               <p role="alert" className={styles.feedback}>
                 {removalError}
               </p>
             )}
             <div className={styles.confirmActions}>
-              <button
-                type="button"
-                className="btn"
-                disabled={busy}
-                onClick={() => setRemoving(undefined)}
-              >
+              <Button disabled={busy} onClick={() => setRemoving(undefined)}>
                 {t("cancel")}
-              </button>
-              <button
-                type="button"
-                className={`btn ${styles.destructive}`}
+              </Button>
+              <Button
+                variant="danger"
                 disabled={busy}
                 onClick={() => void remove()}
               >
                 {removing.direction === "incoming"
                   ? t("connectionsRemoveIncomingAction")
                   : t("connectionsRemoveOutgoingAction")}
-              </button>
+              </Button>
             </div>
           </div>
         </ConnectionDialog>

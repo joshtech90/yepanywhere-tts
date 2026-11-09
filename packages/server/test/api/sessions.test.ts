@@ -4,20 +4,20 @@ import { tmpdir } from "node:os";
 import { gunzipSync } from "node:zlib";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { toUrlProjectId } from "@yep-anywhere/shared";
+import { fromUrlProjectId, toUrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp as createFixtureApp } from "../setup/create-app.js";
 import {
-  MockClaudeSDK,
-  MockRealClaudeSDK,
+  ScriptedClaudeProvider,
   createMockScenario,
-} from "../../src/sdk/mock.js";
+} from "../support/scripted-provider.js";
 import {
   closeProviderRuntimeHostRegistration,
   initializeProviderRuntimeHost,
   isProviderRuntimeHostAvailable,
 } from "../../src/sdk/providers/provider-runtime-host.js";
-import type { ClaudeSDK } from "../../src/sdk/types.js";
+import { controlledProvider } from "../support/scripted-provider.js";
+import { MessageQueue } from "../../src/sdk/messageQueue.js";
 import { PublicShareService } from "../../src/services/PublicShareService.js";
 import { ClaudeSessionReader } from "../../src/sessions/reader.js";
 import type { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
@@ -68,12 +68,29 @@ describe("Sessions API", () => {
     ownedApps.add(app);
     return app;
   };
-  let mockSdk: MockClaudeSDK;
+  // Input/share tests seed an existing live runtime; creation is covered by
+  // the real SQLite admission route suites, never a synthetic HTTP reply.
+  async function seedActiveSession(
+    app: ReturnType<typeof createFixtureApp>["app"],
+    project: string,
+    sessionId: string,
+  ) {
+    const fixture = [...ownedApps].find((value) => value.app === app);
+    if (!fixture) throw new Error("Unowned API fixture");
+    const process = await fixture.supervisor.resumeSession(
+      sessionId,
+      fromUrlProjectId(project),
+      { text: "hello" },
+    );
+    if (!("id" in process)) throw new Error("Expected an active fixture");
+    return { sessionId: process.sessionId, processId: process.id };
+  }
+  let mockSdk: ScriptedClaudeProvider;
   let testDir: string;
   let projectId: string;
 
   beforeEach(async () => {
-    mockSdk = new MockClaudeSDK();
+    mockSdk = new ScriptedClaudeProvider();
     // Create temp directory structure with a valid project
     testDir = join(tmpdir(), `claude-test-${randomUUID()}`);
     const projectPath = "/home/user/myproject";
@@ -107,248 +124,29 @@ describe("Sessions API", () => {
     await rm(testDir, { recursive: true, force: true });
   });
 
-  describe("installed MC launch selection", () => {
-    it.each([
-      ["project", false],
-      ["project", true],
-      ["detached", false],
-      ["detached", true],
-    ] as const)(
-      "carries true, false and absent selection through %s create-only=%s",
-      async (placement, createOnly) => {
-        const { app, supervisor } = createApp({
-          sdk: mockSdk,
-          projectsDir: testDir,
-          realSdk: new MockRealClaudeSDK(),
-        });
-        const start = vi.spyOn(supervisor, "startSession");
-        const create = vi.spyOn(supervisor, "createSession");
-        const path =
-          placement === "project"
-            ? `/api/projects/${projectId}/sessions`
-            : "/api/sessions";
-        for (const machineControl of [true, false, undefined]) {
-          const response = await app.request(
-            `${path}${createOnly ? "/create" : ""}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-Yep-Anywhere": "true",
-              },
-              body: JSON.stringify({ message: "hello", machineControl }),
-            },
-          );
-          expect(response.status).toBe(200);
-          const options = createOnly
-            ? create.mock.lastCall?.[2]
-            : start.mock.lastCall?.[3];
-          expect(options?.machineControl).toBe(machineControl);
-        }
-      },
-    );
-    it.each([
-      { machineControl: "true" },
-      { machineControl: true, computerControl: true },
-    ])(
-      "rejects invalid or conflicting selection %j before launching",
-      async (selection) => {
-        const { app, supervisor } = createApp({
-          sdk: mockSdk,
-          projectsDir: testDir,
-        });
-        const start = vi.spyOn(supervisor, "startSession");
-        const response = await app.request("/api/sessions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Yep-Anywhere": "true",
-          },
-          body: JSON.stringify({ message: "hello", ...selection }),
-        });
-        expect(response.status).toBe(400);
-        expect(start).not.toHaveBeenCalled();
-      },
-    );
-  });
-
-  describe("POST /api/projects/:projectId/sessions", () => {
-    it("returns 400 if message is missing", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
-
-      const res = await app.request(`/api/projects/${projectId}/sessions`, {
+  it("does not expose retired browser creation routes", async () => {
+    const { app, supervisor } = createApp({
+      provider: mockSdk,
+      projectsDir: testDir,
+    });
+    const start = vi.spyOn(supervisor, "startSession");
+    for (const path of [
+      "/api/sessions",
+      "/api/sessions/create",
+      `/api/projects/${projectId}/sessions`,
+      `/api/projects/${projectId}/sessions/create`,
+    ]) {
+      const response = await app.request(path, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
           "X-Yep-Anywhere": "true",
-        },
-        body: JSON.stringify({}),
-      });
-
-      expect(res.status).toBe(400);
-      const json = await res.json();
-      expect(json.error).toBe("Message is required");
-    });
-
-    it("returns 400 for invalid JSON", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
-
-      const res = await app.request(`/api/projects/${projectId}/sessions`, {
-        method: "POST",
-        headers: {
           "Content-Type": "application/json",
-          "X-Yep-Anywhere": "true",
         },
-        body: "not json",
+        body: JSON.stringify({ message: "old creation" }),
       });
-
-      expect(res.status).toBe(400);
-      const json = await res.json();
-      expect(json.error).toBe("Invalid JSON body");
-    });
-
-    it("returns 404 for unknown project", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
-
-      const res = await app.request("/api/projects/unknown/sessions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Yep-Anywhere": "true",
-        },
-        body: JSON.stringify({ message: "hello" }),
-      });
-
-      expect(res.status).toBe(404);
-      const json = await res.json();
-      expect(json.error).toMatch(/Project not found/);
-    });
-
-    it("refuses a retired SSH executor before launch", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
-
-      const res = await app.request(`/api/projects/${projectId}/sessions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Yep-Anywhere": "true",
-        },
-        body: JSON.stringify({
-          message: "hello",
-          executor: "-oProxyCommand=touch_/tmp/pwned",
-        }),
-      });
-
-      expect(res.status).toBe(400);
-      const json = await res.json();
-      expect(json.error).toBe("SSH executors have been removed");
-    });
-
-    it("starts a session and returns processId", async () => {
-      mockSdk.addScenario(createMockScenario("new-session", "Hello!"));
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
-
-      const res = await app.request(`/api/projects/${projectId}/sessions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Yep-Anywhere": "true",
-        },
-        body: JSON.stringify({ message: "hello" }),
-      });
-
-      expect(res.status).toBe(200);
-      const json = await res.json();
-      expect(json.sessionId).toBeDefined();
-      expect(json.processId).toBeDefined();
-    });
-
-    it("starts a session from an attachment without text", async () => {
-      mockSdk.addScenario(createMockScenario("attachment-session", "Seen"));
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
-
-      const res = await app.request(`/api/projects/${projectId}/sessions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Yep-Anywhere": "true",
-        },
-        body: JSON.stringify({
-          message: "",
-          attachments: [
-            {
-              id: "attachment-1",
-              originalName: "image.png",
-              name: "attachment-1-image.png",
-              path: "/tmp/attachment-1-image.png",
-              size: 12,
-              mimeType: "image/png",
-            },
-          ],
-        }),
-      });
-
-      expect(res.status).toBe(200);
-      const json = await res.json();
-      expect(json.processId).toBeDefined();
-    });
-
-    it("accepts permission mode parameter", async () => {
-      mockSdk.addScenario(createMockScenario("new-session", "Hello!"));
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
-
-      const res = await app.request(`/api/projects/${projectId}/sessions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Yep-Anywhere": "true",
-        },
-        body: JSON.stringify({ message: "hello", mode: "acceptEdits" }),
-      });
-
-      expect(res.status).toBe(200);
-      const json = await res.json();
-      expect(json.sessionId).toBeDefined();
-      expect(json.processId).toBeDefined();
-    });
-
-    it("returns permissionMode and modeVersion in response", async () => {
-      mockSdk.addScenario(createMockScenario("new-session", "Hello!"));
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
-
-      const res = await app.request(`/api/projects/${projectId}/sessions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Yep-Anywhere": "true",
-        },
-        body: JSON.stringify({ message: "hello", mode: "acceptEdits" }),
-      });
-
-      expect(res.status).toBe(200);
-      const json = await res.json();
-      expect(json.permissionMode).toBe("acceptEdits");
-      expect(json.modeVersion).toBe(0);
-    });
-
-    it("returns default permissionMode when not specified", async () => {
-      mockSdk.addScenario(createMockScenario("new-session", "Hello!"));
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
-
-      const res = await app.request(`/api/projects/${projectId}/sessions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Yep-Anywhere": "true",
-        },
-        body: JSON.stringify({ message: "hello" }),
-      });
-
-      expect(res.status).toBe(200);
-      const json = await res.json();
-      expect(json.permissionMode).toBe("default");
-      expect(json.modeVersion).toBe(0);
-    });
+      expect(response.status).toBe(404);
+    }
+    expect(start).not.toHaveBeenCalled();
   });
 
   describe("POST /api/projects/:projectId/sessions/:sessionId/resume", () => {
@@ -363,7 +161,7 @@ describe("Sessions API", () => {
     });
 
     it("returns 400 if message is missing", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-123/resume`,
@@ -383,7 +181,7 @@ describe("Sessions API", () => {
     });
 
     it("returns 404 for unknown project", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         "/api/projects/unknown/sessions/sess-123/resume",
@@ -401,7 +199,7 @@ describe("Sessions API", () => {
     });
 
     it("refuses a retired SSH executor before launch", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-123/resume`,
@@ -425,7 +223,7 @@ describe("Sessions API", () => {
 
     it("resumes a session and returns processId", async () => {
       mockSdk.addScenario(createMockScenario("sess-123", "Resumed!"));
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-123/resume`,
@@ -446,7 +244,7 @@ describe("Sessions API", () => {
 
     it("resumes a session from an attachment without text", async () => {
       mockSdk.addScenario(createMockScenario("sess-123", "Resumed!"));
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-123/resume`,
@@ -479,7 +277,7 @@ describe("Sessions API", () => {
 
     it("accepts permission mode parameter", async () => {
       mockSdk.addScenario(createMockScenario("sess-123", "Resumed!"));
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-123/resume`,
@@ -500,7 +298,7 @@ describe("Sessions API", () => {
 
     it("returns permissionMode and modeVersion in response", async () => {
       mockSdk.addScenario(createMockScenario("sess-123", "Resumed!"));
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-123/resume`,
@@ -526,7 +324,7 @@ describe("Sessions API", () => {
 
   describe("POST /api/sessions/:sessionId/messages", () => {
     it("returns 404 if no active process", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request("/api/sessions/unknown/messages", {
         method: "POST",
@@ -545,7 +343,7 @@ describe("Sessions API", () => {
 
   describe("GET /api/sessions/:sessionId/pending-input", () => {
     it("returns null request when no active process", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request("/api/sessions/unknown/pending-input");
       const json = await res.json();
@@ -628,7 +426,7 @@ describe("Sessions API", () => {
 
     it("defaults no-query detail requests to a compact tail", async () => {
       await writeCompactedSession("sess-compact-default");
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-compact-default`,
@@ -658,7 +456,7 @@ describe("Sessions API", () => {
           return [];
         });
       const { app } = createApp({
-        sdk: mockSdk,
+        provider: mockSdk,
         projectsDir: testDir,
         persistedAugmentDelayMs: 50,
       });
@@ -706,7 +504,7 @@ describe("Sessions API", () => {
 
     it("returns full transcript only when fullHistory=1 is explicit", async () => {
       await writeCompactedSession("sess-compact-full");
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-compact-full?fullHistory=1&fullHistoryReason=test`,
@@ -742,7 +540,7 @@ describe("Sessions API", () => {
       });
       await publicShareService.initialize();
       const { app } = createApp({
-        sdk: mockSdk,
+        provider: mockSdk,
         projectsDir: testDir,
         publicShareService,
         serverSettingsService: createSettingsServiceForPublicShares(),
@@ -829,24 +627,33 @@ describe("Sessions API", () => {
       const processGate = new Promise<void>((resolve) => {
         releaseProcess = resolve;
       });
-      const heldSdk: ClaudeSDK = {
-        async *startSession() {
-          yield {
-            type: "system",
-            subtype: "init",
-            session_id: "sess-existing",
+      const heldSdk = controlledProvider({
+        async startSession() {
+          async function* messages() {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sess-existing",
+            };
+            yield {
+              type: "assistant",
+              message: {
+                role: "assistant",
+                content: "replay-only active marker",
+              },
+            };
+            await processGate;
+            yield { type: "result", session_id: "sess-existing" };
+          }
+          return {
+            iterator: messages() as AsyncIterableIterator<
+              import("../../src/sdk/types.js").SDKMessage
+            >,
+            queue: new MessageQueue(),
+            abort: releaseProcess,
           };
-          yield {
-            type: "assistant",
-            message: {
-              role: "assistant",
-              content: "replay-only active marker",
-            },
-          };
-          await processGate;
-          yield { type: "result", session_id: "sess-existing" };
         },
-      };
+      });
       await initializeProviderRuntimeHost();
       closeProviderRuntimeHostRegistration();
       expect(isProviderRuntimeHostAvailable()).toBe(false);
@@ -855,7 +662,7 @@ describe("Sessions API", () => {
       });
       await publicShareService.initialize();
       const { app, supervisor } = createApp({
-        sdk: heldSdk,
+        provider: heldSdk,
         projectsDir: testDir,
         publicShareService,
         serverSettingsService: createSettingsServiceForPublicShares(),
@@ -867,19 +674,12 @@ describe("Sessions API", () => {
           isEnabled: () => true,
         } as never,
       });
-      const resumed = await app.request(
-        `/api/projects/${activeProjectId}/sessions`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Yep-Anywhere": "true",
-          },
-          body: JSON.stringify({ message: "continue" }),
-        },
+      const resumed = await seedActiveSession(
+        app,
+        activeProjectId,
+        "sess-existing",
       );
-      expect(resumed.status).toBe(200);
-      const { processId } = (await resumed.json()) as { processId: string };
+      const { processId } = resumed as { processId: string };
 
       try {
         await vi.waitFor(
@@ -969,7 +769,7 @@ describe("Sessions API", () => {
       });
       await publicShareService.initialize();
       const { app } = createApp({
-        sdk: mockSdk,
+        provider: mockSdk,
         projectsDir: testDir,
         publicShareService,
         serverSettingsService: createSettingsServiceForPublicShares(),
@@ -1025,7 +825,7 @@ describe("Sessions API", () => {
 
     it("preserves explicit compact-tail bounds", async () => {
       await writeCompactedSession("sess-compact-explicit");
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-compact-explicit?tailCompactions=1`,
@@ -1047,7 +847,7 @@ describe("Sessions API", () => {
 
     it("applies turn tails inside the default compact scope", async () => {
       await writeCompactedSession("sess-compact-turn-tail");
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-compact-turn-tail?tailTurns=20`,
@@ -1071,7 +871,7 @@ describe("Sessions API", () => {
 
     it("allows full-history scope to be narrowed by user turns", async () => {
       await writeCompactedSession("sess-full-turn-tail");
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-full-turn-tail?fullHistory=1&fullHistoryReason=test&tailTurns=2`,
@@ -1096,7 +896,7 @@ describe("Sessions API", () => {
 
   describe("POST /api/sessions/:sessionId/input", () => {
     it("returns 404 if no active process", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request("/api/sessions/unknown/input", {
         method: "POST",
@@ -1115,22 +915,15 @@ describe("Sessions API", () => {
     it("returns 400 if process is not waiting for input", async () => {
       // Create a session that immediately completes (not waiting for input)
       mockSdk.addScenario(createMockScenario("sess-no-wait", "Done!"));
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       // Start the session
-      const startRes = await app.request(
-        `/api/projects/${projectId}/sessions`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Yep-Anywhere": "true",
-          },
-          body: JSON.stringify({ message: "hello" }),
-        },
+      const startRes = await seedActiveSession(
+        app,
+        projectId,
+        "input-owned-session",
       );
-      expect(startRes.status).toBe(200);
-      const { sessionId } = await startRes.json();
+      const { sessionId } = startRes;
 
       // Wait for session to complete
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1166,22 +959,15 @@ describe("Sessions API", () => {
         ],
         delayMs: 5,
       });
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       // Start the session
-      const startRes = await app.request(
-        `/api/projects/${projectId}/sessions`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Yep-Anywhere": "true",
-          },
-          body: JSON.stringify({ message: "hello" }),
-        },
+      const startRes = await seedActiveSession(
+        app,
+        projectId,
+        "input-owned-session",
       );
-      expect(startRes.status).toBe(200);
-      const { sessionId } = await startRes.json();
+      const { sessionId } = startRes;
 
       // Wait for session to enter waiting-input state
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1218,22 +1004,15 @@ describe("Sessions API", () => {
         ],
         delayMs: 5,
       });
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       // Start the session
-      const startRes = await app.request(
-        `/api/projects/${projectId}/sessions`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Yep-Anywhere": "true",
-          },
-          body: JSON.stringify({ message: "hello" }),
-        },
+      const startRes = await seedActiveSession(
+        app,
+        projectId,
+        "input-owned-session",
       );
-      expect(startRes.status).toBe(200);
-      const { sessionId } = await startRes.json();
+      const { sessionId } = startRes;
 
       // Wait for session to enter waiting-input state
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1271,22 +1050,15 @@ describe("Sessions API", () => {
         ],
         delayMs: 5,
       });
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       // Start the session
-      const startRes = await app.request(
-        `/api/projects/${projectId}/sessions`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Yep-Anywhere": "true",
-          },
-          body: JSON.stringify({ message: "hello" }),
-        },
+      const startRes = await seedActiveSession(
+        app,
+        projectId,
+        "input-owned-session",
       );
-      expect(startRes.status).toBe(200);
-      const { sessionId } = await startRes.json();
+      const { sessionId } = startRes;
 
       // Wait for session to enter waiting-input state
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1339,25 +1111,18 @@ describe("Sessions API", () => {
         delayMs: 5,
       });
       const disabledApp = createApp({
-        sdk: mockSdk,
+        provider: mockSdk,
         projectsDir: testDir,
         dataDir: testDir,
         serverSettingsService: createSettingsServiceForAuditLog(false),
       }).app;
 
-      const disabledStart = await disabledApp.request(
-        `/api/projects/${projectId}/sessions`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Yep-Anywhere": "true",
-          },
-          body: JSON.stringify({ message: "hello" }),
-        },
+      const disabledStart = await seedActiveSession(
+        disabledApp,
+        projectId,
+        "input-owned-session",
       );
-      expect(disabledStart.status).toBe(200);
-      const disabledSession = await disabledStart.json();
+      const disabledSession = disabledStart;
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const disabledInput = await disabledApp.request(
@@ -1397,25 +1162,18 @@ describe("Sessions API", () => {
         delayMs: 5,
       });
       const enabledApp = createApp({
-        sdk: mockSdk,
+        provider: mockSdk,
         projectsDir: testDir,
         dataDir: testDir,
         serverSettingsService: createSettingsServiceForAuditLog(true),
       }).app;
 
-      const enabledStart = await enabledApp.request(
-        `/api/projects/${projectId}/sessions`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Yep-Anywhere": "true",
-          },
-          body: JSON.stringify({ message: "hello" }),
-        },
+      const enabledStart = await seedActiveSession(
+        enabledApp,
+        projectId,
+        "input-owned-session",
       );
-      expect(enabledStart.status).toBe(200);
-      const enabledSession = await enabledStart.json();
+      const enabledSession = enabledStart;
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const enabledInput = await enabledApp.request(
@@ -1460,22 +1218,15 @@ describe("Sessions API", () => {
         ],
         delayMs: 5,
       });
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       // Start the session
-      const startRes = await app.request(
-        `/api/projects/${projectId}/sessions`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Yep-Anywhere": "true",
-          },
-          body: JSON.stringify({ message: "hello" }),
-        },
+      const startRes = await seedActiveSession(
+        app,
+        projectId,
+        "input-owned-session",
       );
-      expect(startRes.status).toBe(200);
-      const { sessionId } = await startRes.json();
+      const { sessionId } = startRes;
 
       // Wait for session to enter waiting-input state
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1498,7 +1249,7 @@ describe("Sessions API", () => {
 
   describe("GET /api/projects/:projectId/sessions/:sessionId/agents/:agentId", () => {
     it("returns agent messages for existing agent file", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       // Get project path from projectId
       const projectPath = "/home/user/myproject";
@@ -1528,7 +1279,7 @@ describe("Sessions API", () => {
     });
 
     it("returns 200 with empty messages for unknown agent", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-existing/agents/unknown-agent`,
@@ -1542,7 +1293,7 @@ describe("Sessions API", () => {
     });
 
     it("returns 404 for unknown project", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         "/api/projects/unknown/sessions/sess-1/agents/agent-1",
@@ -1554,7 +1305,7 @@ describe("Sessions API", () => {
     });
 
     it("infers status correctly for failed agent", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const projectPath = "/home/user/myproject";
       const encodedPath = projectPath.replace(/[/\\:]/g, "-");
@@ -1579,7 +1330,7 @@ describe("Sessions API", () => {
     });
 
     it("infers status correctly for running agent", async () => {
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const projectPath = "/home/user/myproject";
       const encodedPath = projectPath.replace(/[/\\:]/g, "-");
@@ -1629,7 +1380,7 @@ describe("Sessions API", () => {
 
     it("gzip-encodes large responses when the client accepts it", async () => {
       await writeBigSession("sess-big");
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-big`,
@@ -1650,7 +1401,7 @@ describe("Sessions API", () => {
 
     it("leaves responses uncompressed when Accept-Encoding is absent", async () => {
       await writeBigSession("sess-plain");
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({ provider: mockSdk, projectsDir: testDir });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-plain`,

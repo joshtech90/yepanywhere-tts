@@ -9,7 +9,11 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { UrlProjectId } from "@yep-anywhere/shared";
+import {
+  nativeSessionRef,
+  parseNativeSessionId,
+  type UrlProjectId,
+} from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { encodeProjectId } from "../../src/projects/paths.js";
@@ -18,7 +22,7 @@ import {
   type SessionsDeps,
 } from "../../src/routes/sessions.js";
 import { getClaudeSandboxProjectDir } from "../../src/session-sandbox.js";
-import { MockClaudeSDK } from "../../src/sdk/mock.js";
+import { ScriptedClaudeProvider } from "../support/scripted-provider.js";
 import { SessionReader } from "../../src/sessions/reader.js";
 import { Supervisor } from "../../src/supervisor/Supervisor.js";
 import type { Project } from "../../src/supervisor/types.js";
@@ -105,8 +109,18 @@ describe.skipIf(process.platform !== "linux")(
     function routes() {
       return createSessionsRoutes({
         supervisor: new Supervisor({
-          sdk: new MockClaudeSDK(),
+          provider: new ScriptedClaudeProvider(),
           sandboxStateRoot: join(dataDir, "session-sandboxes"),
+          sessionMetadataService: metadata,
+          resolveNativeSessionSource: async (id) => ({
+            native: nativeSessionRef(
+              "claude",
+              sandboxDir,
+              parseNativeSessionId(id),
+            ),
+            projectId,
+            filePath: join(sandboxDir, `${id}.jsonl`),
+          }),
         }),
         scanner: {
           getOrCreateProject: async () => project,

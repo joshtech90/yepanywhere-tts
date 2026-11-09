@@ -53,8 +53,7 @@ Related topics: [selection-comment-ui](selection-comment-ui.md) (the
 quote-comment ancestor — but see the gesture difference below),
 [source-review-followups](source-review-followups.md) (dormant agent-authored
 annotations for later review sweeps),
-[floating-new-session-composer](floating-new-session-composer.md) (the
-first-turn launch path), [local-file-source-highlighting](local-file-source-highlighting.md)
+[local-file-source-highlighting](local-file-source-highlighting.md)
 (highlighted read-only file previews),
 [forged-transcript-handoff](forged-transcript-handoff.md) and
 [session-context-actions](session-context-actions.md) (seeding a session with
@@ -150,9 +149,6 @@ review-first, agent-directing scope.
   - Path/link affordances graehl noted: any path mentioned in a session is
     already viewable and any file link is already copyable — the viewer makes
     those first-class rather than incidental.
-  - [floating-new-session-composer](floating-new-session-composer.md) — prior
-    art for composing a first turn from a non-session page; the submit
-    endpoint owns the actual launch (see the implementation sketch).
 
 ## Core feature: the accumulating review (the vision)
 
@@ -388,8 +384,14 @@ reserves the included pending entries, writes and fsyncs the frozen
 `request.json`, and only then asks the session launcher to enqueue or deliver a
 turn carrying that same key. Acceptance archives the reserved entries even
 when a queued new session has no session id yet. Mutable server state later
-associates the submission with the canonical YA session id, including provider
-session-id remapping.
+associates the submission with the canonical YA session id. Qualified owner
+new-session launches now use [common durable admission](session-identity.md#retained-caller-consolidation)
+across registry providers, sharing the [completed caller consolidation](session-identity.md#creation-consolidation--november-3):
+the public association is known and saved before provider startup, and native
+allocation cannot replace it. Their retry identity survives launcher restart;
+qualified starts no longer use the old in-memory successful-start cache. All
+registry providers use canonical admission for these ordinary owner launches;
+the superseded successful-start cache is removed.
 
 Retrying the same submission id returns the same accepted result and cannot
 send a second turn. The launcher/input queue must enforce that invariant across
@@ -518,10 +520,18 @@ preferring the session with recorded edits to this file when provenance is
 known, else the project's recently active sessions in a dropdown, else a new
 session. **Add to review remains targetless**: the accumulator's destination
 is selected when the batch is submitted, so comments accumulated at different
-times never silently create a mixed-destination batch. Today the
-submit-to-session action renders only when Source Control was opened from a
-session Edit-block link. The recently-active dropdown satisfies this contract
-before dirty-file provenance lands.
+times never silently create a mixed-destination batch. When Source Control
+was opened from a session Edit-block link, that session is the default;
+otherwise the most recently active project session is. The recently-active
+dropdown satisfies this contract before dirty-file provenance lands.
+
+The dropdown must offer existing sessions promptly. The complete session walk
+can take many seconds on a busy host (15.8 s observed on 2026-11-06), during
+which "New review session" was the only choice. `useProjectReviewSessions`
+therefore reads the server's retained catalog first when the
+`retained-session-collections` capability is present. Its rows may lack titles
+and models, so the complete rows replace them on arrival, and a late retained
+answer never overwrites a complete one.
 
 ### Pending Comments and Reviews are separate Source Control modes
 
@@ -657,7 +667,12 @@ not yet available.
   that exact existing session. It does not consult recent sessions or prior
   review batches.
 - **Submit to new session** starts a separate session using the default
-  session's provider, model, thinking mode, and effort. When Source Control was
+  session's provider, model, thinking mode, and effort. It also names that
+  session (`newSession.sourceSessionId`), so the server gives the review
+  session its router pool or account (a fresh pick or a new pin, never the
+  source's pin; another provider is refused), YA sandbox and service tier,
+  plus Global Instructions and compact settings as ordinary creation does
+  (plan 183). When Source Control was
   not opened from a session Edit link, the default-session action is absent and
   the new session uses the normal launch defaults.
 

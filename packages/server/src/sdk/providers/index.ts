@@ -1,8 +1,4 @@
 import { assertAndroidWorkspaceAvailable } from "../../lib/android-workspace.js";
-import {
-  isDesktopControlOrigin,
-  nativeMachineControl,
-} from "../../desktop/machine-control.js";
 /**
  * Provider exports.
  *
@@ -58,14 +54,7 @@ export {
   type CodexProviderConfig,
 } from "./codex.js";
 
-// Gemini provider (uses gemini CLI)
-import { geminiProvider } from "./gemini.js";
-export {
-  GeminiProvider,
-  geminiProvider,
-  type GeminiProviderConfig,
-} from "./gemini.js";
-
+import { antigravityProvider } from "./antigravity.js";
 // Gemini ACP provider (uses gemini CLI with --experimental-acp)
 import { geminiACPProvider } from "./gemini-acp.js";
 export {
@@ -73,6 +62,17 @@ export {
   geminiACPProvider,
   type GeminiACPProviderConfig,
 } from "./gemini-acp.js";
+
+// Keep saved/configured `gemini` selections discoverable through the same ACP
+// adapter used for launch. This alias owns no separate transport or state.
+const geminiAliasProvider = new Proxy(geminiACPProvider, {
+  get(target, property) {
+    if (property === "name") return "gemini";
+    if (property === "displayName") return "Gemini";
+    const value = Reflect.get(target, property, target) as unknown;
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+});
 
 // Grok Build ACP provider (uses `grok agent stdio`)
 // Phase 1 isolated addition per topics/grok.md. Gated by ENABLED_PROVIDERS=grok.
@@ -124,6 +124,7 @@ export interface ProviderRuntimeConfig {
 }
 
 export interface ProviderRuntimeSnapshot {
+  steeringModes?: import("@yep-anywhere/shared").SteeringModeSettings;
   codexCliPath?: string;
   codexPlanToolMode?: CodexPlanToolMode;
   codexCyberAccessProgram?: CodexCyberAccessProgram;
@@ -181,6 +182,9 @@ export function configureProviderRuntime(config: ProviderRuntimeConfig): void {
   claudeOllamaProvider.setSubagentMaxDepthGetter(getSubagentMaxDepth);
   grokACPProvider.setSubagentMaxDepthGetter(getSubagentMaxDepth);
   codexProvider.setReasoningSummaryGetter(getCodexReasoningSummary);
+  codexProvider.setSteeringModeGetter(
+    () => getProviderRuntimeSnapshot().steeringModes?.codex,
+  );
   codexProvider.setPlanToolModeGetter(getCodexPlanToolMode);
   codexProvider.setCyberAccessProgramGetter(getCodexCyberAccessProgram);
   codexProvider.setMcpAppViewsGetter(
@@ -194,6 +198,7 @@ function hostedProvider(rawProvider: AgentProvider): AgentProvider {
   if (existing) return existing;
   const proxy = new Proxy(rawProvider, {
     get(target, property) {
+      if (property === "runtimeOwner") return "host";
       if (
         property === "getAvailableModels" &&
         target.name === "claude-gateway"
@@ -222,17 +227,6 @@ function hostedProvider(rawProvider: AgentProvider): AgentProvider {
           options: Parameters<AgentProvider["startSession"]>[0],
         ) => {
           await assertAndroidWorkspaceAvailable(options.cwd);
-          const native = nativeMachineControl();
-          if (
-            options.machineControl &&
-            isDesktopControlOrigin(options.desktopControlOrigin) &&
-            native &&
-            (await native.enabled())
-          ) {
-            throw new Error(
-              "Native Machine Control delegation requires a local provider owner; detached provider hosting is unsupported",
-            );
-          }
           return startHostedProviderSession(
             target.name,
             {
@@ -264,9 +258,10 @@ function hostedProvider(rawProvider: AgentProvider): AgentProvider {
 export { isProviderRuntimeHostAvailable };
 
 function runtimeProvider(rawProvider: AgentProvider): AgentProvider {
-  if (!isProviderRuntimeHostAvailable())
+  if (rawProvider.name === "antigravity" || !isProviderRuntimeHostAvailable())
     return new Proxy(rawProvider, {
       get(target, property) {
+        if (property === "runtimeOwner") return "local";
         if (property === "startSession")
           return async (
             options: Parameters<AgentProvider["startSession"]>[0],
@@ -295,8 +290,11 @@ export function getAllProviders(): AgentProvider[] {
     ...(isClaudeOllamaVisible() ? [claudeOllamaProvider] : []),
     codexProvider,
     codexOSSProvider,
-    geminiProvider,
+    geminiAliasProvider,
     geminiACPProvider,
+    ...(process.env.ENABLED_PROVIDERS?.split(",").includes("antigravity")
+      ? [antigravityProvider]
+      : []),
     grokACPProvider, // Phase 1: additive only (see grok-acp.ts header + topics/grok.md)
     opencodeProvider,
     piProvider,
@@ -306,9 +304,8 @@ export function getAllProviders(): AgentProvider[] {
 /**
  * Get a provider by name.
  *
- * Note: "gemini" maps to geminiACPProvider (ACP mode) since it's the better
- * implementation with proper permission handling. The non-ACP stream-json
- * provider is deprecated and will be removed.
+ * Both Gemini names select the retained ACP adapter. Discovery keeps the old
+ * name as an alias, without a separate stream-JSON execution path.
  *
  * "grok" added (additive, isolated). When ENABLED_PROVIDERS does not include "grok",
  * getProvider("grok") is never reached from normal flows.
@@ -329,6 +326,8 @@ export function getRawProvider(name: ProviderName): AgentProvider | null {
     case "gemini-acp":
       // Both map to ACP provider - "gemini" is legacy name for backward compatibility
       return geminiACPProvider;
+    case "antigravity":
+      return antigravityProvider;
     case "grok":
       return grokACPProvider; // Phase 1 Grok Build (ACP)
     case "opencode":

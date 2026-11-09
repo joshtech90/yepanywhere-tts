@@ -1,3 +1,4 @@
+import { levelFor } from "./limitedUserPolicy.js";
 /**
  * Launch policy every process a limited user starts must obey.
  *
@@ -45,6 +46,7 @@ export interface LimitedLaunchBody {
   routerAccountId?: string;
   routerPoolId?: string;
   routerPolicy?: string;
+  routerClaudeAiConnectors?: boolean;
 }
 
 /** What a request asked for, as distinct from what the launch will use. */
@@ -85,11 +87,13 @@ function hostEscapeError(options: {
   routerAccountId?: string;
   routerPoolId?: string;
   routerPolicy?: string;
+  routerClaudeAiConnectors?: boolean;
 }): string | null {
   if (
     options.routerAccountId !== undefined ||
     options.routerPoolId !== undefined ||
-    options.routerPolicy !== undefined
+    options.routerPolicy !== undefined ||
+    options.routerClaudeAiConnectors !== undefined
   )
     return "Router account and pool selection requires the server owner";
   if (options.executor) {
@@ -279,4 +283,39 @@ export function applyLimitedResumePolicy(
   );
   if (refused) return { kind: "error", error: refused.error };
   return { kind: "applied", username: principal.username };
+}
+
+/** Recheck frozen admitted choices; a changed lock cannot rewrite saved intent. */
+export function savedLimitedCreationError(
+  saved: import("../sessions/SessionCreationStore.js").SavedSessionCreation,
+  grants: LimitedUserGrants | null,
+): string | null {
+  const request = saved.request,
+    launch = request?.launch;
+  if (
+    !grants ||
+    !request ||
+    !launch ||
+    levelFor(grants, request.projectId) !== "new-session"
+  )
+    return "The admitted user can no longer create sessions in this project";
+  const hostEscape = hostEscapeError({
+    ...launch,
+    computerControl: launch.machineControl,
+  });
+  if (hostEscape) return hostEscape;
+  if (
+    launch.sandboxLevel !== "project-write" ||
+    launch.sandboxNetworkFirewall !== true
+  )
+    return "Admitted limited-user work requires its project sandbox and network firewall";
+  const { lock } = grants;
+  if (
+    (lock.provider && lock.provider !== request.provider) ||
+    (lock.model &&
+      lock.model !== (request.settings.requestedModel ?? launch.model)) ||
+    (lock.effort && lock.effort !== request.settings.effort)
+  )
+    return "The user's launch lock changed; saved intent cannot be rewritten";
+  return null;
 }

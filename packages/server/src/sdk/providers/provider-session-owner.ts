@@ -1,3 +1,4 @@
+import { parseProviderSteeringState } from "@yep-anywhere/shared";
 import { randomUUID } from "node:crypto";
 import {
   agentCatalogRequest,
@@ -23,6 +24,20 @@ import {
   type AgentctlSessionEnvBridge,
 } from "./agentctl-session-env.js";
 import { coalesceStreamingSnapshots } from "./streaming-snapshot-coalescing.js";
+import {
+  parseCreationRuntimeIdentity,
+  sameCreationRuntimeIdentity,
+  observeProviderInputIds,
+  type CreationRuntimeIdentity,
+  type CreationRuntimeEvidence,
+} from "./creation-runtime-identity.js";
+import { parseNativeSessionId } from "@yep-anywhere/shared";
+import {
+  BOUND_RUNTIME_PROTOCOL_VERSION,
+  parseBoundRuntimeIdentity,
+  sameBoundRuntimeIdentity,
+  type BoundRuntimeIdentity,
+} from "./bound-runtime-identity.mjs";
 import type {
   AgentSession,
   ProviderSessionOptions,
@@ -90,6 +105,9 @@ export interface ProviderSessionSandboxMetadata {
 }
 
 export interface ProviderSessionReadyMetadata {
+  steering?: import("@yep-anywhere/shared").ProviderSteeringState;
+  binding?: BoundRuntimeIdentity;
+  creation?: CreationRuntimeEvidence;
   sessionId?: string;
   queueDepth: number;
   providerActivity: ProviderActivitySnapshot;
@@ -126,6 +144,7 @@ export interface ProviderSessionReadyMetadata {
 }
 
 export interface ProviderSessionStartHooks {
+  onNativeInputConsumed(nativeSessionId: string, inputId: string): void;
   onAgentApiRead: ApiReadPort;
   onToolApproval: CanUseTool;
   onPermissionModeApplied: (mode: PermissionMode) => void;
@@ -157,6 +176,7 @@ export interface ProviderSessionOwnerOptions {
 }
 
 export interface ProviderSessionAttachedState {
+  steering?: import("@yep-anywhere/shared").ProviderSteeringState;
   type: "attached";
   protocolVersion: number;
   runtimeId: string;
@@ -172,6 +192,8 @@ export interface ProviderSessionAttachedState {
    * attaching after that event was acknowledged never sees it replayed.
    */
   providerSessionId?: string;
+  binding?: BoundRuntimeIdentity;
+  creation?: CreationRuntimeEvidence;
 }
 
 export function providerSessionErrorMessage(error: unknown): string {
@@ -207,6 +229,9 @@ export class ProviderSessionOwner {
   };
   private appliedPermissionMode: PermissionMode | undefined;
   private providerSessionId: string | undefined;
+  private steering:
+    | import("@yep-anywhere/shared").ProviderSteeringState
+    | undefined;
   private shuttingDown: Promise<void> | null = null;
   private unsubscribeQueueDepth: (() => void) | null = null;
   private unsubscribeQueueRemoved: (() => void) | null = null;
@@ -222,8 +247,83 @@ export class ProviderSessionOwner {
   private sandboxMetadata: ProviderSessionSandboxMetadata | undefined;
   private diagnostics: Record<string, unknown> | undefined;
   private agentctlSessionEnvBridge: AgentctlSessionEnvBridge | null = null;
+  private creationIdentity: CreationRuntimeIdentity | undefined;
+  private boundIdentity: BoundRuntimeIdentity | undefined;
+  private creationInputConsumed = false;
 
   constructor(private readonly options: ProviderSessionOwnerOptions) {}
+
+  setCreationIdentity(value: unknown): void {
+    if (this.session || this.creationIdentity || this.boundIdentity)
+      throw new Error("Creation launch identity already bound");
+    this.creationIdentity = parseCreationRuntimeIdentity(value);
+  }
+
+  setBoundIdentity(value: unknown): void {
+    if (this.session || this.creationIdentity || this.boundIdentity)
+      throw new Error("Provider launch identity already bound");
+    this.boundIdentity = parseBoundRuntimeIdentity(value);
+  }
+
+  private publicSessionId(): string | undefined {
+    return this.creationIdentity?.sessionId ?? this.boundIdentity?.sessionId;
+  }
+
+  private assertBoundNativeId(value: string): void {
+    if (this.boundIdentity && value !== this.boundIdentity.native.id)
+      throw new Error(
+        "Provider continuation reported a different native session",
+      );
+  }
+
+  protocolVersion(): number {
+    if (this.boundIdentity) return BOUND_RUNTIME_PROTOCOL_VERSION;
+    return this.creationIdentity ? 2 : PROVIDER_SESSION_PROTOCOL_VERSION;
+  }
+
+  assertCreationIdentity(value: unknown): void {
+    if (
+      this.creationIdentity
+        ? !sameCreationRuntimeIdentity(this.creationIdentity, value)
+        : value !== undefined
+    )
+      throw new Error("Provider worker creation identity does not match");
+  }
+
+  creationEvidence(): CreationRuntimeEvidence | undefined {
+    if (!this.creationIdentity) return undefined;
+    return {
+      identity: this.creationIdentity,
+      nativeSessionId: this.providerSessionId
+        ? parseNativeSessionId(this.providerSessionId)
+        : undefined,
+      initialInputConsumed: this.creationInputConsumed,
+    };
+  }
+
+  private publishCreationEvidence(): void {
+    const message = {
+      type: "creationEvidence",
+      creation: this.creationEvidence(),
+    };
+    this.emitSupervisor(message);
+    this.emitController(message);
+  }
+
+  private bindCreationNativeId(id: string): void {
+    const nativeId = parseNativeSessionId(id);
+    if (
+      (this.creationIdentity?.nativeSessionId &&
+        this.creationIdentity.nativeSessionId !== nativeId) ||
+      (this.providerSessionId && this.providerSessionId !== nativeId)
+    )
+      throw new Error(
+        "Provider output conflicts with creation native identity",
+      );
+    if (this.providerSessionId === nativeId) return;
+    this.providerSessionId = nativeId;
+    this.publishCreationEvidence();
+  }
 
   /** Set once from the immutable launch recipe, before a session exists. */
   setIssuedPeerGrantId(grantId: string | undefined) {
@@ -241,6 +341,17 @@ export class ProviderSessionOwner {
       initialBrowserDebugEnvironment,
     );
     const result = await startSession({
+      onNativeInputConsumed: (nativeId, inputId) => {
+        if (!this.creationIdentity) return;
+        if (inputId !== this.creationIdentity.initialInputId) return;
+        if (!this.providerAlive)
+          throw new Error("Creation owner is no longer live");
+        this.bindCreationNativeId(nativeId);
+        if (!this.creationInputConsumed) {
+          this.creationInputConsumed = true;
+          this.publishCreationEvidence();
+        }
+      },
       onAgentApiRead: (operation, _caller, input = {}) =>
         this.requestAgentApiRead(operation, input),
       onToolApproval: (toolName, input, approvalOptions) =>
@@ -270,6 +381,28 @@ export class ProviderSessionOwner {
     this.sandboxMetadata = result.sandbox;
     this.diagnostics = result.diagnostics;
     this.agentctlSessionEnvBridge = result.agentctlSessionEnvBridge ?? null;
+    try {
+      const publicSessionId = this.publicSessionId();
+      if (publicSessionId) {
+        this.agentctlSessionEnvBridge?.publishSessionId(
+          publicSessionId,
+          this.browserDebugEnvironment,
+        );
+        await result.session.publishAgentctlSessionId?.(
+          publicSessionId,
+          this.browserDebugEnvironment,
+        );
+      }
+      if (this.creationIdentity && result.session.sessionId)
+        this.bindCreationNativeId(result.session.sessionId);
+      if (result.session.sessionId)
+        this.assertBoundNativeId(result.session.sessionId);
+    } catch (error) {
+      // Keep the actual session for startup cleanup, but admit no more work.
+      if (this.creationIdentity || this.boundIdentity)
+        this.providerAlive = false;
+      throw error;
+    }
     this.reportProviderPid();
     this.providerActivity = result.session.getProviderActivity?.() ?? {};
     this.providerRetention = result.session.getProviderRetention?.() ?? {
@@ -292,6 +425,9 @@ export class ProviderSessionOwner {
   readyMetadata(): ProviderSessionReadyMetadata {
     const session = this.requireSession();
     return {
+      steering: this.steering,
+      ...(this.boundIdentity ? { binding: this.boundIdentity } : {}),
+      ...(this.creationIdentity ? { creation: this.creationEvidence() } : {}),
       sessionId: session.sessionId,
       queueDepth: this.queueDepth,
       providerActivity: this.providerActivity,
@@ -347,8 +483,17 @@ export class ProviderSessionOwner {
       agentApiAllowed?: boolean;
       agentApiPeersAllowed?: boolean;
       agentApiPeerGrantId?: string;
+      creation?: unknown;
+      binding?: unknown;
     } = {},
   ): ProviderSessionAttachedState {
+    this.assertCreationIdentity(options.creation);
+    if (
+      this.boundIdentity
+        ? !sameBoundRuntimeIdentity(this.boundIdentity, options.binding)
+        : options.binding !== undefined
+    )
+      throw new Error("Provider worker native binding does not match");
     if (!generation) throw new Error("Missing server generation");
     if (
       this.attachedController &&
@@ -511,7 +656,7 @@ export class ProviderSessionOwner {
   private attachedState(): ProviderSessionAttachedState {
     return {
       type: "attached",
-      protocolVersion: PROVIDER_SESSION_PROTOCOL_VERSION,
+      protocolVersion: this.protocolVersion(),
       runtimeId: this.options.runtimeId,
       acknowledgedSequence: this.acknowledgedSequence,
       activeProviderTurn: this.activeProviderTurn,
@@ -521,6 +666,9 @@ export class ProviderSessionOwner {
       providerRetention: this.providerRetention,
       appliedPermissionMode: this.appliedPermissionMode,
       providerSessionId: this.providerSessionId,
+      steering: this.steering,
+      ...(this.boundIdentity ? { binding: this.boundIdentity } : {}),
+      ...(this.creationIdentity ? { creation: this.creationEvidence() } : {}),
     };
   }
 
@@ -563,17 +711,50 @@ export class ProviderSessionOwner {
   }
 
   private bufferEvent(message: SDKMessage): void {
+    if (message.session_id && !message.parent_tool_use_id)
+      this.assertBoundNativeId(message.session_id);
+    if (this.creationIdentity) {
+      if (message.session_id) this.bindCreationNativeId(message.session_id);
+      if (message.type === "user" && !this.providerSessionId)
+        throw new Error("Provider input arrived before native binding");
+      if (this.providerSessionId && !this.creationInputConsumed) {
+        observeProviderInputIds(
+          message,
+          this.creationIdentity.nativeNamespace.family === "claude",
+          (id) => {
+            if (
+              id !== this.creationIdentity!.initialInputId ||
+              this.creationInputConsumed
+            )
+              return;
+            this.creationInputConsumed = true;
+            this.publishCreationEvidence();
+          },
+        );
+      }
+      if (
+        this.creationIdentity.nativeNamespace.family === "claude" &&
+        message.type === "assistant" &&
+        message.isApiErrorMessage === true
+      ) {
+        this.providerAlive = false;
+        this.signalTerminal("provider native API failure", 1);
+      }
+    }
     if (
+      !this.creationIdentity &&
       message.type === "system" &&
       message.subtype === "init" &&
       typeof message.session_id === "string"
     ) {
       this.providerSessionId = message.session_id;
       this.agentctlSessionEnvBridge?.publishSessionId(
-        message.session_id,
+        this.boundIdentity?.sessionId ?? message.session_id,
         this.browserDebugEnvironment,
       );
     }
+    if (message.type === "system" && message.subtype === "init")
+      this.steering = parseProviderSteeringState(message.steering);
     const sequence = ++this.sequence;
     const bytes = Buffer.byteLength(JSON.stringify(message));
     const event: BufferedEvent = {
@@ -1001,6 +1182,8 @@ export class ProviderSessionOwner {
         );
       case "publishAgentctlSessionId": {
         const sessionId = String(args[0]);
+        if (this.publicSessionId() && sessionId !== this.publicSessionId())
+          throw new Error("Agent child identity must use the YA session id");
         const requestedEnvironment = args[1];
         if (
           requestedEnvironment &&
@@ -1019,7 +1202,8 @@ export class ProviderSessionOwner {
           sessionId,
           this.browserDebugEnvironment,
         );
-        this.emitSupervisor({ type: "bound", sessionId });
+        if (!this.creationIdentity && !this.boundIdentity)
+          this.emitSupervisor({ type: "bound", sessionId });
         return undefined;
       }
       case "steer":
@@ -1106,6 +1290,11 @@ export class ProviderSessionOwner {
 
   private requireSession(): AgentSession {
     if (!this.session) throw new Error("Provider session is not ready");
+    if (
+      this.creationIdentity &&
+      (!this.providerAlive || this.terminalSignalled || this.shuttingDown)
+    )
+      throw new Error("Provider creation owner has ended");
     return this.session;
   }
 

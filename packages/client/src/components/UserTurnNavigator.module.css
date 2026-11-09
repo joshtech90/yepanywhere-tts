@@ -92,60 +92,14 @@
 }
 
 .marker {
-  appearance: none;
   position: absolute;
   right: 0;
   width: 22px;
   /* height + margin-top are set inline per marker (sized to neighbor gaps so
      targets tile without overlap); see UserTurnNavigator. */
-  padding: 0;
-  border: 0;
-  background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
   pointer-events: auto;
   touch-action: manipulation;
-}
-
-/* Turn-notch context menu (right-click / long-press): fork / copy / hide. */
-.contextOverlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9998;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  cursor: default;
-}
-
-.contextMenu {
-  position: fixed;
-  z-index: 9999;
-  display: flex;
-  flex-direction: column;
-  min-width: 140px;
-  padding: var(--space-1);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
-}
-
-.contextMenu button {
-  appearance: none;
-  text-align: left;
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-sm);
-  padding: 0.4rem 0.6rem;
-  font-size: var(--font-size-sm);
-  color: var(--text-primary);
-  cursor: pointer;
-}
-
-.contextMenu button:hover,
-.contextMenu button:focus-visible {
-  background: var(--bg-hover);
 }
 
 .markerLine {
@@ -197,16 +151,11 @@
 }
 
 .trimMarker {
-  appearance: none;
   position: absolute;
   right: 1px;
   width: 10px;
   /* height + margin-top set inline per marker (sized to neighbor gaps). */
-  padding: 0;
-  border: 0;
-  background: transparent;
   color: color-mix(in srgb, var(--primary-color) 72%, var(--text-muted));
-  cursor: pointer;
   opacity: 0.64;
   pointer-events: auto;
   touch-action: manipulation;
@@ -221,8 +170,8 @@
   height: 6px;
   border-radius: 999px;
   border: 1px solid currentColor;
-  background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-primary) 80%, transparent);
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-surface) 80%, transparent);
 }
 
 .trimMarker:hover,
@@ -235,12 +184,11 @@
 .trimMarker:focus-visible .trimDot {
   background: currentColor;
   box-shadow:
-    0 0 0 2px var(--bg-primary),
+    0 0 0 2px var(--bg-surface),
     0 0 0 4px color-mix(in srgb, var(--primary-color) 36%, transparent);
 }
 
 .preview {
-  appearance: none;
   position: absolute;
   right: 34px;
   width: var(
@@ -248,7 +196,6 @@
     min(340px, calc(100dvw - 72px))
   );
   max-height: 4.4em;
-  margin: 0;
   padding: 6px 8px;
   transform: translateY(var(--user-turn-nav-preview-translate-y, -50%));
   border: 1px solid var(--border-color);
@@ -256,9 +203,7 @@
   background: color-mix(in srgb, var(--bg-secondary) 96%, transparent);
   box-shadow: 0 8px 28px rgb(0 0 0 / 0.28);
   color: var(--text-primary);
-  cursor: pointer;
   display: -webkit-box;
-  font: inherit;
   font-size: var(--font-size-sm);
   line-height: 1.35;
   overflow: hidden;

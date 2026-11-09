@@ -1,13 +1,18 @@
 import { existsSync } from "node:fs";
 import type { ProviderCatalogFamily } from "../sessions/provider-catalog-family.js";
 import { FileWatcher, type FileWatcherOptions } from "./FileWatcher.js";
+import { EventBus, type FileChangeEvent } from "./EventBus.js";
 
 type ManagedFileWatcher = Pick<FileWatcher, "start" | "stop"> &
-  Partial<Pick<FileWatcher, "getObservationDiagnostics">>;
+  Partial<
+    Pick<FileWatcher, "getObservationDiagnostics" | "getObservationEpoch">
+  >;
 
 export interface ProviderSessionWatcherSpec
-  extends Omit<FileWatcherOptions, "eventBus"> {
+  extends Omit<FileWatcherOptions, "eventBus" | "onInitialBaseline"> {
   family: ProviderCatalogFamily;
+  /** New native acquisition sources need not extend the client activity wire. */
+  internalOnly?: boolean;
 }
 
 export interface ProviderSessionWatcherRegistryMetrics {
@@ -35,6 +40,7 @@ export interface ProviderSessionWatcherRegistryOptions {
  */
 export class ProviderSessionWatcherRegistry {
   private readonly eventBus: FileWatcherOptions["eventBus"];
+  private readonly nativeEvents = new EventBus();
   private readonly specs = new Map<
     ProviderCatalogFamily,
     ProviderSessionWatcherSpec
@@ -56,6 +62,11 @@ export class ProviderSessionWatcherRegistry {
   private readonly activationYieldMs: number;
   private readonly pendingFamilies = new Set<ProviderCatalogFamily>();
   private activationTimer: NodeJS.Timeout | null = null;
+  private generation = 0;
+  private readonly ready = new Set<ProviderCatalogFamily>();
+  private readonly readySubscribers = new Set<
+    (family: ProviderCatalogFamily) => void
+  >();
 
   constructor(options: ProviderSessionWatcherRegistryOptions) {
     this.eventBus = options.eventBus;
@@ -75,6 +86,25 @@ export class ProviderSessionWatcherRegistry {
 
   activate(families: Iterable<ProviderCatalogFamily>): void {
     for (const family of new Set(families)) this.activateFamily(family);
+  }
+
+  /** Internal startup handover, replayed for a late application subscriber. */
+  subscribeReady(
+    listener: (family: ProviderCatalogFamily) => void,
+  ): () => void {
+    this.readySubscribers.add(listener);
+    for (const family of this.ready) listener(family);
+    return () => {
+      this.readySubscribers.delete(listener);
+    };
+  }
+
+  subscribeNativeChanges(
+    listener: (event: FileChangeEvent) => void,
+  ): () => void {
+    return this.nativeEvents.subscribe((event) => {
+      if (event.type === "file-change") listener(event);
+    });
   }
 
   requestActivation(families: Iterable<ProviderCatalogFamily>): void {
@@ -99,10 +129,20 @@ export class ProviderSessionWatcherRegistry {
       return;
     }
 
-    const { family: _family, ...watcherOptions } = spec;
+    const { family: _family, internalOnly, ...watcherOptions } = spec;
+    const generation = this.generation;
     const watcher = this.createWatcher({
       ...watcherOptions,
-      eventBus: this.eventBus,
+      eventBus: internalOnly ? this.nativeEvents : this.eventBus,
+      onInitialBaseline: () => {
+        if (
+          generation !== this.generation ||
+          this.watchers.get(family) !== watcher
+        )
+          return;
+        this.ready.add(family);
+        for (const listener of this.readySubscribers) listener(family);
+      },
     });
     watcher.start();
     this.watchers.set(family, watcher);
@@ -110,6 +150,8 @@ export class ProviderSessionWatcherRegistry {
   }
 
   stop(): void {
+    this.generation++;
+    this.ready.clear();
     if (this.activationTimer) {
       clearTimeout(this.activationTimer);
       this.activationTimer = null;
@@ -129,6 +171,11 @@ export class ProviderSessionWatcherRegistry {
       activeWatchers: this.watchers.size,
       pendingActivations: this.pendingFamilies.size,
     };
+  }
+
+  /** See `FileWatcher.getObservationEpoch`; null for an unwatched family. */
+  getObservationEpoch(family: ProviderCatalogFamily): number | null {
+    return this.watchers.get(family)?.getObservationEpoch?.() ?? null;
   }
 
   /** Fixed-cost observation state; reading it never activates or probes stores. */

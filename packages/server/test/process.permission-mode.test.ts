@@ -12,6 +12,7 @@ describe("Process", () => {
     it("defaults to 'default' mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -25,6 +26,7 @@ describe("Process", () => {
     it("accepts initial permission mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -39,6 +41,7 @@ describe("Process", () => {
     it("allows changing permission mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -56,6 +59,7 @@ describe("Process", () => {
     it("tracks the selected and applied Codex modes separately", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -91,6 +95,7 @@ describe("Process", () => {
       setStandingPermissionModeSource(() => "bypassPermissions");
       try {
         const process = new Process(createMockIterator([]), {
+          queue: new MessageQueue(),
           projectPath: "/test",
           projectId: "proj-1" as UrlProjectId,
           sessionId: "sess-standing",
@@ -115,6 +120,7 @@ describe("Process", () => {
       setStandingPermissionModeSource(() => standing);
       try {
         const process = new Process(createMockIterator([]), {
+          queue: new MessageQueue(),
           projectPath: "/test",
           projectId: "proj-1" as UrlProjectId,
           sessionId: "sess-standing-later",
@@ -138,6 +144,7 @@ describe("Process", () => {
     it("initializes modeVersion to 0", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -151,6 +158,7 @@ describe("Process", () => {
     it("increments modeVersion when mode changes", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -173,6 +181,7 @@ describe("Process", () => {
     it("emits mode-change event when mode changes", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -206,6 +215,7 @@ describe("Process", () => {
     it("handleToolApproval auto-approves in bypassPermissions mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -226,6 +236,7 @@ describe("Process", () => {
 
     it("auto-approves plan completion and remains in Bypass mode", async () => {
       const process = new Process(createMockIterator([]), {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -247,6 +258,7 @@ describe("Process", () => {
 
     it("still surfaces user questions in Bypass mode", async () => {
       const process = new Process(createMockIterator([]), {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -271,6 +283,7 @@ describe("Process", () => {
     it("applies a pending Bypass selection to the active approval bridge", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -301,6 +314,7 @@ describe("Process", () => {
     it("uses selected Ask when the provider turn was frozen in Bypass", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -328,6 +342,7 @@ describe("Process", () => {
 
     it("auto-approves only edits when Accept edits becomes pending", async () => {
       const process = new Process(createMockIterator([]), {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -362,6 +377,7 @@ describe("Process", () => {
 
     it("auto-approves every queued permission when Bypass becomes pending", async () => {
       const process = new Process(createMockIterator([]), {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -406,6 +422,7 @@ describe("Process", () => {
     it("handleToolApproval auto-allows read-only tools in plan mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -430,6 +447,7 @@ describe("Process", () => {
     it("handleToolApproval prompts user for mutating tools in plan mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -535,6 +553,7 @@ describe("Process", () => {
     it("handleToolApproval prompts user for ExitPlanMode in plan mode (not auto-approve)", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -570,6 +589,7 @@ describe("Process", () => {
     it("surfaces AskUserQuestion as a user question in plan mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -612,6 +632,7 @@ describe("Process", () => {
     it("does not let permission rules answer AskUserQuestion", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -663,6 +684,7 @@ describe("Process", () => {
     it("handleToolApproval auto-approves Edit tools in acceptEdits mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -693,6 +715,7 @@ describe("Process", () => {
     it("handleToolApproval auto-allows read-only tools in default mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -726,6 +749,7 @@ describe("Process", () => {
     it("handleToolApproval auto-allows read-only tools in acceptEdits mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -783,6 +807,7 @@ describe("Process", () => {
       for (const tool of testTools) {
         // Create fresh processes for each tool to avoid state pollution
         const defaultProcess = new Process(createMockIterator([]), {
+          queue: new MessageQueue(),
           projectPath: "/test",
           projectId: "proj-1" as UrlProjectId,
           sessionId: "sess-1",
@@ -792,6 +817,7 @@ describe("Process", () => {
         });
 
         const acceptEditsProcess = new Process(createMockIterator([]), {
+          queue: new MessageQueue(),
           projectPath: "/test",
           projectId: "proj-1" as UrlProjectId,
           sessionId: "sess-2",
@@ -856,6 +882,7 @@ describe("Process", () => {
     it("handleToolApproval prompts user for mutating tools in default mode", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -891,6 +918,7 @@ describe("Process", () => {
     it("handles concurrent tool approvals (queues them)", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -953,6 +981,7 @@ describe("Process", () => {
     it("clears pending approvals on interrupt", async () => {
       const iterator = createMockIterator([]);
       const process = new Process(iterator, {
+        queue: new MessageQueue(),
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",

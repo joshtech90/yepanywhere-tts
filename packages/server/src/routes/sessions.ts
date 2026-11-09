@@ -1,77 +1,84 @@
-import { desktopControlOrigin } from "../desktop/machine-control.js";
-import { RETIRED_COMPUTER_CONTROL_ERROR } from "../machine-control/legacy-retirement.js";
+import type { NestedHarnessRelationshipService } from "../sessions/NestedHarnessRelationshipService.js";
+import type { ProviderChildRelationshipService } from "../sessions/ProviderChildRelationshipService.js";
+import { creationStatusForSession } from "../sessions/session-creation-view.js";
+import { sessionCreationReceipt } from "../sessions/session-creation-acceptance.js";
 import {
   ALL_PERMISSION_MODES,
-  type ContextUsage,
-  type DurableRecapMessage,
-  type DurableLocalCommandMessage,
-  type DurableSyntheticDoneMessage,
-  type PermissionRules,
-  type PromptSuggestionMode,
   type ProviderName,
-  type RecapMode,
-  type SessionCreationProvenance,
-  type SessionMetadataResponse,
-  type SessionEffectiveModelSettings,
-  type SessionOwnership,
   type SessionSandboxLevel,
-  type ShowThinking,
   type ThinkingOption,
   type TranscriptDisplayObject,
   type UploadedFile,
   type UserQuestionAnswers,
-  type UserMessageMetadata,
   type UrlProjectId,
-  SESSION_UNREAD_TIMESTAMP,
   agentHarness,
-  buildEffectiveAgentContext,
-  getModelContextWindow,
   isThinkingOption,
   isUrlProjectId,
+  isYaSessionId,
   truncateSessionTitle,
   readQueuedYaCommand,
-  withKnownGoal,
   type SessionRewindReason,
   type SessionRewindRecord,
   type UpdateClearloopRequest,
 } from "@yep-anywhere/shared";
 import { isRealUserTurn } from "@yep-anywhere/shared/transcript/messageProjection";
-import { collapseMessageSnapshots } from "@yep-anywhere/shared/transcript/message";
 import { randomUUID } from "node:crypto";
 import {
   ClearloopConflictError,
   type ClearloopService,
 } from "../services/ClearloopService.js";
 import { turnIndexOf } from "../sessions/turn-index.js";
-import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
 import { hostname } from "node:os";
-import { performance } from "node:perf_hooks";
-import { type Context, Hono } from "hono";
+import { Hono } from "hono";
 import type { ISessionIndexService } from "../indexes/types.js";
 import { getLogger } from "../logging/logger.js";
 import type { ToolResultMediaStore } from "../media/ToolResultMediaStore.js";
-import type {
-  SessionMetadata,
-  SessionMetadataService,
-} from "../metadata/index.js";
+import type { SessionMetadataService } from "../metadata/index.js";
 import type { ProjectMetadataService } from "../metadata/index.js";
-import {
-  type ForkOrdinalClaim,
-  goalCommandOf,
-  nonHumanUserTurnField,
-} from "../metadata/SessionMetadataService.js";
+import type { ForkOrdinalClaim } from "../metadata/SessionMetadataService.js";
 import type { NotificationService } from "../notifications/index.js";
 import type { CodexSessionScanner } from "../projects/codex-scanner.js";
 import type { GeminiSessionScanner } from "../projects/gemini-scanner.js";
-import {
-  DETACHED_PROJECT_PATH,
-  encodeProjectId,
-  limitedDetachedProjectPath,
-} from "../projects/paths.js";
-import { tryClaimProjectPathIndex } from "../projects/projectPathIndex.js";
 import type { ProjectScanner } from "../projects/scanner.js";
-import { resolveCanonicalProjectRedirect } from "./session-project-routing.js";
+import { createSessionProjectRouting } from "./session-project-routing.js";
+import { createSessionCreationRequests } from "./session-creation-requests.js";
+import { registerSessionCreationRoutes } from "./session-creation-routes.js";
+import { registerSessionResumeRoutes } from "./session-resume-routes.js";
+import {
+  type StartSessionBody,
+  hasSessionMessageContent,
+  parseOptionalRestartSessionBody,
+  permissionModeError,
+} from "./session-launch-request.js";
+import { refusedLaunchResponse } from "./session-launch-refusal.js";
+import {
+  type LaunchResult,
+  settleLaunch,
+} from "../sessions/session-launch-outcome.js";
+import {
+  forkSummaryTitleCandidate,
+  forkTitleWithOrdinal,
+  generatedRetitleCandidate,
+  normalizeRestartTitleCandidate,
+} from "../sessions/session-successor-titles.js";
+import {
+  inheritedWorkingProject,
+  persistLaunchMetadata,
+  type NewSessionAnnouncement,
+  type NewSessionRecord,
+  recordNewSessionMetadata,
+  releaseFailedForkNumber,
+} from "../sessions/session-launch-metadata.js";
+import {
+  createSessionLaunchSettings,
+  parseOptionalExecutor,
+} from "../sessions/session-launch-settings.js";
+import {
+  inheritedSandboxSettings,
+  persistedSandboxNetworkFirewall,
+  sandboxWorkingProjectPath,
+} from "../sessions/session-sandbox-inheritance.js";
+import { parseSessionSandboxLevel } from "./session-sandbox-settings.js";
 import { parseSlashCommandSubmission } from "../sdk/slashCommandEmulation.js";
 import { dispatchProviderCommand } from "../supervisor/provider-command.js";
 import { tryRestartCompact } from "../supervisor/restart-compaction.js";
@@ -84,86 +91,37 @@ import { describeQueuedYaCommandProblem } from "../services/ProjectQueueService.
 import type { ServerSettingsService } from "../services/ServerSettingsService.js";
 import type { SessionQueuePersistenceService } from "../services/SessionQueuePersistenceService.js";
 import { CodexSessionReader } from "../sessions/codex-reader.js";
-import { cloneClaudeSession } from "../sessions/fork.js";
 import type { GeminiSessionReader } from "../sessions/gemini-reader.js";
-import { GrokSessionReader } from "../sessions/grok-reader.js";
+import type { GrokSessionReader } from "../sessions/grok-reader.js";
 import type { PiSessionReader } from "../sessions/pi-reader.js";
 import { extractLastAgentExcerpt } from "../sessions/agent-excerpt.js";
-import {
-  readerForProviderChildren,
-  resolveProviderChildSessions,
-} from "../sessions/provider-child-sessions.js";
 import { lastRewindableClaudeRowId } from "../sessions/claude-messages.js";
 import {
-  detachSessionMessageProjection,
-  getCodexMessageSourceByteCursor,
   getCodexProviderForkTurnId,
   normalizeSession,
 } from "../sessions/normalization.js";
-import {
-  applySessionOverlaysToSession,
-  applyRecapOverlayToSummary,
-  hasEquivalentRecapMessage,
-  hasUnreadProviderContent,
-  getEffectiveProviderUpdatedAt,
-  latestRecapMessage,
-  mergeSessionOverlayMessages,
-  mergeLocalCommandMessages,
-} from "../sessions/recap-overlays.js";
+import { applyRecapOverlayToSummary } from "../sessions/recap-overlays.js";
 import { sessionOwnershipFromProcess } from "../sessions/session-runtime-overlay.js";
 import { isAutomaticSessionResumeAllowed } from "../sessions/resume-exemption.js";
 import {
-  type PaginationInfo,
-  sliceAfterMessageIdWithMatch,
-  sliceAtCompactAndUserTurnBoundaries,
-  sliceAtCompactBoundaries,
-  sliceAtUserTurnBoundary,
-} from "../sessions/pagination.js";
-import {
-  augmentTaskListSnapshots,
-  projectTaskListSnapshots,
-  pruneTaskListSnapshotsToLatest,
-} from "../augments/task-list-augments.js";
-import {
-  type PersistedAugmentDiagnostics,
-  augmentEditToolUses,
-  augmentPersistedSessionMessages,
-} from "../sessions/persisted-augments.js";
-import {
+  boundSessionSource,
+  resolveLegacySessionSource,
   findSessionListSummaryAcrossProviders,
   findSessionSummaryAcrossProviders,
-  getSessionSources,
 } from "../sessions/provider-resolution.js";
-import type {
-  GetSessionOptions,
-  ISessionReader,
-  LoadedSession,
-} from "../sessions/types.js";
 import { getProvider } from "../sdk/providers/index.js";
-import { getStaticSlashCommandsForProvider } from "../sdk/providers/staticSlashCommands.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
 import {
   type ProviderForkBoundary,
   resolveInheritedForkModel,
 } from "../sdk/providers/types.js";
 import type { Process } from "../supervisor/Process.js";
-import type {
-  ModelSettings,
-  QueueFullResponse,
-  ResumeMode,
-  SessionReactivationOverrides,
-  Supervisor,
-} from "../supervisor/Supervisor.js";
+import type { Supervisor } from "../supervisor/Supervisor.js";
 import {
   ForkSettingsPersistenceError,
-  ResumeCompactionError,
   routedSessionUnsupportedMessage,
-  RetryableSessionLaunchError,
-  SessionConfigurationConflictError,
-  SessionMessageRejectedError,
 } from "../supervisor/Supervisor.js";
 import { RouterUnavailable } from "../services/AgentAuthRouter.js";
-import type { QueuedResponse } from "../supervisor/WorkerQueue.js";
 import type {
   ContentBlock,
   Message,
@@ -174,125 +132,55 @@ import {
   buildUserMessageMetadata,
   normalizeOptionalServiceTier,
   parseHelperSettings,
-  parseOptionalExecutor,
-  parseOptionalResumeMode,
 } from "./session-request-helpers.js";
-import {
-  resolveCompactPercent,
-  resolveCompactWindow,
-} from "./session-compact-thresholds.js";
-import {
-  type ClaudeResumeApiErrorBlocker,
-  getClaudeResumeBlockerFromReader,
-} from "./session-claude-resume-guard.js";
+import { resolveCompactModelSettings } from "../sessions/session-compact-thresholds.js";
 import {
   isClaudeSdkProviderName,
   isCodexProviderName,
   providerResolutionDeps,
+  resolveSessionReader,
 } from "./session-provider-resolution.js";
-import { parseSessionMetadataPatch } from "./session-metadata-patch.js";
+import { messageId } from "./session-message-id.js";
+import { sdkMessagesToClientMessages } from "./session-sdk-history.js";
+import { registerSessionDetailRoute } from "./session-detail-routes.js";
+import { registerSessionDetailSubresourceRoutes } from "./session-detail-subresource-routes.js";
+import { registerSessionMetadataRoutes } from "./session-metadata-routes.js";
 import { sessionQueueSummaries } from "./session-queue-summaries.js";
 import {
   reportableProcessState,
   resolveRecoveredGroupForDelivery,
   resumeRecoveredGroup,
 } from "./session-recovered-queue.js";
-import { inheritSuccessorLaunchSettings } from "../supervisor/sessionLaunchInheritance.js";
 import { buildThinkingOptions } from "./session-thinking-options.js";
 import {
   actingUsername,
+  principalFor,
   applyLimitedLaunchPolicy,
-  applyLimitedResumePolicy,
   type LimitedLaunchBody,
 } from "../auth/limitedLaunchPolicy.js";
 import type { UserUsageService } from "../auth/UserUsageService.js";
 import type { EventBus } from "../watcher/index.js";
 import { resolveExistingSessionIdentity } from "./session-existing-identity.js";
-
-const SESSION_DETAIL_SLOW_LOG_MS = 250;
-const DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS = 2;
-const LARGE_FULL_HISTORY_MESSAGE_THRESHOLD = 1000;
-
-function effectiveModelSettingsFromMetadata(
-  metadata: SessionMetadata | undefined,
-): SessionEffectiveModelSettings | undefined {
-  const settings = metadata?.effectiveLaunchSettings;
-  if (!settings) return undefined;
-
-  return {
-    requestedModel: settings.requestedModel,
-    thinking: settings.thinking,
-    effort: settings.effort,
-  };
-}
-
-function permissionModeError(mode: unknown): string | undefined {
-  if (
-    mode !== undefined &&
-    !ALL_PERMISSION_MODES.includes(mode as PermissionMode)
-  ) {
-    return "Invalid permission mode";
-  }
-  return undefined;
-}
-
-async function getSessionSlashCommands(
-  process: Process | undefined,
-  provider: ProviderName | undefined,
-  metadata: SessionMetadata | undefined,
-) {
-  let commands = getStaticSlashCommandsForProvider(provider);
-  if (process?.supportsDynamicCommands) {
-    try {
-      commands = (await process.supportedCommands()) ?? commands;
-    } catch (error) {
-      getLogger().warn(
-        {
-          event: "session_dynamic_commands_unavailable",
-          sessionId: process.sessionId,
-          processId: process.id,
-          provider,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        "Falling back to static commands for session read",
-      );
-    }
-  }
-  // A stopped session has no provider to ask, so the last observed goal stands
-  // in for live state.
-  return withKnownGoal(commands, goalCommandOf(metadata));
-}
-
-function roundedMs(value: number): number {
-  return Math.round(value * 10) / 10;
-}
-
-/**
- * Type guard to check if a result is a QueuedResponse
- */
-function isQueuedResponse(
-  result: Process | QueuedResponse | QueueFullResponse,
-): result is QueuedResponse {
-  return "queued" in result && result.queued === true;
-}
-
-/**
- * Type guard to check if a result is a QueueFullResponse
- */
-function isQueueFullResponse(
-  result: Process | QueuedResponse | QueueFullResponse,
-): result is QueueFullResponse {
-  return "error" in result && result.error === "queue_full";
-}
+import type { SessionIdentityLookup } from "../sessions/SessionIdentityStore.js";
+import type { SessionReaderFactory } from "../sessions/types.js";
 
 export interface SessionsDeps {
+  providerChildRelationships?: ProviderChildRelationshipService;
+  harnessRelationships?: Pick<
+    NestedHarnessRelationshipService,
+    "observeTranscript"
+  >;
+  getLimitedUserGrants?: (
+    username: string,
+  ) => import("@yep-anywhere/shared").LimitedUserGrants | null;
+  signal?: AbortSignal;
   onIssueWindow?: (
     source: { sessionId: string; projectId: string },
     messages: readonly Message[],
   ) => void;
   supervisor: Supervisor;
   scanner: ProjectScanner;
-  readerFactory: (project: Project) => ISessionReader;
+  readerFactory: SessionReaderFactory;
   externalTracker?: ExternalSessionTracker;
   notificationService?: NotificationService;
   sessionIndexService?: ISessionIndexService;
@@ -341,238 +229,9 @@ export interface SessionsDeps {
   ) => Promise<ReadonlySet<string>>;
 }
 
-function resolveCompactModelSettings(
-  deps: SessionsDeps,
-  options: {
-    provider?: ProviderName;
-    yaModelId?: string;
-    modelCandidates?: (string | undefined)[];
-  },
-): Pick<
-  ModelSettings,
-  | "compactAtContextPercent"
-  | "compactAtContextWindow"
-  | "forceYaOrchestratedCompaction"
-  | "claudeAutoCompactPercentOverride"
-> {
-  const defaults = deps.serverSettingsService?.getSetting("clientDefaults");
-  const compactAtContextPercent = resolveCompactPercent(
-    defaults?.compactAtContextPercent,
-    options.yaModelId,
-  );
-  const modelInfoService = deps.modelInfoService;
-  const resolveContextWindow = modelInfoService
-    ? (model: string | undefined, provider?: ProviderName) =>
-        modelInfoService.getContextWindow(model, provider)
-    : getModelContextWindow;
-  const compactAtContextWindow =
-    compactAtContextPercent === undefined
-      ? undefined
-      : resolveCompactWindow(
-          options.provider,
-          options.modelCandidates ?? [options.yaModelId],
-          resolveContextWindow,
-        );
-  return {
-    compactAtContextPercent,
-    compactAtContextWindow,
-    forceYaOrchestratedCompaction:
-      defaults?.forceYaOrchestratedCompaction === true,
-    claudeAutoCompactPercentOverride:
-      options.provider === "claude"
-        ? deps.serverSettingsService?.getSetting(
-            "claudeAutoCompactPercentOverride",
-          )
-        : undefined,
-  };
-}
-
 function isApprovalAuditLogEnabled(deps: SessionsDeps): boolean {
   return (
     deps.serverSettingsService?.getSetting("approvalAuditLogEnabled") === true
-  );
-}
-
-async function resolveSessionReader({
-  deps,
-  project,
-  sessionId,
-  projectId,
-}: {
-  deps: SessionsDeps;
-  project: Project;
-  sessionId: string;
-  projectId: UrlProjectId;
-}): Promise<ISessionReader> {
-  const metadataProvider = deps.sessionMetadataService?.getProvider(
-    sessionId,
-  ) as ProviderName | undefined;
-  const resolved = await findSessionListSummaryAcrossProviders(
-    project,
-    sessionId,
-    projectId,
-    providerResolutionDeps(deps),
-    metadataProvider,
-  );
-
-  return resolved?.source.reader ?? deps.readerFactory(project);
-}
-
-interface StartSessionBody {
-  routerAccountId?: string;
-  routerPoolId?: string;
-  routerPolicy?: string;
-  creationProvenance?: SessionCreationProvenance;
-  computerControl?: boolean;
-  machineControl?: boolean;
-  message: string;
-  images?: string[];
-  documents?: string[];
-  attachments?: UploadedFile[];
-  mode?: PermissionMode;
-  model?: string;
-  serviceTier?: string;
-  thinking?: ThinkingOption;
-  /** Display preference for thinking rows (default/on/off). */
-  showThinking?: ShowThinking;
-  provider?: ProviderName;
-  /** Browser-side timestamp for request latency tracking (epoch ms) */
-  clientTimestamp?: number;
-  /** YA-internal submission timing and delivery-intent metadata. */
-  messageMetadata?: UserMessageMetadata;
-  /** Client-generated temp ID for optimistic UI tracking */
-  tempId?: string;
-  /** SSH host alias for remote execution (undefined = local) */
-  executor?: string;
-  /** Default-off YA host filesystem confinement settled at session creation. */
-  sandboxLevel?: SessionSandboxLevel;
-  /** Public-only egress boundary for a project-write session. */
-  sandboxNetworkFirewall?: boolean;
-  /** Permission rules for tool filtering (deny/allow patterns) */
-  permissions?: PermissionRules;
-  /** Session recap behavior for future away-return triggers. */
-  recapMode?: RecapMode;
-  /** Browser-away duration before YA asks this session for a recap. */
-  recapAfterSeconds?: number;
-  /** Prompt suggestion behavior for this session. */
-  promptSuggestionMode?: PromptSuggestionMode;
-  /** Session-level helper side model for simulated helper features. */
-  helperSideModel?: string;
-  /** Resume strategy for existing sessions. */
-  resumeMode?: ResumeMode;
-  /** Removed lane target: explicit stale-client requests are refused. */
-  workstreamId?: unknown;
-}
-
-function hasSessionMessageContent(body: StartSessionBody): boolean {
-  return (
-    typeof body.message === "string" &&
-    (body.message.length > 0 ||
-      (Array.isArray(body.attachments) && body.attachments.length > 0))
-  );
-}
-
-interface CreateSessionBody {
-  routerAccountId?: string;
-  routerPoolId?: string;
-  routerPolicy?: string;
-  creationProvenance?: SessionCreationProvenance;
-  computerControl?: boolean;
-  machineControl?: boolean;
-  mode?: PermissionMode;
-  model?: string;
-  serviceTier?: string;
-  thinking?: ThinkingOption;
-  /** Display preference for thinking rows (default/on/off). */
-  showThinking?: ShowThinking;
-  provider?: ProviderName;
-  /** SSH host alias for remote execution (undefined = local) */
-  executor?: string;
-  /** Default-off YA host filesystem confinement settled at session creation. */
-  sandboxLevel?: SessionSandboxLevel;
-  /** Public-only egress boundary for a project-write session. */
-  sandboxNetworkFirewall?: boolean;
-  /** Permission rules for tool filtering (deny/allow patterns) */
-  permissions?: PermissionRules;
-  /** Session recap behavior for future away-return triggers. */
-  recapMode?: RecapMode;
-  /** Browser-away duration before YA asks this session for a recap. */
-  recapAfterSeconds?: number;
-  /** Prompt suggestion behavior for this session. */
-  promptSuggestionMode?: PromptSuggestionMode;
-  /** Session-level helper side model for simulated helper features. */
-  helperSideModel?: string;
-  /** Removed lane target: explicit stale-client requests are refused. */
-  workstreamId?: unknown;
-}
-
-function parseCreationProvenance(
-  value: unknown,
-): SessionCreationProvenance | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const input = value as Record<string, unknown>;
-  if (
-    input.surface !== "web" &&
-    input.surface !== "desktop" &&
-    input.surface !== "api"
-  ) {
-    return undefined;
-  }
-  const boundedString = (field: unknown): string | undefined => {
-    if (typeof field !== "string") return undefined;
-    const trimmed = field.trim();
-    return trimmed && trimmed.length <= 120 ? trimmed : undefined;
-  };
-  let clientOrigin: string | undefined;
-  if (
-    typeof input.clientOrigin === "string" &&
-    input.clientOrigin.length <= 512
-  ) {
-    try {
-      const url = new URL(input.clientOrigin);
-      if (url.protocol === "http:" || url.protocol === "https:") {
-        clientOrigin = url.origin;
-      }
-    } catch {
-      // Provenance is an optional hint; a malformed origin must not block launch.
-    }
-  }
-  return {
-    surface: input.surface,
-    ...(clientOrigin ? { clientOrigin } : {}),
-    ...(boundedString(input.clientVersion)
-      ? { clientVersion: boundedString(input.clientVersion) }
-      : {}),
-    ...(boundedString(input.clientCommit)
-      ? { clientCommit: boundedString(input.clientCommit) }
-      : {}),
-  };
-}
-
-/**
- * Provenance of a session this HTTP request creates: what the body declares,
- * else the UI its headers identify, else `api`. Every YA UI request carries
- * `X-Yep-Client-Version` (the relay adds it from the connection), so a
- * request without one came from an agent or script.
- */
-function requestCreationProvenance(
-  c: Context,
-  declared: unknown,
-): SessionCreationProvenance {
-  const parsed = parseCreationProvenance(declared);
-  if (parsed) return parsed;
-  const surface = c.req.header("X-Yep-Client-Surface");
-  const clientVersion = c.req.header("X-Yep-Client-Version");
-  if (!clientVersion && surface !== "web" && surface !== "desktop") {
-    return { surface: "api" };
-  }
-  return (
-    parseCreationProvenance({
-      surface: surface === "desktop" ? "desktop" : "web",
-      clientVersion,
-    }) ?? { surface: "web" }
   );
 }
 
@@ -581,256 +240,6 @@ interface InputResponseBody {
   response: "approve" | "approve_accept_edits" | "deny" | string;
   answers?: UserQuestionAnswers;
   feedback?: string;
-}
-
-function parseSessionSandboxLevel(
-  value: unknown,
-  networkFirewall: unknown = undefined,
-  fallbackLevel: SessionSandboxLevel = "none",
-  fallbackNetworkFirewall: boolean | undefined = undefined,
-):
-  | {
-      sandboxLevel: SessionSandboxLevel;
-      sandboxNetworkFirewall: boolean;
-    }
-  | { error: string } {
-  const sandboxLevel =
-    value === undefined || value === null || value === ""
-      ? fallbackLevel
-      : value;
-  if (sandboxLevel !== "none" && sandboxLevel !== "project-write") {
-    return { error: 'sandboxLevel must be "none" or "project-write"' };
-  }
-  if (
-    networkFirewall !== undefined &&
-    networkFirewall !== null &&
-    typeof networkFirewall !== "boolean"
-  ) {
-    return { error: "sandboxNetworkFirewall must be a boolean" };
-  }
-  if (sandboxLevel !== "project-write" && networkFirewall === true) {
-    return {
-      error: "sandboxNetworkFirewall requires sandboxLevel project-write",
-    };
-  }
-  const defaultNetworkFirewall =
-    sandboxLevel === fallbackLevel && fallbackNetworkFirewall !== undefined
-      ? fallbackNetworkFirewall
-      : true;
-  return {
-    sandboxLevel,
-    sandboxNetworkFirewall:
-      sandboxLevel === "project-write" &&
-      (networkFirewall === undefined || networkFirewall === null
-        ? defaultNetworkFirewall
-        : networkFirewall),
-  };
-}
-
-function persistedSandboxNetworkFirewall(
-  metadata:
-    | { sandboxLevel?: SessionSandboxLevel; sandboxNetworkFirewall?: boolean }
-    | null
-    | undefined,
-): boolean {
-  return (
-    metadata?.sandboxLevel === "project-write" &&
-    metadata.sandboxNetworkFirewall !== false
-  );
-}
-
-/**
- * Launch choices one resume request makes for an existing session. An unset
- * field falls back to what the session saved, so a resume with no client body
- * (a `/clearloop` iteration, a body-less route call) keeps the session's
- * standing settings.
- */
-interface ResumeLaunchRequest {
-  /** YA model id the request names; absent recovers the saved one. */
-  model?: string;
-  serviceTier?: ModelSettings["serviceTier"];
-  thinking?: ModelSettings["thinking"];
-  effort?: ModelSettings["effort"];
-  /** SSH host alias the request names; absent recovers the saved one. */
-  executor?: string;
-  permissions?: ModelSettings["permissions"];
-  recapMode?: ModelSettings["recapMode"];
-  recapAfterSeconds?: number;
-  promptSuggestionMode?: ModelSettings["promptSuggestionMode"];
-  helperSideModel?: string;
-  resumeMode: NonNullable<ModelSettings["resumeMode"]>;
-  resumeSessionAt?: string;
-}
-
-function inheritedSandboxSettings(
-  metadata:
-    | {
-        sandboxLevel?: SessionSandboxLevel;
-        sandboxNetworkFirewall?: boolean;
-        sandboxStateKey?: string;
-      }
-    | null
-    | undefined,
-):
-  | {
-      sandboxLevel: "project-write";
-      sandboxNetworkFirewall: boolean;
-      sandboxStateKey?: string;
-    }
-  | Record<string, never> {
-  if (metadata?.sandboxLevel !== "project-write") return {};
-  return {
-    sandboxLevel: "project-write",
-    sandboxNetworkFirewall: metadata.sandboxNetworkFirewall !== false,
-    sandboxStateKey: metadata.sandboxStateKey,
-  };
-}
-
-interface RestartSessionBody extends CreateSessionBody {
-  reason?: string;
-  /**
-   * "handoff" (default): start a fresh session seeded with a bounded
-   * transcript summary. "fork": copy the provider transcript into a new
-   * session (real prefix fork; provider must support it — Claude today)
-   * and continue there.
-   */
-  restartMode?: "handoff" | "fork";
-  /**
-   * Fork slice point: transcript message UUID (inclusive). Omit for a
-   * full-transcript fork. Only meaningful with restartMode "fork".
-   */
-  forkUpToMessageId?: string;
-  /**
-   * The client URL the user was viewing when they triggered the handoff.
-   * Surfaced in the handoff's Source Session block as a self-documenting,
-   * clickable pointer back to the source session. Validated server-side.
-   */
-  sourceUrl?: string;
-  /**
-   * The handoff message to seed the successor with, replacing the text this
-   * route would otherwise build. Set when the user edited the draft the
-   * preview route returned. Ignored by "fork", which copies the real
-   * transcript instead of sending a message.
-   */
-  handoffText?: string;
-}
-
-function parseOptionalJsonObjectBody(
-  rawBody: string,
-): { body: Record<string, unknown> } | { error: string } {
-  if (rawBody.trim().length === 0) return { body: {} };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawBody);
-  } catch {
-    return { error: "Invalid JSON body" };
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { error: "Invalid JSON body" };
-  }
-  return { body: parsed as Record<string, unknown> };
-}
-
-const REACTIVATE_SHOW_THINKING_OPTIONS: ReadonlySet<unknown> = new Set([
-  "default",
-  "on",
-  "off",
-]);
-
-function isPermissionRules(value: unknown): value is PermissionRules {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const rules = value as Record<string, unknown>;
-  return ["allow", "deny"].every((field) => {
-    const patterns = rules[field];
-    return (
-      patterns === undefined ||
-      (Array.isArray(patterns) &&
-        patterns.every((pattern) => typeof pattern === "string"))
-    );
-  });
-}
-
-function parseOptionalReactivateSessionBody(
-  rawBody: string,
-): { body: CreateSessionBody } | { error: string } {
-  const parsed = parseOptionalJsonObjectBody(rawBody);
-  if ("error" in parsed) return parsed;
-  const body = parsed.body;
-
-  if (Object.hasOwn(body, "model") && typeof body.model !== "string") {
-    return { error: "model must be a string" };
-  }
-  if (
-    Object.hasOwn(body, "provider") &&
-    (typeof body.provider !== "string" ||
-      !getProvider(body.provider as ProviderName))
-  ) {
-    return { error: "Invalid provider" };
-  }
-  if (
-    Object.hasOwn(body, "serviceTier") &&
-    body.serviceTier !== undefined &&
-    body.serviceTier !== null &&
-    body.serviceTier !== "" &&
-    normalizeOptionalServiceTier(body.serviceTier) === undefined
-  ) {
-    return { error: "serviceTier must be a valid tier name" };
-  }
-  if (Object.hasOwn(body, "thinking") && !isThinkingOption(body.thinking)) {
-    return { error: "Invalid thinking option" };
-  }
-  if (
-    Object.hasOwn(body, "showThinking") &&
-    !REACTIVATE_SHOW_THINKING_OPTIONS.has(body.showThinking)
-  ) {
-    return { error: "Invalid showThinking option" };
-  }
-  if (
-    Object.hasOwn(body, "permissions") &&
-    body.permissions !== undefined &&
-    body.permissions !== null &&
-    !isPermissionRules(body.permissions)
-  ) {
-    return { error: "permissions must contain string allow/deny arrays" };
-  }
-
-  return { body: body as unknown as CreateSessionBody };
-}
-
-function parseOptionalRestartSessionBody(
-  rawBody: string,
-): { body: RestartSessionBody } | { error: string } {
-  const parsed = parseOptionalJsonObjectBody(rawBody);
-  if ("error" in parsed) return parsed;
-  const body = parsed.body;
-  if (
-    body.restartMode !== undefined &&
-    body.restartMode !== "handoff" &&
-    body.restartMode !== "fork"
-  ) {
-    return { error: 'restartMode must be "handoff" or "fork"' };
-  }
-  for (const [field, label] of [
-    ["reason", "reason"],
-    ["forkUpToMessageId", "forkUpToMessageId"],
-    ["sourceUrl", "sourceUrl"],
-    ["model", "model"],
-  ] as const) {
-    if (body[field] !== undefined && typeof body[field] !== "string") {
-      return { error: `${label} must be a string` };
-    }
-  }
-  if (
-    body.provider !== undefined &&
-    (typeof body.provider !== "string" ||
-      !getProvider(body.provider as ProviderName))
-  ) {
-    return { error: "Invalid provider" };
-  }
-
-  return { body: body as RestartSessionBody };
 }
 
 const RESTART_HANDOFF_MAX_CHARS = 40_000;
@@ -956,57 +365,6 @@ function messageRole(message: Message): string {
 function messageContent(message: Message): unknown {
   const nested = message.message as { content?: unknown } | undefined;
   return nested?.content ?? (message as { content?: unknown }).content;
-}
-
-function messageId(message: Message | undefined): string | undefined {
-  if (!message) {
-    return undefined;
-  }
-  return (
-    (typeof message.uuid === "string" && message.uuid) ||
-    (typeof message.id === "string" && message.id) ||
-    undefined
-  );
-}
-
-type DurableSessionOverlayMessage =
-  | DurableRecapMessage
-  | DurableLocalCommandMessage
-  | DurableSyntheticDoneMessage;
-
-function findDurableOverlayCursor(
-  afterMessageId: string | undefined,
-  overlays: readonly DurableSessionOverlayMessage[],
-): DurableSessionOverlayMessage | undefined {
-  if (!afterMessageId) {
-    return undefined;
-  }
-  return overlays.find(
-    (overlay) =>
-      overlay.uuid === afterMessageId || overlay.id === afterMessageId,
-  );
-}
-
-function sliceAfterDurableOverlayCursor(params: {
-  messages: Message[];
-  overlay: DurableSessionOverlayMessage;
-  cursorId: string;
-}): { messages: Message[]; found: boolean } {
-  const index = params.messages.findIndex((message) => {
-    const id = messageId(message);
-    return (
-      id === params.cursorId ||
-      id === params.overlay.uuid ||
-      id === params.overlay.id ||
-      (params.overlay.type === "system" &&
-        params.overlay.subtype === "away_summary" &&
-        hasEquivalentRecapMessage([message], params.overlay))
-    );
-  });
-  if (index < 0) {
-    return { messages: params.messages, found: false };
-  }
-  return { messages: params.messages.slice(index + 1), found: true };
 }
 
 function messageHasToolResult(message: Message): boolean {
@@ -1196,10 +554,6 @@ function getRestartQueuedMessages(
   return process?.getDeferredQueueSummary?.() ?? [];
 }
 
-function isCompactBoundaryMessage(message: SDKMessage | Message): boolean {
-  return message.type === "system" && message.subtype === "compact_boundary";
-}
-
 function latestCompactSummary(messages: Message[]): string | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -1300,39 +654,6 @@ function buildRestartTranscript(messages: Message[]): {
   };
 }
 
-function compactRestartTitleText(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
-function stripMarkdownHeading(text: string): string {
-  return text.replace(/^#+\s*/, "");
-}
-
-function isGeneratedRestartHandoffTitle(text: string): boolean {
-  const title = stripMarkdownHeading(compactRestartTitleText(text));
-  return (
-    /^Restart Handoff\b/i.test(title) ||
-    /^Handoff:\s*Restart Handoff\b/i.test(title) ||
-    /^Handoff:\s*Yep Anywhere is starting this as a fresh agent session\b/i.test(
-      title,
-    ) ||
-    /^Yep Anywhere is starting this as a fresh agent session\b/i.test(title)
-  );
-}
-
-function normalizeRestartTitleCandidate(
-  title: string | null | undefined,
-): string | undefined {
-  if (!title) {
-    return undefined;
-  }
-  const candidate = stripMarkdownHeading(compactRestartTitleText(title));
-  if (!candidate || isGeneratedRestartHandoffTitle(candidate)) {
-    return undefined;
-  }
-  return candidate;
-}
-
 function isHumanUserMessage(message: Message): boolean {
   const nested = message.message as { role?: unknown } | undefined;
   const role =
@@ -1340,53 +661,6 @@ function isHumanUserMessage(message: Message): boolean {
     (typeof message.role === "string" && message.role) ||
     message.type;
   return role === "user" && !messageHasToolResult(message);
-}
-
-function completedPublicShareMessageCount(options: {
-  messages: Message[];
-  process?: Process;
-  sourceIsExternal: boolean;
-  sourceUpdatedAt: string;
-  hasDurableHistory: boolean;
-}): number {
-  const { messages, process } = options;
-  const sourceIsBusy =
-    options.sourceIsExternal ||
-    process?.state.type === "in-turn" ||
-    process?.state.type === "waiting-input";
-  if (!sourceIsBusy) {
-    return messages.length;
-  }
-
-  // Replay-only messages are a live catch-up buffer, not a durable completed
-  // turn. Before the provider creates its transcript, the stable prefix is
-  // therefore empty.
-  if (!options.hasDurableHistory) {
-    return 0;
-  }
-
-  // A newly resumed process can be active before its first input reaches the
-  // existing transcript. In that window, every persisted row predates the
-  // active turn and is already safe to capture.
-  const sourceUpdatedAt = Date.parse(options.sourceUpdatedAt);
-  if (
-    process &&
-    !Number.isNaN(sourceUpdatedAt) &&
-    sourceUpdatedAt < process.startedAt.getTime()
-  ) {
-    return messages.length;
-  }
-
-  // Provider transcripts are append-only within a turn. While a source is
-  // busy, the latest user-authored request begins the only incomplete suffix;
-  // retaining everything before it captures every completed turn.
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message && isRealUserTurn(message)) {
-      return index;
-    }
-  }
-  return 0;
 }
 
 type SessionForkKind =
@@ -1608,57 +882,6 @@ function resolveForkBeforeBoundary(
   return resolveForkAfterBoundary(messages, keptTurnId, false, providerName);
 }
 
-function forkSummaryTitleCandidate(summary: string): string | undefined {
-  const firstLine = summary
-    .split("\n")
-    .map((line) => line.trim())
-    .find(Boolean);
-  const candidate = firstLine
-    ?.replace(/^#{1,6}\s*/u, "")
-    .replace(/^title:\s*/iu, "")
-    .trim()
-    .replace(/[.!?]+$/u, "");
-  return candidate || undefined;
-}
-
-/** An existing fork/clone prefix is replaced by the new one, never stacked. */
-const FORK_TITLE_PREFIX_PATTERN = /^(?:fork|clone)(?:\s+\d+)?:\s*/iu;
-
-/**
- * Title a fork so repeated forks of one session are told apart: the first is
- * `Fork: <source>`, the next `Fork 2: <source>`. `ordinal` is the source
- * session's fork count from `nextForkOrdinal`, which counts forks created, so
- * deleting a fork does not hand its number to a later one.
- */
-function forkTitleWithOrdinal(
-  base: string,
-  ordinal: number,
-  prefix: "Fork" | "Clone" = "Fork",
-): string {
-  const core = base.replace(FORK_TITLE_PREFIX_PATTERN, "").trim() || base;
-  return truncateSessionTitle(
-    ordinal > 1 ? `${prefix} ${ordinal}: ${core}` : `${prefix}: ${core}`,
-  );
-}
-
-function generatedRetitleCandidate(title: string): string | undefined {
-  const firstLine = title
-    .split("\n")
-    .map((line) => line.trim())
-    .find(Boolean);
-  if (!firstLine) {
-    return undefined;
-  }
-  const candidate = normalizeRestartTitleCandidate(
-    firstLine
-      .replace(/^title:\s*/iu, "")
-      .replace(/^["'“”‘’]+|["'“”‘’]+$/gu, "")
-      .replace(/[.!?]+$/u, "")
-      .trim(),
-  );
-  return candidate ? truncateSessionTitle(candidate) : undefined;
-}
-
 function messageTitleCandidate(message: Message): string | undefined {
   if (
     !isHumanUserMessage(message) ||
@@ -1878,164 +1101,29 @@ function isRestartReplacementActivity(message: SDKMessage): boolean {
   return message.type === "assistant";
 }
 
-/**
- * Convert SDK messages to client Message format.
- * Used for mock SDK sessions where messages aren't persisted to disk.
- */
-function sdkMessagesToClientMessages(sdkMessages: SDKMessage[]): Message[] {
-  const messages: Message[] = [];
-  for (const msg of sdkMessages) {
-    const rawFields = msg as Record<string, unknown>;
-    if (isCompactBoundaryMessage(msg)) {
-      const content =
-        (typeof msg.message?.content === "string"
-          ? msg.message.content
-          : undefined) ??
-        (typeof msg.content === "string" ? msg.content : "Context compacted");
-      messages.push({
-        ...rawFields,
-        id: msg.uuid ?? `msg-${Date.now()}-${messages.length}`,
-        type: "system",
-        role: "system",
-        subtype: "compact_boundary",
-        content,
-        message: { role: "system", content },
-        timestamp:
-          typeof msg.timestamp === "string" && msg.timestamp.trim().length > 0
-            ? msg.timestamp
-            : new Date().toISOString(),
-      });
-      continue;
-    }
-
-    // Only include user and assistant messages with content
-    if (
-      (msg.type === "user" || msg.type === "assistant") &&
-      msg.message?.content
-    ) {
-      const rawContent = msg.message.content;
-      // Both user and assistant messages can have string or array content.
-      // User messages with tool_result blocks have array content that must be preserved.
-      // Assistant messages need ContentBlock[] for transcript projection.
-      let content: string | ContentBlock[];
-      if (typeof rawContent === "string") {
-        // String content: keep as-is for user messages, wrap in text block for assistant
-        content =
-          msg.type === "user"
-            ? rawContent
-            : [{ type: "text" as const, text: rawContent }];
-      } else if (Array.isArray(rawContent)) {
-        // Array content: pass through as ContentBlock[] for both user and assistant
-        content = rawContent as ContentBlock[];
-      } else {
-        // Unknown content type - skip this message
-        continue;
-      }
-
-      messages.push({
-        ...rawFields,
-        id: msg.uuid ?? `msg-${Date.now()}-${messages.length}`,
-        type: msg.type,
-        role: msg.type as "user" | "assistant",
-        content,
-        timestamp:
-          typeof msg.timestamp === "string" && msg.timestamp.trim().length > 0
-            ? msg.timestamp
-            : new Date().toISOString(),
-      });
-    }
-  }
-  return collapseMessageSnapshots(messages);
-}
-
-/**
- * Extract context usage from SDK messages.
- * Finds the last assistant message with usage data.
- *
- * @param sdkMessages - SDK messages to search
- * @param model - Model ID for determining context window size
- * @param provider - Provider for model-less context-window fallback
- */
-function extractContextUsageFromSDKMessages(
-  sdkMessages: SDKMessage[],
-  model: string | undefined,
-  provider?: ProviderName,
-  resolveContextWindow?: (
-    model: string | undefined,
-    provider?: ProviderName,
-  ) => number,
-): ContextUsage | undefined {
-  const contextWindowSize = resolveContextWindow
-    ? resolveContextWindow(model, provider)
-    : getModelContextWindow(model, provider);
-
-  const isCodexProvider = provider === "codex" || provider === "codex-oss";
-
-  // Find the last assistant message with usage data (iterate backwards)
-  for (let i = sdkMessages.length - 1; i >= 0; i--) {
-    const msg = sdkMessages[i];
-    if (msg && msg.type === "assistant" && msg.usage) {
-      const usage = msg.usage as {
-        input_tokens?: number;
-        output_tokens?: number;
-        cached_input_tokens?: number;
-        cache_read_input_tokens?: number;
-        cache_creation_input_tokens?: number;
-      };
-
-      // Codex context meter is based on fresh input tokens from the latest turn.
-      // Claude/OpenCode/Gemini paths continue to include cached+creation tokens.
-      const rawInputTokens = isCodexProvider
-        ? (usage.input_tokens ?? 0)
-        : (usage.input_tokens ?? 0) +
-          (usage.cache_read_input_tokens ?? 0) +
-          (usage.cache_creation_input_tokens ?? 0);
-
-      // Skip messages with zero input tokens (incomplete streaming messages)
-      if (rawInputTokens === 0) {
-        continue;
-      }
-
-      const percentage = Math.round((rawInputTokens / contextWindowSize) * 100);
-
-      const result: ContextUsage = {
-        inputTokens: rawInputTokens,
-        percentage,
-        contextWindow: contextWindowSize,
-      };
-
-      // Add optional fields if available
-      if (usage.output_tokens !== undefined && usage.output_tokens > 0) {
-        result.outputTokens = usage.output_tokens;
-      }
-      if (isCodexProvider) {
-        if (
-          usage.cached_input_tokens !== undefined &&
-          usage.cached_input_tokens > 0
-        ) {
-          result.cacheReadTokens = usage.cached_input_tokens;
-        }
-      } else if (
-        usage.cache_read_input_tokens !== undefined &&
-        usage.cache_read_input_tokens > 0
-      ) {
-        result.cacheReadTokens = usage.cache_read_input_tokens;
-      }
-      if (
-        usage.cache_creation_input_tokens !== undefined &&
-        usage.cache_creation_input_tokens > 0
-      ) {
-        result.cacheCreationTokens = usage.cache_creation_input_tokens;
-      }
-
-      return result;
-    }
-  }
-  return undefined;
-}
-
 export function createSessionsRoutes(deps: SessionsDeps): Hono {
   const routes = new Hono();
+  const { creationForRequest, creationAcceptance } =
+    createSessionCreationRequests(deps);
+  routes.get("/session-creations/:requestId", (c) => {
+    const principal = principalFor(c);
+    const owner =
+      principal.kind === "limited"
+        ? { kind: "limited" as const, username: principal.username }
+        : { kind: "superuser" as const };
+    const requestId = c.req.param("requestId");
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(requestId))
+      return c.json({ error: "Invalid creation request id" }, 400);
+    const saved = deps.sessionMetadataService?.creations.get(owner, requestId);
+    if (!saved) return c.json({ error: "Creation request not found" }, 404);
+    if (saved.deleted)
+      return c.json({ error: "Session creation was deleted" }, 410);
+    return c.json(sessionCreationReceipt(saved));
+  });
+  const storedIdentityFor = (sessionId: string) =>
+    isYaSessionId(sessionId)
+      ? deps.sessionMetadataService?.identities?.resolveYa(sessionId)
+      : undefined;
   // Historical executor labels are read-only. Never turn a retired remote
   // session into a local writer through resume, clone, fork or another action.
   routes.use("/projects/:projectId/sessions/:sessionId/*", async (c, next) => {
@@ -2062,23 +1150,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     Boolean(
       deps.sessionMetadataService?.getMetadata?.(sessionId)?.routerBinding,
     );
-  const recordCreationProvenance = async (
-    sessionId: string,
-    value: unknown,
-  ): Promise<void> => {
-    const provenance = parseCreationProvenance(value);
-    if (!provenance || !deps.sessionMetadataService) return;
-    await deps.sessionMetadataService.recordCreationProvenance?.(
-      sessionId,
-      provenance,
-    );
-    deps.eventBus?.emit({
-      type: "session-metadata-changed",
-      sessionId,
-      creationProvenance: provenance,
-      timestamp: new Date().toISOString(),
-    });
-  };
   const activeForkSummaryJobs = new Map<
     string,
     { objectId: string; abortController: AbortController }
@@ -2093,28 +1164,18 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       timestamp: new Date().toISOString(),
     });
   };
-  const updateForkSummaryChildMetadata = async (
-    childSessionId: string,
-    sourceSessionId: string,
-    title: string,
-    archived: boolean,
-    forkLineageRootId?: string,
-  ): Promise<void> => {
-    await deps.sessionMetadataService?.updateMetadata(childSessionId, {
-      title,
-      archived,
-      forkedFromSessionId: sourceSessionId,
-      ...(forkLineageRootId ? { forkLineageRootId } : {}),
-    });
-    deps.eventBus?.emit({
-      type: "session-metadata-changed",
-      sessionId: childSessionId,
-      title,
-      archived,
-      forkedFromSessionId: sourceSessionId,
-      timestamp: new Date().toISOString(),
-    });
-  };
+  const recordNewSession = (
+    sessionId: string,
+    record: NewSessionRecord,
+    admitted?: NewSessionAnnouncement,
+  ): Promise<void> =>
+    recordNewSessionMetadata(
+      deps.sessionMetadataService,
+      deps.eventBus,
+      sessionId,
+      record,
+      admitted,
+    );
   const getCodexReader = (projectPath: string): CodexSessionReader | null =>
     deps.codexReaderFactory?.(projectPath) ??
     (deps.codexSessionsDir
@@ -2124,390 +1185,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         })
       : null);
 
-  let unscopedGrokReader: GrokSessionReader | null | undefined;
-  const getUnscopedGrokReader = (): GrokSessionReader | null => {
-    if (unscopedGrokReader !== undefined) {
-      return unscopedGrokReader;
-    }
-    unscopedGrokReader = deps.grokSessionsDir
-      ? new GrokSessionReader({ sessionsDir: deps.grokSessionsDir })
-      : null;
-    return unscopedGrokReader;
-  };
+  const {
+    getGrokNativeProjectId,
+    buildGrokNativeRedirectPath,
+    buildSessionProjectRedirectPath,
+    resolveSessionProjectRouting,
+  } = createSessionProjectRouting(deps, storedIdentityFor);
 
-  const getGrokNativeProjectId = async (
-    sessionId: string,
-    currentProjectId: UrlProjectId,
-  ): Promise<UrlProjectId | null> => {
-    const reader = getUnscopedGrokReader();
-    if (!reader) {
-      return null;
-    }
-    const projectPath = await reader.getSessionProjectPath(sessionId);
-    if (!projectPath) {
-      return null;
-    }
-    const canonicalProjectId = encodeProjectId(projectPath);
-    return canonicalProjectId === currentProjectId ? null : canonicalProjectId;
-  };
-
-  const buildGrokNativeRedirectPath = (
-    canonicalProjectId: UrlProjectId,
-    sessionId: string,
-    suffix: "" | "/metadata",
-    requestUrl: string,
-  ): string => {
-    const search = new URL(requestUrl).search;
-    return `/api/projects/${canonicalProjectId}/sessions/${encodeURIComponent(
-      sessionId,
-    )}${suffix}${search}`;
-  };
-
-  const buildSessionProjectRedirectPath = (
-    canonicalProjectId: UrlProjectId,
-    sessionId: string,
-    suffix: string,
-    requestUrl: string,
-  ): string => {
-    const search = new URL(requestUrl).search;
-    return `/api/projects/${canonicalProjectId}/sessions/${encodeURIComponent(
-      sessionId,
-    )}${suffix}${search}`;
-  };
-
-  // Reused project snapshots must not stay stale forever: at most every 30 s a
-  // reuse also refreshes the project list in the background.
-  let lastSnapshotRefreshMs = 0;
-  const refreshProjectSnapshotSoon = () => {
-    const now = Date.now();
-    if (now - lastSnapshotRefreshMs < 30_000) return;
-    lastSnapshotRefreshMs = now;
-    void deps.scanner.listProjects?.().catch(() => {});
-  };
-
-  const resolveSessionProjectRouting = async (
-    requestProjectId: UrlProjectId,
-    sessionId: string,
-    options?: { allowStaleSnapshot?: boolean },
-  ): Promise<
-    | { error: string; status: 404 }
-    | {
-        redirectProjectId: UrlProjectId;
-      }
-    | {
-        transcriptProject: Project;
-        transcriptProjectId: UrlProjectId;
-        workingProject: Project;
-        workingProjectId: UrlProjectId;
-      }
-  > => {
-    const workingProjectId =
-      deps.sessionMetadataService?.getMetadata(sessionId)?.workingProjectId;
-    const activeProcess = deps.supervisor.getProcessForSession(sessionId);
-    const redirectProjectId = resolveCanonicalProjectRedirect({
-      requestProjectId,
-      workingProjectId,
-      activeProcessProjectId:
-        typeof activeProcess?.projectId === "string"
-          ? activeProcess.projectId
-          : undefined,
-    });
-    if (redirectProjectId) {
-      return { redirectProjectId };
-    }
-
-    // A writing session invalidates the project snapshot on every append, so
-    // a fresh lookup rescans every provider's projects. Callers that can retry
-    // a miss reuse the resolved identity instead.
-    const reusedProject = options?.allowStaleSnapshot
-      ? await deps.scanner.getProject?.(requestProjectId, {
-          allowStaleSnapshot: true,
-        })
-      : null;
-    if (reusedProject) refreshProjectSnapshotSoon();
-    const workingProject =
-      reusedProject ??
-      (await deps.scanner.getOrCreateProject(requestProjectId));
-    if (!workingProject) {
-      return { error: "Project not found", status: 404 };
-    }
-
-    const metadata = deps.sessionMetadataService?.getMetadata(sessionId);
-    const overlayTranscriptProjectId =
-      metadata?.workingProjectId === requestProjectId &&
-      metadata.transcriptProjectId &&
-      metadata.transcriptProjectId !== requestProjectId
-        ? metadata.transcriptProjectId
-        : undefined;
-
-    // Default: the transcript lives under the working (request) project.
-    let transcriptProjectId: UrlProjectId = requestProjectId;
-    let transcriptProject: Project = workingProject;
-
-    // Overlay case (session "moved" to a different working project): the
-    // transcript may live under a distinct project. Trust the recorded pointer
-    // only if the transcript is actually findable there — a stale/wrong pointer
-    // must not permanently brick viewing, so fall back to the working project.
-    if (overlayTranscriptProjectId) {
-      const overlayProject = await deps.scanner.getOrCreateProject(
-        overlayTranscriptProjectId,
-      );
-      const overlayHasTranscript = overlayProject
-        ? Boolean(
-            await findSessionListSummaryAcrossProviders(
-              overlayProject,
-              sessionId,
-              overlayTranscriptProjectId,
-              providerResolutionDeps(deps),
-              deps.sessionMetadataService?.getProvider(sessionId) as
-                | ProviderName
-                | undefined,
-            ),
-          )
-        : false;
-      if (overlayProject && overlayHasTranscript) {
-        transcriptProjectId = overlayTranscriptProjectId;
-        transcriptProject = overlayProject;
-      }
-    }
-
-    return {
-      transcriptProject,
-      transcriptProjectId,
-      workingProject,
-      workingProjectId: requestProjectId,
-    };
-  };
-
-  const getGlobalInstructions = (): string | undefined =>
-    buildEffectiveAgentContext({
-      globalInstructions:
-        deps.serverSettingsService?.getSetting("globalInstructions"),
-      hints: deps.serverSettingsService?.getSetting("agentContextHints"),
-    });
-
-  /**
-   * The one assembly of an existing session's resume launch: the request's
-   * choices over the session's saved model, executor, helper preferences and
-   * settled sandbox. The resume route and `/clearloop` iterations both use it.
-   */
-  const buildResumeLaunch = (input: {
-    sessionId: string;
-    providerName: ProviderName;
-    workingProjectPath: string;
-    /** Model the replaced process reported, a compact-window lookup key. */
-    previousResolvedModel?: string;
-    request: ResumeLaunchRequest;
-  }): { projectPath: string; settings: ModelSettings } | { error: string } => {
-    const { sessionId, providerName, request } = input;
-    const saved = deps.sessionMetadataService;
-    const metadata = saved?.getMetadata?.(sessionId);
-    const requestedModel = request.model ?? saved?.getRequestedModel(sessionId);
-    const model =
-      requestedModel && requestedModel !== "default"
-        ? requestedModel
-        : undefined;
-    let executor = request.executor;
-    if (!executor) {
-      const savedExecutor = parseOptionalExecutor(
-        saved?.getExecutor(sessionId),
-      );
-      if (savedExecutor.error) return { error: savedExecutor.error };
-      executor = savedExecutor.executor;
-    }
-    const recapMode = request.recapMode ?? metadata?.recapMode;
-    const sandboxLevel = metadata?.sandboxLevel ?? "none";
-    const sandboxError = getSessionSandboxSettingsError(
-      sandboxLevel,
-      recapMode,
-    );
-    if (sandboxError) return { error: sandboxError };
-    return {
-      projectPath:
-        sandboxLevel === "project-write"
-          ? (metadata?.sandboxProjectPath ?? input.workingProjectPath)
-          : input.workingProjectPath,
-      settings: {
-        model,
-        requestedModel,
-        serviceTier: request.serviceTier,
-        thinking: request.thinking,
-        effort: request.effort,
-        providerName,
-        executor,
-        sandboxLevel,
-        sandboxNetworkFirewall: persistedSandboxNetworkFirewall(metadata),
-        sandboxStateKey: metadata?.sandboxStateKey,
-        globalInstructions: getGlobalInstructions(),
-        permissions: request.permissions,
-        recapMode,
-        recapAfterSeconds:
-          request.recapAfterSeconds ?? saved?.getRecapAfterSeconds?.(sessionId),
-        promptSuggestionMode:
-          request.promptSuggestionMode ??
-          saved?.getPromptSuggestionMode?.(sessionId),
-        helperSideModel: request.helperSideModel,
-        resumeMode: request.resumeMode,
-        resumeSessionAt: request.resumeSessionAt,
-        ...resolveCompactModelSettings(deps, {
-          provider: providerName,
-          yaModelId: requestedModel,
-          modelCandidates: [requestedModel, model, input.previousResolvedModel],
-        }),
-      },
-    };
-  };
-
-  const persistLaunchMetadata = async (
-    sessionId: string,
-    provider: ProviderName | undefined,
-    executor: string | undefined,
-    initialPrompt?: string,
-    requestedModel?: string,
-    promptSuggestionMode?: PromptSuggestionMode,
-    recapAfterSeconds?: number,
-    sandbox?: {
-      level: SessionSandboxLevel;
-      networkFirewall?: boolean;
-      stateKey?: string;
-      projectPath: string;
-      projectId: UrlProjectId;
-    },
-  ): Promise<void> => {
-    if (!deps.sessionMetadataService) {
-      return;
-    }
-    if (provider) {
-      await deps.sessionMetadataService.setProvider(sessionId, provider);
-    }
-    if (executor) {
-      await deps.sessionMetadataService.setExecutor(sessionId, executor);
-    }
-    if (initialPrompt?.trim()) {
-      await deps.sessionMetadataService.setInitialPrompt(
-        sessionId,
-        initialPrompt,
-      );
-    }
-    // Persist the launch model identity. Normal launches retain the selected YA
-    // alias (including "default"); forks replace "default" with the observed
-    // source model so a cold first resume cannot drift to a new default.
-    if (requestedModel) {
-      await deps.sessionMetadataService.setRequestedModel(
-        sessionId,
-        requestedModel,
-      );
-    }
-    // Persist the resolved prompt-suggestion mode so a later resume (which may
-    // omit it from the request body) recovers the per-session preference
-    // instead of falling back to the provider's native default.
-    if (promptSuggestionMode !== undefined) {
-      await deps.sessionMetadataService.updateMetadata(sessionId, {
-        promptSuggestionMode,
-      });
-    }
-    if (recapAfterSeconds !== undefined) {
-      await deps.sessionMetadataService.updateMetadata(sessionId, {
-        recapAfterSeconds,
-      });
-    }
-    if (sandbox) {
-      await deps.sessionMetadataService.setSessionSandbox?.(sessionId, sandbox);
-    }
-  };
-
-  /**
-   * Everything a new session's launch records once it has an id: client
-   * provenance, the limited user who
-   * started it, and the launch metadata, sandbox included. The session-create
-   * routes run it as their `onStarted`, so a start that waited for a free
-   * worker records exactly what one that started at once does.
-   */
-  const recordNewSessionLaunch = async (
-    process: Process,
-    launch: {
-      creationProvenance: unknown;
-      /** The limited user who started it; absent for the superuser. */
-      createdByUser?: string;
-      provider: ProviderName | undefined;
-      executor: string | undefined;
-      initialPrompt?: string;
-      requestedModel?: string;
-      recapAfterSeconds?: number;
-      sandbox: { level: SessionSandboxLevel; networkFirewall: boolean };
-    },
-  ): Promise<void> => {
-    const { sessionId } = process;
-    await recordCreationProvenance(sessionId, launch.creationProvenance);
-    if (launch.createdByUser) {
-      // Ownership survives a later grant change: a limited user can always
-      // read a session they started (topics/limited-users.md § Delivery v1).
-      await deps.sessionMetadataService?.recordSessionCreator(
-        sessionId,
-        launch.createdByUser,
-      );
-    }
-    await persistLaunchMetadata(
-      sessionId,
-      launch.provider,
-      launch.executor,
-      launch.initialPrompt,
-      launch.requestedModel,
-      process.promptSuggestionMode,
-      launch.recapAfterSeconds,
-      {
-        level: launch.sandbox.level,
-        networkFirewall: launch.sandbox.networkFirewall,
-        stateKey: process.sandboxStateKey,
-        projectPath: process.sandboxProjectPath ?? process.projectPath,
-        projectId: process.projectId,
-      },
-    );
-  };
-
-  const loadProviderSession = async (
-    project: Project,
-    sessionId: string,
-    projectId: UrlProjectId,
-    preferredProvider: ProviderName | undefined,
-    afterMessageId?: string,
-    options?: GetSessionOptions,
-  ): Promise<LoadedSession | null> => {
-    for (const source of getSessionSources(
-      project,
-      providerResolutionDeps(deps),
-      preferredProvider,
-    )) {
-      const summaryHint =
-        options?.tailCompactions !== undefined &&
-        source.provider === "codex" &&
-        deps.sessionIndexService
-          ? await deps.sessionIndexService.getCachedSessionSummary(
-              source.sessionDir,
-              projectId,
-              sessionId,
-              source.reader,
-              // A live Codex rollout grows between index passes, so requiring
-              // an exactly-current index meant every mid-turn open of a long
-              // session lost the compact-tail window and fell back to reading
-              // and normalizing the whole file. The reader takes only
-              // head-derived fields from this hint and reads the tail itself.
-              { acceptAppendedFile: true },
-            )
-          : null;
-      const loaded = await source.reader.getSession(
-        sessionId,
-        projectId,
-        afterMessageId,
-        summaryHint ? { ...options, summaryHint } : options,
-      );
-      if (loaded) {
-        return loaded;
-      }
-    }
-
-    return null;
-  };
+  const { getGlobalInstructions, buildResumeLaunch, buildSuccessorLaunch } =
+    createSessionLaunchSettings(deps);
 
   /**
    * Ids of the rewinds a detail response's projection applied, so a client
@@ -2536,16 +1222,26 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     if (resolved) {
       const loaded = await resolved.source.reader.getSession(
-        sessionId,
+        resolved.nativeSessionId,
         projectId,
         undefined,
         { includeOrphans: false },
       );
       if (loaded) {
-        return normalizeSession(loaded, {
-          rewindRecords:
-            deps.sessionMetadataService?.getRewindRecords?.(sessionId),
-        });
+        return normalizeSession(
+          {
+            ...loaded,
+            summary: {
+              ...loaded.summary,
+              id: sessionId,
+              provider: resolved.source.provider,
+            },
+          },
+          {
+            rewindRecords:
+              deps.sessionMetadataService?.getRewindRecords?.(sessionId),
+          },
+        );
       }
     }
 
@@ -2588,7 +1284,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       providerName,
     );
     const loaded = await resolved?.source.reader.getSession(
-      sessionId,
+      resolved.nativeSessionId,
       projectId,
       undefined,
       { includeOrphans: false },
@@ -2666,319 +1362,55 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     return true;
   };
 
-  const ensureDetachedProjectPath = async (
-    executor?: string,
-    username?: string,
-  ): Promise<string> => {
-    const projectPath = username
-      ? limitedDetachedProjectPath(username)
-      : DETACHED_PROJECT_PATH;
-    await mkdir(projectPath, { recursive: true, mode: 0o700 });
-    if (executor) throw new Error("SSH executors have been removed");
-    return projectPath;
-  };
-
-  // GET /api/projects/:projectId/sessions/:sessionId/agents - Get agent mappings
-  // Used to find agent sessions for pending Tasks on page reload
-  routes.get("/projects/:projectId/sessions/:sessionId/agents", async (c) => {
-    const projectId = c.req.param("projectId");
-
-    // Validate projectId format at API boundary
-    if (!isUrlProjectId(projectId)) {
-      return c.json({ error: "Invalid project ID format" }, 400);
-    }
-
-    const routing = await resolveSessionProjectRouting(
-      projectId as UrlProjectId,
-      c.req.param("sessionId"),
-    );
-    if ("redirectProjectId" in routing) {
-      return c.redirect(
-        buildSessionProjectRedirectPath(
-          routing.redirectProjectId,
-          c.req.param("sessionId"),
-          "",
-          c.req.url,
-        ),
-        307,
-      );
-    }
-    if ("error" in routing) {
-      return c.json({ error: routing.error }, routing.status);
-    }
-
-    const reader = await resolveSessionReader({
-      deps,
-      project: routing.transcriptProject,
-      sessionId: c.req.param("sessionId"),
-      projectId: routing.transcriptProjectId,
-    });
-    const mappings = await reader.getAgentMappings(c.req.param("sessionId"));
-
-    return c.json({ mappings });
-  });
-
-  // GET /api/projects/:projectId/sessions/:sessionId/agents/:agentId - Get agent session content
-  // Used for lazy-loading completed Tasks
-  routes.get(
-    "/projects/:projectId/sessions/:sessionId/agents/:agentId",
-    async (c) => {
-      const projectId = c.req.param("projectId");
-      const agentId = c.req.param("agentId");
-
-      // Validate projectId format at API boundary
-      if (!isUrlProjectId(projectId)) {
-        return c.json({ error: "Invalid project ID format" }, 400);
-      }
-
-      const routing = await resolveSessionProjectRouting(
-        projectId as UrlProjectId,
-        c.req.param("sessionId"),
-      );
-      if ("redirectProjectId" in routing) {
-        return c.redirect(
-          buildSessionProjectRedirectPath(
-            routing.redirectProjectId,
-            c.req.param("sessionId"),
-            "",
-            c.req.url,
-          ),
-          307,
-        );
-      }
-      if ("error" in routing) {
-        return c.json({ error: routing.error }, routing.status);
-      }
-
-      const reader = await resolveSessionReader({
-        deps,
-        project: routing.transcriptProject,
-        sessionId: c.req.param("sessionId"),
-        projectId: routing.transcriptProjectId,
-      });
-      const agentSession = await reader.getAgentSession(
-        agentId,
-        c.req.param("sessionId"),
-      );
-
-      if (!agentSession) {
-        return c.json({ error: "Agent session not found" }, 404);
-      }
-
-      // Add server-rendered HTML to text blocks for markdown display
-      const pathIndex = await tryClaimProjectPathIndex(
-        routing.workingProject.path,
-      );
-      try {
-        await augmentPersistedSessionMessages(agentSession.messages, {
-          projectFileLinks: {
-            projectId: routing.workingProjectId,
-            projectPath: routing.workingProject.path,
-            ...(pathIndex ? { index: pathIndex } : {}),
-            resolveAbsoluteFilePaths: deps.resolveAbsoluteFilePaths,
-          },
-        });
-      } finally {
-        pathIndex?.release();
-      }
-
-      return c.json(agentSession);
-    },
-  );
-
-  // GET /api/projects/:projectId/sessions/:sessionId/metadata - Get session metadata only (no messages)
-  // Lightweight endpoint for refreshing title, status, etc. without re-fetching all messages
-  routes.get("/projects/:projectId/sessions/:sessionId/metadata", async (c) => {
-    const projectId = c.req.param("projectId");
+  routes.get("/sessions/:sessionId/native-source", async (c) => {
+    if (principalFor(c).kind !== "superuser")
+      return c.json({ error: "Operator access required" }, 403);
     const sessionId = c.req.param("sessionId");
-
-    // Validate projectId format at API boundary
-    if (!isUrlProjectId(projectId)) {
-      return c.json({ error: "Invalid project ID format" }, 400);
-    }
-
-    const routing = await resolveSessionProjectRouting(
-      projectId as UrlProjectId,
-      sessionId,
-    );
-    if ("redirectProjectId" in routing) {
-      return c.redirect(
-        buildSessionProjectRedirectPath(
-          routing.redirectProjectId,
-          sessionId,
-          "/metadata",
-          c.req.url,
-        ),
-        307,
-      );
-    }
-    if ("error" in routing) {
-      return c.json({ error: routing.error }, routing.status);
-    }
-    const project = routing.workingProject;
-    const transcriptProject = routing.transcriptProject;
-    const transcriptProjectId = routing.transcriptProjectId;
-
-    // Check if session is actively owned by a process
-    const process = deps.supervisor.getProcessForSession(sessionId);
-
-    // Check if session is being controlled by an external program
-    const isExternal = deps.externalTracker?.isExternal(sessionId) ?? false;
-
-    // Determine the session ownership
-    const ownership: SessionOwnership = sessionOwnershipFromProcess(process, {
-      isExternal,
-    });
-
-    // Get session metadata (custom title, archived, starred)
-    const metadata = deps.sessionMetadataService?.getMetadata(sessionId);
-    // Get notification data (lastSeenAt, hasUnread)
-    const lastSeenEntry = deps.notificationService?.getLastSeen(sessionId);
-    const lastSeenAt = lastSeenEntry?.timestamp;
-
-    // Get pending input request from active process
-    const pendingInputRequest =
-      process?.state.type === "waiting-input" ? process.state.request : null;
-    const providerRuntimeStatus =
-      deps.supervisor.getProviderRuntimeStatusForSession?.(sessionId) ??
-      process?.getProviderRuntimeStatus() ??
-      null;
-
-    // Read minimal session info from disk (just for title/timestamps, no messages)
-    const metadataProvider =
-      (metadata?.provider as ProviderName | undefined) ??
-      (deps.sessionMetadataService?.getProvider(sessionId) as
-        | ProviderName
-        | undefined);
-    const slashCommands = await getSessionSlashCommands(
-      process,
-      process?.provider ?? metadataProvider ?? project.provider,
-      metadata,
-    );
-    const deferredMessages = sessionQueueSummaries(deps, sessionId, process);
-    const sessionSummaryResult = await findSessionSummaryAcrossProviders(
-      transcriptProject,
-      sessionId,
-      transcriptProjectId,
-      providerResolutionDeps(deps),
-      metadataProvider ?? process?.provider,
-    );
-    const rawSessionSummary = sessionSummaryResult?.summary ?? null;
-    const providerUpdatedAt = getEffectiveProviderUpdatedAt(
-      rawSessionSummary?.updatedAt ?? "",
-      process,
-    );
-    const recapMessages =
-      deps.sessionMetadataService?.getRecapMessages?.(sessionId) ?? [];
-    const sessionSummary = rawSessionSummary
-      ? applyRecapOverlayToSummary(
-          { ...rawSessionSummary, updatedAt: providerUpdatedAt },
-          recapMessages,
-        )
-      : null;
-
-    if (!sessionSummary && !process) {
-      const canonicalProjectId = await getGrokNativeProjectId(
+    if (!isYaSessionId(sessionId))
+      return c.json({ error: "Invalid session ID" }, 400);
+    const identity = storedIdentityFor(sessionId);
+    if (
+      !identity ||
+      creationStatusForSession(
+        deps.sessionMetadataService,
         sessionId,
-        projectId as UrlProjectId,
-      );
-      if (canonicalProjectId) {
-        return c.redirect(
-          buildGrokNativeRedirectPath(
-            canonicalProjectId,
-            sessionId,
-            "/metadata",
-            c.req.url,
-          ),
-          307,
-        );
-      }
+        deps.signal,
+      )?.state === "deleted"
+    )
       return c.json({ error: "Session not found" }, 404);
-    }
-
-    const hasUnread = providerUpdatedAt
-      ? hasUnreadProviderContent(
-          deps.notificationService,
-          sessionId,
-          providerUpdatedAt,
-        )
-      : undefined;
-
-    const providerChildren = await resolveProviderChildSessions(
-      readerForProviderChildren(
-        transcriptProject,
-        providerResolutionDeps(deps),
-        metadataProvider ?? process?.provider ?? project.provider,
-      ),
-      sessionId,
-      "fresh",
+    const result = {
+      sessionId: identity.sessionId,
+      provider: identity.provider,
+      projectId: identity.projectId,
+      native: identity.native,
+      transcriptPath: null as string | null,
+    };
+    if (!identity.native) return c.json({ ...result, status: "unbound" });
+    const project = await deps.scanner.getOrCreateProject(identity.projectId);
+    if (!project) return c.json({ ...result, status: "missing" });
+    const reader = deps.readerFactory(
+      { ...project, provider: identity.provider },
+      identity.native,
     );
-
-    const response = {
-      session: {
-        id: sessionId,
-        projectId: routing.workingProjectId,
-        title: sessionSummary?.title ?? null,
-        fullTitle: sessionSummary?.fullTitle ?? null,
-        createdAt: sessionSummary?.createdAt ?? new Date().toISOString(),
-        updatedAt:
-          sessionSummary?.updatedAt ||
-          providerUpdatedAt ||
-          new Date().toISOString(),
-        messageCount: sessionSummary?.messageCount ?? 0,
-        provider:
-          metadataProvider ??
-          process?.provider ??
-          sessionSummary?.provider ??
-          project.provider,
-        model: sessionSummary?.model,
-        originator: sessionSummary?.originator,
-        cliVersion: sessionSummary?.cliVersion,
-        source: sessionSummary?.source,
-        approvalPolicy: sessionSummary?.approvalPolicy,
-        sandboxPolicy: sessionSummary?.sandboxPolicy,
-        contextUsage: sessionSummary?.contextUsage,
-        effectiveModelSettings: effectiveModelSettingsFromMetadata(metadata),
-        effectiveLaunchSettings: metadata?.effectiveLaunchSettings,
-        nonHumanUserTurn: nonHumanUserTurnField(
-          deps.sessionMetadataService,
-          sessionId,
-        ),
-        customTitle: metadata?.customTitle,
-        isArchived: metadata?.isArchived,
-        isStarred: metadata?.isStarred,
-        clearloop: deps.clearloopService?.getBadge(sessionId),
-        rewindRecordIds: rewindRecordIdsFor(sessionId),
-        parentSessionId:
-          metadata?.parentSessionId ?? sessionSummary?.parentSessionId,
-        parentSessionKind:
-          metadata?.parentSessionKind ?? sessionSummary?.parentSessionKind,
-        forkedFromSessionId:
-          metadata?.forkedFromSessionId ?? sessionSummary?.forkedFromSessionId,
-        creationProvenance: metadata?.creationProvenance,
-        routerBinding: metadata?.routerBinding,
-        initialPrompt:
-          metadata?.initialPrompt ?? sessionSummary?.fullTitle ?? undefined,
-        wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
-        promptSuggestionMode: metadata?.promptSuggestionMode,
-        recapAfterSeconds: metadata?.recapAfterSeconds,
-        workingProjectId: metadata?.workingProjectId,
-        transcriptProjectId: metadata?.transcriptProjectId,
-        transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
-        lastSeenAt,
-        hasUnread,
-        ...(providerChildren ? { providerChildren } : {}),
-      },
-      ownership,
-      processState: process?.state.type ?? null,
-      providerRuntimeStatus,
-      pendingInputRequest,
-      slashCommands,
-      ...(deferredMessages.length > 0 ? { deferredMessages } : {}),
-    } satisfies SessionMetadataResponse;
-
-    return c.json(response);
+    if (!reader.getSessionFilePath)
+      return c.json({ ...result, status: "unsupported" });
+    const transcriptPath = await reader.getSessionFilePath(identity.native.id);
+    return c.json({
+      ...result,
+      transcriptPath,
+      status: transcriptPath ? "available" : "missing",
+    });
   });
+
+  const sessionDetailRouting = {
+    resolveSessionProjectRouting,
+    buildSessionProjectRedirectPath,
+    getGrokNativeProjectId,
+    buildGrokNativeRedirectPath,
+    rewindRecordIdsFor,
+    storedIdentityFor,
+  };
+  registerSessionDetailSubresourceRoutes(routes, deps, sessionDetailRouting);
 
   // PUT /api/projects/:projectId/sessions/:sessionId/project
   // Reclassify a session under a different YA project without sending any
@@ -3122,9 +1554,31 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       // Claude uses the fast reverse-scan when there is no durable overlay to
       // compare; every other provider goes through the cross-provider load +
       // normalize, then a shared extractor on the uniform message form.
-      const reader = deps.readerFactory(transcriptProject);
-      lastAgentText ??= reader.getLastAgentExcerpt
-        ? await reader.getLastAgentExcerpt(sessionId)
+      const sourceDeps = providerResolutionDeps(deps);
+      const bound = boundSessionSource(
+        transcriptProject,
+        sessionId,
+        sourceDeps,
+      );
+      const legacy =
+        bound === undefined
+          ? await resolveLegacySessionSource(
+              {
+                provider: transcriptProject.provider,
+                reader: deps.readerFactory(transcriptProject),
+                sessionDir: transcriptProject.sessionDir,
+                kind: "primary",
+              },
+              sessionId,
+              { ...transcriptProject, id: transcriptProjectId },
+              sourceDeps,
+            )
+          : undefined;
+      const readable = bound ?? legacy;
+      lastAgentText ??= readable?.source.reader.getLastAgentExcerpt
+        ? await readable.source.reader.getLastAgentExcerpt(
+            readable.nativeSessionId,
+          )
         : undefined;
       if (lastAgentText === undefined) {
         const normalized = await loadRestartSourceSession(
@@ -3150,2078 +1604,17 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     },
   );
 
-  // GET /api/projects/:projectId/sessions/:sessionId - Get session detail
-  // Optional query params:
-  //   ?afterMessageId=<id> - incremental forward-fetch (append new messages)
-  //   ?tailCompactions=<n> - return only last N compact boundaries worth of messages
-  //   ?beforeMessageId=<id> - cursor for loading older chunks (used with tailCompactions)
-  //   ?tailTurns=<n> - recent-turn selector within the authorized history scope
-  //   ?tailFrom=<id> - start selector within the authorized history scope
-  //   ?fullHistory=1 - explicitly authorize selectors to inspect full history
-  routes.get("/projects/:projectId/sessions/:sessionId", async (c) => {
-    const requestStartMs = performance.now();
-    const projectId = c.req.param("projectId");
-    const sessionId = c.req.param("sessionId");
-    const afterMessageId = c.req.query("afterMessageId");
-    const publicShare = c.req.query("publicShare") === "1";
-    const fullHistory = c.req.query("fullHistory") === "1";
-    const fullHistoryReason = c.req.query("fullHistoryReason");
-    const tailCompactionsParam = c.req.query("tailCompactions");
-    const beforeMessageId = c.req.query("beforeMessageId");
-    const tailTurnsParam = c.req.query("tailTurns");
-    const tailFrom = c.req.query("tailFrom");
-    const tailCompactions =
-      tailCompactionsParam !== undefined
-        ? Number.parseInt(tailCompactionsParam, 10)
-        : undefined;
-    const tailTurns =
-      tailTurnsParam !== undefined
-        ? Number.parseInt(tailTurnsParam, 10)
-        : undefined;
-    const requestedTailCompactions =
-      tailCompactions !== undefined &&
-      !Number.isNaN(tailCompactions) &&
-      tailCompactions > 0
-        ? tailCompactions
-        : undefined;
-    const requestedTailTurns =
-      tailTurns !== undefined && !Number.isNaN(tailTurns) && tailTurns > 0
-        ? tailTurns
-        : undefined;
-    const defaultedToCompactTail =
-      !fullHistory && !afterMessageId && requestedTailCompactions === undefined;
-    const unboundedRequestDefaultedToCompactTail =
-      defaultedToCompactTail && !tailFrom && requestedTailTurns === undefined;
-    const effectiveTailCompactions =
-      requestedTailCompactions ??
-      (defaultedToCompactTail
-        ? DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS
-        : undefined);
+  registerSessionDetailRoute(routes, deps, sessionDetailRouting);
 
-    // Validate projectId format at API boundary
-    if (!isUrlProjectId(projectId)) {
-      return c.json({ error: "Invalid project ID format" }, 400);
-    }
-
-    const routing = await resolveSessionProjectRouting(
-      projectId as UrlProjectId,
-      sessionId,
-      { allowStaleSnapshot: true },
-    );
-    if ("redirectProjectId" in routing) {
-      return c.redirect(
-        buildSessionProjectRedirectPath(
-          routing.redirectProjectId,
-          sessionId,
-          "",
-          c.req.url,
-        ),
-        307,
-      );
-    }
-    if ("error" in routing) {
-      return c.json({ error: routing.error }, routing.status);
-    }
-    let project = routing.workingProject;
-    let effectiveProjectId = routing.workingProjectId;
-    let transcriptProject = routing.transcriptProject;
-    let transcriptProjectId = routing.transcriptProjectId;
-    const projectResolvedMs = performance.now();
-
-    // Check if session is actively owned by a process
-    const process = deps.supervisor.getProcessForSession(sessionId);
-
-    // Check if session is being controlled by an external program
-    const isExternal = deps.externalTracker?.isExternal(sessionId) ?? false;
-
-    // Check if we've ever owned this session (for orphan detection)
-    // Only mark tools as "aborted" if we owned the session and know it terminated
-    const wasEverOwned = deps.supervisor.wasEverOwned(sessionId);
-    const metadataProvider = deps.sessionMetadataService?.getProvider(
-      sessionId,
-    ) as ProviderName | undefined;
-    const recapMessages =
-      deps.sessionMetadataService?.getRecapMessages?.(sessionId) ?? [];
-    const syntheticDoneMessages =
-      deps.sessionMetadataService?.getSyntheticDoneMessages?.(sessionId) ?? [];
-    const localCommandMessages =
-      deps.sessionMetadataService?.getLocalCommandMessages?.(sessionId) ?? [];
-    const overlayCursor = findDurableOverlayCursor(afterMessageId, [
-      ...recapMessages,
-      ...syntheticDoneMessages,
-      ...localCommandMessages,
-    ]);
-    const providerAfterMessageId = overlayCursor ? undefined : afterMessageId;
-    const primaryReaderAfterMessageId =
-      isClaudeSdkProviderName(project.provider) ||
-      isClaudeSdkProviderName(metadataProvider)
-        ? undefined
-        : providerAfterMessageId;
-
-    const loadOptions = {
-      // Only include orphaned tool info if:
-      // 1. We previously owned this session (not external)
-      // 2. No active process (tools aren't potentially in progress)
-      // When we own the session, tools without results might be pending approval
-      includeOrphans: wasEverOwned && !process,
-      ...(process?.state.type === "in-turn" ||
-      process?.state.type === "waiting-input"
-        ? { ownedTurnInProgress: true }
-        : {}),
-      ...(!fullHistory &&
-      ((!afterMessageId && effectiveTailCompactions !== undefined) ||
-        primaryReaderAfterMessageId)
-        ? {
-            tailCompactions:
-              effectiveTailCompactions ??
-              DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS,
-            ...(!afterMessageId && beforeMessageId ? { beforeMessageId } : {}),
-          }
-        : {}),
-    };
-    let loadedSession = await loadProviderSession(
-      transcriptProject,
-      sessionId,
-      transcriptProjectId,
-      metadataProvider ?? process?.provider,
-      primaryReaderAfterMessageId,
-      loadOptions,
-    );
-    // The reused snapshot may predate a newly merged session directory; a
-    // miss repeats the lookup against a fresh scan before reporting it.
-    if (!loadedSession) {
-      const fresh = await resolveSessionProjectRouting(
-        projectId as UrlProjectId,
-        sessionId,
-      );
-      if ("redirectProjectId" in fresh) {
-        return c.redirect(
-          buildSessionProjectRedirectPath(
-            fresh.redirectProjectId,
-            sessionId,
-            "",
-            c.req.url,
-          ),
-          307,
-        );
-      }
-      if ("error" in fresh) {
-        return c.json({ error: fresh.error }, fresh.status);
-      }
-      project = fresh.workingProject;
-      effectiveProjectId = fresh.workingProjectId;
-      transcriptProject = fresh.transcriptProject;
-      transcriptProjectId = fresh.transcriptProjectId;
-      loadedSession = await loadProviderSession(
-        transcriptProject,
-        sessionId,
-        transcriptProjectId,
-        metadataProvider ?? process?.provider,
-        primaryReaderAfterMessageId,
-        loadOptions,
-      );
-    }
-
-    const readEndMs = performance.now();
-
-    let session = loadedSession
-      ? normalizeSession(loadedSession, {
-          rewindRecords:
-            deps.sessionMetadataService?.getRewindRecords?.(sessionId),
-        })
-      : null;
-    const explicitProvider = metadataProvider ?? process?.provider;
-    if (session && explicitProvider) {
-      session = { ...session, provider: explicitProvider };
-    }
-    const normalizedMessageCount = session?.messages.length ?? 0;
-    const normalizeEndMs = performance.now();
-    if (session && isClaudeSdkProviderName(session.provider)) {
-      session = {
-        ...session,
-        messages: projectTaskListSnapshots(session.messages),
-      };
-    }
-    let incrementalAnchorFound = false;
-    if (session && providerAfterMessageId) {
-      const sliced = sliceAfterMessageIdWithMatch(
-        session.messages,
-        providerAfterMessageId,
-      );
-      session = {
-        ...session,
-        messages: sliced.messages,
-      };
-      incrementalAnchorFound = sliced.found;
-    }
-
-    // Determine the session ownership
-    const ownership = sessionOwnershipFromProcess(process, {
-      isExternal,
-      fallback: session?.ownership,
-    });
-
-    // Get pending input request from active process (for tool approval prompts)
-    // This ensures clients get pending requests immediately without waiting for SSE
-    const pendingInputRequest =
-      process?.state.type === "waiting-input" ? process.state.request : null;
-    const providerRuntimeStatus =
-      deps.supervisor.getProviderRuntimeStatusForSession?.(sessionId) ??
-      process?.getProviderRuntimeStatus() ??
-      null;
-
-    // Get available slash commands (for "/" button and typed slash menu)
-    // The init message that normally carries these gets discarded from the SSE buffer
-    // after ~30s, so we attach them to the REST response. Providers with known
-    // native built-ins, such as Codex, can expose those while stopped.
-    const metadataStartMs = performance.now();
-    const slashCommands = await getSessionSlashCommands(
-      process,
-      process?.provider ??
-        session?.provider ??
-        metadataProvider ??
-        project.provider,
-      deps.sessionMetadataService?.getMetadata(sessionId),
-    );
-    const deferredMessages = sessionQueueSummaries(deps, sessionId, process);
-    const providerChildren = await resolveProviderChildSessions(
-      readerForProviderChildren(
-        transcriptProject,
-        providerResolutionDeps(deps),
-        metadataProvider ?? process?.provider ?? project.provider,
-      ),
-      sessionId,
-      "fresh",
-    );
-
-    const metadataMs = performance.now() - metadataStartMs;
-
-    if (!session) {
-      // Session file doesn't exist yet - only valid if we own the process
-      if (process) {
-        // Keep Process history as provider-owned replay state. Presentation fields
-        // are computed on a detached client projection, as on file-backed reads.
-        const sdkMessages = process.getMessageHistory();
-        const transcriptSnapshotUpdatedAt =
-          process.lastProviderContentTime?.toISOString() ??
-          process.startedAt.toISOString();
-        const processMessages = sdkMessagesToClientMessages(
-          structuredClone(sdkMessages),
-        );
-        if (isClaudeSdkProviderName(process.provider)) {
-          augmentTaskListSnapshots(processMessages);
-        }
-        if (publicShare) {
-          await augmentEditToolUses(processMessages);
-        } else {
-          const pathIndex = await tryClaimProjectPathIndex(project.path);
-          try {
-            await augmentPersistedSessionMessages(processMessages, {
-              projectFileLinks: {
-                projectId: effectiveProjectId,
-                projectPath: project.path,
-                ...(pathIndex ? { index: pathIndex } : {}),
-                resolveAbsoluteFilePaths: deps.resolveAbsoluteFilePaths,
-              },
-            });
-          } finally {
-            pathIndex?.release();
-          }
-        }
-        // Extract context usage from raw SDK messages (has usage field)
-        // Use process.contextWindow (captured from result messages) as primary source
-        const mis = deps.modelInfoService;
-        const sdkContextWindow = process.contextWindow;
-        const contextUsage = extractContextUsageFromSDKMessages(
-          sdkMessages,
-          process.resolvedModel,
-          process.provider,
-          sdkContextWindow
-            ? () => sdkContextWindow
-            : mis
-              ? (m, p) => mis.getContextWindow(m, p)
-              : undefined,
-        );
-        // (Durable recording happens at the observation point in Process via
-        // onContextWindowObserved, not as a side effect of this GET.)
-        // Get metadata even for new sessions (in case it was set before file was written)
-        const metadata = deps.sessionMetadataService?.getMetadata(sessionId);
-        const recapMessages =
-          deps.sessionMetadataService?.getRecapMessages?.(sessionId) ?? [];
-        const syntheticDoneMessages =
-          deps.sessionMetadataService?.getSyntheticDoneMessages?.(sessionId) ??
-          [];
-        const visibleProcessMessages = mergeSessionOverlayMessages(
-          processMessages,
-          recapMessages,
-          syntheticDoneMessages,
-          localCommandMessages,
-        );
-        // Get notification data for new sessions too
-        const lastSeenEntry = deps.notificationService?.getLastSeen(sessionId);
-        const latestRecap = latestRecapMessage(recapMessages);
-        const newSessionUpdatedAt =
-          latestRecap?.timestamp ?? new Date().toISOString();
-        const publicShareCompletedMessageCount =
-          publicShare && fullHistory
-            ? completedPublicShareMessageCount({
-                messages: visibleProcessMessages,
-                process,
-                sourceIsExternal: false,
-                sourceUpdatedAt: newSessionUpdatedAt,
-                hasDurableHistory: false,
-              })
-            : undefined;
-        const hasUnread = deps.notificationService
-          ? deps.notificationService.hasUnread(sessionId, newSessionUpdatedAt)
-          : undefined;
-        return c.json({
-          session: {
-            id: sessionId,
-            projectId: effectiveProjectId,
-            title: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: newSessionUpdatedAt,
-            messageCount: processMessages.length,
-            ownership,
-            nonHumanUserTurn: nonHumanUserTurnField(
-              deps.sessionMetadataService,
-              sessionId,
-            ),
-            customTitle: metadata?.customTitle,
-            isArchived: metadata?.isArchived,
-            isStarred: metadata?.isStarred,
-            clearloop: deps.clearloopService?.getBadge(sessionId),
-            rewindRecordIds: rewindRecordIdsFor(sessionId),
-            parentSessionId: metadata?.parentSessionId,
-            parentSessionKind: metadata?.parentSessionKind,
-            forkedFromSessionId: metadata?.forkedFromSessionId,
-            creationProvenance: metadata?.creationProvenance,
-            routerBinding: metadata?.routerBinding,
-            initialPrompt: metadata?.initialPrompt,
-            wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
-            promptSuggestionMode: metadata?.promptSuggestionMode,
-            recapAfterSeconds: metadata?.recapAfterSeconds,
-            workingProjectId: metadata?.workingProjectId,
-            transcriptProjectId: metadata?.transcriptProjectId,
-            transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
-            lastSeenAt: lastSeenEntry?.timestamp,
-            hasUnread,
-            provider: process.provider,
-            model: process.resolvedModel,
-            effectiveModelSettings:
-              effectiveModelSettingsFromMetadata(metadata),
-            effectiveLaunchSettings: metadata?.effectiveLaunchSettings,
-            contextUsage,
-            ...(providerChildren ? { providerChildren } : {}),
-          },
-          messages: visibleProcessMessages,
-          transcriptSnapshotUpdatedAt,
-          ownership,
-          providerRuntimeStatus,
-          pendingInputRequest,
-          slashCommands,
-          ...(publicShareCompletedMessageCount !== undefined
-            ? {
-                publicShareCapture: {
-                  completedMessageCount: publicShareCompletedMessageCount,
-                },
-              }
-            : {}),
-          ...(deferredMessages.length > 0 ? { deferredMessages } : {}),
-        });
-      }
-      const canonicalProjectId = await getGrokNativeProjectId(
-        sessionId,
-        projectId as UrlProjectId,
-      );
-      if (canonicalProjectId) {
-        return c.redirect(
-          buildGrokNativeRedirectPath(
-            canonicalProjectId,
-            sessionId,
-            "",
-            c.req.url,
-          ),
-          307,
-        );
-      }
-      return c.json({ error: "Session not found" }, 404);
-    }
-    if (!loadedSession) {
-      throw new Error("Normalized session is missing its reader snapshot");
-    }
-
-    // Get session metadata (custom title, archived, starred)
-    const metadata = deps.sessionMetadataService?.getMetadata(sessionId);
-
-    // Get notification data (lastSeenAt, hasUnread)
-    const lastSeenEntry = deps.notificationService?.getLastSeen(sessionId);
-    const lastSeenAt = lastSeenEntry?.timestamp;
-
-    // Apply pagination BEFORE expensive augmentation. Compact boundaries set
-    // the authorized history scope by default; turn selectors may narrow that
-    // scope but cannot broaden it unless fullHistory=1 removed the default.
-    // Skip initial-window slicing for incremental forward fetches. A provider-
-    // bounded older page already ends before its requested cursor.
-    const providerBoundedOlderPage =
-      loadedSession.readWindow?.kind === "compact-page";
-    let paginationInfo: PaginationInfo | undefined;
-    if (
-      !afterMessageId &&
-      effectiveTailCompactions !== undefined &&
-      !beforeMessageId &&
-      (tailFrom || requestedTailTurns !== undefined)
-    ) {
-      const sliced = sliceAtCompactAndUserTurnBoundaries(
-        session.messages,
-        effectiveTailCompactions,
-        requestedTailTurns ?? 20,
-        tailFrom,
-      );
-      session = { ...session, messages: sliced.messages };
-      paginationInfo = sliced.pagination;
-    } else if (
-      !afterMessageId &&
-      effectiveTailCompactions === undefined &&
-      (tailFrom || requestedTailTurns !== undefined)
-    ) {
-      const sliced = sliceAtUserTurnBoundary(
-        session.messages,
-        requestedTailTurns ?? 20,
-        tailFrom,
-      );
-      session = { ...session, messages: sliced.messages };
-      paginationInfo = sliced.pagination;
-    } else if (effectiveTailCompactions !== undefined && !afterMessageId) {
-      const sliced = sliceAtCompactBoundaries(
-        session.messages,
-        effectiveTailCompactions,
-        providerBoundedOlderPage ? undefined : beforeMessageId,
-      );
-      session = { ...session, messages: sliced.messages };
-      paginationInfo = sliced.pagination;
-    }
-    if (
-      loadedSession.readWindow &&
-      paginationInfo?.hasOlderMessages &&
-      (session.provider === "codex" || session.provider === "codex-oss")
-    ) {
-      const firstMessage = session.messages[0];
-      const sourceCursor = firstMessage
-        ? getCodexMessageSourceByteCursor(firstMessage)
-        : undefined;
-      if (!sourceCursor) {
-        throw new Error(
-          "Provider compact-window read did not expose its source cursor",
-        );
-      }
-      paginationInfo = {
-        ...paginationInfo,
-        truncatedBeforeMessageId: sourceCursor,
-      };
-    }
-    if (
-      loadedSession.readWindow &&
-      !incrementalAnchorFound &&
-      (paginationInfo?.hasOlderMessages !==
-        loadedSession.readWindow.omittedPrefix ||
-        (loadedSession.readWindow.omittedPrefix &&
-          paginationInfo.truncatedBeforeMessageId === undefined))
-    ) {
-      throw new Error(
-        "Provider compact-window read did not preserve its older-history boundary",
-      );
-    }
-    // Codex normalized IDs can drift between stream and JSONL. If an
-    // incremental request misses its anchor, never return the full historical
-    // session into a compact-tail client; bound the fallback to the same tail
-    // window used for initial loads.
-    if (providerAfterMessageId && !incrementalAnchorFound) {
-      const sliced = sliceAtCompactBoundaries(
-        session.messages,
-        effectiveTailCompactions ?? DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS,
-      );
-      session = { ...session, messages: sliced.messages };
-      paginationInfo = sliced.pagination;
-    }
-    const sliceEndMs = performance.now();
-
-    if (!publicShare) {
-      deps.onIssueWindow?.(
-        {
-          sessionId: process?.sessionId ?? session.id,
-          projectId: effectiveProjectId,
-        },
-        session.messages,
-      );
-    }
-
-    // Normalization carries sanitized inline image bytes as private symbol
-    // metadata. Consume those candidates before generic response detachment,
-    // which intentionally retains only serializable fields. The materializer
-    // is copy-on-write and does not mutate provider-reader cache objects.
-    if (!publicShare && deps.toolResultMediaStore) {
-      session = {
-        ...session,
-        messages: await deps.toolResultMediaStore
-          .createMaterializer({
-            provider: session.provider,
-            projectId: effectiveProjectId,
-            projectPath: project.path,
-            getSessionId: () => sessionId,
-          })
-          .materializeMessages(session.messages),
-      };
-    }
-
-    // Normalized messages may be shared by the parsed-transcript cache, and
-    // several provider readers expose stable message objects directly.
-    // Route-specific HTML, tool, media, and pruning fields belong only to this
-    // response projection.
-    session = {
-      ...session,
-      messages: detachSessionMessageProjection(session.messages),
-    };
-    if (isClaudeSdkProviderName(session.provider)) {
-      pruneTaskListSnapshotsToLatest(session.messages);
-    }
-
-    // Keep persisted rendering in lockstep with stream augmentation behavior.
-    let augmentDiagnostics: PersistedAugmentDiagnostics | undefined;
-    if (publicShare) {
-      await augmentEditToolUses(session.messages);
-    } else {
-      const pathIndex = await tryClaimProjectPathIndex(project.path);
-      try {
-        augmentDiagnostics = await augmentPersistedSessionMessages(
-          session.messages,
-          {
-            projectFileLinks: {
-              projectId: effectiveProjectId,
-              projectPath: project.path,
-              ...(pathIndex ? { index: pathIndex } : {}),
-              resolveAbsoluteFilePaths: deps.resolveAbsoluteFilePaths,
-            },
-          },
-          { delayMs: deps.persistedAugmentDelayMs },
-        );
-      } finally {
-        pathIndex?.release();
-      }
-    }
-    // The overlay reassigns `session` below; hasUnreadProviderContent needs
-    // the pre-overlay timestamp.
-    const preRecapUpdatedAt = getEffectiveProviderUpdatedAt(
-      session.updatedAt,
-      process,
-    );
-    session = {
-      ...session,
-      updatedAt: preRecapUpdatedAt,
-      messages: mergeLocalCommandMessages(
-        session.messages,
-        localCommandMessages,
-        {
-          hasOlderMessages: Boolean(
-            (afterMessageId && !overlayCursor) ||
-              paginationInfo?.hasOlderMessages ||
-              loadedSession.readWindow?.omittedPrefix,
-          ),
-          hasNewerMessages: Boolean(beforeMessageId),
-        },
-      ),
-    };
-    if (!beforeMessageId) {
-      session = applySessionOverlaysToSession(
-        session,
-        recapMessages,
-        syntheticDoneMessages,
-      );
-      if (overlayCursor && afterMessageId) {
-        const sliced = sliceAfterDurableOverlayCursor({
-          messages: session.messages,
-          overlay: overlayCursor,
-          cursorId: afterMessageId,
-        });
-        session = { ...session, messages: sliced.messages };
-        incrementalAnchorFound = sliced.found;
-      }
-    } else {
-      session = applyRecapOverlayToSummary(session, recapMessages);
-    }
-    const augmentEndMs = performance.now();
-
-    const hasUnread = hasUnreadProviderContent(
-      deps.notificationService,
-      sessionId,
-      preRecapUpdatedAt,
-    );
-
-    // Override context usage with SDK-reported context window from live process
-    // The reader uses hardcoded defaults; the process captures the real value at runtime
-    let { contextUsage } = session;
-    if (process?.contextWindow && contextUsage) {
-      const cw = process.contextWindow;
-      contextUsage = {
-        ...contextUsage,
-        percentage: Math.round((contextUsage.inputTokens / cw) * 100),
-        contextWindow: cw,
-      };
-      // Durable recording happens at the observation point in Process via
-      // onContextWindowObserved; this block only overrides the displayed value.
-    }
-
-    const { messages: _messages, ...sessionMetadata } = session;
-    const totalMs = performance.now() - requestStartMs;
-    const detailTimings = {
-      augment: roundedMs(augmentEndMs - sliceEndMs),
-      metadata: roundedMs(metadataMs),
-      normalize: roundedMs(normalizeEndMs - readEndMs),
-      project: roundedMs(projectResolvedMs - requestStartMs),
-      read: roundedMs(readEndMs - projectResolvedMs),
-      route: roundedMs(sliceEndMs - normalizeEndMs - metadataMs),
-      total: roundedMs(totalMs),
-    };
-    c.header(
-      "Server-Timing",
-      Object.entries(detailTimings)
-        .map(([name, duration]) => {
-          const description =
-            name === "augment" && augmentDiagnostics
-              ? `;desc="messages=${augmentDiagnostics.inputMessages} changed=${augmentDiagnostics.changedMessages} cache-hit=${augmentDiagnostics.cacheHits} cache-join=${augmentDiagnostics.cacheJoins} cache-miss=${augmentDiagnostics.cacheMisses}"`
-              : "";
-          return `ya-${name};dur=${duration}${description}`;
-        })
-        .join(", "),
-    );
-    if (
-      unboundedRequestDefaultedToCompactTail &&
-      normalizedMessageCount >= LARGE_FULL_HISTORY_MESSAGE_THRESHOLD
-    ) {
-      getLogger().warn(
-        {
-          beforeMessageId: beforeMessageId ?? null,
-          defaultTailCompactions: DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS,
-          event: "session_detail_unbounded_defaulted_to_tail",
-          normalizedMessageCount,
-          projectId: effectiveProjectId,
-          transcriptProjectId,
-          provider: session.provider,
-          publicShare,
-          returnedMessageCount: session.messages.length,
-          sessionId,
-          timings: {
-            augmentMs: roundedMs(augmentEndMs - sliceEndMs),
-            metadataMs: roundedMs(metadataMs),
-            normalizeMs: roundedMs(normalizeEndMs - readEndMs),
-            projectMs: roundedMs(projectResolvedMs - requestStartMs),
-            readMs: roundedMs(readEndMs - projectResolvedMs),
-            routeMs: roundedMs(sliceEndMs - normalizeEndMs - metadataMs),
-            totalMs: roundedMs(totalMs),
-          },
-          totalMessageCount: session.messageCount,
-        },
-        "SESSION_DETAIL: defaulted unbounded request to compact tail",
-      );
-    }
-    if (
-      fullHistory &&
-      session.messages.length >= LARGE_FULL_HISTORY_MESSAGE_THRESHOLD
-    ) {
-      getLogger().warn(
-        {
-          event: "session_detail_full_history_large",
-          fullHistoryReason: fullHistoryReason ?? null,
-          normalizedMessageCount,
-          projectId: effectiveProjectId,
-          transcriptProjectId,
-          provider: session.provider,
-          publicShare,
-          returnedMessageCount: session.messages.length,
-          sessionId,
-          timings: {
-            augmentMs: roundedMs(augmentEndMs - sliceEndMs),
-            metadataMs: roundedMs(metadataMs),
-            normalizeMs: roundedMs(normalizeEndMs - readEndMs),
-            projectMs: roundedMs(projectResolvedMs - requestStartMs),
-            readMs: roundedMs(readEndMs - projectResolvedMs),
-            routeMs: roundedMs(sliceEndMs - normalizeEndMs - metadataMs),
-            totalMs: roundedMs(totalMs),
-          },
-          totalMessageCount: session.messageCount,
-        },
-        "SESSION_DETAIL: large explicit full-history request",
-      );
-    }
-    if (totalMs >= SESSION_DETAIL_SLOW_LOG_MS) {
-      getLogger().warn(
-        {
-          afterMessageId: afterMessageId ?? null,
-          beforeMessageId: beforeMessageId ?? null,
-          event: "session_detail_slow",
-          defaultedToCompactTail,
-          fullHistory,
-          fullHistoryReason: fullHistoryReason ?? null,
-          incrementalAnchorFound: afterMessageId
-            ? incrementalAnchorFound
-            : null,
-          normalizedMessageCount,
-          owned: Boolean(process),
-          processState: process?.state.type ?? null,
-          projectId: effectiveProjectId,
-          transcriptProjectId,
-          provider: session.provider,
-          publicShare,
-          returnedMessageCount: session.messages.length,
-          sessionId,
-          tailCompactions: effectiveTailCompactions ?? null,
-          tailTurns: requestedTailTurns ?? null,
-          timings: {
-            augmentMs: roundedMs(augmentEndMs - sliceEndMs),
-            metadataMs: roundedMs(metadataMs),
-            normalizeMs: roundedMs(normalizeEndMs - readEndMs),
-            projectMs: roundedMs(projectResolvedMs - requestStartMs),
-            readMs: roundedMs(readEndMs - projectResolvedMs),
-            routeMs: roundedMs(sliceEndMs - normalizeEndMs - metadataMs),
-            totalMs: roundedMs(totalMs),
-          },
-          totalMessageCount: session.messageCount,
-        },
-        "SESSION_DETAIL: slow request",
-      );
-    }
-
-    const publicShareCompletedMessageCount =
-      publicShare && fullHistory
-        ? completedPublicShareMessageCount({
-            messages: session.messages,
-            process,
-            sourceIsExternal: isExternal,
-            sourceUpdatedAt: session.updatedAt,
-            hasDurableHistory: true,
-          })
-        : undefined;
-
-    return c.json({
-      session: {
-        ...sessionMetadata,
-        projectId: effectiveProjectId,
-        nonHumanUserTurn: nonHumanUserTurnField(
-          deps.sessionMetadataService,
-          sessionId,
-        ),
-        ownership,
-        contextUsage,
-        customTitle: metadata?.customTitle,
-        isArchived: metadata?.isArchived,
-        isStarred: metadata?.isStarred,
-        clearloop: deps.clearloopService?.getBadge(sessionId),
-        rewindRecordIds: rewindRecordIdsFor(sessionId),
-        parentSessionId: metadata?.parentSessionId ?? session.parentSessionId,
-        parentSessionKind:
-          metadata?.parentSessionKind ?? session.parentSessionKind,
-        forkedFromSessionId:
-          metadata?.forkedFromSessionId ?? session.forkedFromSessionId,
-        creationProvenance: metadata?.creationProvenance,
-        routerBinding: metadata?.routerBinding,
-        initialPrompt: metadata?.initialPrompt ?? session.fullTitle,
-        wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
-        promptSuggestionMode: metadata?.promptSuggestionMode,
-        recapAfterSeconds: metadata?.recapAfterSeconds,
-        workingProjectId: metadata?.workingProjectId,
-        transcriptProjectId: metadata?.transcriptProjectId,
-        transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
-        // Model comes from the session reader (extracted from JSONL)
-        model: session.model,
-        effectiveModelSettings: effectiveModelSettingsFromMetadata(metadata),
-        effectiveLaunchSettings: metadata?.effectiveLaunchSettings,
-        lastSeenAt,
-        hasUnread,
-        ...(providerChildren ? { providerChildren } : {}),
-      },
-      messages: session.messages,
-      transcriptSnapshotUpdatedAt: loadedSession.transcriptSnapshotUpdatedAt,
-      ownership,
-      providerRuntimeStatus,
-      pendingInputRequest,
-      slashCommands,
-      ...(publicShareCompletedMessageCount !== undefined
-        ? {
-            publicShareCapture: {
-              completedMessageCount: publicShareCompletedMessageCount,
-            },
-          }
-        : {}),
-      ...(paginationInfo && { pagination: paginationInfo }),
-      ...(deferredMessages.length > 0 ? { deferredMessages } : {}),
-    });
+  registerSessionCreationRoutes(routes, deps, {
+    creationAcceptance,
+    getGlobalInstructions,
   });
 
-  // POST /api/projects/:projectId/sessions - Start new session
-  routes.post("/projects/:projectId/sessions", async (c) => {
-    const projectId = c.req.param("projectId");
-
-    // Validate projectId format at API boundary
-    if (!isUrlProjectId(projectId)) {
-      return c.json({ error: "Invalid project ID format" }, 400);
-    }
-
-    // Use getOrCreateProject to allow starting sessions in new directories
-    const project = await deps.scanner.getOrCreateProject(projectId);
-    if (!project) {
-      return c.json({ error: "Project not found or path does not exist" }, 404);
-    }
-
-    let body: StartSessionBody;
-    try {
-      body = await c.req.json<StartSessionBody>();
-    } catch {
-      return c.json({ error: "Invalid JSON body" }, 400);
-    }
-
-    if (
-      body.machineControl !== undefined &&
-      typeof body.machineControl !== "boolean"
-    )
-      return c.json({ error: "machineControl must be a boolean" }, 400);
-    if (body.computerControl)
-      return c.json({ error: RETIRED_COMPUTER_CONTROL_ERROR }, 400);
-
-    const modeError = permissionModeError(body.mode);
-    if (modeError) {
-      return c.json({ error: modeError }, 400);
-    }
-
-    if (!hasSessionMessageContent(body)) {
-      return c.json({ error: "Message is required" }, 400);
-    }
-    const { executor, error: executorError } = parseOptionalExecutor(
-      body.executor,
-    );
-    if (executorError) {
-      return c.json({ error: executorError }, 400);
-    }
-    // A limited user's session is sandboxed and obeys their lock, decided
-    // here rather than in the form (topics/limited-users.md § Delivery v1).
-    const limitedLaunch = applyLimitedLaunchPolicy(c, body);
-    if (limitedLaunch.kind === "error") {
-      return c.json({ error: limitedLaunch.error }, 403);
-    }
-    const sandboxSelection = parseSessionSandboxLevel(
-      body.sandboxLevel,
-      body.sandboxNetworkFirewall,
-    );
-    if ("error" in sandboxSelection) {
-      return c.json({ error: sandboxSelection.error }, 400);
-    }
-    const helperSettings = parseHelperSettings(body);
-    if (helperSettings.error) {
-      return c.json({ error: helperSettings.error }, 400);
-    }
-    const sandboxSettingsError = getSessionSandboxSettingsError(
-      sandboxSelection.sandboxLevel,
-      helperSettings.recapMode,
-    );
-    if (sandboxSettingsError) {
-      return c.json({ error: sandboxSettingsError }, 400);
-    }
-    if (body.workstreamId !== undefined) {
-      return c.json({ error: "Managed checkout lanes have been removed" }, 410);
-    }
-
-    const serverTimestamp = Date.now();
-    const userMessage: UserMessage = {
-      text: body.message,
-      images: body.images,
-      documents: body.documents,
-      attachments: body.attachments,
-      mode: body.mode,
-      tempId: body.tempId,
-      metadata: buildUserMessageMetadata(
-        body,
-        serverTimestamp,
-        "direct",
-        actingUsername(c),
-      ),
-    };
-
-    const { thinking, effort } = buildThinkingOptions(body);
-
-    // Convert model option (undefined or "default" means use CLI default)
-    const model =
-      body.model && body.model !== "default" ? body.model : undefined;
-    const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
-
-    // Debug: log what we received
-    console.log("[startSession] Request body:", {
-      provider: body.provider,
-      executor,
-      model: body.model,
-      serviceTier,
-    });
-
-    const result = await deps.supervisor.startSession(
-      project.path,
-      userMessage,
-      body.mode,
-      {
-        model,
-        requestedModel: body.model,
-        serviceTier,
-        thinking,
-        effort,
-        providerName: body.provider,
-        routerAccountId: body.routerAccountId,
-        routerPoolId: body.routerPoolId,
-        routerPolicy: body.routerPolicy,
-        computerControl: body.computerControl,
-        machineControl: body.machineControl,
-        desktopControlOrigin:
-          body.machineControl === true ? desktopControlOrigin(c) : undefined,
-        executor,
-        sandboxLevel: sandboxSelection.sandboxLevel,
-        sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
-        instructionUsername: actingUsername(c),
-        globalInstructions: getGlobalInstructions(),
-        permissions: body.permissions,
-        recapMode: helperSettings.recapMode,
-        recapAfterSeconds: helperSettings.recapAfterSeconds,
-        promptSuggestionMode: helperSettings.promptSuggestionMode,
-        helperSideModel: helperSettings.helperSideModel,
-        ...resolveCompactModelSettings(deps, {
-          provider: body.provider ?? project.provider,
-          yaModelId: body.model,
-          modelCandidates: [body.model, model],
-        }),
-      },
-      {
-        projectId: project.id,
-        onStarted: (_sessionId, process) =>
-          recordNewSessionLaunch(process, {
-            creationProvenance: requestCreationProvenance(
-              c,
-              body.creationProvenance,
-            ),
-            createdByUser:
-              limitedLaunch.kind === "applied"
-                ? limitedLaunch.username
-                : undefined,
-            provider: body.provider,
-            executor,
-            initialPrompt: body.message,
-            requestedModel: body.model,
-            recapAfterSeconds: helperSettings.recapAfterSeconds,
-            sandbox: {
-              level: sandboxSelection.sandboxLevel,
-              networkFirewall: sandboxSelection.sandboxNetworkFirewall,
-            },
-          }),
-      },
-    );
-
-    // Check if queue is full
-    if (isQueueFullResponse(result)) {
-      return c.json(
-        { error: "Queue is full", maxQueueSize: result.maxQueueSize },
-        503,
-      );
-    }
-
-    // Accepted, whether it starts now or waits for a worker.
-    void deps.userUsageService?.recordSession(actingUsername(c));
-    void deps.userUsageService?.recordTurn(actingUsername(c), userMessage.text);
-
-    // Check if request was queued
-    if (isQueuedResponse(result)) {
-      return c.json({ ...result, serverTimestamp }, 202); // 202 Accepted - queued for processing
-    }
-
-    return c.json({
-      sessionId: result.sessionId,
-      processId: result.id,
-      projectId: result.projectId,
-      permissionMode: result.permissionMode,
-      appliedPermissionMode: result.appliedPermissionMode,
-      modeVersion: result.modeVersion,
-      recapAfterSeconds: result.recapAfterSeconds,
-      sandboxEnforcement: result.sandboxEnforcement,
-      serverTimestamp,
-    });
+  registerSessionResumeRoutes(routes, deps, {
+    buildResumeLaunch,
+    getGlobalInstructions,
   });
-
-  // POST /api/projects/:projectId/sessions/create - Create session without starting agent
-  // Used for two-phase flow: create session first, upload files, then send first message
-  routes.post("/projects/:projectId/sessions/create", async (c) => {
-    const projectId = c.req.param("projectId");
-
-    // Validate projectId format at API boundary
-    if (!isUrlProjectId(projectId)) {
-      return c.json({ error: "Invalid project ID format" }, 400);
-    }
-
-    // Use getOrCreateProject to allow starting sessions in new directories
-    const project = await deps.scanner.getOrCreateProject(projectId);
-    if (!project) {
-      return c.json({ error: "Project not found or path does not exist" }, 404);
-    }
-
-    let body: CreateSessionBody = {};
-    try {
-      body = await c.req.json<CreateSessionBody>();
-    } catch {
-      // Body is optional for this endpoint
-    }
-
-    if (
-      body.machineControl !== undefined &&
-      typeof body.machineControl !== "boolean"
-    )
-      return c.json({ error: "machineControl must be a boolean" }, 400);
-    if (body.computerControl)
-      return c.json({ error: RETIRED_COMPUTER_CONTROL_ERROR }, 400);
-
-    const modeError = permissionModeError(body.mode);
-    if (modeError) {
-      return c.json({ error: modeError }, 400);
-    }
-
-    const { executor, error: executorError } = parseOptionalExecutor(
-      body.executor,
-    );
-    if (executorError) {
-      return c.json({ error: executorError }, 400);
-    }
-    // A limited user's session is sandboxed and obeys their lock, decided
-    // here rather than in the form (topics/limited-users.md § Delivery v1).
-    const limitedLaunch = applyLimitedLaunchPolicy(c, body);
-    if (limitedLaunch.kind === "error") {
-      return c.json({ error: limitedLaunch.error }, 403);
-    }
-    const sandboxSelection = parseSessionSandboxLevel(
-      body.sandboxLevel,
-      body.sandboxNetworkFirewall,
-    );
-    if ("error" in sandboxSelection) {
-      return c.json({ error: sandboxSelection.error }, 400);
-    }
-    const helperSettings = parseHelperSettings(body);
-    if (helperSettings.error) {
-      return c.json({ error: helperSettings.error }, 400);
-    }
-    const sandboxSettingsError = getSessionSandboxSettingsError(
-      sandboxSelection.sandboxLevel,
-      helperSettings.recapMode,
-    );
-    if (sandboxSettingsError) {
-      return c.json({ error: sandboxSettingsError }, 400);
-    }
-    if (body.workstreamId !== undefined) {
-      return c.json({ error: "Managed checkout lanes have been removed" }, 410);
-    }
-
-    const { thinking, effort } = buildThinkingOptions(body);
-
-    // Convert model option (undefined or "default" means use CLI default)
-    const model =
-      body.model && body.model !== "default" ? body.model : undefined;
-    const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
-
-    const result = await deps.supervisor.createSession(
-      project.path,
-      body.mode,
-      {
-        model,
-        requestedModel: body.model,
-        serviceTier,
-        thinking,
-        effort,
-        providerName: body.provider,
-        routerAccountId: body.routerAccountId,
-        routerPoolId: body.routerPoolId,
-        routerPolicy: body.routerPolicy,
-        computerControl: body.computerControl,
-        machineControl: body.machineControl,
-        desktopControlOrigin:
-          body.machineControl === true ? desktopControlOrigin(c) : undefined,
-        executor,
-        sandboxLevel: sandboxSelection.sandboxLevel,
-        sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
-        instructionUsername: actingUsername(c),
-        globalInstructions: getGlobalInstructions(),
-        permissions: body.permissions,
-        recapMode: helperSettings.recapMode,
-        recapAfterSeconds: helperSettings.recapAfterSeconds,
-        promptSuggestionMode: helperSettings.promptSuggestionMode,
-        helperSideModel: helperSettings.helperSideModel,
-        ...resolveCompactModelSettings(deps, {
-          provider: body.provider,
-          yaModelId: body.model,
-          modelCandidates: [body.model, model],
-        }),
-      },
-      {
-        projectId: project.id,
-        onStarted: (_sessionId, process) =>
-          recordNewSessionLaunch(process, {
-            creationProvenance: requestCreationProvenance(
-              c,
-              body.creationProvenance,
-            ),
-            createdByUser:
-              limitedLaunch.kind === "applied"
-                ? limitedLaunch.username
-                : undefined,
-            provider: body.provider,
-            executor,
-            requestedModel: body.model,
-            recapAfterSeconds: helperSettings.recapAfterSeconds,
-            sandbox: {
-              level: sandboxSelection.sandboxLevel,
-              networkFirewall: sandboxSelection.sandboxNetworkFirewall,
-            },
-          }),
-      },
-    );
-
-    // Check if queue is full
-    if (isQueueFullResponse(result)) {
-      return c.json(
-        { error: "Queue is full", maxQueueSize: result.maxQueueSize },
-        503,
-      );
-    }
-
-    // Accepted, whether it starts now or waits for a worker.
-    void deps.userUsageService?.recordSession(actingUsername(c));
-
-    // Check if request was queued
-    if (isQueuedResponse(result)) {
-      return c.json({ ...result, serverTimestamp: Date.now() }, 202); // 202 Accepted - queued for processing
-    }
-
-    return c.json({
-      sessionId: result.sessionId,
-      processId: result.id,
-      projectId: result.projectId,
-      permissionMode: result.permissionMode,
-      appliedPermissionMode: result.appliedPermissionMode,
-      modeVersion: result.modeVersion,
-      recapAfterSeconds: result.recapAfterSeconds,
-      sandboxEnforcement: result.sandboxEnforcement,
-      serverTimestamp: Date.now(),
-    });
-  });
-
-  // POST /api/sessions - Start a detached new session under the hidden No Project workspace
-  routes.post("/sessions", async (c) => {
-    let body: StartSessionBody;
-    try {
-      body = await c.req.json<StartSessionBody>();
-    } catch {
-      return c.json({ error: "Invalid JSON body" }, 400);
-    }
-
-    if (
-      body.machineControl !== undefined &&
-      typeof body.machineControl !== "boolean"
-    )
-      return c.json({ error: "machineControl must be a boolean" }, 400);
-    if (body.computerControl)
-      return c.json({ error: RETIRED_COMPUTER_CONTROL_ERROR }, 400);
-
-    const limitedLaunch = applyLimitedLaunchPolicy(c, body);
-    if (limitedLaunch.kind === "error")
-      return c.json({ error: limitedLaunch.error }, 403);
-
-    const modeError = permissionModeError(body.mode);
-    if (modeError) {
-      return c.json({ error: modeError }, 400);
-    }
-
-    if (!hasSessionMessageContent(body)) {
-      return c.json({ error: "Message is required" }, 400);
-    }
-    const { executor, error: executorError } = parseOptionalExecutor(
-      body.executor,
-    );
-    if (executorError) {
-      return c.json({ error: executorError }, 400);
-    }
-    const sandboxSelection = parseSessionSandboxLevel(
-      body.sandboxLevel,
-      body.sandboxNetworkFirewall,
-    );
-    if ("error" in sandboxSelection) {
-      return c.json({ error: sandboxSelection.error }, 400);
-    }
-    const helperSettings = parseHelperSettings(body);
-    if (helperSettings.error) {
-      return c.json({ error: helperSettings.error }, 400);
-    }
-    const sandboxSettingsError = getSessionSandboxSettingsError(
-      sandboxSelection.sandboxLevel,
-      helperSettings.recapMode,
-    );
-    if (sandboxSettingsError) {
-      return c.json({ error: sandboxSettingsError }, 400);
-    }
-
-    const projectPath = await ensureDetachedProjectPath(
-      executor,
-      actingUsername(c),
-    );
-    const serverTimestamp = Date.now();
-    const userMessage: UserMessage = {
-      text: body.message,
-      images: body.images,
-      documents: body.documents,
-      attachments: body.attachments,
-      mode: body.mode,
-      tempId: body.tempId,
-      metadata: buildUserMessageMetadata(
-        body,
-        serverTimestamp,
-        "direct",
-        actingUsername(c),
-      ),
-    };
-
-    const { thinking, effort } = buildThinkingOptions(body);
-    const model =
-      body.model && body.model !== "default" ? body.model : undefined;
-    const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
-
-    const result = await deps.supervisor.startSession(
-      projectPath,
-      userMessage,
-      body.mode,
-      {
-        model,
-        requestedModel: body.model,
-        serviceTier,
-        thinking,
-        effort,
-        providerName: body.provider,
-        routerAccountId: body.routerAccountId,
-        routerPoolId: body.routerPoolId,
-        routerPolicy: body.routerPolicy,
-        computerControl: body.computerControl,
-        machineControl: body.machineControl,
-        desktopControlOrigin:
-          body.machineControl === true ? desktopControlOrigin(c) : undefined,
-        executor,
-        sandboxLevel: sandboxSelection.sandboxLevel,
-        sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
-        globalInstructions: getGlobalInstructions(),
-        instructionUsername: actingUsername(c),
-        permissions: body.permissions,
-        recapMode: helperSettings.recapMode,
-        recapAfterSeconds: helperSettings.recapAfterSeconds,
-        promptSuggestionMode: helperSettings.promptSuggestionMode,
-        helperSideModel: helperSettings.helperSideModel,
-      },
-      {
-        onStarted: (_sessionId, process) =>
-          recordNewSessionLaunch(process, {
-            creationProvenance: requestCreationProvenance(
-              c,
-              body.creationProvenance,
-            ),
-            createdByUser: actingUsername(c),
-            provider: body.provider,
-            executor,
-            initialPrompt: body.message,
-            requestedModel: body.model,
-            recapAfterSeconds: helperSettings.recapAfterSeconds,
-            sandbox: {
-              level: sandboxSelection.sandboxLevel,
-              networkFirewall: sandboxSelection.sandboxNetworkFirewall,
-            },
-          }),
-      },
-    );
-
-    if (isQueueFullResponse(result)) {
-      return c.json(
-        { error: "Queue is full", maxQueueSize: result.maxQueueSize },
-        503,
-      );
-    }
-
-    // Accepted, whether it starts now or waits for a worker.
-    void deps.userUsageService?.recordSession(actingUsername(c));
-    void deps.userUsageService?.recordTurn(actingUsername(c), userMessage.text);
-
-    if (isQueuedResponse(result)) {
-      return c.json({ ...result, serverTimestamp: Date.now() }, 202);
-    }
-
-    return c.json({
-      sessionId: result.sessionId,
-      processId: result.id,
-      projectId: result.projectId,
-      permissionMode: result.permissionMode,
-      appliedPermissionMode: result.appliedPermissionMode,
-      modeVersion: result.modeVersion,
-      recapAfterSeconds: result.recapAfterSeconds,
-      sandboxEnforcement: result.sandboxEnforcement,
-      serverTimestamp,
-    });
-  });
-
-  // POST /api/sessions/create - Create a detached session without sending an initial message
-  routes.post("/sessions/create", async (c) => {
-    let body: CreateSessionBody = {};
-    try {
-      body = await c.req.json<CreateSessionBody>();
-    } catch {
-      // Body is optional for this endpoint
-    }
-
-    if (
-      body.machineControl !== undefined &&
-      typeof body.machineControl !== "boolean"
-    )
-      return c.json({ error: "machineControl must be a boolean" }, 400);
-    if (body.computerControl)
-      return c.json({ error: RETIRED_COMPUTER_CONTROL_ERROR }, 400);
-
-    const limitedLaunch = applyLimitedLaunchPolicy(c, body);
-    if (limitedLaunch.kind === "error")
-      return c.json({ error: limitedLaunch.error }, 403);
-
-    const modeError = permissionModeError(body.mode);
-    if (modeError) {
-      return c.json({ error: modeError }, 400);
-    }
-
-    const { executor, error: executorError } = parseOptionalExecutor(
-      body.executor,
-    );
-    if (executorError) {
-      return c.json({ error: executorError }, 400);
-    }
-    const sandboxSelection = parseSessionSandboxLevel(
-      body.sandboxLevel,
-      body.sandboxNetworkFirewall,
-    );
-    if ("error" in sandboxSelection) {
-      return c.json({ error: sandboxSelection.error }, 400);
-    }
-    const helperSettings = parseHelperSettings(body);
-    if (helperSettings.error) {
-      return c.json({ error: helperSettings.error }, 400);
-    }
-    const sandboxSettingsError = getSessionSandboxSettingsError(
-      sandboxSelection.sandboxLevel,
-      helperSettings.recapMode,
-    );
-    if (sandboxSettingsError) {
-      return c.json({ error: sandboxSettingsError }, 400);
-    }
-
-    const projectPath = await ensureDetachedProjectPath(
-      executor,
-      actingUsername(c),
-    );
-    const { thinking, effort } = buildThinkingOptions(body);
-    const model =
-      body.model && body.model !== "default" ? body.model : undefined;
-    const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
-
-    const result = await deps.supervisor.createSession(
-      projectPath,
-      body.mode,
-      {
-        model,
-        requestedModel: body.model,
-        serviceTier,
-        thinking,
-        effort,
-        providerName: body.provider,
-        routerAccountId: body.routerAccountId,
-        routerPoolId: body.routerPoolId,
-        routerPolicy: body.routerPolicy,
-        computerControl: body.computerControl,
-        machineControl: body.machineControl,
-        desktopControlOrigin:
-          body.machineControl === true ? desktopControlOrigin(c) : undefined,
-        executor,
-        sandboxLevel: sandboxSelection.sandboxLevel,
-        sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
-        globalInstructions: getGlobalInstructions(),
-        instructionUsername: actingUsername(c),
-        permissions: body.permissions,
-        recapMode: helperSettings.recapMode,
-        recapAfterSeconds: helperSettings.recapAfterSeconds,
-        promptSuggestionMode: helperSettings.promptSuggestionMode,
-        helperSideModel: helperSettings.helperSideModel,
-      },
-      {
-        onStarted: (_sessionId, process) =>
-          recordNewSessionLaunch(process, {
-            creationProvenance: requestCreationProvenance(
-              c,
-              body.creationProvenance,
-            ),
-            createdByUser: actingUsername(c),
-            provider: body.provider,
-            executor,
-            requestedModel: body.model,
-            recapAfterSeconds: helperSettings.recapAfterSeconds,
-            sandbox: {
-              level: sandboxSelection.sandboxLevel,
-              networkFirewall: sandboxSelection.sandboxNetworkFirewall,
-            },
-          }),
-      },
-    );
-
-    if (isQueueFullResponse(result)) {
-      return c.json(
-        { error: "Queue is full", maxQueueSize: result.maxQueueSize },
-        503,
-      );
-    }
-
-    // Accepted, whether it starts now or waits for a worker.
-    void deps.userUsageService?.recordSession(actingUsername(c));
-
-    if (isQueuedResponse(result)) {
-      return c.json({ ...result, serverTimestamp: Date.now() }, 202);
-    }
-
-    return c.json({
-      sessionId: result.sessionId,
-      processId: result.id,
-      projectId: result.projectId,
-      permissionMode: result.permissionMode,
-      appliedPermissionMode: result.appliedPermissionMode,
-      modeVersion: result.modeVersion,
-      recapAfterSeconds: result.recapAfterSeconds,
-      sandboxEnforcement: result.sandboxEnforcement,
-      serverTimestamp: Date.now(),
-    });
-  });
-
-  // POST /api/projects/:projectId/sessions/:sessionId/resume - Resume session
-  routes.post("/projects/:projectId/sessions/:sessionId/resume", async (c) => {
-    const projectId = c.req.param("projectId");
-    const sessionId = c.req.param("sessionId");
-
-    // Validate projectId format at API boundary
-    if (!isUrlProjectId(projectId)) {
-      return c.json({ error: "Invalid project ID format" }, 400);
-    }
-
-    const requestProject = await deps.scanner.getOrCreateProject(projectId);
-    if (!requestProject) {
-      return c.json({ error: "Project not found or path does not exist" }, 404);
-    }
-
-    let body: StartSessionBody;
-    try {
-      body = await c.req.json<StartSessionBody>();
-    } catch {
-      return c.json({ error: "Invalid JSON body" }, 400);
-    }
-
-    if (
-      body.routerAccountId !== undefined ||
-      body.routerPoolId !== undefined ||
-      body.routerPolicy !== undefined
-    ) {
-      return c.json(
-        {
-          error:
-            "Router account selection is only supported when creating a session; resumed sessions retain their pin",
-        },
-        400,
-      );
-    }
-
-    const modeError = permissionModeError(body.mode);
-    if (modeError) {
-      return c.json({ error: modeError }, 400);
-    }
-
-    if (!hasSessionMessageContent(body)) {
-      return c.json({ error: "Message is required" }, 400);
-    }
-    const parsedBodyExecutor = parseOptionalExecutor(body.executor);
-    if (parsedBodyExecutor.error) {
-      return c.json({ error: parsedBodyExecutor.error }, 400);
-    }
-    const helperSettings = parseHelperSettings(body);
-    if (helperSettings.error) {
-      return c.json({ error: helperSettings.error }, 400);
-    }
-    const parsedResumeMode = parseOptionalResumeMode(body.resumeMode);
-    if (parsedResumeMode.error) {
-      return c.json({ error: parsedResumeMode.error }, 400);
-    }
-    const resumeMode = parsedResumeMode.resumeMode ?? "full";
-    const persistedMetadata =
-      deps.sessionMetadataService?.getMetadata?.(sessionId);
-    const metadataProvider = deps.sessionMetadataService?.getProvider(
-      sessionId,
-    ) as ProviderName | undefined;
-    const identity = await resolveExistingSessionIdentity({
-      sessionId,
-      requestProjectId: projectId,
-      preferredProvider: body.provider,
-      requestFallbackProvider: requestProject.provider,
-      metadata: persistedMetadata,
-      scanner: deps.scanner,
-      providerDeps: providerResolutionDeps(deps),
-    });
-    if (!identity) {
-      return c.json({ error: "Session not found" }, 404);
-    }
-    const settledSandboxLevel = persistedMetadata?.sandboxLevel ?? "none";
-    const settledSandboxNetworkFirewall =
-      persistedSandboxNetworkFirewall(persistedMetadata);
-    if (
-      body.sandboxLevel !== undefined ||
-      body.sandboxNetworkFirewall !== undefined
-    ) {
-      const requestedSandbox = parseSessionSandboxLevel(
-        body.sandboxLevel,
-        body.sandboxNetworkFirewall,
-        settledSandboxLevel,
-        settledSandboxNetworkFirewall,
-      );
-      if ("error" in requestedSandbox) {
-        return c.json({ error: requestedSandbox.error }, 400);
-      }
-      if (
-        requestedSandbox.sandboxLevel !== settledSandboxLevel ||
-        requestedSandbox.sandboxNetworkFirewall !==
-          settledSandboxNetworkFirewall
-      ) {
-        return c.json(
-          {
-            error:
-              "The session sandbox boundary is settled at creation and cannot change on resume",
-          },
-          409,
-        );
-      }
-    }
-
-    const serverTimestamp = Date.now();
-    const userMessage: UserMessage = {
-      text: body.message,
-      images: body.images,
-      documents: body.documents,
-      attachments: body.attachments,
-      mode: body.mode,
-      tempId: body.tempId,
-      metadata: buildUserMessageMetadata(
-        body,
-        serverTimestamp,
-        "direct",
-        actingUsername(c),
-      ),
-    };
-
-    const providerName = body.provider ?? metadataProvider ?? identity.provider;
-    const previousProcess = deps.supervisor.getProcessForSession?.(sessionId);
-    const resumeDiagnostics = {
-      requestedMode: resumeMode,
-      provider: providerName,
-      previousProcess: previousProcess
-        ? {
-            processId: previousProcess.id,
-            state: previousProcess.state.type,
-            provider: previousProcess.provider,
-            supportsDynamicCommands: previousProcess.supportsDynamicCommands,
-          }
-        : null,
-    };
-
-    let resumeSessionAt: string | undefined;
-    // A recorded same-session rewind is applied by the supervisor at process
-    // launch, whichever path starts the process (topics/session-rewind.md);
-    // it wins over the API-error truncation below, whose blocker check is
-    // skipped here because the dropped tail is already accounted for.
-    const pendingRewind =
-      deps.sessionMetadataService?.getPendingRewind?.(sessionId);
-    if (!pendingRewind && isClaudeSdkProviderName(providerName)) {
-      let blocker: ClaudeResumeApiErrorBlocker | null = null;
-      try {
-        blocker = await getClaudeResumeBlockerFromReader(
-          deps.readerFactory(identity.transcriptProject),
-          sessionId,
-          identity.transcriptProjectId,
-        );
-      } catch (error) {
-        getLogger().warn(
-          {
-            event: "claude_resume_api_error_check_failed",
-            sessionId,
-            projectId,
-            providerName,
-            error: error instanceof Error ? error.message : String(error),
-          },
-          "Failed to check Claude session for resume-blocking API error",
-        );
-      }
-
-      if (blocker?.resumeAtMessageId) {
-        // Recoverable: resume up to the last good assistant message,
-        // dropping the API-error tail, instead of forcing a handoff.
-        resumeSessionAt = blocker.resumeAtMessageId;
-        getLogger().info(
-          {
-            event: "claude_resume_truncated_after_api_error",
-            sessionId,
-            projectId,
-            providerName,
-            messageId: blocker.messageId,
-            apiErrorStatus: blocker.apiErrorStatus,
-            resumeSessionAt,
-          },
-          "Resuming Claude session before SDK API-error tail",
-        );
-      } else if (blocker) {
-        getLogger().warn(
-          {
-            event: "claude_resume_blocked_after_api_error",
-            sessionId,
-            projectId,
-            providerName,
-            messageId: blocker.messageId,
-            apiErrorStatus: blocker.apiErrorStatus,
-          },
-          "Blocked Claude provider resume after SDK API-error message",
-        );
-        return c.json(
-          {
-            error: blocker.error,
-            recovery: blocker.recovery,
-            resume: {
-              ...resumeDiagnostics,
-              blockedReason: "claude-api-error-tail",
-            },
-          },
-          409,
-        );
-      }
-    }
-
-    const launch = buildResumeLaunch({
-      sessionId,
-      providerName,
-      workingProjectPath: identity.workingProject.path,
-      previousResolvedModel: previousProcess?.resolvedModel,
-      request: {
-        model: body.model,
-        serviceTier: normalizeOptionalServiceTier(body.serviceTier),
-        ...buildThinkingOptions(body),
-        executor: parsedBodyExecutor.executor,
-        permissions: body.permissions,
-        recapMode: helperSettings.recapMode,
-        recapAfterSeconds: helperSettings.recapAfterSeconds,
-        promptSuggestionMode: helperSettings.promptSuggestionMode,
-        helperSideModel: helperSettings.helperSideModel,
-        resumeMode,
-        resumeSessionAt,
-      },
-    });
-    if ("error" in launch) {
-      return c.json({ error: launch.error }, 400);
-    }
-    const { settings: resumeSettings, projectPath: resumeProjectPath } = launch;
-    // A limited user resumes only a sandboxed session, on this host, inside
-    // their lock (topics/limited-users.md § Delivery v1).
-    const limitedResume = applyLimitedResumePolicy(c, resumeSettings, body);
-    if (limitedResume.kind === "error") {
-      return c.json({ error: limitedResume.error }, 403);
-    }
-
-    let result: Awaited<ReturnType<Supervisor["resumeSession"]>>;
-    try {
-      result = await deps.supervisor.resumeSession(
-        sessionId,
-        resumeProjectPath,
-        userMessage,
-        body.mode,
-        resumeSettings,
-        { requireProviderSessionId: true },
-      );
-    } catch (error) {
-      if (error instanceof ResumeCompactionError) {
-        getLogger().warn(
-          {
-            event: "resume_compaction_failed",
-            sessionId,
-            projectId,
-            providerName,
-            attempt: error.attempt,
-          },
-          "Compact-first resume failed",
-        );
-        return c.json(
-          {
-            error: error.message,
-            recovery: error.recovery,
-            resume: {
-              ...resumeDiagnostics,
-              compaction: error.attempt,
-            },
-          },
-          409,
-        );
-      }
-      if (error instanceof SessionMessageRejectedError) {
-        return c.json({ error: error.message, reason: error.message }, 409);
-      }
-      if (error instanceof RetryableSessionLaunchError) {
-        getLogger().warn(
-          {
-            event: "provider_resume_attachment_failed",
-            sessionId,
-            projectId,
-            providerName,
-            error: error.message,
-          },
-          "Provider resume failed before native session attachment",
-        );
-        return c.json({ error: error.message }, 409);
-      }
-      throw error;
-    }
-
-    // Check if queue is full
-    if (isQueueFullResponse(result)) {
-      return c.json(
-        { error: "Queue is full", maxQueueSize: result.maxQueueSize },
-        503,
-      );
-    }
-
-    // Check if request was queued
-    if (isQueuedResponse(result)) {
-      void deps.userUsageService?.recordTurn(
-        actingUsername(c),
-        userMessage.text,
-      );
-      return c.json(
-        {
-          ...result,
-          serverTimestamp: Date.now(),
-          resume: { ...resumeDiagnostics, outcome: "queued" },
-        },
-        202,
-      ); // 202 Accepted - queued for processing
-    }
-    void deps.userUsageService?.recordTurn(actingUsername(c), userMessage.text);
-
-    return c.json({
-      processId: result.id,
-      permissionMode: result.permissionMode,
-      appliedPermissionMode: result.appliedPermissionMode,
-      modeVersion: result.modeVersion,
-      recapAfterSeconds: result.recapAfterSeconds,
-      sandboxEnforcement: result.sandboxEnforcement,
-      serverTimestamp,
-      resume: {
-        ...resumeDiagnostics,
-        outcome: "started",
-        compaction:
-          resumeMode === "compact-first" ? { status: "completed" } : undefined,
-      },
-    });
-  });
-
-  // POST /api/projects/:projectId/sessions/:sessionId/reactivate
-  // Spawn or reconcile a live harness process without delivering a turn. Every
-  // request is validated and serialized, including when the session is already
-  // owned or another activation is still in flight.
-  routes.use(
-    "/projects/:projectId/sessions/:sessionId/reactivate",
-    async (c, next) => {
-      const projectId = c.req.param("projectId");
-      if (!isUrlProjectId(projectId) || !deps.projectQueueScheduler) {
-        await next();
-        return;
-      }
-
-      const release = deps.projectQueueScheduler.reserveUserSessionStart(
-        projectId,
-        c.req.param("sessionId"),
-      );
-      try {
-        await next();
-      } finally {
-        release();
-      }
-    },
-  );
-  routes.post(
-    "/projects/:projectId/sessions/:sessionId/reactivate",
-    async (c) => {
-      const projectId = c.req.param("projectId");
-      const sessionId = c.req.param("sessionId");
-
-      if (!isUrlProjectId(projectId)) {
-        return c.json({ error: "Invalid project ID format" }, 400);
-      }
-
-      const parsedBody = parseOptionalReactivateSessionBody(await c.req.text());
-      if ("error" in parsedBody) {
-        return c.json({ error: parsedBody.error }, 400);
-      }
-      const body = parsedBody.body;
-      const modeError = permissionModeError(body.mode);
-      if (modeError) {
-        return c.json({ error: modeError }, 400);
-      }
-      const parsedBodyExecutor = parseOptionalExecutor(body.executor);
-      if (parsedBodyExecutor.error) {
-        return c.json({ error: parsedBodyExecutor.error }, 400);
-      }
-      const helperSettings = parseHelperSettings(body);
-      if (helperSettings.error) {
-        return c.json({ error: helperSettings.error }, 400);
-      }
-      const requestProject = await deps.scanner.getOrCreateProject(projectId);
-      if (!requestProject) {
-        return c.json(
-          { error: "Project not found or path does not exist" },
-          404,
-        );
-      }
-
-      const metadata = deps.sessionMetadataService?.getMetadata?.(sessionId);
-      const parsedSandbox = parseSessionSandboxLevel(
-        body.sandboxLevel,
-        body.sandboxNetworkFirewall,
-        metadata?.sandboxLevel ?? "none",
-        persistedSandboxNetworkFirewall(metadata),
-      );
-      if ("error" in parsedSandbox) {
-        return c.json({ error: parsedSandbox.error }, 400);
-      }
-      const hasProvider = Object.hasOwn(body, "provider");
-      const hasExecutor = Object.hasOwn(body, "executor");
-      const hasModel = Object.hasOwn(body, "model");
-      const hasServiceTier = Object.hasOwn(body, "serviceTier");
-      const hasThinking = Object.hasOwn(body, "thinking");
-      const hasSandbox =
-        Object.hasOwn(body, "sandboxLevel") ||
-        Object.hasOwn(body, "sandboxNetworkFirewall");
-      const hasPermissions = Object.hasOwn(body, "permissions");
-      const hasRecapMode = Object.hasOwn(body, "recapMode");
-      const hasRecapAfterSeconds = Object.hasOwn(body, "recapAfterSeconds");
-      const hasPromptSuggestionMode = Object.hasOwn(
-        body,
-        "promptSuggestionMode",
-      );
-      const hasHelperSideModel = Object.hasOwn(body, "helperSideModel");
-
-      const existingProcess = deps.supervisor.getProcessForSession?.(sessionId);
-      const identity = existingProcess
-        ? null
-        : await resolveExistingSessionIdentity({
-            sessionId,
-            requestProjectId: projectId,
-            preferredProvider: hasProvider
-              ? body.provider
-              : (metadata?.provider as ProviderName | undefined),
-            metadata,
-            scanner: deps.scanner,
-            providerDeps: providerResolutionDeps(deps),
-          });
-      if (!existingProcess && !identity) {
-        return c.json({ error: "Session not found" }, 404);
-      }
-      let providerName = hasProvider
-        ? body.provider
-        : (metadata?.provider as ProviderName | undefined);
-      if (!providerName) {
-        providerName = existingProcess?.provider ?? identity?.provider;
-      }
-      if (!providerName) {
-        return c.json({ error: "Session provider not found" }, 404);
-      }
-      const executor = hasExecutor
-        ? parsedBodyExecutor.executor
-        : metadata?.executor;
-      const requestedModel = hasModel ? body.model : metadata?.requestedModel;
-      const model =
-        requestedModel && requestedModel !== "default"
-          ? requestedModel
-          : undefined;
-      const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
-      const thinkingOptions = hasThinking
-        ? buildThinkingOptions(body)
-        : undefined;
-      const sandboxLevel = hasSandbox
-        ? parsedSandbox.sandboxLevel
-        : metadata?.sandboxLevel;
-      const sandboxNetworkFirewall = hasSandbox
-        ? parsedSandbox.sandboxNetworkFirewall
-        : metadata?.sandboxLevel === "project-write" &&
-          metadata.sandboxNetworkFirewall !== false;
-      const recapMode = hasRecapMode
-        ? helperSettings.recapMode
-        : metadata?.recapMode;
-      const recapAfterSeconds = hasRecapAfterSeconds
-        ? helperSettings.recapAfterSeconds
-        : metadata?.recapAfterSeconds;
-      const promptSuggestionMode = hasPromptSuggestionMode
-        ? helperSettings.promptSuggestionMode
-        : metadata?.promptSuggestionMode;
-      const sandboxSettingsError = getSessionSandboxSettingsError(
-        sandboxLevel,
-        recapMode,
-      );
-      if (sandboxSettingsError) {
-        return c.json({ error: sandboxSettingsError }, 400);
-      }
-
-      const coldSettings: ModelSettings = {
-        model,
-        requestedModel,
-        ...(hasServiceTier ? { serviceTier } : {}),
-        ...thinkingOptions,
-        providerName,
-        executor,
-        ...(hasPermissions
-          ? { permissions: body.permissions ?? undefined }
-          : {}),
-        ...(hasSandbox || sandboxLevel === "project-write"
-          ? {
-              sandboxLevel,
-              sandboxNetworkFirewall,
-              sandboxStateKey: metadata?.sandboxStateKey,
-            }
-          : {}),
-        globalInstructions: getGlobalInstructions(),
-        recapAfterSeconds,
-        recapMode,
-        promptSuggestionMode,
-        ...(hasHelperSideModel
-          ? { helperSideModel: helperSettings.helperSideModel }
-          : {}),
-        ...resolveCompactModelSettings(deps, {
-          provider: providerName,
-          yaModelId: requestedModel,
-          modelCandidates: [requestedModel, model],
-        }),
-      };
-      const overrideModelSettings: ModelSettings = {
-        ...(hasModel ? { model, requestedModel: body.model } : {}),
-        ...(hasServiceTier ? { serviceTier } : {}),
-        ...thinkingOptions,
-        ...(hasProvider ? { providerName: body.provider } : {}),
-        ...(hasExecutor ? { executor: parsedBodyExecutor.executor } : {}),
-        ...(hasPermissions
-          ? { permissions: body.permissions ?? undefined }
-          : {}),
-        ...(hasSandbox
-          ? {
-              sandboxLevel: parsedSandbox.sandboxLevel,
-              sandboxNetworkFirewall: parsedSandbox.sandboxNetworkFirewall,
-              sandboxStateKey: metadata?.sandboxStateKey,
-            }
-          : {}),
-        ...(hasRecapMode ? { recapMode: helperSettings.recapMode } : {}),
-        ...(hasRecapAfterSeconds
-          ? { recapAfterSeconds: helperSettings.recapAfterSeconds }
-          : {}),
-        ...(hasPromptSuggestionMode
-          ? { promptSuggestionMode: helperSettings.promptSuggestionMode }
-          : {}),
-        ...(hasHelperSideModel
-          ? { helperSideModel: helperSettings.helperSideModel }
-          : {}),
-      };
-      // A limited user reactivates only a sandboxed session, on this host,
-      // inside their lock (topics/limited-users.md § Delivery v1). The cold
-      // settings already carry every override the body named, so checking
-      // them covers both; an override the lock then replaced follows it.
-      const limitedReactivate = applyLimitedResumePolicy(c, coldSettings, body);
-      if (limitedReactivate.kind === "error") {
-        return c.json({ error: limitedReactivate.error }, 403);
-      }
-      if (limitedReactivate.kind === "applied") {
-        for (const field of [
-          "model",
-          "requestedModel",
-          "thinking",
-          "effort",
-        ] as const) {
-          if (Object.hasOwn(overrideModelSettings, field)) {
-            (overrideModelSettings as Record<string, unknown>)[field] =
-              coldSettings[field];
-          }
-        }
-      }
-      const requestedOverrides: SessionReactivationOverrides = {
-        ...(Object.hasOwn(body, "mode") && body.mode !== undefined
-          ? { permissionMode: body.mode }
-          : {}),
-        ...(Object.keys(overrideModelSettings).length > 0
-          ? { modelSettings: overrideModelSettings }
-          : {}),
-      };
-      const reactivationProjectPath =
-        sandboxLevel === "project-write"
-          ? (metadata?.sandboxProjectPath ??
-            existingProcess?.projectPath ??
-            identity?.workingProject.path ??
-            requestProject.path)
-          : (existingProcess?.projectPath ??
-            identity?.workingProject.path ??
-            requestProject.path);
-      const reservationProjectId =
-        existingProcess?.projectId ?? identity?.workingProjectId ?? projectId;
-      const release =
-        reservationProjectId === projectId
-          ? undefined
-          : deps.projectQueueScheduler?.reserveUserSessionStart(
-              reservationProjectId,
-              sessionId,
-            );
-
-      let process: Process;
-      try {
-        process = await deps.supervisor.reactivateSession(
-          reactivationProjectPath,
-          sessionId,
-          body.mode,
-          coldSettings,
-          { requestedOverrides },
-        );
-      } catch (error) {
-        return c.json(
-          {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to reactivate session",
-          },
-          error instanceof SessionConfigurationConflictError ? 409 : 503,
-        );
-      } finally {
-        release?.();
-      }
-
-      return c.json({
-        processId: process.id,
-        permissionMode: process.permissionMode,
-        appliedPermissionMode: process.appliedPermissionMode,
-        modeVersion: process.modeVersion,
-        recapAfterSeconds: process.recapAfterSeconds,
-        sandboxEnforcement: process.sandboxEnforcement,
-        serverTimestamp: Date.now(),
-      });
-    },
-  );
 
   // POST /api/projects/:projectId/sessions/:sessionId/recap
   // Away-recap trigger, keyed by session (not process) so it survives a server
@@ -5308,10 +1701,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     let process: Process;
     try {
-      const recapProjectPath =
-        metadata?.sandboxLevel === "project-write"
-          ? (metadata.sandboxProjectPath ?? project.path)
-          : project.path;
+      const recapProjectPath = sandboxWorkingProjectPath(
+        metadata,
+        project.path,
+      );
       process = await deps.supervisor.reactivateSession(
         recapProjectPath,
         sessionId,
@@ -5379,7 +1772,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       projectId: params.projectId,
     });
     const sourceTranscriptPath =
-      (await sourceReader.getSessionFilePath?.(params.sessionId)) ?? undefined;
+      (sourceReader
+        ? await sourceReader.reader.getSessionFilePath?.(
+            sourceReader.nativeSessionId,
+          )
+        : undefined) ?? undefined;
     return buildRestartHandoff({
       handoffTitle: params.handoffTitle,
       sourceSession: params.sourceSession,
@@ -5462,10 +1859,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         oldProcess,
         sourceUrl: c.req.query("sourceUrl"),
         targetExecutor: parsedExecutor.executor,
-        projectPath:
-          originalMetadata?.sandboxLevel === "project-write"
-            ? (originalMetadata.sandboxProjectPath ?? project.path)
-            : project.path,
+        projectPath: sandboxWorkingProjectPath(originalMetadata, project.path),
       });
 
       // The compact status explains a draft that carries no compact summary
@@ -5570,10 +1964,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         409,
       );
     }
-    const restartProjectPath =
-      originalMetadata?.sandboxLevel === "project-write"
-        ? (originalMetadata.sandboxProjectPath ?? project.path)
-        : project.path;
+    const restartProjectPath = sandboxWorkingProjectPath(
+      originalMetadata,
+      project.path,
+    );
 
     const oldProcess = deps.supervisor.getProcessForSession(sessionId);
     const metadataProvider = deps.sessionMetadataService?.getProvider(
@@ -5640,35 +2034,35 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     const sourceProvider = sourceSession.provider ?? preferredSourceProvider;
     const providerName = body.provider ?? sourceProvider;
-    const inheritsSourceProviderSettings = providerName === sourceProvider;
-
     const {
       requestedModel,
-      thinking,
-      effort,
       serviceTier,
       permissionMode: restartPermissionMode,
-    } = inheritSuccessorLaunchSettings(
-      originalMetadata?.effectiveLaunchSettings,
-      {
-        sameProvider: inheritsSourceProviderSettings,
-        legacyRequestedModel: () =>
-          deps.sessionMetadataService?.getRequestedModel(sessionId),
-      },
-      {
-        requestedModel: body.model,
+      settings: successorSettings,
+    } = buildSuccessorLaunch({
+      sessionId,
+      sourceMetadata: originalMetadata,
+      sourceProvider,
+      providerName,
+      sourceModels: [oldProcess?.resolvedModel, sourceSession.model],
+      executor,
+      sandboxLevel: restartSandboxLevel,
+      sandboxNetworkFirewall: restartSandboxNetworkFirewall,
+      request: {
+        model: body.model,
         thinking: body.thinking,
         serviceTier:
           body.serviceTier !== undefined
             ? (normalizeOptionalServiceTier(body.serviceTier) ?? null)
             : undefined,
         permissionMode: body.mode,
+        permissions: body.permissions,
+        recapMode: helperSettings.recapMode,
+        recapAfterSeconds: helperSettings.recapAfterSeconds,
+        promptSuggestionMode: helperSettings.promptSuggestionMode,
+        helperSideModel: helperSettings.helperSideModel,
       },
-    );
-    const model =
-      requestedModel && requestedModel !== "default"
-        ? requestedModel
-        : undefined;
+    });
 
     if (restartMode === "fork") {
       const claimed =
@@ -5682,10 +2076,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       let fork: Awaited<ReturnType<Supervisor["forkSession"]>>;
       try {
         fork = await deps.supervisor.forkSession({
+          creation: creationForRequest(c, body.creationProvenance, {
+            continuedFrom: sessionId,
+          }),
           sessionId,
           projectPath: restartProjectPath,
           providerName: sourceProvider,
           upToMessageId: body.forkUpToMessageId,
+          initialPrompt:
+            body.reason?.trim() || "Continue from this fork point.",
           title: forkTitle,
           launchOverrides: {
             requestedModel,
@@ -5701,9 +2100,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           sandboxStateKey: originalMetadata?.sandboxStateKey,
         });
       } catch (error) {
-        if (claimed && !(error instanceof ForkSettingsPersistenceError)) {
-          await deps.sessionMetadataService?.releaseForkOrdinal(claimed);
-        }
+        await releaseFailedForkNumber(
+          deps.sessionMetadataService,
+          claimed,
+          error,
+        );
         getLogger().warn(
           {
             event: "restart_fork_failed",
@@ -5715,6 +2116,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           },
           "Transcript fork failed",
         );
+        if (error instanceof ForkSettingsPersistenceError)
+          return c.json(
+            { error: error.message, sessionId: error.sessionId, projectId },
+            error.status as 409 | 500,
+          );
         return c.json(
           {
             error:
@@ -5726,100 +2132,76 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
       const forkMessage =
         body.reason?.trim() || "Continue from this fork point.";
-      const result = await deps.supervisor.resumeSession(
-        fork.sessionId,
-        restartProjectPath,
-        { text: forkMessage, mode: restartPermissionMode },
-        restartPermissionMode,
-        {
-          model,
-          requestedModel: requestedModel ?? undefined,
-          serviceTier,
-          thinking,
-          effort,
-          providerName: sourceProvider,
-          executor,
-          sandboxLevel: restartSandboxLevel,
-          sandboxNetworkFirewall: restartSandboxNetworkFirewall,
-          sandboxStateKey:
-            fork.sandboxStateKey ?? originalMetadata?.sandboxStateKey,
-          globalInstructions: getGlobalInstructions(),
-          permissions: body.permissions,
-          recapMode: helperSettings.recapMode,
-          recapAfterSeconds:
-            helperSettings.recapAfterSeconds ??
-            originalMetadata?.recapAfterSeconds,
-          // Inherit the source session's preference unless the body overrides.
-          promptSuggestionMode:
-            helperSettings.promptSuggestionMode ??
-            originalMetadata?.promptSuggestionMode,
-          helperSideModel: helperSettings.helperSideModel,
-          ...resolveCompactModelSettings(deps, {
-            provider: sourceProvider,
-            yaModelId: requestedModel ?? undefined,
-            modelCandidates: [
-              body.model,
-              model,
-              oldProcess?.resolvedModel,
-              sourceSession.model,
-            ],
-          }),
-        },
-      );
-
-      if (isQueueFullResponse(result)) {
-        return c.json(
-          { error: "Queue is full", maxQueueSize: result.maxQueueSize },
-          503,
+      let launched: LaunchResult;
+      try {
+        launched = await deps.supervisor.resumeSession(
+          fork.sessionId,
+          restartProjectPath,
+          { text: forkMessage, mode: restartPermissionMode },
+          restartPermissionMode,
+          {
+            // Fork rejects a provider change above, so these are the source
+            // provider's settings.
+            ...successorSettings,
+            sandboxStateKey:
+              fork.sandboxStateKey ?? originalMetadata?.sandboxStateKey,
+          },
         );
-      }
-      if (isQueuedResponse(result)) {
-        deps.supervisor.cancelQueuedRequest(result.queueId);
+      } catch (error) {
         return c.json(
           {
             error:
-              "Fork could not start immediately; old process was left running",
+              error instanceof Error
+                ? error.message
+                : "Fork continuation failed",
+            sessionId: fork.sessionId,
+            projectId,
           },
-          503,
+          500,
         );
       }
 
-      void deps.userUsageService?.recordSession(actingUsername(c));
-      await recordCreationProvenance(
-        result.sessionId,
-        requestCreationProvenance(c, body.creationProvenance),
-      );
-      await persistLaunchMetadata(
-        result.sessionId,
-        sourceProvider,
-        executor,
-        undefined,
-        requestedModel ?? undefined,
-        result.promptSuggestionMode,
-        result.recapAfterSeconds,
-        {
-          level: restartSandboxLevel,
-          networkFirewall: restartSandboxNetworkFirewall,
-          stateKey:
-            result.sandboxStateKey ??
-            fork.sandboxStateKey ??
-            originalMetadata?.sandboxStateKey,
-          projectPath: restartProjectPath,
-          projectId: result.projectId,
-        },
-      );
-      if (deps.sessionMetadataService) {
-        await deps.sessionMetadataService.updateMetadata(result.sessionId, {
-          title: forkTitle,
-          forkLineageRootId: lineageRootId,
-        });
-        deps.eventBus?.emit({
-          type: "session-metadata-changed",
-          sessionId: result.sessionId,
-          title: forkTitle,
-          timestamp: new Date().toISOString(),
+      const outcome = settleLaunch(launched, {
+        whenQueued: "cancel",
+        supervisor: deps.supervisor,
+        notStartedError:
+          "Fork could not start immediately; old process was left running",
+      });
+      if (outcome.kind !== "started") {
+        // The fork exists either way; name it.
+        return refusedLaunchResponse(c, outcome, {
+          sessionId: fork.sessionId,
+          projectId,
         });
       }
+      const result = outcome.process;
+
+      void deps.userUsageService?.recordSession(actingUsername(c));
+      // The fork's creation recorded the source's preferences; it keeps the
+      // ones its process started with: the request's, defaults included.
+      await persistLaunchMetadata(
+        deps.sessionMetadataService,
+        result.sessionId,
+        {
+          promptSuggestionMode: result.promptSuggestionMode,
+          recapAfterSeconds: result.recapAfterSeconds,
+          sandbox: {
+            level: restartSandboxLevel,
+            networkFirewall: restartSandboxNetworkFirewall,
+            stateKey:
+              result.sandboxStateKey ??
+              fork.sandboxStateKey ??
+              originalMetadata?.sandboxStateKey,
+            projectPath: restartProjectPath,
+            projectId: result.projectId,
+          },
+        },
+      );
+      await recordNewSession(
+        result.sessionId,
+        { forkLineageRootId: lineageRootId },
+        { title: forkTitle },
+      );
 
       const oldProcessAbortDeferred = abortOldProcessAfterReplacementActivity(
         oldProcess,
@@ -5866,100 +2248,47 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         projectPath: restartProjectPath,
       }));
 
-    const result = await deps.supervisor.startSession(
-      restartProjectPath,
+    const outcome = settleLaunch(
+      await deps.supervisor.startSession(
+        restartProjectPath,
+        {
+          text: handoff,
+          mode: restartPermissionMode,
+        },
+        restartPermissionMode,
+        // The client name matches the Codex default; a restart has named
+        // itself since provider client identity was added.
+        { ...successorSettings, clientName: "yep-anywhere" },
+        {
+          creation: creationForRequest(c, body.creationProvenance, {
+            continuedFrom: sessionId,
+          }),
+        },
+      ),
       {
-        text: handoff,
-        mode: restartPermissionMode,
-      },
-      restartPermissionMode,
-      {
-        model,
-        requestedModel: requestedModel ?? undefined,
-        serviceTier,
-        thinking,
-        effort,
-        providerName,
-        clientName: "yep-anywhere",
-        executor,
-        sandboxLevel: restartSandboxLevel,
-        sandboxNetworkFirewall: restartSandboxNetworkFirewall,
-        globalInstructions: getGlobalInstructions(),
-        permissions: body.permissions,
-        recapMode: helperSettings.recapMode,
-        recapAfterSeconds:
-          helperSettings.recapAfterSeconds ??
-          originalMetadata?.recapAfterSeconds,
-        // Inherit the source session's preference unless the body overrides.
-        promptSuggestionMode:
-          helperSettings.promptSuggestionMode ??
-          originalMetadata?.promptSuggestionMode,
-        helperSideModel: helperSettings.helperSideModel,
-        ...resolveCompactModelSettings(deps, {
-          provider: providerName,
-          yaModelId: requestedModel ?? undefined,
-          modelCandidates: inheritsSourceProviderSettings
-            ? [
-                body.model,
-                model,
-                oldProcess?.resolvedModel,
-                sourceSession.model,
-              ]
-            : [body.model, model],
-        }),
+        whenQueued: "cancel",
+        supervisor: deps.supervisor,
+        notStartedError:
+          "Restart could not start immediately; old process was left running",
       },
     );
-
-    if (isQueueFullResponse(result)) {
-      return c.json(
-        { error: "Queue is full", maxQueueSize: result.maxQueueSize },
-        503,
-      );
-    }
-
-    if (isQueuedResponse(result)) {
-      deps.supervisor.cancelQueuedRequest(result.queueId);
-      return c.json(
-        {
-          error:
-            "Restart could not start immediately; old process was left running",
-        },
-        503,
-      );
-    }
+    if (outcome.kind !== "started") return refusedLaunchResponse(c, outcome);
+    const result = outcome.process;
 
     void deps.userUsageService?.recordSession(actingUsername(c));
-    await recordCreationProvenance(
-      result.sessionId,
-      requestCreationProvenance(c, body.creationProvenance),
-    );
-    await persistLaunchMetadata(
-      result.sessionId,
-      providerName,
-      executor,
-      undefined,
-      requestedModel ?? undefined,
-      result.promptSuggestionMode,
-      result.recapAfterSeconds,
-      {
+    // Creation recorded the requested preferences; the handoff keeps the
+    // recap delay its process started with, a default included.
+    await persistLaunchMetadata(deps.sessionMetadataService, result.sessionId, {
+      recapAfterSeconds: result.recapAfterSeconds,
+      sandbox: {
         level: restartSandboxLevel,
         networkFirewall: restartSandboxNetworkFirewall,
         stateKey: result.sandboxStateKey,
         projectPath: result.sandboxProjectPath ?? result.projectPath,
         projectId: result.projectId,
       },
-    );
-    if (deps.sessionMetadataService) {
-      await deps.sessionMetadataService.updateMetadata(result.sessionId, {
-        title: handoffTitle,
-      });
-      deps.eventBus?.emit({
-        type: "session-metadata-changed",
-        sessionId: result.sessionId,
-        title: handoffTitle,
-        timestamp: new Date().toISOString(),
-      });
-    }
+    });
+    await recordNewSession(result.sessionId, { title: handoffTitle });
 
     const oldProcessAbortDeferred = abortOldProcessAfterReplacementActivity(
       oldProcess,
@@ -6075,30 +2404,27 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         return c.json({ error: parsedExecutor.error }, 400);
       }
       const executor = parsedExecutor.executor;
-      const providerName =
-        (launchBody.provider as ProviderName | undefined) ?? sourceProvider;
-      const { requestedModel, thinking, effort, serviceTier, permissionMode } =
-        inheritSuccessorLaunchSettings(
-          originalMetadata?.effectiveLaunchSettings,
-          {
-            sameProvider: providerName === sourceProvider,
-            legacyRequestedModel: () =>
-              deps.sessionMetadataService?.getRequestedModel(sessionId),
-          },
-          {
-            requestedModel: launchBody.model,
-            thinking: launchBody.thinking as ThinkingOption | undefined,
-            permissionMode: body.mode,
-          },
-        );
-      const model =
-        requestedModel && requestedModel !== "default"
-          ? requestedModel
-          : undefined;
-      const projectPath =
-        originalMetadata?.sandboxLevel === "project-write"
-          ? (originalMetadata.sandboxProjectPath ?? project.path)
-          : project.path;
+      const { permissionMode, settings } = buildSuccessorLaunch({
+        sessionId,
+        sourceMetadata: originalMetadata,
+        sourceProvider,
+        providerName:
+          (launchBody.provider as ProviderName | undefined) ?? sourceProvider,
+        sourceModels: [oldProcess?.resolvedModel, sourceSession.model],
+        executor,
+        sandboxLevel: sandbox.level,
+        sandboxNetworkFirewall: sandbox.networkFirewall,
+        instructionUsername: actingUsername(c),
+        request: {
+          model: launchBody.model,
+          thinking: launchBody.thinking as ThinkingOption | undefined,
+          permissionMode: body.mode,
+        },
+      });
+      const projectPath = sandboxWorkingProjectPath(
+        originalMetadata,
+        project.path,
+      );
 
       const handoffTitle = deriveRestartTitle({
         preferredTitle: originalMetadata?.customTitle,
@@ -6132,71 +2458,30 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         ),
       };
 
-      const result = await deps.supervisor.startSession(
-        projectPath,
-        userMessage,
-        permissionMode,
-        {
-          model,
-          requestedModel: requestedModel ?? undefined,
-          serviceTier,
-          thinking,
-          effort,
-          providerName,
-          executor,
-          sandboxLevel: sandbox.level,
-          sandboxNetworkFirewall: sandbox.networkFirewall,
-          instructionUsername: actingUsername(c),
-          globalInstructions: getGlobalInstructions(),
-          recapAfterSeconds: originalMetadata?.recapAfterSeconds,
-          promptSuggestionMode: originalMetadata?.promptSuggestionMode,
-          ...resolveCompactModelSettings(deps, {
-            provider: providerName,
-            yaModelId: requestedModel ?? undefined,
-            modelCandidates: [model, sourceSession.model],
-          }),
-        },
-        {
-          projectId: project.id,
-          onStarted: (_sessionId, process) =>
-            recordNewSessionLaunch(process, {
-              creationProvenance: requestCreationProvenance(
-                c,
-                body.creationProvenance,
-              ),
-              createdByUser: limited ? limitedLaunch.username : undefined,
-              provider: providerName,
-              executor,
-              initialPrompt: body.message,
-              requestedModel: requestedModel ?? undefined,
-              recapAfterSeconds: originalMetadata?.recapAfterSeconds,
-              sandbox,
+      const outcome = settleLaunch(
+        await deps.supervisor.startSession(
+          projectPath,
+          userMessage,
+          permissionMode,
+          settings,
+          {
+            projectId: project.id,
+            creation: creationForRequest(c, body.creationProvenance, {
+              continuedFrom: sessionId,
             }),
-        },
+          },
+        ),
+        { whenQueued: "wait" },
       );
-      if (isQueueFullResponse(result)) {
-        return c.json(
-          { error: "Queue is full", maxQueueSize: result.maxQueueSize },
-          503,
-        );
-      }
+      if (outcome.kind === "refused") return refusedLaunchResponse(c, outcome);
       void deps.userUsageService?.recordSession(actingUsername(c));
       void deps.userUsageService?.recordTurn(actingUsername(c), body.message);
-      if (isQueuedResponse(result)) {
-        return c.json({ ...result, serverTimestamp }, 202);
+      if (outcome.kind === "queued") {
+        return c.json({ ...outcome.queued, serverTimestamp }, 202);
       }
+      const result = outcome.process;
 
-      if (deps.sessionMetadataService) {
-        await deps.sessionMetadataService.updateMetadata(result.sessionId, {
-          title: handoffTitle,
-        });
-        deps.eventBus?.emit({
-          type: "session-metadata-changed",
-          sessionId: result.sessionId,
-          title: handoffTitle,
-          timestamp: new Date().toISOString(),
-        });
-      }
+      await recordNewSession(result.sessionId, { title: handoffTitle });
       return c.json({
         sessionId: result.sessionId,
         processId: result.id,
@@ -6572,17 +2857,19 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       // YA-injected, not a principal's turn: no sender and no usage record.
       metadata: buildUserMessageMetadata({}, Date.now(), "direct"),
     };
-    const result = await deps.supervisor.resumeSession(
-      sessionId,
-      launch.projectPath,
-      userMessage,
-      saved?.permissionMode,
-      launch.settings,
-      { requireProviderSessionId: true },
+    // A queued send runs when a worker frees up.
+    const outcome = settleLaunch(
+      await deps.supervisor.resumeSession(
+        sessionId,
+        launch.projectPath,
+        userMessage,
+        saved?.permissionMode,
+        launch.settings,
+        { requireProviderSessionId: true },
+      ),
+      { whenQueued: "wait" },
     );
-    if (isQueueFullResponse(result)) {
-      throw new Error("Queue is full");
-    }
+    if (outcome.kind === "refused") throw new Error(outcome.error);
   };
 
   deps.clearloopService?.setRunner({
@@ -7131,10 +3418,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     const originalMetadata =
       deps.sessionMetadataService?.getMetadata?.(sessionId);
-    const forkProjectPath =
-      originalMetadata?.sandboxLevel === "project-write"
-        ? (originalMetadata.sandboxProjectPath ?? project.path)
-        : project.path;
+    const forkProjectPath = sandboxWorkingProjectPath(
+      originalMetadata,
+      project.path,
+    );
     let baseTitle = normalizeRestartTitleCandidate(
       originalMetadata?.customTitle,
     );
@@ -7156,8 +3443,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     let fork: Awaited<ReturnType<Supervisor["forkSession"]>>;
     try {
       fork = await deps.supervisor.forkSession({
+        creation: creationForRequest(c, body.creationProvenance),
         sessionId,
         projectPath: forkProjectPath,
+        workingProjectId: inheritedWorkingProject(originalMetadata, projectId),
         providerName,
         upToMessageId,
         boundary: providerBoundary,
@@ -7168,9 +3457,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         ...inheritedSandboxSettings(originalMetadata),
       });
     } catch (error) {
-      if (claimed && !(error instanceof ForkSettingsPersistenceError)) {
-        await deps.sessionMetadataService?.releaseForkOrdinal(claimed);
-      }
+      await releaseFailedForkNumber(
+        deps.sessionMetadataService,
+        claimed,
+        error,
+      );
       getLogger().warn(
         {
           event: "session_fork_failed",
@@ -7185,6 +3476,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         },
         "Transcript fork failed",
       );
+      if (error instanceof ForkSettingsPersistenceError)
+        return c.json(
+          { error: error.message, sessionId: error.sessionId, projectId },
+          error.status as 409 | 500,
+        );
       // A copy of a pinned session that could not keep its account.
       if (error instanceof RouterUnavailable) {
         return c.json({ error: error.message }, 409);
@@ -7209,74 +3505,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       );
     }
 
-    const savedExecutor = parseOptionalExecutor(
-      deps.sessionMetadataService?.getExecutor(sessionId),
-    ).executor;
-    let inheritedModel = fork.launchSettings
-      ? (fork.launchSettings.requestedModel ?? undefined)
-      : resolveInheritedForkModel(
-          deps.sessionMetadataService?.getRequestedModel(sessionId),
-          sourceProcess?.resolvedModel,
-          sourceProcess?.model,
-        );
-    if (!fork.launchSettings && !inheritedModel) {
-      const fullSummary = await findSessionSummaryAcrossProviders(
-        project,
-        sessionId,
-        projectId,
-        providerResolutionDeps(deps),
-        providerName,
-      );
-      inheritedModel = resolveInheritedForkModel(
-        deps.sessionMetadataService?.getRequestedModel(sessionId),
-        fullSummary?.summary.model,
-      );
-    }
-    await persistLaunchMetadata(
+    void deps.userUsageService?.recordSession(actingUsername(c));
+    await recordNewSession(
       fork.sessionId,
-      providerName,
-      savedExecutor,
-      undefined,
-      inheritedModel,
-      originalMetadata?.promptSuggestionMode,
-      originalMetadata?.recapAfterSeconds,
-      {
-        level: originalMetadata?.sandboxLevel ?? "none",
-        networkFirewall: persistedSandboxNetworkFirewall(originalMetadata),
-        stateKey: fork.sandboxStateKey ?? originalMetadata?.sandboxStateKey,
-        projectPath: forkProjectPath,
-        projectId:
-          originalMetadata?.workingProjectId ?? (projectId as UrlProjectId),
-      },
+      { forkLineageRootId },
+      { title: forkTitle, forkedFromSessionId: sessionId },
     );
-    await recordCreationProvenance(
-      fork.sessionId,
-      requestCreationProvenance(c, body.creationProvenance),
-    );
-    const forkCreator = actingUsername(c);
-    if (forkCreator) {
-      // A limited user's fork is theirs, like a session they start
-      // (topics/limited-users.md § Delivery v1).
-      await deps.sessionMetadataService?.recordSessionCreator(
-        fork.sessionId,
-        forkCreator,
-      );
-    }
-    void deps.userUsageService?.recordSession(forkCreator);
-    if (deps.sessionMetadataService) {
-      await deps.sessionMetadataService.updateMetadata(fork.sessionId, {
-        title: forkTitle,
-        forkedFromSessionId: sessionId,
-        forkLineageRootId,
-      });
-      deps.eventBus?.emit({
-        type: "session-metadata-changed",
-        sessionId: fork.sessionId,
-        title: forkTitle,
-        forkedFromSessionId: sessionId,
-        timestamp: new Date().toISOString(),
-      });
-    }
 
     return c.json({
       sessionId: fork.sessionId,
@@ -7391,10 +3625,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       );
     }
     const sourceMetadata = deps.sessionMetadataService.getMetadata?.(sessionId);
-    const sourceProjectPath =
-      sourceMetadata?.sandboxLevel === "project-write"
-        ? (sourceMetadata.sandboxProjectPath ?? project.path)
-        : project.path;
+    const sourceProjectPath = sandboxWorkingProjectPath(
+      sourceMetadata,
+      project.path,
+    );
     const promptSuggestionMode = sourceMetadata?.promptSuggestionMode;
     const recapAfterSeconds = sourceMetadata?.recapAfterSeconds;
     const abortController = new AbortController();
@@ -7436,8 +3670,19 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       }
 
       const generator = await deps.supervisor.forkSession({
+        creation: {
+          context: {
+            owner: { kind: "superuser" },
+            source: { kind: "internal", reason: "retitle" },
+          },
+          authorize: async () => {
+            if (deps.signal?.aborted || abortController.signal.aborted)
+              throw new Error("Summary job was cancelled");
+          },
+        },
         sessionId,
         projectPath: sourceProjectPath,
+        workingProjectId: inheritedWorkingProject(sourceMetadata, projectId),
         providerName,
         title: "Retitle generator",
         ...inheritedSandboxSettings(sourceMetadata),
@@ -7445,28 +3690,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       generatorSessionId = generator.sessionId;
       requestedModel =
         generator.launchSettings?.requestedModel ?? requestedModel;
-      await updateForkSummaryChildMetadata(
+      await recordNewSession(
         generator.sessionId,
-        sessionId,
-        "Retitle generator",
-        true,
-      );
-      await persistLaunchMetadata(
-        generator.sessionId,
-        providerName,
-        savedExecutor,
-        undefined,
-        requestedModel,
-        promptSuggestionMode,
-        recapAfterSeconds,
+        {},
         {
-          level: sourceMetadata?.sandboxLevel ?? "none",
-          networkFirewall: persistedSandboxNetworkFirewall(sourceMetadata),
-          stateKey:
-            generator.sandboxStateKey ?? sourceMetadata?.sandboxStateKey,
-          projectPath: sourceProjectPath,
-          projectId:
-            sourceMetadata?.workingProjectId ?? (projectId as UrlProjectId),
+          title: "Retitle generator",
+          archived: true,
+          forkedFromSessionId: sessionId,
         },
       );
       if (abortController.signal.aborted) {
@@ -7596,10 +3826,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       }
       const originalMetadata =
         deps.sessionMetadataService.getMetadata?.(sessionId);
-      const sourceProjectPath =
-        originalMetadata?.sandboxLevel === "project-write"
-          ? (originalMetadata.sandboxProjectPath ?? project.path)
-          : project.path;
+      const sourceProjectPath = sandboxWorkingProjectPath(
+        originalMetadata,
+        project.path,
+      );
       if (activeForkSummaryJobs.has(sessionId)) {
         return c.json(
           { error: "A fork summary is already generating for this session" },
@@ -7688,8 +3918,22 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         let completed = false;
         try {
           const generator = await deps.supervisor.forkSession({
+            creation: {
+              context: {
+                owner: { kind: "superuser" },
+                source: { kind: "internal", reason: "fork-summary" },
+              },
+              authorize: async () => {
+                if (deps.signal?.aborted || abortController.signal.aborted)
+                  throw new Error("Summary job was cancelled");
+              },
+            },
             sessionId,
             projectPath: sourceProjectPath,
+            workingProjectId: inheritedWorkingProject(
+              originalMetadata,
+              projectId,
+            ),
             providerName,
             title: "Fork summary generator",
             ...inheritedSandboxSettings(originalMetadata),
@@ -7697,30 +3941,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           generatorSessionId = generator.sessionId;
           requestedModel =
             generator.launchSettings?.requestedModel ?? requestedModel;
-          await updateForkSummaryChildMetadata(
+          await recordNewSession(
             generator.sessionId,
-            sessionId,
-            "Fork summary generator",
-            true,
-          );
-          await persistLaunchMetadata(
-            generator.sessionId,
-            providerName,
-            savedExecutor,
-            undefined,
-            requestedModel,
-            originalMetadata?.promptSuggestionMode,
-            originalMetadata?.recapAfterSeconds,
+            {},
             {
-              level: originalMetadata?.sandboxLevel ?? "none",
-              networkFirewall:
-                persistedSandboxNetworkFirewall(originalMetadata),
-              stateKey:
-                generator.sandboxStateKey ?? originalMetadata?.sandboxStateKey,
-              projectPath: sourceProjectPath,
-              projectId:
-                originalMetadata?.workingProjectId ??
-                (projectId as UrlProjectId),
+              title: "Fork summary generator",
+              archived: true,
+              forkedFromSessionId: sessionId,
             },
           );
           if (abortController.signal.aborted) {
@@ -7751,12 +3978,39 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             ? truncateSessionTitle(summaryTitle)
             : ((await fallbackTitle()) ?? "Forked session");
           targetTitle = title;
+          const targetCreation = creationForRequest(c, undefined);
           const target = await deps.supervisor.forkSession({
+            initialPrompt: generated.text,
+            creation: {
+              ...targetCreation,
+              requestId: `fork-summary-target-${displayObject.id}`,
+              authorize: async (saved) => {
+                if (abortController.signal.aborted)
+                  throw new Error("Fork summary was cancelled");
+                return (await targetCreation.authorize(saved)) ?? undefined;
+              },
+              onAccepted: async (saved) => {
+                targetSessionId = saved.sessionId;
+                await deps.sessionMetadataService!.updateTranscriptDisplayObject(
+                  sessionId,
+                  displayObject.id,
+                  (object) =>
+                    object.kind !== "fork-summary"
+                      ? object
+                      : { ...object, targetSessionId: saved.sessionId },
+                );
+                emitTranscriptDisplayObjects(sessionId);
+              },
+            },
             sessionId,
             launchSettings: generator.launchSettings,
             launchOverrides:
               mode !== undefined ? { permissionMode: mode } : undefined,
             projectPath: sourceProjectPath,
+            workingProjectId: inheritedWorkingProject(
+              originalMetadata,
+              projectId,
+            ),
             providerName,
             ...(boundary.providerBoundary
               ? { boundary: boundary.providerBoundary }
@@ -7766,38 +4020,17 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           });
           targetSessionId = target.sessionId;
           void deps.userUsageService?.recordSession(forkSummaryActor);
-          await updateForkSummaryChildMetadata(
+          // Hidden until its continuation starts.
+          await recordNewSession(
             target.sessionId,
-            sessionId,
-            title,
-            true,
-            forkLineageRootId,
-          );
-          await persistLaunchMetadata(
-            target.sessionId,
-            providerName,
-            savedExecutor,
-            undefined,
-            requestedModel,
-            originalMetadata?.promptSuggestionMode,
-            originalMetadata?.recapAfterSeconds,
-            {
-              level: originalMetadata?.sandboxLevel ?? "none",
-              networkFirewall:
-                persistedSandboxNetworkFirewall(originalMetadata),
-              stateKey:
-                target.sandboxStateKey ?? originalMetadata?.sandboxStateKey,
-              projectPath: sourceProjectPath,
-              projectId:
-                originalMetadata?.workingProjectId ??
-                (projectId as UrlProjectId),
-            },
+            { archived: true, forkLineageRootId },
+            { title, forkedFromSessionId: sessionId },
           );
           if (abortController.signal.aborted) {
             throw new DOMException("Fork summary cancelled", "AbortError");
           }
 
-          const result = await deps.supervisor.resumeSession(
+          const launched = await deps.supervisor.resumeSession(
             target.sessionId,
             sourceProjectPath,
             { text: generated.text, mode },
@@ -7821,13 +4054,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
               }),
             },
           );
-          if (isQueueFullResponse(result)) {
-            throw new Error("Queue is full");
-          }
-          if (isQueuedResponse(result)) {
-            deps.supervisor.cancelQueuedRequest(result.queueId);
-            throw new Error("Fork summary could not start immediately");
-          }
+          const outcome = settleLaunch(launched, {
+            whenQueued: "cancel",
+            supervisor: deps.supervisor,
+            notStartedError: "Fork summary could not start immediately",
+          });
+          if (outcome.kind === "refused") throw new Error(outcome.error);
+          const result = outcome.process;
           targetProcessId = result.id;
           if (abortController.signal.aborted) {
             await deps.supervisor.abortProcess(result.id);
@@ -7836,31 +4069,30 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           }
 
           await persistLaunchMetadata(
+            deps.sessionMetadataService,
             result.sessionId,
-            providerName,
-            savedExecutor,
-            undefined,
-            requestedModel,
-            result.promptSuggestionMode,
-            result.recapAfterSeconds,
             {
-              level: originalMetadata?.sandboxLevel ?? "none",
-              networkFirewall:
-                persistedSandboxNetworkFirewall(originalMetadata),
-              stateKey:
-                result.sandboxStateKey ??
-                target.sandboxStateKey ??
-                originalMetadata?.sandboxStateKey,
-              projectPath: result.sandboxProjectPath ?? result.projectPath,
-              projectId: result.projectId,
+              // The target's creation recorded the source's preferences; it
+              // keeps the ones its continuation started with.
+              promptSuggestionMode: result.promptSuggestionMode,
+              recapAfterSeconds: result.recapAfterSeconds,
+              sandbox: {
+                level: originalMetadata?.sandboxLevel ?? "none",
+                networkFirewall:
+                  persistedSandboxNetworkFirewall(originalMetadata),
+                stateKey:
+                  result.sandboxStateKey ??
+                  target.sandboxStateKey ??
+                  originalMetadata?.sandboxStateKey,
+                projectPath: result.sandboxProjectPath ?? result.projectPath,
+                projectId: result.projectId,
+              },
             },
           );
-          await updateForkSummaryChildMetadata(
+          await recordNewSession(
             result.sessionId,
-            sessionId,
-            title,
-            false,
-            forkLineageRootId,
+            { archived: false },
+            { title, forkedFromSessionId: sessionId },
           );
           await deps.sessionMetadataService?.updateTranscriptDisplayObject(
             sessionId,
@@ -7903,11 +4135,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           };
           if (generatorSessionId) {
             try {
-              await updateForkSummaryChildMetadata(
+              await recordNewSession(
                 generatorSessionId,
-                sessionId,
-                "Fork summary generator",
-                true,
+                {},
+                {
+                  title: "Fork summary generator",
+                  archived: true,
+                  forkedFromSessionId: sessionId,
+                },
               );
             } catch (cleanupError) {
               logCleanupFailure("archive-generator", cleanupError);
@@ -7915,22 +4150,20 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           }
           if (targetSessionId && targetTitle) {
             try {
-              await updateForkSummaryChildMetadata(
+              await recordNewSession(
                 targetSessionId,
-                sessionId,
-                targetTitle,
-                true,
+                { archived: true },
+                { title: targetTitle, forkedFromSessionId: sessionId },
               );
             } catch (cleanupError) {
               logCleanupFailure("archive-target", cleanupError);
             }
-          } else if (
-            fallbackClaim &&
-            !(error instanceof ForkSettingsPersistenceError)
-          ) {
+          } else {
             try {
-              await deps.sessionMetadataService?.releaseForkOrdinal(
+              await releaseFailedForkNumber(
+                deps.sessionMetadataService,
                 fallbackClaim,
+                error,
               );
             } catch (cleanupError) {
               logCleanupFailure("release-fork-ordinal", cleanupError);
@@ -8114,7 +4347,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     if (
       body.routerAccountId !== undefined ||
       body.routerPoolId !== undefined ||
-      body.routerPolicy !== undefined
+      body.routerPolicy !== undefined ||
+      body.routerClaudeAiConnectors !== undefined
     ) {
       return c.json(
         {
@@ -8185,9 +4419,45 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // model would never interpret. Claude's `/compact` reports handled:false and
     // falls through to normal delivery so the SDK handles it as a regular turn
     // (and any trailing focus instructions reach the SDK verbatim). Native
-    // controls are out-of-band even when the composer requests deferred send.
+    // controls stay out-of-band except explicitly queued compaction, which
+    // must retain its selected delivery boundary.
     const parsed = parseSlashCommandSubmission(body.message);
-    if (parsed) {
+    if (parsed?.name === "compact" && body.deferred) {
+      if (
+        process.provider !== "codex" &&
+        !isClaudeSdkProviderName(process.provider)
+      )
+        return c.json(
+          { error: "Queued compaction is unavailable for this provider" },
+          409,
+        );
+      if (
+        userMessage.attachments?.length ||
+        userMessage.images?.length ||
+        userMessage.documents?.length
+      )
+        return c.json(
+          { error: "Queue compaction separately from attachments" },
+          400,
+        );
+      const commands = await process.supportedCommands();
+      if (
+        !commands?.some(
+          (command) => command.name.replace(/^\//, "") === "compact",
+        )
+      )
+        return c.json(
+          { error: "This session does not advertise compaction" },
+          409,
+        );
+      if (userMessage.metadata)
+        userMessage.metadata.compactAboveContextPercent = undefined;
+      userMessage.queuedCompact = {
+        command: "compact",
+        argument: parsed.argument,
+      };
+    }
+    if (parsed && !userMessage.queuedCompact) {
       const providerResult = await dispatchProviderCommand(
         process,
         parsed,
@@ -8217,6 +4487,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // boundary. If the process is already idle, Process can accept them now.
     if (
       body.deferred ||
+      process.queuedCompactionBlocksInput ||
       (userMessage.metadata?.turnEffort && process.state.type !== "idle")
     ) {
       if (body.mode) {
@@ -8368,7 +4639,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     sessionMetadataService: deps.sessionMetadataService,
     supervisor: deps.supervisor,
     getGlobalInstructions,
-    persistLaunchMetadata,
   };
 
   // POST /api/sessions/:sessionId/recovered-queue/:queueId/resume - Move
@@ -8763,180 +5033,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     return c.json({ accepted: true, pendingInputRequest });
   });
 
-  // POST /api/sessions/:sessionId/mark-seen - Mark session as seen (read)
-  routes.post("/sessions/:sessionId/mark-seen", async (c) => {
-    const sessionId = c.req.param("sessionId");
-
-    if (!deps.notificationService) {
-      return c.json({ error: "Notification service not available" }, 503);
-    }
-
-    let body: {
-      timestamp?: string;
-      messageId?: string;
-      nonHumanUserTurnMessageId?: string;
-    } = {};
-    try {
-      body = await c.req.json();
-    } catch {
-      // Body is optional
-    }
-
-    let acknowledged: boolean | undefined;
-    if (body.nonHumanUserTurnMessageId !== undefined) {
-      if (
-        typeof body.nonHumanUserTurnMessageId !== "string" ||
-        !body.nonHumanUserTurnMessageId
-      ) {
-        return c.json({ error: "Invalid non-human user turn id" }, 400);
-      }
-      if (!deps.sessionMetadataService) {
-        return c.json({ error: "Session metadata service not available" }, 503);
-      }
-      acknowledged =
-        await deps.sessionMetadataService.acknowledgeNonHumanUserTurn(
-          sessionId,
-          body.nonHumanUserTurnMessageId,
-        );
-      deps.eventBus?.emit({
-        type: "session-metadata-changed",
-        sessionId,
-        nonHumanUserTurn: nonHumanUserTurnField(
-          deps.sessionMetadataService,
-          sessionId,
-        ),
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    await deps.notificationService.markSeen(
-      sessionId,
-      body.timestamp,
-      body.messageId,
-    );
-
-    // A stale or unknown delivered-turn id leaves the receipt pending; the
-    // client needs that answer to report the failed acknowledgement.
-    return c.json(
-      acknowledged === undefined
-        ? { marked: true }
-        : { marked: true, acknowledged },
-    );
-  });
-
-  // DELETE /api/sessions/:sessionId/mark-seen - Mark session as unread
-  routes.delete("/sessions/:sessionId/mark-seen", async (c) => {
-    const sessionId = c.req.param("sessionId");
-
-    if (!deps.notificationService) {
-      return c.json({ error: "Notification service not available" }, 503);
-    }
-
-    await deps.notificationService.clearSession(sessionId);
-
-    // Emit event so other tabs/clients can update
-    if (deps.eventBus) {
-      deps.eventBus.emit({
-        type: "session-seen",
-        sessionId,
-        timestamp: SESSION_UNREAD_TIMESTAMP,
-      });
-    }
-
-    return c.json({ marked: false });
-  });
-
-  // GET /api/notifications/last-seen - Get all last seen entries
-  routes.get("/notifications/last-seen", async (c) => {
-    if (!deps.notificationService) {
-      return c.json({ error: "Notification service not available" }, 503);
-    }
-
-    return c.json({ lastSeen: deps.notificationService.getAllLastSeen() });
-  });
-
-  // GET /api/debug/metadata - Debug endpoint to inspect metadata service state
-  routes.get("/debug/metadata", (c) => {
-    if (!deps.sessionMetadataService) {
-      return c.json(
-        { error: "Session metadata service not available", available: false },
-        503,
-      );
-    }
-
-    const allMetadata = deps.sessionMetadataService.getAllMetadata();
-    const sessionCount = Object.keys(allMetadata).length;
-    const starredCount = Object.values(allMetadata).filter(
-      (m) => m.isStarred,
-    ).length;
-    const archivedCount = Object.values(allMetadata).filter(
-      (m) => m.isArchived,
-    ).length;
-    const filePath = deps.sessionMetadataService.getFilePath();
-
-    return c.json({
-      available: true,
-      filePath,
-      sessionCount,
-      starredCount,
-      archivedCount,
-    });
-  });
-
-  // PUT /api/sessions/:sessionId/metadata - Update session metadata
-  routes.put("/sessions/:sessionId/metadata", async (c) => {
-    const sessionId = c.req.param("sessionId");
-
-    if (!deps.sessionMetadataService) {
-      return c.json({ error: "Session metadata service not available" }, 503);
-    }
-
-    let body: unknown = {};
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: "Invalid JSON body" }, 400);
-    }
-
-    const parsed = parseSessionMetadataPatch(body);
-    if (!parsed.ok) {
-      return c.json({ error: parsed.error }, parsed.status);
-    }
-    const { patch } = parsed;
-
-    await deps.sessionMetadataService.updateMetadata(sessionId, patch);
-
-    // Archive is a stop boundary, including for older clients that only know
-    // the generic metadata route. Provider-owned background jobs can outlive a
-    // graceful turn interrupt, so verify the whole owned process is gone.
-    if (patch.archived === true) {
-      await deps.supervisor.abortSessionWithVerification(sessionId);
-    }
-
-    // Emit SSE event so sidebar and other clients can update
-    if (deps.eventBus) {
-      deps.eventBus.emit({
-        type: "session-metadata-changed",
-        sessionId,
-        title: patch.title,
-        archived: patch.archived,
-        starred: patch.starred,
-        sidebarCategory: patch.sidebarCategory,
-        parentSessionId: patch.parentSessionId,
-        parentSessionKind:
-          patch.parentSessionId === undefined
-            ? undefined
-            : patch.parentSessionId
-              ? "btw-aside"
-              : null,
-        promptSuggestionMode: patch.promptSuggestionMode ?? undefined,
-        recapAfterSeconds: patch.recapAfterSeconds ?? undefined,
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    return c.json({ updated: true });
-  });
+  registerSessionMetadataRoutes(routes, deps);
 
   // POST /api/projects/:projectId/sessions/:sessionId/clone - Clone a session
   routes.post("/projects/:projectId/sessions/:sessionId/clone", async (c) => {
@@ -8990,26 +5087,57 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       // A copy of a router-pinned session must be able to keep its account.
       deps.supervisor.assertRouterBindingInheritable(sessionId);
       // Get session directory from project
-      const sessionDir = project.sessionDir;
+      let sessionDir = project.sessionDir;
+      const sourceIdentity = storedIdentityFor(sessionId);
+      const sourceLookup: SessionIdentityLookup = sourceIdentity
+        ? { kind: "stored", identity: sourceIdentity }
+        : { kind: "legacy" };
+      if (sourceIdentity && !sourceIdentity.native)
+        return c.json(
+          { error: "Session has no native transcript to clone" },
+          409,
+        );
       if (!sessionDir) {
         return c.json({ error: "Session directory not found" }, 500);
       }
 
-      // Resolve bounded source/title metadata without treating it as a
-      // complete transcript summary.
-      const originalResolution = await findSessionListSummaryAcrossProviders(
-        project,
+      // One operation-scoped identity snapshot owns every native source read.
+      const originalMetadata =
+        deps.sessionMetadataService?.getMetadata?.(sessionId);
+      const sourceProject = await resolveExistingSessionIdentity({
         sessionId,
-        projectId,
+        requestProjectId: projectId,
+        identityLookup: sourceLookup,
+        preferredProvider: body.provider,
+        metadata: originalMetadata,
+        scanner: deps.scanner,
+        providerDeps: providerResolutionDeps(deps),
+      });
+      // Keep the explicit legacy provider-probe boundary when there is no YA row.
+      const transcriptProject = sourceProject?.transcriptProject ?? project;
+      const transcriptProjectId =
+        sourceProject?.transcriptProjectId ?? projectId;
+      const originalResolution = await findSessionListSummaryAcrossProviders(
+        transcriptProject,
+        sessionId,
+        transcriptProjectId,
         providerResolutionDeps(deps),
         body.provider,
+        sourceLookup,
       );
+      if (sourceIdentity && !originalResolution)
+        return c.json({ error: "Session native transcript not found" }, 404);
+      const originalNative =
+        originalResolution?.native ??
+        (await originalResolution?.source.reader.getNativeSessionRef?.(
+          originalResolution.nativeSessionId,
+        ));
+      if (originalNative?.family === "claude")
+        sessionDir = originalNative.storageScope;
       const originalSession = originalResolution?.summary ?? null;
       let cloneProvider: ProviderName =
         originalResolution?.source.provider ?? project.provider;
 
-      const originalMetadata =
-        deps.sessionMetadataService?.getMetadata?.(sessionId);
       const originalTitle =
         originalMetadata?.customTitle ?? originalSession?.title;
       const cloneTitle =
@@ -9040,91 +5168,51 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           originalResolution?.source.provider ??
           body.provider ??
           (isCodexProviderName(project.provider) ? project.provider : "codex");
-        const forkProjectPath =
-          originalMetadata?.sandboxLevel === "project-write"
-            ? (originalMetadata.sandboxProjectPath ?? project.path)
-            : project.path;
+        const forkProjectPath = sandboxWorkingProjectPath(
+          originalMetadata,
+          project.path,
+        );
         const fork = await deps.supervisor.forkSession({
+          creation: creationForRequest(c, undefined, {
+            asideOf: parentSessionId === sessionId ? sessionId : undefined,
+          }),
           sessionId,
           projectPath: forkProjectPath,
+          // A sandboxed source's clone stays listed with it.
+          ...(originalMetadata?.sandboxLevel === "project-write"
+            ? {
+                workingProjectId: inheritedWorkingProject(
+                  originalMetadata,
+                  projectId,
+                ),
+              }
+            : {}),
           providerName: cloneProvider,
           title: cloneTitle,
           ...inheritedSandboxSettings(originalMetadata),
         });
-        if (originalMetadata?.sandboxLevel === "project-write") {
-          await deps.sessionMetadataService?.setSessionSandbox(fork.sessionId, {
-            level: originalMetadata.sandboxLevel,
-            networkFirewall: persistedSandboxNetworkFirewall(originalMetadata),
-            stateKey: fork.sandboxStateKey ?? originalMetadata.sandboxStateKey,
-            projectPath: forkProjectPath,
-            projectId:
-              originalMetadata.workingProjectId ?? (projectId as UrlProjectId),
-          });
-        }
         result = {
           newSessionId: fork.sessionId,
           // Older /btw clients use this offset only until their prompt marker
           // arrives. A conservative bound hides inherited text without a scan.
           entries: Number.MAX_SAFE_INTEGER,
         };
-      } else if (originalMetadata?.sandboxLevel === "project-write") {
-        // A sandboxed source's transcript lives in its project's private
-        // provider root, and a clone for the same canonical project shares
-        // that root and its settled sandbox (topics/session-sandboxing.md
-        // § Session Lifetime), so the copy is read from and written there.
-        const stateKey = originalMetadata.sandboxStateKey;
-        if (!stateKey) {
-          return c.json(
-            {
-              error:
-                "This sandboxed session records no private state, so its transcript cannot be cloned",
-            },
-            409,
-          );
-        }
-        const sandboxProjectPath =
-          originalMetadata.sandboxProjectPath ?? project.path;
-        const transcriptDirectory =
-          await deps.supervisor.openClaudeSandboxTranscriptDirectory({
-            stateKey,
-            projectPath: sandboxProjectPath,
-          });
-        try {
-          result = await cloneClaudeSession(
-            `/proc/self/fd/${transcriptDirectory.fd}`,
-            sessionId,
-          );
-        } finally {
-          await transcriptDirectory.close();
-        }
-        await deps.sessionMetadataService?.setSessionSandbox(
-          result.newSessionId,
-          {
-            level: "project-write",
-            networkFirewall: persistedSandboxNetworkFirewall(originalMetadata),
-            stateKey,
-            projectPath: sandboxProjectPath,
-            projectId:
-              originalMetadata.workingProjectId ?? (projectId as UrlProjectId),
-            // The sandbox transcript readers find a session by its provider.
-            provider: cloneProvider,
-          },
-        );
       } else {
-        result = await cloneClaudeSession(sessionDir, sessionId);
-      }
-      // The Codex path forks through the Supervisor, which already did this.
-      if (!shouldCloneFromCodex) {
-        const copyId = result.newSessionId;
-        await deps.supervisor.inheritRouterBinding(sessionId, copyId, () =>
-          rm(join(sessionDir, `${copyId}.jsonl`), { force: true }),
-        );
-      }
-      if (cloneSettings) {
-        await deps.supervisor.recordForkLaunchSettings(
-          result.newSessionId,
-          cloneSettings,
-        );
+        const clone = await deps.supervisor.cloneSession({
+          sessionId,
+          projectPath: originalMetadata?.sandboxProjectPath ?? project.path,
+          providerName: cloneProvider,
+          title: cloneTitle,
+          launchSettings: cloneSettings,
+          creation: creationForRequest(c, body.creationProvenance, {
+            asideOf: parentSessionId === sessionId ? sessionId : undefined,
+          }),
+          ...inheritedSandboxSettings(originalMetadata),
+        });
+        result = {
+          newSessionId: clone.sessionId,
+          entries: clone.entries ?? Number.MAX_SAFE_INTEGER,
+        };
       }
       if (!shouldCloneFromCodex) {
         // The verbatim copy keeps every uuid, so the source's rewound groups
@@ -9136,28 +5224,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         );
       }
 
-      const cloneCreator = actingUsername(c);
-      if (cloneCreator) {
-        // A limited user's clone is theirs, like a session they start
-        // (topics/limited-users.md § Delivery v1).
-        await deps.sessionMetadataService?.recordSessionCreator(
-          result.newSessionId,
-          cloneCreator,
-        );
-      }
-      void deps.userUsageService?.recordSession(cloneCreator);
-      await recordCreationProvenance(
-        result.newSessionId,
-        requestCreationProvenance(c, body.creationProvenance),
-      );
-      // Set clone metadata. /btw asides pass parentSessionId so the child
-      // can jump back into the parent viewport.
-      if (deps.sessionMetadataService) {
-        await deps.sessionMetadataService.updateMetadata(result.newSessionId, {
-          title: cloneTitle,
+      void deps.userUsageService?.recordSession(actingUsername(c));
+      // /btw asides pass parentSessionId so the child can jump back into the
+      // parent viewport. Creation recorded the clone's title, its source and
+      // a link to that source; a link to another parent is recorded here.
+      if (parentSessionId && parentSessionId !== sessionId) {
+        await deps.sessionMetadataService?.updateMetadata(result.newSessionId, {
           parentSessionId,
-          parentSessionKind: parentSessionId ? "btw-aside" : undefined,
-          forkedFromSessionId: sessionId,
+          parentSessionKind: "btw-aside",
         });
       }
 
@@ -9171,8 +5245,17 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       const message =
         error instanceof Error ? error.message : "Failed to clone session";
       return c.json(
-        { error: message },
-        error instanceof RouterUnavailable ? 409 : 500,
+        {
+          error: message,
+          ...(error instanceof ForkSettingsPersistenceError
+            ? { sessionId: error.sessionId, projectId }
+            : {}),
+        },
+        error instanceof ForkSettingsPersistenceError
+          ? (error.status as 409 | 500)
+          : error instanceof RouterUnavailable
+            ? 409
+            : 500,
       );
     }
   });

@@ -63,7 +63,7 @@ Start from these documents rather than introducing parallel behavior:
   provider delivery and must not claim to close it.
 - [Attachment storage](../../topics/attachment-storage.md),
   [project storage](../../topics/project-directory-storage.md), and
-  [SQLite](../../topics/optional-sqlite.md) own file placement and storage
+  [SQLite](../../topics/required-sqlite.md) own file placement and storage
   lifecycle. Draft state stays in app data, never in the selected checkout.
 - [Capabilities](../../topics/server-capabilities.md) and
   [hosted compatibility](../../topics/remote-hosted-compatibility.md) own rollout.
@@ -86,7 +86,7 @@ Inventory all local draft writers before implementation. The initial map is:
 | Surface | Existing owner | Adapter obligation |
 | --- | --- | --- |
 | Session composer | `useDraftPersistence.ts`, `sessionDraftStorage.ts`, `draftEnvelope.ts` | Text, completed attachments, source/session identity, send recovery. |
-| New-session, project and floating composers; seeded/handoff forms | `NewSessionForm.tsx`, `FloatingActionButton.tsx`, `RestartSessionModal.tsx`, `useDrafts.ts` | Preserve existing separate slots and any existing project scope; audit custom draft keys. |
+| New-session and project composers; seeded/handoff forms (the floating composer was removed 2026-11-07) | `NewSessionForm.tsx`, `RestartSessionModal.tsx`, `useDrafts.ts` | Preserve existing separate slots and any existing project scope; audit custom draft keys. |
 | Tool-approval feedback | `useDrafts.ts` | Adapt its separate string persistence; retain its current session-scoped behavior. |
 | Question-panel Other answers | `useDrafts.ts` | Preserve per-question fields rather than concatenating unrelated answers. |
 | Async-question replies | `asyncQuestionRecords.ts` | Sync draft text by question identity without treating reminder flags, answers, or edit counters as draft text. |

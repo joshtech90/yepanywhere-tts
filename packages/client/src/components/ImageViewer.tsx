@@ -10,6 +10,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
+import { buttonClassName, IconButton } from "./ui/Button";
+import { SegmentedControl } from "./ui/SegmentedControl";
 import styles from "./ImageViewer.module.css";
 
 interface ImageDimensions {
@@ -446,43 +448,41 @@ export function ImageViewer({
       role="toolbar"
       aria-label={t("imageViewerControls")}
     >
-      <button
-        type="button"
-        className={styles.control}
-        aria-pressed={viewMode === "fit"}
-        onClick={fitImage}
-      >
-        {t("imageViewerFit")}
-      </button>
-      <button
-        type="button"
-        className={styles.control}
-        aria-pressed={viewMode === "zoom" && scale === 1}
-        onClick={() => zoomAt(1)}
-      >
-        {t("imageViewerActualSize")}
-      </button>
-      <button
-        type="button"
-        className={styles.control}
-        aria-label={t("imageViewerZoomOut")}
+      <SegmentedControl
+        aria-label={t("imageViewerScale")}
+        options={[
+          { value: "fit", label: t("imageViewerFit") },
+          { value: "actual", label: t("imageViewerActualSize") },
+        ]}
+        value={
+          viewMode === "fit"
+            ? "fit"
+            : viewMode === "zoom" && scale === 1
+              ? "actual"
+              : null
+        }
+        onChange={(value) => (value === "fit" ? fitImage() : zoomAt(1))}
+      />
+      <IconButton
+        label={t("imageViewerZoomOut")}
         onClick={() => zoomAt(getCurrentScale() / IMAGE_ZOOM_STEP)}
       >
         −
-      </button>
+      </IconButton>
       <output className={styles.zoomLevel} aria-live="polite">
         {zoomLabel}
       </output>
-      <button
-        type="button"
-        className={styles.control}
-        aria-label={t("imageViewerZoomIn")}
+      <IconButton
+        label={t("imageViewerZoomIn")}
         onClick={() => zoomAt(getCurrentScale() * IMAGE_ZOOM_STEP)}
       >
         +
-      </button>
+      </IconButton>
       <a
-        className={styles.download}
+        className={buttonClassName({
+          variant: "ghost",
+          className: styles.download,
+        })}
         href={url}
         download={fileName}
         aria-label={t("imageViewerDownload", { name: fileName })}
@@ -567,10 +567,10 @@ export function ImageViewer({
               scheduleNavigationChromeHide();
             }}
           >
-            <button
-              type="button"
+            <IconButton
+              variant="secondary"
               className={cx(styles.navigationButton, styles.previous)}
-              aria-label={t("imageViewerPrevious")}
+              label={t("imageViewerPrevious")}
               onClick={() => {
                 onNavigationInput?.("controls");
                 revealNavigationChrome("all");
@@ -578,11 +578,11 @@ export function ImageViewer({
               }}
             >
               <ImageViewerChevron direction="previous" />
-            </button>
-            <button
-              type="button"
+            </IconButton>
+            <IconButton
+              variant="secondary"
               className={cx(styles.navigationButton, styles.next)}
-              aria-label={t("imageViewerNext")}
+              label={t("imageViewerNext")}
               onClick={() => {
                 onNavigationInput?.("controls");
                 revealNavigationChrome("all");
@@ -590,7 +590,7 @@ export function ImageViewer({
               }}
             >
               <ImageViewerChevron direction="next" />
-            </button>
+            </IconButton>
           </div>
         ) : null}
       </div>

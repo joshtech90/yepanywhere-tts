@@ -5,6 +5,8 @@ import { GeminiACPProvider } from "../../../src/sdk/providers/gemini-acp.js";
 // cancellable MessageQueue are real, including the idle next() wait.
 vi.mock("../../../src/sdk/providers/acp/client.js", () => ({
   ACPClient: class {
+    // Settles only when the CLI process exits, which never happens here.
+    closed = new Promise<void>(() => {});
     async connect() {}
     async initialize() {}
     async newSession() {

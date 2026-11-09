@@ -17,12 +17,84 @@ re-prioritizes the "Gaps To Close" list below around the copilot goal. The "Gaps
 To Close" contracts here remain authoritative for the general fleshout detail.
 
 The selected [YA-owned session identity](session-identity.md) follow-up reopens
-the session-id split below for new YA-created sessions. It will keep a permanent
-YA id and a separate native `ses_*` binding; implementation is pending. Existing
+the session-id split below for new YA-created sessions. Ordinary owner text creation now keeps a permanent
+YA id and a separate native `ses_*` binding under its narrow capability. Existing
 native/public ids stay unchanged. Reader selection, focused watches and resume
 must resolve that binding rather than infer OpenCode solely from the public
 id's prefix. [Session creation](session-creation.sketches.md) depends on this
 ownership boundary.
+
+## Scoped cold continuation
+
+The server resolves existing YA identity to a proved OpenCode data root and
+native handle before continuation. DB and legacy JSON sources retain their
+actual physical paths; a proved CLI-export source may have no per-session file.
+Cold continuation never fabricates a path or falls back to `POST /session` when a
+provided handle is invalid. Native HTTP control uses the native handle, while
+Process, events and public collections keep the original YA id across restart.
+New ordinary text launches use the durable acceptance contract below; other
+launch shapes retain their existing flow.
+
+All launches choose an unused loopback port unless an explicit internal
+`basePort` is supplied. Independent YA processes must not start their default
+servers on the same fixed port. Scoped owners additionally use a fresh
+spawn-only HTTP Basic credential. The
+endpoint must reject an invalid credential before accepting the real one; an
+open or unrelated port cannot establish readiness. Credentials stay outside
+metadata, snapshots and public facts. This uses OpenCode's documented
+[local server authentication](https://opencode.ai/docs/server/#authentication).
+Older endpoints without enforcement fail explicitly for this scoped path;
+legacy unqualified launches keep their existing transport during rollout.
+Startup failure retains the actual child handle for cleanup, and liveness
+requires actual exit evidence rather than the fact that SIGTERM was sent.
+
+## Durable ordinary text creation
+
+The optional `session-creation-opencode-text` capability selects the same
+owner-only saved-intent API and draft recovery workflow as
+[Claude/Codex text acceptance](session-identity.md#qualified-claude-text-acceptance--november-2).
+YA saves the prompt/source/settings and public UUID before native effects.
+OpenCode allocates `ses_*` through authenticated `POST /session`; YA binds it
+under the canonical `XDG_DATA_HOME/opencode` data root (or the native default).
+Only native operations use that handle. URLs, events, metadata and collections
+retain the public UUID through streaming, reload and cold continuation.
+
+New durable launches require an observable native SQLite DB/WAL or legacy JSON
+store after native server readiness. An export-only/fileless store refuses
+before native session creation while retaining the saved prompt. Existing
+export-backed history and proved cold continuation remain supported.
+Attachments, slash commands, sandbox/executor, limited users and other unsupported
+creation shapes retain their established entry points. Older servers without
+the exact optional bit use the legacy flow; another provider's bit is insufficient.
+The broad proposed receipts capability remains unadvertised.
+
+The adapter's user echo and SSE output do not prove input consumption. Only a
+successful authenticated synchronous native message POST confirms the exact
+initial-input UUID associated with that request. OpenCode's
+[message endpoint](https://opencode.ai/docs/server/#messages) waits for the turn
+response. A rejected, aborted or unknown response leaves input unconfirmed;
+loss of its owner retains uncertainty and never replays the saved text.
+This conservative boundary can keep follow-up disabled while an initial turn
+is still streaming. Controlled adapter/native DB, HTTP/SSE and hosted lifecycle
+checks pass on Node 22/macOS, as does actual published 0.8.0/0.11.0 observation.
+The earlier unauthenticated free-model probe returned an upstream error. A
+subsequent isolated OpenCode 1.18.18 smoke using OpenAI subscription OAuth and
+`openai/gpt-6.1-sol` passes live creation, native input confirmation, server
+restart and cold continuation. Both exact assistant replies survive a second
+restart; read-only native DB checks establish one native session and exactly
+two user inputs. Public collections retain one YA id and refuse a native-id
+public alias. This live qualification is an API/storage smoke on Node 22/macOS
+with a local owner; the existing hosted/browser evidence remains controlled,
+and Linux/Windows live qualification is not claimed.
+
+OpenCode owns subscription authentication in the selected profile; YA launches
+it using that profile's native credentials. A separate OpenCode subscription
+is not required for the tested OpenAI OAuth route. The primary Codex login and
+credentials were not copied into the standalone test profile.
+
+Hosting additionally negotiates `session-creation-opencode-v1` from both host
+and worker before launch; an old host/worker fails without falling back to a
+new local owner or disturbing incumbents.
 
 ## Scope
 
@@ -49,6 +121,21 @@ POSIX retains the first existing `which` hit. The 2026-08-20 Windows regression
 probe used OpenCode 1.18.18, selected the packaged executable, completed the
 version probe, and returned the verbose model catalog. Session discovery from
 durable storage remains independent of whether the executable is installed.
+
+### Supported release line: 1.x only
+
+This backend speaks OpenCode 1.x's server API. OpenCode 2 (`@opencode/cli`,
+2.2.5 evaluated 2026-11-04) replaces that API, its event vocabulary, the
+`models --verbose` catalog and the session tables. The current adapter cannot
+start a 2.x session. Unprotected launches fail with `Failed to create
+session: 405`. Protected launches fail with `OpenCode server failed to start`.
+Neither error names the version. YA has no OpenCode updater or update notice
+and therefore never offers `opencode upgrade --major`. A user who upgrades
+loses YA OpenCode sessions until a v2 adapter exists. Pre-upgrade history
+stays readable: 2.x keeps the legacy rows when it migrates `opencode.db`.
+The probe record is in [provider refresh](provider-refresh.md#opencode); the
+blockers and proposed adapter path are in
+[the OpenCode 2 gap](../gaps/opencode-2-unsupported.md).
 
 ## Capability Comparison
 
@@ -265,6 +352,76 @@ pre-1.16: fall back to CLI export (captured via a **file fd**, not a pipe), then
 to the legacy file tree. Do not delete the file-tree path — older installs and
 already-migrated transcripts still use it.
 
+### Durable child relationships
+
+Application detail, collection and process enrichment reads accepted child
+relationships from the required profile SQL index without awaiting native
+acquisition. The native database remains read-only. A single coherent SELECT
+reads the selected session, descendants and ancestors, using native parent ids
+and the provider's directory/worktree scoping rules. Native task execution
+creates that parent link; resuming an existing task does not reparent it.
+Native forks omit the link even when their copied history contains Task parts.
+Those parts therefore cannot independently establish a provider-child edge.
+The upstream [1.18.9 Task implementation](https://github.com/anomalyco/opencode/blob/v1.18.9/packages/opencode/src/tool/task.ts)
+and [session fork implementation](https://github.com/anomalyco/opencode/blob/v1.18.9/packages/opencode/src/session/session.ts)
+define these distinctions; the inference-free native scenario qualifies direct
+spawning and production-reader/SQL agreement against that executable.
+
+The nested native scenario explicitly enables `general` Task permission and
+sets `subagent_depth: 2` in its private fixture configuration. It qualifies
+root → child → grandchild acquisition without flattening immediate parents,
+refusal of another spawn at the native depth limit, top-level exclusion,
+parent-scoped content/mappings, and SQL reopen after native storage removal.
+The default child omits Task; production configuration and depth defaults stay
+unchanged. Other depths, platforms and OpenCode 2.x remain unqualified.
+
+The source rechecks the logical database snapshot before profile publication,
+including WAL-only commits. Structural versions exclude `time_updated`, so
+activity can refresh the bounded display overlay without rewriting relationship
+evidence. One indexed snapshot per reader/change batch serves its retained
+parents together. Activity-only changes update and re-sort the overlay; only
+changed lineages reacquire their publication proof. The probe selects registered
+roots and their subtrees/ancestors, not a timestamp scan of the native corpus.
+There are at most 128 retained source registrations and four compact event
+results, released with their owner. DB and WAL notifications share one pending
+key per source, so a paired write does not overflow the 128-source queue.
+Each lineage has its own validation generation; unrelated spawns cannot cancel
+its initial publication or leave a listed parent permanently unknown. Titles, agent names and directory fields
+are bounded; messages, parts, prompts and
+native paths are never selected for graph evidence. Optional schema columns do
+not silently turn missing parent proof into a known-empty result. Reader
+retirement and project/native-root rebinds fence outstanding work.
+
+The legacy JSON source reads only bounded project/session headers (64 KiB
+per header), never message or part trees. A reader shares one compact catalog
+of at most 4,096 headers and an immediate-parent lookup; exceeding that budget
+is partial rather than accepted empty. Failed headers, missing ancestry,
+conflicting ids and cycles preserve previously accepted facts. A failed legacy
+store cannot block independent current SQL proof. Missing ancestry above a
+proved viewed parent makes the observation partial while preserving its valid
+direct children. A schema without parent ids does not erase independent legacy
+parent proof. Current native
+SQL parent proof wins over frozen JSON for the same native id. Default SQL and
+legacy roots share the existing namespace; explicitly different configured
+roots stay distinct. `OPENCODE_DB_READER=0` retains legacy proof without opening
+or probing the native database. It does not disable YA's required profile SQL.
+
+One internal provider observer watches only the configured database/WAL, with
+a nonrecursive native directory watch. Message, part, media and frozen legacy
+trees acquire no native watches or baseline scans. Legacy headers refresh on
+explicit detail demand; continuous observation of mutable pre-1.16 stores is
+not claimed. The observer emits no public native-file events. macOS directory
+notifications can miss writes to an open WAL; two fixed inode file watches
+cover the database and WAL, with directory notifications for replacement.
+These have provider lifetime, finite allocation and teardown, never session
+lifetime or a per-session timer. Bun 1.3.14 on macOS also misses inode-watch
+writes, so its one provider-owned fallback stats only those two fixed files
+once per second; it never scans transcripts or queries unchanged native SQL.
+Disabling the direct DB reader also omits this observer. Allocation failure
+degrades observation without an allocation retry loop. The existing
+128-source/two-worker coordinator coalesces acquisition. Unwatched custom roots refresh on explicit detail demand;
+continuous observation of every arbitrary private root is not claimed.
+
 ### Direct SQLite reader (Gap #11) — LANDED 2026-06-21
 
 `OpenCodeDbReader` (`packages/server/src/sessions/opencode-db-reader.ts`) reads
@@ -274,18 +431,76 @@ source in `OpenCodeSessionReader` (`getSession`, `getSessionSummary`,
 below is the as-built contract; a few choices deviate from the original draft
 and are flagged inline.
 
-**Mechanism chosen: `node:sqlite`, not `better-sqlite3`** (the draft's primary).
-The published `yepanywhere` package copies `packages/server` dependencies
-verbatim (`scripts/build-bundle.ts`) and advertises zero external deps, so
-`better-sqlite3` would force a native build on every install plus the host's
-GLIBCXX friction. The DB reader is an *optimization with a working fallback*, so
-a dependency-free builtin fits better. It is loaded via `createRequire("node:sqlite")`
-(not a static/dynamic `import`): that degrades to null on Node < 22.5 (the main server now requires the
-[Node 22/Bun floor](server-runtime.md)) instead of crashing at module load, and sidesteps vitest's module runner,
-which can't transform this newer-than-vite builtin. On old runtimes the reader
-returns null and the export/file-tree fallbacks run exactly as before. One-time
-`ExperimentalWarning` on first use is left intact (reliable suppression needs a
-global `emitWarning` override that risks swallowing other warnings).
+**Runtime-portable read-only mechanism.** The reader uses
+[YA's shared SQLite adapter](required-sqlite.md#runtime-portable-sqlite), selecting
+Node's built-in SQLite or Desktop's pinned Bun SQLite. No external SQLite
+package or native installer is added. A read-only file open requires an existing
+database and cannot create a missing native store. Missing/locked/old-schema
+sources retain the documented fallbacks. Normal database opens for YA, relay
+and push-broker storage retain their existing behavior.
+
+Each native reader owns one lazy read-only handle and one statement per fixed
+SQL string. Handle replacement releases those statements and cached positive
+project ids. Missing projects are not permanently cached, so a later native
+creation/WAL commit becomes visible to the same reader. Reader retirement is
+terminal: it cannot reopen its database or launch a new CLI fallback after a
+pending lookup settles. An already-started legacy CLI export retains its
+existing bounded completion path. Finite catalogue scans close their native
+handle after reading compact rows; retained catalogue rows do not retain it.
+
+This storage prerequisite for [plan 171](../docs/tactical/171-durable-session-identity-and-creation.md)
+does not enable different public/native launch ids, change OpenCode's native
+schema or refresh a provider target. Native `opencode.db` remains authoritative
+history and is never written, checkpointed or migrated by YA.
+
+**Scoped YA identity reads.** An OpenCode native address consists of its native
+id and canonical backend data directory. DB addresses use the parent of
+`opencode.db`, including DB-only installations without `storage/`; legacy JSON
+addresses use the parent of `storage/`. These can differ when XDG changes the
+DB location. History and child reads for a stored YA identity use only that
+address and original project, then return the public YA id. A provider-looking
+id in a URL cannot become an alias for another public session. Missing bound
+history does not borrow a different root. CLI fallback for a bound address is
+permitted only when that address is the configured CLI data root; a cached CLI
+list cannot bypass this restriction.
+
+Native catalogue rows retain physical source keys, native ids and actual data
+roots. Public projections reuse scoped reverse bindings. The session's native
+directory proves an explicitly bound subdirectory even when legacy catalogue
+grouping uses the enclosing Git worktree. Project-local lists omit that bound
+resource from the old umbrella; the ordinary working-project overlay supplies
+its current location. Legacy unbound sessions keep their existing public id
+and worktree grouping through explicit adoption.
+
+The summary-index namespace includes the actual DB and JSON roots as well as
+the project. Simultaneous requests for the same native id in different stores
+cannot share a summary computation. Compact DB metadata bypasses single-file
+cache certification through the existing source-scoped in-flight index owner;
+WAL-only commits therefore update metadata even while the main file's stat is
+unchanged. Legacy JSON retains ordinary file caching. Native directory proof
+accepts the stored original project's physical alias without changing its
+public spelling. The asynchronous public projection shares per-project proof
+within the operation and observes app cancellation before further SQL work.
+
+A focused DB view observes the native DB and WAL in their shared directory.
+A committed WAL change refreshes public detail without requiring a DB-file
+mtime change. This possible source change is not evidence that every session
+in the DB is active or externally owned. Native JSON views use their actual
+session metadata file; retained export-only history remains readable without
+inventing a file. New differing-id OpenCode launches remain gated by plan 171.
+
+**Native directory membership.** A session's `directory` is distinct from its
+native project id. In particular, OpenCode puts unrelated non-Git directories
+under the shared `global` project with worktree `/`. DB history, summary,
+freshness, child and list reads match the selected directory (including its
+physical symlink spelling); they do not treat `global` as proof of membership.
+A known row from another directory cannot fall through to a CLI export and
+bypass this check. Legacy native-project worktree links remain readable,
+including the old `/` umbrella. Git catalogue grouping stays under its native
+worktree; `global` catalogue rows use each session's own directory. Schemas
+without `session.directory` retain their original worktree behavior. These
+rules do not alter authorization: project grants still apply to the requested
+YA project before transcript acquisition.
 
 **Fallback order: DB → file tree → export** (draft said DB → export → file tree).
 Putting the subprocess *last* keeps even pre-1.16 file-storage installs from
@@ -303,11 +518,11 @@ omitted from those top-level lists and exposed through
 [provider-child-sessions.md](provider-child-sessions.md).
 
 **Global opt-out: `OPENCODE_DB_READER` (default on).** Set it to `0`/`false`/
-`off`/`no` and the reader never opens the DB and never imports `node:sqlite` —
+`off`/`no` and the direct reader never opens the DB or loads a SQLite driver —
 every OpenCode session path falls back to CLI export / file tree, exactly as
 before the reader existed. The check sits at the single `ensureDb` choke point,
-so the whole sqlite dependency is conditional and switchable per environment.
-This keeps the builtin off any path that does not want it.
+so native OpenCode database reads remain independently switchable. YA's own
+required SQLite storage is unaffected.
 
 **Detail route had to be taught the `ses_*` shape, not just metadata.** The
 reader is necessary but not sufficient: the session-detail route
@@ -505,6 +720,8 @@ the later 1.18.9 refresh govern current behavior; the explicitly dated
     (incl. TUI/externally-owned) session renders the full transcript with no
     subprocess. Export (file-fd) + file-tree remain fallbacks for old installs /
     Node < 22.5. See *Direct SQLite reader (Gap #11)*.
+12. **Open.** OpenCode 2 support: a second adapter for the v2 `/api/` server,
+    event model and `session_v2` tables. See *Supported release line*.
 
 ## Verification Shape
 

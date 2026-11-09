@@ -19,9 +19,6 @@
   align-items: center;
   gap: 8px;
 }
-.actions > button {
-  min-height: 40px;
-}
 .status {
   color: var(--text-muted);
   font-size: 13px;
@@ -46,35 +43,6 @@
 .key {
   overflow-wrap: anywhere;
   color: var(--text-secondary);
-}
-.value {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 36px;
-  padding: 6px 8px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font: inherit;
-}
-.remove {
-  width: 40px;
-  min-height: 40px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 24px;
-  line-height: 1;
-  cursor: pointer;
-}
-.remove:hover {
-  background: var(--bg-hover);
-}
-.remove:disabled {
-  opacity: 0.35;
-  cursor: default;
 }
 @media (width <= 480px) {
   .row {

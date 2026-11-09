@@ -13,6 +13,7 @@ import {
 import { getResumeError } from "../lib/connection/resumeErrors";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { ButtonBase, IconButton } from "../components/ui/Button";
 import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
 import { useRemoteConnection } from "../contexts/RemoteConnectionContext";
 import { signInRequiredState } from "../hooks/useSignInRequiredNotice";
@@ -243,9 +244,8 @@ export function HostPickerPage() {
                 const isConnecting = connectingHostId === host.id;
 
                 return (
-                  <button
+                  <ButtonBase
                     key={host.id}
-                    type="button"
                     className="host-picker-item"
                     onClick={() => handleConnectHost(host)}
                     disabled={isConnecting}
@@ -269,22 +269,22 @@ export function HostPickerPage() {
                           {formatLastConnected(host.lastConnected)}
                         </span>
                       )}
-                      <button
-                        type="button"
+                      <IconButton
+                        size="small"
                         className="host-picker-delete"
                         onClick={(e) => handleDeleteHost(host.id, e)}
-                        title={t("hostPickerRemoveHost")}
+                        label={t("hostPickerRemoveHost")}
                         data-testid={`delete-host-${host.id}`}
                       >
                         &times;
-                      </button>
+                      </IconButton>
                     </div>
                     {isConnecting && (
                       <div className="host-picker-connecting">
                         <div className="login-spinner" />
                       </div>
                     )}
-                  </button>
+                  </ButtonBase>
                 );
               })}
             </div>
@@ -306,8 +306,7 @@ export function HostPickerPage() {
         )}
 
         <div className="login-mode-options">
-          <button
-            type="button"
+          <ButtonBase
             className="login-mode-option"
             onClick={() => navigate("/login/relay")}
             data-testid="relay-mode-button"
@@ -318,10 +317,9 @@ export function HostPickerPage() {
             <span className="login-mode-option-desc">
               {t("hostPickerRelayDescription")}
             </span>
-          </button>
+          </ButtonBase>
 
-          <button
-            type="button"
+          <ButtonBase
             className="login-mode-option login-mode-option-secondary"
             onClick={() => navigate("/login/direct")}
             data-testid="direct-mode-button"
@@ -332,7 +330,7 @@ export function HostPickerPage() {
             <span className="login-mode-option-desc">
               {t("hostPickerDirectDescription")}
             </span>
-          </button>
+          </ButtonBase>
         </div>
 
         <p className="login-hint">

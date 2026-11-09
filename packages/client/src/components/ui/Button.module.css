@@ -1,0 +1,232 @@
+/*
+ * The shared button family (plan 182, family 1). The control owns its look;
+ * a caller's className adds layout only (margins, flex placement, width).
+ * Variants started from the census prototypes and the most-used legacy
+ * family, settings-button.
+ */
+
+/* ButtonBase: a reset for clickable rows, cards, disclosures and chips. The
+   :where() keeps it at zero specificity, so the owner's styles always win.
+   Font size is the base token rather than inherited: raw buttons render at
+   the browser's ~13 px default, and every legacy row was designed at that
+   size, so a swapped row keeps its text size unless its owner sets one. */
+:where(.base) {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--font-size-base);
+  text-align: inherit;
+  cursor: pointer;
+}
+
+:where(.base:disabled) {
+  cursor: not-allowed;
+}
+
+.base:focus-visible,
+.button:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: 2px;
+}
+
+.button {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-height: 32px;
+  margin: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  line-height: 1.2;
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.button:disabled,
+.button[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button[aria-busy="true"] {
+  cursor: progress;
+}
+
+.small {
+  min-height: 26px;
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+.dense {
+  min-height: 22px;
+  padding: 0 var(--space-1);
+  font-size: var(--font-size-xs);
+}
+
+/* Zero specificity: a dense control that its owner positions absolutely
+   (a corner copy button) keeps that position. */
+:where(.dense) {
+  position: relative;
+}
+
+/* Text glyphs (×, ↑) used as icons read at a larger size than labels. */
+.icon {
+  width: 32px;
+  padding: 0;
+  font-size: calc(var(--font-size-lg) + 4px);
+  line-height: 1;
+}
+
+.icon.small {
+  width: 26px;
+  font-size: calc(var(--font-size-base) + 4px);
+}
+
+.icon.dense {
+  width: 22px;
+  font-size: var(--font-size-base);
+}
+
+/* Fingers, not cursors: coarse pointers get a larger hit area. */
+@media (pointer: coarse) {
+  .button {
+    min-height: 44px;
+  }
+
+  .small {
+    min-height: 36px;
+  }
+
+  .icon {
+    width: 44px;
+  }
+
+  .icon.small {
+    width: 36px;
+  }
+
+  /* Dense controls keep their drawn size so their row does not grow; the
+     hit area extends invisibly around them instead. */
+  .dense {
+    min-height: 22px;
+  }
+
+  .icon.dense {
+    width: 22px;
+  }
+
+  .dense::before {
+    content: "";
+    position: absolute;
+    inset: -8px;
+  }
+}
+
+.icon svg {
+  flex-shrink: 0;
+}
+
+.primary {
+  background: var(--app-yep-green-dark);
+  color: #fff;
+}
+
+.primary:hover:not(:disabled, [aria-disabled="true"]) {
+  background: var(--app-yep-green);
+}
+
+.secondary {
+  background: var(--bg-hover);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.secondary:hover:not(:disabled, [aria-disabled="true"]) {
+  background: var(--border-color);
+}
+
+.outline {
+  background: transparent;
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.outline:hover:not(:disabled, [aria-disabled="true"]) {
+  background: var(--bg-hover);
+}
+
+.ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.ghost:hover:not(:disabled, [aria-disabled="true"]) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* On is a filled, bordered chip: a background alone is too faint to read as
+   a state in a row of toggles. */
+.ghost[aria-pressed="true"] {
+  background: var(--bg-hover);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.danger {
+  background: var(--error-color);
+  border-color: var(--error-color);
+  color: #fff;
+}
+
+.danger:hover:not(:disabled, [aria-disabled="true"]) {
+  background: color-mix(in srgb, var(--error-color) 85%, #000);
+}
+
+.dangerOutline {
+  background: transparent;
+  border-color: var(--error-color);
+  color: var(--error-color);
+}
+
+.dangerOutline:hover:not(:disabled, [aria-disabled="true"]) {
+  background: color-mix(in srgb, var(--error-color) 14%, transparent);
+}
+
+.spinner {
+  flex-shrink: 0;
+  width: 0.9em;
+  height: 0.9em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}

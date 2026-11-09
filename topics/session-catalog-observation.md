@@ -75,6 +75,9 @@ more.
 
 The base generation publishes before the optional Codex question pass. That
 pass skips archived sessions and obeys the existing bounded preview contract.
+Archive metadata comes from the scoped native binding's public session. A raw
+native spelling that also names an unrelated public resource cannot supply
+that resource's archive state to the row.
 A subsequent generation adds observed questions; clients preserve existing
 detail when compact fields are omitted. File identity includes device, inode,
 size, modification time, and change time. An append or replacement during a
@@ -139,6 +142,13 @@ The final consumer releases its private in-memory rows and invalidates pending
 work; this is not browser persistence or authority across logins.
 
 ## Retained project discovery owner
+
+Hidden-project membership uses canonical identity lookup, rebuilt only after
+hidden membership changes or metadata reload. Checking each discovered project
+does not rescan the hidden-project list. Provider merging also indexes the
+settled Claude projects by identity, preserving first-match/provider precedence
+without searching the growing project array for each Codex or Gemini project.
+These indexes are memory-only; hiding still preserves native files and sessions.
 
 Servers advertising `retained-projects` accept `summaryMode=retained` on
 `GET /api/projects`. `ProjectScanner.readRetainedProjects` returns the last
@@ -223,6 +233,18 @@ sessions; a collection request failure also permits that independent lookup.
 Browser display snapshots remain non-authoritative and cannot enable launch.
 
 Claude discovery retains the unmerged result for each native project directory.
+When a launch folder also contains `claude --worktree` transcripts, its owner is
+the transcript cwd whose Claude native directory key matches the folder name,
+regardless of transcript enumeration order or which cwd appears most often.
+Discovery searches bounded batches until it finds that match. If none matches,
+the first readable cwd remains the fallback, with regular sessions preferred
+over agent transcripts. A folder key is lossy and is never decoded into a path.
+Discovery, registered/virtual projects and Claude copy operations use the same
+native encoding, including punctuation, macOS Unicode normalization and the
+pinned provider's long-path hash suffix. Older disk project snapshots are
+invalidated on upgrade so an incorrect mapping is rebuilt without manual cache
+deletion; transcripts and YA session identities remain intact.
+
 File events reconcile only their owning directory, including nested agent files,
 then rerun the existing in-memory identity/workstream merge. Creating or removing
 the last session can add or remove a directory contribution; changing its native
@@ -377,7 +399,19 @@ scan own their paths, so a completed snapshot cannot overwrite newer state.
 Focused session targets in the same directory share one native watch while
 retaining per-target polling and trailing validation. Removing the final target
 closes that native watch, and an asynchronous file-resolution result arriving
-after the final unsubscribe must not recreate it.
+after the final unsubscribe must not recreate it. Stored Claude/Codex/OpenCode/Pi
+identities resolve the exact native root/id before legacy watch discovery;
+unbound or missing bound sources do not probe same-string ambient files.
+Subscription/event ids and effective project remain public YA facts, while
+event paths name the real native file. Final unsubscribe also aborts pending
+stored-source resolution before it can acquire reader work; shutdown closes
+the same interest owner. OpenCode DB targets include the same-directory WAL;
+constant-size source snapshots include device/inode/mtime/ctime/size and WAL
+presence. Watch events are possible-history-change evidence, never session
+liveness or install-wide catalogue rebuild requests. One target watches at most
+three additional files in the same directory, and all companions share the
+existing reference-counted directory watch. Other native-family observation
+remains pending.
 
 Cache publication follows the same ordering rule as watcher reconciliation.
 One mutable discovery or summary index scope has one process-local cold-load
@@ -444,6 +478,18 @@ owns grouping, sharding, and persistence. Three rules keep families joinable:
   row stores change — the whole title, the summary's creation time — bumping
   that format makes each persisted row from an older build read once more on
   the next reconciliation, while `sourceVersion` stays the file's identity.
+- **Native addresses stay native inside the catalogue.** File row format 3
+  records `nativeStorageScope` when the reader supplies explicit native evidence,
+  including the actual private root behind a merged reader. It does not change
+  the adapter/store/native-id key or physical file location. Public collection
+  and access projections use the profile identity owner to adopt Claude/Codex
+  rows in one transaction and return an already bound YA id/launch variant.
+  Existing bindings are found with one indexed read per provider store for
+  just the projected ids, and only rows without a consistent binding enter that
+  transaction; nothing is retained between projections.
+  Old rows without that evidence are reread at the new format; they are not
+  adopted by guessing a merged root. Other native families retain their existing
+  projection until their scoped reader/adoption migration is qualified.
 - **Recency may use a narrower provider/platform activity clock.** Plain Codex
   rollouts on Windows use the later of file modification and change time,
   because Windows can defer the last-write timestamp until Codex closes its
@@ -634,6 +680,24 @@ per transcript — and names what is left. Removing that remaining parse is what
 the durable catalog is for, and it has no production caller, so a restart still
 costs the routes a first read of every project.
 
+### Gemini native-source membership
+
+Gemini catalogue enumeration supports both the configured native root and an
+individual native `chats` directory. Both enumerate only the selected project's
+header hashes. Source ids come from the JSON header, and canonical native-root
+facts are retained before public projection; old rows lacking that fact are
+rebuilt once. A qualified reader whose native proof disappears during a scan
+omits that candidate; it cannot publish an unqualified native-id alias. A slug
+or filename cannot authorize another project. Point reads,
+summary reads and path proof enforce the same membership, including replacement
+of a previously cached source. Working-project moves preserve the original
+source, public id and launch variant. Focused observation shares the existing
+viewer-owned file watcher and releases it with the last viewer. Native file
+changes also invalidate warm Gemini summary indexes before the validation
+interval. Index-requested root enumeration observes new files immediately;
+point lookup's discovery TTL cannot hide them. See
+[YA-owned session identity](session-identity.md#current-implementation).
+
 ## YA-owned provider cache storage
 
 Gemini's YA-owned hash-to-project map lives at
@@ -772,3 +836,19 @@ relocated session visibly grouped under its former project.
   is needed to trigger it.
 - Loss/eviction of browser persistence changes only cold-fetch cost, not visible
   correctness or the ability to reconnect.
+
+
+## Accepted session point lookups
+
+Collection consumers may restore one project's accepted catalog rows without
+starting reconciliation, summary enrichment or native history loading. The
+existing source-versioned project-shard owner coalesces concurrent reads and
+retains unchanged shard content across generations. Point lookups neither adopt
+identities nor reset an unreadable generation into provider discovery. A bad
+shard leaves the title unknown; normal collection reconciliation owns recovery. A known public identity requires its exact family, original scope
+and native ID, and validates any working-project assignment. Unbound legacy
+lookups require unique project/provider membership and honor pending native
+allocation quarantine; same-string rows in other stores cannot stand in for a
+known binding. Missing or ambiguous facts remain unknown, not authority to
+invoke another reader. Project Queue uses this path for target and named
+blocker titles, preserving custom-title precedence and nullable unknown titles.

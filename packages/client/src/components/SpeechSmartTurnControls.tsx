@@ -10,20 +10,19 @@ import {
   MAX_SPEECH_SMART_TURN_TIMEOUT_MS,
   type SpeechSmartTurnSettings,
 } from "../lib/speechProviders/SpeechProvider";
+import { Checkbox } from "./ui/Checkbox";
 import { RangeNumberRow } from "./ui/RangeNumberRow";
 import styles from "./SpeechSmartTurnControls.module.css";
 
 interface SpeechSmartTurnControlsProps {
   settings: SpeechSmartTurnSettings;
   onChange: (settings: SpeechSmartTurnSettings) => void;
-  compact?: boolean;
   disabled?: boolean;
 }
 
 export function SpeechSmartTurnControls({
   settings,
   onChange,
-  compact = false,
   disabled = false,
 }: SpeechSmartTurnControlsProps) {
   const { t } = useI18n();
@@ -40,15 +39,12 @@ export function SpeechSmartTurnControls({
   };
   const body = (
     <div className={styles.body}>
-      <label className={styles.toggle}>
-        <input
-          type="checkbox"
-          checked={clean.enabled}
-          disabled={disabled}
-          onChange={(event) => update({ enabled: event.target.checked })}
-        />
-        <span>Smart Turn</span>
-      </label>
+      <Checkbox
+        label="Smart Turn"
+        checked={clean.enabled}
+        disabled={disabled}
+        onCheckedChange={(enabled) => update({ enabled })}
+      />
       <RangeNumberRow
         id={`${id}-threshold`}
         label="Threshold"
@@ -108,20 +104,6 @@ export function SpeechSmartTurnControls({
       )}
     </div>
   );
-
-  if (compact) {
-    return (
-      <details className={`${styles.root} ${styles.compact}`}>
-        <summary
-          className={styles.summary}
-          title="Grok STT Smart Turn controls"
-        >
-          Turn
-        </summary>
-        <div className={styles.popover}>{body}</div>
-      </details>
-    );
-  }
 
   return <div className={styles.root}>{body}</div>;
 }

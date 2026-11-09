@@ -159,11 +159,40 @@ describe("RemoteAccessSettings host identity", () => {
     vi.clearAllMocks();
   });
 
+  it("offers the same settings to Remote Access clients as to direct ones", () => {
+    // This link's host, relay and logout are connection info, not settings.
+    const settingIds = () =>
+      [...document.querySelectorAll("[data-settings-item]")]
+        .map((item) => item.getAttribute("data-settings-item"))
+        .filter((id) => !id?.startsWith("remote-access-session-"))
+        .sort();
+
+    const direct = render(<RemoteAccessSettings />);
+    const directIds = settingIds();
+    expect(screen.getByText("remoteAccessSetup")).toBeTruthy();
+    direct.unmount();
+
+    remoteConnectionState.value = {
+      currentHostId: null,
+      disconnect: vi.fn(),
+      storedUsername: "alice",
+    };
+    render(<RemoteAccessSettings />);
+
+    expect(settingIds()).toEqual(directIds);
+    expect(screen.getByText("remoteAccessSetup")).toBeTruthy();
+    expect(
+      document.querySelector(
+        '[data-settings-item="remote-access-session-logout"]',
+      ),
+    ).not.toBeNull();
+  });
+
   it("persists a selected preset through server settings", async () => {
     render(<RemoteAccessSettings />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "hostIdentityUsePreset:❤️" }),
+      screen.getByRole("radio", { name: "hostIdentityUsePreset:❤️" }),
     );
 
     await waitFor(() =>
@@ -231,7 +260,7 @@ describe("RemoteAccessSettings host identity", () => {
     const item = screen.getByText("hostAwakeTitle").closest(".settings-item");
     expect(item).not.toBeNull();
 
-    fireEvent.click(within(item as HTMLElement).getByRole("checkbox"));
+    fireEvent.click(within(item as HTMLElement).getByRole("switch"));
 
     await waitFor(() =>
       expect(mockUpdateSettings).toHaveBeenCalledWith({
@@ -374,10 +403,7 @@ describe("RemoteAccessSettings host identity", () => {
     render(<RemoteAccessSettings />);
 
     fireEvent.click(
-      screen
-        .getByText("advancedPublicShareTitle")
-        .closest(".settings-item")!
-        .querySelector('input[type="checkbox"]')!,
+      screen.getByRole("switch", { name: "advancedPublicShareTitle" }),
     );
 
     expect(confirm).toHaveBeenCalledWith("advancedPublicShareDisableConfirm");

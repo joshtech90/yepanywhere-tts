@@ -31,7 +31,9 @@ The design and deferred work are in [plan 143](../docs/tactical/143-agent-auth-r
    refresh. The session header shows its pinned account. AAR usage snapshots
    include their observation time; these are account windows, not a promise
    that every model has the same budget. Routed session controls suppress quota
-   observations from the native login. No background polling is added.
+   observations from the native login and show the pinned account's cached
+   AAR windows instead. Available allowance weights are shown in USD 200-plan
+   units, with unknown amounts left unknown. No background polling is added.
 5. Disconnect revokes the integration and its derived inference credentials.
    If AAR is offline, YA persists `revocation-pending`, blocks new routed
    launches locally, and offers **Finish disconnecting**.
@@ -66,6 +68,17 @@ scrubs of secrets and paths.
   session selector retains the selected account on failure; disabled choices
   cannot be selected. Enable the same account in AAR to resume its sessions,
   or deliberately select an available account for a new session.
+- **Account login lapsed:** A Claude login lasts a fixed time from sign-in, and
+  renewals do not extend it. AAR (2026-11 and later) refuses a lapsed or
+  cleared login with a 409 `login_required` code; launch and resume then fail
+  with "The pinned router account (name) needs to sign in again" and keep the
+  pin. Sign the same account in again in AAR and retry. The send-failure toast
+  shows that message; only a resume refused with `recovery: handoff-required`
+  shows handoff guidance. A new session refused at its router step, before
+  any provider starts, ends as a failed creation with failure
+  `router-login-required` (any other router refusal: `router-refused`); the
+  notice says nothing was sent, and the creation can be retried. Every router
+  refusal is logged as `agent_auth_router_refused`.
 - **Failed-launch cleanup pending:** The count survives restart. **Retry
   failed-launch cleanup** sends only recorded cancellations, starts no provider
   process, and does not allocate or change an account. Failed acknowledgements
@@ -116,14 +129,45 @@ editor; this fallback grants no global administration authority. In New Session,
 model, and optionally another router policy or an account. The session header shows a
 compact chip with the pin's saved pool and account names, never the raw account
 id; it falls back to the policy (AAR's label captured at launch, else its id) for
-pins saved without names and is hidden on narrow screens. Its tooltip lists pool, account, policy and reason, and it opens
-Session Info, whose Router section lists the names with the pool, account,
-binding and router ids. The pin keeps AAR's names as display labels captured at
+pins saved without names and is hidden on narrow screens. Its tooltip lists pool, account, policy and reason. With
+`agent-auth-router-session-switch` the chip opens an account menu (direct
+Claude and Codex sessions show a "Direct" chip while a router is connected);
+otherwise it opens Session Info, whose Router section lists the names with the
+pool, account, binding and router ids. The pin keeps AAR's names as display labels captured at
 launch, so an AAR outage or removed account still shows which account to restore;
 a resume refreshes a renamed account and backfills a missing pool name, and the
 unavailable-account error names the saved account. Identity remains the ids.
 Pool selection is only for new owner sessions;
 continuation, remote executors, limited users and sandboxes cannot change a pin.
+
+**Switching an existing session's account**
+([plan 185](../docs/tactical/185-switch-session-router-account.md)). The
+chip menu lists the provider's pool accounts, then Direct and Session info.
+Picking one calls `POST /api/agent-auth-router/sessions/:id/switch`
+(`{routerPoolId, routerAccountId}` or `{direct: true}`), which:
+
+1. allocates, prepares (policy `manual`, the picked account) and commits the
+   new pin, after resolving the session's model against that account's
+   catalog and checking its thinking and tier. A refusal returns the
+   router's message and changes nothing;
+2. saves the new binding, or removes it for Direct; a router pick saves the
+   concrete model as the requested model, since the router refuses aliases;
+3. kills the provider process whatever its state, as Kill does (not
+   `/terminate`), because it holds the old credential;
+4. cancels the old allocation (best effort; cleanup stays retryable).
+
+A process that obtained the old token just before the switch and registers
+after the kill is refused at registration ("send the message again"). A
+failed switch cancels its new allocation whatever the failure, including a
+lost reply. A session whose hosted runtime has not reattached yet is refused
+until it has. With no live process, the model falls back to the saved
+requested model, then the current pin's model.
+
+The next message resumes the same transcript on the new account; only the
+prompt cache is lost. Claude accepts thinking signatures from another account
+on resume (tested 2026-11-08). The page reloads after a switch. Remote
+executors, project-write sandboxes and other providers are refused; limited
+users cannot reach the route. There is no automatic failover.
 
 The overview shows each account's windows, usage bars, remaining percentages,
 reset times, observation freshness and model/policy-specific eligibility reasons.
@@ -135,6 +179,9 @@ stale label. A reset passing does not establish restored quota.
 
 Automatic policies require fresh catalog membership and fresh applicable quota with
 headroom; unknown, stale, exhausted, disabled or blocked accounts are excluded.
+For Codex, fresh account-verified ordinary-usage permission takes precedence
+over general display percentages, which can read 100% while usage is allowed.
+Owner ceilings and observed authentication/rate-limit blocks still apply.
 Manual permits unknown quota with validated catalog membership, but cannot ignore
 known applicable exhaustion or observed authentication/rate-limit blocks. Neither
 mode enables paid overage. Catalog evidence expires after 60 seconds and quota
@@ -233,10 +280,59 @@ Routed Claude sets `ENABLE_TOOL_SEARCH=true`. Claude Code otherwise disables
 tool search for any non-Anthropic `ANTHROPIC_BASE_URL` and sends every tool
 definition in full. AAR forwards the request body and `anthropic-*` headers, and
 a live pool session on 2026-10-06 deferred and loaded MCP tools through it.
-claude.ai connectors never load in routed sessions: the flag settings set
-`disableClaudeAiConnectors`, and Claude Code also skips them whenever the routed
-auth token takes precedence over the claude.ai login. User-scope MCP servers in
-the native `~/.claude.json` do load.
+By default claude.ai connectors do not load in routed sessions: the flag
+settings set `disableClaudeAiConnectors`, and Claude Code also skips them
+whenever the routed auth token takes precedence over the claude.ai login. A
+Claude session can opt in; see
+[claude.ai connectors](#claudeai-connectors-in-routed-claude-sessions).
+User-scope MCP servers in the native `~/.claude.json` load either way.
+
+### claude.ai connectors in routed Claude sessions
+
+A routed Claude session can keep this computer's claude.ai connectors (Claude
+Docs, Drive and the rest) while its pool account runs inference. The connector
+account is the claude.ai login Claude Code uses for YA's sessions, the one
+`claude auth status` reports in YA's `CLAUDE_CONFIG_DIR`; the inference account
+is still the pin. They can be different accounts.
+
+- **Availability.** Claude discovery (`POST /api/agent-auth-router/selection`)
+  adds `claudeAiConnectors: { login }` when AAR advertises
+  `gateway-token-header-v1`. `login` holds the login's email, or is null when
+  `claude auth status` reports no claude.ai login. Absent means unsupported,
+  and New Session then shows no control.
+- **Choice.** Advanced options show **claude.ai connectors** under Pool for a
+  Claude pool selection: Off, or On as the login's email (disabled without a
+  login). It defaults to Off, and an explicit choice is saved per host as
+  `newSessionDefaults.providers.claude.routerClaudeAiConnectors` with the pool.
+  Creation sends `routerClaudeAiConnectors: true` only when on; only the
+  owner may send it, only with a pool or account, and only for Claude.
+  Continuation refuses it like the other router fields.
+- **Launch.** The allocation records the choice, so resume, restart and
+  copies keep it, and the binding shows it in Process Info. At each launch,
+  if AAR still advertises the capability and a claude.ai login exists, the
+  gateway token travels in `ANTHROPIC_CUSTOM_HEADERS` as `x-aar-gateway-token`
+  (after any custom headers the launch environment already sets),
+  `ANTHROPIC_AUTH_TOKEN` is empty and the flag settings omit
+  `disableClaudeAiConnectors`. Claude Code without a claude.ai login refuses to
+  start in that mode, so otherwise the launch uses the token-only transport
+  without connectors. Inference still never falls back to the direct login.
+- **Traffic.** Claude Code fetches the connector list and calls connectors
+  directly at Anthropic with the login's own token, outside AAR. On inference
+  requests it also sends that token to AAR, which ignores it for
+  authentication, never forwards it and never logs it. Claude Code may refresh
+  the login as it does for any session using it.
+- **Compatibility.** The control depends on a response field older servers
+  never send, so it needs no capability bit. Older servers ignore the request
+  field and settings key, keeping the token-only transport.
+- **Verification (2026-11-04).** Claude Code 2.1.312 (Agent SDK 0.3.312) with
+  AAR's `gateway-token-header-v1`, run directly and through a disposable YA
+  profile: with a work and a personal claude.ai account swapped between
+  inference and connectors, each session read only the private Claude Doc its
+  connector account owns; AAR attributed every request to the pinned account,
+  and the same YA session with the option off had no Claude Docs connector.
+  Claude Code loads these connectors in the background, so a session's first
+  turn can in principle start before they are ready; the verified YA sessions
+  found them on their first turn.
 
 The private Unix socket is the owner bootstrap boundary. Its directory/socket
 must be private, owned by the YA user and not symlinks. AAR control is separate
@@ -269,8 +365,25 @@ an isolation boundary against that user's own local files.
   pool; Codex copies follow the same path, and `thread/fork` itself needs no
   network, though see
   [`gaps/routed-codex-calls-chatgpt-with-direct-login.md`](../gaps/routed-codex-calls-chatgpt-with-direct-login.md).
-- Restart/handoff, fork with summary, YA recap/title helper sessions and
-  project queue selection are refused for routed sessions in this slice,
+- A launch whose selection, saved default or source session names a pool or
+  account produces a routed session or a visible refusal, never a silent
+  Direct launch (plan 183). Project Queue new-session items carry the
+  selection (`project-queue-router-selection`) and allocate when they
+  dispatch, so a pool picks against quota at that time; a router refusal
+  retries and then pauses the item, and the retry allocates afresh on the
+  same admitted session because a fresh allocation refused before commit
+  never ran. Template preparation sessions send the form's selection with
+  the routed model. A new session derived from a routed session (the session
+  composer's New session, Agent API `createSession`, a Source Review
+  session) gets a fresh policy pick from the source binding's pool with its
+  policy (a Manual pool pin names its account), or the source's explicit
+  account through a new pin; it never shares the source's allocation or
+  token. Such a derived session on another provider is refused for the
+  Agent API and Source Review; the composer starts it Direct only when the
+  user explicitly picks another provider. Older servers that would drop the
+  selection are refused client-side.
+- Restart/handoff, fork with summary and YA recap/title helper sessions
+  are refused for routed sessions in this slice,
   because they start a fresh session, or call the provider directly as the
   fork summary's generator does, without the pin, on the owner's direct login.
   The restart, stale-handoff, fork-summary and retitle routes return 409 with
@@ -438,7 +551,8 @@ New accounts remain unassigned until the owner grants them directly or adds them
 to a granted pool. Direct-account allocation requires a direct grant; pool use
 does not authorize bypassing pool membership. Shared pool allocation state
 arbitrates across integrations. Disconnect/revocation leaves router pools and
-other integrations intact. Existing pins cannot switch accounts; revoking a
+other integrations intact. A pin never switches accounts on its own; only
+the owner's explicit switch above replaces it. Revoking a
 grant blocks subsequent requests while accepted streams may finish.
 
 
@@ -532,10 +646,10 @@ or specialized fixed launches. The saved preference remains intact. A model
 known only to the router is not sent directly on fallback. Explicit pool picks
 keep the existing launch refusals when they cannot be used.
 
-Project Queue ignores a restored router preference and resolves its launch
-settings against the direct provider catalog; an explicitly picked pool keeps
-the existing unsupported-queue behavior. Template creation uses its own launch
-path and does not submit these routing defaults.
+Project Queue and template creation submit a restored or picked selection
+with the routed model, thinking and tier, as a direct start does (plan 183,
+replacing plan 147 § 6). A server without `project-queue-router-selection`
+is refused Queue while a pool is shown, restored or picked.
 
 The maintainer explicitly approved silent compatibility without a new
 capability or explanatory note. The existing settings route receives the

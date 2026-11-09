@@ -6,6 +6,8 @@ import { useId } from "react";
 import { useI18n } from "../i18n";
 import { ProviderBadge } from "./ProviderBadge";
 import styles from "./NewSessionProjectQueue.module.css";
+import { ButtonBase } from "./ui/Button";
+import { projectQueueRouterLabel } from "../lib/projectQueueRouterLabel";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 
@@ -92,14 +94,14 @@ export function NewSessionProjectQueue({
       <ul className={styles.list}>
         {items.map((item) => {
           const title = itemTitle(item, t);
+          const routerLabel = projectQueueRouterLabel(item.target, t);
           return (
             <li
               key={item.id}
               className={styles.item}
               data-new-session-project-queue-item-id={item.id}
             >
-              <button
-                type="button"
+              <ButtonBase
                 className={styles.itemButton}
                 onClick={() => onOpenItem(item.id)}
                 title={title}
@@ -121,11 +123,16 @@ export function NewSessionProjectQueue({
                       className={styles.provider}
                     />
                   )}
+                  {routerLabel && (
+                    <span className={styles.provider} title={routerLabel.title}>
+                      {routerLabel.label}
+                    </span>
+                  )}
                 </span>
                 {item.lastError && (
                   <span className={styles.itemError}>{item.lastError}</span>
                 )}
-              </button>
+              </ButtonBase>
             </li>
           );
         })}

@@ -3,6 +3,7 @@ import {
   memo,
   type ReactNode,
   type RefObject,
+  useRef,
   useState,
 } from "react";
 import type { ProjectPathLinkTarget } from "@yep-anywhere/shared";
@@ -16,7 +17,9 @@ import {
 } from "../../lib/parseUserPrompt";
 import type { ContentBlock } from "../../types";
 import { AttachmentChip } from "../AttachmentChip";
+import { Button, ButtonBase } from "../ui/Button";
 import { CopyTextButton } from "../ui/CopyTextButton";
+import { Popover } from "../ui/Popover";
 import { ForkTurnMenu } from "./ForkTurnMenu";
 import { useUserPromptActionPacking } from "./useUserPromptActionPacking";
 import { UserPromptLinkedText } from "./UserPromptLinkedText";
@@ -332,13 +335,14 @@ function CollapsibleText({
           />
         </div>
         {isExpanded && needsTruncation && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="small"
             className="show-more-btn"
             onClick={() => setIsExpanded(false)}
           >
             Show less
-          </button>
+          </Button>
         )}
       </div>
     );
@@ -355,13 +359,14 @@ function CollapsibleText({
         />
         <div className="fade-overlay" />
       </div>
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="small"
         className="show-more-btn"
         onClick={() => setIsExpanded(true)}
       >
         Show more
-      </button>
+      </Button>
     </div>
   );
 }
@@ -416,8 +421,7 @@ function UserPromptActionButtons({
         />
       )}
       {onCorrect && (
-        <button
-          type="button"
+        <ButtonBase
           className="user-prompt-action user-prompt-action-edit"
           onClick={onCorrect}
           aria-label={t("userPromptEditAction")}
@@ -438,11 +442,10 @@ function UserPromptActionButtons({
             <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
           </svg>
           <span className="user-prompt-correct-label">Edit</span>
-        </button>
+        </ButtonBase>
       )}
       {onCancelUnconfirmed && (
-        <button
-          type="button"
+        <ButtonBase
           className="user-prompt-action user-prompt-action-cancel-sent"
           onClick={onCancelUnconfirmed}
           aria-label={t("userPromptCancelUnconfirmedAction")}
@@ -462,7 +465,7 @@ function UserPromptActionButtons({
             <path d="M18 6 6 18" />
             <path d="m6 6 12 12" />
           </svg>
-        </button>
+        </ButtonBase>
       )}
       {(onForkAfter || forkUnavailableMessage) && (
         <ForkTurnMenu
@@ -475,8 +478,7 @@ function UserPromptActionButtons({
         />
       )}
       {onTrimBefore && (
-        <button
-          type="button"
+        <ButtonBase
           className="user-prompt-action user-prompt-action-show-starting"
           onClick={onTrimBefore}
           aria-label={t("userPromptShowStartingHere")}
@@ -499,7 +501,7 @@ function UserPromptActionButtons({
             <path d="m15 16 3 3 3-3" />
             <path d="M18 5v14" />
           </svg>
-        </button>
+        </ButtonBase>
       )}
       {extraActions}
     </div>
@@ -511,7 +513,8 @@ function UserPromptActionButtons({
  * server-accepted but not yet proven in the durable transcript; disappears
  * entirely on confirmation so the steady state stays unadorned. Hover shows
  * the short explanation (title); click/tap toggles a popover with the full
- * one, since touch devices never see the title.
+ * one, since touch devices never see the title. The tag sits in the right
+ * margin, so the popover extends leftward from it.
  */
 function DeliveryStateMarker({
   deliveryState,
@@ -520,28 +523,32 @@ function DeliveryStateMarker({
 }) {
   const { t } = useI18n();
   const [showDetail, setShowDetail] = useState(false);
+  const markerRef = useRef<HTMLButtonElement>(null);
   if (deliveryState !== "sent") return null;
   return (
     <>
-      <button
-        type="button"
+      <ButtonBase
+        ref={markerRef}
         className="user-prompt-delivery-marker"
         title={t("userPromptDeliverySent")}
         aria-label={t("userPromptDeliverySent")}
         aria-expanded={showDetail}
         onClick={() => setShowDetail((open) => !open)}
         onBlur={() => setShowDetail(false)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") setShowDetail(false);
-        }}
       >
         {t("userPromptDeliverySentLabel")}
-      </button>
-      {showDetail && (
-        <span className="user-prompt-delivery-popover" role="status">
-          {t("userPromptDeliverySentDetail")}
-        </span>
-      )}
+      </ButtonBase>
+      <Popover
+        open={showDetail}
+        onClose={() => setShowDetail(false)}
+        anchorRef={markerRef}
+        placement="bottom-end"
+        role="status"
+        surface="card"
+        style={{ maxWidth: "min(340px, 85dvw)" }}
+      >
+        {t("userPromptDeliverySentDetail")}
+      </Popover>
     </>
   );
 }

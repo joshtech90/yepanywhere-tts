@@ -24,6 +24,12 @@ export interface CodexRolloutDiscoveryMetadata {
   timestamp: string;
   isSubagent: boolean;
   isHeadlessExec: boolean;
+  /** Verified immediate native parent; session_id can instead name the root. */
+  parentThreadId?: string | null;
+  childMetadataVersion?: number;
+  agentNickname?: string;
+  agentRole?: string;
+  spawnDepth?: number;
 }
 
 export interface CodexDiscoveredSession {
@@ -34,6 +40,12 @@ export interface CodexDiscoveredSession {
   mtime: number;
   size: number;
   isSubagent: boolean;
+  /** Verified immediate native parent; session_id can instead name the root. */
+  parentThreadId?: string | null;
+  childMetadataVersion?: number;
+  agentNickname?: string;
+  agentRole?: string;
+  spawnDepth?: number;
 }
 
 export interface CodexRolloutDiscoveryStats {
@@ -321,6 +333,11 @@ function toDiscoveredSession(
     mtime: getCodexRolloutActivityTimeMs(filePath, stats),
     size: stats.size,
     isSubagent: metadata.isSubagent,
+    parentThreadId: metadata.parentThreadId ?? null,
+    childMetadataVersion: metadata.childMetadataVersion,
+    agentNickname: metadata.agentNickname,
+    agentRole: metadata.agentRole,
+    spawnDepth: metadata.spawnDepth,
   };
 }
 
@@ -353,6 +370,9 @@ function parseCodexSessionMeta(
         : new Date(stats.mtimeMs).toISOString(),
     isSubagent: isSubagentSessionMeta(meta),
     isHeadlessExec: isHeadlessCodexExecSessionMeta(meta),
+    parentThreadId: nativeParentThreadId(meta),
+    childMetadataVersion: 2,
+    ...childDisplayMetadata(meta),
   };
 }
 
@@ -376,6 +396,62 @@ export function isHeadlessCodexExecSessionMeta(meta: {
   return (
     !LOCAL_CODEX_MODEL_PROVIDERS.has(provider) && !provider.startsWith("ya_")
   );
+}
+
+function childDisplayMetadata(meta: Partial<CodexSessionMetaEntry["payload"]>) {
+  const spawn =
+    typeof meta.source === "object"
+      ? meta.source?.subagent?.thread_spawn
+      : undefined;
+  const nickname = meta.agent_nickname ?? spawn?.agent_nickname;
+  const role =
+    meta.agent_role ??
+    ("agent_type" in meta ? meta.agent_type : undefined) ??
+    spawn?.agent_role ??
+    spawn?.agent_type;
+  const depth = spawn?.depth;
+  return {
+    ...(typeof nickname === "string"
+      ? { agentNickname: nickname.slice(0, 256) }
+      : {}),
+    ...(typeof role === "string" ? { agentRole: role.slice(0, 256) } : {}),
+    ...(typeof depth === "number" && Number.isSafeInteger(depth) && depth >= 0
+      ? { spawnDepth: depth }
+      : {}),
+  };
+}
+
+function nativeParentThreadId(
+  meta: Partial<CodexSessionMetaEntry["payload"]>,
+): string | null {
+  // The qualified navigation path is native thread spawning. Review/compact
+  // and internal delegate histories need their own persistence qualification;
+  // they were not exposed by the previous launch-correlated materializer.
+  const sourceValue: unknown = meta.source;
+  if (
+    isObjectRecord(sourceValue) &&
+    (sourceValue.internal !== undefined ||
+      (sourceValue.subagent !== undefined &&
+        (!isObjectRecord(sourceValue.subagent) ||
+          !isObjectRecord(sourceValue.subagent.thread_spawn))))
+  )
+    return null;
+  if (
+    typeof sourceValue === "string" &&
+    /^subagent[_-]/i.test(sourceValue) &&
+    !/thread[_-]?spawn/i.test(sourceValue)
+  )
+    return null;
+  const direct = hasNonEmptyString(meta.parent_thread_id)
+    ? meta.parent_thread_id
+    : null;
+  const source =
+    typeof meta.source === "object"
+      ? meta.source?.subagent?.thread_spawn?.parent_thread_id
+      : undefined;
+  const nested = hasNonEmptyString(source) ? source : null;
+  // Conflicting native claims remain unresolved; never use the root session_id.
+  return direct && nested && direct !== nested ? null : (direct ?? nested);
 }
 
 export function isSubagentSessionMeta(
@@ -434,7 +510,12 @@ function isCodexRolloutDiscoveryMetadata(
     typeof value.cwd === "string" &&
     typeof value.timestamp === "string" &&
     typeof value.isSubagent === "boolean" &&
-    typeof value.isHeadlessExec === "boolean"
+    typeof value.isHeadlessExec === "boolean" &&
+    // Older cached child headers lack this proof; refresh those headers once.
+    (!value.isSubagent ||
+      (value.childMetadataVersion === 2 &&
+        (value.parentThreadId === null ||
+          typeof value.parentThreadId === "string")))
   );
 }
 

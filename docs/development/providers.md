@@ -9,6 +9,17 @@ Read the applicable [provider refresh](../../topics/provider-refresh.md)
 sections for provider-specific sources, probes, and refresh evidence. This
 guide owns the shared contributor procedures and Codex audit approval rule.
 
+## Native behavior qualification
+
+Before provider or shared scheduling refactors, establish the relevant behavior
+with [native provider scenarios](../../topics/native-provider-testing.md).
+`pnpm test:providers` runs real executables with scripted local model responses,
+without inference. Extend shared actions/assertions where semantics match and
+keep provider-specific capabilities explicit. Missing local routing or binaries
+must remain an explicit qualification gap, not a successful fake/paid fallback.
+Run applicable scenarios when upgrading a qualified executable and keep its
+test pin aligned with the audited target.
+
 ## Codex Version Bump Audit
 
 Treat `package.json` `yepAnywhere.codexCli.expectedVersion` as the repo's
@@ -45,6 +56,15 @@ compatibility marker in root `package.json`:
   transcript/control assumptions were checked or updated; keep
   `yepAnywhere.claudeCode.claudeAgentSdkVersion` paired with the committed
   `@anthropic-ai/claude-agent-sdk` dependency when the SDK is refreshed.
+
+`CODEX_CLI_MINIMUM_SUPPORTED_VERSION` in
+`packages/server/src/services/CodexUpdateChecker.ts` is the opposite bound:
+the oldest Codex CLI that YA's integration works with, or `null` when no such
+floor is known. It is the only trigger for the update dialog an administrator
+sees, so raise it only for a known incompatibility, such as removing an older
+protocol fallback, never merely because a newer release exists. Per-feature
+version gates that degrade gracefully do not raise it. See
+[provider installation updates](../../topics/provider-installation-updates.md#update-notices).
 
 This marker is the committed "compatible through / up to date as of" answer for
 future minor-version checks. For Codex, keep `expectedVersion` in sync with

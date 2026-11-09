@@ -1,3 +1,4 @@
+import { antigravitySessionsDir } from "./sdk/providers/antigravity-runtime.js";
 import { localPeerHost } from "./peer-api/connection-contracts.js";
 import { PeerAccessManager } from "./peer-api/manager.js";
 import { readServerIdentity } from "./core-api/server-identity.js";
@@ -8,14 +9,15 @@ import * as fs from "node:fs";
 import { createServer as createHttpsServer } from "node:https";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
-import { serve } from "@hono/node-server";
+import { serve, upgradeWebSocket } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { createNodeWebSocket } from "@hono/node-ws";
+import { WebSocketServer } from "ws";
 import {
   SPEECH_RELAY_CHANNEL,
   idleReapHoursToMs,
   isClaudeProviderName,
+  isYaSessionId,
+  toUrlProjectId,
   parseSpeechVoiceBackends,
   unionSpeechVoiceBackends,
 } from "@yep-anywhere/shared";
@@ -73,6 +75,9 @@ import {
 import { ProjectGlossarySubscriptionManager } from "./projects/projectGlossarySubscriptionManager.js";
 import { ProjectWorktreeSubscriptionManager } from "./projects/projectWorktreeSubscriptionManager.js";
 import { projectPathCacheDiagnostics } from "./projects/projectPathIndex.js";
+import { GROK_SESSIONS_DIR } from "./projects/paths.js";
+import { OPENCODE_DB_PATH } from "./sessions/opencode-reader.js";
+import { openCodeRelationshipWatcherSpec } from "./sessions/opencode-child-source.js";
 import { ProjectStoragePolicy } from "./projects/projectStoragePolicy.js";
 import { PushService, getOrCreateVapidKeys } from "./push/index.js";
 import { RecentsService } from "./recents/index.js";
@@ -86,7 +91,8 @@ import { getServerCompatibilityInfo } from "./routes/version.js";
 import { createWsRelayRoutes } from "./routes/ws-relay.js";
 import { createAcceptRelayConnection } from "./routes/ws-relay.js";
 import { relayResponseSerializationDiagnostics } from "./routes/ws-relay-handlers.js";
-import { detectClaudeCli, detectCodexCli } from "./sdk/cli-detection.js";
+import { warnIfCodexVersionMismatch } from "./codex-version-advisory.js";
+import { detectClaudeCli } from "./sdk/cli-detection.js";
 import { initMessageLogger } from "./sdk/messageLogger.js";
 import { MockServerClaudeProvider } from "./sdk/mock.js";
 import {
@@ -103,7 +109,6 @@ import { gatewayEffortProbeCache } from "./services/GatewayEffortProbe.js";
 import { syncGatewayServiceExports } from "./sdk/providers/gatewayServiceExport.js";
 import { ClaudeOllamaProvider } from "./sdk/providers/claude-ollama.js";
 import { grokACPProvider } from "./sdk/providers/grok-acp.js";
-import { RealClaudeSDK } from "./sdk/real.js";
 import { configureAuthAudit } from "./security/authAuditLog.js";
 import {
   BrowserProfileService,
@@ -136,8 +141,18 @@ import {
 import { SpeechBackendInstallService } from "./services/voice/speechBackendInstall.js";
 import { claudeTranscriptCache } from "./sessions/claude-transcript-cache.js";
 import { codexEntryCacheBudget } from "./sessions/codex-entry-cache-budget.js";
+import { observeCodexRolloutTree } from "./sessions/codex-shared-scan-cache.js";
+import { codexSessionWatcherSpec } from "./sessions/codex-thread-index.js";
+import {
+  formatListenerAddress,
+  type NetworkListenerControl,
+  NetworkListeners,
+} from "./network/listeners.js";
 import { providerCatalogFamily } from "./sessions/provider-catalog-family.js";
-import { ClaudeSessionReader } from "./sessions/reader.js";
+import {
+  boundSessionSource,
+  resolveLegacySessionSource,
+} from "./sessions/provider-resolution.js";
 import { AttachmentStagingService } from "./uploads/AttachmentStagingService.js";
 import { UploadManager } from "./uploads/manager.js";
 import {
@@ -486,96 +501,27 @@ if (cliInfo.found) {
   );
 }
 
-function parseCodexVersion(raw: string | undefined): string | null {
-  if (!raw) return null;
-  const match = raw.match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/);
-  return match ? match[0] : null;
-}
-
-function readExpectedCodexVersionFromPackageJson(): string | null {
-  const candidatePaths = [
-    path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "../../../package.json",
-    ),
-    path.resolve(process.cwd(), "package.json"),
-  ];
-
-  for (const packageJsonPath of candidatePaths) {
-    try {
-      if (!fs.existsSync(packageJsonPath)) {
-        continue;
-      }
-
-      const parsed = JSON.parse(
-        fs.readFileSync(packageJsonPath, "utf-8"),
-      ) as unknown;
-      if (!parsed || typeof parsed !== "object") {
-        continue;
-      }
-
-      const root = parsed as {
-        yepAnywhere?: { codexCli?: { expectedVersion?: string } };
-      };
-      const expected = root.yepAnywhere?.codexCli?.expectedVersion;
-      if (typeof expected === "string" && expected.trim().length > 0) {
-        return expected.trim();
-      }
-    } catch {
-      // Ignore malformed/unavailable package.json and try next candidate path.
-    }
-  }
-
-  return null;
-}
-
-async function warnIfCodexVersionMismatch(): Promise<void> {
-  // An excluded provider must not perform installation/ACL work merely to
-  // produce an optional advisory. Empty configuration exposes all providers.
-  if (
-    config.enabledProviders.length > 0 &&
-    !config.enabledProviders.some(
-      (provider) => provider === "codex" || provider === "codex-oss",
-    )
-  ) {
-    return;
-  }
-
-  const expectedRaw = readExpectedCodexVersionFromPackageJson();
-  if (!expectedRaw) {
-    return;
-  }
-
-  const expected = parseCodexVersion(expectedRaw) ?? expectedRaw;
-  const codexInfo = await detectCodexCli(config.codexCliPath);
-  if (!codexInfo.found || !codexInfo.version) {
-    return;
-  }
-
-  const actual = parseCodexVersion(codexInfo.version) ?? codexInfo.version;
-  if (actual === expected) {
-    return;
-  }
-
-  console.warn(
-    `[Codex] CLI version differs from YA's audited target: package.json yepAnywhere.codexCli.expectedVersion=${expected}, detected ${actual}. This is an advisory compatibility signal, not a hard requirement; YA gates known version-sensitive behavior where possible, but Codex app-server behavior may differ if the protocol changed.`,
-  );
-}
-
-await warnIfCodexVersionMismatch();
+await warnIfCodexVersionMismatch(config);
 
 const mockProvider = config.useMockSdk
   ? new MockServerClaudeProvider()
   : undefined;
-const realSdk = config.useMockSdk ? undefined : new RealClaudeSDK();
 
 // Create the event bus and the eligibility-gated provider watcher owner.
 const eventBus = new EventBus();
+const openCodeRelationshipWatcher =
+  openCodeRelationshipWatcherSpec(OPENCODE_DB_PATH);
 const providerSessionWatchers = new ProviderSessionWatcherRegistry({
   eventBus,
   activationDelayMs: PROVIDER_WATCH_ACTIVATION_DELAY_MS,
   activationYieldMs: PROVIDER_WATCH_ACTIVATION_YIELD_MS,
   specs: [
+    {
+      family: "antigravity",
+      provider: "antigravity",
+      watchDir: antigravitySessionsDir(),
+      debounceMs: 200,
+    },
     {
       family: "claude",
       watchDir: config.claudeSessionsDir,
@@ -588,22 +534,34 @@ const providerSessionWatchers = new ProviderSessionWatcherRegistry({
       provider: "gemini",
       debounceMs: 200,
     },
-    {
-      family: "codex",
-      watchDir: config.codexSessionsDir,
-      provider: "codex",
-      debounceMs: 200,
-      periodicRescanMs: config.codexWatchPeriodicRescanMs,
-    },
+    codexSessionWatcherSpec(
+      config.codexSessionsDir,
+      config.codexWatchPeriodicRescanMs,
+    ),
     {
       family: "pi",
       watchDir: config.piSessionsDir,
       provider: "pi",
       debounceMs: 200,
     },
+    {
+      family: "grok",
+      provider: "grok",
+      watchDir: GROK_SESSIONS_DIR,
+      debounceMs: 200,
+      internalOnly: true,
+    },
+    ...(openCodeRelationshipWatcher ? [openCodeRelationshipWatcher] : []),
   ],
 });
 providerSessionWatchersForShutdown = providerSessionWatchers;
+// While the Codex watcher observes the sessions tree, cached enumerations stay
+// current between its reports instead of re-walking cold history on a timer.
+observeCodexRolloutTree({
+  sessionsDir: config.codexSessionsDir,
+  eventBus,
+  epoch: () => providerSessionWatchers.getObservationEpoch("codex"),
+});
 
 // When running without tsx watch (NO_BACKEND_RELOAD=true), start source watcher
 // to notify the UI when server code changes and needs manual reload
@@ -613,7 +571,7 @@ if (process.env.NO_BACKEND_RELOAD === "true") {
 }
 
 // The SQLite database is required: session metadata lives there, so a server
-// that cannot open it does not start (topics/optional-sqlite.md).
+// that cannot open it does not start (topics/required-sqlite.md).
 const discoverySqlite = (() => {
   try {
     return new DiscoverySqliteService({ dataDir: config.dataDir });
@@ -646,6 +604,7 @@ const sessionQueuePersistenceService = new SessionQueuePersistenceService({
 });
 const sessionDiscoveryIndexRegistry = new SessionDiscoveryIndexRegistry();
 const sessionIndexService = new SessionIndexService({
+  database: discoverySqlite.getDatabase(),
   projectsDir: config.claudeProjectsDir,
   dataDir: path.join(config.dataDir, "indexes"),
   fullValidationIntervalMs: config.sessionIndexFullValidationMs,
@@ -668,16 +627,6 @@ const recentsService = new RecentsService({
       type: "recents-changed",
       timestamp: new Date().toISOString(),
     }),
-});
-// A new session is opened, and visited, under a provisional id before the
-// provider reports its real one.
-eventBus.subscribe((event) => {
-  if (event.type !== "session-id-remapped") return;
-  recentsService
-    .remapSession(event.oldSessionId, event.newSessionId)
-    .catch((error) => {
-      console.warn("[RecentsService] Failed to remap session:", error);
-    });
 });
 const authService = new AuthService({
   dataDir: config.dataDir,
@@ -822,6 +771,9 @@ async function startServer() {
   await notificationService.initialize();
   markStartup("notificationService initialized");
   await sessionMetadataService.initialize();
+  // Before any new admission: only surviving owner proof can confirm input
+  // accepted under the previous controller. No prompt payloads are loaded here.
+  sessionMetadataService.creations.recoverOwnerLoss();
   markStartup("sessionMetadataService initialized");
   const migratedCatalogFamilies = installService.needsCatalogMetadataMigration()
     ? await installService.completeCatalogMetadataMigration(
@@ -1019,16 +971,7 @@ async function startServer() {
 
   // Callback holder for network binding changes - will be set after servers are created
   const networkBindingCallbackHolder: {
-    onLocalhostPortChange?: (
-      port: number,
-    ) => Promise<{ success: boolean; error?: string; redirectUrl?: string }>;
-    onNetworkBindingChange?: (
-      config: { host: string; port: number } | null,
-    ) => Promise<{ success: boolean; error?: string }>;
-    /** Live: addresses currently bound (reads real sockets at call time). */
-    getActiveListeners?: () => string[];
-    /** Live localhost port after an optional port-0 bind. */
-    getLocalhostPort?: () => number;
+    listeners?: NetworkListenerControl;
   } = {};
 
   // Determine effective port for server-info (CLI override or saved setting)
@@ -1166,6 +1109,7 @@ async function startServer() {
     app,
     supervisor,
     scanner,
+    readerFactory,
     disposeSessionReaders,
     stopNotifications,
     glossaryIndexService,
@@ -1184,13 +1128,16 @@ async function startServer() {
     getCatalogFamilies: () => installService.getCatalogFamilies(),
     artifacts: config.artifacts,
     provider: mockProvider,
-    realSdk,
     projectsDir: config.claudeProjectsDir,
     idleTimeoutMs,
     persistedAugmentDelayMs: readPerfPersistedAugmentDelayMs(),
     defaultPermissionMode: config.defaultPermissionMode,
     eventBus,
     // Note: uploadeWebSocket not passed yet - will be added below
+    subscribeProviderObservationReady: (listener) =>
+      providerSessionWatchers.subscribeReady(listener),
+    subscribeNativeProviderFileChanges: (listener) =>
+      providerSessionWatchers.subscribeNativeChanges(listener),
     notificationService,
     sessionMetadataService,
     onSuccessfulProviderSession: async (_sessionId, provider) => {
@@ -1364,25 +1311,48 @@ async function startServer() {
   setDebugContext({
     supervisor,
     claudeSessionsDir: config.claudeSessionsDir,
-    getSessionReader: async (projectPath: string) => {
-      // Find the project by scanning - projectPath is the absolute path
-      const projects = await scanner.listProjects();
-      const project = projects.find((p) => p.path === projectPath);
-      if (!isClaudeProviderName(project?.provider)) return null;
-      return new ClaudeSessionReader({
-        sessionDir: project.sessionDir,
-        summaryParserWorkerMode: config.claudeSummaryParserWorkerMode,
-      });
+    getSessionSource: async (projectPath, sessionId) => {
+      const identity = isYaSessionId(sessionId)
+        ? sessionMetadataService.identities.resolveYa(sessionId)
+        : undefined;
+      if (identity && !identity.native) return null;
+      const project = await scanner.getOrCreateProject(
+        identity?.projectId ?? toUrlProjectId(projectPath),
+      );
+      if (
+        !project ||
+        !isClaudeProviderName(identity?.provider ?? project.provider)
+      )
+        return null;
+      const bound = boundSessionSource(
+        project,
+        sessionId,
+        { readerFactory },
+        identity ? { kind: "stored", identity } : { kind: "legacy" },
+      );
+      if (bound === null) return null;
+      const legacy = bound
+        ? undefined
+        : await resolveLegacySessionSource(
+            {
+              reader: readerFactory(project),
+              provider: project.provider,
+              sessionDir: project.sessionDir,
+              kind: "primary",
+            },
+            sessionId,
+            project,
+            { readerFactory, identities: sessionMetadataService.identities },
+          );
+      return bound || legacy
+        ? {
+            reader: bound?.source.reader ?? legacy!.source.reader,
+            nativeSessionId: bound?.nativeSessionId ?? legacy!.nativeSessionId,
+            projectId: bound?.projectId ?? project.id,
+          }
+        : null;
     },
   });
-
-  // Create WebSocket support with the main app
-  // This must use the same app instance that has the routes
-  // We get wss for the unified upgrade handler (instead of using injectWebSocket)
-  const { wss, upgradeWebSocket } = createNodeWebSocket({ app });
-  // Upload and speech payloads are already chunked; reject an oversized message
-  // in ws before the relay handlers buffer or parse it.
-  configureInboundWebSocketMessageLimit(wss);
 
   // Add upload routes with WebSocket support
   // These must be added BEFORE the frontend proxy catch-all
@@ -1619,10 +1589,6 @@ async function startServer() {
   // Determine effective port (CLI override or saved setting or default)
   const effectivePort = networkBindingService.getLocalhostPort();
 
-  // Track servers for multi-socket management
-  let localhostServer: ReturnType<typeof serve>;
-  let networkServer: ReturnType<typeof serve> | null = null;
-
   // Helper to create a server with WebSocket support
   function createServer(
     port: number,
@@ -1631,10 +1597,15 @@ async function startServer() {
     options?: { fatalOnError?: boolean },
   ): ReturnType<typeof serve> {
     const { fatalOnError = false } = options ?? {};
+    // Each listener owns its WebSocket server: closing an old network binding
+    // must not close admission on another listener's sockets.
+    const wss = new WebSocketServer({ noServer: true });
+    configureInboundWebSocketMessageLimit(wss);
     const server = tlsOptions
       ? serve(
           {
             fetch: app.fetch,
+            websocket: { server: wss },
             port,
             hostname,
             createServer: createHttpsServer,
@@ -1642,7 +1613,10 @@ async function startServer() {
           },
           onReady,
         )
-      : serve({ fetch: app.fetch, port, hostname }, onReady);
+      : serve(
+          { fetch: app.fetch, websocket: { server: wss }, port, hostname },
+          onReady,
+        );
 
     server.on("error", (error: unknown) => {
       const err = error as NodeJS.ErrnoException;
@@ -1667,308 +1641,156 @@ async function startServer() {
         artifactServer.handleUpgrade(request, socket, head),
       frontendProxy,
       isApiPath: (urlPath) => urlPath.startsWith("/api"),
-      app,
-      wss,
     });
     return server;
   }
 
-  // Callback for localhost port changes (test-first pattern)
-  async function onLocalhostPortChange(
-    newPort: number,
-  ): Promise<{ success: boolean; error?: string; redirectUrl?: string }> {
-    const currentPort = networkBindingService.getLocalhostPort();
-
-    // If port hasn't changed, no action needed
-    if (newPort === currentPort) {
-      return { success: true };
-    }
-
-    try {
-      // Test-first: try to bind new port before closing old one
-      const testServer = tlsOptions
-        ? serve(
-            {
-              fetch: app.fetch,
-              port: newPort,
-              hostname: "127.0.0.1",
-              createServer: createHttpsServer,
-              serverOptions: tlsOptions,
-            },
-            () => {},
-          )
-        : serve(
-            { fetch: app.fetch, port: newPort, hostname: "127.0.0.1" },
-            () => {},
-          );
-
-      // If we got here, the port is available
-      // Close the test server and the old server
-      testServer.close();
-
-      // Close old localhost server
-      localhostServer.close();
-
-      // Create new localhost server
-      localhostServer = createServer(
-        newPort,
-        "127.0.0.1",
-        (info) => {
-          console.log(
-            `[NetworkBinding] Localhost server restarted on port ${info.port}`,
-          );
-        },
-        { fatalOnError: true },
+  // The listening sockets. A change binds its new sockets before releasing
+  // the old ones and never exits on failure (topics/connection-safe-settings.md).
+  const networkListeners = new NetworkListeners({
+    create: ({ host, port }, { fatalOnError, onReady }) =>
+      createServer(port, host, onReady, { fatalOnError }),
+    onBound: (address) => {
+      console.log(
+        `Server URL: ${serverProtocol}://${formatListenerAddress(address)}`,
       );
-
-      return {
-        success: true,
-        // Only include redirectUrl if port actually changed
-        redirectUrl: `${serverProtocol}://127.0.0.1:${newPort}`,
-      };
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to bind port";
-      console.error(
-        `[NetworkBinding] Failed to bind port ${newPort}:`,
-        message,
+      console.log(
+        `[NetworkBinding] Listening on ${formatListenerAddress(address)}`,
       );
-      return { success: false, error: message };
-    }
-  }
+    },
+  });
 
-  // Track whether we're currently bound to 0.0.0.0 (which covers localhost)
-  let boundToAllInterfaces = false;
-
-  // Callback for network socket changes
-  async function onNetworkBindingChange(
-    bindConfig: { host: string; port: number } | null,
-  ): Promise<{ success: boolean; error?: string }> {
-    const isBindingToAllInterfaces =
-      bindConfig?.host === "0.0.0.0" || bindConfig?.host === "::";
-    const localhostPort = networkBindingService.getLocalhostPort();
-    const samePortAsLocalhost = bindConfig?.port === localhostPort;
-    const needsLocalhostClose = isBindingToAllInterfaces && samePortAsLocalhost;
-
-    try {
-      // Close existing network server if running
-      if (networkServer) {
-        networkServer.close();
-        networkServer = null;
-        console.log("[NetworkBinding] Network socket closed");
-      }
-
-      // If we were bound to 0.0.0.0 and now we're not, rebind localhost
-      if (boundToAllInterfaces && !isBindingToAllInterfaces) {
-        localhostServer = createServer(
-          localhostPort,
-          "127.0.0.1",
-          (info) => {
-            console.log(
-              `[NetworkBinding] Localhost server rebound on port ${info.port}`,
-            );
-          },
-          { fatalOnError: true },
-        );
-        boundToAllInterfaces = false;
-      }
-
-      // Create new network server if config provided
-      if (bindConfig) {
-        // If binding to 0.0.0.0 on the same port as localhost, we need to
-        // close the localhost server first since 0.0.0.0 includes 127.0.0.1
-        if (needsLocalhostClose) {
-          localhostServer.close();
-          console.log(
-            "[NetworkBinding] Closed localhost server to bind to all interfaces",
-          );
-        }
-
-        try {
-          networkServer = createServer(
-            bindConfig.port,
-            bindConfig.host,
-            (info) => {
-              const networkUrl = `${serverProtocol}://${bindConfig.host}:${info.port}`;
-              console.log(`Server URL: ${networkUrl}`);
-              console.log(
-                `[NetworkBinding] Network socket listening on ${bindConfig.host}:${info.port}`,
-              );
-              // An all-interface bind can close localhost before its ready
-              // callback runs. Initialize speech on either successful bind.
-              startSpeechBackendInitialization();
-            },
-          );
-          // Only set this flag after successful binding
-          if (needsLocalhostClose) {
-            boundToAllInterfaces = true;
-          }
-        } catch (bindError) {
-          // If we closed localhost but failed to bind network, recover localhost
-          if (needsLocalhostClose) {
-            console.log(
-              "[NetworkBinding] Recovering localhost server after failed bind",
-            );
-            localhostServer = createServer(
-              localhostPort,
-              "127.0.0.1",
-              (info) => {
-                console.log(
-                  `[NetworkBinding] Localhost server recovered on port ${info.port}`,
-                );
-              },
-              { fatalOnError: true },
-            );
-          }
-          throw bindError;
-        }
-      }
-
-      return { success: true };
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Failed to bind network socket";
-      console.error("[NetworkBinding] Failed to bind network socket:", message);
-      return { success: false, error: message };
-    }
-  }
-
-  // Wire up the callbacks to the holder so routes can use them
-  networkBindingCallbackHolder.onLocalhostPortChange = onLocalhostPortChange;
-  networkBindingCallbackHolder.onNetworkBindingChange = onNetworkBindingChange;
-  // Report the addresses actually bound right now by reading the live sockets.
-  // A server that failed to bind (e.g. an unresolvable --host) reports a null
-  // address(), so it never appears here -- the panel shows only real listeners.
-  networkBindingCallbackHolder.getActiveListeners = () => {
-    const listeners: string[] = [];
-    for (const server of [localhostServer, networkServer]) {
-      const address = server?.address();
-      if (address && typeof address === "object") {
-        listeners.push(`${address.address}:${address.port}`);
-      }
-    }
-    return listeners;
-  };
-  networkBindingCallbackHolder.getLocalhostPort = () => {
-    const address = localhostServer?.address();
-    return address && typeof address === "object"
-      ? address.port
-      : effectiveServerPort;
-  };
+  // The network socket to start with: --host, else saved settings (the
+  // saved socket is ignored while --host overrides it). A missing saved port
+  // follows the loopback port.
+  const cliNetworkHost =
+    config.cliHostOverride &&
+    config.host !== "127.0.0.1" &&
+    config.host !== "localhost"
+      ? config.host
+      : null;
+  const networkConfig = networkBindingService.getNetworkConfig();
+  const savedNetworkHost =
+    networkConfig.enabled &&
+    networkConfig.host &&
+    !networkBindingService.isNetworkOverridden()
+      ? networkConfig.host
+      : null;
+  const startupNetworkHost = cliNetworkHost ?? savedNetworkHost;
+  const startupNetworkPort = cliNetworkHost ? null : networkConfig.port;
 
   // Create the main localhost server
   const expectedServerUrl = `${serverProtocol}://127.0.0.1:${effectivePort}`;
   console.log(`[Server] Starting on ${expectedServerUrl}`);
   let desktopReadySent = false;
-  localhostServer = createServer(
-    effectivePort,
-    "127.0.0.1",
-    (info) => {
-      markStartup("localhost server onReady");
-      providerSessionWatchers.requestActivation(
-        installService.getCatalogFamilies(),
+  // Readiness runs once the socket serving loopback listens; a wildcard
+  // network socket on the loopback port is that socket, never replaced later.
+  const startupReady = (info: { port: number }) => {
+    markStartup("localhost server onReady");
+    providerSessionWatchers.requestActivation(
+      installService.getCatalogFamilies(),
+    );
+    void reportDevWrapperListening({
+      host: "127.0.0.1",
+      port: info.port,
+    }).catch((error) => {
+      console.error(
+        "[DevWrapper] Failed to report acquired localhost bind:",
+        error,
       );
-      void reportDevWrapperListening({
-        host: "127.0.0.1",
-        port: info.port,
-      }).catch((error) => {
-        console.error(
-          "[DevWrapper] Failed to report acquired localhost bind:",
-          error,
-        );
-      });
-      // Write port to file if requested (for test harnesses)
-      if (config.portFile) {
-        fs.writeFileSync(config.portFile, String(info.port));
-      }
+    });
+    // Write port to file if requested (for test harnesses)
+    if (config.portFile) {
+      fs.writeFileSync(config.portFile, String(info.port));
+    }
 
-      const serverUrl = `${serverProtocol}://127.0.0.1:${info.port}`;
-      if (desktopBootstrapService && !desktopReadySent) {
-        desktopReadySent = true;
-        process.stdout.write(
-          `YEP_DESKTOP_READY ${JSON.stringify({
-            protocol: DESKTOP_BOOTSTRAP_PROTOCOL_VERSION,
-            port: info.port,
-          })}\n`,
-        );
-      }
-      console.log(`Server URL: ${serverUrl}`);
-      console.log(`Server running at ${serverUrl}`);
-      console.log(`Projects dir: ${config.claudeProjectsDir}`);
-      console.log(`Permission mode: ${config.defaultPermissionMode}`);
-      startSpeechBackendInitialization();
+    const serverUrl = `${serverProtocol}://127.0.0.1:${info.port}`;
+    if (desktopBootstrapService && !desktopReadySent) {
+      desktopReadySent = true;
+      process.stdout.write(
+        `YEP_DESKTOP_READY ${JSON.stringify({
+          protocol: DESKTOP_BOOTSTRAP_PROTOCOL_VERSION,
+          port: info.port,
+        })}\n`,
+      );
+    }
+    console.log(`Server URL: ${serverUrl}`);
+    console.log(`Server running at ${serverUrl}`);
+    console.log(`Projects dir: ${config.claudeProjectsDir}`);
+    console.log(`Permission mode: ${config.defaultPermissionMode}`);
+    startSpeechBackendInitialization();
 
-      if (config.openBrowser) {
-        const platform = os.platform();
-        let cmd: string;
-        let args: string[];
-        if (platform === "darwin") {
-          cmd = "open";
-          args = [serverUrl];
-        } else if (platform === "win32") {
-          cmd = "cmd";
+    if (config.openBrowser) {
+      const platform = os.platform();
+      let cmd: string;
+      let args: string[];
+      if (platform === "darwin") {
+        cmd = "open";
+        args = [serverUrl];
+      } else if (platform === "win32") {
+        cmd = "cmd";
+        args = ["/c", "start", "", serverUrl];
+      } else {
+        // Detect WSL: use cmd.exe to open in Windows browser
+        let isWsl = false;
+        try {
+          isWsl = fs
+            .readFileSync("/proc/version", "utf-8")
+            .toLowerCase()
+            .includes("microsoft");
+        } catch {}
+        if (isWsl) {
+          cmd = "cmd.exe";
           args = ["/c", "start", "", serverUrl];
         } else {
-          // Detect WSL: use cmd.exe to open in Windows browser
-          let isWsl = false;
-          try {
-            isWsl = fs
-              .readFileSync("/proc/version", "utf-8")
-              .toLowerCase()
-              .includes("microsoft");
-          } catch {}
-          if (isWsl) {
-            cmd = "cmd.exe";
-            args = ["/c", "start", "", serverUrl];
-          } else {
-            cmd = "xdg-open";
-            args = [serverUrl];
-          }
+          cmd = "xdg-open";
+          args = [serverUrl];
         }
-        execFile(cmd, args, (err) => {
-          if (err) {
-            console.warn(`Could not open browser: ${err.message}`);
-          }
-        });
       }
-
-      // Notify all connected clients that the backend has restarted
-      // This allows other tabs to clear their "reload needed" banner
-      eventBus.emit({
-        type: "backend-reloaded",
-        timestamp: new Date().toISOString(),
+      execFile(cmd, args, (err) => {
+        if (err) {
+          console.warn(`Could not open browser: ${err.message}`);
+        }
       });
-    },
-    { fatalOnError: true },
+    }
+
+    // Notify all connected clients that the backend has restarted
+    // This allows other tabs to clear their "reload needed" banner
+    eventBus.emit({
+      type: "backend-reloaded",
+      timestamp: new Date().toISOString(),
+    });
+  };
+  await networkListeners.start(
+    effectivePort,
+    startupReady,
+    startupNetworkHost
+      ? { host: startupNetworkHost, port: startupNetworkPort ?? effectivePort }
+      : null,
   );
 
-  // Start network socket if enabled in saved settings (and not CLI-overridden)
-  const networkConfig = networkBindingService.getNetworkConfig();
-  if (
-    networkConfig.enabled &&
-    networkConfig.host &&
-    !networkBindingService.isNetworkOverridden()
-  ) {
-    const networkPort = networkConfig.port ?? effectivePort;
-    await onNetworkBindingChange({
-      host: networkConfig.host,
-      port: networkPort,
+  if (startupNetworkHost && !networkListeners.current().network) {
+    const { localhostPort } = networkListeners.current();
+    const bound = await networkListeners.apply({
+      localhostPort,
+      network: {
+        host: startupNetworkHost,
+        port: startupNetworkPort ?? localhostPort,
+      },
     });
-    markStartup("network socket bound from settings");
+    if (!bound.success)
+      console.error(
+        `[NetworkBinding] ${cliNetworkHost ? "--host" : "Saved network"} socket not bound: ${bound.error}`,
+      );
+    markStartup(
+      cliNetworkHost
+        ? "network socket bound from CLI override"
+        : "network socket bound from settings",
+    );
   }
 
-  // If CLI host override was specified (not localhost), also bind to that interface
-  // This handles the case where user runs `yepanywhere --host 0.0.0.0`
-  if (
-    config.cliHostOverride &&
-    config.host !== "127.0.0.1" &&
-    config.host !== "localhost"
-  ) {
-    await onNetworkBindingChange({ host: config.host, port: effectivePort });
-    markStartup("network socket bound from CLI override");
-  }
+  // Routes change the listeners only once startup has finished binding them.
+  networkBindingCallbackHolder.listeners = networkListeners;
 
   // Start maintenance server on separate port (for out-of-band diagnostics)
   // This runs independently from the main server and can be used to debug
@@ -2009,9 +1831,6 @@ async function startServer() {
       `- ${timing.phase}: +${timing.deltaMs}ms (total ${timing.elapsedMs}ms)`,
     );
   }
-
-  // Export callbacks for use by API routes (via app options)
-  return { onLocalhostPortChange, onNetworkBindingChange };
 }
 
 startServer().catch((error) => {

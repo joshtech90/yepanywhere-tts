@@ -48,7 +48,13 @@ export interface SessionAccessResolverDeps {
       updatedAt?: string;
     }>
   >;
-  /** In-memory publication identity; never scans or refreshes provider stores. */
+  /** Persisted creation resources; only a bound native row may supply activity. */
+  getCreationSession?: (
+    sessionId: string,
+  ) =>
+    | { projectId: string; provider: string; nativeBound?: boolean }
+    | undefined;
+  /** Compact publication identity; never scans or refreshes provider stores. */
   getCatalogVersion?: () => string | undefined;
   /** Session metadata: the user recorded at creation and the sandbox level. */
   getSessionMetadata: (sessionId: string) =>
@@ -165,14 +171,18 @@ export class SessionAccessResolver {
   async resolve(sessionId: string): Promise<SessionAccessFacts | null> {
     const metadata = this.deps.getSessionMetadata(sessionId);
     const live = this.deps.getLiveSession(sessionId);
-    if (this.needsCatalog(sessionId, live)) {
+    const saved = live ? undefined : this.deps.getCreationSession?.(sessionId);
+    if (
+      (!saved || saved.nativeBound === true) &&
+      this.needsCatalog(sessionId, live)
+    ) {
       await this.refreshCatalog();
       // A publication can race the shared read. Join one replacement read,
       // then fail closed if publications still outpace it; never chase an
       // unbounded sequence of generations on a foreground request.
       if (!this.catalogIsCurrent()) await this.refreshCatalog();
     }
-    return this.factsFrom(sessionId, metadata, live);
+    return this.factsFrom(sessionId, metadata, live, saved);
   }
 
   /**
@@ -183,7 +193,11 @@ export class SessionAccessResolver {
    */
   resolveKnown(sessionId: string): SessionAccessFacts | null {
     const live = this.deps.getLiveSession(sessionId);
-    if (this.needsCatalog(sessionId, live)) {
+    const saved = live ? undefined : this.deps.getCreationSession?.(sessionId);
+    if (
+      (!saved || saved.nativeBound === true) &&
+      this.needsCatalog(sessionId, live)
+    ) {
       this.refreshCatalog().catch((error: unknown) => {
         console.warn("[SessionAccess] Session catalog read failed:", error);
       });
@@ -192,6 +206,7 @@ export class SessionAccessResolver {
       sessionId,
       this.deps.getSessionMetadata(sessionId),
       live,
+      saved,
     );
   }
 
@@ -199,6 +214,7 @@ export class SessionAccessResolver {
     sessionId: string,
     metadata: ReturnType<SessionAccessResolverDeps["getSessionMetadata"]>,
     live: ReturnType<SessionAccessResolverDeps["getLiveSession"]>,
+    saved?: { projectId: string; provider: string; nativeBound?: boolean },
   ): SessionAccessFacts | null {
     const row = this.catalogFacts(sessionId);
     if (live) {
@@ -215,6 +231,17 @@ export class SessionAccessResolver {
     const sandboxed =
       metadata?.sandboxLevel === "project-write" &&
       metadata.sandboxNetworkFirewall !== false;
+    // The current YA resource wins over a cached native spelling with the
+    // same id. Its saved timestamp is never native activity or join freshness.
+    if (saved) {
+      return {
+        projectId: metadata?.workingProjectId ?? saved.projectId,
+        provider: saved.provider,
+        lastActivityMs: saved.nativeBound ? (row?.updatedAtMs ?? null) : null,
+        createdByUser: metadata?.createdByUser,
+        sandboxed,
+      };
+    }
     if (!row) {
       // A pinned project still identifies an otherwise unknown session.
       if (metadata?.workingProjectId) {

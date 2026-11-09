@@ -15,10 +15,11 @@ and architecture-mandates.md.
 Dated probes, version-by-version refresh notes, and implementation chronology
 live in [`grok.evidence.md`](grok.evidence.md).
 
-## Current contract (1.0.4)
+## Current contract
 
-Installed `grok 1.0.4` is the current local target.
-`yepAnywhere.grokCli.compatibleThroughVersion` records that version.
+The audited-through target is Grok 1.0.70, recorded by
+`yepAnywhere.grokCli.compatibleThroughVersion` and the native fixture pin.
+Older dated probes remain evidence for their explicitly named versions.
 
 **ACP is the embedding path.** YA launches
 `grok agent [--effort] [-m] --no-leader stdio` through the existing
@@ -34,7 +35,7 @@ installation still wins before PATH, and explicit `grokPath` remains
 authoritative. This is discovery compatibility, not support for unrelated npm
 Grok packages.
 
-**Default model is `grok-4.7`** (Grok 1.0.67), alongside
+**Default model is `grok-4.7`** (Grok 1.0.70), alongside
 `grok-4.7-build-fast`, `grok-4.6` and `grok-4.5`, each defaulting to `high`
 effort. `getAvailableModels()` follows `grok models` (`*` / `-` rows) and
 enriches from `GROK_HOME/models_cache.json`. It hardcodes no model, so an
@@ -45,9 +46,10 @@ the discovered default.
 
 **`AGENTCTL_SESSION_ID` is published to Grok tool shells.** YA installs
 the same `BASH_ENV` session-id bridge Claude and Codex use. Resume
-seeds the id in the spawned `grok` environment before startup. A new
-session writes it as soon as `session/new` returns the native id, before
-the first user-turn tool shells. Agents must not search
+seeds the public id in the spawned `grok` environment before startup when
+supplied. Native attachment preserves that public id, including later tool
+shells. A legacy new session without a public bootstrap still publishes its
+returned native handle before the first user-turn tool shells. Agents must not search
 `~/.grok/sessions/` to recover a YA-launched session id.
 
 **Continuation is `session/load` + `_meta.noReplay`.** Grok advertises
@@ -125,6 +127,81 @@ paths key the same rendered message on it — see
 [stream-durable-id-dedup](stream-durable-id-dedup.md) § Grok for the buffering
 rule that keeps the two sides grouping chunks alike, and for the user-turn
 pairing Grok's self-minted row identity forces.
+
+## Native source identity and observation
+
+Historical reads use the canonical native id from `summary.json:info.id` and
+its actual canonical sessions root. An older summary without that field uses
+its directory name. A different directory spelling cannot act as an alias or
+substitute another canonical resource for a stored native binding. The header cwd must belong to its encoded
+project directory. YA bindings retain their public id and original native
+project even after the working project changes; native roots with the same id
+remain distinct. Index entries also include the selected root/project.
+
+A missing `updates.jsonl` is a readable empty history, not permission to read
+another root. Focused client observation watches the summary and fixed native
+companions (`chat_history.jsonl`, `events.jsonl`, `updates.jsonl`) through the
+existing shared watcher. Creating the replay log after the first read triggers
+a public-id/working-project refresh without rewriting physical event paths.
+The last viewer releases observation. Retired readers discard pending results,
+including partial collections, and never repopulate their caches.
+
+Parent-scoped child reads require the parent's native subagent metadata and
+matching parent/child handles. A proven child created after discovery was
+cached may be read by one exact sibling lookup; an arbitrary same-project
+session is not a child. Child handles retain the existing nested route shape.
+
+Application child enrichment reads accepted profile SQLite facts immediately,
+independently of native acquisition. The native source checks the exact physical
+root, parent summary identity/project and each sidecar's explicit parent/child
+ids. A directory spelling alone cannot substitute another canonical id.
+Copied sidecars naming a different parent are partial evidence, not children of
+the fork. Missing sources and failed reads preserve previously accepted facts.
+An existing proved parent without a subagents directory can establish emptiness.
+Self-referential sidecars stay partial without blocking valid siblings; ordinary
+non-directory files are ignored. Older sidecars missing a structural id or
+naming only a legacy parent-directory spelling remain partial. The retained
+inline reader has its older tolerant behavior; this source qualifies 1.0.70.
+
+Acquisition reads bounded parent summaries and sidecars, never transcript
+bodies. Each JSON record has a 1 MiB limit; larger, unreadable or malformed
+records remain unavailable/partial, with known facts retained. Grok's sidecar
+contains the entire delegated prompt. SQL retains only structural ids and
+bounded descriptions/types, excluding the prompt, attempt id and child cwd.
+Child resources use the canonical global native sessions root, matching Grok's
+existing binding; they are not promoted into top-level YA sessions.
+
+One eligible global watcher feeds the bounded relationship coordinator through
+an internal registry channel. Raw Grok file events do not extend the client
+activity wire. The existing optional child projection and metadata-change event
+carry accepted updates. Watcher baseline handover closes deferred-start gaps;
+file/root aliases are re-proved before use. Child body changes stat activity
+without replay, structural SQL writes or metadata broadcasts. Relative or
+escaped child locations do not grant an activity read outside the native store.
+Explicit detail demand also reconciles roots outside the configured watcher.
+A failed first header observation owns a lexical event candidate, so later
+native persistence can recover it without another request. The candidate grants
+no proof. Metadata-corrected child locations replace activity locators even when
+the new file is backdated; invalid locations retain known facts and historical
+timestamps while dropping the stale locator.
+Other legacy catalog/child-exclusion readers remain tracked in
+[plan 176](../docs/tactical/176-durable-session-relationships.md).
+
+Image/video source permission follows the bound native session's actual
+`images/` and `videos/` directories. It does not reconstruct a path from the YA
+id, working directory or ambient Grok root. A returned handle remains fetchable
+from an existing empty working project. Session authorization and ordinary
+file allow-list checks still apply; a foreign native root gains no permission.
+See [session media handles](session-media-handles.md).
+
+Scoped cold continuation validates the actual local `GROK_HOME/sessions`
+namespace and original physical project before CLI effects or bridge allocation.
+Native load/control uses the native handle; YA events and tool environment keep
+the public identity. Relative native-home overrides and changed working-project
+overlays refuse this scoped launch, while historical reads remain available.
+Load rejection sends no prompt and never allocates a replacement conversation.
+See [retained ACP ownership](provider-abstraction.md#retained-acp-continuation-and-teardown)
+for pending-request cancellation and verified child teardown.
 
 ## Tool vocabulary
 
@@ -212,7 +289,7 @@ agent-loop reference; compare its package version and `SOURCE_REV`
 against `grok --version` before treating a source finding as evidence
 for the installed patch.
 
-<!-- epistemic status: installed 1.0.67 binary + no-token ACP
-initialize/session/new/session/load (grok-4.7 default, high) as of
-2026-10-23; public xai-org/grok-build 1.0.45 source last checked 2026-10-16;
-no live prompt on 1.0.67; provider remains gated -->
+<!-- epistemic status: installed 1.0.70 binary + no-token ACP
+initialize/session/new/session/load (grok-4.7 default, high) and the five
+native scenarios as of 2026-11-04; public xai-org/grok-build 1.0.45 source
+last checked 2026-11-04; no live prompt on 1.0.70; provider remains gated -->

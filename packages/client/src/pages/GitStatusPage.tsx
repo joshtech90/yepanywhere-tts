@@ -25,6 +25,8 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { GitActionFeedback } from "../components/GitActionFeedback";
 import { ProjectSelector } from "../components/ProjectSelector";
+import { Button, IconButton } from "../components/ui/Button";
+import { Popover } from "../components/ui/Popover";
 import { GlossaryProjectBoundary } from "../contexts/GlossaryContext";
 import { SourceReviewDefaultSessionContext } from "../contexts/SourceReviewDefaultSessionContext";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
@@ -418,9 +420,8 @@ function SourceHeaderControls({
         disabled={gitActions.isRunning}
       />
       {onToggleWorktreePaused && (
-        <button
-          type="button"
-          className="git-status-action-button"
+        <Button
+          size="small"
           aria-pressed={worktreePaused}
           title={
             worktreePaused
@@ -437,7 +438,7 @@ function SourceHeaderControls({
               ? t("sourceResumeLiveUpdates")
               : t("sourcePauseLiveUpdates")}
           </span>
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -483,9 +484,9 @@ function SourceActionButton({
   }, [tone, feedback]);
   const showOutcome = recent && tone !== null && feedback !== "";
   return (
-    <button
-      type="button"
-      className={`git-status-action-button ${className} ${
+    <Button
+      size="small"
+      className={`${className} ${
         showOutcome ? `git-status-action-${tone}` : ""
       } ${running ? "git-status-action-running" : ""}`}
       title={feedbackTitle}
@@ -511,7 +512,7 @@ function SourceActionButton({
         )}
       </span>
       <span className={styles.actionLabel}>{label}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -674,6 +675,7 @@ export function GitStatusPage() {
   } = useGitStatus(effectiveProjectId, {
     omitUntracked: supportsWorkingTreeSections,
     useUntrackedCache: !supportsWorkingTreeSections,
+    fresh: true,
   });
   const liveWorktreeEnabled = Boolean(
     effectiveProjectId &&
@@ -980,14 +982,13 @@ function GitStatusContent({
   const projectionNotice = projectionRequestError ? (
     <div className="source-projection-notice" role="alert">
       <span>{projectionRequestError}</span>
-      <button
-        type="button"
-        className="source-projection-notice-dismiss"
-        aria-label={t("sourceDismissProjectionError")}
+      <IconButton
+        label={t("sourceDismissProjectionError")}
+        size="small"
         onClick={() => setProjectionRequestError(null)}
       >
         ×
-      </button>
+      </IconButton>
     </div>
   ) : null;
   // Bridge a commit file to its blame-at-HEAD view: switch to the files tab
@@ -1265,18 +1266,31 @@ function GitIntegrationOptionsPanel({
 }
 
 function GitIntegrationOptionsHelp({ t }: { t: TranslationFn }) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   return (
-    <details className="git-integration-help">
-      <summary
-        aria-label={t("gitStatusAutoHelpLabel")}
-        title={t("gitStatusAutoHelpLabel")}
+    <>
+      <IconButton
+        ref={triggerRef}
+        size="small"
+        label={t("gitStatusAutoHelpLabel")}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
       >
-        ?
-      </summary>
-      <div className="git-integration-help-popover">
-        {t("gitStatusAutoHelp")}
-      </div>
-    </details>
+        <span aria-hidden="true">?</span>
+      </IconButton>
+      <Popover
+        open={open}
+        onClose={() => setOpen(false)}
+        anchorRef={triggerRef}
+        placement="bottom-end"
+        role="dialog"
+        aria-label={t("gitStatusAutoHelpLabel")}
+      >
+        <p className={styles.integrationHelp}>{t("gitStatusAutoHelp")}</p>
+      </Popover>
+    </>
   );
 }
 

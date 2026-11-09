@@ -50,7 +50,7 @@ for (const viewport of [
     await expect(showThinking).toBeVisible({ timeout: 10_000 });
     await expect(suggestions).toBeVisible();
     await expect(recap).toBeVisible({ timeout: 10_000 });
-    await recap.getByRole("button", { name: "Forked" }).click();
+    await recap.getByRole("radio", { name: "Forked" }).click();
 
     const duration = page.locator(".recap-after-seconds-control--inline");
     const seconds = duration.getByRole("spinbutton", {
@@ -162,10 +162,13 @@ for (const viewport of [
     );
 
     const showThinkingPicker = showThinking.locator(
-      'button[aria-haspopup="listbox"]',
+      'button[aria-haspopup="menu"]',
     );
     await showThinkingPicker.click();
-    await page.getByRole("dialog").getByRole("button", { name: "On" }).click();
+    await page
+      .getByRole("menu")
+      .getByRole("menuitemradio", { name: "On" })
+      .click();
     await expect(showThinkingPicker).toContainText("On");
 
     await page.reload();

@@ -18,6 +18,19 @@ Status: corrected in current source after `0.7.0`; no stable npm release
 contains the storage-location setting yet. The release history below explains
 the missing-capability warning for older servers.
 
+## Initial-session admission
+
+[Durable creation](session-identity.md#creation-consolidation--november-3) seals
+staged or retained raw initial files and inline images before accepting the
+session. Accepted claims outlive draft/Queue cleanup and materialize beneath the
+permanent YA id before native dispatch. Limited raw paths must belong to that
+account's staged draft. Inline images are bounded to 32 MiB decoded in total,
+ordinary files to 64 MiB each, and the combined selection to 64; the existing
+2 GiB/profile claim bound applies. Unsupported native inline-image adapters
+save failure before effects. Literal document references retain text semantics.
+Template preparation uses this same claim owner. Older-server client fallback
+and public staged capability 146 keep their existing restricted meanings.
+
 ## Why Attachments Are Stored
 
 Pre-session drafts are isolated by acting account. Limited-user draft uploads,
@@ -33,7 +46,9 @@ items keep their staged attachments in the queuing account's store
 On servers advertising `draft-sync-v1`, completed staging references follow
 [draft synchronization](draft-synchronization.md). Current synced references and
 their seven-day release grace protect originals from deletion and staging TTL.
-Queue transfer copies protected originals; a draft may reference several batches
+Queue transfer copies originals whenever draft synchronization is initialized,
+including a reference whose draft publication is still in flight; unpublished
+originals keep the normal staging TTL. A draft may reference several batches
 owned by the same account. Upload progress and unfinished bytes remain local to
 the uploading device.
 
@@ -216,6 +231,37 @@ share-scoped file route and bearer secret; the client keeps
 attachment-shaped `~/` or absolute paths as the share `path` instead of
 dropping them as outside-project. The share still does not grant
 `/etc/passwd` or other app-data files just because they were mentioned.
+
+## Durable initial attachments
+
+For the qualified owner Claude/Codex creation workflow, immutable input bundles
+live in app-data `uploads/creation-inputs/`, outside draft staging and its TTL.
+The common [creation owner](session-identity.md#selected-ownership-boundary)
+commits their path-free metadata/digest claim with the accepted prompt and YA id.
+Clients submit staged references, never arbitrary server file paths. Validation
+uses the authenticated staging account and canonical metadata. Several batches
+from that account are allowed; another account's ids confer no access.
+
+Provider startup follows materialization under that saved YA id using the normal
+location policy. Queue completion or draft cleanup cannot expire accepted bytes.
+Pre-effect failure retains the claim for explicit retry; partial copies publish
+atomically and equal-sized changed files refuse delivery. Profile claims are
+limited to 2 GiB and 64 files per creation; refusal preserves the source draft.
+Deletion releases the logical claim. Unclaimed bundles/partial directories older
+than seven days are reclaimed on the first attachment creation after process
+startup, with no per-session cleanup loop. Final transcript attachment retention
+remains governed below. This is not an immediate deletion or periodic retention
+promise.
+
+The exact optional capability `session-creation-staged-attachments` (146), plus
+the selected provider's text-creation bit, gates this request. Supported released
+servers in the existing creation compatibility audit lack it, so newer clients
+retain create/materialize/send there. No new staged field or acceptance claim
+is sent on that fallback. An explicit `creation-not-accepted` refusal allows a
+corrected submission without clearing its files or text; ambiguous failures keep
+the original recovery identity. Newer unfinished file pastes also survive
+acceptance of an earlier selection. Other retained launch shapes still use their existing
+flow pending the consolidation ledger.
 
 ## Retention And Cleanup
 

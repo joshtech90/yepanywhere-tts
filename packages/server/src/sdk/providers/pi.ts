@@ -1,3 +1,10 @@
+import {
+  fromUrlProjectId,
+  parseNativeSessionId,
+  toUrlProjectId,
+} from "@yep-anywhere/shared";
+import { resolveNativeSessionRef } from "../../sessions/SessionIdentityStore.js";
+import { assertProviderForkSource } from "./types.js";
 /**
  * pi provider — Plan A: subprocess RPC mode (`pi --mode rpc`).
  *
@@ -16,7 +23,10 @@
 
 import { type ChildProcess, exec, execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { realpath } from "node:fs/promises";
+import { nativeStorageScope } from "./native-storage-scope.js";
+import { readFirstLine } from "../../utils/jsonl.js";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -68,7 +78,8 @@ import type {
   AgentProvider,
   AgentSession,
   AuthStatus,
-  ProviderForkBoundary,
+  ProviderForkOptions,
+  ProviderForkResult,
   StartSessionOptions,
 } from "./types.js";
 
@@ -239,7 +250,11 @@ function parsePiModelSelection(
 }
 
 function isProcessStillAlive(proc: ChildProcess): boolean {
-  return !proc.killed && proc.exitCode === null && proc.signalCode === null;
+  return (
+    typeof proc.pid === "number" &&
+    proc.exitCode === null &&
+    proc.signalCode === null
+  );
 }
 
 function mapPiUsage(usage: unknown): {
@@ -271,6 +286,8 @@ function mapPiUsage(usage: unknown): {
 export class PiProvider implements AgentProvider {
   readonly name = "pi" as const;
   readonly displayName = "pi";
+  readonly supportsNativeResumeSource = true;
+  readonly supportsInlineImages = true;
   // pi runs tools autonomously; the YA approval bridge (tool_execution_start
   // "can block" hook over extension_ui_request) is a documented follow-up, so
   // YA permission modes do not yet gate pi tools.
@@ -395,8 +412,135 @@ export class PiProvider implements AgentProvider {
     }));
   }
 
+  private async nativeResumeFile(
+    options: StartSessionOptions,
+    env: NodeJS.ProcessEnv,
+  ): Promise<string | undefined> {
+    const source = options.nativeResumeSource;
+    if (!source) return undefined;
+    if (!options.resumeSessionId || !source.filePath)
+      throw new Error(
+        "Pi continuation requires its native id and session file",
+      );
+    assertProviderForkSource(
+      {
+        nativeSessionId: parseNativeSessionId(options.resumeSessionId),
+        nativeSource: source,
+      },
+      this.name,
+    );
+    if (options.executor || options.sessionSandbox)
+      throw new Error(
+        "Pi scoped continuation requires its local session store",
+      );
+    // homedir() below describes this process. Do not certify it as the child's
+    // namespace if remoteEnv changes its native home resolution.
+    for (const [key, value] of Object.entries(options.remoteEnv ?? {})) {
+      const name = process.platform === "win32" ? key.toUpperCase() : key;
+      if (
+        (name === "HOME" || name === "USERPROFILE") &&
+        value !== process.env[name]
+      ) {
+        throw new Error("Pi continuation cannot change its native home");
+      }
+    }
+    const cwd = await realpath(options.cwd);
+    const expandHome = (value: string) =>
+      value.replace(/^~(?=$|[/\\])/, homedir());
+    const agentDir = resolve(
+      cwd,
+      expandHome(env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent")),
+    );
+    const root = await realpath(join(agentDir, "sessions"));
+    if (root !== source.native.storageScope)
+      throw new Error("Pi continuation is outside the launch session store");
+    const file = await realpath(source.filePath);
+    const inside = (parent: string) => {
+      const part = relative(parent, file);
+      return (
+        part !== "" &&
+        part !== ".." &&
+        !part.startsWith(".." + (process.platform === "win32" ? "\\" : "/")) &&
+        !isAbsolute(part)
+      );
+    };
+    if (!inside(root))
+      throw new Error("Pi continuation file is outside its native namespace");
+    if (
+      env.PI_CODING_AGENT_SESSION_DIR &&
+      !inside(
+        await realpath(
+          resolve(cwd, expandHome(env.PI_CODING_AGENT_SESSION_DIR)),
+        ),
+      )
+    )
+      throw new Error(
+        "Pi continuation file conflicts with the configured session directory",
+      );
+    if ((await realpath(fromUrlProjectId(source.projectId))) !== cwd)
+      throw new Error(
+        "Pi continuation cannot change its native working project",
+      );
+    const line = await readFirstLine(file, 1024 * 1024);
+    if (!line)
+      throw new Error(
+        "Pi continuation requires a bounded native session header",
+      );
+    const header = JSON.parse(line);
+    if (
+      header?.type !== "session" ||
+      header.id !== source.native.id ||
+      typeof header.cwd !== "string" ||
+      !isAbsolute(header.cwd) ||
+      (await realpath(header.cwd)) !== cwd
+    )
+      throw new Error(
+        "Pi continuation header does not match its native address/project",
+      );
+    return file;
+  }
+
+  async getNewSessionNamespace(cwd: string) {
+    const agentDir = (
+      process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent")
+    ).replace(/^~(?=$|[/\\])/, homedir());
+    const storageScope = await nativeStorageScope(
+      resolve(await realpath(cwd), agentDir, "sessions"),
+    );
+    const readerRoot =
+      this.sessionsDir ??
+      process.env.PI_SESSIONS_DIR ??
+      join(homedir(), ".pi", "agent", "sessions");
+    if (
+      readerRoot &&
+      (await nativeStorageScope(resolve(cwd, readerRoot))) !== storageScope
+    )
+      throw new Error(
+        "Pi creation requires the reader and native session store to match",
+      );
+    return { family: "pi" as const, storageScope };
+  }
+
   async startSession(options: StartSessionOptions): Promise<AgentSession> {
     const log = getLogger();
+    const env = stripYaControlPlaneCredentials({
+      ...process.env,
+      ...options.remoteEnv,
+    });
+    if (options.publicSessionId && !options.resumeSessionId) {
+      if (
+        env.PI_CODING_AGENT_DIR !== process.env.PI_CODING_AGENT_DIR ||
+        env.PI_CODING_AGENT_SESSION_DIR !==
+          process.env.PI_CODING_AGENT_SESSION_DIR ||
+        env.HOME !== process.env.HOME ||
+        env.USERPROFILE !== process.env.USERPROFILE
+      )
+        throw new Error(
+          "Pi creation cannot change its native storage environment",
+        );
+      await this.getNewSessionNamespace(options.cwd);
+    }
+    const resumeFile = await this.nativeResumeFile(options, env);
     const piTarget = await this.findPiLaunchTarget();
     if (!piTarget) {
       return this.errorSession("pi CLI not found");
@@ -413,7 +557,7 @@ export class PiProvider implements AgentProvider {
       args.push("--model", options.model);
     }
     if (options.resumeSessionId) {
-      args.push("--session", options.resumeSessionId);
+      args.push("--session", resumeFile ?? options.resumeSessionId);
     }
 
     let proc: ChildProcess;
@@ -421,10 +565,7 @@ export class PiProvider implements AgentProvider {
       proc = spawn(piTarget.command, buildPiLaunchArgs(piTarget, args), {
         cwd: options.cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: stripYaControlPlaneCredentials({
-          ...process.env,
-          ...options.remoteEnv,
-        }),
+        env,
       });
     } catch (error) {
       return this.errorSession(
@@ -439,18 +580,51 @@ export class PiProvider implements AgentProvider {
     const client = new PiRpcClient(proc);
 
     // Resolve the pi session id synchronously (relative to Supervisor startup)
-    // so waitForSessionId() resolves on the first init yield.
+    // so the first init yield carries the native binding.
     let sessionId: string;
     try {
       const state = await client.request({ type: "get_state" }, 10000);
       if (!state.success) {
         throw new Error(state.error ?? "get_state failed");
       }
-      sessionId = (state.data as PiSessionState).sessionId;
+      sessionId = parseNativeSessionId(
+        (state.data as PiSessionState).sessionId,
+      );
+      if (options.publicSessionId && !options.resumeSessionId) {
+        const namespace = await this.getNewSessionNamespace(options.cwd);
+        const file = (state.data as PiSessionState).sessionFile;
+        if (typeof file !== "string")
+          throw new Error("Pi creation requires a native session file");
+        const nativeFile = await nativeStorageScope(resolve(options.cwd, file));
+        const part = relative(namespace.storageScope, nativeFile);
+        if (
+          !part ||
+          part === ".." ||
+          part.startsWith(".." + (process.platform === "win32" ? "\\" : "/")) ||
+          isAbsolute(part) ||
+          // PiSessionReader enumerates exactly root/<project>/*.jsonl.
+          part.split(sep).length !== 2 ||
+          !part.endsWith(".jsonl")
+        )
+          throw new Error(
+            "Pi created outside the discoverable launch session store",
+          );
+      }
+      if (resumeFile) {
+        const current = state.data as PiSessionState;
+        if (
+          current.sessionId !== options.resumeSessionId ||
+          typeof current.sessionFile !== "string" ||
+          (await realpath(resolve(options.cwd, current.sessionFile))) !==
+            resumeFile
+        )
+          throw new Error("Pi opened a different native session file or id");
+      }
     } catch (error) {
       proc.kill("SIGTERM");
       return this.errorSession(
         `pi session did not start: ${error instanceof Error ? error.message : String(error)}`,
+        proc,
       );
     }
     log.info({ sessionId, cwd: options.cwd }, "pi RPC session ready");
@@ -489,7 +663,11 @@ export class PiProvider implements AgentProvider {
     return {
       iterator,
       queue,
-      abort: () => abortController.abort(),
+      abort: () => {
+        // The consumer may abort before its first iterator pull installs hooks.
+        proc.kill("SIGTERM");
+        abortController.abort();
+      },
       // Graceful turn interrupt: stop the in-flight turn but keep the process.
       interrupt: async () => {
         try {
@@ -509,13 +687,13 @@ export class PiProvider implements AgentProvider {
       setModel: async (model?: string) => {
         const sel = parsePiModelSelection(model);
         if (!sel) return;
-        await client
-          .request({
-            type: "set_model",
-            provider: sel.provider,
-            modelId: sel.modelId,
-          })
-          .catch(() => {});
+        const response = await client.request({
+          type: "set_model",
+          provider: sel.provider,
+          modelId: sel.modelId,
+        });
+        if (!response.success)
+          throw new Error(response.error ?? "Pi rejected the model selection");
       },
       runProviderCommand: (command, argument) =>
         this.runProviderCommand(client, command, argument),
@@ -526,13 +704,8 @@ export class PiProvider implements AgentProvider {
     };
   }
 
-  async forkSession(options: {
-    sessionId: string;
-    cwd: string;
-    upToMessageId?: string;
-    boundary?: ProviderForkBoundary;
-    title?: string;
-  }): Promise<{ sessionId: string; filePath: string }> {
+  async forkSession(options: ProviderForkOptions): Promise<ProviderForkResult> {
+    assertProviderForkSource(options, this.name);
     if (options.boundary && options.boundary.kind !== "entry") {
       throw new Error("Pi fork requires an entry boundary");
     }
@@ -540,9 +713,28 @@ export class PiProvider implements AgentProvider {
       sessionsDir: this.sessionsDir,
       projectPath: options.cwd,
     });
-    const sourcePath = await reader.getSessionFilePath(options.sessionId);
-    if (!sourcePath) {
-      throw new Error(`Pi session ${options.sessionId} was not found`);
+    const sourcePath =
+      options.nativeSource?.filePath ??
+      (await reader.getSessionFilePath(options.nativeSessionId));
+    const sourceNative =
+      options.nativeSource?.native ??
+      (await reader.getNativeSessionRef(options.nativeSessionId));
+    if (!sourcePath || !sourceNative) {
+      throw new Error(`Pi session ${options.nativeSessionId} was not found`);
+    }
+    if (options.nativeSource) {
+      const launchRoot = join(
+        process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"),
+        "sessions",
+      );
+      if (
+        (await realpath(launchRoot).catch(() => undefined)) !==
+          sourceNative.storageScope ||
+        options.nativeSource.projectId !== toUrlProjectId(options.cwd)
+      )
+        throw new Error(
+          "Pi copy source is outside the launch transcript store or project; scoped resume is not qualified",
+        );
     }
     const fork = await forkPiSessionFile({
       sourcePath,
@@ -552,7 +744,17 @@ export class PiProvider implements AgentProvider {
           ? options.boundary.entryId
           : options.upToMessageId,
     });
-    return fork;
+    const nativeChildId = parseNativeSessionId(fork.sessionId);
+    return {
+      nativeSessionId: nativeChildId,
+      filePath: fork.filePath,
+      native: await resolveNativeSessionRef(
+        "pi",
+        sourceNative.storageScope,
+        nativeChildId,
+      ),
+      transcriptProjectId: toUrlProjectId(options.cwd),
+    };
   }
 
   /**
@@ -576,13 +778,31 @@ export class PiProvider implements AgentProvider {
         },
         120000,
       );
-      return r.success
-        ? { handled: true }
-        : { handled: true, error: r.error ?? "compact failed" };
+      if (!r.success)
+        return { handled: true, error: r.error ?? "compact failed" };
+      const data = r.data as Record<string, unknown> | undefined;
+      if (
+        !data ||
+        typeof data.summary !== "string" ||
+        !data.summary.trim() ||
+        typeof data.firstKeptEntryId !== "string" ||
+        !data.firstKeptEntryId ||
+        typeof data.tokensBefore !== "number" ||
+        !Number.isFinite(data.tokensBefore) ||
+        data.tokensBefore < 0
+      )
+        return {
+          handled: true,
+          error: "Pi compact returned invalid completion evidence",
+          uncertain: true,
+        };
+      // Pi persists the compaction and clears its busy state before replying.
+      return { handled: true, completion: "completed" };
     } catch (error) {
       return {
         handled: true,
         error: error instanceof Error ? error.message : String(error),
+        uncertain: true,
       };
     }
   }
@@ -649,6 +869,7 @@ export class PiProvider implements AgentProvider {
     const events: SDKMessage[] = [];
     let wake: (() => void) | null = null;
     let processExited = false;
+    const input = queue[Symbol.asyncIterator]();
     /** Whether a run started since the current turn's latest prompt send. */
     let runStartedSinceSend = false;
 
@@ -686,28 +907,33 @@ export class PiProvider implements AgentProvider {
     });
     const onExit = () => {
       processExited = true;
+      void input.return();
       wake?.();
     };
     proc.once("exit", onExit);
+    if (proc.exitCode != null || proc.signalCode != null) onExit();
 
     const abortHandler = () => {
       log.info({ sessionId }, "Aborting pi process");
       proc.kill("SIGTERM");
+      void input.return();
+      wake?.();
     };
     signal.addEventListener("abort", abortHandler);
-
-    // Init message — resolves waitForSessionId().
-    yield {
-      type: "system",
-      subtype: "init",
-      session_id: sessionId,
-      cwd: options.cwd,
-    } as SDKMessage;
+    if (signal.aborted) abortHandler();
 
     try {
+      // Keep startup inside the cleanup boundary: consumers can stop at init.
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: sessionId,
+        cwd: options.cwd,
+      } as SDKMessage;
+
       let isFirst = true;
-      for await (const message of queue) {
-        if (signal.aborted) break;
+      for await (const message of input) {
+        if (signal.aborted || processExited) break;
 
         let text = this.extractText(message);
         const images = this.extractImages(message);
@@ -767,6 +993,8 @@ export class PiProvider implements AgentProvider {
                 endTurn(response.error ?? "pi rejected the prompt");
                 return;
               }
+              if (message.uuid)
+                options.onNativeInputConsumed?.(sessionId, message.uuid);
               const disposition = (
                 response.data as { disposition?: unknown } | undefined
               )?.disposition;
@@ -855,9 +1083,10 @@ export class PiProvider implements AgentProvider {
       }
     } finally {
       unsubscribe();
+      await input.return();
       proc.off("exit", onExit);
       signal.removeEventListener("abort", abortHandler);
-      if (!proc.killed) {
+      if (proc.exitCode === null && proc.signalCode === null) {
         proc.kill("SIGTERM");
       }
     }
@@ -1179,14 +1408,19 @@ export class PiProvider implements AgentProvider {
     } as SDKMessage;
   }
 
-  private errorSession(errorMsg: string): AgentSession {
+  private errorSession(errorMsg: string, proc?: ChildProcess): AgentSession {
     const queue = new MessageQueue();
     return {
       iterator: (async function* () {
         yield { type: "error", error: errorMsg } as SDKMessage;
       })(),
       queue,
-      abort: () => {},
+      abort: () => {
+        proc?.kill("SIGTERM");
+      },
+      ...(proc
+        ? { pid: proc.pid, isProcessAlive: () => isProcessStillAlive(proc) }
+        : {}),
     };
   }
 

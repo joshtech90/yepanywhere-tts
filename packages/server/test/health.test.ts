@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { app } from "../src/app.js";
 import { countBusyProcesses } from "../src/routes/health.js";
-import { MockClaudeSDK, MockServerClaudeProvider } from "../src/sdk/mock.js";
+import { MockServerClaudeProvider } from "../src/sdk/mock.js";
+import { ScriptedClaudeProvider } from "./support/scripted-provider.js";
 import { createApp } from "./setup/create-app.js";
 
 describe("GET /health", () => {
@@ -15,7 +16,7 @@ describe("GET /health", () => {
   });
 
   it("allows macOS Tauri desktop origin in the full app", async () => {
-    const { app } = createApp({ sdk: new MockClaudeSDK() });
+    const { app } = createApp({ provider: new ScriptedClaudeProvider() });
     const res = await app.request("/health", {
       headers: { Origin: "tauri://localhost" },
     });
@@ -27,7 +28,7 @@ describe("GET /health", () => {
   });
 
   it("allows Windows Tauri desktop origin in the full app", async () => {
-    const { app } = createApp({ sdk: new MockClaudeSDK() });
+    const { app } = createApp({ provider: new ScriptedClaudeProvider() });
     const res = await app.request("/health", {
       headers: { Origin: "http://tauri.localhost" },
     });
@@ -54,8 +55,8 @@ describe("GET /health", () => {
     ]);
   });
 
-  it("keeps isolated mock-SDK apps out of provider discovery", async () => {
-    const { app } = createApp({ sdk: new MockClaudeSDK() });
+  it("keeps explicitly disabled apps out of provider discovery", async () => {
+    const { app } = createApp({ provider: null });
     const res = await app.request("/api/providers");
 
     expect(res.status).toBe(200);
@@ -65,7 +66,7 @@ describe("GET /health", () => {
 
 describe("GET /health/activity", () => {
   it("reports no busy sessions on a fresh server", async () => {
-    const { app } = createApp({ sdk: new MockClaudeSDK() });
+    const { app } = createApp({ provider: new ScriptedClaudeProvider() });
     const res = await app.request("/health/activity");
 
     expect(res.status).toBe(200);
@@ -73,7 +74,13 @@ describe("GET /health/activity", () => {
   });
 
   it("counts turns and pending input but not idle or ended sessions", () => {
-    const states = ["in-turn", "waiting-input", "idle", "terminated", "in-turn"];
+    const states = [
+      "in-turn",
+      "waiting-input",
+      "idle",
+      "terminated",
+      "in-turn",
+    ];
     const counts = countBusyProcesses({
       getAllProcesses: () => states.map((type) => ({ state: { type } })),
     });

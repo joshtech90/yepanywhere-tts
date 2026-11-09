@@ -51,28 +51,6 @@
   line-height: 1.35;
 }
 
-.advancedToggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-height: 2.25rem;
-  padding: 0.35rem 0.6rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--bg-code);
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.advancedToggle:hover,
-.advancedToggle[aria-expanded="true"] {
-  border-color: var(--app-yep-green);
-  color: var(--text-primary);
-}
-
 .selectedChoice {
   display: flex;
   align-items: center;
@@ -290,27 +268,7 @@
 }
 
 .captionToggle {
-  display: inline-grid;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  padding: 0;
   margin-inline-start: auto;
-  border: 1px solid var(--border-color);
-  border-radius: 50%;
-  background: var(--bg-surface);
-  color: var(--text-muted);
-  font: inherit;
-  font-size: var(--font-size-sm);
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.captionToggle:hover,
-.captionToggle[aria-pressed="true"] {
-  border-color: var(--app-yep-green);
-  color: var(--app-yep-green);
-  background: color-mix(in srgb, var(--app-yep-green) 9%, var(--bg-surface));
 }
 
 .optionCaption {
@@ -492,36 +450,80 @@
 
 .catalogAction {
   flex: none;
-  min-height: 2rem;
-  padding: 0.3rem 0.6rem;
+}
+
+.creationRecovery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  font: inherit;
-  font-weight: 600;
+  border-radius: 0.5rem;
+}
+
+.toolbarActions {
+  position: relative;
+}
+
+.shortcutsHelp {
+  flex-shrink: 0;
+}
+
+.shortcutsTrigger {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  list-style: none;
   cursor: pointer;
+  color: var(--text-muted);
 }
 
-.catalogStatusMuted .catalogAction {
-  border-color: transparent;
-  background: none;
-  color: inherit;
-  font-weight: inherit;
-  text-decoration: underline;
+.shortcutsTrigger::-webkit-details-marker {
+  display: none;
 }
 
-.catalogAction:hover:not(:disabled) {
-  border-color: var(--text-dimmed);
-  background: var(--bg-hover);
+.shortcutsQuestion {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
 }
 
-.catalogStatusMuted .catalogAction:hover:not(:disabled) {
-  background: none;
+.shortcutsTrigger:hover,
+.shortcutsTrigger:focus-visible {
   color: var(--text-primary);
 }
 
-.catalogAction:disabled {
-  cursor: wait;
-  opacity: 0.55;
+.shortcutsPopover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 60;
+  display: grid;
+  gap: var(--space-2);
+  width: min(300px, calc(100dvw - 32px));
+  padding: var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.28);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.shortcutsRow {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.shortcutsRow kbd {
+  font-family: var(--font-mono);
 }

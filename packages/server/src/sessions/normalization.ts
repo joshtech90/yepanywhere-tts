@@ -1,3 +1,4 @@
+import { claudeInputMessageIds } from "../sdk/providers/claude-delivery.js";
 import type {
   ClaudeSessionEntry,
   SessionRewindRecord,
@@ -430,6 +431,7 @@ export function normalizeSession(
         ...summary,
         messages: stampTurnIndexes(data.session.messages as Message[]),
       };
+    case "antigravity":
     case "pi":
       // pi messages are already normalized YA messages (PiSessionReader maps
       // the v3 JSONL tree), like grok — pass through.
@@ -499,6 +501,7 @@ function convertClaudeMessage(
   const rawAny = raw as Record<string, unknown>;
   const message: Message = {
     ...rawAny,
+    inputMessageIds: claudeInputMessageIds(raw),
     // Include normalized content if message had content
     ...(isConversationEntry(raw) && {
       message: {

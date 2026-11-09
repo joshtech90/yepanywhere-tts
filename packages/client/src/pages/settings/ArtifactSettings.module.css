@@ -9,31 +9,7 @@
   min-width: 0;
 }
 
-.fields label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.fields .toggle {
-  flex-direction: row;
-  align-items: center;
-}
-
-.vhostRow input:not([type="checkbox"]),
-.fields > label > input:not([type="checkbox"]) {
-  width: 100%;
-  box-sizing: border-box;
-  min-width: 0;
-  padding: 8px;
-  color: var(--text-primary);
-  background: var(--bg-input);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  font: inherit;
-}
-
-.fields p {
+.fields > p {
   margin: -4px 0 4px;
   color: var(--text-secondary);
   font-size: 13px;
@@ -47,14 +23,6 @@
 
 .fields button {
   align-self: flex-start;
-  min-height: 36px;
-  padding: 6px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-primary);
-  background: var(--bg-secondary);
-  font: inherit;
-  cursor: pointer;
 }
 
 .provider {
@@ -101,6 +69,12 @@
   line-height: 1.5;
 }
 
+.vhostIntro p,
+.password p {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
 .vhostRow {
   display: grid;
   border: 0;
@@ -112,22 +86,8 @@
   min-width: 0;
 }
 
-.vhostRow label {
-  min-width: 0;
-}
-
 .vhostRow button {
   align-self: end;
-}
-
-.vhostRow select {
-  min-height: 36px;
-  padding: 7px 8px;
-  color: var(--text-primary);
-  background: var(--bg-input);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  font: inherit;
 }
 
 .password {
@@ -187,23 +147,8 @@
   gap: 4px;
   min-width: 0;
 }
-.withLinkIcon input {
-  flex: 1 1 auto;
-}
 .linkIcon {
-  display: inline-flex;
   flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  color: var(--text-secondary);
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
 }
 .linkIconLabel {
   position: absolute;
@@ -214,16 +159,7 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.linkIcon:hover,
-.linkIcon:focus-visible {
-  color: var(--accent-color);
-  background: var(--bg-hover);
-}
 @container settings-collection (max-width: 560px) {
-  .linkIcon {
-    width: 44px;
-    height: 44px;
-  }
   .table th.linksHeader {
     width: 48px;
   }
@@ -244,7 +180,9 @@
    the word letter by letter. */
 .accessButton {
   max-width: 100%;
-  padding-inline: 6px;
+}
+.accessLabel {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -260,7 +198,7 @@
 .table .oauthBlocked > td {
   background: color-mix(in srgb, var(--error-color, #c44343) 12%, transparent);
 }
-.table .oauthBlocked button,
+.table .oauthBlocked .blockedToggle,
 .table .oauthBlocked small {
   color: var(--error-color, #c44343);
 }
@@ -284,11 +222,6 @@
 }
 
 @media (width <= 640px) {
-  .fields button,
-  .fields .toggle {
-    min-height: 44px;
-  }
-
   .vhostRow {
     grid-template-columns: 1fr;
   }

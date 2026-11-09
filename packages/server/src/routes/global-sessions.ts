@@ -1,3 +1,6 @@
+import { mergeCreationGlobalItems } from "./creation-session-collections.js";
+import type { ProviderChildRelationshipService } from "../sessions/ProviderChildRelationshipService.js";
+import { creationCollectionRows } from "../sessions/session-creation-view.js";
 /**
  * Global sessions route - returns all sessions across all projects.
  *
@@ -8,6 +11,8 @@
 import type { SessionClearloopBadge } from "@yep-anywhere/shared";
 import {
   isUrlProjectId,
+  fromUrlProjectId,
+  ALL_PROVIDERS,
   type ProviderChildSessionSummary,
   type ProviderName,
   type NonHumanUserTurn,
@@ -65,6 +70,8 @@ import {
 import type { ClearloopBadgeResolver } from "../services/ClearloopService.js";
 
 export interface GlobalSessionsDeps {
+  providerChildRelationships?: ProviderChildRelationshipService;
+  signal?: AbortSignal;
   retainedCollections?: RetainedSessionCollections;
   scanner: ProjectScanner;
   readerFactory: (project: Project) => ISessionReader;
@@ -136,6 +143,7 @@ export interface GlobalSessionItem {
   /** Source session whose provider transcript was cloned or forked. */
   forkedFromSessionId?: string;
   creationProvenance?: SessionCreationProvenance;
+  creation?: SessionSummary["creation"];
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
   initialPrompt?: string;
   /** SSH host alias for remote execution (undefined = local) */
@@ -325,9 +333,16 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
   let cachedStats: { value: GlobalSessionStats; timestamp: number } | null =
     null;
   let statsDirty = true;
+  let cachedStatsGeneration: number | undefined;
   let inFlightStats: Promise<GlobalSessionStats> | null = null;
 
-  const collectionGeneration = new SessionCollectionGeneration(deps.eventBus);
+  const collectionGeneration = new SessionCollectionGeneration(
+    deps.eventBus,
+    () =>
+      deps.signal?.aborted
+        ? undefined
+        : deps.sessionMetadataService?.creations?.generation,
+  );
   const collectionWalks = new SourceVersionedSingleFlight<
     string,
     GlobalSessionsResponse
@@ -376,6 +391,9 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
       project,
       {
         readerFactory: deps.readerFactory,
+        identities: deps.sessionMetadataService?.identities,
+        getRecordedProvider: (id) =>
+          deps.sessionMetadataService?.getProvider?.(id),
         sessionIndexService: deps.sessionIndexService,
         codexSessionsDir: deps.codexSessionsDir,
         codexReaderFactory: deps.codexReaderFactory,
@@ -406,6 +424,12 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     const statsListOptions = getDefaultListOptions();
     const statsAutoArchiveAfterMs = statsListOptions?.activeAfterMs;
 
+    const control = creationCollectionRows(
+      deps.sessionMetadataService,
+      deps.signal,
+    );
+    const byId = new Map(control.map((row) => [String(row.sessionId), row]));
+    const seen = new Set<string>();
     for (const project of projects) {
       const sessions = await listSessionsForProject(
         project,
@@ -413,6 +437,10 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
         statsListOptions,
       );
       for (const session of sessions) {
+        const creation = byId.get(session.id);
+        if (creation?.deleted || (creation && !creation.nativeBound)) continue;
+        seen.add(session.id);
+
         const metadata = deps.sessionMetadataService?.getMetadata(session.id);
         const effectiveProjectId =
           metadata?.workingProjectId ?? session.projectId;
@@ -464,6 +492,25 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
       }
     }
 
+    const extra = statsForSessionItems(
+      mergeCreationGlobalItems([], deps.sessionMetadataService, deps).filter(
+        (item) =>
+          !seen.has(item.id) &&
+          (!accessibleProjectIds || accessibleProjectIds.has(item.projectId)),
+      ),
+    );
+    stats.totalCount += extra.totalCount;
+    stats.archivedCount += extra.archivedCount;
+    stats.unreadCount += extra.unreadCount;
+    stats.starredCount += extra.starredCount;
+    for (const provider of ALL_PROVIDERS)
+      if (extra.providerCounts[provider])
+        stats.providerCounts[provider] =
+          (stats.providerCounts[provider] ?? 0) +
+          extra.providerCounts[provider]!;
+    for (const [executor, count] of Object.entries(extra.executorCounts))
+      stats.executorCounts[executor] =
+        (stats.executorCounts[executor] ?? 0) + count;
     return stats;
   };
 
@@ -476,10 +523,12 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     if (accessibleProjectIds) {
       return computeGlobalStats(new Set(accessibleProjectIds));
     }
+    const generation = collectionGeneration.current;
     const now = Date.now();
     const isFresh =
       cachedStats &&
       !statsDirty &&
+      cachedStatsGeneration === generation &&
       now - cachedStats.timestamp < STATS_CACHE_TTL_MS;
     if (isFresh && cachedStats) {
       return cachedStats.value;
@@ -492,7 +541,8 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     const statsPromise = computeGlobalStats()
       .then((stats) => {
         cachedStats = { value: stats, timestamp: Date.now() };
-        statsDirty = false;
+        cachedStatsGeneration = generation;
+        statsDirty = collectionGeneration.current !== generation;
         return stats;
       })
       .finally(() => {
@@ -542,24 +592,27 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     // post-walk value would certify rows the response does not contain.
     const generation = collectionGeneration.current;
     if (c.req.query("summaryMode") === "retained" && deps.retainedCollections) {
+      const matches = (row: GlobalSessionItem) =>
+        (!accessibleProjectIdSet ||
+          accessibleProjectIdSet.has(row.projectId)) &&
+        matchesGlobalSessionQuery(row, {
+          filterProjectId,
+          searchQuery,
+          includeArchived,
+          starredOnly,
+          categorizedOnly,
+        }) &&
+        isBeforeCursor(row.updatedAt, afterCursor);
       const retained = await readRetainedSessionItems(
         deps.retainedCollections,
         deps,
+        (sessions) => sessions.filter(matches).slice(0, limit),
       );
       const accessibleSessions = retained.sessions.filter(
         (row) =>
           !accessibleProjectIdSet || accessibleProjectIdSet.has(row.projectId),
       );
-      const rows = accessibleSessions.filter(
-        (row) =>
-          matchesGlobalSessionQuery(row, {
-            filterProjectId,
-            searchQuery,
-            includeArchived,
-            starredOnly,
-            categorizedOnly,
-          }) && isBeforeCursor(row.updatedAt, afterCursor),
-      );
+      const rows = accessibleSessions.filter(matches);
       return c.json({
         ...retained,
         sessions: rows.slice(0, limit),
@@ -581,7 +634,10 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
       c.req.query("knownGeneration") ?? "",
       10,
     );
-    if (!afterCursor && collectionGeneration.matches(knownGeneration)) {
+    if (
+      !afterCursor &&
+      collectionGeneration.matches(knownGeneration, generation)
+    ) {
       const unchanged: GlobalSessionsUnchangedResponse = {
         unchanged: true,
         generation,
@@ -684,7 +740,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
       .sort((a, b) => a.name.localeCompare(b.name));
 
     // Collect all sessions with enriched data
-    const allSessions: GlobalSessionItem[] = [];
+    let allSessions: GlobalSessionItem[] = [];
     const providerCatalog = await buildProviderProjectCatalog({
       projects: allProjects,
       codexScanner: deps.codexScanner,
@@ -795,20 +851,50 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           ),
         };
 
-        if (
-          accessibleProjectIdSet &&
-          !accessibleProjectIdSet.has(item.projectId)
-        ) {
-          continue;
-        }
-        if (!matchesGlobalSessionQuery(item, request)) continue;
         allSessions.push(item);
       }
     }
 
+    allSessions = mergeCreationGlobalItems(
+      allSessions,
+      deps.sessionMetadataService,
+      deps,
+    ).filter(
+      (item) =>
+        (!accessibleProjectIdSet ||
+          accessibleProjectIdSet.has(item.projectId)) &&
+        matchesGlobalSessionQuery(item, request),
+    );
+    const projectOptionIds = new Set(projectOptions.map((option) => option.id));
+    for (const item of allSessions)
+      if (
+        !projectOptionIds.has(item.projectId) &&
+        item.creation &&
+        isUrlProjectId(item.projectId) &&
+        !isDetachedProjectPath(fromUrlProjectId(item.projectId))
+      ) {
+        projectOptionIds.add(item.projectId);
+        projectOptions.push({ id: item.projectId, name: item.projectName });
+      }
+    projectOptions.sort((a, b) => a.name.localeCompare(b.name));
+    // Sort by updatedAt descending (most recent first)
+    allSessions.sort(
+      (a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+    );
+
+    // Apply cursor pagination
+    const filteredSessions = allSessions.filter((s) =>
+      isBeforeCursor(s.updatedAt, afterCursor),
+    );
+
+    // Get one extra to determine hasMore
+    const sessionsWithExtra = filteredSessions.slice(0, limit + 1);
+    const hasMore = sessionsWithExtra.length > limit;
+    const pageSessions = sessionsWithExtra.slice(0, limit);
     const resolutionDeps = providerResolutionDeps(deps);
     const sessionsByProject = new Map<string, GlobalSessionItem[]>();
-    for (const session of allSessions) {
+    for (const session of pageSessions) {
       const existing = sessionsByProject.get(session.projectId);
       if (existing) {
         existing.push(session);
@@ -835,24 +921,16 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
         )),
       );
     }
-    allSessions.length = 0;
-    allSessions.push(...sessionsWithChildren);
-
-    // Sort by updatedAt descending (most recent first)
-    allSessions.sort(
-      (a, b) =>
-        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+    const enriched = new Map(
+      sessionsWithChildren.map((row) => [
+        JSON.stringify([row.projectId, row.id]),
+        row,
+      ]),
+    );
+    const sessions = pageSessions.map(
+      (row) => enriched.get(JSON.stringify([row.projectId, row.id])) ?? row,
     );
 
-    // Apply cursor pagination
-    const filteredSessions = allSessions.filter((s) =>
-      isBeforeCursor(s.updatedAt, afterCursor),
-    );
-
-    // Get one extra to determine hasMore
-    const sessionsWithExtra = filteredSessions.slice(0, limit + 1);
-    const hasMore = sessionsWithExtra.length > limit;
-    const sessions = sessionsWithExtra.slice(0, limit);
     const stats =
       includeStats && !filterProjectId
         ? await getCachedGlobalStats(accessibleProjectIds)

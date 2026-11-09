@@ -21,11 +21,16 @@
     "i18n:scan": "node scripts/find-raw-i18n-copy.mjs",
     "agent:monitor": "node scripts/monitor-agent-process.mjs",
     "artifact:capture": "tsx packages/client/scripts/capture-artifact.ts",
+    "design:index": "tsx packages/client/scripts/design-index.ts",
+    "design:shot": "tsx packages/client/scripts/design-shot.ts",
+    "design:tour": "tsx packages/client/scripts/design-tour.ts",
+    "buttons:check": "tsx packages/client/scripts/design-buttons-check.ts",
     "unicode-math:train": "tsx scripts/unicode-math/train.ts",
     "android:interop:check": "tsx --conditions source scripts/android-secure-interop-fixture.ts",
     "android:interop:write": "tsx scripts/android-secure-interop-fixture.ts --write",
     "android:probe-server": "pnpm --filter @yep-anywhere/server exec tsx --conditions source scripts/android-native-secure-probe-server.ts",
     "css:check": "node scripts/check-css-architecture.mjs",
+    "source:budgets": "node scripts/check-source-file-budgets.mjs",
     "css:health": "tsx scripts/css-health.ts",
     "css:inventory": "tsx scripts/css-inventory.ts",
     "css:lint": "eslint --max-warnings 0 \"packages/client/src/**/*.css\" \"site/src/**/*.css\"",
@@ -47,8 +52,10 @@
     "build": "pnpm -r build",
     "build:bundle": "tsx scripts/build-bundle.ts",
     "build:stable": "pnpm --filter client build:stable",
-    "typecheck": "pnpm --filter shared build && pnpm -r --filter=!@yep-anywhere/android --filter=!@yep-anywhere/browser-extension exec tsc --noEmit && pnpm tools:typecheck && pnpm e2e:typecheck",
+    "typecheck": "pnpm --filter shared build && pnpm -r --filter=!@yep-anywhere/android --filter=!@yep-anywhere/browser-extension --filter=!@yep-anywhere/native-test-executables exec tsc --noEmit && pnpm tools:typecheck && pnpm e2e:typecheck",
     "test": "node --test artifact-host/host.test.mjs packages/mobile-core/scripts/sodium.test.mjs packages/client/e2e/lifecycle-study/network-gate.checks.mjs packages/client/e2e/lifecycle-study/acceptance.checks.mjs packages/android-host/test/profile.test.mjs && pnpm -r --filter=!@yep-anywhere/android test",
+    "test:providers": "pnpm --filter @yep-anywhere/server test test/native-provider",
+    "test:package": "node scripts/agent-self-package-smoke.mjs --release --artifact-dir=dist/npm-release",
     "test:e2e": "pnpm --filter client test:e2e",
     "test:e2e:ui": "pnpm --filter client test:e2e",
     "test:e2e:android": "pnpm --filter client test:e2e:android",
@@ -60,17 +67,20 @@
     "test:e2e:sdk:real": "pnpm --filter server test:e2e:real",
     "test:e2e:sdk:local": "pnpm --filter server test:e2e:local",
     "test:e2e:sdk:local:quality": "pnpm --filter server test:e2e:local:quality",
-    "lint": "node scripts/check-css-architecture.mjs && pnpm css:modules:check && pnpm css:lint && pnpm tools:check && node scripts/biome.cjs lint .",
+    "lint": "node scripts/check-css-architecture.mjs && node scripts/check-source-file-budgets.mjs && node scripts/check-chromium-sandbox.mjs && pnpm css:modules:check && pnpm -s buttons:check && pnpm css:lint && pnpm tools:check && node scripts/biome.cjs lint .",
     "format": "node scripts/biome.cjs format --write .",
     "format:check": "node scripts/biome.cjs format .",
     "prepare": "husky",
     "site:dev": "node scripts/run-site-npm.mjs dev",
     "site:build": "node scripts/run-site-npm.mjs build",
     "e2e:typecheck": "tsc -p packages/client/tsconfig.e2e.json --noEmit",
-    "tools:typecheck": "tsc -p packages/server/tsconfig.tool-display-tests.json --noEmit && tsc -p packages/server/tsconfig.agent-api-eval.json --noEmit",
+    "tools:typecheck": "tsc -p packages/server/tsconfig.tool-display-tests.json --noEmit && tsc -p packages/server/tsconfig.agent-api-eval.json --noEmit && tsc -p packages/server/tsconfig.native-provider-tests.json --noEmit",
     "tools:check": "node --test scripts/check-tool-display-boundaries.test.mjs && node scripts/check-tool-display-boundaries.mjs && pnpm simple-client:check && pnpm exec tsx --conditions source scripts/agent-api-eval/run.ts",
     "simple-client:generate": "node scripts/generate-simple-client.mjs",
-    "simple-client:check": "node --test scripts/simple-client-schema.test.mjs && node scripts/generate-simple-client.mjs --check"
+    "simple-client:check": "node --test scripts/simple-client-schema.test.mjs && node scripts/generate-simple-client.mjs --check",
+    "test:providers:install": "node scripts/install-native-provider-tests.mjs",
+    "test:providers:all": "node scripts/run-native-provider-tests.mjs",
+    "test:providers:app": "node scripts/run-native-app-tests.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
@@ -90,18 +100,18 @@
   },
   "yepAnywhere": {
     "codexCli": {
-      "expectedVersion": "0.166.0",
-      "compatibleThroughVersion": "0.166.0"
+      "expectedVersion": "0.167.0",
+      "compatibleThroughVersion": "0.167.0"
     },
     "claudeCode": {
-      "compatibleThroughVersion": "2.1.312",
-      "claudeAgentSdkVersion": "0.3.312"
+      "compatibleThroughVersion": "2.1.319",
+      "claudeAgentSdkVersion": "0.3.319"
     },
     "piCli": {
-      "compatibleThroughVersion": "1.4.0"
+      "compatibleThroughVersion": "1.5.0"
     },
     "grokCli": {
-      "compatibleThroughVersion": "1.0.67"
+      "compatibleThroughVersion": "1.0.70"
     }
   },
   "dependencies": {

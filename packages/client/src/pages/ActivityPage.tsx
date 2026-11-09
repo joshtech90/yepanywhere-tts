@@ -1,5 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { Button } from "../components/ui/Button";
+import { TextInput } from "../components/ui/Field";
 import {
   type FileChangeEvent,
   type FileType,
@@ -199,38 +201,18 @@ export function ActivityPage() {
           flexWrap: "wrap",
         }}
       >
-        <input
+        <TextInput
           type="text"
           value={pathFilter}
           onChange={(e) => setPathFilter(e.target.value)}
           placeholder={t("activityPathPlaceholder" as never)}
-          style={{
-            flex: 1,
-            minWidth: "200px",
-            padding: "0.75rem",
-            background: "#2a2a2a",
-            border: "1px solid #444",
-            borderRadius: "8px",
-            color: "inherit",
-            fontSize: "1rem",
-          }}
+          aria-label={t("activityPathPlaceholder" as never)}
+          style={{ flex: 1, minWidth: "200px" }}
         />
-        <button
-          type="button"
-          onClick={togglePause}
-          style={{
-            background: paused ? "#a44" : "#444",
-          }}
-        >
+        <Button variant="ghost" aria-pressed={paused} onClick={togglePause}>
           {paused ? t("activityResume" as never) : t("activityPause" as never)}
-        </button>
-        <button
-          type="button"
-          onClick={clearEvents}
-          style={{ background: "#444" }}
-        >
-          {t("activityClear" as never)}
-        </button>
+        </Button>
+        <Button onClick={clearEvents}>{t("activityClear" as never)}</Button>
       </div>
 
       {/* Type filters */}
@@ -243,34 +225,20 @@ export function ActivityPage() {
         }}
       >
         {FILE_TYPE_OPTIONS.map((type) => (
-          <button
-            type="button"
+          <Button
             key={type}
+            variant="ghost"
+            size="small"
+            aria-pressed={typeFilters.has(type)}
             onClick={() => toggleTypeFilter(type)}
-            style={{
-              padding: "0.5rem 0.75rem",
-              fontSize: "0.875rem",
-              background: typeFilters.has(type) ? "#4a4aff" : "#333",
-              border: typeFilters.has(type)
-                ? "1px solid #5a5aff"
-                : "1px solid #444",
-            }}
           >
             {getFileTypeLabel(type, t)}
-          </button>
+          </Button>
         ))}
         {typeFilters.size > 0 && (
-          <button
-            type="button"
-            onClick={() => setTypeFilters(new Set())}
-            style={{
-              padding: "0.5rem 0.75rem",
-              fontSize: "0.875rem",
-              background: "#444",
-            }}
-          >
+          <Button size="small" onClick={() => setTypeFilters(new Set())}>
             {t("activityClearFilters" as never)}
-          </button>
+          </Button>
         )}
       </div>
 

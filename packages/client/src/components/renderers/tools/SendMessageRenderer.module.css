@@ -43,17 +43,11 @@
 
 .toggle {
   margin-top: 0.25rem;
-  padding: 0;
-  border: none;
-  color: var(--link-color, var(--text-muted));
-  background: none;
-  font: inherit;
-  cursor: pointer;
 }
 
 .error {
   padding: 0.5rem;
   border-radius: 4px;
   color: var(--error-color);
-  background: var(--bg-error, rgba(207, 34, 46, 0.1));
+  background: var(--bg-error);
 }

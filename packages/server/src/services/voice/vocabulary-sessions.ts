@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { catalogFileVersion } from "../../sessions/catalog-adapters/row.js";
 import type { RetainedSessionCollections } from "../RetainedSessionCollections.js";
 import {
-  getSessionSources,
+  getSessionSourceForProvider,
   type ProviderResolutionDeps,
 } from "../../sessions/provider-resolution.js";
 import {
@@ -11,7 +11,7 @@ import {
   normalizeSession,
 } from "../../sessions/normalization.js";
 import { sessionCatalogRowKey } from "../../sessions/catalog-types.js";
-import { providerCatalogFamily } from "../../sessions/provider-catalog-family.js";
+import { nativeCatalogSessionRef } from "../../sessions/catalog-identity.js";
 import type { VocabularySession } from "./VocabularyLearning.js";
 
 export async function* vocabularySessions(
@@ -23,6 +23,14 @@ export async function* vocabularySessions(
   const snapshot = await catalog.read();
   for (const row of snapshot.rows) {
     if (Date.parse(row.updatedAt) < cutoff) continue;
+    const native = nativeCatalogSessionRef(row);
+    // Old compact rows need the next scoped catalogue publication. Skipping
+    // leaves their checkpoint untouched and does not fail unrelated learning.
+    if (
+      !native &&
+      (row.catalogFamily === "claude" || row.catalogFamily === "codex")
+    )
+      continue;
     yield {
       key: sessionCatalogRowKey(row),
       version: row.sourceVersion,
@@ -38,25 +46,28 @@ export async function* vocabularySessions(
           throw new Error(
             `Speech learning cannot resolve project for ${row.sessionId}`,
           );
-        const sources = getSessionSources(project, deps, row.provider);
-        const source =
-          sources.find((candidate) => candidate.provider === row.provider) ??
-          sources.find(
-            (candidate) =>
-              providerCatalogFamily(candidate.provider) === row.catalogFamily,
-          );
-        if (!source)
+        const reader = native
+          ? deps.readerFactory(
+              { ...project, provider: row.provider ?? row.catalogFamily },
+              native,
+            )
+          : getSessionSourceForProvider(
+              project,
+              deps,
+              row.provider ?? row.catalogFamily,
+            )?.reader;
+        if (!reader)
           throw new Error(
             `Speech learning cannot resolve provider for ${row.sessionId}`,
           );
-        const summaryHint = await source.reader.getSessionSummary(
+        const summaryHint = await reader.getSessionSummary(
           row.sessionId,
           project.id,
           { readMode: "head" },
         );
         let beforeMessageId: string | undefined;
         do {
-          const loaded = await source.reader.getSession(
+          const loaded = await reader.getSession(
             row.sessionId,
             project.id,
             undefined,

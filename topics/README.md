@@ -27,6 +27,9 @@
   context and proposed convergence of invitations, accounts, and scoped grants)
 - Public share content censorship
 - Approval and local access security hardening
+- [Connection-safe settings](connection-safe-settings.md) (the same settings
+  over direct and Remote Access connections, confirmation before a change cuts
+  off its own caller, and runtime listener changes)
 - Security trust boundaries
 - Active content security (confirmed same-origin HTML execution, scriptless
   file viewing, and isolated origins for agent-built applications)
@@ -38,15 +41,19 @@
 - Hard development rules for upstream-facing defaults
 - Kzahel-disabled feature decisions
 - Session UI customization
+- [Shared UI controls and feedback](shared-ui-controls.md) (toast lifetimes,
+  dropdown placement, and fatal client diagnostics)
 - Provider image sizing guidance
 - Attachment previews and same-browser cache
 - Project directory storage (app-data-only default, global project-local
   opt-in, writer audit, and Git-metadata boundary)
 - Storage settings (YA data directory vs. project `.yep`, default lazy media,
   and live managed-session preservation opt-in)
-- [Optional discovery SQLite storage](optional-sqlite.md) (Node/Bun adapters,
-  startup opt-in, migrations, and source-server readiness)
+- [Required SQLite storage](required-sqlite.md) (Node/Bun adapters,
+  startup policy, migrations, and source-server readiness)
 - OpenCode backend capability and rendering parity
+- [ACP integration and sharing](acp.md) (current YA/T3 comparison and proposed
+  transport/session composition; native Copilot and generic registry boundaries)
 - OpenCode ses_ session ID unification with YA session ID
 - MessageQueue batch delivery and steering UI
 - Message-control and queue intent (`/btw`, queue intent, later-interrupt state contract)
@@ -92,6 +99,8 @@
 - Turn-notch actions / fork-from-turn (fork already exists; proposal: expose fork/copy/trim from scrollbar notches + seed compose with the forked turn)
 - Turn-rail marker layout (hit targets sized to neighbor gaps; optional PAVA de-cluster spread behind one off-by-default constant)
 - Client global store (coarse normalized sessions/projects/project queues/inbox summary cache, not transcript state)
+- [React state patterns](react-state-patterns.md) (effect and store publication,
+  convergence, snapshot identity, subscription scope, and lifecycle ownership)
 - Session summary fidelity (bounded list projections, complete-index isolation,
   and partial-observation nondowngrade rules)
 - Client source runtime topology (per-YA-server runtime boundary above summary/query/session-detail stores)

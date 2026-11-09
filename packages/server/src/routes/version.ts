@@ -511,6 +511,17 @@ export const RESUME_PROTOCOL_VERSION = 3;
 export const REMOTE_COMPATIBILITY_LEVEL = 10;
 
 const BASE_CAPABILITIES: string[] = [
+  SERVER_CAPABILITIES.projectQueueRouterSelection.name,
+  SERVER_CAPABILITIES.connectionSafeSettings.name,
+  SERVER_CAPABILITIES.providerSteeringModes.name,
+  SERVER_CAPABILITIES.providerSteerNowDefaults.name,
+  SERVER_CAPABILITIES.queuedSessionCompaction.name,
+  SERVER_CAPABILITIES.sessionCreationAdmission.name,
+  SERVER_CAPABILITIES.stagedSessionCreation.name,
+  SERVER_CAPABILITIES.claudeTextCreation.name,
+  SERVER_CAPABILITIES.codexTextCreation.name,
+  SERVER_CAPABILITIES.opencodeTextCreation.name,
+  SERVER_CAPABILITIES.piTextCreation.name,
   SERVER_CAPABILITIES.newSessionSelectionMode.name,
   SERVER_CAPABILITIES.contextUsageBreakdown.name,
   SERVER_CAPABILITIES.processServiceTierChange.name,
@@ -608,6 +619,8 @@ const BASE_CAPABILITIES: string[] = [
   SERVER_CAPABILITIES.rendezProjectStatus.name,
   SERVER_CAPABILITIES.projectFolderState.name,
   SERVER_CAPABILITIES.fileFolderListing.name,
+  SERVER_CAPABILITIES.projectAppStartCommand.name,
+  SERVER_CAPABILITIES.sessionRelationships.name,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
@@ -761,6 +774,7 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterPools.name);
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterOwnedPools.name);
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterMostRemaining.name);
+    capabilities.push(SERVER_CAPABILITIES.agentAuthRouterSessionSwitch.name);
   }
   if (options?.installedMachineControlAvailable)
     capabilities.push(SERVER_CAPABILITIES.installedMachineControl.name);

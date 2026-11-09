@@ -79,6 +79,29 @@ import {
   writeSessionScrollMemory,
 } from "../lib/sessionScrollMemoryStorage";
 
+function sameProviderChildren(
+  left: SessionMetadata["providerChildren"],
+  right: NonNullable<SessionMetadata["providerChildren"]>,
+): boolean {
+  return (
+    left === right ||
+    (!!left &&
+      left.length === right.length &&
+      left.every((child, index) => {
+        const next = right[index]!;
+        return (
+          child.id === next.id &&
+          child.parentSessionId === next.parentSessionId &&
+          child.title === next.title &&
+          child.agentType === next.agentType &&
+          child.toolUseId === next.toolUseId &&
+          child.spawnDepth === next.spawnDepth &&
+          child.updatedAt === next.updatedAt
+        );
+      }))
+  );
+}
+
 /** Result from initial session load */
 export type SessionLoadResult = SessionDetailLoadCompleteResult;
 export type { AgentContent, AgentContentMap } from "../lib/sessionDetail/types";
@@ -202,7 +225,7 @@ export interface UseSessionMessagesResult {
   removeUnconfirmedSelfSend: (tempId: string) => void;
   /** Fetch new messages incrementally (for file change events) */
   fetchNewMessages: (trigger?: IncrementalFetchTrigger) => Promise<void>;
-  /** Fetch session metadata only */
+  /** Refresh startup status without replacing live runtime/title metadata. */
   fetchSessionMetadata: () => Promise<void>;
   /** Pagination info from compact-boundary-based loading */
   pagination: PaginationInfo | undefined;
@@ -366,6 +389,23 @@ export function useSessionMessages(
     [runtime, snapshotKey],
   );
   const sourceApi = coordinator.api;
+  const metadataRefresh = useMemo(
+    () => ({
+      coordinator,
+      active: true,
+      request: null as Promise<void> | null,
+      initialRequestSettled: false,
+      pendingRequested: false,
+      loadGeneration: 0,
+    }),
+    [coordinator],
+  );
+  useEffect(() => {
+    metadataRefresh.active = true;
+    return () => {
+      metadataRefresh.active = false;
+    };
+  }, [metadataRefresh]);
   const snapshotKeyString = coordinator.entryKeyString;
   const scrollMemoryReference = useMemo(
     () => ({ sourceKey, projectId, sessionId }),
@@ -596,6 +636,79 @@ export function useSessionMessages(
     [dispatchSessionDetailAction, readStoreSession, reportStoreDivergence],
   );
 
+  // Metadata recovery owns creation and accepted children only. It cannot
+  // replace messages, title, scroll or runtime state. Serialize replies and
+  // defer events received during initial/warm catch-up until that data applies.
+  const fetchSessionMetadata = useCallback(async (): Promise<void> => {
+    if (!metadataRefresh.active) return;
+    if (!metadataRefresh.initialRequestSettled || !readStoreSession()) {
+      metadataRefresh.pendingRequested = true;
+      return;
+    }
+    if (metadataRefresh.request) {
+      metadataRefresh.pendingRequested = true;
+      return metadataRefresh.request;
+    }
+    metadataRefresh.pendingRequested = false;
+    const generation = metadataRefresh.loadGeneration;
+    const request = (async () => {
+      try {
+        const data = await sourceApi.getSessionMetadata({
+          projectId,
+          sessionId,
+        });
+        if (!metadataRefresh.active) return;
+        if (
+          generation !== metadataRefresh.loadGeneration ||
+          !metadataRefresh.initialRequestSettled
+        ) {
+          metadataRefresh.pendingRequested = true;
+          return;
+        }
+        const { creation, providerChildren } = data.session;
+        updateSession((prev) => {
+          if (!prev) return prev;
+          const creationChanged =
+            creation !== undefined &&
+            JSON.stringify(creation) !== JSON.stringify(prev.creation);
+          const childrenChanged =
+            providerChildren !== undefined &&
+            !sameProviderChildren(prev.providerChildren, providerChildren);
+          return creationChanged || childrenChanged
+            ? {
+                ...prev,
+                ...(creationChanged ? { creation } : {}),
+                ...(childrenChanged ? { providerChildren } : {}),
+              }
+            : prev;
+        });
+      } catch {
+        // Retain accepted fields on unavailable/older server responses.
+      }
+    })();
+    metadataRefresh.request = request;
+    try {
+      await request;
+    } finally {
+      if (metadataRefresh.request === request) {
+        metadataRefresh.request = null;
+        if (
+          metadataRefresh.active &&
+          metadataRefresh.initialRequestSettled &&
+          metadataRefresh.pendingRequested
+        )
+          await fetchSessionMetadata();
+      }
+    }
+  }, [
+    projectId,
+    sessionId,
+    sourceApi,
+    updateSession,
+    metadataRefresh,
+    readStoreSession,
+  ]);
+
   const warnSessionDetailStore = useCallback(
     (payload: Record<string, unknown>) => {
       if (!import.meta.env.DEV) {
@@ -708,8 +821,11 @@ export function useSessionMessages(
   // replacing the cached transcript.
   useEffect(() => {
     let cancelled = false;
+    metadataRefresh.loadGeneration++;
+    metadataRefresh.initialRequestSettled = false;
     initialLoadFailedRef.current = false;
     let warmHydrated = false;
+    let historyRequestSettled = false;
     let pendingWarmData: GetSessionResult | null = null;
     let pendingWarmError: Error | null = null;
     let initialAfterMessageId: string | undefined;
@@ -734,6 +850,17 @@ export function useSessionMessages(
     const initialLoad = coordinator.beginInitialLoad({
       warmSnapshot: warmLoad,
     });
+    const flushPendingMetadata = () => {
+      if (
+        cancelled ||
+        !metadataRefresh.active ||
+        !historyRequestSettled ||
+        (warmLoad && !warmHydrated)
+      )
+        return;
+      metadataRefresh.initialRequestSettled = true;
+      if (metadataRefresh.pendingRequested) void fetchSessionMetadata();
+    };
 
     const notifyLoadComplete = (
       data: GetSessionResult,
@@ -744,6 +871,7 @@ export function useSessionMessages(
       );
       notifyTranscriptReconciled(data, appliedRowCount);
       onLoadComplete?.(coordinator.buildLoadCompleteResult(data));
+      flushPendingMetadata();
     };
 
     const readRevealSnapshotAfterStoreUpdate = (
@@ -815,6 +943,7 @@ export function useSessionMessages(
         "session_initial_load_complete",
         completion.loadCompletePerfDetail,
       );
+      flushPendingMetadata();
     };
 
     const finishWarmHydration = (options: {
@@ -1056,6 +1185,11 @@ export function useSessionMessages(
         initialLoadFailedRef.current = true;
         setLoading(false);
         onLoadError?.(err);
+      })
+      .finally(() => {
+        if (cancelled || !metadataRefresh.active) return;
+        historyRequestSettled = true;
+        flushPendingMetadata();
       });
     return () => {
       cancelled = true;
@@ -1081,6 +1215,8 @@ export function useSessionMessages(
     sourceApi,
     warnSessionDetailStore,
     sourceSummary,
+    metadataRefresh,
+    fetchSessionMetadata,
   ]);
 
   // Handle streaming content updates (from useStreamingContent)
@@ -1624,35 +1760,6 @@ export function useSessionMessages(
     [coordinator],
   );
 
-  // Fetch session metadata only
-  const fetchSessionMetadata = useCallback(async () => {
-    try {
-      const data = await sourceApi.getSessionMetadata({
-        projectId,
-        sessionId,
-      });
-      sourceSummary.reportProviderRuntimeStatusSnapshot(
-        coordinator.buildProviderRuntimeStatusSnapshot(data),
-      );
-      const metadataSession = {
-        ...data.session,
-        ownership: data.ownership,
-      };
-      // For new sessions, prev may be null if JSONL didn't exist on initial load
-      updateSession((prev) =>
-        prev ? { ...prev, ...metadataSession } : metadataSession,
-      );
-    } catch {
-      // Silent fail for metadata updates
-    }
-  }, [
-    coordinator,
-    projectId,
-    sessionId,
-    sourceApi,
-    sourceSummary,
-    updateSession,
-  ]);
   const selectedInitialScrollSnapshot = shouldRetainSessionScrollMemory(
     getSessionScrollBehaviorMode(),
   )

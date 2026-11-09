@@ -1,18 +1,14 @@
-import { useRouterDiscovery } from "../hooks/useRouterDiscovery";
+import { FileDropZone } from "./FileDropZone";
 import {
-  RouterPoolSelector,
-  preferredRouterSelection,
-  restoreRouterSelection,
-  routedAccounts,
-  routedModels,
-  routerPoolMembers,
-} from "./RouterPoolSelector";
-import { resolveRouterModel, routerAliasTargets } from "@yep-anywhere/shared";
-import type { RouterSelection } from "./RouterPoolSelector";
+  getSessionCreation,
+  settleSessionCreation,
+  pendingSessionCreation,
+} from "../lib/sessionCreation";
 import { DraftSyncNotice } from "./DraftSyncNotice";
 import { DRAFT_STORAGE_EVENT, draftStorage } from "../lib/draftSyncStorage";
 import { useRendezCompose } from "../hooks/useRendezCompose";
-import { MachineControlSessionSelection } from "./MachineControlSessionSelection";
+import { useComposerSpeechHandlers } from "../hooks/useComposerSpeechHandlers";
+import { useComposerSpeechState } from "../hooks/useComposerSpeechState";
 import { useComposerVoiceRef } from "../hooks/useComposerVoiceRef";
 import type { ProjectAppTarget } from "../api/projectApp";
 import {
@@ -29,28 +25,16 @@ import {
   rememberComposerUpload,
 } from "../lib/composerHistory";
 import templateStyles from "./TemplateProjectForm.module.css";
+import { Button, ButtonBase } from "./ui/Button";
 import { useProjectTemplateChoices } from "../hooks/useProjectTemplateChoices";
 import {
-  DEFAULT_PROVIDER,
   fromUrlProjectId,
   isUrlProjectId,
   SERVER_CAPABILITIES,
   serverHasCapability,
-  isTurnEffort,
-  DEFAULT_RECAP_AFTER_SECONDS,
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
-  HELPER_SIDE_MODEL_CHEAPEST,
-  HELPER_SIDE_MODEL_SAME_AS_MAIN,
-  type EffortLevel,
-  type PromptSuggestionMode,
-  type ProviderInfo,
   type ProviderName,
-  type RecapMode,
-  type SessionSandboxLevel,
-  type ThinkingMode,
   type ThinkingOption,
-  normalizeRecapAfterSeconds,
-  resolveModel,
 } from "@yep-anywhere/shared";
 import {
   type ChangeEvent,
@@ -65,77 +49,43 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { type SessionOptions, type UploadedFile, api } from "../api/client";
-import { ENTER_SENDS_MESSAGE } from "../constants";
+import { type UploadedFile, api } from "../api/client";
 import styles from "./NewSessionForm.module.css";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useToastContext } from "../contexts/ToastContext";
 import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
 import { useDraftPersistence } from "../hooks/useDraftPersistence";
+import { useBackgroundSessionCreation } from "../hooks/useBackgroundSessionCreation";
 import { useProjectFileCompletion } from "../hooks/useProjectFileCompletion";
 import { ProjectFileCompletionMenu } from "./ProjectFileCompletionMenu";
 import { createNewSessionDraftKey } from "../hooks/useDrafts";
 import {
-  getModelSetting,
   getShowThinkingSetting,
   useModelSettings,
 } from "../hooks/useModelSettings";
 import { useProjectQueues } from "../hooks/useProjectQueues";
+import { useNewSessionOptions } from "../hooks/useNewSessionOptions";
 import {
-  getDefaultLaunchableProvider,
-  getLaunchableProviders,
-  useProviderRow,
-  useProviders,
-} from "../hooks/useProviders";
-import { useProviderDescriptors } from "../hooks/useProviderDescriptors";
+  type NewSessionAcceptedCreation,
+  type NewSessionLaunch,
+  type PendingNewSessionSpeechDeliveryIntent,
+  queueNewSessionForProject,
+  startNewSession,
+} from "../lib/newSessionStart";
+import { templateSessionSettings } from "../lib/templateSessionSettings";
+import { NewSessionOptionsPanel } from "./NewSessionOptionsPanel";
 import {
   getAttachmentUploadProfile,
   useAttachmentUploadQuality,
 } from "../hooks/useAttachmentUploadQuality";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useSpeechSourceRuntime } from "../hooks/useSpeechSourceRuntime";
-import { useServerSettings } from "../hooks/useServerSettings";
 import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
-import { type MessageKey, useI18n } from "../i18n";
+import { useI18n } from "../i18n";
 import { formatFileSize } from "../lib/formatFileSize";
-import { formatContextWindowLabel } from "../lib/contextWindowLabel";
-import { formatBriefAge } from "../lib/sessionAge";
-import { getUiCreationProvenance } from "../lib/sessionCreationProvenance";
-import { parseComposerSlashCommand } from "../lib/slashCommands";
 import { takePrebootComposer } from "../lib/prebootComposer";
 import { UI_KEYS } from "../lib/storageKeys";
-import {
-  getEffortLevelLabel,
-  getEffortLevelOptions,
-  getThinkingModeOptions,
-  resolveSupportedEffortLevel,
-  resolveSupportedThinkingMode,
-} from "../lib/effortLevels";
-import { selectableServiceTiers, serviceTierLabel } from "../lib/serviceTiers";
-import {
-  knownLockedEffort,
-  knownLockedProvider,
-  launchLockFor,
-  launchLockOverrides,
-  type LaunchLock,
-} from "../lib/limitedLaunchLock";
-import {
-  getPreferredProviderModelId,
-  getProviderSessionDefaults,
-  hasRequiredProviderModel,
-  withProviderSessionDefaults,
-} from "../lib/newSessionDefaults";
-import {
-  type RouterModelUnavailable,
-  buildRouterModelList,
-  startsAdditionalModelGroup,
-  withProviderVisibleModelSelection,
-} from "../lib/modelCatalog";
-import { providerSupportsLocalSessionSandbox } from "../lib/providerCapabilities";
-import {
-  describeUnavailableSessionSandbox,
-  serverHasAvailableSessionSandbox,
-} from "../lib/sessionSandboxAvailability";
+import { launchLockFor, type LaunchLock } from "../lib/limitedLaunchLock";
 import {
   type PendingFile,
   type PendingLocalFile,
@@ -151,17 +101,6 @@ import {
   toPersistedStagedAttachmentRef,
 } from "../lib/newSessionAttachments";
 import {
-  PROMPT_SUGGESTION_MODE_ORDER,
-  RECAP_MODE_ORDER,
-  getDefaultHelperSideModel,
-  getPreferredPromptSuggestionMode,
-  getPreferredRecapMode,
-  parseThinkingOption,
-  resolvePromptSuggestionMode,
-  resolveRecapMode,
-  toThinkingOption,
-} from "../lib/newSessionOptions";
-import {
   PROJECT_SUGGESTION_COUNT,
   QUICK_PROJECT_COUNT,
   findProjectByInput,
@@ -174,9 +113,7 @@ import {
   projectNameForEntry,
   settlePathEntry,
 } from "../lib/newProjectPath";
-import { getRecapModeDescription } from "../lib/recapModes";
-import { getSessionDefaultControlCopy } from "../lib/sessionDefaultControlCopy";
-import { prepareImageUpload } from "../lib/imageAttachmentResize";
+import { prepareComposerAttachmentUpload } from "../lib/composerAttachmentUpload";
 import { storeUploadedAttachmentPreview } from "../lib/attachmentPreviewCache";
 import type { DraftAttachmentState } from "../lib/draftEnvelope";
 import {
@@ -189,14 +126,17 @@ import {
   hasAttachmentNavigationRisk,
   useAttachmentNavigationGuard,
 } from "../lib/attachmentNavigationGuard";
-import { requiresAttachmentOnlyServerUpdate } from "../lib/attachmentSubmission";
 import { shouldShowProjectQueueAffordance } from "../lib/projectQueueVisibility";
 import {
   useActiveProjectSessionIds,
   useClientSummarySourceKey,
 } from "../lib/clientSummaryStore";
-import { hasCoarsePointer } from "../lib/deviceDetection";
-import { logSessionUiTrace } from "../lib/diagnostics/uiTrace";
+import {
+  getClipboardFiles,
+  handleSpeechEscapeKey,
+  isComposerEnterSend,
+} from "../lib/composerKeys";
+import { hasComposerDraftContent } from "../lib/sessionComposerSubmission";
 import {
   isFullPaneComposerShortcut,
   resizeComposerTextarea,
@@ -206,13 +146,6 @@ import {
   consumeNewSessionPrefillToken,
 } from "../lib/newSessionPrefill";
 import { makeAttachmentFileNamesUnique } from "../lib/attachmentFileNames";
-import {
-  getEstimatedServerOffsetMs,
-  getServerClockTimestamp,
-  measureServerLatencyMs,
-  recordServerClockSample,
-} from "../lib/serverClock";
-import { createSessionNavigationState } from "../lib/sessionNavigationState";
 import {
   canSpeechMethodStream,
   getSpeechMethodCapabilities,
@@ -225,102 +158,34 @@ import {
 import type {
   SpeechSmartTurnSettings,
   SpeechTranscriptionContext,
-  SpeechTranscriptionResultMetadata,
 } from "../lib/speechProviders/SpeechProvider";
-import { focusComposerForSpeechTransition } from "../lib/speechComposerFocus";
 import {
-  clearSpeechInsertionRangeReplacement,
-  createSpeechInsertionRange,
-  getSpeechSelectionFinalDelayMs,
-  getSpeechInterimDisplayTranscript,
-  getSpeechTranscriptInsertionParts,
-  getSpeechTranscriptReplacementParts,
+  getSpeechInterimPreview,
   getSpeechVisibleDraftText,
-  mapSpeechInsertionRangeThroughEdit,
-  retargetSpeechInsertionRange,
-  type SpeechInsertionRange,
   textBeforeSpeechCursor,
 } from "../lib/speechRecognition";
-import {
-  commitSpeechTranscript,
-  hasNonWhitespaceEdit,
-  type PendingSpeechRetarget,
-  type PendingTextareaSelectionRestore,
-} from "../lib/speechDraftTransaction";
-import {
-  prependSpeechMessagePrefix,
-  resolveDeliverySpeechPrefix,
-} from "../lib/speechMessagePrefix";
 import { handleVoiceInputShortcutKeyDown } from "../lib/voiceInputShortcut";
+import { createClientSpeechTurnId } from "../lib/speechTargets";
 import { generateUUID } from "../lib/uuid";
 import { useVersion } from "../hooks/useVersion";
 import { useSpeechCaptureSettings } from "../hooks/useSpeechCaptureSettings";
 import { useRecentSpeechAttribution } from "../hooks/useRecentSpeechAttribution";
-import { useProviderSubscriptionUsage } from "../hooks/useProviderSubscriptionUsage";
 import { useActingPrincipal } from "../hooks/useActingPrincipal";
 import { isAbsoluteLikePath, shortenPath } from "../lib/text";
-import { getPermissionModeOptions } from "../lib/permissionModes";
 import type { PermissionMode, Project } from "../types";
 import { AttachmentChip } from "./AttachmentChip";
 import { DeliveryGlyph } from "./DeliveryGlyph";
-import { FilterDropdown, type FilterOption } from "./FilterDropdown";
+import type { FilterOption } from "./FilterDropdown";
 import { FullPaneComposerToggle } from "./FullPaneComposerToggle";
-import { NewSessionFixedLaunch } from "./NewSessionFixedLaunch";
 import { NewSessionProjectQueue } from "./NewSessionProjectQueue";
+import { SpeechDraftField } from "./SpeechDraftField";
 import { SpeechPrefixActionCue } from "./SpeechPrefixActionCue";
-import { ProviderBadge } from "./ProviderBadge";
-import { ModelSubscriptionUsage } from "./ModelSubscriptionUsage";
-import { RecapAfterSecondsControl } from "./RecapAfterSecondsControl";
 import { SpeechControlMenu } from "./SpeechControlMenu";
-import {
-  VoiceInputButton,
-  type SpeechCycleSettlement,
-  type SpeechPendingKind,
-  type VoiceInputButtonRef,
-} from "./VoiceInputButton";
-
-const ROUTER_MODEL_UNAVAILABLE = {
-  unresolved: "routerModelUnresolved",
-  conflict: "routerModelConflict",
-  missing: "routerModelMissing",
-} as const satisfies Record<RouterModelUnavailable, MessageKey>;
-
-interface PendingSpeechFinal {
-  timer: ReturnType<typeof setTimeout>;
-  transcript: string;
-  metadata?: SpeechTranscriptionResultMetadata;
-}
-
-type PendingNewSessionSpeechDeliveryIntent = "start" | "project-queue";
+import { VoiceInputButton, type VoiceInputButtonRef } from "./VoiceInputButton";
 
 interface PendingNewSessionSpeechDelivery {
   kind: PendingNewSessionSpeechDeliveryIntent;
   visibleTextSnapshot: string;
-}
-
-function createClientSpeechTurnId(): string {
-  return generateUUID();
-}
-
-function createSpeechTargetId(): string {
-  return `speech-target-${generateUUID()}`;
-}
-
-/**
- * Stand-in row for seeding the form before any provider has been probed.
- *
- * It carries no status or capability claims: it exists so the saved provider
- * and its provider-local model defaults can resolve, and it is replaced by the
- * probed row the moment one arrives. It is never rendered as a provider card.
- */
-function unprobedProviderRow(name: ProviderName): ProviderInfo {
-  return {
-    name,
-    displayName: name,
-    installed: false,
-    authenticated: false,
-    enabled: false,
-  };
 }
 
 export interface NewSessionFormProps {
@@ -363,67 +228,7 @@ export interface NewSessionFormProps {
    * Reuse the New Session composer and launch controls for a specialized
    * session start such as handoff.
    */
-  launch?: {
-    draftKey: string;
-    initialMessage: string;
-    fixedProject?: boolean;
-    allowAttachments?: boolean;
-    allowProjectQueue?: boolean;
-    /**
-     * How the seeded message is offered. `editable` is an ordinary draft.
-     * `muted` shows it dimmed, compact, and read-only: the launch composes
-     * its own first turn — a fork copies the real transcript — so the draft
-     * is context for the choice rather than something being sent.
-     */
-    composer?: "editable" | "muted";
-    /** Start-control wording, for a launch whose verb is not "start session". */
-    startLabel?: string;
-    startingLabel?: string;
-    /**
-     * Withhold the provider and model pickers. A fork continues an existing
-     * provider transcript, so changing either would not be a fork; offering
-     * the choice would only invite a request the server refuses.
-     */
-    fixedProviderModel?: boolean;
-    submit: (request: {
-      message: string;
-      options: SessionOptions;
-      clientTimestamp: number;
-    }) => Promise<void>;
-  };
-}
-
-interface NewSessionOptionSectionProps {
-  caption?: string;
-  children: ReactNode;
-  className: string;
-  showCaption: boolean;
-  title: string;
-  placeholder?: boolean;
-}
-
-function NewSessionOptionSection({
-  caption,
-  children,
-  className,
-  showCaption,
-  title,
-  placeholder = false,
-}: NewSessionOptionSectionProps) {
-  return (
-    <div
-      className={`${className}${placeholder ? ` ${styles.optionPlaceholder}` : ""}`}
-      title={showCaption ? undefined : caption}
-      aria-hidden={placeholder || undefined}
-      inert={placeholder || undefined}
-    >
-      <h3>{title}</h3>
-      {children}
-      {showCaption && caption && (
-        <p className={styles.optionCaption}>{caption}</p>
-      )}
-    </div>
-  );
+  launch?: NewSessionLaunch;
 }
 
 /** The New project palette choice that starts from a plain folder. */
@@ -453,7 +258,6 @@ export function NewSessionForm({
   launch,
 }: NewSessionFormProps) {
   const { t } = useI18n();
-  const sessionDefaultCopy = getSessionDefaultControlCopy(t);
   // New project starts a folder YA has not seen, from the explicit panel or
   // from an unmatched path typed into the project search
   // (topics/project-names.md § New project).
@@ -487,6 +291,18 @@ export function NewSessionForm({
   const { relayTransport, relayedServerSpeechAvailable } =
     useSpeechSourceRuntime();
   const clientSummarySourceKey = useClientSummarySourceKey();
+  const creationViewOwner = useRef({
+    active: true,
+    sourceKey: clientSummarySourceKey,
+    accountKey: null as string | null,
+  });
+  creationViewOwner.current.sourceKey = clientSummarySourceKey;
+  useEffect(() => {
+    creationViewOwner.current.active = true;
+    return () => {
+      creationViewOwner.current.active = false;
+    };
+  }, []);
   const sourceRuntime = useCurrentSourceRuntime();
   const sourceSummary = sourceRuntime.summary;
   const sourceTransport = sourceRuntime.transport;
@@ -496,43 +312,6 @@ export function NewSessionForm({
   );
   const [message, setMessage, draftControls] =
     useDraftPersistence(newSessionDraftKey);
-  const [mode, setMode] = useState<PermissionMode>("default");
-  const [selectedProvider, setSelectedProvider] = useState<ProviderName | null>(
-    null,
-  );
-  const [routerPreference, setRouterPreference] =
-    useState<RouterSelection | null>(null);
-  const [routerSelectionCustomized, setRouterSelectionCustomized] =
-    useState(false);
-  useEffect(() => {
-    setRouterPreference((selection) =>
-      selection?.sourceKey === clientSummarySourceKey ? selection : null,
-    );
-    setRouterSelectionCustomized(false);
-  }, [clientSummarySourceKey]);
-  const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const [selectedServiceTier, setSelectedServiceTier] = useState<string | null>(
-    null,
-  );
-  const [selectedThinkingMode, setSelectedThinkingMode] =
-    useState<ThinkingMode>("off");
-  const [selectedEffortLevel, setSelectedEffortLevel] =
-    useState<EffortLevel>("high");
-  const [selectedRecapMode, setSelectedRecapMode] = useState<RecapMode>("off");
-  const [sandboxLevel, setSandboxLevel] = useState<SessionSandboxLevel>("none");
-  const [machineControlSelected, setMachineControlSelected] = useState(false);
-  const selectMachineControl = useCallback((selected: boolean) => {
-    setMachineControlSelected(selected);
-  }, []);
-  const [sandboxNetworkFirewall, setSandboxNetworkFirewall] = useState(true);
-  const [recapAfterSeconds, setRecapAfterSeconds] = useState(
-    DEFAULT_RECAP_AFTER_SECONDS,
-  );
-  const [selectedPromptSuggestionMode, setSelectedPromptSuggestionMode] =
-    useState<PromptSuggestionMode>("off");
-  const [helperSideModel, setHelperSideModel] = useState<string>(
-    HELPER_SIDE_MODEL_CHEAPEST,
-  );
   const [pendingFiles, setPendingFilesState] = useState<PendingFile[]>([]);
   const pendingFilesRef = useRef<PendingFile[]>([]);
   const draftAttachmentBatchIdRef = useRef<string | null>(null);
@@ -542,14 +321,11 @@ export function NewSessionForm({
   >(new Map());
   const removedPendingUploadIdsRef = useRef<Set<string>>(new Set());
   const [isStarting, setIsStarting] = useState(false);
+  const [acceptingText, setAcceptingText] = useState(false);
+  const [acceptedCreation, setAcceptedCreation] =
+    useState<NewSessionAcceptedCreation | null>(null);
   const [fullPane, setFullPane] = useState(false);
   const [fullPaneWide, setFullPaneWide] = useState(false);
-  const [showOptionCaptions, setShowOptionCaptions] = useState(false);
-  const [showAdvancedOptions, setShowAdvancedOptions] = useState(
-    () =>
-      localStorage.getItem(UI_KEYS.newSessionAdvancedOptionsExpanded) ===
-      "true",
-  );
   const [fullPaneBaseWidth, setFullPaneBaseWidth] = useState<number | null>(
     null,
   );
@@ -557,30 +333,27 @@ export function NewSessionForm({
     Record<string, { uploaded: number; total: number }>
   >({});
   const [attachmentQuality] = useAttachmentUploadQuality();
-  const {
-    providers,
-    loading: providersLoading,
-    stale: providersStale,
-    refetch: refetchProviders,
-  } = useProviders();
-  const selectedProviderQuery = useProviderRow(selectedProvider);
-  const aggregateProviderInfo = providers.find(
-    (p) => p.name === selectedProvider,
-  );
-  const selectedProviderInfo =
-    selectedProviderQuery.row ?? aggregateProviderInfo;
   const { visibility: toolbarVisibility } = useSessionToolbarPresence();
-  const [interimTranscript, setInterimTranscript] = useState("");
-  const interimTranscriptRef = useRef(interimTranscript);
-  interimTranscriptRef.current = interimTranscript;
-  const [speechPending, setSpeechPending] = useState<SpeechPendingKind | null>(
-    null,
-  );
-  const speechPendingRef = useRef<SpeechPendingKind | null>(null);
+  const {
+    speechState,
+    interimTranscript,
+    setInterimTranscript,
+    interimTranscriptRef,
+    speechPending,
+    speechPendingRef,
+    speechTransactionHasTextRef,
+    speechTurnIdRef,
+    speechInsertionRangeRef,
+    activeSpeechTargetIdRef,
+    pendingSpeechFinalRef,
+    pendingTextareaSelectionRef,
+    clearPendingSpeechFinal,
+    noteSpeechDraftEdit,
+    restorePendingTextareaSelection,
+  } = useComposerSpeechState();
   const pendingSpeechDeliveryRef =
     useRef<PendingNewSessionSpeechDelivery | null>(null);
   const pendingSpeechDeliverySettledRef = useRef(false);
-  const speechTransactionHasTextRef = useRef(false);
   const dispatchingSettledSpeechDeliveryRef = useRef(false);
   const runPendingSpeechDeliveryRef = useRef<() => void>(() => {});
   const { asrAttributionMs, speechMessagePrefix } = useSpeechCaptureSettings();
@@ -590,7 +363,6 @@ export function NewSessionForm({
     isRecent: isRecentSpeechAttribution,
     consume: consumeSpeechAttribution,
   } = useRecentSpeechAttribution(asrAttributionMs);
-  const [, setSpeechPreviewRevision] = useState(0);
   const [isProjectChooserExpanded, setIsProjectChooserExpanded] =
     useState(false);
   const requestedProjectPath = useMemo(() => {
@@ -612,23 +384,6 @@ export function NewSessionForm({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const voiceButtonRef = useRef<VoiceInputButtonRef>(null);
   const sharedVoiceRef = useComposerVoiceRef(voiceButtonRef, onVoiceControl);
-  const speechTurnIdRef = useRef<string | null>(null);
-  const speechInsertionRangeRef = useRef<SpeechInsertionRange | null>(null);
-  const activeSpeechTargetIdRef = useRef<string | null>(null);
-  const speechInsertionRangesRef = useRef<Map<string, SpeechInsertionRange>>(
-    new Map(),
-  );
-  const pendingSpeechRetargetRef = useRef<PendingSpeechRetarget | null>(null);
-  const pendingSpeechFinalRef = useRef<PendingSpeechFinal | null>(null);
-  // True once the user manually edits (non-whitespace) during the active mic
-  // transaction; holds an automatic Smart Turn endpoint send. Speech-inserted
-  // finals go through setDraft (not onChange) and never set this.
-  const composerEditedDuringSpeechRef = useRef(false);
-  const pendingTextareaSelectionRef =
-    useRef<PendingTextareaSelectionRestore | null>(null);
-  const hasSeededDefaultsRef = useRef(false);
-  const hasInitializedDefaultsRef = useRef(false);
-  const hasUserCustomizedDefaultsRef = useRef(false);
   const lastSyncedProjectIdRef = useRef<string | null>(null);
   const hasSeededMessageRef = useRef(false);
   const seedBaselineRef = useRef<string | null>(null);
@@ -658,6 +413,22 @@ export function NewSessionForm({
   // form reads them so it stops presenting a choice that would be refused.
   // See topics/limited-users.md § Delivery v1.
   const { principal, resolved: principalResolved } = useActingPrincipal();
+  const { backgroundSessionCreation } = useBackgroundSessionCreation();
+  creationViewOwner.current.accountKey = principal.username;
+  const pendingCreation = useMemo(
+    () =>
+      isStarting
+        ? null
+        : pendingSessionCreation(
+            `ya-text-creation:${clientSummarySourceKey}:${principal.username}:${newSessionDraftKey}`,
+          ),
+    [
+      clientSummarySourceKey,
+      principal.username,
+      newSessionDraftKey,
+      isStarting,
+    ],
+  );
   const historyScope = principalResolved
     ? JSON.stringify([clientSummarySourceKey, principal.username])
     : null;
@@ -678,33 +449,54 @@ export function NewSessionForm({
       !isStarting &&
       serverHasCapability(versionInfo, SERVER_CAPABILITIES.rendezCompose),
   );
-  const supportsSessionSandboxing =
-    serverHasAvailableSessionSandbox(versionInfo);
-  const canConfigureSessionSandbox =
-    supportsSessionSandboxing &&
-    providerSupportsLocalSessionSandbox(selectedProvider);
-  // Where the toggle would sit, say what keeps a supported host from offering
-  // it; a limited user cannot change the host, and its fixed launch says so.
-  const sessionSandboxUnavailableReason =
-    !supportsSessionSandboxing &&
-    !launchLock.limited &&
-    providerSupportsLocalSessionSandbox(selectedProvider)
-      ? describeUnavailableSessionSandbox(versionInfo, t)
-      : null;
-  const effectiveSandboxLevel: SessionSandboxLevel = launchLock.limited
-    ? "project-write"
-    : canConfigureSessionSandbox
-      ? sandboxLevel
-      : "none";
-  // The firewall is part of the sandbox a limited user cannot clear; the server
-  // refuses a limited launch that turns it off.
-  const effectiveSandboxNetworkFirewall =
-    effectiveSandboxLevel === "project-write" &&
-    (launchLock.limited || sandboxNetworkFirewall);
-  // Open local access does not block the sandbox; it earns a standing warning.
-  const sandboxLocalAuthOpen =
-    effectiveSandboxLevel === "project-write" &&
-    versionInfo?.sessionSandboxing?.localAuthEnforced === false;
+  const newSessionOptions = useNewSessionOptions({
+    clientSummarySourceKey,
+    launch,
+    launchLock,
+    preferredProvider,
+    preferredModel,
+    preferredThinking,
+    preferredPermissionMode,
+    versionInfo,
+    versionLoading,
+    legacyEffortLevel,
+    legacyThinkingMode,
+    t,
+  });
+  const {
+    displayDefaultsPending,
+    effectiveEffortLevel,
+    effectivePermissionMode,
+    effectiveSandboxLevel,
+    effectiveSandboxNetworkFirewall,
+    effectiveServiceTier,
+    effectiveThinkingMode,
+    hasSelectedProviderModel,
+    helperSideModel,
+    machineControlEligible,
+    machineControlSelected,
+    recapAfterSeconds,
+    refetchSettings,
+    routedModel,
+    routerAccountId,
+    routerClaudeAiConnectors,
+    routerPolicy,
+    routerSelection,
+    routerThinking,
+    selectedEffortLevel,
+    selectedModel,
+    selectedPromptSuggestionMode,
+    selectedProvider,
+    selectedProviderInfo,
+    selectedRecapMode,
+    selectedServiceTier,
+    selectedThinkingMode,
+    settingsError,
+    settingsLoading,
+    showThinkingControls,
+    supportsInstalledMachineControl,
+    supportsSessionSandboxing,
+  } = newSessionOptions;
 
   const projectQueueCtrlEnterEnabled =
     versionInfo?.clientDefaults?.projectQueueCtrlEnterEnabled ??
@@ -717,6 +509,14 @@ export function NewSessionForm({
   const allowProjectQueue = launch?.allowProjectQueue ?? true;
   const fixedProject = launch?.fixedProject ?? fixedProjectProp;
   const composerMuted = launch?.composer === "muted";
+  const canCreateInBackground =
+    backgroundSessionCreation &&
+    !launch &&
+    !composerMuted &&
+    serverHasCapability(
+      versionInfo,
+      SERVER_CAPABILITIES.sessionCreationAdmission.name,
+    );
   const showProviderAndModel = !(launch?.fixedProviderModel ?? false);
   // A locked field is stated in the fixed-launch caption instead of offered.
   const showProviderPicker = showProviderAndModel && !launchLock.provider;
@@ -1007,40 +807,27 @@ export function NewSessionForm({
         setPendingFiles((prev) => [...prev, uploadingFile]);
 
         const uploadPromise = (async () => {
-          const preparedImage = file.type.startsWith("image/")
-            ? await prepareImageUpload(
-                file,
-                getAttachmentUploadProfile(
-                  attachmentQuality,
-                  selectedProviderInfo,
-                  selectedModel,
-                ),
-              )
-            : { file };
-          const uploadFile = preparedImage.file;
-          const stagedRef = await sourceTransport.uploadStagedAttachment(
-            uploadFile,
-            {
-              batchId,
-              onProgress: (bytesUploaded) => {
+          const { uploadFile, uploadOptions } =
+            await prepareComposerAttachmentUpload(
+              file,
+              getAttachmentUploadProfile(
+                attachmentQuality,
+                selectedProviderInfo,
+                selectedModel,
+              ),
+              (bytesUploaded, preparedFile) => {
                 setUploadProgress((prev) => ({
                   ...prev,
                   [tempId]: {
                     uploaded: bytesUploaded,
-                    total: uploadFile.size,
+                    total: preparedFile.size,
                   },
                 }));
               },
-              ...(preparedImage.width !== undefined &&
-              preparedImage.height !== undefined
-                ? {
-                    imageDimensions: {
-                      width: preparedImage.width,
-                      height: preparedImage.height,
-                    },
-                  }
-                : {}),
-            },
+            );
+          const stagedRef = await sourceTransport.uploadStagedAttachment(
+            uploadFile,
+            { batchId, ...uploadOptions },
           );
           if (uploadFile.type.startsWith("image/")) {
             void storeUploadedAttachmentPreview(
@@ -1165,384 +952,7 @@ export function NewSessionForm({
     addPendingFiles(incomingShareFiles);
   }, [addPendingFiles, allowAttachments, incomingShareFiles]);
 
-  const { providers: providerDescriptors } = useProviderDescriptors(
-    serverHasCapability(
-      versionInfo,
-      SERVER_CAPABILITIES.providerDescriptors.name,
-    ),
-  );
-  const {
-    settings,
-    displayDefaults,
-    isLoading: settingsLoading,
-    error: settingsError,
-    refetch: refetchSettings,
-    updateSetting: updateServerSetting,
-  } = useServerSettings();
-  const displayDefaultsPending = displayDefaults !== undefined;
-  const defaultsReady = !settingsLoading && settings !== null;
-  const newSessionDefaultsRef = useRef(settings?.newSessionDefaults);
-  useEffect(() => {
-    newSessionDefaultsRef.current = settings?.newSessionDefaults;
-  }, [settings?.newSessionDefaults]);
-
   const resolvedPlaceholder = placeholder ?? t("newSessionPlaceholder");
-  const modeLabels: Record<PermissionMode, string> = {
-    default: t("modeDefaultLabel"),
-    acceptEdits: t("modeAcceptEditsLabel"),
-    plan: t("modePlanLabel"),
-    bypassPermissions: t("modeBypassPermissionsLabel"),
-    auto: t("modeAutoLabel"),
-  };
-  const modeDescriptions: Record<PermissionMode, string> = {
-    default: t("modeDefaultDescription"),
-    acceptEdits: t("modeAcceptEditsDescription"),
-    plan: t("modePlanDescription"),
-    bypassPermissions: t("modeBypassPermissionsDescription"),
-    auto: t("modeAutoDescription"),
-  };
-  const recapModeLabels: Record<RecapMode, string> = {
-    off: t("recapModeOff"),
-    native: t("recapModeNative"),
-    "side-session": t("recapModeSideSession"),
-    fork: t("recapModeFork"),
-  };
-  const promptSuggestionModeLabels: Record<PromptSuggestionMode, string> = {
-    off: t("promptSuggestionModeOff"),
-    native: t("promptSuggestionModeNative"),
-  };
-  const providerDescriptions: Record<ProviderName, string> = {
-    claude: t("newSessionProviderDescriptionClaude"),
-    "claude-gateway": t("newSessionProviderDescriptionClaudeGateway"),
-    "claude-ollama": t("newSessionProviderDescriptionClaudeOllama"),
-    codex: t("newSessionProviderDescriptionCodex"),
-    "codex-oss": t("newSessionProviderDescriptionCodexOss"),
-    gemini: t("newSessionProviderDescriptionGemini"),
-    "gemini-acp": t("newSessionProviderDescriptionGeminiAcp"),
-    grok: t("newSessionProviderDescriptionGrok"),
-    opencode: t("newSessionProviderDescriptionOpenCode"),
-    pi: t("newSessionProviderDescriptionPi"),
-  };
-  const promptSuggestionModeDescriptions: Record<PromptSuggestionMode, string> =
-    {
-      off: t("promptSuggestionModeOffDescription"),
-      native: t("promptSuggestionModeNativeDescription"),
-    };
-  const recapAfterSecondsInlineLabels: Record<RecapMode, string> = {
-    off: t("recapAfterSecondsLabel"),
-    native: t("recapAfterSecondsInlineNative"),
-    "side-session": t("recapAfterSecondsInlineSideSession"),
-    fork: t("recapAfterSecondsInlineFork"),
-  };
-
-  const providerChoices = (providerDescriptors ?? providers).map(
-    (descriptor) => ({
-      ...descriptor,
-      ...(descriptor.name === selectedProvider
-        ? selectedProviderInfo
-        : providers.find((provider) => provider.name === descriptor.name)),
-    }),
-  );
-  const routerEnabled =
-    serverHasCapability(
-      versionInfo,
-      SERVER_CAPABILITIES.agentAuthRouter.name,
-    ) &&
-    !launchLock.limited &&
-    effectiveSandboxLevel === "none" &&
-    (selectedProvider === "claude" || selectedProvider === "codex");
-  const routerDiscovery = useRouterDiscovery(selectedProvider, routerEnabled);
-  const routerThinking: ThinkingOption =
-    selectedThinkingMode === "off"
-      ? "off"
-      : selectedThinkingMode === "auto"
-        ? "auto"
-        : `on:${selectedEffortLevel}`;
-  const currentRouterPreference =
-    routerPreference?.sourceKey === clientSummarySourceKey
-      ? routerPreference
-      : null;
-  const routerSelection = useMemo(
-    () =>
-      routerSelectionCustomized
-        ? currentRouterPreference
-        : routerEnabled && !launch
-          ? restoreRouterSelection(
-              currentRouterPreference,
-              routerDiscovery.error ? null : routerDiscovery.data,
-              selectedProvider,
-              selectedModel,
-              routerThinking,
-            )
-          : null,
-    [
-      routerSelectionCustomized,
-      currentRouterPreference,
-      routerEnabled,
-      launch,
-      routerDiscovery.data,
-      routerDiscovery.error,
-      selectedProvider,
-      selectedModel,
-      routerThinking,
-    ],
-  );
-  const routerRestorePending = Boolean(
-    !routerSelectionCustomized &&
-      currentRouterPreference &&
-      routerEnabled &&
-      !launch &&
-      !routerDiscovery.data &&
-      !routerDiscovery.loaded,
-  );
-  const { usage: subscriptionUsage } = useProviderSubscriptionUsage(
-    routerSelection ? null : selectedProvider,
-    { bootstrapTier: "supplementary" },
-  );
-  const routerAccounts = useMemo(
-    () =>
-      routedAccounts(
-        routerDiscovery.data,
-        selectedProvider,
-        routerSelection?.poolId,
-      ),
-    [routerDiscovery.data, selectedProvider, routerSelection?.poolId],
-  );
-  const accountModels = useMemo(
-    () =>
-      routedModels(
-        routerDiscovery.data,
-        selectedProvider,
-        routerSelection?.poolId,
-      ),
-    [routerDiscovery.data, selectedProvider, routerSelection?.poolId],
-  );
-  const routerAliases = useMemo(
-    () => routerAliasTargets(routerAccounts),
-    [routerAccounts],
-  );
-  const routerModelList = useMemo(
-    () =>
-      buildRouterModelList({
-        direct: selectedProviderInfo?.models ?? [],
-        accounts: routerAccounts,
-        accountModels,
-        routed: !!routerSelection,
-        selectedModel,
-      }),
-    [
-      selectedProviderInfo?.models,
-      routerAccounts,
-      accountModels,
-      routerSelection,
-      selectedModel,
-    ],
-  );
-  const availableModels = routerModelList.models;
-  // The pool's rows are as old as its least recently read member.
-  const routerCatalogAt = routerAccounts
-    .flatMap((a) => [a.catalogAt, a.cliModelsAt])
-    .filter((at): at is string => !!at)
-    .sort()[0];
-  const [routerCatalogRefresh, setRouterCatalogRefresh] = useState<
-    "idle" | "refreshing" | "failed"
-  >("idle");
-  const refreshRouterCatalog = useCallback(async () => {
-    setRouterCatalogRefresh("refreshing");
-    const results = await Promise.allSettled(
-      routerAccounts.map((a) => api.routerRefreshOverview({ accountId: a.id })),
-    );
-    await routerDiscovery.reload();
-    setRouterCatalogRefresh(
-      results.some((r) => r.status === "rejected") ? "failed" : "idle",
-    );
-  }, [routerAccounts, routerDiscovery.reload]);
-  const visibleModels = useMemo(
-    () =>
-      withProviderVisibleModelSelection(
-        selectedProvider,
-        availableModels,
-        selectedModel,
-        t("modelSelectionUnavailable"),
-      ),
-    [availableModels, selectedModel, selectedProvider, t],
-  );
-  const selectedProviderCatalogCurrent =
-    selectedProvider !== "claude-gateway" ||
-    (selectedProviderQuery.fresh &&
-      !selectedProviderQuery.refreshing &&
-      selectedProviderQuery.error === null);
-  const routedModel = resolveRouterModel(
-    selectedModel,
-    accountModels,
-    routerAliases,
-  );
-  const selectedModelInfo = visibleModels.find(
-    (model) => model.id === selectedModel,
-  );
-  const routerTierSelection =
-    routerDiscovery.data?.serviceTierSelection === true;
-  const tierModel = routerSelection
-    ? routerSelection.accountId
-      ? routerAccounts
-          .find((a) => a.id === routerSelection.accountId)
-          ?.models.find((m) => m.id === routedModel)
-      : accountModels.find((m) => m.id === routedModel)
-    : selectedModelInfo;
-  const serviceTierOptions =
-    routerSelection && !routerTierSelection
-      ? []
-      : selectableServiceTiers(tierModel?.serviceTiers);
-  const effectiveServiceTier =
-    selectedServiceTier &&
-    serviceTierOptions.some((tier) => tier.id === selectedServiceTier)
-      ? selectedServiceTier
-      : null;
-  const compatibleMembers = routerSelection?.poolId
-    ? routerPoolMembers(
-        routerDiscovery.data,
-        routerSelection.poolId,
-        selectedProvider,
-        selectedModel,
-        routerThinking,
-        effectiveServiceTier,
-      )
-    : [];
-  const selectedRouterPool = routerDiscovery.data?.pools.find(
-    (p) => p.id === routerSelection?.poolId,
-  );
-  // A picked account always pins with "manual"; otherwise the chosen policy
-  // or the pool default decides. A Manual default with one fitting account
-  // needs no pick.
-  const routerAccountId =
-    routerSelection?.accountId ||
-    ((routerSelection?.policy ?? selectedRouterPool?.policy) === "manual" &&
-    compatibleMembers.length === 1
-      ? compatibleMembers[0]?.id
-      : undefined);
-  const routerPolicy = routerAccountId ? "manual" : routerSelection?.policy;
-  const selectedProviderRuntime = selectedProviderQuery.fresh
-    ? selectedProviderQuery.row
-    : !providersStale
-      ? aggregateProviderInfo
-      : undefined;
-  const hasDirectProviderModel =
-    (!selectedProvider || selectedProviderRuntime?.installed === true) &&
-    selectedProviderCatalogCurrent &&
-    (!currentRouterPreference ||
-      !selectedProviderInfo?.models?.length ||
-      selectedProviderInfo.models.some(
-        (model) => model.id === selectedModel,
-      )) &&
-    hasRequiredProviderModel(
-      selectedProvider,
-      selectedProviderInfo?.models ?? [],
-      selectedModel,
-    );
-  const hasSelectedProviderModel =
-    !routerRestorePending &&
-    (routerSelection
-      ? !!(
-          routerEnabled &&
-          routedModel &&
-          !routerDiscovery.error &&
-          compatibleMembers.length &&
-          (routerAccountId
-            ? compatibleMembers.some((a) => a.id === routerAccountId)
-            : (routerPolicy ?? selectedRouterPool?.policy) !== "manual")
-        )
-      : hasDirectProviderModel);
-  const helperSelectableModels = useMemo(
-    () => [...visibleModels],
-    [visibleModels],
-  );
-  const helperSideModelOptions: FilterOption<string>[] = useMemo(
-    () => [
-      {
-        value: HELPER_SIDE_MODEL_CHEAPEST,
-        label: t("helperSideModelCheapest"),
-      },
-      {
-        value: HELPER_SIDE_MODEL_SAME_AS_MAIN,
-        label: t("helperSideModelSameAsMain"),
-        description: selectedModel ?? undefined,
-      },
-      ...helperSelectableModels.map((model) => ({
-        value: model.id,
-        label: model.name,
-        description: model.description,
-      })),
-    ],
-    [helperSelectableModels, selectedModel, t],
-  );
-  // Default to true for backwards compatibility with providers that don't set these flags
-  const supportsPermissionMode =
-    selectedProviderInfo?.supportsPermissionMode ?? true;
-  const supportsThinkingToggle =
-    selectedProviderInfo?.supportsThinkingToggle ?? true;
-  const effortOptions = useMemo(
-    () =>
-      getEffortLevelOptions({
-        provider: selectedProviderInfo,
-        model: selectedModelInfo,
-        translate: t,
-      }),
-    [selectedModelInfo, selectedProviderInfo, t],
-  );
-  const effectiveEffortLevel = routerSelection
-    ? selectedEffortLevel
-    : resolveSupportedEffortLevel(selectedEffortLevel, effortOptions);
-  const thinkingModeOptions = useMemo(
-    () =>
-      getThinkingModeOptions({
-        provider: selectedProviderInfo,
-        model: selectedModelInfo,
-        effortOptions,
-      }),
-    [effortOptions, selectedModelInfo, selectedProviderInfo],
-  );
-  const effectiveThinkingMode = routerSelection
-    ? selectedThinkingMode
-    : resolveSupportedThinkingMode(selectedThinkingMode, thinkingModeOptions);
-  // A locked effort also settles the thinking mode it implies, so the panel
-  // that would let either be changed is withheld rather than shown inert.
-  const showThinkingControls =
-    supportsThinkingToggle &&
-    !launchLock.effort &&
-    thinkingModeOptions.some((option) => option !== "off");
-  const permissionModeOptions = useMemo(
-    () => getPermissionModeOptions({ model: selectedModelInfo }),
-    [selectedModelInfo],
-  );
-  const effectivePermissionMode = permissionModeOptions.includes(mode)
-    ? mode
-    : "default";
-  const supportsInstalledMachineControl = serverHasCapability(
-    versionInfo,
-    SERVER_CAPABILITIES.installedMachineControl.name,
-  );
-  const machineControlEligible =
-    supportsInstalledMachineControl &&
-    effectiveSandboxLevel === "none" &&
-    !launch &&
-    effectivePermissionMode !== "plan" &&
-    (selectedProvider === "codex"
-      ? effectivePermissionMode === "bypassPermissions"
-      : ["claude", "claude-gateway", "claude-ollama"].includes(
-          selectedProvider ?? "",
-        ));
-  const getLegacyProviderDefaultSeed = useCallback(
-    (providerName: ProviderName) => ({
-      model:
-        providerName === "claude" ? resolveModel(getModelSetting()) : undefined,
-      thinkingMode: legacyThinkingMode,
-      effortLevel: legacyEffortLevel,
-    }),
-    [legacyEffortLevel, legacyThinkingMode],
-  );
-  const availableRecapModes = RECAP_MODE_ORDER;
-  const availablePromptSuggestionModes = PROMPT_SUGGESTION_MODE_ORDER;
-  const showHelperSideModel = selectedRecapMode === "side-session";
   const sortedProjects = useMemo(
     () => sortProjectsForChooser(projects, recentProjectIds),
     [projects, recentProjectIds],
@@ -1723,6 +1133,10 @@ export function NewSessionForm({
     !newProjectPanelShown &&
     (projectSnapshotPending ||
       (Boolean(projectId) && currentProjectSelection === null));
+  // Until the first capability read settles, the form cannot tell a current
+  // server from an older one: it would pick the retired legacy creation route
+  // and skip a saved router preference. Starting waits for it like the project.
+  const serverCapabilitiesPending = versionInfo === null && versionLoading;
   const isDetachedProject =
     !newProjectPanelShown &&
     currentProjectSelection === null &&
@@ -1876,210 +1290,6 @@ export function NewSessionForm({
     t,
   ]);
 
-  // A locked field is not a default anything may override, so every path that
-  // seeds provider, model, effort, or sandbox ends here. It deliberately does
-  // not mark the form customized: a lock the server imposed is not a
-  // preference worth saving as this client's default.
-  const applyLaunchLock = useCallback(() => {
-    if (!launchLock.limited) return;
-    const lockedProvider = knownLockedProvider(launchLock);
-    if (lockedProvider) setSelectedProvider(lockedProvider);
-    if (launchLock.model) setSelectedModel(launchLock.model);
-    if (launchLock.effort) {
-      const lockedEffort = knownLockedEffort(launchLock);
-      if (lockedEffort) setSelectedEffortLevel(lockedEffort);
-      setSelectedThinkingMode("on");
-    }
-    setSandboxLevel("project-write");
-    // Sandboxing implies the firewall here for the same reason the toggle
-    // turns it on: without it a sandboxed agent can reach YA and escape.
-    // The checkbox below stays theirs to clear afterwards.
-    setSandboxNetworkFirewall(true);
-    // A side-session recap cannot run beside a sandboxed session, the same
-    // reason the sandbox toggle clears it when a superuser turns it on.
-    setSelectedRecapMode((current) =>
-      current === "side-session" ? "off" : current,
-    );
-  }, [launchLock]);
-
-  // Apply saved defaults against whatever provider rows are known so far.
-  // `providerRows` may be empty (nothing probed yet) or a previous visit's
-  // snapshot; the standing choice is settings state, so an unknown catalog
-  // seeds the saved provider rather than blanking the form.
-  const applyInitialDefaults = useCallback(
-    (providerRows: ProviderInfo[]) => {
-      const catalogKnown = providerRows.length > 0;
-      const launchableProviderNames = new Set(
-        getLaunchableProviders(providerRows).map((p) => p.name),
-      );
-      const isSelectable = (name: ProviderName) =>
-        !catalogKnown || launchableProviderNames.has(name);
-      const savedDefaults = settings?.newSessionDefaults ?? displayDefaults;
-      // An explicit caller preference (e.g. "clear" from an existing session)
-      // outranks saved new-session defaults.
-      const requestedProviderName =
-        preferredProvider && isSelectable(preferredProvider)
-          ? preferredProvider
-          : null;
-      const savedProviderName =
-        requestedProviderName ??
-        (savedDefaults?.provider && isSelectable(savedDefaults.provider)
-          ? savedDefaults.provider
-          : null);
-      const initialProvider =
-        providerRows.find((p) => p.name === savedProviderName) ??
-        getDefaultLaunchableProvider(providerRows) ??
-        (catalogKnown
-          ? null
-          : unprobedProviderRow(savedProviderName ?? DEFAULT_PROVIDER));
-
-      if (!initialProvider) return;
-
-      const initialModels = initialProvider.models ?? [];
-      const requestedModelId =
-        requestedProviderName &&
-        initialProvider.name === requestedProviderName &&
-        preferredModel &&
-        ((initialProvider.name !== "claude-gateway" &&
-          initialModels.length === 0) ||
-          initialModels.some((model) => model.id === preferredModel))
-          ? preferredModel
-          : null;
-      const preferredPromptSuggestionMode =
-        getPreferredPromptSuggestionMode(savedDefaults);
-      const initialProviderDefaults = getProviderSessionDefaults(
-        savedDefaults,
-        initialProvider.name,
-        getLegacyProviderDefaultSeed(initialProvider.name),
-      );
-      setSelectedProvider(initialProvider.name);
-      setSelectedServiceTier(initialProviderDefaults.serviceTier ?? null);
-      setRouterPreference(
-        preferredRouterSelection(
-          initialProviderDefaults,
-          clientSummarySourceKey,
-        ),
-      );
-      setRouterSelectionCustomized(false);
-      setSelectedModel(
-        requestedModelId ??
-          getPreferredProviderModelId(
-            initialProvider.name,
-            initialModels,
-            initialProviderDefaults.model,
-          ),
-      );
-      const preferredThinkingSelection = preferredThinking
-        ? parseThinkingOption(preferredThinking)
-        : null;
-      setSelectedThinkingMode(
-        preferredThinkingSelection?.mode ??
-          initialProviderDefaults.thinkingMode ??
-          "off",
-      );
-      setSelectedEffortLevel(
-        preferredThinkingSelection?.effort ??
-          initialProviderDefaults.effortLevel ??
-          "high",
-      );
-      const savedSandboxLevel =
-        supportsSessionSandboxing &&
-        savedDefaults?.sandboxLevel === "project-write"
-          ? "project-write"
-          : "none";
-      const savedRecapMode = getPreferredRecapMode(
-        initialProvider,
-        savedDefaults,
-      );
-      setSelectedRecapMode(
-        providerSupportsLocalSessionSandbox(initialProvider.name) &&
-          savedSandboxLevel === "project-write" &&
-          savedRecapMode === "side-session"
-          ? "off"
-          : savedRecapMode,
-      );
-      setSandboxLevel(savedSandboxLevel);
-      setSandboxNetworkFirewall(
-        savedSandboxLevel === "project-write" &&
-          savedDefaults?.sandboxNetworkFirewall !== false,
-      );
-      setRecapAfterSeconds(
-        normalizeRecapAfterSeconds(savedDefaults?.recapAfterSeconds),
-      );
-      setSelectedPromptSuggestionMode(preferredPromptSuggestionMode);
-      setHelperSideModel(
-        getDefaultHelperSideModel(initialModels, initialProviderDefaults),
-      );
-      setMode(
-        preferredPermissionMode ?? savedDefaults?.permissionMode ?? "default",
-      );
-      // Last, so a saved default never outranks the acting principal's lock.
-      applyLaunchLock();
-    },
-    [
-      applyLaunchLock,
-      clientSummarySourceKey,
-      settings,
-      displayDefaults,
-      supportsSessionSandboxing,
-      getLegacyProviderDefaultSeed,
-      preferredProvider,
-      preferredModel,
-      preferredThinking,
-      preferredPermissionMode,
-    ],
-  );
-
-  // Saved display defaults can seed controls while current settings load.
-  // Waiting for the provider catalog here would hand an unselected provider's
-  // discovery cost to the saved one; see topics/session-defaults.md.
-  useEffect(() => {
-    if (hasSeededDefaultsRef.current || (settingsLoading && !displayDefaults))
-      return;
-    hasSeededDefaultsRef.current = !settingsLoading && !displayDefaultsPending;
-    if (hasUserCustomizedDefaultsRef.current) return;
-    applyInitialDefaults(providers);
-  }, [
-    applyInitialDefaults,
-    providers,
-    settingsLoading,
-    displayDefaults,
-    displayDefaultsPending,
-  ]);
-
-  // Reconcile that seed once the probed catalog and version capabilities land.
-  useEffect(() => {
-    if (
-      hasInitializedDefaultsRef.current ||
-      providersLoading ||
-      settingsLoading ||
-      versionLoading
-    ) {
-      return;
-    }
-
-    hasInitializedDefaultsRef.current = true;
-    if (hasUserCustomizedDefaultsRef.current) {
-      return;
-    }
-
-    if (providers.length === 0) return;
-    applyInitialDefaults(providers);
-  }, [
-    applyInitialDefaults,
-    providers,
-    providersLoading,
-    settingsLoading,
-    versionLoading,
-  ]);
-
-  // Re-assert the lock for a principal that arrived after the first seed. The
-  // seeding paths call applyLaunchLock themselves, so this covers only the
-  // ordering where the acting-principal request settles last.
-  useEffect(() => {
-    applyLaunchLock();
-  }, [applyLaunchLock]);
-
   // A layout effect, so the field is filled before any key can start the
   // session: an empty field would start it detached.
   useLayoutEffect(() => {
@@ -2127,170 +1337,6 @@ export function NewSessionForm({
       document.removeEventListener("focusin", handleFocusIn, true);
     };
   }, [isProjectChooserExpanded]);
-
-  // When provider changes, reset model based on user settings
-  const handleProviderSelect = (providerName: ProviderName) => {
-    hasUserCustomizedDefaultsRef.current = true;
-    setSelectedProvider(providerName);
-    const provider = providers.find((p) => p.name === providerName);
-    const providerModels = provider?.models ?? [];
-    const providerDefaults = getProviderSessionDefaults(
-      settings?.newSessionDefaults,
-      providerName,
-      getLegacyProviderDefaultSeed(providerName),
-    );
-    setSelectedServiceTier(providerDefaults.serviceTier ?? null);
-    setRouterPreference(
-      preferredRouterSelection(providerDefaults, clientSummarySourceKey),
-    );
-    setRouterSelectionCustomized(false);
-    if (provider?.models && provider.models.length > 0) {
-      setSelectedModel(
-        getPreferredProviderModelId(
-          providerName,
-          providerModels,
-          providerDefaults.model,
-        ),
-      );
-    } else {
-      setSelectedModel(null);
-    }
-    const preferredThinkingSelection = preferredThinking
-      ? parseThinkingOption(preferredThinking)
-      : null;
-    setSelectedThinkingMode(
-      preferredThinkingSelection?.mode ??
-        providerDefaults.thinkingMode ??
-        "off",
-    );
-    setSelectedEffortLevel(
-      preferredThinkingSelection?.effort ??
-        providerDefaults.effortLevel ??
-        "high",
-    );
-    setHelperSideModel(
-      getDefaultHelperSideModel(providerModels, providerDefaults),
-    );
-  };
-
-  useEffect(() => {
-    if (selectedProvider !== "claude-gateway") return;
-    if (
-      selectedModel &&
-      availableModels.some((model) => model.id === selectedModel)
-    ) {
-      return;
-    }
-    const providerDefaults = getProviderSessionDefaults(
-      settings?.newSessionDefaults,
-      selectedProvider,
-      getLegacyProviderDefaultSeed(selectedProvider),
-    );
-    const nextModel = getPreferredProviderModelId(
-      selectedProvider,
-      availableModels,
-      providerDefaults.model,
-    );
-    if (selectedModel !== nextModel) {
-      setSelectedModel(nextModel);
-      setHelperSideModel(
-        getDefaultHelperSideModel(availableModels, providerDefaults),
-      );
-    }
-  }, [
-    availableModels,
-    getLegacyProviderDefaultSeed,
-    selectedModel,
-    selectedProvider,
-    settings?.newSessionDefaults,
-  ]);
-
-  // A provider chosen before its catalog answered has no model yet. Fill the
-  // provider-local saved default once its models arrive, leaving any existing
-  // pick alone.
-  useEffect(() => {
-    if (!selectedProvider || selectedModel) return;
-    if (availableModels.length === 0) return;
-    const providerDefaults = getProviderSessionDefaults(
-      settings?.newSessionDefaults,
-      selectedProvider,
-      getLegacyProviderDefaultSeed(selectedProvider),
-    );
-    const nextModel = getPreferredProviderModelId(
-      selectedProvider,
-      availableModels,
-      providerDefaults.model,
-    );
-    if (!nextModel) return;
-    setSelectedModel(nextModel);
-    setHelperSideModel(
-      getDefaultHelperSideModel(availableModels, providerDefaults),
-    );
-  }, [
-    availableModels,
-    getLegacyProviderDefaultSeed,
-    selectedModel,
-    selectedProvider,
-    settings?.newSessionDefaults,
-  ]);
-
-  // Build model options for FilterDropdown
-  const modelOptions = useMemo((): FilterOption<string>[] => {
-    return visibleModels.map((model, index) => {
-      const label = model.size
-        ? `${model.name} (${(model.size / (1024 * 1024 * 1024)).toFixed(1)} GB)`
-        : model.name;
-
-      const unavailable = routerModelList.unavailable.get(model.id);
-      let description = unavailable
-        ? t(ROUTER_MODEL_UNAVAILABLE[unavailable])
-        : model.description;
-      if (!description) {
-        const parts: string[] = [];
-        if (model.parameterSize) parts.push(model.parameterSize);
-        if (model.contextWindow) {
-          parts.push(formatContextWindowLabel(model.contextWindow));
-        }
-        if (model.parentModel) parts.push(model.parentModel);
-        if (model.quantizationLevel) parts.push(model.quantizationLevel);
-        if (parts.length > 0) description = parts.join(" · ");
-      }
-
-      return {
-        value: model.id,
-        label,
-        description,
-        disabled: !!unavailable,
-        groupLabelBefore: startsAdditionalModelGroup(visibleModels, index)
-          ? t("previousModelsGroup")
-          : undefined,
-        // Reuse the session-header/tooltip badge so the model's route (e.g.
-        // pi's "copilot") is visible in the picker, in the same provider →
-        // route → model order the badge already establishes.
-        icon: selectedProvider ? (
-          <ProviderBadge provider={selectedProvider} model={model.id} />
-        ) : undefined,
-        meta: (
-          <ModelSubscriptionUsage
-            usage={subscriptionUsage}
-            modelId={model.id}
-          />
-        ),
-      };
-    });
-  }, [
-    routerModelList.unavailable,
-    selectedProvider,
-    subscriptionUsage,
-    t,
-    visibleModels,
-  ]);
-
-  // Handle model selection from FilterDropdown
-  const handleModelSelect = useCallback((selected: string[]) => {
-    hasUserCustomizedDefaultsRef.current = true;
-    setSelectedModel(selected[0] ?? null);
-  }, []);
 
   // Build STT backend options for the mic-attached speech menu.
   const speechMethodOptions = useMemo((): FilterOption<SpeechMethodId>[] => {
@@ -2403,18 +1449,7 @@ export function NewSessionForm({
   );
 
   useLayoutEffect(() => {
-    const pending = pendingTextareaSelectionRef.current;
-    const textarea = textareaRef.current;
-    if (
-      !pending ||
-      !textarea ||
-      message !== pending.value ||
-      textarea.value !== pending.value
-    ) {
-      return;
-    }
-    pendingTextareaSelectionRef.current = null;
-    pending.restore(textarea);
+    restorePendingTextareaSelection(message, textareaRef.current);
   }, [message]);
 
   useLayoutEffect(() => {
@@ -2524,98 +1559,11 @@ export function NewSessionForm({
     }
   };
 
-  const handleModeSelect = (selectedMode: PermissionMode) => {
-    hasUserCustomizedDefaultsRef.current = true;
-    setMode(selectedMode);
-  };
-
-  // Auto-persist new-session defaults: any user change to provider / model /
-  // speed / router / permission / recap / suggestions / helper becomes the
-  // default immediately
-  // (no explicit "save as default" step). Skips the initial load — only fires
-  // once the user has actually customized something — and stays silent to
-  // avoid a toast on every click.
-  useEffect(() => {
-    if (
-      !hasUserCustomizedDefaultsRef.current ||
-      !defaultsReady ||
-      settings?.newSessionDefaults?.selectionMode === "fixed" ||
-      !selectedProvider ||
-      displayDefaultsPending
-    )
-      return;
-    const {
-      helperSideModel: _legacyHelperSideModel,
-      serviceTier: _legacyServiceTier,
-      sandboxLevel: _savedSandboxLevel,
-      sandboxNetworkFirewall: _savedSandboxNetworkFirewall,
-      ...baseDefaults
-    } = (newSessionDefaultsRef.current ?? {}) as NonNullable<
-      typeof newSessionDefaultsRef.current
-    > & { helperSideModel?: string };
-    void Promise.resolve(
-      updateServerSetting("newSessionDefaults", {
-        ...withProviderSessionDefaults(
-          {
-            ...baseDefaults,
-            provider: selectedProvider ?? undefined,
-            // Permission mode is an all-provider preference. Keep an
-            // unsupported saved value such as Auto intact while the visible /
-            // launch-time mode falls back to Ask for the selected model.
-            permissionMode: mode,
-            recapMode: selectedRecapMode,
-            recapAfterSeconds,
-            promptSuggestionMode: selectedPromptSuggestionMode,
-            ...(supportsSessionSandboxing
-              ? {
-                  sandboxLevel,
-                  ...(sandboxLevel === "project-write"
-                    ? { sandboxNetworkFirewall }
-                    : {}),
-                }
-              : {}),
-          },
-          selectedProvider,
-          {
-            model: selectedModel ?? undefined,
-            serviceTier: selectedServiceTier ?? undefined,
-            routerPoolId: currentRouterPreference?.poolId,
-            routerAccountId: currentRouterPreference?.accountId || undefined,
-            routerPolicy: currentRouterPreference?.policy,
-            thinkingMode: selectedThinkingMode,
-            effortLevel: selectedEffortLevel,
-            helperSideModel,
-          },
-          getLegacyProviderDefaultSeed(selectedProvider),
-        ),
-      }),
-    ).catch((err) => {
-      console.error("Failed to save new session defaults:", err);
-    });
-  }, [
-    getLegacyProviderDefaultSeed,
-    helperSideModel,
-    defaultsReady,
-    settings?.newSessionDefaults?.selectionMode,
-    displayDefaultsPending,
-    mode,
-    recapAfterSeconds,
-    sandboxLevel,
-    sandboxNetworkFirewall,
-    selectedModel,
-    selectedServiceTier,
-    currentRouterPreference,
-    selectedEffortLevel,
-    selectedProvider,
-    selectedPromptSuggestionMode,
-    selectedRecapMode,
-    selectedThinkingMode,
-    supportsSessionSandboxing,
-    updateServerSetting,
-  ]);
-
   const resolveProjectIdForSubmission = useCallback(
-    async (trimmedProjectInput: string): Promise<string | null> => {
+    async (
+      trimmedProjectInput: string,
+      ownsSubmission: () => boolean = () => true,
+    ): Promise<string | null> => {
       // New project creates exactly one folder (the server refuses a
       // missing parent), with Git unless declined, and adds an existing
       // folder as it is.
@@ -2625,6 +1573,7 @@ export function NewSessionForm({
           name: newProjectSubmission.name,
           ...(projectCreationGitChoice ? { gitInit: newProjectGitInit } : {}),
         });
+        if (!ownsSubmission()) return null;
         const createdId = added.project.id ?? null;
         if (!createdId) return null;
         const path = added.project.path ?? newProjectSubmission.path;
@@ -2662,6 +1611,7 @@ export function NewSessionForm({
               name: target.name,
             })
           : await api.addProject(target.path);
+        if (!ownsSubmission()) return null;
         resolvedProjectId = addProjectResult.project.id ?? null;
         if (!resolvedProjectId) return null;
         if (newFolder) {
@@ -2706,41 +1656,29 @@ export function NewSessionForm({
       const localFiles = currentFiles.filter(isPendingLocalFile);
       for (const pendingFile of localFiles) {
         try {
-          const preparedImage = pendingFile.file.type.startsWith("image/")
-            ? await prepareImageUpload(
-                pendingFile.file,
-                getAttachmentUploadProfile(
-                  attachmentQuality,
-                  selectedProviderInfo,
-                  selectedModel,
-                ),
-              )
-            : { file: pendingFile.file };
-          const uploadFile = preparedImage.file;
-          const uploadedFile = await sourceTransport.upload(
-            activeProjectId,
-            sessionId,
-            uploadFile,
-            {
-              onProgress: (bytesUploaded) => {
+          const { uploadFile, uploadOptions } =
+            await prepareComposerAttachmentUpload(
+              pendingFile.file,
+              getAttachmentUploadProfile(
+                attachmentQuality,
+                selectedProviderInfo,
+                selectedModel,
+              ),
+              (bytesUploaded, preparedFile) => {
                 setUploadProgress((prev) => ({
                   ...prev,
                   [pendingFile.id]: {
                     uploaded: bytesUploaded,
-                    total: uploadFile.size,
+                    total: preparedFile.size,
                   },
                 }));
               },
-              ...(preparedImage.width !== undefined &&
-              preparedImage.height !== undefined
-                ? {
-                    imageDimensions: {
-                      width: preparedImage.width,
-                      height: preparedImage.height,
-                    },
-                  }
-                : {}),
-            },
+            );
+          const uploadedFile = await sourceTransport.upload(
+            activeProjectId,
+            sessionId,
+            uploadFile,
+            uploadOptions,
           );
           uploadedFiles.push(uploadedFile);
         } catch (uploadErr) {
@@ -2818,445 +1756,100 @@ export function NewSessionForm({
   );
 
   const handleStartSession = useCallback(
-    async (
+    (
       messageOverride?: unknown,
       speechTriggered = false,
       propagateFailure = false,
-    ) => {
-      const override =
-        typeof messageOverride === "string" ? messageOverride : undefined;
-      if (override === undefined && deferSpeechDelivery("start")) {
-        return;
-      }
-
-      if (
-        routerSelection &&
-        (routerSelection.sourceKey !== clientSummarySourceKey ||
-          !serverHasCapability(
-            versionInfo,
-            SERVER_CAPABILITIES.agentAuthRouter.name,
-          ) ||
-          launchLock.limited ||
-          effectiveSandboxLevel !== "none" ||
-          launch)
-      ) {
-        showToast(t("routerLaunchUnsupported"), "error");
-        return;
-      }
-      const finalMessage = (override ?? draftControls.getDraft()).trimEnd();
-
-      const submissionFiles = pendingFilesRef.current;
-      const hasContent = finalMessage.trim() || submissionFiles.length > 0;
-      // A muted composer composes its own first turn, so an empty message is
-      // not a reason to refuse the start.
-      if (
-        (!hasContent && !composerMuted) ||
-        creatingTemplateProject ||
-        templateProjectBusy ||
-        isStarting ||
-        displayDefaultsPending ||
-        !hasSelectedProviderModel ||
-        projectPending
-      ) {
-        if (propagateFailure) throw new Error(t("composerMemoCannotStart"));
-        return;
-      }
-
-      const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
-        configuredPrefix: speechMessagePrefix,
-        speechTriggered,
-        recentSpeech: isRecentSpeechAttribution(),
-      });
-      let trimmedMessage =
-        deliverySpeechPrefix && hasContent
-          ? prependSpeechMessagePrefix(finalMessage, deliverySpeechPrefix)
-          : finalMessage.trim();
-      const command = parseComposerSlashCommand(trimmedMessage);
-      const turnEffort =
-        command && isTurnEffort(command.kind) ? command.kind : undefined;
-      if (
-        turnEffort &&
-        (!serverHasCapability(
-          versionInfo,
-          SERVER_CAPABILITIES.turnEffortModifiers.name,
-        ) ||
-          launch ||
-          !["codex", "claude", "claude-gateway", "claude-ollama"].includes(
-            selectedProvider ?? "",
-          ))
-      ) {
-        showToast(t("turnEffortUnavailable"), "error");
-        return;
-      }
-      if (turnEffort && command) {
-        if (!command.argument.trim()) {
-          showToast(t("turnEffortNeedsMessage"), "error");
-          return;
-        }
-        trimmedMessage = command.argument;
-      }
-      const messageMetadata = turnEffort
-        ? { deliveryIntent: "direct" as const, turnEffort }
-        : undefined;
-      if (
-        requiresAttachmentOnlyServerUpdate({
-          version: versionInfo,
-          text: finalMessage,
-          attachmentCount: pendingFiles.length,
-        })
-      ) {
-        showToast(t("attachmentOnlyRequiresServerUpdate"), "error");
-        return;
-      }
-      const trimmedProjectInput = normalizeProjectInput(projectInput);
-      const actionAtMs = Date.now();
-      const clientTimestamp = getServerClockTimestamp(actionAtMs);
-
-      setInterimTranscript("");
-      consumeSpeechAttribution();
-      setIsStarting(true);
-      if (historyScope)
-        void rememberComposerPrompt(historyScope, finalMessage).catch((cause) =>
-          showToast(
-            t("composerHistorySaveError", { error: String(cause) }),
-            "error",
-          ),
-        );
-
-      try {
-        let resolvedProjectId =
-          await resolveProjectIdForSubmission(trimmedProjectInput);
-        if (!resolvedProjectId && !canCreateDetached) {
-          throw new Error("Choose a project to start a session.");
-        }
-
-        let sessionId: string;
-        let processId: string;
-        const sessionMode = effectivePermissionMode;
-        let initialPermissionMode: PermissionMode = sessionMode;
-        let initialAppliedPermissionMode: PermissionMode | undefined;
-        let initialModeVersion = 0;
-        const uploadedFiles: UploadedFile[] = [];
-
-        // Get model and thinking settings
-        const thinking = toThinkingOption(
-          effectiveThinkingMode,
+      background = false,
+    ) =>
+      startNewSession(
+        {
+          attachmentQuality,
+          basePath,
+          canCreateDetached,
+          canCreateInBackground,
+          clientSummarySourceKey,
+          composerMuted,
+          consumeSpeechAttribution,
+          creatingTemplateProject,
+          creationViewOwner,
+          deferSpeechDelivery,
+          displayDefaultsPending,
+          draftControls,
           effectiveEffortLevel,
-        );
-        const effectiveRecapMode = resolveRecapMode(
+          effectivePermissionMode,
+          effectiveSandboxLevel,
+          effectiveSandboxNetworkFirewall,
+          effectiveServiceTier,
+          effectiveThinkingMode,
+          ensureDraftAttachmentBatchId,
+          hasSelectedProviderModel,
+          helperSideModel,
+          historyScope,
+          isRecentSpeechAttribution,
+          isStarting,
+          launch,
+          launchLock,
+          machineControlEligible,
+          machineControlSelected,
+          navigate,
+          newSessionDraftKey,
+          pendingFiles,
+          pendingFilesRef,
+          pendingStagedUploadsRef,
+          principal: { username: principal.username },
+          principalResolved,
+          projectApp,
+          projectInput,
+          projectPending,
+          recapAfterSeconds,
+          resolvePendingAttachmentsForSession,
+          resolveProjectIdForSubmission,
+          routedModel,
+          routerAccountId,
+          routerClaudeAiConnectors,
+          routerPolicy,
+          routerSelection,
+          routerThinking,
+          selectedModel,
+          selectedPromptSuggestionMode,
+          selectedProvider,
           selectedProviderInfo,
           selectedRecapMode,
-        );
-        const effectivePromptSuggestionMode = resolvePromptSuggestionMode(
-          selectedProviderInfo,
-          selectedPromptSuggestionMode,
-        );
-        // Display preference for thinking rows; sent for compatibility while the
-        // server requests provider summaries independently.
-        const showThinking = getShowThinkingSetting();
-        const creationProvenance = getUiCreationProvenance(versionInfo);
-        const sessionOptions = {
-          creationProvenance,
-          ...(supportsInstalledMachineControl
-            ? {
-                machineControl:
-                  machineControlSelected && machineControlEligible,
-              }
-            : {}),
-
-          mode: sessionMode,
-          model: routerSelection ? routedModel : selectedModel || undefined,
-          ...(routerSelection &&
-          serverHasCapability(
-            versionInfo,
-            SERVER_CAPABILITIES.agentAuthRouter.name,
-          )
-            ? {
-                routerAccountId,
-                ...(routerSelection.poolId
-                  ? {
-                      routerPoolId: routerSelection.poolId,
-                      ...(routerPolicy ? { routerPolicy } : {}),
-                    }
-                  : {}),
-              }
-            : {}),
-          thinking: routerSelection ? routerThinking : thinking,
-          showThinking,
-          ...(effectiveServiceTier
-            ? { serviceTier: effectiveServiceTier }
-            : {}),
-          provider: selectedProvider ?? undefined,
-          ...(supportsSessionSandboxing
-            ? {
-                sandboxLevel: effectiveSandboxLevel,
-                ...(effectiveSandboxLevel === "project-write"
-                  ? {
-                      sandboxNetworkFirewall: effectiveSandboxNetworkFirewall,
-                    }
-                  : {}),
-              }
-            : {}),
-          recapMode: effectiveRecapMode,
-          recapAfterSeconds,
-          promptSuggestionMode: effectivePromptSuggestionMode,
-          helperSideModel,
-          // Last word, so a submit that raced the acting-principal request
-          // still launches inside the lock instead of being refused.
-          ...launchLockOverrides(launchLock),
-        };
-        logSessionUiTrace("new-session-submit", {
-          projectId: resolvedProjectId ?? null,
-          detached: !resolvedProjectId,
-          mode: sessionMode,
-          model: selectedModel ?? null,
-          thinking,
-          provider: selectedProvider ?? null,
-          sandboxLevel: supportsSessionSandboxing
-            ? effectiveSandboxLevel
-            : null,
-          sandboxNetworkFirewall: supportsSessionSandboxing
-            ? effectiveSandboxNetworkFirewall
-            : null,
-          recapMode: effectiveRecapMode,
-          recapAfterSeconds,
-          promptSuggestionMode: effectivePromptSuggestionMode,
-          helperSideModel,
-          textLength: trimmedMessage.length,
-          pendingFileCount: pendingFiles.length,
-          clientTimestamp,
-          serverOffsetMs: getEstimatedServerOffsetMs(),
-        });
-
-        if (launch) {
-          if (pendingFiles.length > 0) {
-            throw new Error("This session launch does not accept attachments");
-          }
-          await launch.submit({
-            message: trimmedMessage,
-            options: sessionOptions,
-            clientTimestamp,
-          });
-          draftControls.clearDraft();
-          setIsStarting(false);
-          return;
-        }
-
-        if (submissionFiles.length > 0) {
-          // Two-phase flow: create session first, then upload to real session folder
-          // Step 1: Create the session without sending a message
-          const createRequestSentAtMs = Date.now();
-          const createResult = resolvedProjectId
-            ? await api.createSession(resolvedProjectId, sessionOptions)
-            : await api.createDetachedSession(sessionOptions);
-          const createResponseReceivedAtMs = Date.now();
-          const createTiming = recordServerClockSample({
-            clientRequestStartMs: createRequestSentAtMs,
-            clientResponseEndMs: createResponseReceivedAtMs,
-            serverTimestamp: createResult.serverTimestamp,
-          });
-          const activeProjectId = createResult.projectId;
-          sessionId = createResult.sessionId;
-          processId = createResult.processId;
-          initialPermissionMode = createResult.permissionMode;
-          initialAppliedPermissionMode = createResult.appliedPermissionMode;
-          initialModeVersion = createResult.modeVersion;
-          resolvedProjectId = activeProjectId;
-          logSessionUiTrace("new-session-created", {
-            sessionId,
-            processId,
-            projectId: resolvedProjectId,
-            thinking,
-            mode: sessionMode,
-            serverTimestamp: createResult.serverTimestamp,
-            requestRttMs: createTiming?.roundTripMs ?? null,
-            estimatedServerOffsetMs: createTiming?.serverOffsetMs ?? null,
-          });
-
-          // Step 2: Materialize staged draft refs, or use the legacy final
-          // session upload fallback for files selected before capability support
-          // was known.
-          uploadedFiles.push(
-            ...(await resolvePendingAttachmentsForSession(
-              activeProjectId,
-              sessionId,
-            )),
-          );
-
-          // Step 3: Send the first message with attachments
-          const queueRequestSentAtMs = Date.now();
-          const queueResult = await api.queueMessage(
-            sessionId,
-            trimmedMessage,
-            sessionMode,
-            uploadedFiles.length > 0 ? uploadedFiles : undefined,
-            undefined, // tempId
-            thinking, // Pass the captured thinking setting to avoid process restart
-            undefined, // deferred
-            clientTimestamp,
-            messageMetadata,
-            undefined, // serviceTier
-            showThinking,
-          );
-          const queueResponseReceivedAtMs = Date.now();
-          const queueTiming = recordServerClockSample({
-            clientRequestStartMs: queueRequestSentAtMs,
-            clientResponseEndMs: queueResponseReceivedAtMs,
-            serverTimestamp: queueResult.serverTimestamp,
-          });
-          logSessionUiTrace("new-session-queued", {
-            sessionId,
-            processId,
-            projectId: resolvedProjectId,
-            clientTimestamp,
-            serverTimestamp: queueResult.serverTimestamp,
-            uploadWaitMs: queueRequestSentAtMs - actionAtMs,
-            requestRttMs: queueTiming?.roundTripMs ?? null,
-            estimatedServerOffsetMs: queueTiming?.serverOffsetMs ?? null,
-            clientToServerLatencyMs: measureServerLatencyMs(
-              clientTimestamp,
-              queueResult.serverTimestamp,
-            ),
-          });
-        } else {
-          // No files - use single-step flow for efficiency
-          const startRequestSentAtMs = Date.now();
-          const result = resolvedProjectId
-            ? await api.startSession(
-                resolvedProjectId,
-                trimmedMessage,
-                sessionOptions,
-                undefined,
-                clientTimestamp,
-                messageMetadata,
-              )
-            : await api.startDetachedSession(
-                trimmedMessage,
-                sessionOptions,
-                undefined,
-                clientTimestamp,
-                messageMetadata,
-              );
-          const startResponseReceivedAtMs = Date.now();
-          const startTiming = recordServerClockSample({
-            clientRequestStartMs: startRequestSentAtMs,
-            clientResponseEndMs: startResponseReceivedAtMs,
-            serverTimestamp: result.serverTimestamp,
-          });
-          sessionId = result.sessionId;
-          processId = result.processId;
-          initialPermissionMode = result.permissionMode;
-          initialAppliedPermissionMode = result.appliedPermissionMode;
-          initialModeVersion = result.modeVersion;
-          resolvedProjectId = result.projectId;
-          logSessionUiTrace("new-session-started", {
-            sessionId,
-            processId,
-            projectId: resolvedProjectId,
-            thinking,
-            mode: sessionMode,
-            provider: selectedProvider ?? null,
-            model: selectedModel ?? null,
-            clientTimestamp,
-            serverTimestamp: result.serverTimestamp,
-            requestRttMs: startTiming?.roundTripMs ?? null,
-            estimatedServerOffsetMs: startTiming?.serverOffsetMs ?? null,
-            clientToServerLatencyMs: measureServerLatencyMs(
-              clientTimestamp,
-              result.serverTimestamp,
-            ),
-          });
-        }
-
-        if (!resolvedProjectId) {
-          throw new Error("Missing project ID for new session");
-        }
-
-        // Clean up preview URLs
-        setPendingFiles([], {
-          persistDraft: false,
-          revokeRemovedPreviewUrls: true,
-        });
-
-        draftControls.clearDraft();
-        // Pass initial status so SessionPage can connect SSE immediately
-        // without waiting for getSession to complete
-        // Also pass initial message as optimistic title (session name = first message)
-        // Pass model/provider so ProviderBadge can render immediately
-        navigate(
-          `${basePath}/projects/${resolvedProjectId}/sessions/${sessionId}`,
-          {
-            state: createSessionNavigationState({
-              projectApp,
-              initialStatus: {
-                owner: "self",
-                processId,
-                permissionMode: initialPermissionMode,
-                appliedPermissionMode: initialAppliedPermissionMode,
-                modeVersion: initialModeVersion,
-                recapAfterSeconds,
-              },
-              initialTitle: trimmedMessage,
-              initialModel: routerSelection
-                ? routedModel
-                : selectedModel || undefined,
-              initialProvider: selectedProvider ?? undefined,
-            }),
-          },
-        );
-        return true;
-      } catch (err) {
-        console.error("Failed to start session:", err);
-        draftControls.restoreFromStorage();
-        setIsStarting(false);
-
-        // Show user-visible error message
-        let errorMessage = t("newSessionStartError");
-        if (err instanceof Error) {
-          const providerDisplayName =
-            selectedProviderInfo?.displayName ?? selectedProvider ?? "Provider";
-          const lowerMessage = err.message.toLowerCase();
-          const status = (err as Error & { status?: number }).status;
-
-          // Check for specific error types
-          if (err.message.includes("Queue is full")) {
-            errorMessage = t("newSessionServerBusy");
-          } else if (
-            lowerMessage.includes("invalid authentication credentials") ||
-            lowerMessage.includes("authentication_error") ||
-            lowerMessage.includes("please run /login") ||
-            (status === 401 &&
-              (selectedProvider === "claude" ||
-                selectedProvider === "gemini" ||
-                selectedProvider === "codex"))
-          ) {
-            errorMessage = t("newSessionProviderAuthError", {
-              provider: providerDisplayName,
-            });
-          } else if (err.message.includes("503")) {
-            errorMessage = t("newSessionServerCapacity");
-          } else if (err.message.includes("404")) {
-            errorMessage = t("newSessionProjectNotFound");
-          } else if (
-            err.message.includes("fetch") ||
-            err.message.includes("network")
-          ) {
-            errorMessage = t("newSessionNetworkError");
-          } else {
-            errorMessage = err.message;
-          }
-        }
-        showToast(errorMessage, "error");
-        if (propagateFailure) throw err;
-      }
-    },
+          serverCapabilitiesPending,
+          setAcceptedCreation,
+          setAcceptingText,
+          setInterimTranscript,
+          setIsStarting,
+          setPendingFiles,
+          showToast,
+          sourceTransport,
+          speechMessagePrefix,
+          supportsInstalledMachineControl,
+          supportsSessionSandboxing,
+          t,
+          templateProjectBusy,
+          textareaRef,
+          versionInfo,
+        },
+        messageOverride,
+        speechTriggered,
+        propagateFailure,
+        background,
+      ),
     [
       basePath,
+      canCreateInBackground,
+      newSessionDraftKey,
+      principal.username,
+      principalResolved,
+      sourceTransport,
       draftControls,
       routerSelection,
       routedModel,
       routerAccountId,
       routerPolicy,
+      routerClaudeAiConnectors,
       routerThinking,
       clientSummarySourceKey,
       supportsInstalledMachineControl,
@@ -3285,10 +1878,13 @@ export function NewSessionForm({
       projectInput,
       projectApp,
       projectPending,
+      serverCapabilitiesPending,
       recapAfterSeconds,
       effectiveSandboxLevel,
       effectiveSandboxNetworkFirewall,
       resolvePendingAttachmentsForSession,
+      ensureDraftAttachmentBatchId,
+      attachmentQuality,
       resolveProjectIdForSubmission,
       selectedModel,
       selectedPromptSuggestionMode,
@@ -3304,166 +1900,57 @@ export function NewSessionForm({
     ],
   );
 
-  const handleQueueProjectSession = async (messageOverride?: unknown) => {
-    if (routerSelection && routerSelectionCustomized) {
-      showToast(t("routerQueueUnsupported"), "error");
-      return;
-    }
-    if (machineControlSelected && machineControlEligible) return;
-    if (creatingTemplateProject || templateProjectBusy) return;
-    const override =
-      typeof messageOverride === "string" ? messageOverride : undefined;
-    if (override === undefined && deferSpeechDelivery("project-queue")) {
-      return;
-    }
-
-    const finalMessage = (override ?? draftControls.getDraft()).trimEnd();
-    const rawTrimmedMessage = finalMessage.trim();
-    const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
-      configuredPrefix: speechMessagePrefix,
-      speechTriggered: false,
-      recentSpeech: isRecentSpeechAttribution(),
-    });
-    const trimmedMessage = rawTrimmedMessage
-      ? prependSpeechMessagePrefix(rawTrimmedMessage, deliverySpeechPrefix)
-      : rawTrimmedMessage;
-    const trimmedProjectInput = normalizeProjectInput(projectInput);
-    const stagedRefs = pendingFiles
-      .filter(isPendingStagedFile)
-      .map(toPersistedStagedAttachmentRef);
-    const canQueueAttachments = stagedRefs.length === pendingFiles.length;
-    if (
-      !trimmedMessage ||
-      !canQueueAttachments ||
-      isStarting ||
-      displayDefaultsPending ||
-      projectPending ||
-      !hasDirectProviderModel
-    ) {
-      return;
-    }
-
-    consumeSpeechAttribution();
-
-    const actionAtMs = Date.now();
-    const clientTimestamp = getServerClockTimestamp(actionAtMs);
-    const submittedAt = new Date(clientTimestamp).toISOString();
-    const firstStagedRef = stagedRefs[0];
-    const stagedAttachments = firstStagedRef
-      ? {
-          batchId: firstStagedRef.batchId,
-          refs: stagedRefs,
-          updatedAt: new Date().toISOString(),
-        }
-      : undefined;
-
-    setInterimTranscript("");
-    setIsStarting(true);
-
-    try {
-      const resolvedProjectId =
-        await resolveProjectIdForSubmission(trimmedProjectInput);
-      if (!resolvedProjectId) {
-        throw new Error(t("projectQueueNewSessionNeedsProject"));
-      }
-
-      const sessionMode = effectivePermissionMode;
-      // Queue does not support routing. A restored preference is only for
-      // immediate creation; resolve this launch against the direct catalog.
-      const directModel = selectedProviderInfo?.models?.find(
-        (model) => model.id === selectedModel,
-      );
-      const directEffortOptions = getEffortLevelOptions({
-        provider: selectedProviderInfo,
-        model: directModel,
-        translate: t,
-      });
-      const thinking = toThinkingOption(
-        resolveSupportedThinkingMode(
-          selectedThinkingMode,
-          getThinkingModeOptions({
-            provider: selectedProviderInfo,
-            model: directModel,
-            effortOptions: directEffortOptions,
-          }),
-        ),
-        resolveSupportedEffortLevel(selectedEffortLevel, directEffortOptions),
-      );
-      const directServiceTier = selectableServiceTiers(
-        directModel?.serviceTiers,
-      ).find((tier) => tier.id === selectedServiceTier)?.id;
-      const showThinking = getShowThinkingSetting();
-
-      const response = await api.createProjectQueueItem(resolvedProjectId, {
-        target: {
-          type: "new-session",
-          mode: sessionMode,
-          model: selectedModel ?? undefined,
-          ...(directServiceTier ? { serviceTier: directServiceTier } : {}),
-          thinking,
-          showThinking,
-          provider: selectedProvider ?? undefined,
-          ...(supportsSessionSandboxing
-            ? {
-                sandboxLevel: effectiveSandboxLevel,
-                ...(effectiveSandboxLevel === "project-write"
-                  ? {
-                      sandboxNetworkFirewall: effectiveSandboxNetworkFirewall,
-                    }
-                  : {}),
-              }
-            : {}),
-          ...launchLockOverrides(launchLock),
-          title: trimmedMessage,
-        },
-        message: {
-          text: trimmedMessage,
-          mode: sessionMode,
-          ...(stagedAttachments ? { stagedAttachments } : {}),
-          metadata: {
-            deliveryIntent: "deferred",
-            clientTimestamp,
-            composition: {
-              submittedAt,
-              typingEndedAt: submittedAt,
-            },
-          },
-        },
-        createdFrom: {
-          client: "new-session",
-        },
-      });
-      sourceSummary.reportProjectQueueCollectionSnapshot(response.queue);
-
-      logSessionUiTrace("new-session-project-queued", {
-        projectId: resolvedProjectId,
-        mode: sessionMode,
-        model: selectedModel ?? null,
-        thinking,
-        provider: selectedProvider ?? null,
-        sandboxLevel: supportsSessionSandboxing ? effectiveSandboxLevel : null,
-        sandboxNetworkFirewall: supportsSessionSandboxing
-          ? effectiveSandboxNetworkFirewall
-          : null,
-        textLength: trimmedMessage.length,
-        attachmentCount: stagedRefs.length,
-        uploadWaitMs: Date.now() - actionAtMs,
-      });
-      setPendingFiles([], {
-        persistDraft: false,
-        revokeRemovedPreviewUrls: true,
-      });
-      draftControls.clearDraft();
-      setIsStarting(false);
-      showToast(t("projectQueueNewSessionQueuedToast"), "success");
-    } catch (err) {
-      console.error("Failed to queue project session:", err);
-      draftControls.restoreFromStorage();
-      setIsStarting(false);
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      showToast(t("projectQueueSubmitFailed", { message: errorMsg }), "error");
-    }
-  };
+  const handleQueueProjectSession = (messageOverride?: unknown) =>
+    queueNewSessionForProject(
+      {
+        clientSummarySourceKey,
+        consumeSpeechAttribution,
+        creatingTemplateProject,
+        creationViewOwner,
+        deferSpeechDelivery,
+        displayDefaultsPending,
+        draftControls,
+        effectivePermissionMode,
+        effectiveSandboxLevel,
+        effectiveSandboxNetworkFirewall,
+        effectiveServiceTier,
+        hasSelectedProviderModel,
+        isRecentSpeechAttribution,
+        isStarting,
+        launchLock,
+        machineControlEligible,
+        machineControlSelected,
+        pendingFilesRef,
+        principal,
+        projectInput,
+        projectPending,
+        resolveProjectIdForSubmission,
+        routedModel,
+        routerAccountId,
+        routerClaudeAiConnectors,
+        routerPolicy,
+        routerSelection,
+        routerThinking,
+        selectedEffortLevel,
+        selectedModel,
+        selectedProvider,
+        selectedProviderInfo,
+        selectedServiceTier,
+        selectedThinkingMode,
+        setAcceptingText,
+        setInterimTranscript,
+        setIsStarting,
+        setPendingFiles,
+        showToast,
+        sourceSummary,
+        speechMessagePrefix,
+        supportsSessionSandboxing,
+        t,
+        templateProjectBusy,
+        versionInfo,
+      },
+      messageOverride,
+    );
 
   runPendingSpeechDeliveryRef.current = () => {
     if (
@@ -3483,7 +1970,12 @@ export function NewSessionForm({
         void handleQueueProjectSession(pending.visibleTextSnapshot);
         return;
       }
-      void handleStartSession(pending.visibleTextSnapshot);
+      void handleStartSession(
+        pending.visibleTextSnapshot,
+        false,
+        false,
+        pending.kind === "background",
+      );
     } finally {
       dispatchingSettledSpeechDeliveryRef.current = false;
     }
@@ -3494,6 +1986,26 @@ export function NewSessionForm({
   }, []);
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    // A held dismissal key must never fall through to cancelling a
+    // transcription, as in the session composer.
+    if (e.key === "Escape" && e.repeat) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (
+      e.key === "Enter" &&
+      e.metaKey &&
+      !e.ctrlKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.nativeEvent.isComposing &&
+      canCreateInBackground
+    ) {
+      e.preventDefault();
+      void handleStartSession(undefined, false, false, true);
+      return;
+    }
     if (fileCompletion.onKeyDown(e)) return;
     if (isFullPaneComposerShortcut(e)) {
       e.preventDefault();
@@ -3511,33 +2023,13 @@ export function NewSessionForm({
       return;
     }
 
-    // Escape cancels a pending post-capture wait. Active listening still
-    // finalizes on Escape below.
     if (
-      e.key === "Escape" &&
-      !e.ctrlKey &&
-      !e.metaKey &&
-      !e.shiftKey &&
-      !e.altKey &&
-      (speechPending === "transcribing" || speechPending === "finalizing")
+      handleSpeechEscapeKey(e, {
+        speechPending,
+        voice: voiceButtonRef.current,
+        cancelTranscription: handleCancelTranscription,
+      })
     ) {
-      e.preventDefault();
-      e.stopPropagation();
-      handleCancelTranscription();
-      return;
-    }
-
-    if (
-      e.key === "Escape" &&
-      !e.ctrlKey &&
-      !e.metaKey &&
-      !e.shiftKey &&
-      !e.altKey &&
-      voiceButtonRef.current?.isListening
-    ) {
-      e.preventDefault();
-      e.stopPropagation();
-      voiceButtonRef.current.toggle();
       return;
     }
 
@@ -3545,13 +2037,8 @@ export function NewSessionForm({
       // Skip Enter during IME composition (e.g. Chinese/Japanese/Korean input)
       if (e.nativeEvent.isComposing) return;
 
-      // If voice recording is active, Enter submits (on any device)
-      if (voiceButtonRef.current?.isListening) {
-        e.preventDefault();
-        handleStartSession();
-        return;
-      }
-
+      // The Ctrl+Enter shortcut runs before "listening, so start", as the
+      // session composer orders its Ctrl+Enter actions.
       if (
         projectQueueCtrlEnterEnabled &&
         toolbarVisibility.projectQueue &&
@@ -3567,42 +2054,22 @@ export function NewSessionForm({
         return;
       }
 
-      // On mobile (touch devices), Enter adds newline - must use send button.
-      // On desktop, Enter sends message, Shift/Ctrl+Enter adds newline.
-      const isMobile = hasCoarsePointer();
-
-      if (isMobile) {
-        // Mobile: Enter always adds newline, send button required
+      // If voice recording is active, Enter submits (on any device)
+      if (voiceButtonRef.current?.isListening) {
+        e.preventDefault();
+        handleStartSession();
         return;
       }
 
-      if (ENTER_SENDS_MESSAGE) {
-        if (e.ctrlKey || e.shiftKey) return;
+      if (isComposerEnterSend(e)) {
         e.preventDefault();
         handleStartSession();
-      } else {
-        if (e.ctrlKey || e.shiftKey) {
-          e.preventDefault();
-          handleStartSession();
-        }
       }
     }
   };
 
   const handlePaste = (e: ClipboardEvent) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-
-    const files: File[] = [];
-    for (const item of items) {
-      if (item.kind === "file") {
-        const file = item.getAsFile();
-        if (file) {
-          files.push(file);
-        }
-      }
-    }
-
+    const files = getClipboardFiles(e);
     if (files.length > 0) {
       e.preventDefault();
       addPendingFiles(files);
@@ -3610,295 +2077,71 @@ export function NewSessionForm({
   };
 
   // Voice input handlers
-  const handleListeningStart = useCallback(() => {
-    speechTransactionHasTextRef.current = false;
-    const textarea = textareaRef.current;
-    const current = draftControls.getDraft();
-    const selectionStart = Math.max(
-      0,
-      Math.min(textarea?.selectionStart ?? current.length, current.length),
-    );
-    const selectionEnd = Math.max(
-      selectionStart,
-      Math.min(textarea?.selectionEnd ?? selectionStart, current.length),
-    );
-    const targetId = createSpeechTargetId();
-    const range = createSpeechInsertionRange(selectionStart, selectionEnd);
-    activeSpeechTargetIdRef.current = targetId;
-    speechInsertionRangeRef.current = range;
-    speechInsertionRangesRef.current.set(targetId, range);
-    pendingTextareaSelectionRef.current = null;
-    pendingSpeechRetargetRef.current = null;
-    composerEditedDuringSpeechRef.current = false;
-    if (textarea) {
-      focusComposerForSpeechTransition(textarea);
-      textarea.setSelectionRange(selectionStart, selectionEnd);
-    }
-    interimTranscriptRef.current = "";
-    setInterimTranscript("");
-  }, [draftControls]);
-
-  const clearPendingSpeechFinal = useCallback(() => {
-    const pending = pendingSpeechFinalRef.current;
-    if (pending === null) return;
-    clearTimeout(pending.timer);
-    pendingSpeechFinalRef.current = null;
-  }, []);
-
-  useEffect(() => clearPendingSpeechFinal, [clearPendingSpeechFinal]);
-
-  const handleSpeechSelectionTarget = useCallback(
-    (event?: unknown, draftAtSelection?: string) => {
-      const manualInteraction = event !== undefined;
-      const textarea = textareaRef.current;
-      const range = speechInsertionRangeRef.current;
-      if (!textarea || !range) return;
-      const selectionStart = textarea.selectionStart;
-      const selectionEnd = textarea.selectionEnd;
-      const getNextRange = (
-        currentRange: SpeechInsertionRange,
-      ): SpeechInsertionRange => {
-        if (selectionStart === selectionEnd) {
-          return speechPendingRef.current === "listening"
-            ? retargetSpeechInsertionRange(
-                currentRange,
-                selectionStart,
-                selectionEnd,
-              )
-            : clearSpeechInsertionRangeReplacement(currentRange);
-        }
-        if (
-          currentRange.replaceSelectedAtMs === undefined &&
-          currentRange.end === selectionStart &&
-          currentRange.replaceEnd === selectionEnd
-        ) {
-          return currentRange;
-        }
-        return retargetSpeechInsertionRange(
-          currentRange,
-          selectionStart,
-          selectionEnd,
-        );
-      };
-
-      if (selectionStart === selectionEnd) clearPendingSpeechFinal();
-      const hasVisibleInterim = interimTranscriptRef.current.trim().length > 0;
+  const handleSmartTurnSend = useCallback(
+    (text: string) => {
+      // A deliberate background/Queue action already owns delivery.
+      // Let finalization settle it instead of starting a second,
+      // foreground submission from the transcription's spoken command.
       if (
-        manualInteraction &&
-        (hasVisibleInterim || pendingSpeechRetargetRef.current !== null)
-      ) {
-        pendingSpeechRetargetRef.current = {
-          draft: draftAtSelection ?? draftControls.getDraft(),
-          start: selectionStart,
-          end: selectionEnd,
-        };
-        return;
-      }
-
-      const nextRange = getNextRange(range);
-      if (speechPendingRef.current === "listening" && nextRange !== range) {
-        voiceButtonRef.current?.beginInsertionBoundary();
-      }
-      speechInsertionRangeRef.current = nextRange;
-      if (activeSpeechTargetIdRef.current) {
-        speechInsertionRangesRef.current.set(
-          activeSpeechTargetIdRef.current,
-          nextRange,
-        );
-      }
-      setSpeechPreviewRevision((revision) => revision + 1);
+        pendingSpeechDeliveryRef.current?.kind === "background" ||
+        pendingSpeechDeliveryRef.current?.kind === "project-queue"
+      )
+        return false;
+      // As in the session composer, a send that cannot start is not
+      // accepted, and only an accepted send arms follow-up listening.
+      // A muted launch composer starts without a draft of its own.
+      if (
+        (!hasComposerDraftContent(text, pendingFilesRef.current.length) &&
+          !composerMuted) ||
+        isStarting
+      )
+        return false;
+      void handleStartSession(text, true);
+      voiceButtonRef.current?.continueAfterSpeechSend();
+      return true;
     },
-    [clearPendingSpeechFinal, draftControls],
+    [composerMuted, handleStartSession, isStarting],
+  );
+  // The draft never leaves the field here (plan 178 D3), so a failed or
+  // cancelled cycle only drops the pending delivery.
+  const dropPendingSpeechDelivery = useCallback(() => {
+    pendingSpeechDeliveryRef.current = null;
+    pendingSpeechDeliverySettledRef.current = false;
+  }, []);
+  const {
+    handleListeningStart,
+    handleSpeechSelectionTarget,
+    clearSpeechSelectionTarget,
+    handleVoiceTranscript,
+    handleListeningStop,
+    handleInterimTranscript,
+    handlePendingSpeechChange,
+    handleTranscriptionSettled,
+    handleCancelTranscription,
+  } = useComposerSpeechHandlers({
+    speechState,
+    draftControls,
+    textareaRef,
+    voiceButtonRef,
+    pendingSpeechDeliveryRef,
+    pendingSpeechDeliverySettledRef,
+    noteSpeechAttribution,
+    maybeRunPendingSpeechDelivery,
+    abandonPendingDelivery: dropPendingSpeechDelivery,
+    onSmartTurnSend: handleSmartTurnSend,
+  });
+  // Select, pointer-up and key-up are manual caret moves, as in the session
+  // composer (plan 178 D1, D10).
+  const handleManualSpeechSelection = useCallback(
+    () => handleSpeechSelectionTarget(true),
+    [handleSpeechSelectionTarget],
   );
 
-  const clearSpeechSelectionTarget = useCallback(() => {
-    clearPendingSpeechFinal();
-    if (!speechInsertionRangeRef.current) return;
-    const nextRange = clearSpeechInsertionRangeReplacement(
-      speechInsertionRangeRef.current,
-    );
-    speechInsertionRangeRef.current = nextRange;
-    if (activeSpeechTargetIdRef.current) {
-      speechInsertionRangesRef.current.set(
-        activeSpeechTargetIdRef.current,
-        nextRange,
-      );
-    }
-    setSpeechPreviewRevision((revision) => revision + 1);
-  }, [clearPendingSpeechFinal]);
+  useEffect(() => clearPendingSpeechFinal, []);
 
   const handleSpeechSelectionClick = useCallback(() => {
     window.setTimeout(() => handleSpeechSelectionTarget(true), 0);
   }, [handleSpeechSelectionTarget]);
-
-  const commitVoiceTranscript = useCallback(
-    (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
-      if (transcript.trim() && metadata?.smartTurnCommand !== "cancel") {
-        speechTransactionHasTextRef.current = true;
-        noteSpeechAttribution();
-      }
-      pendingSpeechDeliverySettledRef.current = true;
-      const outcome = commitSpeechTranscript(
-        {
-          textareaRef,
-          getDraft: draftControls.getDraft,
-          setDraft: draftControls.setDraft,
-          setInterimTranscript: (next) => {
-            interimTranscriptRef.current = next;
-            setInterimTranscript(next);
-          },
-          speechInsertionRangeRef,
-          activeSpeechTargetIdRef,
-          speechInsertionRangesRef,
-          pendingTextareaSelectionRef,
-          pendingSpeechRetargetRef,
-          onInsertionBoundary: () =>
-            voiceButtonRef.current?.beginInsertionBoundary(),
-          onSpeechTargetChanged: () =>
-            setSpeechPreviewRevision((revision) => revision + 1),
-          onSmartTurnSend: (text) => {
-            voiceButtonRef.current?.continueAfterSpeechSend();
-            void handleStartSession(text, true);
-          },
-          composerEditedDuringSpeech: () =>
-            composerEditedDuringSpeechRef.current,
-        },
-        transcript,
-        metadata,
-      );
-      maybeRunPendingSpeechDelivery();
-      // A completed overlapping (non-active) target's result has landed;
-      // forget its range (active target is forgotten on pending->null).
-      const committedTargetId = metadata?.speechTargetId;
-      if (
-        committedTargetId &&
-        committedTargetId !== activeSpeechTargetIdRef.current &&
-        speechInsertionRangesRef.current.delete(committedTargetId)
-      ) {
-        setSpeechPreviewRevision((revision) => revision + 1);
-      }
-      return outcome;
-    },
-    [
-      draftControls,
-      handleStartSession,
-      maybeRunPendingSpeechDelivery,
-      noteSpeechAttribution,
-    ],
-  );
-  const handleVoiceTranscript = useCallback(
-    (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
-      const speechRange = metadata?.speechTargetId
-        ? (speechInsertionRangesRef.current.get(metadata.speechTargetId) ??
-          null)
-        : speechInsertionRangeRef.current;
-      const delayMs = metadata?.smartTurnCommand
-        ? 0
-        : pendingSpeechRetargetRef.current
-          ? 0
-          : getSpeechSelectionFinalDelayMs(speechRange);
-      if (delayMs > 0) {
-        clearPendingSpeechFinal();
-        const timer = setTimeout(() => {
-          const pending = pendingSpeechFinalRef.current;
-          if (!pending || pending.timer !== timer) return;
-          pendingSpeechFinalRef.current = null;
-          commitVoiceTranscript(pending.transcript, pending.metadata);
-        }, delayMs);
-        pendingSpeechFinalRef.current = { timer, transcript, metadata };
-        return;
-      }
-
-      clearPendingSpeechFinal();
-      return commitVoiceTranscript(transcript, metadata);
-    },
-    [clearPendingSpeechFinal, commitVoiceTranscript],
-  );
-
-  const flushPendingSpeechFinal = useCallback(() => {
-    const pending = pendingSpeechFinalRef.current;
-    if (pending === null) return;
-    clearTimeout(pending.timer);
-    pendingSpeechFinalRef.current = null;
-    commitVoiceTranscript(pending.transcript, pending.metadata);
-  }, [commitVoiceTranscript]);
-
-  const handleListeningStop = useCallback(() => {
-    const visibleInterim = getSpeechInterimDisplayTranscript(
-      draftControls.getDraft(),
-      interimTranscriptRef.current,
-      speechInsertionRangeRef.current,
-    );
-    flushPendingSpeechFinal();
-    if (visibleInterim) commitVoiceTranscript(visibleInterim);
-    pendingSpeechRetargetRef.current = null;
-    interimTranscriptRef.current = "";
-    setInterimTranscript("");
-    focusComposerForSpeechTransition(textareaRef.current);
-    return Boolean(visibleInterim);
-  }, [commitVoiceTranscript, draftControls, flushPendingSpeechFinal]);
-
-  const handleInterimTranscript = useCallback((transcript: string) => {
-    interimTranscriptRef.current = transcript;
-    setInterimTranscript(transcript);
-  }, []);
-
-  const handlePendingSpeechChange = useCallback(
-    (kind: SpeechPendingKind | null, settlement?: SpeechCycleSettlement) => {
-      if (settlement === "failed") {
-        pendingSpeechDeliveryRef.current = null;
-        pendingSpeechDeliverySettledRef.current = false;
-      } else if (settlement === "completed") {
-        if (
-          pendingSpeechDeliveryRef.current &&
-          speechTransactionHasTextRef.current
-        ) {
-          noteSpeechAttribution();
-        }
-        pendingSpeechDeliverySettledRef.current = true;
-      }
-      speechPendingRef.current = kind;
-      if (kind === "listening") handleSpeechSelectionTarget();
-      if (kind === null) {
-        // Active recording finished: forget its target so completed targets do
-        // not accumulate (see MessageInput).
-        const targetId = activeSpeechTargetIdRef.current;
-        if (targetId) {
-          speechInsertionRangesRef.current.delete(targetId);
-        }
-        speechInsertionRangeRef.current = null;
-        activeSpeechTargetIdRef.current = null;
-        pendingSpeechRetargetRef.current = null;
-      }
-      setSpeechPending(kind);
-      if (kind === null) maybeRunPendingSpeechDelivery();
-    },
-    [
-      handleSpeechSelectionTarget,
-      maybeRunPendingSpeechDelivery,
-      noteSpeechAttribution,
-    ],
-  );
-
-  // Cancel a pending transcription/finalization. The provider discards the
-  // in-flight result (keeping committed text); here we drop the pending speech
-  // target.
-  const handleCancelTranscription = useCallback(() => {
-    voiceButtonRef.current?.cancelProcessing();
-    pendingSpeechDeliveryRef.current = null;
-    pendingSpeechDeliverySettledRef.current = false;
-    clearPendingSpeechFinal();
-    const targetId = activeSpeechTargetIdRef.current;
-    if (targetId) {
-      speechInsertionRangesRef.current.delete(targetId);
-    }
-    speechInsertionRangeRef.current = null;
-    activeSpeechTargetIdRef.current = null;
-    pendingSpeechRetargetRef.current = null;
-    setSpeechPending(null);
-    speechPendingRef.current = null;
-    setInterimTranscript("");
-  }, [clearPendingSpeechFinal]);
 
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
@@ -3920,6 +2163,7 @@ export function NewSessionForm({
       !displayDefaultsPending &&
       hasSelectedProviderModel &&
       !projectPending &&
+      !serverCapabilitiesPending &&
       (!isDetachedProject || canCreateDetached),
   );
   const hasProjectQueueTargetProject = Boolean(projectQueueTargetProjectId);
@@ -3945,7 +2189,13 @@ export function NewSessionForm({
       (message.trim() || speechPending !== null || interimTranscript) &&
       pendingFilesReadyForProjectQueue &&
       hasProjectQueueTargetProject &&
-      hasDirectProviderModel,
+      // A pool the server cannot queue stays pressable so Queue says why.
+      (hasSelectedProviderModel ||
+        (Boolean(routerSelection) &&
+          !serverHasCapability(
+            versionInfo,
+            SERVER_CAPABILITIES.projectQueueRouterSelection.name,
+          ))),
   );
   const projectQueueNewSessionTitle =
     machineControlSelected && machineControlEligible
@@ -3980,27 +2230,15 @@ export function NewSessionForm({
           prefix: manualDeliverySpeechPrefix,
         })
       : tooltip;
-  const speechInsertionRange = speechInsertionRangeRef.current;
-  const interimDisplayTranscript = getSpeechInterimDisplayTranscript(
-    message,
-    interimTranscript,
-    speechInsertionRange,
-  );
   // Only mutable provisional speech uses the textarea mirror. Capture and
   // post-capture status live with the mic so the real draft and caret stay
   // untouched while transcription is pending.
-  const interimInsertion = speechInsertionRange
-    ? getSpeechTranscriptReplacementParts(
-        message,
-        interimDisplayTranscript,
-        speechInsertionRange.end,
-        speechInsertionRange.replaceEnd ?? speechInsertionRange.end,
-      )
-    : getSpeechTranscriptInsertionParts(
-        message,
-        interimDisplayTranscript,
-        message.length,
-      );
+  const { interimDisplayTranscript, interimInsertion } =
+    getSpeechInterimPreview(
+      message,
+      interimTranscript,
+      speechInsertionRangeRef.current,
+    );
 
   const getTranscriptionContext =
     useCallback((): SpeechTranscriptionContext => {
@@ -4079,105 +2317,49 @@ export function NewSessionForm({
         textareaRef={textareaRef}
         onChange={setMessage}
       >
-        <div
-          className={`speech-draft-field ${
-            interimDisplayTranscript ? "has-interim" : ""
-          }`}
+        <SpeechDraftField
+          interimDisplayTranscript={interimDisplayTranscript}
+          interimInsertion={interimInsertion}
+          interimTranscript={interimTranscript}
         >
-          <div className="speech-draft-inline">
-            {interimDisplayTranscript && (
-              <div className="speech-draft-mirror" aria-hidden="true">
-                <span>{interimInsertion.before}</span>
-                {interimInsertion.separatorBefore}
-                <span className="speech-interim-inline">
-                  {interimInsertion.transcript}
-                </span>
-                <span className="speech-interim-caret" />
-                {interimInsertion.separatorAfter}
-                <span>{interimInsertion.after}</span>
-              </div>
-            )}
-            <textarea
-              data-draft-key={newSessionDraftKey}
-              ref={attachComposerTextarea}
-              data-composer-input
-              value={message}
-              onChange={(e) => {
-                const nextMessage = fileCompletion.normalizeInput(
-                  e.target.value,
-                );
-                clearPendingSpeechFinal();
-                if (speechInsertionRangesRef.current.size > 0) {
-                  const nextRanges = new Map<string, SpeechInsertionRange>();
-                  for (const [
-                    targetId,
-                    range,
-                  ] of speechInsertionRangesRef.current) {
-                    nextRanges.set(
-                      targetId,
-                      clearSpeechInsertionRangeReplacement(
-                        mapSpeechInsertionRangeThroughEdit(
-                          message,
-                          nextMessage,
-                          range,
-                        ),
-                      ),
-                    );
-                  }
-                  speechInsertionRangesRef.current = nextRanges;
-                  speechInsertionRangeRef.current =
-                    activeSpeechTargetIdRef.current !== null
-                      ? (nextRanges.get(activeSpeechTargetIdRef.current) ??
-                        null)
-                      : null;
-                }
-                if (
-                  activeSpeechTargetIdRef.current !== null &&
-                  hasNonWhitespaceEdit(message, nextMessage)
-                ) {
-                  composerEditedDuringSpeechRef.current = true;
-                }
-                handleSpeechSelectionTarget(true, nextMessage);
-                setMessage(nextMessage);
-              }}
-              onKeyDown={handleKeyDown}
-              onFocus={fileCompletion.onFocus}
-              onBlur={fileCompletion.onBlur}
-              onSelect={() => {
-                handleSpeechSelectionTarget();
-                fileCompletion.onSelect();
-              }}
-              onPointerUp={handleSpeechSelectionTarget}
-              onClick={handleSpeechSelectionClick}
-              onKeyUp={handleSpeechSelectionTarget}
-              onCut={clearSpeechSelectionTarget}
-              onCopy={clearSpeechSelectionTarget}
-              onPaste={(event) => {
-                clearSpeechSelectionTarget();
-                if (allowAttachments) {
-                  handlePaste(event);
-                }
-              }}
-              placeholder={resolvedPlaceholder}
-              disabled={isStarting}
-              // Read-only rather than disabled: the draft stays selectable and
-              // scrollable so it can still be read, just not sent.
-              readOnly={composerMuted}
-              rows={composerMuted ? Math.min(rows, 3) : rows}
-              className="new-session-form-textarea"
-            />
-          </div>
-          {interimTranscript && (
-            <div
-              className="speech-interim-status"
-              role="status"
-              aria-live="polite"
-              aria-label="Tentative speech transcript"
-            >
-              {interimTranscript}
-            </div>
-          )}
-        </div>
+          <textarea
+            data-draft-key={newSessionDraftKey}
+            ref={attachComposerTextarea}
+            data-composer-input
+            value={message}
+            onChange={(e) => {
+              const nextMessage = fileCompletion.normalizeInput(e.target.value);
+              noteSpeechDraftEdit(message, nextMessage);
+              handleSpeechSelectionTarget(true, nextMessage);
+              setMessage(nextMessage);
+            }}
+            onKeyDown={handleKeyDown}
+            onFocus={fileCompletion.onFocus}
+            onBlur={fileCompletion.onBlur}
+            onSelect={() => {
+              handleManualSpeechSelection();
+              fileCompletion.onSelect();
+            }}
+            onPointerUp={handleManualSpeechSelection}
+            onClick={handleSpeechSelectionClick}
+            onKeyUp={handleManualSpeechSelection}
+            onCut={clearSpeechSelectionTarget}
+            onCopy={clearSpeechSelectionTarget}
+            onPaste={(event) => {
+              clearSpeechSelectionTarget();
+              if (allowAttachments) {
+                handlePaste(event);
+              }
+            }}
+            placeholder={resolvedPlaceholder}
+            disabled={isStarting && !acceptingText}
+            // Read-only rather than disabled: the draft stays selectable and
+            // scrollable so it can still be read, just not sent.
+            readOnly={composerMuted}
+            rows={composerMuted ? Math.min(rows, 3) : rows}
+            className="new-session-form-textarea"
+          />
+        </SpeechDraftField>
         <ProjectFileCompletionMenu completion={fileCompletion} />
         <div className="new-session-form-toolbar">
           <div className="new-session-form-toolbar-left">
@@ -4273,6 +2455,7 @@ export function NewSessionForm({
                   onListeningStart={handleListeningStart}
                   onListeningStop={handleListeningStop}
                   onPendingSpeechChange={handlePendingSpeechChange}
+                  onTranscriptionSettled={handleTranscriptionSettled}
                   disabled={isStarting}
                   className="toolbar-button"
                   speechMethod={selectedSpeechMethod}
@@ -4292,7 +2475,57 @@ export function NewSessionForm({
               />
             )}
           </div>
-          <div className="new-session-form-toolbar-actions">
+          <div
+            className={`new-session-form-toolbar-actions ${styles.toolbarActions}`}
+          >
+            {canCreateInBackground && toolbarVisibility.shortcutsHelp && (
+              <details
+                className={styles.shortcutsHelp}
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget))
+                    event.currentTarget.open = false;
+                }}
+              >
+                <summary
+                  role="button"
+                  className={styles.shortcutsTrigger}
+                  aria-label={t("newSessionKeyboardShortcuts")}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      const details = event.currentTarget
+                        .parentElement as HTMLDetailsElement;
+                      details.open = false;
+                    }
+                  }}
+                >
+                  <span className={styles.shortcutsQuestion}>?</span>
+                </summary>
+                <div className={styles.shortcutsPopover}>
+                  <strong>{t("newSessionKeyboardShortcuts")}</strong>
+                  <div className={styles.shortcutsRow}>
+                    <kbd>⌘ Enter</kbd>
+                    <span>
+                      {describePrefixedDelivery(
+                        t("sessionCreationBackgroundAction"),
+                      )}
+                    </span>
+                  </div>
+                  {!compact && (
+                    <div className={styles.shortcutsRow}>
+                      <kbd>Ctrl U</kbd>
+                      <span>
+                        {t(
+                          fullPane
+                            ? "composerFullPaneRestore"
+                            : "composerFullPaneExpand",
+                        )}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </details>
+            )}
             {toolbarVisibility.projectQueue && showProjectQueueAction && (
               <button
                 type="button"
@@ -4398,8 +2631,7 @@ export function NewSessionForm({
       {/* The suggestion list drops below the search, not below New project. */}
       <div className={styles.projectSearchAnchor}>
         <div className="new-session-project-controls">
-          <button
-            type="button"
+          <ButtonBase
             className="new-session-project-summary"
             onClick={() => setIsProjectChooserExpanded((prev) => !prev)}
             aria-expanded={isProjectChooserExpanded}
@@ -4441,7 +2673,7 @@ export function NewSessionForm({
             >
               <polyline points="6 9 12 15 18 9" />
             </svg>
-          </button>
+          </ButtonBase>
 
           <label className="new-session-project-inline-field">
             <span className="new-session-project-inline-label">
@@ -4482,16 +2714,14 @@ export function NewSessionForm({
 
         {!launch && !fixedProject && (
           <div className={templateStyles.expansion}>
-            <button
-              type="button"
+            <Button
               aria-expanded={newProjectOpen}
               aria-controls="new-session-new-project"
-              className={templateStyles.secondary}
               disabled={templateProjectBusy || isStarting}
               onClick={toggleNewProject}
             >
               {t("templateNewProject")}
-            </button>
+            </Button>
           </div>
         )}
         {/* Shown over an open New project too: choosing a project closes it. */}
@@ -4611,751 +2841,142 @@ export function NewSessionForm({
       )}
     </section>
   ) : null;
-  const optionPlaceholder = (
-    className: string,
-    title: string,
-    caption: string | undefined,
-    triggerClassName?: string,
-    triggerContent?: ReactNode,
-  ) => (
-    <NewSessionOptionSection
-      className={className}
-      title={title}
-      caption={caption}
-      showCaption={showOptionCaptions}
-      placeholder
-    >
-      <FilterDropdown
-        label={title}
-        options={[]}
-        selected={[]}
-        onChange={() => {}}
-        fullWidth
-        triggerClassName={triggerClassName}
-        triggerContent={triggerContent}
-      />
-    </NewSessionOptionSection>
-  );
-  const providerSection =
-    providerChoices.length > 1 ? (
-      <NewSessionOptionSection
-        className={`new-session-provider-section ${styles.compactProviderSection}`}
-        title={sessionDefaultCopy.provider.title}
-        caption={sessionDefaultCopy.provider.description}
-        showCaption={showOptionCaptions}
-      >
-        <div
-          aria-busy={
-            providersLoading || providersStale || displayDefaultsPending
-          }
-        >
-          <FilterDropdown<ProviderName>
-            label={sessionDefaultCopy.provider.title}
-            triggerClassName={styles.providerTrigger}
-            options={providerChoices.map((provider) => ({
-              value: provider.name,
-              label: provider.displayName,
-              icon: (
-                <span
-                  className={`provider-option-dot provider-${provider.name}`}
-                />
-              ),
-              description: [
-                providerDescriptions[provider.name],
-                provider.installed === false
-                  ? t("newSessionProviderStatusNotInstalled")
-                  : provider.authenticated === false &&
-                      provider.enabled === false
-                    ? t("newSessionProviderStatusAuthenticationNeeded")
-                    : null,
-              ]
-                .filter(Boolean)
-                .join(" · "),
-              disabled: provider.installed === false,
-            }))}
-            selected={selectedProvider ? [selectedProvider] : []}
-            onChange={([provider]) => {
-              if (provider && !isStarting) handleProviderSelect(provider);
-            }}
-            multiSelect={false}
-            fullWidth
-            triggerContent={
-              selectedProvider ? (
-                <span className={styles.selectedChoice}>
-                  <span
-                    className={`provider-option-dot provider-${selectedProvider}`}
-                    aria-hidden="true"
-                  />
-                  <span className={styles.selectedChoiceText}>
-                    <span>
-                      {providerChoices.find(
-                        (provider) => provider.name === selectedProvider,
-                      )?.displayName ?? selectedProvider}
-                    </span>
-                    {selectedProviderInfo &&
-                      !routerSelection &&
-                      !selectedProviderInfo.authenticated &&
-                      !selectedProviderInfo.enabled && (
-                        <span className={styles.choiceStatus}>
-                          {t("newSessionProviderStatusAuthenticationNeeded")}
-                        </span>
-                      )}
-                  </span>
-                </span>
-              ) : undefined
-            }
-          />
-        </div>
-      </NewSessionOptionSection>
-    ) : (
-      optionPlaceholder(
-        `new-session-provider-section ${styles.compactProviderSection}`,
-        sessionDefaultCopy.provider.title,
-        sessionDefaultCopy.provider.description,
-        styles.providerTrigger,
-      )
-    );
-  const modelField =
-    selectedProvider && modelOptions.length > 0 ? (
-      <NewSessionOptionSection
-        className="new-session-model-field"
-        title={sessionDefaultCopy.model.title}
-        caption={sessionDefaultCopy.model.description}
-        showCaption={showOptionCaptions}
-      >
-        <FilterDropdown
-          panelVariant="model"
-          label={sessionDefaultCopy.model.title}
-          options={modelOptions}
-          selected={selectedModel ? [selectedModel] : []}
-          onChange={handleModelSelect}
-          multiSelect={false}
-          placeholder={t("newSessionModelPlaceholder")}
-          fullWidth
-          triggerClassName={styles.leftAlignedTrigger}
-          triggerContent={
-            selectedProvider && selectedModel ? (
-              <span className={styles.selectedChoice}>
-                <ProviderBadge
-                  provider={selectedProvider}
-                  model={selectedModel}
-                />
-                <span className={styles.selectedChoiceText}>
-                  {modelOptions.find((option) => option.value === selectedModel)
-                    ?.label ?? selectedModel}
-                </span>
-              </span>
-            ) : undefined
-          }
-        />
-      </NewSessionOptionSection>
-    ) : (
-      optionPlaceholder(
-        "new-session-model-field",
-        sessionDefaultCopy.model.title,
-        sessionDefaultCopy.model.description,
-        undefined,
-        <span className={styles.selectedChoice}>
-          <ProviderBadge provider={selectedProvider ?? "claude"} />
-          <span>{sessionDefaultCopy.model.title}</span>
-        </span>,
-      )
-    );
-  const gatewayCatalogUnavailable =
-    selectedProvider === "claude-gateway" &&
-    (!selectedProviderQuery.fresh || availableModels.length === 0);
-  const modelCatalog = selectedProviderInfo?.modelCatalog;
-  const modelCatalogAge = formatBriefAge(modelCatalog?.fetchedAt);
-  const routerCatalogAge = formatBriefAge(routerCatalogAt);
-  // Pool launches read their rows from the router, not this provider list.
-  const routerCatalogNotice =
-    !routerSelection || modelOptions.length === 0
-      ? null
-      : routerCatalogRefresh === "refreshing"
-        ? {
-            warning: false,
-            message: t("newSessionModelCatalogRefreshing"),
-            action: t("newSessionModelCatalogRefresh"),
-          }
-        : routerCatalogAge
-          ? {
-              warning: routerCatalogRefresh === "failed",
-              message:
-                routerCatalogRefresh === "failed"
-                  ? t("newSessionModelCatalogRefreshFailed", {
-                      age: routerCatalogAge,
-                    })
-                  : t("newSessionModelCatalogUpdated", {
-                      age: routerCatalogAge,
-                    }),
-              action: t("newSessionModelCatalogRefresh"),
-            }
-          : null;
-  const modelCatalogNotice = gatewayCatalogUnavailable
-    ? {
-        warning: true,
-        message: selectedProviderQuery.refreshing
-          ? t("newSessionGatewayCatalogLoading")
-          : t("newSessionGatewayCatalogUnavailable"),
-        action: t("newSessionGatewayCatalogRetry"),
-      }
-    : routerSelection ||
-        !modelCatalog ||
-        modelCatalog.source === "static" ||
-        modelOptions.length === 0
-      ? null
-      : selectedProviderQuery.refreshing
-        ? {
-            warning: false,
-            message: t("newSessionModelCatalogRefreshing"),
-            action: t("newSessionModelCatalogRefresh"),
-          }
-        : modelCatalog.source === "fallback"
-          ? {
-              warning: true,
-              message: t("newSessionModelCatalogFallback"),
-              action: t("newSessionModelCatalogRefresh"),
-            }
-          : {
-              warning: modelCatalog.error !== undefined,
-              message: modelCatalog.error
-                ? t("newSessionModelCatalogRefreshFailed", {
-                    age: modelCatalogAge ?? "?",
-                  })
-                : t("newSessionModelCatalogUpdated", {
-                    age: modelCatalogAge ?? "0m",
-                  }),
-              action: t("newSessionModelCatalogRefresh"),
-            };
-  const catalogNotice = routerCatalogNotice ?? modelCatalogNotice;
-  const modelCatalogStatus = (
-    <div
-      className={
-        catalogNotice?.warning
-          ? styles.catalogStatus
-          : styles.catalogStatusMuted
-      }
-      role="status"
-      aria-live="polite"
-      title={routerCatalogNotice ? undefined : modelCatalog?.error}
-    >
-      <span
-        className={styles.catalogMessage}
-        data-sizing-text={t("newSessionGatewayCatalogUnavailable")}
-        title={routerSelection ? undefined : modelCatalog?.error}
-      >
-        <span>{catalogNotice?.message}</span>
-      </span>
-      <button
-        type="button"
-        className={styles.catalogAction}
-        disabled={
-          routerSelection
-            ? routerCatalogRefresh === "refreshing"
-            : selectedProvider
-              ? selectedProviderQuery.refreshing
-              : providersLoading
-        }
-        onClick={() =>
-          void (routerSelection
-            ? refreshRouterCatalog()
-            : selectedProvider
-              ? selectedProviderQuery.refresh()
-              : refetchProviders())
-        }
-      >
-        {catalogNotice?.action ?? t("newSessionModelCatalogRefresh")}
-      </button>
-    </div>
-  );
-  const modelSection = (
-    <div className="new-session-model-section">{modelField}</div>
-  );
-  const showThinkingSection = (
-    <NewSessionOptionSection
-      className="new-session-helper-section new-session-show-thinking-section"
-      title={sessionDefaultCopy.showThinking.title}
-      caption={sessionDefaultCopy.showThinking.description}
-      showCaption={showOptionCaptions}
-    >
-      <FilterDropdown<"default" | "on" | "off">
-        label={sessionDefaultCopy.showThinking.title}
-        options={[
-          { value: "default", label: t("showThinkingDefault") },
-          { value: "on", label: t("showThinkingOn") },
-          { value: "off", label: t("showThinkingOff") },
-        ]}
-        selected={[showThinking]}
-        onChange={([value]) => setShowThinking(value ?? "default")}
-        multiSelect={false}
-        fullWidth
-        triggerClassName={styles.leftAlignedTrigger}
-      />
-    </NewSessionOptionSection>
-  );
-  const serviceTierSection =
-    serviceTierOptions.length > 0 ? (
-      <NewSessionOptionSection
-        className="new-session-helper-section"
-        title={t("newSessionServiceTierTitle")}
-        caption={t("newSessionServiceTierDescription")}
-        showCaption={showOptionCaptions}
-      >
-        <FilterDropdown<string>
-          label={t("newSessionServiceTierTitle")}
-          options={[
-            {
-              value: "",
-              label: t("serviceTierStandardLabel"),
-              description: t("serviceTierStandardDescription"),
-            },
-            ...serviceTierOptions.map((tier) => ({
-              value: tier.id,
-              label: tier.name,
-              description: tier.description,
-            })),
-          ]}
-          selected={[effectiveServiceTier ?? ""]}
-          onChange={([value]) => {
-            hasUserCustomizedDefaultsRef.current = true;
-            setSelectedServiceTier(value || null);
-          }}
-          multiSelect={false}
-          fullWidth
-          triggerClassName={styles.leftAlignedTrigger}
-        />
-      </NewSessionOptionSection>
-    ) : null;
-  const effortSection = showThinkingControls ? (
-    <NewSessionOptionSection
-      className={`new-session-helper-section ${styles.effortSection}`}
-      title={t("newSessionThinkingEffortTitle")}
-      caption={sessionDefaultCopy.thinking.description}
-      showCaption={showOptionCaptions}
-    >
-      <FilterDropdown<string>
-        label={t("newSessionThinkingEffortTitle")}
-        options={[
-          ...thinkingModeOptions
-            .filter((option) => option !== "on")
-            .map((option) => ({
-              value: option,
-              label: t(
-                option === "off"
-                  ? "modelSettingsThinkingOffLabel"
-                  : "modelSettingsThinkingAutoLabel",
-              ),
-              icon: <span className={`mode-option-dot thinking-${option}`} />,
-            })),
-          ...(thinkingModeOptions.includes("on")
-            ? effortOptions.map((option) => ({
-                value: `on:${option.value}`,
-                label: option.label,
-                icon: (
-                  <span
-                    className={`model-switch-indicator-dot tone-${option.value}`}
-                  />
-                ),
-                description: showOptionCaptions
-                  ? option.description
-                  : undefined,
-              }))
-            : []),
-        ]}
-        selected={[
-          effectiveThinkingMode === "on"
-            ? `on:${effectiveEffortLevel}`
-            : effectiveThinkingMode,
-        ]}
-        onChange={([selection]) => {
-          if (!selection || isStarting) return;
-          hasUserCustomizedDefaultsRef.current = true;
-          if (selection === "off" || selection === "auto") {
-            setSelectedThinkingMode(selection);
-            return;
-          }
-          const nextEffort = effortOptions.find(
-            (option) => selection === `on:${option.value}`,
-          );
-          if (!nextEffort) return;
-          setSelectedEffortLevel(nextEffort.value);
-          setSelectedThinkingMode("on");
-        }}
-        multiSelect={false}
-        fullWidth
-        triggerContent={
-          <span className={styles.selectedChoice}>
-            <span
-              className={
-                effectiveThinkingMode === "on"
-                  ? `model-switch-indicator-dot tone-${effectiveEffortLevel}`
-                  : `mode-option-dot thinking-${effectiveThinkingMode}`
-              }
-              aria-hidden="true"
-            />
-            <span className={styles.selectedChoiceText}>
-              {effectiveThinkingMode === "on"
-                ? (effortOptions.find(
-                    (option) => option.value === effectiveEffortLevel,
-                  )?.label ?? effectiveEffortLevel)
-                : t(
-                    effectiveThinkingMode === "off"
-                      ? "modelSettingsThinkingOffLabel"
-                      : "modelSettingsThinkingAutoLabel",
-                  )}
-            </span>
-          </span>
-        }
-      />
-    </NewSessionOptionSection>
-  ) : null;
-  const effortSlot =
-    effortSection ??
-    (!launchLock.effort
-      ? optionPlaceholder(
-          `new-session-helper-section ${styles.effortSection}`,
-          t("newSessionThinkingEffortTitle"),
-          sessionDefaultCopy.thinking.description,
-        )
-      : null);
-  const recapSection = selectedProvider ? (
-    <NewSessionOptionSection
-      className="new-session-helper-section"
-      title={sessionDefaultCopy.recap.title}
-      caption={getRecapModeDescription(selectedRecapMode, t, recapAfterSeconds)}
-      showCaption={showOptionCaptions}
-    >
-      <FilterDropdown<RecapMode>
-        label={sessionDefaultCopy.recap.title}
-        options={availableRecapModes.map((modeValue) => ({
-          value: modeValue,
-          label: recapModeLabels[modeValue],
-          icon: <span className={`mode-option-dot recap-${modeValue}`} />,
-          description: showOptionCaptions
-            ? getRecapModeDescription(modeValue, t, recapAfterSeconds)
-            : undefined,
-          disabled:
-            isStarting ||
-            (effectiveSandboxLevel === "project-write" &&
-              modeValue === "side-session"),
-        }))}
-        selected={[selectedRecapMode]}
-        onChange={([value]) => {
-          if (isStarting) return;
-          hasUserCustomizedDefaultsRef.current = true;
-          setSelectedRecapMode(value ?? "off");
-        }}
-        multiSelect={false}
-        fullWidth
-        triggerContent={
-          <span className={styles.selectedChoice}>
-            <span
-              className={`mode-option-dot recap-${selectedRecapMode}`}
-              aria-hidden="true"
-            />
-            <span className={styles.selectedChoiceText}>
-              {recapModeLabels[selectedRecapMode]}
-            </span>
-          </span>
-        }
-      />
-      {selectedRecapMode !== "off" && (
-        <RecapAfterSecondsControl
-          value={recapAfterSeconds}
-          disabled={isStarting}
-          className={
-            showOptionCaptions ? styles.captionedRecapDuration : undefined
-          }
-          label={
-            showOptionCaptions
-              ? recapAfterSecondsInlineLabels[selectedRecapMode]
-              : undefined
-          }
-          mode={selectedRecapMode}
-          onCommit={(seconds) => {
-            hasUserCustomizedDefaultsRef.current = true;
-            setRecapAfterSeconds(seconds);
-          }}
-        />
-      )}
-    </NewSessionOptionSection>
-  ) : null;
-  const helperSideModelSection = showHelperSideModel ? (
-    <NewSessionOptionSection
-      className="new-session-helper-section new-session-helper-model-section"
-      title={sessionDefaultCopy.helperModel.title}
-      caption={sessionDefaultCopy.helperModel.description}
-      showCaption={showOptionCaptions}
-    >
-      <FilterDropdown
-        label={sessionDefaultCopy.helperModel.title}
-        options={helperSideModelOptions}
-        selected={[helperSideModel]}
-        onChange={(selected) => {
-          hasUserCustomizedDefaultsRef.current = true;
-          setHelperSideModel(selected[0] ?? HELPER_SIDE_MODEL_CHEAPEST);
-        }}
-        multiSelect={false}
-        placeholder={t("helperSideModelCheapest")}
-        fullWidth
-        triggerClassName={styles.leftAlignedTrigger}
-      />
-    </NewSessionOptionSection>
-  ) : null;
-  const promptSuggestionSection = selectedProvider ? (
-    <NewSessionOptionSection
-      className="new-session-helper-section"
-      title={sessionDefaultCopy.suggestions.title}
-      caption={promptSuggestionModeDescriptions[selectedPromptSuggestionMode]}
-      showCaption={showOptionCaptions}
-    >
-      <FilterDropdown<PromptSuggestionMode>
-        label={sessionDefaultCopy.suggestions.title}
-        options={availablePromptSuggestionModes.map((modeValue) => ({
-          value: modeValue,
-          label: promptSuggestionModeLabels[modeValue],
-          icon: <span className={`mode-option-dot suggestion-${modeValue}`} />,
-          description: showOptionCaptions
-            ? promptSuggestionModeDescriptions[modeValue]
-            : undefined,
-          disabled: isStarting,
-        }))}
-        selected={[selectedPromptSuggestionMode]}
-        onChange={([value]) => {
-          if (isStarting) return;
-          hasUserCustomizedDefaultsRef.current = true;
-          setSelectedPromptSuggestionMode(value ?? "off");
-        }}
-        multiSelect={false}
-        fullWidth
-        triggerContent={
-          <span className={styles.selectedChoice}>
-            <span
-              className={`mode-option-dot suggestion-${selectedPromptSuggestionMode}`}
-              aria-hidden="true"
-            />
-            <span className={styles.selectedChoiceText}>
-              {promptSuggestionModeLabels[selectedPromptSuggestionMode]}
-            </span>
-          </span>
-        }
-      />
-    </NewSessionOptionSection>
-  ) : null;
-  const permissionSection = supportsPermissionMode ? (
-    <NewSessionOptionSection
-      className="new-session-mode-section"
-      title={sessionDefaultCopy.permission.title}
-      showCaption={showOptionCaptions}
-    >
-      <FilterDropdown<PermissionMode>
-        label={sessionDefaultCopy.permission.title}
-        options={permissionModeOptions.map((permissionMode) => ({
-          value: permissionMode,
-          label: modeLabels[permissionMode],
-          icon: <span className={`mode-option-dot mode-${permissionMode}`} />,
-          description: modeDescriptions[permissionMode],
-          disabled: isStarting,
-        }))}
-        selected={[effectivePermissionMode]}
-        onChange={([value]) => {
-          if (value && !isStarting) handleModeSelect(value);
-        }}
-        multiSelect={false}
-        fullWidth
-        triggerContent={
-          <span className={styles.selectedChoice}>
-            <span
-              className={`mode-option-dot mode-${effectivePermissionMode}`}
-              aria-hidden="true"
-            />
-            <span className={styles.selectedChoiceText}>
-              {modeLabels[effectivePermissionMode]}
-            </span>
-          </span>
-        }
-      />
-    </NewSessionOptionSection>
-  ) : null;
-  const sandboxSection = canConfigureSessionSandbox ? (
-    <>
-      {!launchLock.limited && (
-        <NewSessionOptionSection
-          className="new-session-helper-section new-session-sandbox-section"
-          title={sessionDefaultCopy.sandbox.title}
-          caption={sessionDefaultCopy.sandbox.description}
-          showCaption={showOptionCaptions}
-        >
-          <FilterDropdown<SessionSandboxLevel>
-            label={sessionDefaultCopy.sandbox.title}
-            options={[
-              { value: "none", label: t("recapModeOff"), disabled: isStarting },
-              {
-                value: "project-write",
-                label: t("newSessionSandboxLabel"),
-                description: showOptionCaptions
-                  ? sessionDefaultCopy.sandbox.description
-                  : undefined,
-                disabled: isStarting,
-              },
-            ]}
-            selected={[sandboxLevel]}
-            onChange={([value]) => {
-              if (isStarting) return;
-              const enabled = value === "project-write";
-              hasUserCustomizedDefaultsRef.current = true;
-              setSandboxLevel(enabled ? "project-write" : "none");
-              if (enabled) {
-                setSandboxNetworkFirewall(true);
-              }
-              if (enabled && selectedRecapMode === "side-session") {
-                setSelectedRecapMode("off");
-              }
-            }}
-            multiSelect={false}
-            fullWidth
-            triggerClassName={styles.leftAlignedTrigger}
-          />
-          {sandboxLocalAuthOpen && (
-            <p
-              className={styles.optionWarning}
-              data-new-session-sandbox-local-auth-warning="true"
-            >
-              {t("newSessionSandboxLocalAuthWarning")}
-            </p>
-          )}
-        </NewSessionOptionSection>
-      )}
-      {effectiveSandboxLevel === "project-write" && !launchLock.limited && (
-        <NewSessionOptionSection
-          className="new-session-helper-section new-session-sandbox-firewall-section"
-          title={sessionDefaultCopy.sandboxFirewall.title}
-          caption={sessionDefaultCopy.sandboxFirewall.description}
-          showCaption={showOptionCaptions}
-        >
-          <FilterDropdown<"on" | "off">
-            label={sessionDefaultCopy.sandboxFirewall.title}
-            options={[
-              { value: "on", label: t("showThinkingOn"), disabled: isStarting },
-              {
-                value: "off",
-                label: t("showThinkingOff"),
-                description: showOptionCaptions
-                  ? sessionDefaultCopy.sandboxFirewall.description
-                  : undefined,
-                disabled: isStarting,
-              },
-            ]}
-            selected={[sandboxNetworkFirewall ? "on" : "off"]}
-            onChange={([value]) => {
-              if (isStarting) return;
-              hasUserCustomizedDefaultsRef.current = true;
-              setSandboxNetworkFirewall(value === "on");
-            }}
-            multiSelect={false}
-            fullWidth
-            triggerClassName={styles.leftAlignedTrigger}
-          />
-        </NewSessionOptionSection>
-      )}
-    </>
-  ) : sessionSandboxUnavailableReason ? (
-    <NewSessionOptionSection
-      className="new-session-helper-section new-session-sandbox-section"
-      title={sessionDefaultCopy.sandbox.title}
-      showCaption={showOptionCaptions}
-    >
-      <p
-        className={styles.optionCaption}
-        data-new-session-sandbox-unavailable="true"
-      >
-        {sessionSandboxUnavailableReason}
-      </p>
-    </NewSessionOptionSection>
-  ) : null;
-  // What this account settles, stated where the withheld pickers would sit.
-  // An effort this client cannot name is stated as stored.
-  const lockedEffortLevel = knownLockedEffort(launchLock);
-  const fixedLaunchSection = launchLock.limited ? (
-    <NewSessionFixedLaunch
-      lock={launchLock}
-      modelLabel={
-        launchLock.model
-          ? (visibleModels.find((model) => model.id === launchLock.model)
-              ?.name ?? null)
-          : null
-      }
-      effortLabel={
-        lockedEffortLevel
-          ? getEffortLevelLabel(lockedEffortLevel, selectedProviderInfo, t)
-          : null
-      }
-      sandboxAvailable={supportsSessionSandboxing}
-    />
-  ) : null;
   // Withholding every picker in this slot would otherwise leave its grid area
   // empty rather than giving the width back, so the layout drops the area.
-  const providerSlotFilled = Boolean(
-    fixedLaunchSection ||
-      (showProviderPicker && providerSection) ||
-      (showModelPicker && modelSection) ||
-      effortSlot,
+  // The provider and model sections always render (each falls back to a
+  // placeholder), and the effort slot renders unless thinking controls are
+  // withheld and the effort is locked.
+  const providerSlotFilled =
+    launchLock.limited ||
+    showProviderPicker ||
+    showModelPicker ||
+    showThinkingControls ||
+    !launchLock.effort;
+  const creationRecovery = (
+    <>
+      {acceptedCreation &&
+        acceptedCreation.sourceKey === clientSummarySourceKey &&
+        acceptedCreation.accountKey === principal.username && (
+          <div role="status" className={styles.creationRecovery}>
+            <span>
+              {t(
+                acceptedCreation.background
+                  ? "sessionCreationBackgroundSaved"
+                  : "sessionCreationNewerDraft",
+              )}
+            </span>
+            <Button
+              onClick={() =>
+                navigate(
+                  `${basePath}/projects/${acceptedCreation.projectId}/sessions/${acceptedCreation.sessionId}`,
+                )
+              }
+            >
+              {t("sessionCreationOpenSaved")}
+            </Button>
+          </div>
+        )}
+      {pendingCreation && (
+        <div role="status" className={styles.creationRecovery}>
+          <span>
+            {t(
+              pendingCreation.receipt
+                ? "sessionCreationSavedWhileAway"
+                : "sessionCreationUnconfirmedRequest",
+            )}
+          </span>
+          <Button
+            onClick={async () => {
+              const key = `ya-text-creation:${clientSummarySourceKey}:${principal.username}:${newSessionDraftKey}`;
+              const pending = pendingSessionCreation(key);
+              if (!pending) return;
+              try {
+                const receipt = await getSessionCreation(
+                  sourceTransport,
+                  pending.requestId,
+                );
+                if (
+                  !creationViewOwner.current.active ||
+                  creationViewOwner.current.sourceKey !==
+                    clientSummarySourceKey ||
+                  creationViewOwner.current.accountKey !== principal.username
+                )
+                  return;
+                const cleared =
+                  pending.draftText !== undefined &&
+                  pendingFilesRef.current.map((file) => file.id).join("\0") ===
+                    (pending.draftFileIds ?? []).join("\0") &&
+                  draftControls.getDraft() === pending.draftText &&
+                  JSON.stringify(draftControls.getAttachmentState()) ===
+                    (pending.draftAttachments ?? "null")
+                    ? draftControls.captureSubmission?.().confirm()
+                    : false;
+                if (
+                  cleared ||
+                  pendingFilesRef.current.map((file) => file.id).join("\0") !==
+                    (pending.draftFileIds ?? []).join("\0") ||
+                  (pending.draftText !== undefined &&
+                    (draftControls.getDraft() !== pending.draftText ||
+                      JSON.stringify(draftControls.getAttachmentState()) !==
+                        (pending.draftAttachments ?? "null")))
+                )
+                  settleSessionCreation(key, receipt.requestId);
+                navigate(
+                  `${basePath}/projects/${receipt.projectId}/sessions/${receipt.sessionId}`,
+                );
+              } catch {
+                showToast(t("sessionCreationStillUnconfirmed"), "error");
+              }
+            }}
+          >
+            {t("sessionCreationCheckSaved")}
+          </Button>
+        </div>
+      )}
+    </>
   );
-  const activeAdvancedOptions = [
-    effectivePermissionMode !== "default"
-      ? `${sessionDefaultCopy.permission.title}: ${modeLabels[effectivePermissionMode]}`
-      : null,
-    effectiveServiceTier
-      ? `${t("newSessionServiceTierTitle")}: ${serviceTierLabel(effectiveServiceTier, serviceTierOptions, t)}`
-      : null,
-    showThinking !== "default"
-      ? `${sessionDefaultCopy.showThinking.title}: ${showThinking === "on" ? t("showThinkingOn") : t("showThinkingOff")}`
-      : null,
-    selectedRecapMode !== "off"
-      ? `${sessionDefaultCopy.recap.title}: ${recapModeLabels[selectedRecapMode]}`
-      : null,
-    selectedPromptSuggestionMode !== "off"
-      ? `${sessionDefaultCopy.suggestions.title}: ${promptSuggestionModeLabels[selectedPromptSuggestionMode]}`
-      : null,
-    effectiveSandboxLevel === "project-write"
-      ? sessionDefaultCopy.sandbox.title
-      : null,
-    machineControlSelected && machineControlEligible
-      ? t("newSessionMachineControlTitle")
-      : null,
-  ].filter((label): label is string => label !== null);
 
   const displayDefaultsError =
     displayDefaultsPending && settingsError ? (
       <div role="alert" className={styles.catalogStatus}>
         <span>{t("newSessionDefaultsUnavailable")}</span>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="small"
           className={styles.catalogAction}
           onClick={() => void refetchSettings()}
           disabled={settingsLoading}
         >
           {t("newSessionDefaultsRetry")}
-        </button>
+        </Button>
       </div>
     ) : null;
 
   // Compact mode: just the input area, no header or mode selector
   if (compact) {
     return (
-      <div
+      <FileDropZone
+        enabled={allowAttachments && !composerMuted && !isStarting}
+        onFiles={addPendingFiles}
+        ownerKey={`${clientSummarySourceKey}:${principal.username}:${newSessionDraftKey}`}
+        newSession
         className="new-session-form new-session-form-compact"
         onKeyDownCapture={handleComposerKeyDown}
       >
+        {creationRecovery}
         {displayDefaultsError}
         {inputArea}
-      </div>
+      </FileDropZone>
     );
   }
 
   // Full mode: form with header, input area, and mode selector
   return (
-    <div
+    <FileDropZone
+      enabled={allowAttachments && !composerMuted && !isStarting}
+      onFiles={addPendingFiles}
+      ownerKey={`${clientSummarySourceKey}:${principal.username}:${newSessionDraftKey}`}
+      newSession
       className={`new-session-form new-session-container${
         fullPane ? ` ${styles.fullPane}` : ""
       }${fullPaneWide ? ` ${styles.fullPaneWide}` : ""}`}
@@ -5377,6 +2998,7 @@ export function NewSessionForm({
         </div>
       )}
 
+      {creationRecovery}
       {displayDefaultsError}
 
       <div
@@ -5458,28 +3080,10 @@ export function NewSessionForm({
                       ? t("templateSelectProvider")
                       : undefined
               }
-              sessionSettings={{
-                mode: effectivePermissionMode,
-                provider: selectedProvider ?? undefined,
-                model: selectedModel ?? undefined,
-                thinking: toThinkingOption(
-                  effectiveThinkingMode,
-                  effectiveEffortLevel,
-                ),
-                showThinking: getShowThinkingSetting(),
-                sandboxLevel: effectiveSandboxLevel,
-                sandboxNetworkFirewall: effectiveSandboxNetworkFirewall,
-                recapMode: resolveRecapMode(
-                  selectedProviderInfo,
-                  selectedRecapMode,
-                ),
-                recapAfterSeconds,
-                promptSuggestionMode: resolvePromptSuggestionMode(
-                  selectedProviderInfo,
-                  selectedPromptSuggestionMode,
-                ),
-                helperSideModel,
-              }}
+              sessionSettings={templateSessionSettings(
+                newSessionOptions,
+                getShowThinkingSetting(),
+              )}
               onStarted={(createdProjectId, sessionId) => {
                 if (historyScope)
                   void rememberComposerPrompt(historyScope, message).catch(
@@ -5497,118 +3101,20 @@ export function NewSessionForm({
             />
           </div>
         )}
-        {providerSlotFilled && (
-          <div className="new-session-provider-slot">
-            {fixedLaunchSection}
-            {showProviderPicker && providerSection}
-            {showModelPicker && modelSection}
-            {effortSlot}
-            {showModelPicker && modelCatalogStatus}
-          </div>
-        )}
-        <div className={styles.advancedSection}>
-          <button
-            type="button"
-            className={styles.advancedToggle}
-            aria-expanded={showAdvancedOptions}
-            aria-controls="new-session-advanced-options"
-            onClick={() => {
-              const expanded = !showAdvancedOptions;
-              setShowAdvancedOptions(expanded);
-              localStorage.setItem(
-                UI_KEYS.newSessionAdvancedOptionsExpanded,
-                String(expanded),
-              );
-            }}
-          >
-            <span>
-              {t(
-                showAdvancedOptions
-                  ? "newSessionHideAdvancedOptions"
-                  : "newSessionShowAdvancedOptions",
-              )}
-            </span>
-            <span aria-hidden="true">{showAdvancedOptions ? "▴" : "▾"}</span>
-          </button>
-          {!showAdvancedOptions && activeAdvancedOptions.length > 0 && (
-            <span className={styles.advancedSummary}>
-              {activeAdvancedOptions.join(" · ")}
-            </span>
-          )}
-          <button
-            type="button"
-            className={styles.captionToggle}
-            aria-label={
-              showOptionCaptions
-                ? t("newSessionHideOptionCaptions")
-                : t("newSessionShowOptionCaptions")
-            }
-            aria-pressed={showOptionCaptions}
-            title={
-              showOptionCaptions
-                ? t("newSessionHideOptionCaptions")
-                : t("newSessionShowOptionCaptions")
-            }
-            onClick={() => setShowOptionCaptions((shown) => !shown)}
-          >
-            <span aria-hidden="true">?</span>
-          </button>
-        </div>
-        <div
-          id="new-session-advanced-options"
-          className={`${styles.secondaryOptions}${
-            isProjectChooserExpanded ? ` ${styles.secondaryOptionsHidden}` : ""
-          }`}
-          data-new-session-secondary-options="true"
-          hidden={!showAdvancedOptions}
-        >
-          {serverHasCapability(
-            versionInfo,
-            SERVER_CAPABILITIES.agentAuthRouter.name,
-          ) &&
-            !launchLock.limited &&
-            effectiveSandboxLevel === "none" &&
-            (selectedProvider === "claude" || selectedProvider === "codex") && (
-              <RouterPoolSelector
-                provider={selectedProvider}
-                model={selectedModel}
-                thinking={routerThinking}
-                serviceTier={effectiveServiceTier}
-                data={routerDiscovery.data}
-                busy={routerDiscovery.busy}
-                error={routerDiscovery.error}
-                retry={() => void routerDiscovery.reload()}
-                sourceKey={clientSummarySourceKey}
-                value={
-                  routerSelection?.sourceKey === clientSummarySourceKey
-                    ? routerSelection
-                    : null
-                }
-                onChange={(selection) => {
-                  hasUserCustomizedDefaultsRef.current = true;
-                  setRouterSelectionCustomized(true);
-                  setRouterPreference(selection);
-                }}
-                disabled={isStarting}
-                showCaption={showOptionCaptions}
-              />
-            )}
-          {permissionSection}
-          {serviceTierSection}
-          {showThinkingSection}
-          {recapSection}
-          {helperSideModelSection}
-          {promptSuggestionSection}
-          {sandboxSection}
-          <MachineControlSessionSelection
-            eligible={machineControlEligible}
-            selected={machineControlSelected}
-            onChange={selectMachineControl}
-            disabled={isStarting}
-            showCaption={showOptionCaptions}
-          />
-        </div>
+        <NewSessionOptionsPanel
+          options={newSessionOptions}
+          providerSlotFilled={providerSlotFilled}
+          showProviderPicker={showProviderPicker}
+          showModelPicker={showModelPicker}
+          launchLock={launchLock}
+          isStarting={isStarting}
+          isProjectChooserExpanded={isProjectChooserExpanded}
+          showThinking={showThinking}
+          setShowThinking={setShowThinking}
+          clientSummarySourceKey={clientSummarySourceKey}
+          versionInfo={versionInfo}
+        />
       </div>
-    </div>
+    </FileDropZone>
   );
 }

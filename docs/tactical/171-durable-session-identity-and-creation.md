@@ -2,19 +2,1418 @@
 
 Topic: ya-owned-session-ids
 
-Status: implementation plan independently accepted by Sol 6.1 High on
-2026-11-01 after correction of seven material design findings. The maintainer
-selected the ownership direction and requested reviewed implementation slices,
-commits as work proceeds, and standalone-profile testing. Runtime implementation
-has not started. Acceptance covers the plan's ordering, intermediate contracts
-and enabling gates, not an unspecified schema/wire contract or source work.
-Section 1 and per-slice implementation reviews remain required below.
+Status: the native session-creation consolidation target is **implemented and
+independently accepted** (2026-11-03). Every production native new-session
+caller shares durable admission and permanent public identity; duplicate
+creation engines are retired. Final lint, format, typecheck and complete
+workspace tests pass: **6,924 server / 7,067 client** cases. Focused owned-profile
+local/hosted browser, Bun and actual Claude CLI checks pass. Each coherent slice
+received one Sol 6.1 High review; no repeat review cycle was used. Broader
+receipts advertisement, native-copy result-loss
+reconciliation and wider OS/external qualification remain explicit limits.
+
+The November 1 foundation and November 2 Claude/Codex milestone history below
+remain evidence for their respective boundaries; the current ledger governs
+completion of the subsequently selected consolidation target.
 
 The maintainer subsequently requested incorporation of the separate
 [creation-provenance admission notes](../../topics/session-creation-provenance.sketches.md).
 The coordination requirements and coverage ledger below extend this plan;
 Sol 6.1 High separately accepted this documentation addition on 2026-11-01.
-Runtime work and the provenance defect remain unimplemented.
+The November 3 consolidation below completes the common caller rollout. The
+provenance audit is narrowed to lost native-copy result correlation; it no
+longer lists missing ordinary caller source writes.
+
+## Optional background New Session — November 3
+
+The next selected product slice implements the
+[background action contract](../../topics/session-creation.sketches.md#implemented-optional-background-creation--november-3)
+on the completed admission foundation. Message Delivery has one browser-local,
+default-off setting with Undo. Ordinary New Session gains the visible action
+and Command-Enter, retains settings and newer drafts, acknowledges captured
+text/files and offers Open for startup status without automatic navigation or
+another poller. Old servers retain ordinary creation; no server contract changes.
+
+Focused checks pass: 124 form/settings/recovery unit cases (5.98 seconds), three
+owned browser cases (19.6 seconds, one worker/no retries), including routed
+Claude with 200 saved sessions and sequential typing within 100 ms under
+concurrent updates; Codex attachment acknowledgement, button/shortcut creates,
+distinct operations and both eventual consumed inputs; and lost acceptance/read
+replies across reload with newer work and no duplicate create. Actual npm 0.11.0
+keeps the action hidden even with the preference enabled and still completes
+ordinary creation/history reload. Desktop 1000×600 and phone 375×812 captures
+are inspected and archived at
+`.artifacts/ui-testing/2026-11-03-background-creation-final/` through the shared capture
+facility. New styles use the existing component module; coupled legacy CSS
+extraction is deferred by the touched-owner report.
+
+The single localhost:3400 Sol review uses verified `gpt-6.1-sol`, High and
+`bypassPermissions`. It requested a speech-finalization correction and the
+existing speech-prefix disclosure on the action. Both are corrected: a final
+spoken send waits behind the pending manual background intent, with one
+submission after successful settlement; the button shares Start's cue/tooltip/
+accessible disclosure. The focused component regression checks the captured
+payload, preserved newer dictation, one acceptance, background confirmation and
+no navigation. The reviewer is verified stopped; there is no second review.
+Root lint, format, typecheck
+and workspace tests pass after the corrections: 6,901 server cases (142.16
+seconds), 7,074 client cases (128.15 seconds), 967 shared, 139 relay and 45 push-broker cases. Console scan
+remains at its existing 108-site budget. Existing upstream SQLite/negative-path
+diagnostics and the two unowned jsdom navigation diagnostics remain recorded in
+[the tooling gap](../../gaps/runtime-cutover-tooling-warnings.md) and
+[the navigation gap](../../gaps/client-unit-navigation-diagnostics.md); the
+focused touched-area checks add none.
+This slice adds no wider external-account or Linux/Windows qualification.
+
+The maintainer then selected a smaller presentation: background creation is
+shortcut-only, with no extra button or row. A compact **?** in the existing
+New Session toolbar discloses Command-Enter and full-pane editing, following
+Toolbar → Keyboard shortcuts visibility without disabling the shortcut when
+hidden. Native disclosure handles click/keyboard activation; blur and Escape
+close it. Existing admission, captured acknowledgement and speech ownership
+are unchanged. The focused speech regression now submits with Command-Enter.
+One verified Sol 6.1 High/bypass review found phone clipping when Project Queue
+also appears. The panel is now anchored to the toolbar action boundary, and
+375px checks assert that both the panel and its keys remain in the viewport
+with Queue visible. The reviewer is verified stopped; there is no second cycle.
+The three migrated Claude/Codex browser cases pass (18.7 seconds); the final
+owned built-client layout/capture case passes (6.9 seconds, plus a 7-second
+build). Desktop/phone closed/open captures are inspected at
+`.artifacts/ui-testing/2026-11-03-background-shortcut-final/`. All 109 form unit
+cases pass (6.18 seconds), including shortcut-only pending speech ownership;
+a focused hidden-help/working-shortcut check also passes. Root lint, formatting,
+typecheck and workspace tests pass (6,901 server / 7,074 client cases); the
+post-review layout correction passes focused browser, CSS/lint and type checks.
+Console budget is unchanged. Concurrent fixture changes remain outside this UI
+commit.
+
+## Selected cleanup — current clients and legacy removal
+
+The maintainer authorized the following three implementation slices after the
+server admission consolidation. Older Chrome extension clients do not block
+retirement on new servers; current clients must still support the stable
+v0.8.0–v0.11.0 server corpus through a client-only compatibility adapter.
+
+1. **Current-client convergence.** Advertise a distinct full-admission bit;
+   submit prompt/staged files/options together from New Session and Session-page
+   actions, including limited/sandbox/Machine Control choices. Keep old-server
+   writes in one explicit adapter. Empty preparation is an explicit intent.
+2. **Retire SDK execution scaffolding.** Bootstrap and tests use AgentProvider;
+   delete the deprecated RealClaudeSDK wrapper and Supervisor SDK fallback
+   engines, queue payloads and duplicate provenance plumbing.
+3. **Retire unused server interfaces and provisional remapping.** Move remaining
+   current tooling/API consumers, remove obsolete new-server creation URLs and
+   temporary public-ID replacement. Keep current-client old-server event/input
+   compatibility and existing native-history import/resume at explicit boundaries.
+
+One actual localhost:3400 Sol 6.1 High/bypassPermissions review per slice, focused
+corrections and commits as work lands. This is implementation/removal work;
+additional account or Chrome extension qualification is not its blocking gate.
+New admission bit 147 does not broaden bits 142–146 or advertise broad receipts.
+Existing ownership, current-grant checks and live Machine Control credentials
+remain authoritative. Wider native-copy/template recovery remains separate.
+
+Current-client slice implemented: bit 147 gates the combined prompt/files/options
+contract and explicit empty preparation. The sole Sol review identified five
+recovery/lifetime defects; corrections retain files through refusal, acknowledge
+only the captured draft, freeze retry metadata and fence parked-page replies.
+Owned browser checks cover limited admission, sequential newer typing,
+unchanged-file acknowledgement, lost-reply reload/recovery and parked POST/GET
+completion (six cases, 33.3 seconds). Focused draft/collector/navigation checks
+pass (51 cases, 4.52 seconds). Full workspace checks pass: 6,925 server
+checks (147.51 seconds), 7,070 client checks (130.58 seconds), shared 967,
+relay 139 and push 45; lint/format/types and CSS pass. Existing upstream SQLite
+notices and expected negative-path diagnostics retain their documented owners.
+SDK runtime retirement implemented: production and test fixtures now use
+AgentProvider, with no `sdk`/`realSdk` constructor alternatives, deprecated
+wrapper, alternate Supervisor engines or duplicate queue provenance field.
+The single Sol review approves. Four migrated fixture/assertion regressions
+from the first full run were corrected; focused verification passes 234 cases
+in 4.53 seconds, and two owned browser checks pass in 14.3 seconds. Final
+workspace validation passes: 6,924 server cases (144.04 seconds), 7,070 client
+cases (128.65 seconds), shared 967, relay 139 and push 45; lint/format/types pass.
+The existing [unowned jsdom diagnostics](../../gaps/client-unit-navigation-diagnostics.md)
+and upstream SQLite notices remain separately tracked. The review process was
+retired with verified provider teardown. Server-alias/public-remap retirement
+is completed below.
+
+The final retirement slice is implemented: old browser POST registrations,
+public create-only Supervisor entry and public-ID remap producers/observers are
+removed. Current tooling uses acceptance and observes live owner registration
+separately. Raw provider lifecycle fixtures retain the same execution engine;
+production creation still requires admitted context. Old emission/writer/wiring
+assertions are retired, while meaningful input/approval/share tests seed an
+existing runtime and native/peer legacy alias fixtures preserve upgrade reads.
+The mocked limited-launch wiring case is superseded by real admission policy
+coverage in No project app tests and the limited-user browser smoke. Native v0
+and peer schemas remain unchanged. A real npm 0.11.0 server passes current-client
+fallback, one legacy start, reply and history reload after wire isolation.
+
+The sole final Sol review found a retained-runtime native-conflict input fence
+bug, stale Codex preparation assertions and an accidentally removed account-switch
+race. Corrections close input before synchronous listeners and verify/fence
+teardown, test both init/output conflicts with successful/failed abort, migrate
+local/hosted preparation to receipt/readiness checks, and restore account-switch
+coverage using the actual accepted owner request key. Focused runtime checks
+pass 214 cases in 3.85 seconds; Claude preparation plus local/hosted Codex and
+account-switch browser checks pass without increasing timeouts. The obsolete
+five-second public-ID wait is removed; explicit native-evidence waits remain.
+The review process was retired with verified provider teardown; no second review
+round was launched. Actual owned performance-harness launch, protocol-2 attach,
+preparation, one streamed turn and native persistence pass; this is behavioral
+qualification, not a benchmark result. Final workspace gates pass: 6,901 server
+cases (146.92 seconds), 7,070 client cases (131.17 seconds), shared 967, relay 139
+and push 45; root lint/format/types and explicit new-file checks are clean.
+Twelve targeted browser cases pass across focused runs, including routed Claude,
+local/hosted Codex copy and preparation, delayed replies and account renewal;
+prior first-slice lost-reply draft recovery remains qualified. Existing SQLite,
+negative-path log, console-budget and [jsdom navigation diagnostics](../../gaps/client-unit-navigation-diagnostics.md)
+retain their documented owners. No timeout/retry increases or account/platform
+qualification expansion were used to complete retirement.
+
+## Completion target — one creation contract, retired legacy implementations
+
+The maintainer clarified that the endpoint of this refactor is one stable
+session-creation contract. The qualified text path is the working foundation;
+parallel creation implementations are migration debt to remove as callers move.
+Provider qualification alone does not complete the tactical plan.
+
+All retained YA-owned new user-visible sessions must enter the same
+transport-independent admission owner. UI, Project Queue, review, native/peer
+API and maintenance callers supply their authenticated creation context and
+creation intent. That owner saves the public identity, payload/settings/source
+and operation identity before dispatch, and owns acceptance, startup attempts,
+failure and uncertainty. Existing Supervisor/runtime owners and provider
+adapters execute admitted work and supply native identity/input evidence.
+Callers must not reproduce that lifecycle or rely on a later callback to save
+logical-session facts. Native transcripts remain provider-owned.
+
+This does not require one HTTP URL. Older routes may remain thin compatibility
+adapters into the same owner while preserving supported response, authorization
+and receipt semantics. Current clients still need their supported older-server
+fallback. Retaining those interfaces must not retain a second creation engine
+inside the new server. Native provider allocation remains adapter work; resume
+of an existing session and adoption of externally created history have their
+own explicit boundaries. Fork/clone creation of a new public resource must join
+the admission migration without requiring a full lineage/workspace redesign.
+
+Each migration slice must identify and delete the creation implementation it
+supersedes, including obsolete startup callbacks, public-id remapping and draft
+acknowledgement branches where their last applicable consumer has moved. Keep
+only compatibility behavior with a named supported consumer and explicit owner.
+An unsupported retained provider or input shape needs a concrete migration or
+retirement decision; an indefinite bypass cannot satisfy completion.
+
+Selected consolidation sequence, keeping the larger-slice/single-review cadence
+(the ledger below records the resulting implementation):
+
+1. **Project Queue on Claude/Codex.** Carry queued creation through the common
+   identity/admission owner, define idempotent promotion and restart recovery,
+   and retire its separate new-session creation behavior. Preserve the repaired
+   enqueue provenance and existing scheduling/runtime ownership.
+2. **Attachments and ordinary creation callers.** Admit durable attachment claims
+   and the initial payload together, migrate the retained form/create/start
+   paths, and delete their superseded creation and unsafe draft-clear logic.
+3. **Remaining retained callers and provider shapes.** Migrate review, native/peer,
+   maintenance and new fork/clone resources; close their provenance omissions.
+   Finish or explicitly retire remaining provider/input shapes, then remove
+   their creation bypasses and obsolete remap branches.
+
+Completion requires an audited ingress inventory with no retained YA-owned
+user-visible creation bypass, one admission/startup authority, deleted legacy
+implementations, preserved supported API/skew behavior, and focused evidence
+for caller-specific failure/restart/duplicate-delivery boundaries. Advertise the
+broad receipts contract only after its complete guarantees hold. Optional
+background UX and automatic retry policy remain separate feature decisions.
+This target governs the final ingress audit; historical implementation phases
+below are retained as evidence, not a second current backlog.
+
+## Consolidation progress ledger
+
+| Surface | Common contract | Legacy implementation retirement | Evidence/status |
+| --- | --- | --- | --- |
+| Ordinary owner text, Claude/Codex/OpenCode/Pi | Implemented | Qualified text uses saved dispatch | Existing native/browser/recovery qualification above |
+| Project Queue ordinary owner text | Implemented in current slice | Qualified promotion no longer owns deferred native startup/retry; same eligibility and dispatcher as direct creation | Six real SQLite/owner integration cases; local/hosted native-process and failed-row browser checks pass |
+| Owner Claude/Codex staged attachments | Implemented in current slice | Capable ordinary form and Queue bypass their empty-provider/materialize/send implementation; older-server and other retained shapes remain named consumers | 43-case storage/staging/owner qualification; three local/hosted native/browser cases; single review corrected and full checks pass |
+| Qualified owner native API/peer, keyed review, maintenance and text successors | Implemented in current slice | Review starts recover from the canonical store; its successful-start cache is removed; native input UUID comes from its trusted receipt; caller adapters use saved dispatch | 143 focused integration cases; four local/hosted native/browser cases, real Claude CLI and three Bun cases pass |
+| Qualified owner create-only routes | Implemented as empty preparation adapters | No separate qualified empty-provider creation engine; no invented initial turn | Local/hosted native/browser first-turn/restart checks pass |
+| Retained provider adapters | Implemented in current slice | Grok, frozen Gemini ACP, Codex OSS and Claude wrappers use adapter namespaces; review successful-start fallback cache removed | Six real stdio/SQLite cold-continuation and lost-proof cases pass; 69 focused cases pass; sole Sol review accepts with a ledger correction |
+| New fork/clone resources and restricted/input shapes | Implemented | Saved copy P precedes effects; limited/sandbox/desktop and legacy first inputs use the same attempt/attachment owner | SQLite/native race, authority revocation, copy failure/cold recovery and local/hosted browser checks |
+| Template preparation and final bypass audit | Implemented and independently accepted | Template create/upload/send replaced; duplicate Supervisor create bodies, Queue new-session engine and creation-source callbacks removed | Authenticated owner-keyed recovery and original locks; standalone profile regression; ingress inventory below |
+
+Queue admission uses a deterministic operation key from the durable queue item,
+commits its public association before native effects and delegates worker
+deferral to the common owner. Confirmed replay recovers the same result; unsafe
+native uncertainty never auto-replays. Explicit retry reuses the saved public id
+only after proved non-dispatch. The queue's source-less legacy rows preserve
+unknown rather than inventing provenance. Accepted item text/settings are frozen;
+failed rows link to the saved session. New optional summary fields preserve
+older-server/client absence behavior without a broad capability claim.
+The three-case owned native/browser run passes in 16.8 seconds. Desktop/phone
+captures were inspected; the saved-session recovery link has a 36 px minimum
+height and no row overflow. Its focused recapture/check passes in 10.9 seconds.
+The single Sol 6.1 High review found that a crash before the JSON association write
+could leave admitted input editable/retargetable. Queue now reconciles the
+compact deterministic store key before edits and dispatch selection; the new
+cold-reopen/edit/retarget/retry regression passes. Corrected focused integration
+passes 84 cases/four files in 23.33 seconds. The reviewer was retired with verified
+stop and the original finding/correction retained under ignored
+`tasks/session-identity/reviews/queue-creation.md`; no second review. Root static
+checks pass. The first full run passes 6,901 server/7,067 client cases. The final
+post-review full run passes 6,901 server/7,067 client but fails the already tracked
+[Rendez nested watcher](../../gaps/rendez-nested-watch-event-after-restart.md)
+second-delivery-after-restart case. Focused watcher+Queue reproduces that same
+watcher failure while all six Queue cases pass. No watcher source/time budget
+changed; no green final aggregate is claimed. Corrected Queue integration
+passes 84 cases; existing contract, lifecycle, browser and static evidence remain
+separate from that adjacent watcher gap.
+
+The attachment slice seals canonical account-owned inputs outside draft/Queue
+staging, commits their path-free digest claim with the prompt and materializes
+under the saved YA id before dispatch. SQLite migration 22 accounts the 2 GiB
+profile claim budget; at most 64 files belong to one operation. Explicit safe
+retry survives deletion of staging originals, changed final bytes refuse, and
+expired unclaimed preparation is reclaimed without deleting accepted claims.
+The provider text capabilities retain their meanings; optional bit 146 gates
+ordinary owner Claude/Codex staged creation, including attachment-only input.
+Other retained shapes and older-server clients remain named compatibility
+consumers until the next cut.
+
+The sole Sol 6.1 High review found three material gaps: newer unfinished pasted
+files could clear at acknowledgement, definitive refusals could strand the
+recovery key, and omitted-provider Queue attachments bypassed admission. Focused
+corrections capture the complete live selection (also for reload recovery),
+coalesce bounded preparation before SQLite, distinguish an explicit
+`creation-not-accepted` response from ambiguous failure/GET 404, and delegate
+attachment eligibility to the effective-provider owner. Regression cases cover
+an unchanged-text unfinished PNG paste, two real pre-admission refusals followed
+by corrected creation, and default-provider safe retry. No repeat review; the
+reviewer was retired with verified stop.
+
+Final four-file focused qualification passes 43 cases in 2.55 seconds. The
+three-case local/hosted native browser run passes in 22.8 seconds with one worker
+and no retries; final desktop/phone captures were inspected through artifact
+capture. Owned standalone Bun also passes local/native and definitive-refusal
+browser qualification (two cases, 8.0 seconds), exercising migration/claim SQL
+on its SQLite adapter. Root lint/format/typecheck and console/CSS ownership checks pass. The
+full workspace run passes 6,908 server and 7,067 client cases (server 147.26 s).
+It includes the tracked Rendez case; passing this run does not close that
+intermittent watcher gap. Earlier full-run failures in a schema-version
+expectation and an unnecessary text-only authorization check were corrected and
+focused-verified. Source/evidence and the sole review are retained under ignored
+`tasks/session-identity/attachments-*` / `reviews/attachment-consolidation.md`.
+
+The retained-caller slice admits qualified native/peer creation, keyed Source
+Review, maintenance, text successors and empty preparation through that same
+owner. Preparation records settings without inventing a first prompt; its live
+incumbent accepts the first turn and bound cold history keeps the public id.
+Migration 23 makes this distinction available in compact collection projections.
+Native API receipt identity remains trusted input identity, while its established
+SDK-queue receipt meaning stays separate from native creation proof. Exact native
+API slash text bypasses YA command emulation. Peer authority is checked again at
+dispatch; serialized provenance is descriptive, never authority.
+
+The sole Sol review found a retained-provider Source Review fallback regression
+and an unkeyed failure reported as queued. Qualified keyed starts now use the
+canonical store; the named unqualified-provider cache remains until migration.
+Unkeyed failures propagate and keep comments pending. Corrections pass 143
+focused cases in 1.85 seconds. Four owned local/hosted browser/native cases pass
+in 31.5 seconds, three Bun cases in 11.1 seconds, and the real pinned Claude CLI
+preparation case in 10.3 seconds (11.6 seconds including setup), using an owned
+local model endpoint rather than an external account. Desktop/phone captures
+were inspected. Root static checks and the full workspace suite pass: 6,916
+server cases (143.55 seconds) and 7,067 client cases. The reviewer was retired
+with verified stop; there was no second review. Ignored `callers-*` evidence and
+`reviews/caller-consolidation.md` record the checks and corrections. Other
+provider/restricted shapes and new forks/clones still require migration and
+retirement of their named legacy engines; this is not consolidation closure.
+
+Retained provider admission is independently accepted by the sole Sol 6.1 High
+review, with its stale-ledger note corrected and verified retirement recorded.
+Six controlled native-stdio/SQLite cases cover Grok, frozen Gemini ACP and Codex
+OSS: native proof delayed independently of the user echo, loss of that proof
+without allocation replay, and exact-N cold continuation through profile reopen.
+They pass in 3.50 seconds; broader focused host/Queue qualification passes 69
+cases in 12.94 seconds. Ten older fixtures needed the explicit chosen-id property;
+corrected native/HTTP fixtures plus the six cases pass 45 cases in 3.57 seconds.
+The existing six-case real Claude CLI/browser file also passes in 44.7 seconds,
+including routed creation, preparation, refusal and recovery. Root lint, format,
+typecheck and full tests pass: 6,922 server cases in 140.70 seconds and 7,067
+client cases. An earlier full run also reproduced the tracked Rendez watcher
+failure; this passing sample does not close its intermittent gap. No second
+review. Evidence is retained under ignored `providers-*` / `provider-admission-*`
+and `reviews/provider-admission.md`. New hosted coverage for every added adapter,
+external model-account smokes and Linux/Windows remain unclaimed.
+
+## Final consolidation slice — November 3
+
+The [current identity contract](../../topics/session-identity.md#creation-consolidation--november-3)
+owns the final semantics. This cut moves limited/sandbox/desktop-control starts,
+legacy files/images/documents and all new fork/clone resources through the
+existing admission/attempt owner, then deletes their duplicate implementations.
+A final source inventory found template preparation's in-process create/upload/send;
+it now submits one deterministic keyed prompt/files admission. Auth/session
+cookie creation calls are unrelated authentication resources and excluded.
+
+| Retained production ingress | Admission/effect boundary |
+| --- | --- |
+| Project/detached start and create-only HTTP URLs | Thin policy/response adapters; common input or explicit preparation intent |
+| Project Queue immediate/worker-delayed/staged starts | Original enqueue owner/source; deterministic item key and current grants |
+| Source Review, native v0/peer and maintenance | Existing trusted caller context and input receipts, common saved dispatch |
+| Text restart/stale handoff | Original successor request context and immutable first input |
+| Ordinary fork, restart-fork, recap/retitle/fork-summary helper and target, Claude full clone | Exact native source, permanent saved P before copy, actual returned N binding |
+| Template preparation | Existing project operation plus `template-${operationId}` common admission; no separate native creation engine |
+| Mock backend | Explicit namespace/controlled acceptance for standalone fixture; not real-provider qualification |
+| Existing-session activation and external history | Resume/adoption only; cannot allocate a replacement for unbound saved startup |
+
+The production native I/O guard refuses missing admission before native effects.
+The remaining `createProviderSession`/`createRealSession` names are small wrappers
+for existing resume and stateless SDK scaffolding; their duplicate creation
+bodies are gone. Legacy public HTTP responses/URLs, authenticated native receipts
+and supported older-server client fallback stay supported. No public capability
+meaning broadens; broad receipts remain unadvertised.
+
+Focused evidence now includes concurrent copy coalescing while its generation
+advances, observer mutation resistance, helper failure/restart, common-key
+fork-summary association recovery, retained restart-fork continuation failure,
+real Claude JSONL/Pi copy, native warm-reader discovery for Claude/Codex/Pi,
+account-private multi-batch file sealing, deletion of raw originals before safe
+retry, current limited-grant/lock revocation, and live desktop credential proof.
+Unsupported sandbox platforms save failure without a native launch. The local/
+hosted Codex browser cases gate native fork return, expose the saved copy first,
+restart/reopen it and type sequentially into exactly one continuation on copied N.
+Linux kernel enforcement and Windows native qualification remain external to this
+Mac run; no ambient account or primary-profile process is used.
+
+Removed four Queue tests for the superseded create/materialize/resume and
+callback retry engine, and three route tests asserting post-start metadata
+writes through mocks. Surviving real SQLite/native delayed-admission and
+limited-revocation checks exercise those regressions at their new owner.
+The account-private multi-batch and source/header/reopen tests retain their
+unique security/persistence boundaries; their fixtures model acceptance without
+claiming native consumption or OS confinement. The Queue scheduling file passes
+40 cases in 23.64 seconds; core authority/copy tests pass 48 cases in 4.60 seconds.
+The first full diagnostic run exposed 26 legacy-fixture/metadata regressions;
+fixes include real admission-time working-project/standing-preference metadata
+and an explicit mock-backend namespace. The sole actual localhost:3400 Sol 6.1 High review **ACCEPTs** this slice with
+no material P1/P2 findings. Effective model, High effort and bypass permissions
+were verified; its owned process was retired with HTTP 200/`verifiedStopped`.
+No repeat review. The report is retained under ignored
+`tasks/session-identity/reviews/final-creation-consolidation.md`.
+
+Six final local/hosted browser cases pass in 40.3 seconds with one worker and
+no retries. The deliberate-restart websocket reset was removed by joining the
+browser context before stopping its owned backend; the final two fork cases
+pass cleanly in 18.6 seconds. Three standalone Bun cases pass in 12.4 seconds;
+the actual pinned Claude CLI routed and empty-preparation cases pass in
+18.5 seconds against the owned local model endpoint. Desktop/phone copy and
+preparation captures were inspected at 1000×600 and 375×812: saved copy state,
+disabled pending composer, editable preparation, wrapping and no overflow.
+Console budgets remain unchanged and CSS ownership checks pass.
+
+The first post-review aggregate passes 6,922 server/7,067 client cases but finds
+two template fixtures still using the old endpoint/SDK-only launch. They now
+exercise canonical HTTP acceptance with the explicit mock backend and assert
+one saved public id, original source and prompt; all nine template cases pass
+in 3.73 seconds. No production change or second review was required. The wider
+[template operation recovery gap](../../gaps/project-template-standup.md) remains
+separate from native admission. The corrected complete workspace run passes: **6,924 server / 7,067 client**,
+plus 966 shared, 139 relay and 45 push-broker cases and the root Node checks.
+Server duration is 138.44 seconds. Warning-free lint, format, root typecheck
+(including browser specs), and the corrected server fixture typecheck pass.
+This run includes the tracked Rendez case; its intermittent gap is not closed.
+The staged new authority interface received a type-only lint cleanup; final
+root typecheck and 143 affected route/copy cases pass in 1.71 seconds.
+No final test timeout, retry, console budget or production logging suppression
+was added. Ignored `consolidation-*` evidence retains initial failures as well
+as corrected results. The native-ingress audit found no retained production
+new-session bypass; this completes the selected consolidation endpoint, not the
+separate full workspace/lineage redesign or broader receipts guarantee.
+
+## Active milestone — Claude and Codex creation, November 2
+
+The maintainer narrowed execution after the implementation audit: deliver a
+complete text-creation workflow for Claude and Codex before broadening provider
+or caller coverage. This section supersedes the remaining nine-phase ordering
+and repeated review instructions below for this milestone. Completed foundations
+remain; the historical progress and broader backlog are retained as reference.
+
+The user outcome is one permanent YA session, saved prompt/settings/source before
+provider effects, usable startup/failure/uncertainty presentation, and preserved
+history after refresh. Claude accepts YA's chosen native id; Codex returns a
+native thread id which must bind without changing the YA URL. Include the routed,
+account-pinned Claude path that motivated the work. Native history stays with the
+provider, while YA owns accepted intent and startup evidence.
+
+Implement three larger slices, each with focused tests and one Sol review:
+
+1. **Claude creation end to end.** Complete ordinary text admission through API,
+   Supervisor/provider and the browser. Save before startup, expose the stable
+   session promptly, show honest startup/failure/uncertainty, and retain/copy the
+   prompt after refresh. Cover selected router/account ownership and the existing
+   supported local/hosted runtime choices. Integrate only the unfinished host
+   work needed by these scenarios. Capture submitted draft identity before async
+   work; acknowledgement must preserve newer local/sibling/device edits.
+2. **Codex through the same workflow.** Reuse the application lifecycle/UI,
+   explicitly bind the returned native thread id, and keep public identity through
+   streaming, discovery, history, refresh and continuation. Keep the pinned
+   app-server protocol/target. Native first-input confirmation must be real
+   provider evidence; YA's fabricated user echo is insufficient.
+3. **Recovery qualification.** Add focused fault scenarios and fix their findings:
+   missing executable before subscription, lost acceptance response, restart
+   during startup, Hono replacement with surviving worker, full owner loss and
+   uncertain first-input delivery. Prove no duplicate logical session or initial
+   prompt, unchanged routing, and safe draft acknowledgement while typing.
+
+Tests accompany each implementation slice. Reuse real SQLite/application tests,
+owned standalone profiles and existing browser/native protocol fixtures. Retain
+browser E2E where actual form submission, navigation, reload, typing or transport
+is the boundary. Report controlled native/model endpoint tests separately from
+small actual installed-provider smokes; record unavailable live evidence without
+claiming it passed. Run focused checks during edits and required broad/static
+checks at slice completion, avoiding repeated passing runs without new cause.
+
+One actual localhost:3400 Sol 6.1 High / bypassPermissions review covers each
+complete slice. Fix its material findings and verify with focused checks; do not
+start another review cycle for each correction or adapter. Commit coherent slices
+on the current branch. This replaces the earlier mandatory re-review loop.
+
+The first milestone excludes attachments, optional background creation/shortcuts,
+automated retry, broad other-provider new creation and migration of Queue, review,
+fork, native/peer and maintenance callers. Preserve their existing behavior and
+keep the provenance/unconfirmed-send gaps open for uncovered paths. The safety
+invariants still apply: acknowledged input is durably saved, public identity is
+stable, uncertain effects never trigger automatic replay, newer drafts survive,
+and authentication/router account selection remains authoritative.
+
+Client rollout must use an exact narrow capability/negotiated contract for the
+qualified text providers, with the existing flow when absent or ineligible.
+Do not weaken or advertise the broader `session-creation-receipts` promise before
+its attachment/all-caller guarantees exist. No compatibility cutoff, provider
+refresh, global host restart, or bulk identity rewrite is part of this milestone.
+
+## Release qualification — selected next slice
+
+The maintainer approved one bounded qualification slice after the November 2
+milestone. Keep ordinary Claude/Codex text scope, standalone profiles, focused
+corrections, one actual localhost:3400 Sol 6.1 High/bypassPermissions review and
+commits as work proceeds. This authorizes exercising the declared provider
+versions; it does not select a provider protocol refresh, default change or
+migration of attachments, Project Queue and other creation callers.
+
+| Check | Required evidence |
+| --- | --- |
+| Actual providers | Pinned Codex executable creation/answer/restart/continuation; live Claude through available authorized credentials/router, with unavailable evidence explicit. |
+| Phone-width relay interruption | Real encrypted relay submission/reconnect recovers the same public session and never replays initial input. A viewport check does not claim physical-phone lifecycle qualification. |
+| Worker saturation | Queued UI/prompt/source, exactly-once promotion and an accurate recoverable state after restart before dispatch. |
+| Source/account retirement | A delayed acceptance cannot navigate another source/account or clear its draft; original result remains recoverable. |
+| Browser draft handoff | Real sibling tabs and independent browser contexts preserve newer unsent drafts across acknowledgement. |
+| Supported older server | Current client falls back when narrow capability is absent; unsupported shapes retain the existing path. Reuse the existing released corpus where practical. |
+| Router/auth refusal | Unavailable/expired authorization remains pinned, retains saved input and gives honest failure/uncertainty without direct fallback or duplicate dispatch. |
+
+Use permanent E2E only where browser/transport interleavings are the unique
+boundary. Keep one-off installed-provider/compatibility probes as qualification
+evidence; report exact runtimes, wall time and limits. The existing draft-loss,
+creation-provenance and general unconfirmed-follow-up gaps remain open outside
+this scope. The routed-Codex direct-account discovery gap is independent and
+must not be represented as closed by successful routed model inference.
+
+## Release qualification results
+
+- The actual official Codex 0.166.0 executable and live model pass creation,
+  native ACK, split public/native ids, profile restart and continuation in the
+  same native thread. The disposable install leaves the normal CLI unchanged.
+- The current client passes against actual published YA 0.8.0 and 0.11.0 servers:
+  one established start, no new receipt endpoint, native answer and reload.
+  Permanent capability-absence coverage also edits the streamed bootstrap's
+  version part so the test exercises the real source of capability facts.
+- Browser worker saturation/promotion exposed one product defect: saved/queued
+  pre-dispatch attempts stayed queued after Hono restart although the in-memory
+  queue was gone. Startup now retains intent as failed/not-admitted/launch-refused
+  only with evidence that the recorded controller PID is gone;
+  dispatched unconfirmed effects remain uncertain. Focused store and real
+  standalone browser checks pass, with no automatic dispatch or input replay.
+- Real sibling tabs, independent browser draft sync and a signed acting-account
+  switch preserve the newer/account-owned draft. Encrypted relay tests pass
+  phone-width reply interruption/read-only recovery and host-A/host-B retirement.
+  Router refusal with direct bait credentials causes zero model requests.
+- The initially blocked live Claude check now passes after the owner signed
+  into a dedicated router account with the official CLI. Only the newly owned
+  standalone integration received that account grant. Pinned SDK 0.3.312 with
+  Claude Code 2.1.312 and live routed inference pass saved acceptance/native
+  confirmation, standalone restart/history and continuation under the same
+  public session/account pin,
+  using two short model turns. The integration is verified revoked afterward;
+  the account remains enrolled and ready. Retained local evidence is
+  `tasks/session-identity/release-qualification-claude-live-authorized.log` and
+  `release-qualification-claude-authorized-cleanup.json`. Earlier access-blocked
+  logs remain accurate historical evidence. Controlled SDK/CLI/AAR checks remain
+  distinct. Physical-device and Linux/Windows execution are not claimed. The
+  routed-Codex discovery/account gap remains open.
+- The subsequent live Claude browser smoke passes in 15.9 seconds: actual form
+  submission, offline browser while the provider completes, automatic catch-up
+  on reconnect, reload and composer continuation. Native transcript evidence
+  shows each input once, one creation POST, the same public session/account
+  and persisted `web` provenance. Desktop/phone captures were inspected. The
+  passing source-mode run preloads the session route/transcript modules online;
+  earlier harness runs failed because the account lacked a selectable pool or
+  because disconnect preceded lazy module loading. These logs are retained,
+  without claiming offline cold-asset support. The owned integration is verified
+  revoked, its temporary pool removed and its standalone profile disposed.
+  Evidence: `tasks/session-identity/live-claude-browser-ready.log`, with the
+  one-off harness and captures retained locally; no paid live test enters CI.
+- The single actual localhost:3400 Sol 6.1 High/bypassPermissions review found
+  a competing-startup defect: recovery ran before the new server discovered an
+  occupied port and could invalidate the incumbent queue. Private controller-PID
+  provenance and conservative liveness checks correct it. The focused real
+  duplicate-startup check proves rejection leaves the incumbent queued, then
+  capacity release promotes it exactly once. Untagged legacy pre-dispatch rows
+  remain conservative; live/reused PIDs never authorize delivery. The original
+  REVISE report and correction evidence are retained under ignored
+  `tasks/session-identity/reviews/release-qualification.md`. No second review was
+  requested; only the owned reviewer was retired, with verified stop.
+- All 18 bounded browser cases passed together in 2.1 minutes before this
+  review correction. Post-correction Node queue/duplicate-startup and recovery
+  checks pass four cases in 37.6 seconds; Bun 1.3.14 passes the same full-worker
+  duplicate-startup/restart case in 12.6 seconds. The full server suite passes
+  6,888 tests in 130.31 seconds. Root typecheck, lint (zero warnings), format and
+  exact-file checks pass.
+- The pre-review full workspace run passed 6,888 server / 7,067 client tests.
+  The final workspace attempt omitted the browser-cache environment under its
+  temporary home, producing browser-not-found failures and skipped browser
+  cases; its concurrent server run also hit an unrelated filesystem-watch
+  timeout. All nine affected client files pass with the cache configured
+  (51 cases); the complete isolated server run above passes. The failed logs
+  remain recorded rather than represented as a successful final root command.
+  A concurrent Node/Bun Playwright output collision was corrected with separate
+  output directories; Bun's different occupied-port wording is accepted without
+  weakening the incumbent-state/promotion assertions.
+- This bounded slice is complete, including the subsequently authorized live
+  Claude check above. No attachment/Project Queue migration, provider expansion,
+  protocol defaults or primary-server changes were made.
+
+## Project Queue provenance repair — selected follow-up
+
+The maintainer authorized the Queue origin repair after the live browser smoke,
+with one actual Sol 6.1 High review before committing. This bounded slice stores
+normalized enqueue headers on durable queue items and writes the source through
+the existing metadata owner before provider/SDK effects. It includes forced and
+worker-deferred starts, staged attachments, restart/edit/retry preservation,
+legacy unknown records and unchanged existing-session source. It adds no client
+request, capability, native protocol or scheduling/default change.
+
+This deliberately repairs provenance on existing launch paths without claiming
+the broader Queue identity/promotion-key migration below is complete. The five
+other audited source omissions stay open. Scope and checks are recorded in the
+[owning contract](../../topics/session-creation-provenance.md#project-queue-origin)
+and the narrowed [gap](../../gaps/session-creation-source-missing-launch-paths.md).
+Focused real queue/Hono/Supervisor/SQLite checks pass six cases, including a
+separate database connection observing source before provider start, native-id
+remap and failed persistence with zero provider effects. Owned Node 22.23.3 and
+Bun 1.3.14 HTTP checks also pass web/API enqueue, restart, desktop forced
+promotion and correct cold detail/Global Sessions/Inbox source after native-id
+remap. These are controlled pinned Codex protocol checks, not paid live-provider
+qualification. Earlier empty-queue pause and premature retained-catalog probe
+failures remain in the local logs; the final cold collection assertions pass.
+
+The sole actual localhost:3400 Sol 6.1 High/bypassPermissions review ACCEPTs the
+bounded repair with no material findings; its owned process was retired with
+verified stop. The report is retained under ignored
+`tasks/session-identity/reviews/queue-provenance.md`. Root typecheck, lint (zero
+warnings), format and exact new-file checks pass. Full tests report all 7,067
+client tests passing and 6,893 server tests passing with one unrelated
+RendezWatchService prepared-upload/restart failure; its isolated rerun instead
+missed the second nested delivery. Both red results remain recorded in the
+[existing watcher gap](../../gaps/rendez-nested-watch-event-after-restart.md).
+No passing aggregate/root result is claimed.
+
+## Native API provenance — subsequent slice
+
+The maintainer authorized the next native v0/peer source repair and provider
+rollout slices on November 2. Native command creation now supplies an explicit
+API source to the existing pre-effect metadata writer; original trusted creator,
+peer authority, receipt and input evidence are unchanged. Worker deferral carries
+the source, native remap/reload retain it, and sends do not relabel sessions.
+The focused four-file native/peer suite passes 34 cases, including real
+Supervisor and SQLite coverage for local/peer creators and deferred failure.
+This slice adds no API/capability/default or durable-identity contract. Its
+single Sol 6.1 High review found that an assertion inside an expected deferred
+startup failure could be swallowed. Captured entry observations are now asserted
+outside that failure; the corrected 34-case focused run passes in 18.11 seconds.
+No runtime defect or second review. The full runtime run passes 6,895 server and
+7,067 client tests; root static checks pass. The original REVISE and correction
+are retained under ignored `tasks/session-identity/reviews/native-api-provenance.md`.
+The owned reviewer was retired with verified stop. OpenCode, then Pi, are the
+following bounded provider slices.
+
+## OpenCode ordinary text creation — current slice
+
+The OpenCode-specific optional capability (global id 144) extends ordinary owner
+text acceptance while preserving all other entry points. Native `ses_*` is
+allocated by OpenCode and bound in its canonical data root. Only successful
+native synchronous message HTTP completion proves the exact initial input;
+queue/user echo and SSE are insufficient. New durable launches require an
+observable DB/WAL or JSON store, while export-only sources remain read/resume.
+Host and worker negotiate their separate OpenCode feature before effects.
+The [provider contract](../../topics/opencode-backend.md#durable-ordinary-text-creation)
+owns the observable behavior. Controlled browser tests cover local and hosted
+creation, streaming before confirmation, reload/cold continuation and no duplicate
+public identity; process-fault/refusal checks preserve saved input without replay.
+Actual published clients 0.8.0 and 0.11.0 observe split identity and durable history.
+Desktop/phone captures were inspected: both turns and composer remain usable.
+The pinned OpenCode 1.18.18 executable started, allocated/bound native identity,
+but the isolated unauthenticated free model produced no answer within 70 seconds.
+A direct native availability probe returned upstream UnknownError (exit 1), so
+that initial run did not qualify live-model creation/continuation. Its binary and
+profiles are confined to ignored task artifacts; no user provider/config changed.
+Focused native/provider/host checks pass 71 cases in 17.39 seconds. The five-case
+browser suite passed four; the fileless failure assertion incorrectly required
+`failed` when native-child exit conservatively produced `uncertain`. The corrected
+assertion accepts both non-delivery states and passes in 3.9 seconds while
+retaining zero native allocations/messages. Root lint/format/typecheck pass; full workspace passes 6,895 server and 7,067
+client cases (server 146.68 seconds). The sole Sol 6.1 High review returned
+REVISE for empty `XDG_DATA_HOME` resolving differently from native OpenCode.
+Creation, resume and reader normalization now use the native default for empty
+values; real DB/JSON/export resume coverage runs explicit and empty-XDG layouts.
+The original review/correction is retained under ignored
+`tasks/session-identity/reviews/opencode-creation.md`; no second review.
+The owned reviewer was retired with verified stop. Corrected focused coverage
+passes 26 cases/three files in 5.50 seconds, including both real native scope
+variants; final parameterized resume checks pass two cases in 6.37 seconds.
+Pi follows as the next bounded slice below.
+
+### OpenCode subscription qualification — November 2
+
+The maintainer authorized OpenCode sign-in with the existing ChatGPT
+subscription account in a dedicated standalone profile. Native device sign-in
+saved OpenCode's own OAuth credential with mode 0600. No primary Codex credential copy or metered
+API key was used. This supersedes the earlier free-model availability limit
+for the tested subscription path, without changing the pinned executable.
+
+OpenCode 1.18.18 reports `openai/gpt-6.1-sol` in its authenticated model catalog.
+The live API/storage smoke passes saved 202/public UUID, exact first assistant
+answer and native input confirmation, owned YA restart, cold native continuation
+and exact second answer, then another owned restart retaining both replies.
+A read-only native DB check establishes one native allocation, exactly two user
+inputs and both exact assistant text values. Public collection/alias checks
+retain one YA resource and return 404 for its native `ses_*` alias. Owned server
+and native processes are stopped afterward; the authorized standalone login
+remains available for later testing. Credentials remain outside tracked files.
+
+Evidence is retained under ignored `tasks/session-identity/opencode-chatgpt-smoke.log`
+and `opencode-chatgpt-standalone/smoke-result.json`. This is Node 22/macOS local
+owner qualification with the live subscription model; it does not broaden the
+host/browser/OS matrix or imply a new protocol/schema refresh. Only owning
+contracts/roadmap/evidence docs change in this follow-up; no implementation
+review or full runtime suite is repeated for this documentation-only record.
+
+## Pi ordinary text creation — current slice
+
+The Pi-specific optional capability (global id 145) adds ordinary owner text
+acceptance with a canonical native session namespace, reader-root agreement and
+native `get_state` file-scope validation before prompt delivery. Pi allocates N;
+public P remains permanent. Successful native RPC prompt preflight confirms the
+exact input UUID; queue/user/stream echoes cannot. Host and worker negotiate
+`session-creation-pi-v1` before launch. Other shapes preserve their existing flow.
+The [Pi provider contract](../../topics/pi-provider.md#durable-ordinary-text-creation)
+owns observable behavior and version/platform limits.
+
+Focused provider/RPC/native-read/resume/host coverage passes 72 cases/five files
+in 13.93 seconds. Four initial browser cases pass in 28.8 seconds. Visual review
+caught a fixture branch-parent error that hid the first turn after continuation;
+the fixture now preserves its native parent, and both local/hosted cases assert
+both turns after reload (22.3 seconds). An outside-scope native-file refusal
+passes before any prompt (3.0 seconds). Desktop/phone captures were inspected:
+both turns remain visible and composer usable. Actual published clients 0.8.0
+and 0.11.0 receive idle native-file append updates after Hono restart and reload,
+with no native handle in browser requests. The real Pi 1.4.0 executable passes
+RPC/native history creation and cold continuation against an owned local model
+endpoint, retaining original conversation context in exactly two requests.
+This is an actual executable/protocol/storage check, not an external model pass.
+Current-client fallback against the actual published YA 0.11.0 server passes:
+one legacy start, no durable-admission request, answer and history reload. The
+older-host test now retains generic owner/Codex features while refusing the
+separate Pi/OpenCode capabilities; focused check passes in 2.47 seconds.
+Root static checks pass. The sole Sol 6.1 High review found that the native-file
+check accepted root-level/deeply nested files the reader cannot discover. Managed
+startup now requires the reader's one-directory JSONL layout before any prompt;
+focused root/deep/outside regressions pass three cases in 11.1 seconds with
+zero native prompts, preserving saved input. The original review is preserved under ignored
+`tasks/session-identity/reviews/pi-creation.md`; no second review. The owned
+reviewer was retired with verified stop.
+
+The first full workspace run passed 6,895 server/7,067 client cases but failed
+the assembled Claude host's post-replacement waiting-input barrier. Its unchanged
+focused rerun passes in 8.08 seconds. The unresolved ordering/diagnostic evidence
+is captured in [the suite gap](../../gaps/full-suite-timing-and-diagnostics.md),
+without raising budgets or suppressing output. One final full run follows the
+Pi layout correction; no green aggregate is claimed for the first run.
+The final full run passes 6,896 server and 7,067 client cases (server 143.14
+seconds), including the assembled replacement case. Corrected root lint,
+format and type checks pass; the real Pi executable/default-path creation and
+cold continuation also pass after the layout guard. The original intermittent
+failure stays captured rather than being described as fixed. This completes
+the authorized native API provenance, OpenCode and Pi slices; remaining source
+omissions, other providers/input shapes and release/OS matrices retain their
+separate scope.
+
+## Execution progress
+
+- Recovery milestone slice: four owned-profile fault cases pass: lost HTTP
+  acceptance reply with read-only recovery and one submission; abrupt Hono loss
+  under an independently owned host with the same worker PID and later native
+  ACK; local and hosted owner loss before ACK retaining prompt/uncertainty,
+  refusing resume and resolving identical admission without replay. These cases
+  take 26.2 seconds together. macOS auto-bootstrap follows launcher IPC lifetime;
+  the surviving-worker case therefore uses the documented independent host owner.
+  The local owner-loss case also passes with Bun 1.3.14 (1.7 seconds).
+  A routed Claude browser case with 200 persisted saved sessions proves every
+  sequential key is acknowledged within 100 ms from event timestamp through
+  a rendered frame, while title updates and acceptance arrive mid-typing; the
+  newer draft survives explicit navigation and return. The ten focused E2E cases pass together in 1.3 minutes. Root
+  typecheck, lint, formatting and exact-file E2E lint pass. The final one-per-slice
+  Sol review found two typing-qualification gaps: acceptance was outside the
+  measured interval and the timer ended before paint. Acceptance now arrives
+  midway through sequential keys; event timestamps include dispatch delay and
+  the second animation frame observes the preceding rendering/paint. The exact
+  corrected case passes. A controlled-fixture stdin-close exit now prevents
+  orphaned barrier timers after local Hono loss; owned leaked fixture groups
+  were reaped with identity checks. No repeated review was requested. The current
+  runtime's full run passed 6,888 server and 7,067 client tests. This slice adds qualification, with no runtime changes.
+
+- Codex milestone slice: the same text API/UI now binds Codex's independently
+  allocated native thread id while preserving YA identity through discovery,
+  history, browser reload and continuation. Successful native `turn/start` ACK
+  confirms input; the adapter's user echo cannot. Host and worker negotiate an
+  additional Codex creation feature before launch. Controlled local/host browser
+  cases pass; the initial live-reply misses were traced to missing WebSocket
+  upgrade forwarding in the fixture, corrected without a product refresh change.
+  All five Claude/Codex browser cases now pass (44.1 seconds). A separate actual
+  installed Codex/live model smoke confirms split IDs, native ACK, one native
+  thread and retained answer after standalone server restart. This installed CLI
+  reports 0.160.0; the protocol target/reference remains 0.166.0. The sole Sol review
+  found an empty-CODEX_HOME namespace mismatch, now corrected to native semantics
+  with a focused regression. No repeated review was requested. The recovery
+  slice above completes the narrowed fault qualification. Root typecheck, lint and
+  formatting pass. The corrected full run passes 6,888 server and 7,067 client
+  tests (149.57 seconds for the server workspace); the initial run failed only
+  an outdated expected host-feature array, corrected and focused-verified.
+
+- Claude milestone slice: the narrow text acceptance API, routed/account-pinned
+  dispatch, saved startup/failure UI and captured draft acknowledgement are
+  implemented. Three owned-profile browser cases cover real Claude CLI against
+  a controlled model endpoint: routed startup with browser reload,
+  disappeared executable plus page/server restart, and form retirement before
+  acceptance followed by recovery without a second submission. Focused server
+  checks pass (164 tests); draft checks pass (93 tests). One actual Sol 6.1 High
+  review identified delayed sibling storage and retired-form recovery defects;
+  both were corrected and the exact interleavings verified without re-review.
+  This is controlled native evidence, not a live Anthropic model smoke. The
+  Codex and recovery slices above extend this checkpoint. Required root
+  typecheck, lint and formatting pass; the final full run passes 6,886 server
+  and 7,067 client tests (140.34 seconds for the server workspace).
+
+- Phase 3 provider-variant continuation is independently accepted by Sol
+  6.1 High after correcting a vacuous Gateway readiness assertion to configure
+  an actual autostart-capable service. Claude/Gateway/Ollama share one native
+  environment validator; Gateway checks before readiness and revalidates before
+  SDK launch. Codex OSS retains per-turn exec, validates UUID/native-store/header
+  before routing/leases, refuses a different native thread, reports failed turns
+  and releases actual children, input waits and installation leases on teardown.
+  Pinned `rust-v0.166.0` source proves UUID resume avoids the missing-name
+  allocation fallback; no target/protocol refresh is made. Focused checks pass
+  68 cases / five files / 2.75 s. All nine standalone variant/runtime probes
+  pass on Node 22, Node 26 and Bun. Gateway/Ollama use the actual pinned SDK/CLI
+  and an owned fake model for two split-id cold resumes across restarts, with
+  competing native history untouched. OSS uses a controlled OS CLI/native
+  rollout peer. Neither external model/installed-Codex nor Linux/Windows native
+  execution is claimed. Final lint has zero warnings; format/typecheck pass.
+  Both complete workspace outcomes remain red at the existing Rendez restart
+  defect: pre-correction top-level line 231 (135.35 s), final corrected nested
+  delivery (133.09 s), each with 6,882 other server / 7,064 client cases passing.
+  No watcher source/budget changed or blind retry replaced either result.
+  Hosted cold workers, broader released-client observation and new-launch gates
+  remain open.
+
+- Phase 3 retained ACP cold continuation is independently accepted by Sol
+  6.1 High. Grok and frozen Gemini validate their actual launch store and
+  original physical project before CLI/bridge effects; native RPC keeps N and
+  public observations keep P. Grok tool shells retain P after attachment.
+  Failed/unsupported Gemini resume now refuses without a replacement allocation
+  or prompt, resolving its recorded gap without changing protocol or registry
+  mapping. Shared ACP teardown retains the real child, settles in-flight calls
+  on transport closure and cancels idle input waits. Actual ENOENT/EPIPE tests
+  exposed pinned-SDK pending-call hangs; the corrected tests pass without
+  timeout increases. Standalone Gemini's owned native/reader roots now agree.
+  Real app/SQLite/OS protocol/native-history/reopen checks pass: 84 cases /
+  seven files / 4.53 s. All nine standalone restart probes pass for Grok,
+  Gemini's legacy alias and Gemini ACP on Node 22, Node 26 and Bun. These use
+  controlled native peers; installed-CLI/model, other-OS, hosted cold-worker and
+  released-client observation qualification are separate. Initial fixture and
+  transport failures remain recorded. Final lint has zero warnings,
+  format/typecheck pass, console budgets are unchanged, and the complete
+  workspace passes 6,880 server / 7,064 client cases (server 133.43 s).
+  The separate Rendez instability remains open. New provider creation and
+  remaining host/variant gates stay pending.
+
+- Phase 3 Pi cold continuation is independently accepted by Sol 6.1 High
+  after correcting child-home and empty-directory namespace handling. It passes
+  the proved absolute native file, validates scope/header/original physical
+  project before CLI effects, and verifies returned native id/file before input.
+  A changed child home or working-project overlay refuses explicitly. Public
+  identity remains YA; the saved original input is never replayed. Startup
+  errors retain real child evidence, asynchronous spawn/pipe errors reject RPC,
+  and idle abort or iterator return releases its wait and child. Real app,
+  SQLite, competing native history, OS RPC failure and database-reopen checks
+  pass: 55 cases / five files / 2.92 s. Owned standalone native-file continuation,
+  history and profile-restart probes pass on Node 22, Node 26 and Bun, with an
+  additional final-correction Node 26 pass. The Pi CLI is absent; these use a
+  controlled OS RPC peer, without an external model or Linux/Windows runtime
+  claim. Relevant path/cwd behavior was inspected in upstream 1.1.0 and the
+  current pinned 1.4.0 source; no version/protocol refresh is made. Final lint
+  has zero warnings, format/typecheck pass, and the corrected full workspace
+  passes 6,876 server / 7,064 client cases (server 133.63 s). New Pi creation,
+  its separate durable user-turn-id gap and remaining provider/host gates stay
+  open.
+
+- Phase 3 OpenCode cold continuation and fileless source acquisition are
+  independently accepted by Sol 6.1 High after pinning the protected native
+  listener's hostname explicitly. One source callback supplies proved native
+  facts and an optional actual path; fork/copy requires a physical source.
+  DB, JSON and CLI-export cold resumes retain their existing native handle and
+  public identity, with no native session allocation. Wrong scope/handle refuses
+  before CLI effects. Scoped owners use a selected unused loopback port and
+  fresh private HTTP credential; an unrelated endpoint receives no input, and
+  startup failure retains the actual child until exit evidence. The existing
+  internal basePort option is now honored for isolated fixture ownership.
+  Real app/SQLite/OS HTTP/native-store/reopen checks pass; the broader focused
+  scope passes 214 cases / eight files / 25.36 s. The final hostname-bound subset
+  passes 24 cases / two files / 4.05 s. Standalone OS YA/fileless-native HTTP and
+  profile-restart probes pass on Node 22, Node 26 and Bun; a final Node 26 probe
+  enforces the explicit hostname argument. The installed OpenCode CLI is absent,
+  so this records controlled native protocol evidence, not an external model or
+  installed-CLI smoke claim. Lint has zero warnings, format/typecheck pass.
+  The pre-hostname-correction full run hit the known Rendez nested-restart
+  failure (6,872 other server / 7,064 client; server 132.45 s); it is preserved.
+  Eight isolated instrumented watcher restarts did not reproduce that failure
+  and justify no watcher fix or gap closure. The corrected complete Node 26
+  workspace passes (6,873 server / 7,064 client; server 130.10 s). New OpenCode
+  launch ownership and remaining provider/host cold gates
+  remain later slices.
+
+- Phase 3 owned released-client observation passes on published 0.8.0 and
+  0.11.0 for Claude and Codex. Four existing-API probes and four actual released
+  composer probes exercise differing public/native ids, one pending input,
+  confirmed output and one durable user turn after page reload. URLs, all public
+  requests and collection identities stay YA. Each profile owns its server,
+  browser and native/protocol fixture; browser network is restricted to that
+  server. Claude uses the pinned actual SDK/CLI with a local fake model; Codex
+  uses the real adapter and controlled OS app-server/native rollout path, without
+  external model calls. Composer probes acknowledge every sequential character
+  within 20 ms (Claude 10/20 ms, Codex 16/16 ms for 0.11.0/0.8.0). Initial Codex
+  fixture failures are retained: response/event ordering and a missing seed
+  receipt were corrected to the existing native provenance contract; normalized
+  API evidence showed one user turn rather than a product duplication defect.
+  Sol 6.1 High independently accepts this evidence. No runtime/client/capability
+  change is made by this qualification. Remaining provider/host cold paths and later phases stay
+  gated; this does not claim phase 8's future draft/concurrent-volume checks.
+
+- Phase 3 local Claude/Codex cold continuation is independently accepted by
+  Sol 6.1 High after correcting retained legacy-host interception and failed
+  bridge cleanup. One provider-owned native-source boundary supplies native
+  resume/control id and proven path, while Process/events and child/API/self
+  authority retain the YA id. Existing bindings validate without allocation;
+  stale scope, deletion during source/instruction awaits and a different
+  provider attachment refuse before later input. Claude retains account-home
+  selection and its prompt-cache native address; Codex uses the exact rollout
+  path and refuses unsupported negotiation. Stored equal-id legacy host
+  sessions attach only to the incumbent; missing owners and destructive
+  configuration/sandbox replacements refuse before launch/termination.
+  Focused checks pass 232 cases / five files / 24.79 s, including actual host
+  worker generation replacement with real SQLite. Actual pinned SDK/CLI
+  standalone probes pass two split-id cold HTTP resumes across profile restarts
+  on Node 22, Node 26 and Bun, selecting one native alias despite competing
+  same-id history. A final Node 26 run also checks one retained original native
+  input. The initial full run exposed two instruction-source fixture adapters
+  missing their new opt-in; their production id/path/public assertions now pass.
+  The pre-review-correction complete workspace passed 6,870 server / 7,064
+  client cases (server 131.01 s). Final corrected source passes lint with zero
+  warnings, format and typecheck. Its complete workspace run passes 6,871 other
+  server / 7,064 client checks but hits the existing top-level Rendez restart
+  failure (server 133.51 s). The red run is retained without retry; the separate
+  [watcher gap](../../gaps/rendez-nested-watch-event-after-restart.md) stays open.
+  Other provider cold paths, fresh hosted cold workers and owned released-client
+  qualification remain gates before differing-id new launches.
+
+- Phase 4 hosted transport and saved-attempt reconciliation are independently
+  accepted by Sol 6.1 High after correcting compiled asset delivery, deferred
+  owner selection and destructive configuration/compact bypasses. The private
+  managed feature negotiates before launch, pins host versus local ownership
+  and requires exact protocol-2 claims before ownership changes. Worker proof
+  reconciles only the current SQLite attempt; startup marks unconfirmed owners
+  uncertain before admission. Reattachment restores observation without
+  replaying the original input. Native commands use the same admission guard.
+  Qualified hosted Claude text survives Hono replacement with both confirmed
+  and delayed input evidence; full owner loss keeps the exact saved prompt and
+  refuses automatic native relaunch. Actual pinned SDK/CLI standalone probes
+  pass on Node 22 and Node 26. A clean compiled-server startup also passes with
+  the copied decoder assets and no TypeScript loader/source fallback.
+  Corrected focused checks pass 98 cases / nine files / 11.15 s, followed by
+  36 command-boundary cases / four files / 10.34 s. The assembled test now
+  waits for HTTP readiness after worker reattachment (one case / 9.16 s): the
+  first full run exposed that host ownership precedes HTTP listen, with all
+  other 6,859 server and 7,064 client cases passing. The corrected complete
+  Node 26 workspace passes (6,860 server / 7,064 client; server 142.58 s);
+  lint has zero warnings and format/typecheck pass. No global receipts capability,
+  unsupported provider rollout or automatic replacement is enabled. Cold
+  resume, broader input shapes and remaining callers stay gated.
+
+- Phase 4 worker ownership and protocol-2 attachment are independently accepted
+  by Sol 6.1 High after correcting an inner-bridge/AgentSelf bootstrap gap.
+  One immutable bounded creation record carries public id, attempt, native
+  namespace/optional chosen id and independent input UUID. The worker retains
+  native binding and matching input confirmation across detach and acknowledged
+  replay; stale/forged attach fails before replay. Native conflict, completion,
+  API failure and failed public publication close input while retaining cleanup
+  ownership. Private public-id bootstrap initializes inner bridges and self/API
+  identity before native startup; native handles remain separate.
+  Focused checks pass 94 cases / eight files / 10.91 s. Owned pinned SDK/CLI
+  owner probes pass on Node 22, Node 26 and Bun. Actual production-worker
+  socket-2/detached proof and wrong-namespace pre-effect refusal pass on Node 22
+  and Node 26. Real native Bash verifies the inner bridge, AgentSelf and local
+  API all use P with P != N and no controller identity publication on both Node
+  runtimes. Its explicit approval controller preserves existing permission
+  ownership; detached delivery is a separate probe. Lint has zero warnings,
+  format/typecheck and the complete Node 26 workspace pass (6,855 server /
+  7,064 client; server 130.30 s). Host transport, saved-attempt reconciliation,
+  Hono replacement and managed feature advertisement remain gated.
+
+
+- The phase 4 host design refinement and non-enabling startup negotiation are
+  independently accepted by Sol 6.1 High. Required worker features withhold
+  stdin until a supporting pre-start hello; premature readiness is rejected,
+  legacy launches remain immediate, and pipe failure cannot terminate the host.
+  No managed feature or caller is enabled. Real IPC regression cases and the
+  assembled host/Hono replacement pass (45 checks / two files / 11.59 s).
+  Owned production-refusal and old-worker deadline/reap probes pass on Node 26
+  and Node 22. Lint has zero warnings, format/typecheck and the complete
+  Node 26 workspace pass (6,846 server / 7,064 client; server 132.08 s).
+  Worker evidence, protocol-2 attach and managed hosted dispatch remain gated.
+
+- Phase 4 default-wrapper consolidation is independently accepted by Sol 6.1 High:
+  the thin Claude SDK
+  bridge declares its canonical provider, allowing omitted-provider requests
+  to use the configured AgentProvider and the same durable text path. Explicit
+  provider overrides (including disabled discovery) and unnamed independent
+  SDKs keep precedence. The start path also preserves provider-visible client
+  identity. An owned Node profile passes default project/detached missing-CLI
+  saved failures, profile reopen, and real pinned SDK/CLI healthy HTTP launch
+  plus native-history restart against a local fake model. The same owned Bun
+  qualification passes. Focused checks pass 183 cases / five files / 3.83 s;
+  lint has zero warnings, format/typecheck and the complete Node 26 workspace
+  pass (6,841 server / 7,064 client; server 129.40 s).
+  Other phase 4 rollout gates remain open.
+
+- Phase 4 ordinary request integration is independently accepted by Sol 6.1 High:
+  qualified superuser
+  project/detached Claude AgentProvider text starts now admit durable intent
+  before availability checks. Versioned input choices retain temp-id/mode,
+  origin/effort and composition/speech/timing across worker deferral; actor,
+  receipt/hidden authority and arbitrary fields are excluded. Existing response
+  shapes, post-start associations and idle preemption are preserved. Real
+  SQLite/reopen and HTTP tests cover failures before native launch, exact
+  metadata, source-at-admission, queued promotion and private-field exclusion.
+  An actual owned Node standalone profile passes project/detached failure,
+  saved-state restart, then real pinned Claude SDK/CLI healthy HTTP launch and
+  native-history restart using a local fake model only. The same owned Bun
+  qualification passes. Focused checks pass 187 cases / six files / 3.87 s;
+  lint has zero warnings, format/typecheck and the complete Node 26 workspace
+  pass (6,841 server / 7,064 client; server 129.09 s). Deferred callbacks retain
+  copied launch values instead of raw HTTP contexts/bodies.
+  Slash/attachment/runtime-authority inputs, limited/routed/sandboxed/hosted
+  paths and later phase gates remain pending; no receipt capability ships.
+
+- Phase 4 managed runtime boundary is independently accepted by Sol 6.1 High:
+  a private Supervisor
+  dispatcher reads stored choices/input identity, checks current authority and
+  provider availability, claims the actual native namespace before effects,
+  and uses the existing worker queue for deferral. Managed Process binds before
+  publication while keeping its YA id and recognizes native input confirmation
+  independently of local queue pulls. Unconfirmed exit retains uncertainty;
+  queued cancellation persists before returning. Actual pinned Claude SDK/CLI
+  qualification uses an owned local fake model and caught/corrected pre-init
+  title telemetry and response stamps without user re-echo. Ordinary routes,
+  router/sandbox/hosted integration and all later rollout gates remain pending.
+  Review corrected premature ownership release, ended-stream input admission,
+  native-directory leaf aliases and the native API-error/explicit-stop paths.
+  The final focused scope passes 225 checks / eight files / 4.84 s; real
+  SDK/CLI probes pass on Node 22.23.3, Node 26.7.0 and Bun 1.3.14. Lint has zero
+  warnings; format/typecheck and the final complete Node 26 workspace pass
+  (6,836 server / 7,064 client; server 128.51 s). The initial pre-correction
+  full run hit the separately recorded Rendez nested-restart failure; its red
+  evidence remains preserved and this successful run does not close that gap.
+
+- Phase 1: concrete design accepted, including attempt/evidence budgets,
+  durable retry fencing and the bounded retained-fork source bridge. Existing
+  storage/provider-resolution baseline: 13 checks passed on Node 26.7.0.
+  The desktop-pinned Bun 1.3.14 binary was checksum-verified in the owned local
+  task directory; Bun storage qualification remains a source-slice check.
+- Phase 4 storage foundation is implemented and independently accepted by
+  Sol 6.1 High: migration 18 and the common
+  atomic identity/metadata/payload/attempt boundary, with fenced binding and
+  idempotent explicit pre-effect retry. This precedes the first equal-id Claude
+  vertical path; focused real-SQLite/reopen checks pass on Node 22 and pinned
+  Bun. Remaining phase 3 cold-resume/browser gates still block
+  differing-id launches. Public creation behavior and capability are unchanged.
+  Final focused storage/identity/native-helper checks: 18 passed across three
+  files in 2.47 s. Lint has zero warnings; format/typecheck pass. The complete
+  Node 22.23.3 workspace passes (6,803 server / 7,064 client; server 134.65 s).
+  Both Node 26.7 workspace runs hit the existing Rendez restart line-364
+  failure; those red runs remain recorded in its gap. A separate reviewed
+  type-only helper-fixture cleanup clears three inherited lint warnings.
+- Phase 4 fatal-startup correction is independently accepted by Sol 6.1 High:
+  wrapped missing-binary classification, admission fencing before error callbacks
+  and established dead-owner refusal preserve lazy first input. Four regressions
+  fail against the prior Process and pass after correction; final focused scope
+  is 98 checks across four files in 1.19 s. Actual pinned SDK missing-executable
+  probes pass on Node 26.7 and Bun 1.3.14 without a model call. Lint has zero
+  warnings; format/typecheck and the complete Node 22 workspace pass (6,808
+  server / 7,064 client; server 132.86 s). Durable launch integration remains
+  the next vertical boundary.
+- Phase 3 released-browser non-owned refresh qualification now passes using
+  integrity-verified published npm 0.8.0 and 0.11.0 client assets, actual isolated
+  YA HTTP/WebSocket listeners, unequal UUID ids and native Claude/Codex append
+  followed by refresh/reload at the unchanged YA URL. All four combinations pass
+  on Node; latest Codex also passes with the pinned Bun server. Only test assets
+  are intercepted; API/WebSocket traffic reaches the real owned listener.
+  Chromium's loopback network permission is granted only to that fixture origin.
+  Owned-process browser cases and cold-resume consumers remain unqualified.
+- Phase 4 saved-record detail/metadata and access-fact reads are independently
+  accepted by Sol 6.1 High after preserving optional identity access in retained
+  metadata facades. Exact prompt/source after profile reopen, creator ownership,
+  safe status projection, no native project-directory creation and ordinary
+  unbound-resume refusal pass real-app/SQLite/auth checks and actual standalone
+  Node/Bun HTTP probes. Saved facts override cached native aliases without
+  borrowing their activity. Final focused checks: 231 across six files in
+  7.32 s. Lint has zero warnings; format/typecheck and the complete Node 26
+  workspace pass (6,810 server / 7,064 client; server 127.92 s). The Node 22
+  full run hit the existing Rendez restart failure and remains recorded in its
+  gap. Collection discovery and the actual durable launcher remain later
+  boundaries.
+- Phase 4 collection slice is independently accepted by Sol 6.1 High:
+  global/project/inbox collections and public project cards include Saved/Failed control rows;
+  native-bound records with no transcript remain readable. Migration 19's atomic
+  revision invalidates collection conditionals and cached stats without payload
+  decoding or native catalogue rows. Ordinary unconsumed/uncertain resume refuses.
+  Three review corrections preserve global hiding/restoration, count the union
+  of a published native inventory and controls, and merge controls after native
+  notification enrichment. Final focused checks pass 152 cases across 13 files
+  in 6.06 s, including real notifications and mixed bound/no-transcript counts.
+  Corrected standalone Node/Bun HTTP collection/restart probes and pinned Bun
+  18→19/revision/reopen probes pass. Lint has zero warnings; format/typecheck
+  pass. The first workspace invocation hid the browser cache under its temporary
+  home and failed browser fixtures; its log is retained, with an explicit cache
+  path supplied for the final run. That corrected complete Node 26 workspace
+  passes (6,814 server / 7,064 client; server 127.96 s). Public creation, actual
+  durable launching and capability remain unchanged.
+- Phase 4 native-allocation quarantine is independently accepted by Sol 6.1
+  High. Dispatch
+  and the selected native namespace claim commit together, preventing an early
+  provider transcript from being adopted as a second public session. Known
+  bindings remain usable; matching binding releases its claim, while uncertainty
+  and deletion without native proof retain it. Private namespace evidence uses
+  existing attempt budgets. Real SQLite and HTTP/native-file checks cover
+  rollback/capacity, two concurrent claims, wrong/stale binding, reopen, legacy
+  read/list exclusion and publication solely under the YA id after binding.
+  A review correction removes the asynchronous no-claim watch fallback: the
+  deterministic red case attached N after a paused lookup; the corrected source
+  refuses N while known and unrelated scopes still receive actual append events.
+  A full-gate regression also exposed unnecessary summary acquisition in the
+  retained preview path. Direct guarded excerpt reads preserve that historical
+  behavior; a separate Sol review accepts the correction. Final focused checks
+  pass 107 cases across 14 files in 5.26 s. Corrected owned
+  Node/Bun standalone early-file/guarded-preview/restart/live-binding/restart
+  probes pass; direct
+  Node 22/Bun 19→20 and retained-quarantine probes pass. Node 22 emits its
+  documented SQLite experimental notice. Final lint has zero warnings;
+  format/typecheck and the corrected complete Node 26 workspace pass (6,817
+  server / 7,064 client; server 129.64 s). The earlier full preview failure is
+  retained as red evidence. No actual durable launcher or capability is enabled
+  by this prerequisite.
+- Phase 4 launch-intent storage is independently accepted by Sol 6.1 High: migration 21
+  reserves an independent first-input UUID in the admission transaction, while a
+  versioned allowlist retains additional submitted model/tool/sandbox/router/
+  helper/compaction choices without environment objects or live desktop proof.
+  Existing request/payload budgets apply; old records retain null input ids and
+  absent launch snapshots. Real SQLite checks cover caller mutation, replay,
+  changed-choice conflict, retry/reopen stability and actual 20→21 legacy replay.
+  Final focused checks: 23 cases / five files / 3.11 s. Actual Node 22 and
+  pinned Bun migration/snapshot/input-id/retry/reopen probes pass; lint has zero
+  warnings and format/typecheck pass. Full Node 26 and Node 22 runs both hit the
+  existing Rendez top-level restart line-231 failure (6,818 other server /
+  7,064 client checks pass; 128.91/134.60 s server runs). Both red results remain
+  recorded in the existing gap; this slice changes no watcher code or budgets.
+  This is preparation for dispatch; no new launch route/capability is enabled.
+- Phase 2: implemented and independently accepted by Sol 6.1 High after fixing
+  stored-identity missing-transcript fallback and Codex read ownership. Migration
+  17, scoped forward/reverse adoption and bound Claude/Codex detail/history are
+  qualified with unequal ids, collisions and profile reopen. Focused checks:
+  79 passed / 2 retained skips across five files in 2.59 s; pinned Bun 1.3.14
+  migration/adoption/reopen probe passed. Lint, format, typecheck and full workspace
+  tests passed (6,720 server / 7,064 client). Launch behavior is unchanged.
+  Whole-suite expected fault-path logs and unowned client navigation diagnostics
+  remain covered by the existing diagnostic gaps; focused checks are clean.
+- Phase 3: first discovery/source slice implemented and independently accepted
+  after correcting project-membership checks and native/public metadata-key
+  collisions. Claude/Codex full/lightweight/retained lists share batch adoption;
+  summary refs and migrated helper reads retain native addresses. The real
+  profile/app/merged-root fixture includes append/reopen, an unrelated public id
+  equal to a bound native id, and correct/wrong/moved-project bang routes.
+  Corrected focused checks: 46 passed across six files in 2.90 s under a private
+  temporary home. Native catalogue row format 3 retains actual source scopes;
+  no physical source/index keys are renamed. Lint, format, typecheck and full
+  workspace tests pass (6,721 server / 7,064 client); pinned Bun 1.3.14 also
+  passes batch-conflict rollback and reopen.
+  The subsequent focused Claude/Codex watch slice is independently accepted:
+  native append/public wire events/detail refresh, shared-viewer teardown,
+  unbound/missing-source isolation and late-resolution cancellation pass eight
+  focused checks in 2.63 s. Lint, format, typecheck and workspace tests pass
+  (6,723 server / 7,064 client); pinned Bun observes the scoped native append.
+  The retained fork/clone source cut is also independently accepted after
+  restoring torn-JSONL tolerance and refusing copy destinations that current
+  cold launch cannot address. Provider inputs/results name native ids; public
+  lineage/settings/account pins remain public. Actual SDK/profile fixtures cover
+  unequal parent ids, original/working projects, copy/read/reopen, bounded and
+  missing anchors, retained metadata failures and pre-copy scope refusal. Pi
+  child cold reads retain their recorded root; controlled Codex protocol checks
+  preserve native path/id/turn and configured launch namespace. Corrected focused
+  checks: 153 passed / 2 retained skips across four files in 22.96 s; pinned Bun
+  1.3.14 source-copy probe passed. Lint, format, typecheck and workspace tests
+  pass (6,726 server / 7,064 client). Fully scoped cold resume/immediate helpers
+  remain an enabling requirement, with unqualified copies refused before I/O.
+  The native read-consumer cut is independently accepted after adding original
+  project/path consistency and scope-less legacy Codex upgrade fences.
+  Instruction restoration, issue indexing and Conversation acquisition retain
+  native sources with public observations; corrected catalogue publication can
+  recover a deferred source without reopening. Actual app/SQLite fixtures cover
+  both families, working-project moves, two viewers/native append, public issue
+  keys, instruction-source capture, reopen and post-shutdown cancellation.
+  Focused checks: 46 passed across five files in 5.20 s; lint, format, typecheck
+  and corrected workspace tests pass (6,738 server / 7,064 client). Standalone
+  Node 26.7.0 and pinned Bun 1.3.14 servers also pass actual HTTP Claude
+  unequal-id Conversation/native append/public issue/restart probes under the
+  Node coordinator. These do not qualify native CLI/model or hosted continuity.
+  The process/child projection cut is independently accepted: process enrichment
+  retains public facts for unbound/unreadable identities and reads bound native
+  models/titles without ambient or public-metadata collisions. Child listings
+  use native parents while returning YA parents and existing native child handles.
+  Metadata/full reads reuse their native source; summary/settings recovery works
+  through empty moved working projects. Actual app/SQLite/native fixtures cover
+  profile reopen, scoped Codex child content and recovered launch context.
+  Focused checks: 46 passed across six files in 5.22 s; warning-free lint,
+  format, typecheck and workspace tests pass (6,742 server / 7,064 client).
+  Standalone Node 26.7.0 and pinned Bun 1.3.14 HTTP probes pass scoped native
+  child/public parent/original-A–working-B reads before and after restart.
+  These do not qualify native CLI/model or hosted continuity.
+  The native catalogue/helper consumer cut is independently accepted. Optional
+  Codex question enrichment resolves public archive facts through scoped reverse
+  binding. Vocabulary reads use actual native roots; old scope-less rows defer
+  without checkpoints or blocking other learning. Maintenance comparison borrows
+  the app's scoped reader and retains the public response id. Existing actual
+  app/SQLite fixtures now include private-versus-ambient vocabulary and an owned
+  maintenance HTTP comparison. Focused checks: 41 passed across five files in
+  5.56 s; warning-free lint, format, typecheck and workspace tests pass
+  (6,742 server / 7,064 client). Private-home actual app/SQLite/native vocabulary
+  and metadata-collision probes also pass on Node 26.7.0 and pinned Bun 1.3.14.
+  The production maintenance callback is source-reviewed; the controlled HTTP
+  fixture qualifies its handler and bound reader, not native CLI/model startup.
+  The Claude/Codex external file-observation cut is independently accepted after
+  correcting cold-reader source ordering, disposal of active summary batches
+  and working-project changes during external activity. Physical source proof
+  and scoped binding precede ownership/grace/decay joins; native Codex thread ids
+  remain distinct from reverted leaf filenames. Known native files update the
+  existing reader/scan cache without corpus rescans or fabricated freshness.
+  Acquisition is bounded and shutdown cancels late adoption and publication.
+  Corrected focused checks: 110 passed / 2 retained skips across eight files in
+  6.19 s. Warning-free lint, format, typecheck and corrected workspace tests pass
+  (6,749 server / 7,064 client). Owned standalone Node 26.7.0 and pinned Bun
+  1.3.14 actual FileWatcher/HTTP/native-file probes pass public ownership,
+  working-project/native-id collisions, reverted leaf history and profile
+  restart. These do not qualify native CLI/model or provider-host continuity.
+  The earlier full run's unrelated extensionless-image failure remains recorded
+  in [its adjacent gap](../../gaps/files-api-extensionless-image-index-race.md);
+  the failed run was retained and its renderer/test fixture was left unchanged.
+  Remaining all-provider observation, released-browser/owned-confirmation
+  qualification, native source consumers and other provider shapes are pending;
+  phase 3 is not complete.
+- Standalone fixture: the existing E2E process helper now has opt-in private
+  environment composition and a selected server executable, retaining its
+  process registry/host cleanup. The poisoned-parent actual-config/native-path
+  probe and ordinary creation/history/restart/cleanup pass under Node and the
+  pinned Bun server with a Node coordinator. Sol independently accepted the
+  fixture after correcting shell-bridge inheritance and case-insensitive Windows
+  name handling. Focused checks: 8 passed / two files in 4.86 s on Node;
+  3 passed / one file in 2.24 s with pinned Bun 1.3.14. Lint, format, typecheck
+  and the corrected workspace run pass (6,729 server / 7,064 client).
+  The earlier workspace run's known Rendez restart failure remains recorded in
+  [its existing gap](../../gaps/rendez-nested-watch-event-after-restart.md).
+  Hosting remains a separate owned scenario; native Linux/Windows execution,
+  durable-creation and live model qualification are not claimed.
+- Phase 3 legacy-alias guard is independently accepted after three review
+  fixes: proof selects a scope-constrained pooled reader, unknown-parent child
+  fallback requires native evidence, and the production fork-source callback
+  carries app cancellation. Missing public native spellings cannot read or
+  control another scoped public binding; existing ids retain their spelling.
+  Real App/SQLite merged-root, orphaned-child and held-fork teardown regressions
+  pass. Focused checks: 36 passed across six files in 5.38 s. Owned Node 26.7.0
+  and pinned Bun 1.3.14 HTTP/append/restart probes pass. Lint, format and
+  typecheck pass. The final workspace run passed 6,752 server / 7,064 client;
+  an unchanged-tree preceding run failed the separately tracked
+  [Rendez restart watcher](../../gaps/rendez-nested-watch-event-after-restart.md).
+  Both outcomes are retained; this slice does not resolve that instability.
+  Host PID correlation and other retained-provider qualification remain next;
+  launch behavior and capability advertisement are unchanged.
+- Phase 3 host PID correlation is independently accepted. Native PID/start
+  evidence and the configured canonical namespace select a unique retained
+  catalogue source; public metadata supplies title/working-project facts.
+  The released native-id wire field stays native, and its legacy project link
+  is omitted for unequal YA/native ids. Uncached PID records share one existing
+  TTL batch. Optional reads neither initialize discovery nor recover corrupt
+  shards; normal collection reads retain rebuild ownership. A review finding
+  exposed the indirect corruption callback, now covered by the existing real
+  over-budget catalogue fixture without a wall-clock delay. Retirement fences
+  pending catalogue work before SQL teardown. Focused checks: 34 passed across
+  six files in 6.13 s. Owned actual-OS/PID/HTTP/restart probes pass on Node
+  26.7.0 and pinned Bun 1.3.14; the inert process fixture does not qualify
+  provider/model startup. Frozen final lint, format, typecheck and full tests
+  pass (6,753 server / 7,064 client). An intermediate run that overlapped the
+  final regression/source correction is retained separately and is not final
+  qualification. Other native-family/control and old-client focused-watch
+  browser qualification remain phase-3 enabling work; no launch/capability
+  behavior changes here.
+- Phase 3 OpenCode SQLite prerequisite is independently accepted. The native
+  reader now uses the common Node/Bun adapter with engine-enforced read-only
+  file opens; normal YA/relay/push opens are unchanged. Fixed SQL statements
+  and handle-dependent caches are released on replacement/retirement, misses
+  do not hide later native creation, and finite catalogue scans release their
+  native handles before walking JSON history. Pending lookup retirement cannot
+  reopen native storage or launch a new CLI fallback. Existing export/file-tree
+  fallbacks and native schema/target versions remain unchanged. Focused checks:
+  26 server checks in 0.661 s plus seven shared checks in 0.094 s. Actual
+  read-only/no-create/write-denial/WAL/lifetime probes and owned standalone YA
+  DB-only history/100-refresh/restart probes pass on Node 26.7.0, Node 22.23.3
+  and pinned Bun 1.3.14. Node 22's existing experimental SQLite notice remains
+  deliberately unsuppressed. Final lint, format, typecheck and full workspace
+  tests pass (6,755 server / 7,064 client). Native scope/public adoption,
+  bound OpenCode history and focused DB/WAL observation remain next; this
+  prerequisite does not qualify live model startup or another platform.
+- Phase 3 OpenCode directory membership fixes the previously recorded non-Git
+  transcript defect. Shared `global` rows are scoped by their actual directory,
+  including physical path aliases; known foreign rows cannot escape through
+  export fallback. Child/list/history reads share that boundary. Existing Git
+  worktree and legacy `/` links retain their behavior; catalogue grouping uses
+  per-session directories only for `global`. Old schemas retain worktree reads.
+  Sol independently accepted after two alias-proof corrections. The real
+  SQLite/symlink regression verifies 13 sessions reuse one physical lookup
+  and a subsequent operation observes symlink retargeting. Focused checks:
+  36 passed across three files in 0.817 s. Actual Node 26.7.0 and pinned Bun
+  1.3.14 directory-SQL/child/retarget probes and owned YA HTTP/WAL/restart
+  checks pass. Final warning-free lint, format, typecheck and workspace tests
+  pass (6,758 server / 7,064 client). This does not yet enable scoped native
+  binding or different-id launches; other native families remain pending.
+- Phase 3 OpenCode binding/read/watch migration is independently accepted.
+  Canonical DB/JSON data-directory sources, nested-project/physical-alias proof,
+  public catalogue/working-project projection, constrained CLI fallback and
+  focused DB/WAL refresh share existing owners. Review caught two source-joining
+  defects: summary index keys now distinguish native roots, and asynchronous
+  catalogue proof preserves valid original project spellings. Compact shared-DB
+  metadata bypasses main-file timestamp certification through the existing
+  in-flight index owner, so WAL-only updates remain fresh. Cancellation fences
+  filesystem proof before SQL teardown. The initial full run exposed an Inbox
+  regression from guessing a root for an unqualified reader; its exact focused
+  reproduction now passes and OpenCode adoption requires reader-provided proof.
+  Corrected focused checks: 180 passed across 13 files in 4.41 s. Owned Node
+  26.7.0 and pinned Bun 1.3.14 actual HTTP/WebSocket/WAL/100-refresh/restart
+  probes pass. Final lint, format, typecheck and workspace tests pass (6,761
+  server / 7,064 client). No split-id launch or new capability is enabled;
+  other native-family/cold-resume/released-client work remains phase 3.
+- Phase 3 Pi source migration is independently accepted: canonical native
+  catalogue scope, public adoption, root-scoped indexed metadata and focused
+  refresh use existing owners. Selected-file fingerprints prevent discovery's
+  five-second TTL or a fixed mtime from hiding appends. Qualified missing proof
+  cannot emit a guessed public native id. Review caught pending publication
+  after reader retirement; public await boundaries now discard partial lists
+  and late point results. Seven deterministic scheduling regressions delegate
+  real parsing/acquisition. Focused checks: 40 passed / seven files in 2.56 s.
+  Actual Node 26.7.0 and pinned Bun 1.3.14 standalone HTTP/WebSocket/fixed-mtime
+  append/restart and direct retirement-race probes pass. Final lint, format,
+  typecheck and full workspace tests pass (6,770 server / 7,064 client).
+  New-session launches remain unchanged until later admission/provider slices;
+  Grok/frozen-Gemini sources, scoped cold resume and released clients remain
+  phase-3 enabling work.
+- Phase 3 Grok native-source migration is independently accepted.
+  Canonical root/summary-handle evidence, original-project bound readers,
+  indexed metadata and focused companion observation retain public identity.
+  Late replay-file creation, proven child cache misses and media below the
+  actual native directory work across an empty working-project move. Initial
+  app fixtures exposed child and media 404s; both reproductions now pass.
+  Pending real reads and partial lists are discarded on retirement. Sol found
+  canonical-id substitution through a directory-name fallback; all acquisition
+  now requires the canonical handle. Cold/warm replacement and post-invalidation
+  regressions preserve the positive different-directory case. Focused checks:
+  53 passed across five files in 2.58 s. Actual Node 26.7.0 and pinned Bun
+  1.3.14 HTTP/WebSocket/late-replay/restart and canonical-collision probes pass.
+  Final warning-free lint, format, typecheck and workspace tests pass (6,778
+  server / 7,064 client; 127.44 s server run). Launch behavior/capabilities are
+  unchanged; frozen Gemini, cold resume and released clients remain phase 3.
+- Phase 3 frozen Gemini native-source migration is independently accepted.
+  Root/header-id/project-hash proof applies across bound history, summaries,
+  indexed catalogue enumeration and focused observation. Original raw/physical
+  project aliases are scoped without consulting another store's project map.
+  Existing unknown-project hash coordinates retain historical grouping. Warm
+  id/hash replacement cannot substitute a source; retirement discards pending
+  results. The real app/SQLite fixture qualifies two roots, unequal ids,
+  physical aliases, working-project moves, indexed metadata, old row-format
+  recovery, adoption and profile reopen. A real enumeration/header-replacement
+  probe exposed scope-less native catalogue publication; qualified missing proof
+  now omits the candidate. Sol caught an index-dispatch prefix regression.
+  Corrected scope keys preserve `gemini::`; index-requested root enumeration
+  also bypasses point-discovery TTL so create events refresh immediately. The
+  real reader/index/EventBus regression proves edit and create before a 60 s
+  validation interval, with both initial failures retained. Corrected focused
+  checks: 83 passed across six files in 3.16 s. Actual Node 26.7.0 and pinned
+  Bun 1.3.14 owned HTTP/WebSocket/rewrite/restart, catalogue-race and warm-index
+  probes pass. Final warning-free lint, format, typecheck and full workspace
+  tests pass (6,791 server / 7,064 client; 132.44 s server run). Frozen protocol,
+  schema and launch mapping are unchanged; the ACP failed-resume gap remains a
+  later enabling boundary. Cold resume/helpers and released clients remain
+  phase 3; durable admission is still pending.
+- Phase 3 fork-backed helper sources are independently accepted. Retitle,
+  handoff summary and forked recap resolve the public generator once through
+  the existing native source boundary; provider inputs are native-branded and
+  application metadata/results remain public. Acquisition cancellation cannot
+  dispatch a helper. Codex validates the selected home, supplies the exact
+  rollout path and refuses another returned thread before turn start. Claude
+  retains its configured account home and proves its native selector or
+  conventional physical-cwd directory. Two Sol findings exposed an unsafe cwd
+  fallback and relative-home resolution across a symlink; corrected native
+  fixtures prove refusal before model calls and transcript mutation, plus
+  successful valid aliases, ordinary directories longer than 64 characters,
+  and the physically correct relative home. The initial failures are retained.
+  Corrected six-file checks pass 293 cases with two retained skips in 24.40 s;
+  the final physical-cwd correction passes four boundary checks in 2.41 s.
+  Owned Node 26.7.0 and pinned Bun 1.3.14 execute the actual pinned Claude SDK
+  and CLI against a local fake model, including over-200-character native keys;
+  Bun also qualifies relative-home refusal and correct context. These use no
+  operator credentials or upstream model calls. App/SQLite reopen/collision/
+  cancellation and actual Codex subprocess path/home/mismatch checks pass.
+  Final lint, format, typecheck and full workspace tests pass (6,797 server /
+  7,064 client; 129.82 s server run). General Claude alias-history migration,
+  cold resume/prompt-cache touches, durable helper admission/provenance and
+  released-client qualification remain outside this cut.
+- Historical foundation checkpoint: phases 4–9 were pending here. The current
+  consolidation ledger above supersedes this checkpoint; broad receipts remain
+  unadvertised.
 
 The reviewer ran through localhost:3400 with effective `gpt-6.1-sol`, High
 effort and bypass permissions verified in session metadata. Initial/revised
@@ -41,7 +1440,7 @@ Owning contracts and prior work:
 - [Remap](../../topics/session-id-remap.md),
   [liveness](../../topics/session-liveness.md),
   [HTTP v0 receipts](../../topics/http-api-v0.md#creation-and-retry-receipts),
-  [storage](../../topics/optional-sqlite.md#database-ownership-and-migration)
+  [storage](../../topics/required-sqlite.md#database-ownership-and-migration)
   and [provider-host ownership](../../topics/provider-host-api.md).
 - Existing gaps: [draft acknowledgement can delete newer text](../../gaps/new-session-draft-clear-captures-after-submission.md)
   and [unconfirmed sends](../../gaps/unconfirmed-send-loss-across-reload.md).
@@ -421,8 +1820,8 @@ current Claude/Codex/Gemini support covers the other rows.
 | `claude-ollama` | Claude SDK/transcript family with Ollama launch facts | Preserve retained provider/configuration; qualify native scope and the same read/resume/watch boundaries. |
 | `codex` | App-server thread id, rollout reader | Differing-id launch, native source fork/clone, rollout discovery, owned-input confirmation and focused watch; host claims/bound/reattach. |
 | `codex-oss` | Codex runtime/storage family with distinct launch choice | Qualify alongside Codex or in its own reviewed cut; preserve launch variant even when native discovery reports the family. |
-| `opencode` | Native `ses_*`; JSON, SQLite DB and export-backed history | Prefix-independent reader selection, native resume/control and reverse lookup; qualify/extend focused observation for each available source, including no single transcript path. Current normalization to Claude is insufficient. |
-| `pi` | Retained RPC/native transcript shape | Native read/resume/control/discovery and process ownership joins; qualify a focused/bounded observation path for old clients before split-id launch. No current focused Pi target is assumed. |
+| `opencode` | Native `ses_*`; ordinary owner text capability 144 | DB/WAL and JSON qualify for new durable launches; export-only remains read/resume. Prefix-independent native resolution and published-client observation pass. Live OpenCode 1.18.18/OpenAI subscription API creation and cold continuation pass on Node 22/macOS; other live runtime/OS matrices remain unqualified. |
+| `pi` | Native RPC ID and JSONL; ordinary owner text capability 145 | Native read/resume/discovery foundations and idle native-file observation qualify; local/hosted lifecycle and actual Pi 1.4.0 owned-model smoke pass. Other input/caller/platform shapes retain their gates. |
 | `grok` | Retained ACP/native transcript shape | Native read/resume/control/discovery and ownership joins; qualify bounded old-client observation. No current focused Grok target is assumed. |
 | `gemini` | Frozen CLI/native history path | Preserve current protocol and historical reads; audit namespace separately from ACP and qualify broad/focused observation or obtain an explicit limitation decision before enabling. |
 | `gemini-acp` | Frozen ACP/native history path | Preserve current mapping without refresh; qualify source/resume/control, storage scope and observation independently of CLI assumptions. |
@@ -469,8 +1868,10 @@ payload, disabled provider after acceptance, full capacity, interrupted staging,
 foreign attachment refusal, crash at side-effect boundaries and pinned settings.
 Reads/replays remain possible at capacity. Qualify legacy/v0 response semantics
 and existing queue behavior. Satisfy the source ledger for each migrated caller;
-partial coverage cannot close the full provenance gap. Review, fix/re-review,
-check and commit each cut.
+partial coverage cannot close the full provenance gap. Each cut must retire
+its superseded creation implementation under the completion target above.
+Use one Sol review, focused corrections/checks and a commit per larger slice;
+the earlier repeated-review loop is superseded.
 
 ## 8 — present saved and failed sessions with safe draft acknowledgement
 
@@ -590,8 +1991,8 @@ Record the returned session/process ids immediately. Verify effective model,
 reasoning effort and permission mode from session metadata/provider evidence,
 not just the requested body. If launch acknowledgement is lost, inspect existing
 sessions before another POST; today's ordinary API has no new idempotency promise.
-Wait for a terminal review, fix material findings and re-review the changed
-result. Report a missing/unavailable reviewer rather than self-certify its gate.
+For the active milestone, wait for one terminal review, fix material findings
+and verify corrections with focused checks; do not launch another review cycle. Report a missing/unavailable reviewer rather than self-certify its gate.
 Retire only this work's reviewer when idle; never affect unrelated sessions.
 
 For each source slice: run focused checks, review, reconcile corrections, then

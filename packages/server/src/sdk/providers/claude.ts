@@ -1,3 +1,16 @@
+import {
+  captureClaudeCopyBoundary,
+  type ClaudeCopyBoundary,
+} from "../../sessions/claude-copy-boundary.js";
+import { claudeCwdProjectDirectory } from "../../projects/claude-project-directory.js";
+import { nativeStorageScope } from "./native-storage-scope.js";
+import {
+  prepareClaudeInput,
+  claudeInputMessageIds,
+} from "./claude-delivery.js";
+import { fromUrlProjectId, parseNativeSessionId } from "@yep-anywhere/shared";
+import { assertClaudeCopyRoot } from "../../sessions/fork.js";
+import { resolveNativeSessionRef } from "../../sessions/SessionIdentityStore.js";
 import { routerModelSupportsThinking } from "@yep-anywhere/shared";
 import { claudeRouterEnvironment } from "./router-transport.js";
 import { startAgentSelfSession } from "./agent-self.js";
@@ -15,10 +28,18 @@ import {
   readFileSync,
   statSync,
 } from "node:fs";
-import { open as openFile, type FileHandle } from "node:fs/promises";
+import { open as openFile, realpath, type FileHandle } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { delimiter, extname, join, win32 } from "node:path";
+import {
+  basename,
+  delimiter,
+  dirname,
+  extname,
+  join,
+  resolve,
+  win32,
+} from "node:path";
 import { promisify } from "node:util";
 import {
   type SDKMessage as AgentSDKMessage,
@@ -100,13 +121,16 @@ import type {
   ProviderSessionOptions,
   ProviderSessionOptionsUpdateResult,
   ProviderName,
-  ProviderForkBoundary,
+  ProviderForkOptions,
+  ProviderSessionSource,
+  ProviderForkResult,
   ProviderLoginLaunch,
   StartSessionOptions,
   SummaryGenerationRequest,
   SummaryGenerationResult,
 } from "./types.js";
 import {
+  assertProviderForkSource,
   PROVIDER_SESSION_OPTION_KEYS,
   agentServerEnvironmentFor,
   agentApiEnvironmentFor,
@@ -286,8 +310,12 @@ function assertClaudeForkSessionId(sessionId: string): void {
   }
 }
 
-function createClaudeForkStore(directory: FileHandle): SessionStore {
-  const directoryPath = `/proc/self/fd/${directory.fd}`;
+function createClaudeForkStore(
+  directory: FileHandle | string,
+  copied?: (boundary: ClaudeCopyBoundary | undefined) => void,
+): SessionStore {
+  const directoryPath =
+    typeof directory === "string" ? directory : `/proc/self/fd/${directory.fd}`;
   return {
     async load(key): Promise<SessionStoreEntry[] | null> {
       if (key.subpath) {
@@ -313,10 +341,16 @@ function createClaudeForkStore(directory: FileHandle): SessionStore {
       }
       try {
         const content = await file.readFile("utf8");
-        return content
-          .split("\n")
-          .filter((line) => line.trim().length > 0)
-          .map((line) => JSON.parse(line) as SessionStoreEntry);
+        const entries: SessionStoreEntry[] = [];
+        for (const line of content.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            entries.push(JSON.parse(line) as SessionStoreEntry);
+          } catch {
+            /* Match the native SDK's malformed/torn-row tolerance. */
+          }
+        }
+        return entries;
       } finally {
         await file.close();
       }
@@ -339,6 +373,7 @@ function createClaudeForkStore(directory: FileHandle): SessionStore {
           `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
           "utf8",
         );
+        copied?.(captureClaudeCopyBoundary(entries));
       } finally {
         await file.close();
       }
@@ -492,6 +527,40 @@ function resolveLocalClaudeCodeExecutable(): string | undefined {
 
   cachedLocalClaudeCodeExecutable = executable ?? null;
   return executable;
+}
+
+/**
+ * This computer's claude.ai login as a routed Claude launch would see it, with
+ * the credential variables that launch clears removed; null when Claude Code
+ * would use no claude.ai login. Reads `claude auth status`, never a token.
+ */
+export async function readClaudeAiLogin(): Promise<{ email?: string } | null> {
+  const executable = resolveLocalClaudeCodeExecutable();
+  if (!executable) return null;
+  const env = { ...process.env };
+  for (const name of [
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+  ])
+    delete env[name];
+  try {
+    const { stdout } = await execFileAsync(executable, ["auth", "status"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      env,
+    });
+    const status = JSON.parse(stdout) as {
+      loggedIn?: unknown;
+      authMethod?: unknown;
+      email?: unknown;
+    };
+    if (status.loggedIn !== true || status.authMethod !== "claude.ai")
+      return null;
+    return typeof status.email === "string" ? { email: status.email } : {};
+  } catch {
+    return null;
+  }
 }
 
 function numericField(source: unknown, field: string): number | undefined {
@@ -1112,11 +1181,19 @@ function loggedOutStatusFromFailedCheck(error: unknown): AuthStatus | null {
 export class ClaudeProvider implements AgentProvider {
   readonly name: ProviderName = "claude";
   readonly displayName: string = "Claude";
+  readonly supportsNativeResumeSource = true;
+  readonly supportsInlineImages = true;
+  readonly acceptsChosenSessionId = true;
   readonly supportsPermissionMode = true;
   readonly supportsThinkingToggle: boolean = true;
   readonly supportsSlashCommands = true;
   readonly supportsSteering = true;
   readonly supportsSteerNow = true;
+  readonly steering = {
+    selection: "per-message" as const,
+    modes: ["gentle", "immediate"] as const,
+    defaultMode: "immediate" as const,
+  };
   readonly supportsRecaps = true;
   // Intentionally false. Claude emits native away_summary recaps only in the
   // interactive TUI (entrypoint:cli), which writes them to the session JSONL
@@ -1207,6 +1284,43 @@ export class ClaudeProvider implements AgentProvider {
   /** Check whether the bundled or explicitly configured Claude runtime exists. */
   async isInstalled(): Promise<boolean> {
     return this.isClaudeCliInstalled();
+  }
+
+  async getNewSessionNamespace(
+    cwd: string,
+    sandbox?: Pick<
+      import("../../session-sandbox.js").SessionSandboxRuntime,
+      "transcriptDir"
+    >,
+  ) {
+    if (sandbox)
+      return {
+        family: "claude" as const,
+        storageScope: await nativeStorageScope(sandbox.transcriptDir),
+      };
+    // The CLI resolves cwd before selecting its conventional project key.
+    const physicalCwd = await realpath(cwd);
+    const project = claudeCwdProjectDirectory(physicalCwd);
+    let root = resolve(
+      physicalCwd,
+      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+      "projects",
+      project,
+    );
+    const missing: string[] = [];
+    for (;;) {
+      try {
+        root = join(await realpath(root), ...missing.reverse());
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const parent = dirname(root);
+        if (parent === root) throw error;
+        missing.push(basename(root));
+        root = parent;
+      }
+    }
+    return { family: "claude" as const, storageScope: root };
   }
 
   /**
@@ -1379,7 +1493,13 @@ export class ClaudeProvider implements AgentProvider {
 
   /** Check whether YA has an executable Claude Code runtime to launch. */
   private async isClaudeCliInstalled(): Promise<boolean> {
-    return resolveLocalClaudeCodeExecutable() !== undefined;
+    const executable = resolveLocalClaudeCodeExecutable();
+    // Installation can change after this module resolved the executable.
+    // Recheck the captured path before admitting a saved startup attempt.
+    return (
+      executable !== undefined &&
+      resolvePathExecutable(executable) !== undefined
+    );
   }
 
   /**
@@ -1893,9 +2013,84 @@ export class ClaudeProvider implements AgentProvider {
     }
   }
 
+  /** Keep account-home selection unchanged while addressing one captured root. */
+  private async nativeSourceEnvironment(
+    source: ProviderSessionSource,
+    cwd: string,
+    sessionSandbox: SessionSandboxRuntime | undefined,
+    env: NodeJS.ProcessEnv,
+  ): Promise<string> {
+    let nativeCwd = cwd;
+    const scope = source.native.storageScope;
+    if (sessionSandbox) {
+      if ((await realpath(sessionSandbox.transcriptDir)) !== scope)
+        throw new Error(
+          "Claude native source does not match the inherited private transcript root",
+        );
+    } else {
+      // A child runs in the physical directory, including when its supplied
+      // cwd is a symlink. Resolve that before interpreting a relative home.
+      const physicalCwd = await realpath(nativeCwd).catch(() => null);
+      if (!physicalCwd)
+        throw new Error(
+          "Claude native source has no available native project cwd",
+        );
+      nativeCwd = physicalCwd;
+      // Do not change the home spelling: it can select the operator's account.
+      const projects = await realpath(
+        resolve(
+          nativeCwd,
+          env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+          "projects",
+        ),
+      ).catch(() => null);
+      if (projects !== dirname(scope))
+        throw new Error(
+          "Claude native source is outside the launch transcript store; scoped resume is not qualified",
+        );
+      const name = basename(scope);
+      if (
+        env.CLAUDE_CONFIG_DIR &&
+        /^[A-Za-z0-9_-]{1,64}$/.test(name) &&
+        !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(name)
+      ) {
+        env.CLAUDE_CODE_PROJECT_DIR_NAME = name;
+      } else {
+        // Clearing an unusable selector is safe only when cwd addresses the
+        // same captured native directory. Never try a competing same-id file.
+        env.CLAUDE_CODE_PROJECT_DIR_NAME = undefined;
+        if (claudeCwdProjectDirectory(nativeCwd) !== name)
+          throw new Error(
+            "Claude native source cannot be addressed by the native project selector or cwd",
+          );
+      }
+    }
+    return nativeCwd;
+  }
+
   private async generateForkBackedSummary(
     request: Extract<SummaryGenerationRequest, { strategy: "fork" }>,
   ): Promise<SummaryGenerationResult> {
+    assertProviderForkSource(
+      {
+        nativeSessionId: request.generatorSessionId,
+        nativeSource: request.nativeSource,
+      },
+      this.name,
+    );
+    const summaryEnv = this.getEnv(request.model);
+    let nativeCwd = request.nativeSource
+      ? fromUrlProjectId(request.nativeSource.projectId)
+      : request.cwd;
+    if (request.nativeSource)
+      nativeCwd = await this.nativeSourceEnvironment(
+        request.nativeSource,
+        nativeCwd,
+        request.sessionSandbox,
+        summaryEnv,
+      );
+    if (request.signal?.aborted)
+      throw new DOMException("Summary generation cancelled", "AbortError");
     const userPrompt =
       request.purpose === "session-retitle"
         ? this.createSessionRetitlePrompt(request)
@@ -1935,11 +2130,11 @@ export class ClaudeProvider implements AgentProvider {
         prompt: singlePrompt(),
         options: {
           ...DEFAULT_CLAUDE_PROVIDER_GENERATION_OPTIONS,
-          cwd: request.cwd,
+          cwd: nativeCwd,
           abortController,
           permissionMode: "default",
           pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
-          env: this.getEnv(request.model),
+          env: summaryEnv,
           ...this.getSessionToolOptions(request.model, request.sessionSandbox),
           model: normalizeClaudeLaunchModel(request.model),
           resume: request.generatorSessionId,
@@ -2144,39 +2339,92 @@ export class ClaudeProvider implements AgentProvider {
    * sliced at `upToMessageId`. The kept prefix is byte-identical to the
    * source, so provider prompt-cache warmth carries over on resume.
    */
-  async forkSession(options: {
-    sessionId: string;
-    cwd: string;
-    upToMessageId?: string;
-    boundary?: ProviderForkBoundary;
-    title?: string;
-    sessionSandbox?: SessionSandboxRuntime;
-  }): Promise<{ sessionId: string }> {
+  async forkSession(options: ProviderForkOptions): Promise<ProviderForkResult> {
+    assertProviderForkSource(options, this.name);
     if (options.boundary && options.boundary.kind !== "message") {
       throw new Error("Claude fork requires a message boundary");
     }
+    let copyBoundary: ClaudeCopyBoundary | undefined;
+    const copied = (boundary: ClaudeCopyBoundary | undefined) => {
+      copyBoundary = boundary;
+    };
     const upToMessageId =
       options.boundary?.kind === "message"
         ? options.boundary.messageId
         : options.upToMessageId;
     if (!options.sessionSandbox) {
-      return sdkForkSession(options.sessionId, {
+      if (options.nativeSource)
+        await assertClaudeCopyRoot(
+          options.nativeSource.native.storageScope,
+          this.getEnv().CLAUDE_CONFIG_DIR,
+        );
+      const result = await sdkForkSession(options.nativeSessionId, {
         dir: options.cwd,
         upToMessageId,
         title: options.title,
+        ...(options.nativeSource
+          ? {
+              sessionStore: createClaudeForkStore(
+                options.nativeSource.native.storageScope,
+                copied,
+              ),
+            }
+          : {}),
       });
+      const nativeChildId = parseNativeSessionId(result.sessionId);
+      return options.nativeSource
+        ? {
+            nativeSessionId: nativeChildId,
+            ...(copyBoundary ? { copyBoundary } : {}),
+            filePath: join(
+              options.nativeSource.native.storageScope,
+              nativeChildId + ".jsonl",
+            ),
+            native: await resolveNativeSessionRef(
+              this.name,
+              options.nativeSource.native.storageScope,
+              nativeChildId,
+            ),
+            transcriptProjectId: options.nativeSource.projectId,
+          }
+        : { nativeSessionId: nativeChildId };
     }
-    const transcriptDirectory =
-      await options.sessionSandbox.openTranscriptDirectory();
+    const directory = await options.sessionSandbox.openTranscriptDirectory();
     try {
-      return await sdkForkSession(options.sessionId, {
+      if (
+        options.nativeSource &&
+        (await realpath(options.sessionSandbox.transcriptDir)) !==
+          options.nativeSource.native.storageScope
+      ) {
+        throw new Error(
+          "Claude fork source does not match the inherited private transcript root",
+        );
+      }
+      const result = await sdkForkSession(options.nativeSessionId, {
         dir: options.cwd,
         upToMessageId,
         title: options.title,
-        sessionStore: createClaudeForkStore(transcriptDirectory),
+        sessionStore: createClaudeForkStore(directory, copied),
       });
+      const nativeChildId = parseNativeSessionId(result.sessionId);
+      return {
+        nativeSessionId: nativeChildId,
+        ...(copyBoundary ? { copyBoundary } : {}),
+        filePath: join(
+          options.sessionSandbox.transcriptDir,
+          nativeChildId + ".jsonl",
+        ),
+        native: await resolveNativeSessionRef(
+          this.name,
+          options.sessionSandbox.transcriptDir,
+          nativeChildId,
+        ),
+        ...(options.nativeSource
+          ? { transcriptProjectId: options.nativeSource.projectId }
+          : {}),
+      };
     } finally {
-      await transcriptDirectory.close();
+      await directory.close();
     }
   }
 
@@ -2189,26 +2437,15 @@ export class ClaudeProvider implements AgentProvider {
     );
   }
 
-  private async startSessionInternal(
+  /** Resolve and validate the actual native environment before readiness effects. */
+  async validateNativeResumeSource(
     options: StartSessionOptions,
-  ): Promise<AgentSession> {
+  ): Promise<void> {
+    if (options.nativeResumeSource) await this.sessionEnvironment(options);
+  }
+
+  protected async sessionEnvironment(options: StartSessionOptions) {
     if (options.executor) throw new Error("SSH executors have been removed");
-    const log = getLogger();
-    const queue = new MessageQueue();
-    const abortController = new AbortController();
-    const providerSessionOptions = getClaudeSessionLaunchOptions(
-      options.sessionOptions,
-    );
-    const launchBridge = createLaunchAgentctlSessionEnvBridge({
-      initialSessionId: options.resumeSessionId,
-      getSessionEnv: options.getSessionChildEnv,
-      sessionSandbox: options.sessionSandbox,
-    });
-    const agentctlSessionEnvBridge = launchBridge?.bridge ?? null;
-    // Spawns must use this runtime: it also mounts the bridge directory.
-    const sessionSandbox = launchBridge
-      ? launchBridge.sessionSandbox
-      : options.sessionSandbox;
     const autoCompactOverrideEnv = getClaudeAutoCompactOverrideEnv(
       options.launchCompactPercentOverride,
     );
@@ -2224,8 +2461,52 @@ export class ClaudeProvider implements AgentProvider {
     if (options.routerLaunch)
       Object.assign(
         baseClaudeEnv,
-        claudeRouterEnvironment(options.routerLaunch),
+        claudeRouterEnvironment(
+          options.routerLaunch,
+          baseClaudeEnv.ANTHROPIC_CUSTOM_HEADERS,
+        ),
       );
+    if (options.nativeResumeSource) {
+      if (!options.resumeSessionId)
+        throw new Error("Native resume source requires a continuation id");
+      assertProviderForkSource(
+        {
+          nativeSessionId: parseNativeSessionId(options.resumeSessionId),
+          nativeSource: options.nativeResumeSource,
+        },
+        this.name,
+      );
+      await this.nativeSourceEnvironment(
+        options.nativeResumeSource,
+        options.cwd,
+        options.sessionSandbox,
+        baseClaudeEnv,
+      );
+    }
+    return baseClaudeEnv;
+  }
+
+  private async startSessionInternal(
+    options: StartSessionOptions,
+  ): Promise<AgentSession> {
+    if (options.executor) throw new Error("SSH executors have been removed");
+    const log = getLogger();
+    const queue = new MessageQueue(prepareClaudeInput);
+    const abortController = new AbortController();
+    const providerSessionOptions = getClaudeSessionLaunchOptions(
+      options.sessionOptions,
+    );
+    const baseClaudeEnv = await this.sessionEnvironment(options);
+    const launchBridge = createLaunchAgentctlSessionEnvBridge({
+      initialSessionId: options.publicSessionId ?? options.resumeSessionId,
+      getSessionEnv: options.getSessionChildEnv,
+      sessionSandbox: options.sessionSandbox,
+    });
+    const agentctlSessionEnvBridge = launchBridge?.bridge ?? null;
+    // Spawns must use this runtime: it also mounts the bridge directory.
+    const sessionSandbox = launchBridge
+      ? launchBridge.sessionSandbox
+      : options.sessionSandbox;
     const claudeEnv = agentctlSessionEnvBridge
       ? agentctlSessionEnvBridge.extendEnv(baseClaudeEnv)
       : baseClaudeEnv;
@@ -2481,8 +2762,13 @@ export class ClaudeProvider implements AgentProvider {
                 settings: {
                   ...this.getSettings(options.model),
                   apiKeyHelper: "",
-                  disableClaudeAiConnectors: true,
-                  env: claudeRouterEnvironment(options.routerLaunch),
+                  ...(options.routerLaunch.claudeAiConnectors
+                    ? {}
+                    : { disableClaudeAiConnectors: true }),
+                  env: claudeRouterEnvironment(
+                    options.routerLaunch,
+                    claudeEnv.ANTHROPIC_CUSTOM_HEADERS,
+                  ),
                 },
               }
             : {}),
@@ -2549,6 +2835,7 @@ export class ClaudeProvider implements AgentProvider {
 
     // Wrap the iterator to convert SDK message types to our internal types
     const wrappedIterator = this.wrapIterator(sdkQuery, {
+      signal: abortController.signal,
       providerRetention,
       goalTracker,
       getCommandInventory: buildCommandInventory,
@@ -2616,7 +2903,7 @@ export class ClaudeProvider implements AgentProvider {
       getProviderRetention: () => providerRetention.getSnapshot(),
       refreshPromptCache: ({ sessionId }) =>
         this.refreshPromptCache({
-          sessionId,
+          sessionId: options.nativeResumeSource?.native.id ?? sessionId,
           cwd: effectiveCwd,
           model: normalizeClaudeLaunchModel(options.model),
           thinking: options.thinking,
@@ -2725,6 +3012,7 @@ export class ClaudeProvider implements AgentProvider {
   private async *wrapIterator(
     iterator: AsyncIterable<AgentSDKMessage>,
     observation?: {
+      signal?: AbortSignal;
       providerRetention?: ClaudeProviderRetentionTracker;
       goalTracker?: ClaudeGoalTracker;
       /** Current inventory, already carrying goal state, for goal updates. */
@@ -2756,6 +3044,14 @@ export class ClaudeProvider implements AgentProvider {
         if (goalUpdate) yield goalUpdate;
       }
     } catch (error) {
+      // The native SDK can classify requested cancellation without naming it AbortError.
+      if (
+        observation?.signal?.aborted &&
+        error instanceof Error &&
+        "errorClass" in error &&
+        error.errorClass === "aborted"
+      )
+        return;
       // Handle abort errors gracefully
       if (error instanceof Error && error.name === "AbortError") {
         return;
@@ -2821,7 +3117,11 @@ export class ClaudeProvider implements AgentProvider {
     goal?: ClaudeGoalSnapshot,
   ): SDKMessage {
     // Pass through all fields, only normalize content blocks
-    const sdkMessage = message as unknown as SDKMessage;
+    const rawMessage = message as unknown as SDKMessage;
+    const sdkMessage =
+      rawMessage.type === "user"
+        ? { ...rawMessage, inputMessageIds: claudeInputMessageIds(rawMessage) }
+        : rawMessage;
     const withGoal = (commands: SlashCommand[]): SlashCommand[] =>
       goal ? withClaudeGoalDetails(commands, goal) : commands;
     if (

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { getLogger } from "../logging/logger.js";
 import { isCodexRolloutFileName } from "../utils/codexRolloutFiles.js";
 import { watchSharedDirectory } from "./SharedDirectoryWatcher.js";
+import { runOutsideRequestContext } from "../lib/outsideRequestContext.js";
 import type {
   EventBus,
   FileChangeEvent,
@@ -19,6 +20,14 @@ export interface FileWatcherOptions {
   eventBus: EventBus;
   /** Debounce delay in ms (default: 200) */
   debounceMs?: number;
+  /** Fixed native metadata subtrees/files. Excluded trees are never scanned. */
+  includePaths?: readonly string[];
+  /** Native recursion and baseline traversal share the same explicit bound. */
+  recursive?: boolean;
+  /** Fixed files needing inode watches (macOS open SQLite WAL writes). Max 8. */
+  watchFiles?: readonly string[];
+  /** Internal finite handover; never emitted onto the client activity stream. */
+  onInitialBaseline?: () => void;
   /**
    * Optional periodic full-tree rescan interval (ms).
    * Useful on platforms where fs.watch may miss deep file writes.
@@ -26,8 +35,28 @@ export interface FileWatcherOptions {
   periodicRescanMs?: number;
   /** Maximum adaptive periodic rescan delay in ms. */
   periodicRescanMaxBackoffMs?: number;
+  /**
+   * A provider-owned change signal created per watch. While it can vouch for
+   * an interval, a periodic tick re-checks only the paths it names instead of
+   * walking the whole tree.
+   */
+  periodicRescanHints?: () => FileWatcherChangeHints;
+  /**
+   * Longest a hinted watch goes without a full walk (default: 10 minutes). A
+   * hint source sees writes, not removals, so this bounds how long a dropped
+   * native delete or rename event can leave a removed file listed.
+   */
+  periodicFullRescanFloorMs?: number;
   /** Slow rescan log threshold in ms (default: 250). */
   rescanSlowLogThresholdMs?: number;
+}
+
+export interface FileWatcherChangeHints {
+  /**
+   * Absolute paths that may have changed since the previous call, or null
+   * when the signal cannot vouch for that interval and a full rescan must run.
+   */
+  changedPaths(): Promise<readonly string[] | null>;
 }
 
 export type FileWatcherRescanReason = "fallback" | "periodic";
@@ -103,15 +132,37 @@ const PERIODIC_RESCAN_BACKOFF_RATIO = 0.5;
 const PERIODIC_RESCAN_RECOVERY_RATIO = 0.1;
 const PERIODIC_RESCAN_DEFAULT_MAX_BACKOFF_MS = 60 * 60 * 1000;
 
+/** Process-unique, so no two watcher lifetimes share an observation epoch. */
+let lastObservationEpoch = 0;
+
 export class FileWatcher {
   private observationError: string | null = null;
+  private observationEpoch = 0;
   private watchDir: string;
   private provider: WatchProvider;
   private eventBus: EventBus;
   private debounceMs: number;
+  private readonly includePaths?: readonly string[];
+  private readonly recursive: boolean;
+  private readonly watchFiles: readonly string[];
+  private readonly fileWatches = new Map<
+    string,
+    { identity: string; watcher: fs.FSWatcher }
+  >();
+  private fileWatchFailed = false;
+  // Bun 1.3.14 on macOS misses writes even with an inode fs.watch. One
+  // provider-owned timer stats at most eight fixed files, never a corpus.
+  private readonly fixedFilePoll =
+    !!process.versions.bun && process.platform === "darwin";
+  private fixedFileTimer: NodeJS.Timeout | undefined;
+  private readonly onInitialBaseline?: () => void;
   private periodicRescanMs: number;
   private periodicRescanCurrentMs: number;
   private periodicRescanMaxBackoffMs: number;
+  private readonly createPeriodicRescanHints?: () => FileWatcherChangeHints;
+  private periodicRescanHints?: FileWatcherChangeHints;
+  private readonly periodicFullRescanFloorMs: number;
+  private lastFullRescanAt = 0;
   private rescanSlowLogThresholdMs: number;
   private watcher: fs.FSWatcher | null = null;
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
@@ -137,6 +188,18 @@ export class FileWatcher {
     this.provider = options.provider;
     this.eventBus = options.eventBus;
     this.debounceMs = options.debounceMs ?? 200;
+    this.includePaths = options.includePaths;
+    this.recursive = options.recursive ?? true;
+    this.watchFiles = options.watchFiles ?? [];
+    if (
+      this.watchFiles.length > 8 ||
+      this.watchFiles.some(
+        (name) =>
+          path.isAbsolute(name) || name.includes(path.sep) || name === "..",
+      )
+    )
+      throw new Error("FileWatcher requires at most eight fixed basenames");
+    this.onInitialBaseline = options.onInitialBaseline;
     this.periodicRescanMs = options.periodicRescanMs ?? 0;
     this.periodicRescanCurrentMs = this.periodicRescanMs;
     this.periodicRescanMaxBackoffMs = Math.max(
@@ -151,6 +214,9 @@ export class FileWatcher {
       0,
       options.rescanSlowLogThresholdMs ?? DEFAULT_RESCAN_SLOW_LOG_THRESHOLD_MS,
     );
+    this.createPeriodicRescanHints = options.periodicRescanHints;
+    this.periodicFullRescanFloorMs =
+      options.periodicFullRescanFloorMs ?? 10 * 60 * 1000;
   }
 
   /**
@@ -162,11 +228,13 @@ export class FileWatcher {
     }
 
     this.observationError = null;
+    this.fileWatchFailed = false;
+    this.observationEpoch = ++lastObservationEpoch;
     try {
       const lifecycleGeneration = ++this.lifecycleGeneration;
       this.watcher = watchSharedDirectory(
         this.watchDir,
-        { recursive: true },
+        { recursive: this.recursive },
         (eventType, filename) => {
           if (!filename) {
             getLogger().debug(
@@ -179,19 +247,36 @@ export class FileWatcher {
         },
       );
 
-      this.watcher.on("error", (error) => {
+      const watcher = this.watcher;
+      watcher.on("error", (error) => {
+        if (this.watcher !== watcher) return;
         this.observationError = error.message;
         console.error("[FileWatcher] Error:", error);
       });
-      this.watcher.on("close", () => {
+      watcher.on("close", () => {
+        if (this.watcher !== watcher) return;
         this.watcher = null;
+        this.releaseFixedFiles();
       });
+      this.refreshFileWatches();
+      if (this.fixedFilePoll && this.watchFiles.length) {
+        this.fixedFileTimer = runOutsideRequestContext(() =>
+          setInterval(() => {
+            for (const name of this.watchFiles)
+              this.handleFileEvent("change", name);
+          }, 1000),
+        );
+        this.fixedFileTimer.unref();
+      }
 
       getLogger().info(`[FileWatcher] Watching ${this.watchDir}`);
       this.scheduleInitialBaseline(lifecycleGeneration);
 
       if (this.periodicRescanMs > 0) {
         this.periodicRescanCurrentMs = this.periodicRescanMs;
+        this.periodicRescanHints = this.createPeriodicRescanHints?.();
+        // The initial baseline is this watch's first full walk.
+        this.lastFullRescanAt = Date.now();
         this.scheduleNextPeriodicRescan();
         getLogger().info(
           `[FileWatcher] Periodic rescan enabled (base=${this.periodicRescanMs}ms, max=${this.periodicRescanMaxBackoffMs}ms) for ${this.watchDir}`,
@@ -209,6 +294,8 @@ export class FileWatcher {
    */
   stop(): void {
     this.lifecycleGeneration += 1;
+    this.releaseFixedFiles();
+    this.fileWatchFailed = false;
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
@@ -227,6 +314,7 @@ export class FileWatcher {
       clearTimeout(this.periodicRescanTimer);
       this.periodicRescanTimer = null;
     }
+    this.periodicRescanHints = undefined;
     this.knownFileFingerprints.clear();
     this.initialBaselineTouchedPaths.clear();
     this.rescanRequestedDuringBaseline = false;
@@ -242,6 +330,17 @@ export class FileWatcher {
    */
   get isWatching(): boolean {
     return this.watcher !== null && this.observationError === null;
+  }
+
+  /**
+   * Identifies one uninterrupted observation of the tree, or null when events
+   * may be missing: before the baseline, after an error, or once stopped.
+   * Evidence gathered under an epoch stays current while that epoch holds.
+   */
+  getObservationEpoch(): number | null {
+    return this.isWatching && this.initialBaselineState === "complete"
+      ? this.observationEpoch
+      : null;
   }
 
   getObservationDiagnostics() {
@@ -333,6 +432,7 @@ export class FileWatcher {
         { event: "file_watcher_initial_baseline", ...metrics },
         "FILE_WATCHER: initial baseline complete",
       );
+      this.onInitialBaseline?.();
       return { ...metrics };
     } catch (error) {
       if (this.isCurrentLifecycle(lifecycleGeneration)) {
@@ -393,8 +493,10 @@ export class FileWatcher {
       const files: string[] = [];
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) pendingDirectories.push(fullPath);
-        else files.push(fullPath);
+        if (!this.includesPath(fullPath)) continue;
+        if (entry.isDirectory()) {
+          if (this.recursive) pendingDirectories.push(fullPath);
+        } else files.push(fullPath);
       }
 
       for (let offset = 0; offset < files.length; offset += statBatchSize) {
@@ -444,6 +546,8 @@ export class FileWatcher {
 
   private handleFileEvent(eventType: string, filename: string): void {
     const fullPath = path.join(this.watchDir, filename);
+    if (!this.includesPath(fullPath)) return;
+    this.refreshFileWatches();
     const duringInitialBaseline =
       this.initialBaselineState === "scheduled" ||
       this.initialBaselineState === "running";
@@ -538,6 +642,9 @@ export class FileWatcher {
       provider: this.provider,
       path: fullPath,
       relativePath,
+      ...(["claude", "codex", "grok", "opencode"].includes(this.provider)
+        ? { nativeStorageScope: this.watchDir }
+        : {}),
       changeType,
       timestamp: new Date().toISOString(),
       ...fingerprint,
@@ -610,10 +717,38 @@ export class FileWatcher {
 
     this.periodicRescanTimer = setTimeout(() => {
       this.periodicRescanTimer = null;
-      void this.runRescan("periodic").finally(() => {
+      void this.runPeriodicCheck().finally(() => {
         this.scheduleNextPeriodicRescan();
       });
     }, this.periodicRescanCurrentMs);
+  }
+
+  /**
+   * Hinted paths go through the ordinary event path, whose fingerprint check
+   * drops what native events already reported. Without a usable hint the tick
+   * walks the whole tree, as it always did.
+   */
+  private async runPeriodicCheck(): Promise<void> {
+    const hints = this.periodicRescanHints;
+    const paths = hints ? await hints.changedPaths().catch(() => null) : null;
+    if (!this.watcher || hints !== this.periodicRescanHints) return;
+    if (
+      paths === null ||
+      Date.now() - this.lastFullRescanAt >= this.periodicFullRescanFloorMs
+    )
+      return this.runRescan("periodic");
+    // Backoff paces full walks; a hinted check costs too little to stretch.
+    this.periodicRescanCurrentMs = this.periodicRescanMs;
+    for (const fullPath of paths) {
+      const relativePath = path.relative(this.watchDir, fullPath);
+      if (
+        relativePath &&
+        relativePath !== ".." &&
+        !relativePath.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(relativePath)
+      )
+        this.handleFileEvent("change", relativePath);
+    }
   }
 
   private async rescanAndEmit(reason: FileWatcherRescanReason): Promise<void> {
@@ -720,6 +855,7 @@ export class FileWatcher {
       this.rescanInProgress = false;
       this.rescanTouchedPaths.clear();
       if (completed) {
+        this.lastFullRescanAt = Date.now();
         metrics.durationMs = Date.now() - startedAt;
         metrics.overlapSkipsSinceLast = this.rescanOverlapSkipsSinceLast;
         metrics.overlapSkipsTotal = this.rescanOverlapSkipsTotal;
@@ -853,6 +989,8 @@ export class FileWatcher {
 
   private parseFileType(relativePath: string): FileChangeEvent["fileType"] {
     switch (this.provider) {
+      case "opencode":
+        return "agent-session";
       case "claude":
         return this.parseClaudeFileType(relativePath);
       case "gemini":
@@ -861,7 +999,102 @@ export class FileWatcher {
         return this.parseCodexFileType(relativePath);
       case "pi":
         return this.parsePiFileType(relativePath);
+      case "grok": {
+        const parts = relativePath.split(path.sep);
+        if (parts.includes("subagents")) return "agent-session";
+        return [
+          "summary.json",
+          "updates.jsonl",
+          "chat_history.jsonl",
+          "events.jsonl",
+        ].includes(path.basename(relativePath))
+          ? "session"
+          : "other";
+      }
+      case "antigravity":
+        return /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.(?:meta|db(?:-wal)?)$/i.test(
+          relativePath,
+        )
+          ? "session"
+          : "other";
     }
+  }
+
+  private includesPath(fullPath: string): boolean {
+    const suffix = path.relative(this.watchDir, fullPath);
+    return (
+      !this.includePaths ||
+      this.includePaths.some(
+        (included) =>
+          suffix === included ||
+          suffix.startsWith(`${included}${path.sep}`) ||
+          included.startsWith(`${suffix}${path.sep}`),
+      )
+    );
+  }
+
+  private refreshFileWatches(): void {
+    if (this.fixedFilePoll || this.fileWatchFailed || !this.watcher) return;
+    for (const name of this.watchFiles) {
+      const fullPath = path.join(this.watchDir, name);
+      const previous = this.fileWatches.get(name);
+      let identity: string;
+      try {
+        const s = fs.lstatSync(fullPath);
+        if (!s.isFile())
+          throw Object.assign(new Error("Native watch file unavailable"), {
+            code: "ENOENT",
+          });
+        identity = `${s.dev}:${s.ino}`;
+      } catch (error) {
+        this.fileWatches.delete(name);
+        previous?.watcher.close();
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        this.failFileWatches(error);
+        return;
+      }
+      if (previous?.identity === identity) continue;
+      this.fileWatches.delete(name);
+      previous?.watcher.close();
+      try {
+        const watcher = runOutsideRequestContext(() =>
+          fs.watch(fullPath, { persistent: false }, (event) => {
+            if (this.fileWatches.get(name)?.watcher === watcher)
+              this.handleFileEvent(event, name);
+          }),
+        );
+        this.fileWatches.set(name, { identity, watcher });
+        watcher.on("error", (error) => {
+          if (this.fileWatches.get(name)?.watcher === watcher)
+            this.failFileWatches(error);
+        });
+        watcher.on("close", () => {
+          if (this.fileWatches.get(name)?.watcher === watcher)
+            this.failFileWatches(
+              new Error("Native metadata file watcher closed"),
+            );
+        });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        this.failFileWatches(error);
+        return;
+      }
+    }
+  }
+
+  private failFileWatches(error: unknown): void {
+    this.fileWatchFailed = true;
+    this.observationError =
+      error instanceof Error ? error.message : String(error);
+    this.releaseFixedFiles();
+  }
+
+  private releaseFixedFiles(): void {
+    if (this.fixedFileTimer) clearInterval(this.fixedFileTimer);
+    this.fixedFileTimer = undefined;
+    const watches = [...this.fileWatches.values()];
+    this.fileWatches.clear();
+    for (const value of watches) value.watcher.close();
   }
 
   private parseClaudeFileType(

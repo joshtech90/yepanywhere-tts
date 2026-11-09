@@ -10,6 +10,8 @@ import { useI18n } from "../i18n";
 import type { InputRequest, UserQuestionAnswers } from "../types";
 import type { AskUserQuestionInput, Question } from "./renderers/tools/types";
 import styles from "./QuestionAnswerPanel.module.css";
+import { Button, ButtonBase } from "./ui/Button";
+import { TextInput } from "./ui/Field";
 
 const OTHER_ANSWER = "__other__";
 
@@ -270,8 +272,7 @@ export function QuestionAnswerPanel({
     // biome-ignore lint/a11y/noStaticElementInteractions: keyboard shortcuts for the focusable buttons inside
     <div className={styles.wrapper} onKeyDown={handleKeyDown}>
       {/* Floating toggle button */}
-      <button
-        type="button"
+      <ButtonBase
         className={styles.toggle}
         onClick={() => setCollapsed(!collapsed)}
         aria-label={
@@ -293,7 +294,7 @@ export function QuestionAnswerPanel({
         >
           <polyline points="6 9 12 15 18 9" />
         </svg>
-      </button>
+      </ButtonBase>
 
       {!collapsed && (
         <div className={styles.panel}>
@@ -415,9 +416,10 @@ export function QuestionAnswerPanel({
                 {/* Other text input */}
                 {isOtherSelected && (
                   <div className={styles.otherInput}>
-                    <input
+                    <TextInput
                       ref={otherInputRef}
                       type={currentQuestion.isSecret ? "password" : "text"}
+                      aria-label={t("questionPanelOther")}
                       placeholder={t("questionPanelTypeAnswer")}
                       value={getQuestionOtherText(currentQuestion)}
                       onChange={(e) => handleOtherTextChange(e.target.value)}
@@ -430,36 +432,34 @@ export function QuestionAnswerPanel({
 
           {/* Actions */}
           <div className={styles.actions}>
-            <button
-              type="button"
-              className={cx(styles.btn, styles.deny)}
+            <Button
+              className={styles.btn}
               onClick={handleDeny}
               disabled={submitting}
             >
               {t("questionPanelCancel")}
               <kbd>esc</kbd>
-            </button>
+            </Button>
 
             {isLastQuestion ? (
-              <button
-                type="button"
-                className={cx(styles.btn, styles.submit)}
+              <Button
+                variant="primary"
+                className={styles.btn}
                 onClick={handleSubmit}
                 disabled={!allAnswered || submitting}
               >
                 {t("questionPanelSubmit")}
                 <kbd>↵</kbd>
-              </button>
+              </Button>
             ) : (
-              <button
-                type="button"
-                className={cx(styles.btn, styles.next)}
+              <Button
+                className={styles.btn}
                 onClick={advanceToNext}
                 disabled={!currentQuestionAnswered || submitting}
               >
                 {t("questionPanelNext")}
                 <kbd>↵</kbd>
-              </button>
+              </Button>
             )}
           </div>
         </div>

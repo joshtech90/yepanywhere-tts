@@ -5,6 +5,8 @@ import {
   resolveLimitedUserInstructions,
   type LimitedUserInstructions as Instructions,
 } from "@yep-anywhere/shared";
+import { Button } from "../../components/ui/Button";
+import { Checkbox } from "../../components/ui/Checkbox";
 import { useI18n } from "../../i18n";
 import {
   InstructionBlocks,
@@ -51,18 +53,15 @@ export function SharedLimitedUserInstructions({
       aria-label={t("usersSharedInstructionsTitle")}
     >
       <h3>{t("usersSharedInstructionsTitle")}</h3>
-      <label className={styles.checkbox}>
-        <input
-          type="checkbox"
-          checked={startFromDefault}
-          disabled={busy}
-          onChange={(event) => {
-            setStartFromDefault(event.target.checked);
-            setSaved(false);
-          }}
-        />
-        {t("usersInstructionsDefault")}
-      </label>
+      <Checkbox
+        label={t("usersInstructionsDefault")}
+        checked={startFromDefault}
+        disabled={busy}
+        onCheckedChange={(checked) => {
+          setStartFromDefault(checked);
+          setSaved(false);
+        }}
+      />
       <p className={styles.hint}>
         {t(
           startFromDefault
@@ -84,24 +83,21 @@ export function SharedLimitedUserInstructions({
         </p>
       )}
       <div className={styles.actions}>
-        <button
-          type="button"
-          className="settings-button settings-button-primary"
+        <Button
+          variant="primary"
           disabled={busy || !!error}
           aria-label={t("usersInstructionsSave")}
           onClick={() => void save()}
         >
           {t("usersInstructionsSaveShort")}
-        </button>
-        <button
-          type="button"
-          className="settings-button"
+        </Button>
+        <Button
           aria-expanded={preview}
           aria-label={t("usersInstructionsPreview")}
           onClick={() => setPreview(!preview)}
         >
           {t("usersInstructionsPreviewShort")}
-        </button>
+        </Button>
         {saved && (
           <span role="status" className={styles.hint}>
             {t("usersInstructionsSaved")}
@@ -170,15 +166,13 @@ export function PerUserInstructions({
         disabled={disabled}
       />
       <div className={styles.actions}>
-        <button
-          type="button"
-          className="settings-button"
+        <Button
           aria-expanded={preview}
           aria-label={t("usersInstructionsPreview")}
           onClick={() => setPreview(!preview)}
         >
           {t("usersInstructionsPreviewShort")}
-        </button>
+        </Button>
       </div>
       {preview && (
         <pre className={styles.preview}>

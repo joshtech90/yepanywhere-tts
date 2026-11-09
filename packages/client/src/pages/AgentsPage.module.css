@@ -65,13 +65,8 @@
 
 @media (hover: hover) {
   .card:hover {
-    border-color: var(--border-hover);
+    border-color: var(--border-input);
   }
-}
-
-.card:has(.metricsWrapOpen) {
-  position: relative;
-  z-index: 40;
 }
 
 .cardTerminated {
@@ -196,24 +191,6 @@
 .killButton {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: var(--font-size-xs);
-  padding: 0.125rem 0.5rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-color);
-  background: var(--bg-hover);
-  color: var(--text-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.killButton:hover:not(:disabled) {
-  border-color: var(--error-color);
-  color: var(--error-color);
-}
-
-.killButton:disabled {
-  opacity: 0.6;
-  cursor: default;
 }
 
 .cardMeta {
@@ -238,13 +215,8 @@
 }
 
 .metricsWrap {
-  position: relative;
   margin-left: auto;
   flex-shrink: 0;
-}
-
-.metricsWrapOpen {
-  z-index: 40;
 }
 
 .metrics {
@@ -256,33 +228,23 @@
   border-radius: 999px;
   background: var(--bg-surface);
   color: var(--text-muted);
-  font: inherit;
   font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  cursor: pointer;
 }
 
 .metrics:hover,
 .metrics:focus-visible,
 .metrics[aria-expanded="true"] {
-  border-color: var(--border-hover);
+  border-color: var(--border-input);
   color: var(--text-primary);
 }
 
+/* Content of the shared Popover: the metrics, one per line. */
 .metricsPopover {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + var(--space-1));
-  right: 0;
-  width: max-content;
+  display: block;
   max-width: min(22rem, calc(100dvw - 2rem));
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-lg);
-  color: var(--text-primary);
+  padding: var(--space-1) var(--space-2);
   font-size: var(--font-size-xs);
   line-height: 1.5;
   white-space: pre-line;

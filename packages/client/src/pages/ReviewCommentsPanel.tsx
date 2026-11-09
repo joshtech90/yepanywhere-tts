@@ -1,6 +1,8 @@
 import type { ReviewComment } from "@yep-anywhere/shared";
 import { useState } from "react";
 import { api } from "../api/client";
+import { Button, ButtonBase } from "../components/ui/Button";
+import { Textarea } from "../components/ui/Field";
 import { notifyReviewCommentsChanged } from "../lib/reviewCommentsBus";
 import type { TranslationFn } from "../i18n";
 import styles from "./ReviewCommentsPanel.module.css";
@@ -92,21 +94,19 @@ export function ReviewCommentsPanel({
         {pending.map((comment) => (
           <li key={comment.id} className={styles.row}>
             <div className={styles.rowHead}>
-              <button
-                type="button"
+              <ButtonBase
                 className={styles.location}
                 title={t("sourceReviewOpenInFiles")}
                 onClick={() => onOpenFile(comment.anchor.path)}
               >
                 {commentLocation(comment)}
-              </button>
+              </ButtonBase>
               <span className={styles.revision}>
                 {revisionLabel(comment, t)}
               </span>
               <div className={styles.rowActions}>
-                <button
-                  type="button"
-                  className={styles.edit}
+                <Button
+                  size="small"
                   disabled={busyId === comment.id}
                   onClick={() => {
                     setEditId(comment.id);
@@ -115,44 +115,44 @@ export function ReviewCommentsPanel({
                   }}
                 >
                   {t("sourceReviewEdit")}
-                </button>
-                <button
-                  type="button"
-                  className={styles.delete}
+                </Button>
+                <Button
+                  variant="danger-outline"
+                  size="small"
                   disabled={busyId === comment.id}
                   onClick={() => void handleDelete(comment.id)}
                 >
                   {confirmId === comment.id
                     ? t("sourceReviewDeleteConfirm")
                     : t("sourceReviewDelete")}
-                </button>
+                </Button>
               </div>
             </div>
             {editId === comment.id ? (
               <div className={styles.editor}>
-                <textarea
+                <Textarea
                   aria-label={t("sourceReviewEditComment")}
+                  rows={4}
                   value={editText}
                   maxLength={20_000}
                   onChange={(event) => setEditText(event.target.value)}
                 />
                 <div className={styles.editorActions}>
-                  <button
-                    type="button"
+                  <Button
                     onClick={() => {
                       setEditId(null);
                       setEditText("");
                     }}
                   >
                     {t("cancel")}
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="primary"
                     disabled={busyId === comment.id || !editText.trim()}
                     onClick={() => void handleSave(comment.id)}
                   >
                     {t("sourceReviewSaveEdit")}
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : (
@@ -162,9 +162,9 @@ export function ReviewCommentsPanel({
         ))}
       </ul>
       <div className={styles.actions}>
-        <button type="button" className="review-submit-go" onClick={onSubmit}>
+        <Button variant="primary" onClick={onSubmit}>
           {t("sourceReviewOpenSubmit")}
-        </button>
+        </Button>
       </div>
     </section>
   );

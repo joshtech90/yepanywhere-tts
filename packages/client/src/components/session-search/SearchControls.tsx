@@ -13,6 +13,11 @@ import {
   type SearchStatus,
   type TimeBasis,
 } from "./model";
+import { Button, ButtonBase, IconButton } from "../ui/Button";
+import { Checkbox } from "../ui/Checkbox";
+import { TextInput } from "../ui/Field";
+import { Popover } from "../ui/Popover";
+import { SegmentedControl } from "../ui/SegmentedControl";
 import styles from "./SessionSearch.module.css";
 
 export function CheckIcon({ size = 18 }: { size?: number }) {
@@ -66,24 +71,12 @@ export function SearchHeader({
 }) {
   const { t } = useI18n();
   const input = useRef<HTMLInputElement>(null);
-  const statusArea = useRef<HTMLDivElement>(null);
+  const statusButton = useRef<HTMLButtonElement>(null);
   const pendingField = useRef<SearchField | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
   useEffect(() => {
     if (!status) setStatusOpen(false);
   }, [status]);
-  useEffect(() => {
-    if (!statusOpen) return;
-    const close = (event: PointerEvent) => {
-      if (
-        event.target instanceof Node &&
-        !statusArea.current?.contains(event.target)
-      )
-        setStatusOpen(false);
-    };
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
-  }, [statusOpen]);
   // Router navigation is deferred work; it must never own keyboard echo.
   const [draft, setDraft] = useState(query);
   const draftValue = useRef(query);
@@ -202,7 +195,7 @@ export function SearchHeader({
       <div className={styles.fields}>
         <span className={styles.searchIn}>{t("sessionSearchIn")}</span>
         {(["title", "assistant", "user"] as const).map((field) => (
-          <label
+          <span
             key={field}
             title={
               field !== "title" && !supported
@@ -212,39 +205,40 @@ export function SearchHeader({
                   : undefined
             }
           >
-            <input
-              type="checkbox"
+            <Checkbox
+              className={styles.field}
+              label={
+                <>
+                  {t(`sessionSearchField_${field}`)}
+                  {field !== "title" && (
+                    <kbd>{field === "assistant" ? "C-s" : "C-r"}</kbd>
+                  )}
+                </>
+              }
               checked={fields.includes(field)}
               disabled={field !== "title" && !supported}
-              onChange={(e) => {
-                const next = e.target.checked
+              onCheckedChange={(checked) => {
+                const next = checked
                   ? [...fields, field]
                   : fields.filter((f) => f !== field);
                 onFields(field !== "title" && !next.length ? ["title"] : next);
               }}
             />
-            {t(`sessionSearchField_${field}`)}
-            {field !== "title" && (
-              <kbd>{field === "assistant" ? "C-s" : "C-r"}</kbd>
-            )}
-          </label>
+          </span>
         ))}
         {onIntersection && (
-          <label
-            className={styles.intersection}
-            title={t("sessionSearchIntersectionHelp")}
-          >
-            <input
-              type="checkbox"
+          <span title={t("sessionSearchIntersectionHelp")}>
+            <Checkbox
+              className={styles.field}
+              label={t("sessionSearchIntersection")}
               checked={intersection}
-              onChange={(event) => onIntersection(event.target.checked)}
+              onCheckedChange={onIntersection}
             />
-            {t("sessionSearchIntersection")}
-          </label>
+          </span>
         )}
       </div>
       <div className={styles.needleRow}>
-        <input
+        <TextInput
           ref={input}
           className={styles.search}
           type="search"
@@ -254,9 +248,9 @@ export function SearchHeader({
           placeholder={t("globalSessionsSearchPlaceholder")}
           aria-label={t("globalSessionsSearchPlaceholder")}
         />
-        <div ref={statusArea} className={styles.statusArea}>
-          <button
-            type="button"
+        <div className={styles.statusArea}>
+          <ButtonBase
+            ref={statusButton}
             className={styles.searchStatus}
             disabled={!status}
             title={status}
@@ -275,8 +269,18 @@ export function SearchHeader({
             >
               …
             </span>
-          </button>
-          {statusOpen && <div className={styles.statusDetails}>{status}</div>}
+          </ButtonBase>
+          <Popover
+            open={statusOpen}
+            onClose={() => setStatusOpen(false)}
+            anchorRef={statusButton}
+            placement="bottom-end"
+            surface="card"
+            className={styles.statusDetails}
+            role="status"
+          >
+            {status}
+          </Popover>
         </div>
       </div>
     </div>
@@ -302,6 +306,7 @@ function RangeField({
         {(value || placeholder).padEnd(reservation, "0")}
       </span>
       <input
+        className={styles.ageInput}
         aria-label={label}
         title={t("sessionSearchAgeHelp")}
         placeholder={placeholder}
@@ -345,19 +350,17 @@ export function SearchFilters({
   return (
     <div className={styles.filterRow}>
       <div className={styles.range}>
-        <div className={styles.basis}>
-          {(["activity", "turns", "created"] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={basis === value}
-              title={t(`sessionSearchTimeHelp_${value}`)}
-              onClick={() => onBasis(value)}
-            >
-              {t(`sessionSearchTime_${value}`)}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          size="small"
+          aria-label={t("sessionSearchTimeBasis")}
+          options={(["activity", "turns", "created"] as const).map((value) => ({
+            value,
+            label: t(`sessionSearchTime_${value}`),
+            tooltip: t(`sessionSearchTimeHelp_${value}`),
+          }))}
+          value={basis}
+          onChange={onBasis}
+        />
         <div className={styles.age}>
           <RangeField
             label={t("sessionSearchFrom")}
@@ -375,9 +378,9 @@ export function SearchFilters({
         </div>
         <div className={styles.quickAge}>
           {[1, 7, 30].map((days) => (
-            <button
+            <Button
               key={days}
-              type="button"
+              size="small"
               title={t("sessionSearchRecentHelp", { days })}
               onClick={() => {
                 onBasis("activity");
@@ -386,17 +389,17 @@ export function SearchFilters({
               }}
             >
               {days}d
-            </button>
+            </Button>
           ))}
-          <button
-            type="button"
+          <Button
+            size="small"
             onClick={() => {
               onYoung("");
               onOld("");
             }}
           >
             {t("sessionSearchAnyAge")}
-          </button>
+          </Button>
         </div>
       </div>
       <div className={styles.filters}>
@@ -404,7 +407,9 @@ export function SearchFilters({
         {showLimit && (
           <label className={styles.limit} title={t("sessionSearchLimitHelp")}>
             {t("sessionSearchLimit")}
-            <input
+            <TextInput
+              size="small"
+              className={styles.limitInput}
               inputMode="numeric"
               placeholder="∞"
               value={limit}
@@ -571,64 +576,57 @@ export function SearchSelection({
   return (
     <div className={styles.scope}>
       <div className={styles.selectionInfo}>
-        <button
-          type="button"
+        <ButtonBase
           className={styles.selectionCount}
           title={t("sessionSearchSelectionHelp", { count })}
           onClick={onManage}
         >
           <CheckIcon />
           {count}
-        </button>
-        <button
-          type="button"
-          className={styles.selectMatched}
+        </ButtonBase>
+        <Button
+          size="small"
           onClick={onSelectShown}
           disabled={!shown || allShownSelected || pending}
           title={t("sessionSearchSelectShownTitle", { count: shown })}
         >
           <SelectAllIcon />
           <span>{t("sessionSearchSelectShown", { count: shown })}</span>
-        </button>
-        <button
-          type="button"
-          className={styles.onlySelected}
+        </Button>
+        <Button
+          variant="ghost"
+          size="small"
           aria-pressed={onlySelected}
           onClick={() => onOnlySelected(!onlySelected)}
           title={t("sessionSearchOnlySelectedTitle")}
         >
           {t("sessionSearchOnlySelected")}
-        </button>
+        </Button>
         {count > 0 && (
-          <button
-            type="button"
-            className={styles.clearSelection}
+          <IconButton
+            size="small"
+            label={t("sessionSearchClear", { count })}
             onClick={onClear}
             disabled={pending}
-            title={t("sessionSearchClear", { count })}
-            aria-label={t("sessionSearchClear", { count })}
           >
             <SelectionCancel />
-          </button>
+          </IconButton>
         )}
       </div>
       <div className={styles.statusFilters}>
         <span>{t("sessionSearchFilter")}</span>
         {statuses.map((status) => (
-          <button
+          <IconButton
             key={status}
-            type="button"
+            size="small"
             aria-pressed={filters.includes(status)}
-            title={t("sessionSearchStatusFilter", {
-              status: t(`sessionSearchStatus_${status}`),
-            })}
-            aria-label={t("sessionSearchStatusFilter", {
+            label={t("sessionSearchStatusFilter", {
               status: t(`sessionSearchStatus_${status}`),
             })}
             onClick={() => onToggle(status)}
           >
             <StatusIcon status={status} />
-          </button>
+          </IconButton>
         ))}
       </div>
       <div

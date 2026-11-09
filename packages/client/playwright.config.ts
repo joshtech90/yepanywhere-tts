@@ -13,6 +13,11 @@ const outputDir = process.env.YEP_E2E_RESULTS_DIR;
 
 export default defineConfig({
   testDir: "./e2e",
+  // Real native app qualification has its own configuration and cost budget.
+  testIgnore: [
+    "**/native-app-reload.spec.ts",
+    "**/native-input-identity.spec.ts",
+  ],
   outputDir,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
@@ -26,6 +31,7 @@ export default defineConfig({
   globalSetup: "./e2e/global-setup.ts",
   globalTeardown: "./e2e/global-teardown.ts",
   use: {
+    launchOptions: { chromiumSandbox: true },
     // baseURL provided by fixtures.ts (reads port from global-setup)
     // Not `retain-on-failure`, which records every test and whose injected
     // recorder script is blocked in a sandboxed `srcdoc` frame — the mockup

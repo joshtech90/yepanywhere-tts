@@ -15,7 +15,7 @@ import { expect, test } from "@playwright/test";
 import { createTestViteServer as createViteServer } from "./support/vite-server";
 import { createApp } from "../../server/test/setup/create-app";
 import { createFrontendProxy } from "../../server/src/frontend/proxy";
-import { MockClaudeSDK } from "../../server/src/sdk/mock";
+import { ScriptedClaudeProvider } from "../../server/test/support/scripted-provider.js";
 import { ServerSettingsService } from "../../server/src/services/ServerSettingsService";
 import { initFileAccess } from "../../server/src/middleware/file-access";
 import { recordUiCapture } from "./support/ui-capture";
@@ -81,7 +81,7 @@ test.beforeAll(async () => {
   if (!viteAddress || typeof viteAddress === "string")
     throw new Error("Missing Vite port");
   instance = createApp({
-    sdk: new MockClaudeSDK(),
+    provider: new ScriptedClaudeProvider(),
     dataDir: join(directory, "data"),
     projectsDir: join(directory, "sessions"),
     serverSettingsService: settings,
@@ -1188,7 +1188,7 @@ test("edits OAuth email rows without losing sequential input during updates", as
     .locator("summary")
     .filter({ hasText: "Hosted sign-in provider" });
   await providerSection.click();
-  const enabled = page.getByRole("checkbox", {
+  const enabled = page.getByRole("switch", {
     name: "Enable hosted sign-in",
     exact: true,
   });
@@ -1241,7 +1241,7 @@ test("edits OAuth email rows without losing sequential input during updates", as
   ]) {
     await page.setViewportSize(viewport);
     await secret.evaluate((input) =>
-      input.closest("label")!.scrollIntoView({ block: "start" }),
+      input.parentElement!.scrollIntoView({ block: "start" }),
     );
     await recordUiCapture(page, `vhost-provider-${viewport.width}`, viewport);
   }
@@ -1390,10 +1390,10 @@ test("edits OAuth email rows without losing sequential input during updates", as
     .getByRole("button", { name: "Save sign-in provider" })
     .click();
   await expect(
-    page.getByRole("checkbox", { name: "Google", exact: true }),
+    page.getByRole("switch", { name: "Google", exact: true }),
   ).toBeChecked();
   await expect(
-    page.getByRole("checkbox", { name: "Microsoft", exact: true }),
+    page.getByRole("switch", { name: "Microsoft", exact: true }),
   ).toBeChecked();
   for (const viewport of [
     { width: 1200, height: 600 },
@@ -1414,15 +1414,13 @@ test("edits OAuth email rows without losing sequential input during updates", as
     .providers!.find(
       (entry) => entry.provider.issuer === "https://accounts.google.com",
     )!;
-  await page
-    .getByRole("checkbox", { name: "Microsoft", exact: true })
-    .uncheck();
+  await page.getByRole("switch", { name: "Microsoft", exact: true }).uncheck();
   await expect
     .poll(
       () => instance.artifactServer.vhostOauth.status().providers![0]!.enabled,
     )
     .toBe(false);
-  await page.getByRole("checkbox", { name: "Microsoft", exact: true }).check();
+  await page.getByRole("switch", { name: "Microsoft", exact: true }).check();
   await expect
     .poll(
       () => instance.artifactServer.vhostOauth.status().providers![0]!.enabled,

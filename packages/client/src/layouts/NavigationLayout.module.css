@@ -11,7 +11,7 @@
   padding: 4px 12px;
   padding-top: max(4px, env(safe-area-inset-top));
   border-bottom: 1px solid var(--border-color);
-  background: var(--bg-primary);
+  background: transparent;
 }
 
 .cockpitLink {

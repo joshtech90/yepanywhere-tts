@@ -65,6 +65,21 @@ not carry a migration queue.
 - When extraction takes a legacy file below its ceiling, run
   `pnpm css:check --record` in the same change. Recording only lowers limits;
   it never accepts growth.
+- A `var(--name)` read of a custom property that no production client source
+  defines fails `pnpm css:check`. Such a read silently takes its fallback, or
+  drops its declaration when it has none. The undefined-token pass of
+  2026-11-09 emptied `undefinedCustomProperties` in
+  `scripts/css-architecture-baseline.json` (62 names and 291 reads when first
+  recorded on 2026-11-08), so every undefined read now fails. A definition is
+  a CSS declaration or `@property`, or a TypeScript style key, `setProperty`
+  call (with the name inline or in a `const` in the same file) or `--name:`
+  string; the scan covers CSS and TypeScript under `packages/client/src`,
+  excluding tests, and the design playground's reads under
+  `packages/client/design` (which its own definitions may satisfy, but
+  production reads may not). Read a theme token, define the property, or set it where
+  its owner renders. The
+  [design playground](ui-design.md#shared-controls-and-the-design-playground)
+  token page lists each name with its sites.
 - CSS refactors preserve rendered appearance, responsive behavior, interaction
   states, and theme behavior unless an owning product topic explicitly changes
   them. Hashed module class names are implementation details; tests and browser
@@ -104,6 +119,30 @@ not carry a migration queue.
   lists. Escaped punctuation, Unicode, leading digits, and single-character
   classes retain one canonical identity; source tokenization must not split one
   runtime class into ASCII word fragments.
+- `pnpm lint` runs `pnpm buttons:check`, the ban for the button, switch,
+  segmented-control, menu, popover and field families
+  ([UI design](ui-design.md#shared-controls-and-the-design-playground)). It
+  rejects a banned legacy button, switch or option class (rule-less in
+  `design/census/mapping.ts` or recorded as banned), a raw `<button>`
+  outside `ui/Button.tsx` and the later families (tabs, the composer), a
+  `role="switch"`, `"radio"` or `"radiogroup"` outside `ui/Switch.tsx` and
+  `ui/SegmentedControl.tsx`, a menu role outside `ui/Menu.tsx`, a
+  `mousedown`/`pointerdown`/`touchstart`/`click`/`focusin` listener on the
+  document, its body or the window (hand-rolled outside dismissal) outside
+  `ui/Popover.tsx`,
+  a new `role="button"`
+  element, and a CSS rule, in a module or a global
+  stylesheet, whose selector reaches a bare `button` element (`.panel
+  button`, `button:hover`) and sets look or size properties. Such a rule
+  outranks `ButtonBase`'s zero-specificity reset and ties with `Button`'s
+  variants. For fields it rejects a raw `<input>` (text types, number,
+  checkbox, radio), `<select>` or `<textarea>` outside `ui/Field.tsx`,
+  `ui/Checkbox.tsx` and `ui/Switch.tsx`, and a rule whose selector styles a
+  bare `input`, `select` or `textarea` (its last compound, so
+  `.row:has(input:checked)` does not count; range, file and color inputs
+  are not fields) with look or size properties. Exceptions sit in
+  `packages/client/design/census/button-allowlist.json` with a count and a
+  reason; counts only fall, and `--record` lowers them.
 - `pnpm css:unused` remains the investigative global-and-module report. Its
   known legacy findings may make that command exit nonzero without breaking
   ordinary lint. `--remove` remains limited to global rules; module rules are
@@ -113,10 +152,11 @@ not carry a migration queue.
 
 | Command | Role | Exit/write contract |
 |---|---|---|
-| `pnpm css:check` | Hard containment gate | Exits 1 for global growth, an unreviewed global file, or a stale/invalid baseline entry. `--record` is the only write mode and only lowers current ceilings. |
+| `pnpm css:check` | Hard containment gate | Exits 1 for global growth, an unreviewed global file, a stale/invalid baseline entry, a newly undefined custom property, or more reads of a recorded one. `--record` is the only write mode and only lowers current ceilings. |
+| `pnpm buttons:check` | Hard button, switch, segmented-control, menu, popover and field ban | Exits 1 for a banned legacy button, switch, option or field class, a raw `<button>`, a `role="button"` element, a `button` look rule, a switch/radio role, a menu role, a document/window pointer listener, a raw field element or a field look rule beyond the allowlist, or an allowlist count above the scan. `--record` only lowers allowlist counts, drops entries at zero and adds newly rule-less classes to the banned list. |
 | `pnpm css:modules:check` | Hard module usage/global-interop gate | Exits 1 for any module contract issue or an unusable scan; otherwise 0. It never edits CSS. |
 | `pnpm css:lint` | Hard authored-CSS lint gate | ESLint with `eslint-cssicorn` over `packages/client/src` and `site/src` CSS; exits 1 on any error or warning. It never edits CSS unless run by hand with `--fix`. |
-| `pnpm lint` | Combined repository gate | Runs containment, module contracts, CSS lint, and Biome; any child failure fails lint. |
+| `pnpm lint` | Combined repository gate | Runs containment, module contracts, the button ban, CSS lint, and Biome; any child failure fails lint. |
 | `pnpm css:touched` | Advisory feature-diff prompt | Exits 0 for opportunity, deferral, or no matching owner; exits 2 for invalid arguments or a failed git comparison. It never edits files. |
 | `pnpm css:inventory` | Advisory ownership drill-down | A valid report exits 0 and never edits files; invalid arguments exit 2. |
 | `pnpm css:unused` | Advisory dead-code investigation | Exits 1 while potential global dead code or a module contract issue remains. `--dry-run` previews; explicit `--remove` may delete only reviewed global rules, never module selectors. |

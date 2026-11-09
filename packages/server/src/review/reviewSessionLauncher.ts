@@ -1,3 +1,11 @@
+import { HttpError } from "../middleware/error-handler.js";
+import { sessionCreationSubmissionHash } from "../sessions/session-creation-acceptance.js";
+import { createHash } from "node:crypto";
+import type { SessionLaunchOptions } from "../supervisor/Supervisor.js";
+import type {
+  SessionCreationStore,
+  SavedSessionCreation,
+} from "../sessions/SessionCreationStore.js";
 /**
  * The narrow session-launch seam the review submit endpoint needs (topic:
  * source-review-to-session). Segregated from the full Supervisor so the route
@@ -6,11 +14,37 @@
  */
 
 import type { ReviewNewSessionOptions } from "@yep-anywhere/shared";
-import type { Supervisor } from "../supervisor/Supervisor.js";
+import type { ModelSettings, Supervisor } from "../supervisor/Supervisor.js";
+import {
+  RouterRefusedBeforeProvider,
+  type RouterBindingRef,
+  routerSelectionFromBinding,
+} from "../services/AgentAuthRouter.js";
+
+/**
+ * What a review session's launch takes from the server and from the session
+ * that opened Source Control, as ordinary creation does (plan 183).
+ */
+export interface ReviewLaunchDefaults {
+  globalInstructions: () => string | undefined;
+  compactSettings: (
+    provider: ModelSettings["providerName"],
+    model: string | undefined,
+  ) => Partial<ModelSettings>;
+  sourceLaunch: (sessionId: string) =>
+    | {
+        provider?: ModelSettings["providerName"];
+        routerBinding?: RouterBindingRef;
+        sandboxLevel?: ModelSettings["sandboxLevel"];
+        sandboxNetworkFirewall?: boolean;
+        serviceTier?: string | null;
+      }
+    | undefined;
+}
 
 export type ReviewLaunchResult =
   | { status: "started"; sessionId: string }
-  | { status: "queued" }
+  | { status: "queued"; sessionId?: string }
   | { status: "queue-full"; maxQueueSize?: number };
 
 /** Outcome of delivering a follow-up turn (possibly resuming a reaped session). */
@@ -26,6 +60,7 @@ export interface ReviewSessionLauncher {
     text: string,
     options?: ReviewNewSessionOptions,
     submissionId?: string,
+    creation?: NonNullable<SessionLaunchOptions["creation"]>,
   ): Promise<ReviewLaunchResult>;
   /**
    * Deliver `text` as a follow-up turn to `sessionId`. When the session has a
@@ -53,29 +88,19 @@ export function createSupervisorReviewLauncher(
     submissionId: string,
     acceptance: ReviewDeliveryAcceptance,
   ) => void | Promise<void>,
+  creations?: SessionCreationStore,
+  defaults?: ReviewLaunchDefaults,
 ): ReviewSessionLauncher {
-  const starts = new Map<string, Promise<ReviewLaunchResult>>();
   const followUps = new Map<string, Promise<ReviewFollowUpResult>>();
   return {
-    async startReviewSession(projectPath, text, options, submissionId) {
-      if (submissionId) {
-        const key = `${projectPath}\0${submissionId}`;
-        const existing = starts.get(key);
-        if (existing) return existing;
-        const pending = start(projectPath, text, options, submissionId);
-        starts.set(key, pending);
-        let result: ReviewLaunchResult;
-        try {
-          result = await pending;
-        } catch (error) {
-          starts.delete(key);
-          throw error;
-        }
-        if (result.status === "queue-full") starts.delete(key);
-        trimOldest(starts);
-        return result;
-      }
-      return start(projectPath, text, options);
+    async startReviewSession(
+      projectPath,
+      text,
+      options,
+      submissionId,
+      creation,
+    ) {
+      return start(projectPath, text, options, submissionId, creation);
     },
 
     async deliverFollowUp(projectPath, sessionId, text, submissionId) {
@@ -105,48 +130,103 @@ export function createSupervisorReviewLauncher(
     text: string,
     options?: ReviewNewSessionOptions,
     submissionId?: string,
+    suppliedCreation?: NonNullable<SessionLaunchOptions["creation"]>,
   ): Promise<ReviewLaunchResult> {
     // projectId derives from projectPath inside startSession.
-    const modelSettings = options
-      ? {
-          providerName: options.provider,
-          model: options.model,
-          thinking: options.thinking,
-          effort: options.effort,
-        }
+    const modelSettings = reviewModelSettings(options, defaults);
+    const creation = suppliedCreation ?? {
+      context: {
+        owner: { kind: "superuser" as const },
+        source: {
+          kind: "request" as const,
+          provenance: { surface: "api" as const },
+        },
+      },
+      authorize: async () => {},
+    };
+    const requestId =
+      creation.requestId ??
+      (submissionId
+        ? `review-${createHash("sha256").update(projectPath).update("\0").update(submissionId).digest("hex")}`
+        : undefined);
+    const submissionHash = sessionCreationSubmissionHash(
+      { text, options },
+      projectPath,
+    );
+    let accepted: SavedSessionCreation | undefined;
+    const associate = async (saved: SavedSessionCreation) => {
+      accepted = saved;
+      await creation.onAccepted?.(saved);
+      if (submissionId)
+        await onDeliveryAccepted?.(projectPath, submissionId, {
+          deliveryStatus: "queued",
+          targetSessionId: saved.sessionId,
+        });
+    };
+    const prior = requestId
+      ? creations?.get(creation.context.owner, requestId)
       : undefined;
-    const result = submissionId
-      ? await supervisor.startSession(
+    if (prior) {
+      if (prior.deleted)
+        throw new HttpError(410, "Review creation was deleted");
+      if (prior.request?.submissionHash !== submissionHash)
+        throw new HttpError(409, "Review creation conflicts with saved input");
+      await creation.authorize(prior);
+      await associate(prior);
+      return prior.attempt.delivery === "consumed"
+        ? { status: "started", sessionId: prior.sessionId }
+        : { status: "queued", sessionId: prior.sessionId };
+    }
+    const launch = async (): Promise<ReviewLaunchResult> => {
+      let result: Awaited<ReturnType<Supervisor["startSession"]>>;
+      try {
+        result = await supervisor.startSession(
           projectPath,
           reviewMessage(text, submissionId),
           undefined,
           modelSettings,
           {
+            creation: {
+              ...creation,
+              requestId,
+              submissionHash,
+              onAccepted: associate,
+            },
             onStarted: (sessionId) =>
-              onDeliveryAccepted?.(projectPath, submissionId, {
-                deliveryStatus: "delivered",
-                targetSessionId: sessionId,
-              }),
+              submissionId
+                ? onDeliveryAccepted?.(projectPath, submissionId, {
+                    deliveryStatus: "delivered",
+                    targetSessionId: sessionId,
+                  })
+                : undefined,
           },
-        )
-      : await supervisor.startSession(
-          projectPath,
-          reviewMessage(text),
-          undefined,
-          modelSettings,
         );
-    if ("error" in result) {
-      return { status: "queue-full", maxQueueSize: result.maxQueueSize };
-    }
-    if ("queued" in result) {
-      if (submissionId) {
-        await onDeliveryAccepted?.(projectPath, submissionId, {
-          deliveryStatus: "queued",
-        });
+      } catch (error) {
+        // A router refusal precedes any provider start: report it rather
+        // than a queued delivery that will never run (plan 183).
+        if (error instanceof RouterRefusedBeforeProvider)
+          throw new HttpError(409, error.message);
+        if (accepted && submissionId)
+          return { status: "queued", sessionId: accepted.sessionId };
+        throw error;
       }
-      return { status: "queued" };
-    }
-    return { status: "started", sessionId: result.sessionId };
+      if ("error" in result) {
+        return { status: "queue-full", maxQueueSize: result.maxQueueSize };
+      }
+      if ("queued" in result) {
+        if (submissionId) {
+          await onDeliveryAccepted?.(projectPath, submissionId, {
+            deliveryStatus: "queued",
+          });
+        }
+        return {
+          status: "queued",
+          ...(accepted ? { sessionId: accepted.sessionId } : {}),
+        };
+      }
+      return { status: "started", sessionId: result.sessionId };
+    };
+    return launch();
   }
 
   async function followUp(
@@ -192,6 +272,50 @@ export function createSupervisorReviewLauncher(
     }
     return { status: "delivered" };
   }
+}
+
+/**
+ * A review session keeps the opening session's router selection (a fresh
+ * pick from its pool, or its account through a new pin; never its pin),
+ * sandbox and tier, and gets global instructions and compaction settings.
+ */
+function reviewModelSettings(
+  options: ReviewNewSessionOptions | undefined,
+  defaults: ReviewLaunchDefaults | undefined,
+): ModelSettings | undefined {
+  if (!options && !defaults) return undefined;
+  const source = options?.sourceSessionId
+    ? defaults?.sourceLaunch(options.sourceSessionId)
+    : undefined;
+  const provider = options?.provider ?? source?.provider;
+  const binding = source?.routerBinding;
+  if (binding && binding.provider !== provider)
+    throw new HttpError(
+      409,
+      `The opening session runs on an Agent Auth Router ${binding.provider} account, so its review must use ${binding.provider}.`,
+    );
+  const globalInstructions = defaults?.globalInstructions();
+  return {
+    providerName: provider,
+    model: options?.model,
+    requestedModel: options?.model,
+    thinking: options?.thinking,
+    effort: options?.effort,
+    // A tier is provider-specific; the sandbox is a host boundary that
+    // Supervisor refuses for a provider that cannot run inside it.
+    ...(source?.serviceTier && source.provider === provider
+      ? { serviceTier: source.serviceTier }
+      : {}),
+    ...(binding ? routerSelectionFromBinding(binding) : {}),
+    ...(!binding && source?.sandboxLevel === "project-write"
+      ? {
+          sandboxLevel: "project-write" as const,
+          sandboxNetworkFirewall: source.sandboxNetworkFirewall !== false,
+        }
+      : {}),
+    ...(globalInstructions ? { globalInstructions } : {}),
+    ...defaults?.compactSettings(provider, options?.model),
+  };
 }
 
 function reviewMessage(text: string, submissionId?: string) {

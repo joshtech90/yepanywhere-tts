@@ -5,6 +5,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -43,15 +44,23 @@ import {
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import type { ServerSettings } from "../../api/client";
+import {
+  Button,
+  buttonClassName,
+  IconButton,
+} from "../../components/ui/Button";
+import { Checkbox } from "../../components/ui/Checkbox";
 import { CommittedRangeNumberInput } from "../../components/ui/CommittedRangeNumberInput";
+import { Field, Select, TextInput } from "../../components/ui/Field";
 import { Modal, type ModalAnchorRect } from "../../components/ui/Modal";
+import { Switch } from "../../components/ui/Switch";
 import { useToastContext } from "../../contexts/ToastContext";
-import { useCodexUpdateStatus } from "../../hooks/useCodexUpdateStatus";
 import { useProviders } from "../../hooks/useProviders";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { GatewayServicesSettings } from "./GatewayServicesSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
+import { CodexUpdatePanel } from "./CodexUpdatePanel";
 import { ProviderSignIn } from "./ProviderSignIn";
 import {
   ClaudeAutoCompactPercentOverrideControl,
@@ -60,14 +69,14 @@ import {
 import { SettingsDocLink } from "./SettingsDocLink";
 import { SettingsItem } from "./SettingsItem";
 import { InstructionRestorationControl } from "./InstructionRestorationControl";
+import { OllamaSettings } from "./OllamaProviderSettings";
+import { ProviderSteerNowDefault } from "./SteerNowProviderDefaults";
 import styles from "./ProvidersSettings.module.css";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { SettingsSection } from "./SettingsSection";
 import { getProviderSessionDefaults } from "../../lib/newSessionDefaults";
 import { getAllProviders } from "../../providers/registry";
 
-const DEFAULT_OLLAMA_SYSTEM_PROMPT =
-  "You are a helpful coding assistant. You help users with software engineering tasks. You have access to tools for reading files, editing files, running shell commands, and searching code. Use tools when needed to answer questions or make changes. Be concise and direct.";
 const DEFAULT_CLAUDE_LOGIN_COMMAND = "claude auth login --claudeai";
 const DEFAULT_CODEX_LOGIN_COMMAND = "codex login";
 const CLAUDE_OLLAMA_DEPRECATION_DISMISSAL_KEY =
@@ -101,402 +110,25 @@ type UpdateServerSetting = <K extends keyof ServerSettings>(
   value: ServerSettings[K],
 ) => Promise<void>;
 
-function OllamaUrlInput() {
-  const { t } = useI18n();
-  const { settings, updateSetting } = useServerSettings();
-  const [url, setUrl] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
-  const [hasChanges, setHasChanges] = useState(false);
-
-  const serverValue = settings?.ollamaUrl ?? "";
-
-  useEffect(() => {
-    if (settings) {
-      setUrl(settings.ollamaUrl ?? "");
-    }
-  }, [settings]);
-
-  const handleSave = useCallback(async () => {
-    setIsSaving(true);
-    try {
-      await updateSetting("ollamaUrl", url.trim() || undefined);
-      setHasChanges(false);
-    } catch {
-      // Error handled by useServerSettings
-    } finally {
-      setIsSaving(false);
-    }
-  }, [url, updateSetting]);
-
-  return (
-    <form
-      style={{ marginTop: "var(--space-2)", width: "100%" }}
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (hasChanges && !isSaving) void handleSave();
-      }}
-    >
-      <div
-        style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}
-      >
-        <input
-          type="text"
-          className="settings-input"
-          value={url}
-          onChange={(e) => {
-            setUrl(e.target.value);
-            setHasChanges(e.target.value !== serverValue);
-          }}
-          placeholder="http://localhost:11434"
-          style={{ flex: 1 }}
-        />
-        <button
-          type="submit"
-          className="settings-button"
-          disabled={!hasChanges || isSaving}
-        >
-          {isSaving ? t("providersSaving") : t("providersSave")}
-        </button>
-      </div>
-      <span className="settings-hint">{t("providersOllamaUrlHint")}</span>
-    </form>
-  );
-}
-
-function OllamaUseFullSystemPrompt() {
-  const { t } = useI18n();
-  const { settings, updateSetting } = useServerSettings();
-  const enabled = settings?.ollamaUseFullSystemPrompt ?? false;
-
-  return (
-    <label
-      style={{
-        display: "flex",
-        gap: "var(--space-2)",
-        alignItems: "center",
-        marginTop: "var(--space-2)",
-        cursor: "pointer",
-      }}
-    >
-      <input
-        type="checkbox"
-        checked={enabled}
-        onChange={(e) =>
-          updateSetting("ollamaUseFullSystemPrompt", e.target.checked)
-        }
-      />
-      <span>{t("providersUseFullPrompt")}</span>
-      <span className="settings-hint" style={{ marginLeft: "auto" }}>
-        {t("providersUseFullPromptHint")}
-      </span>
-    </label>
-  );
-}
-
-function OllamaSystemPromptInput() {
-  const { t } = useI18n();
-  const { settings, updateSetting } = useServerSettings();
-  const [prompt, setPrompt] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
-  const [hasChanges, setHasChanges] = useState(false);
-
-  const serverValue = settings?.ollamaSystemPrompt ?? "";
-
-  useEffect(() => {
-    if (settings) {
-      setPrompt(settings.ollamaSystemPrompt ?? "");
-    }
-  }, [settings]);
-
-  const handleSave = useCallback(async () => {
-    setIsSaving(true);
-    try {
-      await updateSetting("ollamaSystemPrompt", prompt.trim() || undefined);
-      setHasChanges(false);
-    } catch {
-      // Error handled by useServerSettings
-    } finally {
-      setIsSaving(false);
-    }
-  }, [prompt, updateSetting]);
-
-  return (
-    <div style={{ marginTop: "var(--space-2)", width: "100%" }}>
-      <textarea
-        className="settings-textarea"
-        value={prompt}
-        onChange={(e) => {
-          setPrompt(e.target.value);
-          setHasChanges(e.target.value !== serverValue);
-        }}
-        placeholder={DEFAULT_OLLAMA_SYSTEM_PROMPT}
-        rows={4}
-      />
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginTop: "var(--space-2)",
-        }}
-      >
-        <span className="settings-hint">{t("providersOllamaPromptHint")}</span>
-        <button
-          type="button"
-          className="settings-button"
-          disabled={!hasChanges || isSaving}
-          onClick={handleSave}
-        >
-          {isSaving ? t("providersSaving") : t("providersSave")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function GrokBuildApiKeySettings() {
   const { t } = useI18n();
   const { settings, updateSetting } = useServerSettings();
   const enabled = settings?.grokBuildUseXaiApiKey ?? false;
+  const hintId = useId();
 
   return (
-    <label
-      style={{
-        display: "flex",
-        gap: "var(--space-2)",
-        alignItems: "flex-start",
-        marginTop: "var(--space-2)",
-        cursor: "pointer",
-      }}
-    >
-      <input
-        type="checkbox"
+    <div className={styles.grokApiKey}>
+      <Switch
+        label={t("providersGrokUseXaiApiKey")}
+        aria-describedby={hintId}
         checked={enabled}
-        onChange={(event) =>
-          updateSetting("grokBuildUseXaiApiKey", event.target.checked)
+        onCheckedChange={(checked) =>
+          updateSetting("grokBuildUseXaiApiKey", checked)
         }
-        style={{ marginTop: "0.2rem" }}
       />
-      <span>
-        <span>{t("providersGrokUseXaiApiKey")}</span>
-        <span className="settings-hint" style={{ display: "block" }}>
-          {t("providersGrokUseXaiApiKeyHint")}
-        </span>
-      </span>
-    </label>
-  );
-}
-
-function CodexUpdatePanel() {
-  const { t } = useI18n();
-  const { showToast } = useToastContext();
-  const { settings, updateSetting } = useServerSettings();
-  const {
-    status,
-    isChecking,
-    isInstalling,
-    error,
-    installOutput,
-    refresh,
-    install,
-  } = useCodexUpdateStatus();
-
-  const policy = settings?.codexUpdatePolicy ?? "notify";
-  const canAuto = status?.updateMethod === "npm";
-
-  const copy = useCallback(
-    async (text: string) => {
-      try {
-        await navigator.clipboard.writeText(text);
-        showToast(t("providersCodexUpdateCommandCopied"), "success");
-      } catch {
-        showToast(t("providersCodexUpdateCopyFailed"), "error");
-      }
-    },
-    [showToast, t],
-  );
-
-  if (!status?.installed || !status.latest) {
-    return null;
-  }
-
-  const updateAvailable = status.updateAvailable;
-
-  return (
-    <div style={{ marginTop: "var(--space-2)", width: "100%" }}>
-      <div
-        style={{
-          display: "flex",
-          gap: "var(--space-2)",
-          alignItems: "center",
-          flexWrap: "wrap",
-        }}
-      >
-        {updateAvailable ? (
-          <span>
-            <strong>{t("providersCodexUpdateAvailable")}</strong>{" "}
-            {status.installed} → {status.latest}
-          </span>
-        ) : (
-          <span className="settings-hint">
-            {t("providersCodexUpdateUpToDate", {
-              version: status.installed,
-            })}
-          </span>
-        )}
-        <button
-          type="button"
-          className="settings-button"
-          onClick={() => void refresh(true)}
-          disabled={isChecking}
-        >
-          {isChecking
-            ? t("providersCodexUpdateChecking")
-            : t("providersCodexUpdateCheckNow")}
-        </button>
-        {status.releaseUrl && updateAvailable && (
-          <a
-            href={status.releaseUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="settings-link"
-          >
-            {t("providersCodexUpdateReleaseNotes")}
-          </a>
-        )}
-        {/* A div rather than a fieldset: a <legend> is laid out in the border
-            area whatever the fieldset's display is, so it always took a line of
-            its own above radios that fit beside it. */}
-        <div
-          role="radiogroup"
-          aria-label={t("providersCodexUpdatePolicyTitle")}
-          style={{
-            display: "flex",
-            gap: "var(--space-3)",
-            alignItems: "center",
-            flexWrap: "wrap",
-          }}
-        >
-          <span className="settings-hint">
-            {t("providersCodexUpdatePolicyTitle")}
-          </span>
-          {(["auto", "notify", "off"] as const).map((value) => {
-            const disabled = value === "auto" && !canAuto;
-            return (
-              <label
-                key={value}
-                style={{
-                  display: "inline-flex",
-                  gap: 4,
-                  alignItems: "center",
-                  opacity: disabled ? 0.55 : 1,
-                  cursor: disabled ? "not-allowed" : "pointer",
-                }}
-                title={
-                  disabled
-                    ? t("providersCodexUpdatePolicyAutoUnavailable")
-                    : undefined
-                }
-              >
-                <input
-                  type="radio"
-                  name="codex-update-policy"
-                  value={value}
-                  checked={policy === value}
-                  disabled={disabled}
-                  onChange={() =>
-                    void updateSetting("codexUpdatePolicy", value)
-                  }
-                />
-                <span>
-                  {value === "auto"
-                    ? t("commonAuto")
-                    : value === "notify"
-                      ? t("providersCodexUpdatePolicyNotify")
-                      : t("commonOff")}
-                </span>
-              </label>
-            );
-          })}
-        </div>
-      </div>
-
-      {updateAvailable && (
-        <div
-          style={{
-            display: "flex",
-            gap: "var(--space-2)",
-            alignItems: "center",
-            marginTop: "var(--space-2)",
-            flexWrap: "wrap",
-          }}
-        >
-          {status.updateMethod === "npm" ? (
-            <button
-              type="button"
-              className="settings-button"
-              onClick={() => void install()}
-              disabled={isInstalling}
-            >
-              {isInstalling
-                ? t("providersCodexUpdateInstalling")
-                : t("providersCodexUpdateNow")}
-            </button>
-          ) : status.manualInstallCommand ? (
-            <span className="settings-hint">
-              {t("providersCodexUpdateWithInstaller")}
-            </span>
-          ) : null}
-          {status.manualInstallCommand ? (
-            <>
-              <code
-                style={{
-                  padding: "2px 6px",
-                  background: "var(--color-surface-raised, #f5f5f5)",
-                  borderRadius: 4,
-                  fontSize: "0.85em",
-                }}
-              >
-                {status.manualInstallCommand}
-              </code>
-              <button
-                type="button"
-                className="settings-button"
-                onClick={() => void copy(status.manualInstallCommand ?? "")}
-              >
-                {t("remoteSetupCopy")}
-              </button>
-            </>
-          ) : status.updateMethod === "manual" ? (
-            <span className="settings-hint">
-              {t("providersCodexUpdateManualInstallHint")}
-            </span>
-          ) : null}
-        </div>
-      )}
-
-      {error && (
-        <p className="settings-hint" style={{ color: "var(--color-error)" }}>
-          {error}
-        </p>
-      )}
-      {installOutput && (
-        <details style={{ marginTop: "var(--space-2)" }}>
-          <summary className="settings-hint">
-            {t("providersCodexUpdateInstallOutput")}
-          </summary>
-          <pre
-            style={{
-              fontSize: "0.8em",
-              whiteSpace: "pre-wrap",
-              maxHeight: 200,
-              overflow: "auto",
-            }}
-          >
-            {installOutput}
-          </pre>
-        </details>
-      )}
+      <p id={hintId} className={styles.switchHint}>
+        {t("providersGrokUseXaiApiKeyHint")}
+      </p>
     </div>
   );
 }
@@ -532,8 +164,7 @@ function CodexReasoningSummarySetting({
       ]}
       valueText={labels[value]}
     >
-      <select
-        className="settings-select"
+      <Select
         aria-label={t("providersCodexReasoningSummaryAria")}
         value={value}
         onChange={(event) => {
@@ -547,7 +178,7 @@ function CodexReasoningSummarySetting({
             {labels[summary]}
           </option>
         ))}
-      </select>
+      </Select>
     </SettingsItem>
   );
 }
@@ -578,8 +209,7 @@ function CodexPlanToolSetting({
       keywords={["update_plan", "plan", "checklist", "tasks", "todo"]}
       valueText={labels[selection]}
     >
-      <select
-        className="settings-select"
+      <Select
         aria-label={t("providersCodexPlanToolAria")}
         value={selection}
         onChange={(event) => {
@@ -595,7 +225,7 @@ function CodexPlanToolSetting({
             {labels[mode]}
           </option>
         ))}
-      </select>
+      </Select>
     </SettingsItem>
   );
 }
@@ -628,8 +258,7 @@ function CodexCyberAccessProgramSetting({
       keywords={["daybreak", "cyber", "security", "access", "program"]}
       valueText={labels[selection]}
     >
-      <select
-        className="settings-select"
+      <Select
         aria-label={t("providersCodexCyberAccessAria")}
         value={selection}
         onChange={(event) => {
@@ -645,21 +274,8 @@ function CodexCyberAccessProgramSetting({
             {labels[program]}
           </option>
         ))}
-      </select>
+      </Select>
     </SettingsItem>
-  );
-}
-
-function OllamaSettings() {
-  const { settings } = useServerSettings();
-  const useFullPrompt = settings?.ollamaUseFullSystemPrompt ?? false;
-
-  return (
-    <>
-      <OllamaUrlInput />
-      <OllamaUseFullSystemPrompt />
-      {!useFullPrompt && <OllamaSystemPromptInput />}
-    </>
   );
 }
 
@@ -701,7 +317,7 @@ function ClaudeGatewaySettings({
       setIsSaving(false);
     }
   }, [reloadProviders, startCommand, updateSettings, url]);
-
+  const canSave = hasChanges && !isSaving;
   return (
     <div
       id="provider-claude-gateway-configuration"
@@ -716,13 +332,13 @@ function ClaudeGatewaySettings({
         className="claude-gateway-settings-control"
         onSubmit={(event) => {
           event.preventDefault();
-          if (hasChanges && !isSaving) void handleSave();
+          if (canSave) void handleSave();
         }}
       >
         <div className="claude-gateway-settings-row">
-          <input
+          <TextInput
             type="url"
-            className="settings-input"
+            className={styles.gatewayUrl}
             value={url}
             onChange={(event) => setUrl(event.target.value)}
             onFocus={() => {
@@ -731,30 +347,25 @@ function ClaudeGatewaySettings({
             placeholder={exampleUrl}
             aria-label={t("providersClaudeGatewayUrlAria")}
           />
-          <button
-            type="submit"
-            className="settings-button"
-            disabled={!hasChanges || isSaving}
-          >
+          <Button variant="primary" type="submit" disabled={!canSave}>
             {isSaving ? t("providersSaving") : t("providersSave")}
-          </button>
+          </Button>
         </div>
 
-        <label className="claude-gateway-start-command">
-          <span>{t("providersClaudeGatewayStartCommandLabel")}</span>
-          <input
-            type="text"
-            className="settings-input"
+        <Field
+          className={styles.gatewayStartCommand}
+          label={t("providersClaudeGatewayStartCommandLabel")}
+          hint={t("providersClaudeGatewayStartCommandHint")}
+        >
+          <TextInput
+            mono
             value={startCommand}
             maxLength={10_000}
             onChange={(event) => setStartCommand(event.target.value)}
             placeholder={t("providersClaudeGatewayStartCommandPlaceholder")}
             aria-label={t("providersClaudeGatewayStartCommandAria")}
           />
-        </label>
-        <p className="settings-hint">
-          {t("providersClaudeGatewayStartCommandHint")}
-        </p>
+        </Field>
 
         <p className="settings-hint">
           {t("providersClaudeGatewayIsolationHint")}
@@ -779,21 +390,19 @@ function ClaudeGatewayToggleSetting({
 }: ClaudeGatewayToggleSettingProps) {
   const { settings, updateSetting } = useServerSettings();
   const enabled = settings?.[setting] ?? true;
+  const hintId = useId();
 
   return (
     <div id={id} className="settings-subsection">
-      <label>
-        <input
-          type="checkbox"
-          checked={enabled}
-          aria-label={title}
-          onChange={(event) =>
-            void updateSetting(setting, event.target.checked)
-          }
-        />{" "}
-        <strong>{title}</strong>
-      </label>
-      <p className="settings-hint">{description}</p>
+      <Switch
+        label={title}
+        aria-describedby={hintId}
+        checked={enabled}
+        onCheckedChange={(checked) => void updateSetting(setting, checked)}
+      />
+      <p id={hintId} className={styles.switchHint}>
+        {description}
+      </p>
     </div>
   );
 }
@@ -818,13 +427,9 @@ function ProviderLoginCommandPanel({
       >
         <code>{command}</code>
       </div>
-      <button
-        type="button"
-        className="settings-button"
-        onClick={() => onCopy(command)}
-      >
+      <Button onClick={() => onCopy(command)}>
         {t("providersLoginCommandCopy", { provider })}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -1022,16 +627,16 @@ function ClaudeAdditionalModelsSettings({
         valueText={summary}
         className="providers-additional-models-setting"
       >
-        <button
+        <Button
           ref={triggerRef}
-          type="button"
-          className="settings-button settings-button-secondary providers-additional-models-trigger"
+          variant="outline"
+          className="providers-additional-models-trigger"
           onClick={openEditor}
           aria-haspopup="dialog"
         >
           <span>{summary}</span>
           <span aria-hidden="true">▾</span>
-        </button>
+        </Button>
       </SettingsItem>
       {open && (
         <Modal
@@ -1045,24 +650,19 @@ function ClaudeAdditionalModelsSettings({
             </p>
             <div className="providers-additional-models-list">
               {choices.map((model) => (
-                <label
+                <Checkbox
                   key={model.id}
                   className="providers-additional-model-option"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(model.id)}
-                    disabled={isSaving}
-                    onChange={() => toggleModel(model)}
-                  />
-                  <span>
-                    <strong>{model.name}</strong>
-                    <code>{model.id}</code>
-                    {model.description && (
-                      <span className="settings-hint">{model.description}</span>
-                    )}
-                  </span>
-                </label>
+                  label={
+                    <>
+                      <strong>{model.name}</strong> <code>{model.id}</code>
+                    </>
+                  }
+                  description={model.description || undefined}
+                  checked={selectedIds.has(model.id)}
+                  disabled={isSaving}
+                  onCheckedChange={() => toggleModel(model)}
+                />
               ))}
             </div>
             <details className="providers-additional-models-custom">
@@ -1071,9 +671,8 @@ function ClaudeAdditionalModelsSettings({
                 {t("providersAdditionalModelsCustomHint")}
               </p>
               <div className="providers-additional-models-custom-row">
-                <input
-                  type="text"
-                  className="settings-input"
+                <TextInput
+                  className={styles.customModelId}
                   value={customId}
                   maxLength={MAX_CLAUDE_ADDITIONAL_MODEL_ID_LENGTH}
                   placeholder={t("providersAdditionalModelsCustomPlaceholder")}
@@ -1086,14 +685,12 @@ function ClaudeAdditionalModelsSettings({
                     }
                   }}
                 />
-                <button
-                  type="button"
-                  className="settings-button"
+                <Button
                   disabled={isSaving || !customId.trim()}
                   onClick={addCustomModel}
                 >
                   {t("providersAdditionalModelsAdd")}
-                </button>
+                </Button>
               </div>
             </details>
             {isSaving && (
@@ -1192,22 +789,20 @@ function LongContextEffortWarningControl({
             const providerId = provider.id as ProviderName;
             const enabled = value.providers?.[providerId] === true;
             return (
-              <label key={provider.id} className={styles.providerToggle}>
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={(event) => {
-                    const providersMap = { ...value.providers };
-                    if (event.target.checked) {
-                      providersMap[providerId] = true;
-                    } else {
-                      delete providersMap[providerId];
-                    }
-                    void save({ ...value, providers: providersMap });
-                  }}
-                />
-                <span>{provider.displayName}</span>
-              </label>
+              <Checkbox
+                key={provider.id}
+                label={provider.displayName}
+                checked={enabled}
+                onCheckedChange={(checked) => {
+                  const providersMap = { ...value.providers };
+                  if (checked) {
+                    providersMap[providerId] = true;
+                  } else {
+                    delete providersMap[providerId];
+                  }
+                  void save({ ...value, providers: providersMap });
+                }}
+              />
             );
           })}
         </div>
@@ -1275,7 +870,11 @@ export function ProvidersSettings() {
     const serverInfo = serverProviders.find(
       (p) => p.name === clientProvider.id,
     );
-    if (clientProvider.id === "claude-ollama" && !serverInfo) {
+    if (
+      (clientProvider.id === "claude-ollama" ||
+        clientProvider.id === "antigravity") &&
+      !serverInfo
+    ) {
       return [];
     }
 
@@ -1318,6 +917,7 @@ export function ProvidersSettings() {
           .map((provider) => (
             <Link
               key={provider.name}
+              className={buttonClassName()}
               to={`${signInBasePath}/provider-sign-in/${provider.name}`}
             >
               {t("providersSignIn", { provider: provider.displayName })}
@@ -1467,16 +1067,14 @@ export function ProvidersSettings() {
                   showClaudeOllamaDeprecation ? (
                     <div className="provider-deprecation-notice" role="status">
                       <span>{t("providersClaudeOllamaDeprecationNotice")}</span>
-                      <button
-                        type="button"
-                        className="provider-deprecation-notice__dismiss"
-                        aria-label={t(
-                          "providersClaudeOllamaDeprecationDismissAria",
-                        )}
+                      <IconButton
+                        size="small"
+                        className={styles.deprecationDismiss}
+                        label={t("providersClaudeOllamaDeprecationDismissAria")}
                         onClick={dismissClaudeOllamaDeprecation}
                       >
                         ×
-                      </button>
+                      </IconButton>
                     </div>
                   ) : undefined}
                 </>
@@ -1598,16 +1196,14 @@ export function ProvidersSettings() {
                   {provider.id === "codex" && provider.installed && (
                     <>
                       <div style={{ marginTop: "var(--space-2)" }}>
-                        <button
-                          type="button"
-                          className="settings-button"
+                        <Button
                           disabled={providersLoading}
                           onClick={() => void reloadProviders()}
                         >
                           {providersLoading
                             ? t("providersModelsRefreshing")
                             : t("providersModelsRefresh")}
-                        </button>
+                        </Button>
                         {providersError && (
                           <p className="settings-hint" role="alert">
                             {t("providersModelsRefreshFailed")}
@@ -1631,6 +1227,7 @@ export function ProvidersSettings() {
                 </a>
               )}
             </SettingsItem>
+            <ProviderSteerNowDefault name={provider.id} />
             {provider.id === "codex" && (
               <CodexReasoningSummarySetting
                 value={

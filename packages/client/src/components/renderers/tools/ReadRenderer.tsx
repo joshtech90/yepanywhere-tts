@@ -15,6 +15,7 @@ import { useI18n } from "../../../i18n";
 import { useInlineMedia } from "../../../hooks/useInlineMedia";
 import { useQuoteableTextSource } from "../../../hooks/useQuoteableTextSource";
 import { useRemoteImage } from "../../../hooks/useRemoteImage";
+import { useTextTooltipAttributes } from "../../../hooks/useTooltipAppearance";
 import { isMarkdownLikeFile } from "../../../lib/markdownFiles";
 import { useScrollPreservingToggle } from "../../../lib/scrollAnchor";
 import { getPathBasename, makeDisplayPath } from "../../../lib/text";
@@ -39,7 +40,9 @@ import {
   renderFixedFontRichContent,
 } from "../../ui/FixedFontMathToggle";
 import { InnerHtml } from "../../ui/InnerHtml";
+import { ButtonBase } from "../../ui/Button";
 import { RenderModeGlyph } from "../../ui/RenderModeGlyph";
+import { SegmentedControl } from "../../ui/SegmentedControl";
 import type {
   ImageFile,
   PdfFile,
@@ -48,6 +51,11 @@ import type {
   TextFile,
 } from "./types";
 import styles from "./ReadRenderer.module.css";
+
+const MARKDOWN_VIEW_OPTIONS = [
+  { value: "source", label: "Source" },
+  { value: "preview", label: "Preview" },
+] as const;
 
 /** Extended result type with server-rendered syntax highlighting */
 type ReadResultWithAugment = ReadResult;
@@ -224,6 +232,7 @@ function FileModalContent({
   highlightedTruncated?: boolean;
   renderedMarkdownHtml?: string;
 }) {
+  const { t } = useI18n();
   const isMarkdown = isMarkdownLikeFile(file.filePath);
   const clientMarkdownPreview = useMemo(() => {
     if (!isMarkdown || renderedMarkdownHtml) {
@@ -254,6 +263,8 @@ function FileModalContent({
   const [showMath, setShowMath] = useState(false);
   const { btnRef: mathBtnRef, handleClick: handleMathToggle } =
     useScrollPreservingToggle(showMath, () => setShowMath((v) => !v));
+  const mathToggleLabel = showMath ? "Show source" : "Render math (LaTeX)";
+  const mathToggleTooltip = useTextTooltipAttributes(mathToggleLabel);
 
   const lines = file.content.length > 0 ? file.content.split("\n") : [];
 
@@ -310,20 +321,13 @@ function FileModalContent({
 
   const toggleButton = hasMarkdownPreview && (
     <div className="markdown-view-toggle">
-      <button
-        type="button"
-        className={`toggle-btn ${!showPreview ? "active" : ""}`}
-        onClick={() => setShowPreview(false)}
-      >
-        Source
-      </button>
-      <button
-        type="button"
-        className={`toggle-btn ${showPreview ? "active" : ""}`}
-        onClick={() => setShowPreview(true)}
-      >
-        Preview
-      </button>
+      <SegmentedControl
+        size="small"
+        aria-label={t("sourceViewMode")}
+        options={MARKDOWN_VIEW_OPTIONS}
+        value={showPreview ? "preview" : "source"}
+        onChange={(view) => setShowPreview(view === "preview")}
+      />
     </div>
   );
   const showSigma = !hasMarkdownPreview && hasMathToggle;
@@ -334,17 +338,16 @@ function FileModalContent({
       {showSigma ? (
         <div className="fixed-font-render-toggle">
           {content}
-          <button
+          <ButtonBase
             ref={mathBtnRef}
-            type="button"
             className={`fixed-font-render-toggle__button ${showMath ? "is-rendered" : ""}`}
             onClick={handleMathToggle}
-            aria-label={showMath ? "Show source" : "Render math (LaTeX)"}
-            title={showMath ? "Show source" : "Render math (LaTeX)"}
+            aria-label={mathToggleLabel}
+            {...mathToggleTooltip}
             aria-pressed={showMath}
           >
             <RenderModeGlyph />
-          </button>
+          </ButtonBase>
         </div>
       ) : (
         content
@@ -496,8 +499,7 @@ function ImageFileResult({
   return (
     <div className="read-image-result">
       <div className="local-media-link-group">
-        <button
-          type="button"
+        <ButtonBase
           className="local-media-inline-toggle"
           aria-expanded={expanded}
           aria-label={expanded ? "Collapse image" : "Expand image"}
@@ -505,7 +507,7 @@ function ImageFileResult({
           onClick={() => setOverride(!expanded)}
         >
           {expanded ? "-" : "+"}
-        </button>
+        </ButtonBase>
         {filePath && displayPath ? (
           <span className="file-range-inline">
             <SessionFilePathLink
@@ -535,8 +537,7 @@ function ImageFileResult({
       )}
       {expanded &&
         (previewUrl ? (
-          <button
-            type="button"
+          <ButtonBase
             className={styles.imagePreviewButton}
             aria-label={`Open ${fileName}`}
             onClick={openViewer}
@@ -549,7 +550,7 @@ function ImageFileResult({
               width={dimensions?.displayWidth}
               height={dimensions?.displayHeight}
             />
-          </button>
+          </ButtonBase>
         ) : (
           <span className="file-line-count-inline">
             {previewError
@@ -634,8 +635,7 @@ function PdfFileResult({
 
   return (
     <div className="read-pdf-result">
-      <button
-        type="button"
+      <ButtonBase
         className="file-link-button"
         onClick={() => openPdfInNewTab(base64)}
       >
@@ -647,7 +647,7 @@ function PdfFileResult({
           </span>
         )}
         <span className="file-line-count">Open PDF</span>
-      </button>
+      </ButtonBase>
     </div>
   );
 }

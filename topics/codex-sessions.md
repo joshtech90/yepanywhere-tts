@@ -88,6 +88,45 @@ find it. The rename is reversible and the content untouched; see
 `topics/heartbeat.md` § Unowned Resume Exemptions and
 `packages/server/src/sessions/resume-exemption.ts`.
 
+
+## Scoped Codex OSS continuation
+
+Codex OSS uses `--json` for both new `codex exec` turns and subsequent
+`codex exec resume` turns. Native JSONL item and turn events determine assistant
+output, tools and completion; human-readable headings do not delimit responses.
+This keeps queued follow-up output visible with the audited CLI.
+
+Each exec invocation also supplies the launch sandbox explicitly, including
+resumed turns: Bypass uses `danger-full-access`, and other supported exec modes
+retain `workspace-write`. The option precedes the `resume` subcommand because
+`-s` is an exec option. Omitting it reloads configuration and can silently
+change the sandbox after the first turn. This is the exec backend's existing
+launch mapping; it does not add app-server live permission switching to OSS.
+
+A scoped cold
+continuation requires a native UUID, the actual canonical `CODEX_HOME/sessions`
+(or native home default), a physical descendant rollout and a matching bounded
+`session_meta` id/original-project header. Reader-only directory overrides do
+not select the CLI's store. Scoped native-home overrides must be absolute.
+These checks precede model routing and installation leases. Working-project
+metadata and the original transcript project stay separate.
+
+Only a UUID is sent to `exec resume`: pinned Codex resolves it directly through
+`thread/resume`, while an unresolved name may start a fresh thread. A scoped
+continuation never submits such a name. An unexpected native `thread.started`
+id fails the continuation instead of redirecting later turns. Native CLI ids
+stay native; Process, API/events and returned history keep the public YA id.
+The original saved input is not replayed.
+
+A nonzero native exit or asynchronous spawn/pipe failure reports a failed turn.
+Actual child closure is observed before teardown releases the installation
+lease. Abort cancels an idle queue wait, prevents launch after the local user
+echo and works before the first iterator pull; stopping at init also releases
+the lease. This per-turn adapter may be idle without an OS child. A local user
+echo is not evidence that native input was consumed. This qualifies existing
+continuation, without enabling new differing-id allocation or changing the
+pinned Codex protocol/version or endpoint choice.
+
 ## Process-Scoped Subagent Depth
 
 The server-wide **Subagent nesting limit** is snapshotted for each newly started
@@ -419,3 +458,32 @@ if its discovery shard still contains a stale record.
 This keeps YA faithful to Codex's local transcript model while preserving the
 resource-quiescence requirement from
 [architecture-mandates](architecture-mandates.md).
+
+## Exact native file observations
+
+The file observer takes the thread id from native metadata, rather than the
+last UUID in a rollout filename. A reverted thread can keep that id while its
+physical leaf changes. Its trusted watcher reports the actual native storage
+root; old in-process events retain the configured-root fallback and must still
+prove that the physical file belongs there.
+
+A scoped reader can accept one observed file after validating native family,
+root, project and metadata and excluding provider subagents. It updates the
+existing native file/scan cache without a corpus scan or extending scan
+freshness. Shared scan entries use native-id maps within their source root;
+source updates touch that root's entries, rather than walking other roots or
+session rows. A warm or in-flight older scan cannot overwrite the newer native
+leaf, including when a different cold reader receives a delayed old-file event.
+Exact point evidence before enumeration has no scan timestamp; it cannot certify
+a complete/fresh store listing. The existing rollout-selection policy and history-reference parser stay
+authoritative; public YA identity and lineage keys are unchanged.
+
+### Replayed usage and active turn ownership
+
+App-server resume can replay `thread/tokenUsage/updated` for the last persisted
+turn after a new `turn/start` receipt barrier. YA retains the usage's original
+turn attribution without adopting that id as the active control target. Usage
+replay alone cannot retarget steer/interrupt or cause a pair of spurious turn-id
+resynchronizations. Live turn notifications retain their existing id-race repair.
+The pinned native cold-resume scenario covers this ordering without replay
+fixtures or paid inference.

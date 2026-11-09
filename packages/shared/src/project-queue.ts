@@ -9,7 +9,10 @@ import type { StagedAttachmentRef, UploadedFile } from "./upload.js";
 import type { UrlProjectId } from "./projectId.js";
 import type { QueuedYaCommand } from "./queued-ya-commands.js";
 import type { UserMessageMetadata } from "./user-message-metadata.js";
-import type { SessionQueuedMessageSummary } from "./app-types.js";
+import type {
+  SessionCreationProvenance,
+  SessionQueuedMessageSummary,
+} from "./app-types.js";
 
 export const DEFAULT_PROJECT_QUEUE_QUIET_SECONDS = 30;
 export const MAX_PROJECT_QUEUE_QUIET_SECONDS = 5 * 60;
@@ -235,6 +238,17 @@ export type ProjectQueueTarget =
       title?: string;
       thinking?: ThinkingOption;
       showThinking?: ShowThinking;
+      /**
+       * Agent Auth Router selection. The pin is allocated when the item
+       * dispatches, so a pool picks its account against quota at that time;
+       * a refusal pauses the item and never launches on the direct login.
+       */
+      routerPoolId?: string;
+      routerAccountId?: string;
+      /** Only with `routerPoolId`. */
+      routerPolicy?: string;
+      /** Claude only, with a pool or account. */
+      routerClaudeAiConnectors?: boolean;
     };
 
 export interface ProjectQueueCreatedFrom {
@@ -251,11 +265,21 @@ export interface ProjectQueueItem {
   createdAt: string;
   updatedAt: string;
   createdFrom?: ProjectQueueCreatedFrom;
+  /** Original enqueue source; absent only on legacy persisted items. */
+  creationProvenance?: SessionCreationProvenance;
   /**
    * The limited user who queued this item, whose launch policy and
    * attribution apply when it runs; absent means the superuser.
    */
   createdByUser?: string;
+  /** Server-owned durable admission, retained when startup fails. */
+  creationSessionId?: string;
+  /**
+   * Retry identity for a failed durable creation: set by an operator retry,
+   * or automatically only after a router refusal, which fails before any
+   * provider starts and so delivered nothing.
+   */
+  creationRetryId?: string;
   status: ProjectQueueItemStatus;
   lastError?: string;
   lastAttemptAt?: string;
@@ -272,8 +296,12 @@ export interface ProjectQueueItemSummary {
   createdAt: string;
   updatedAt: string;
   createdFrom?: ProjectQueueCreatedFrom;
+  /** Original enqueue source; absent only on legacy persisted items. */
+  creationProvenance?: SessionCreationProvenance;
   /** The limited user who queued this item; absent means the superuser. */
   createdByUser?: string;
+  /** Present after this item has entered durable session admission. */
+  creationSessionId?: string;
   status: ProjectQueueItemStatus;
   attachmentCount: number;
   lastError?: string;

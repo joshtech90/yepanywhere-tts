@@ -10,25 +10,17 @@
   gap: 12px;
 }
 
-.controls label {
-  display: grid;
-  gap: 6px;
-  font-size: 13px;
-}
-
-.controls input,
-.controls select,
-.unknown button {
+.unknownWord {
   min-height: 44px;
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 8px;
-  background: var(--bg-primary);
+  background: var(--bg-input);
   color: var(--text-primary);
   font: inherit;
 }
 
-.controls input {
+.minimum {
   width: 100px;
 }
 
@@ -62,16 +54,12 @@
 .word {
   width: 100%;
   min-height: 44px;
-  padding: 0;
-  border: 0;
-  background: transparent;
   color: var(--text-primary);
-  font: inherit;
+  font-size: inherit;
   text-align: left;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  cursor: pointer;
 }
 
 .value {
@@ -103,14 +91,17 @@
   background: #398579;
 }
 
+.table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
 .table tr[data-selected="true"],
-.table tbody tr:hover,
-.unknown button[aria-pressed="true"] {
-  background: var(--bg-primary);
+.unknownWord[aria-pressed="true"] {
+  background: var(--bg-selected);
 }
 
 .word:focus-visible,
-.unknown button:focus-visible {
+.unknownWord:focus-visible {
   outline: 2px solid var(--text-primary);
   outline-offset: 4px;
 }

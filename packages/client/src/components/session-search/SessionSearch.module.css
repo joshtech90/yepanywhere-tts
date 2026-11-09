@@ -6,25 +6,9 @@
   align-items: center;
   gap: 8px 14px;
 }
-.intersection {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  white-space: nowrap;
-}
 .quickAge {
   display: flex;
   gap: 4px;
-}
-.quickAge button {
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  min-height: 28px;
-  padding: 3px 6px;
-  font-size: 12px;
 }
 .withDetail {
   display: grid;
@@ -55,19 +39,12 @@
   align-items: center;
   gap: 10px;
 }
-.fields label {
-  display: inline-flex;
+/* Compounded to outrank the checkbox's own top alignment, so the box sits
+   centered in the row. */
+.fields .field {
   align-items: center;
-  gap: 4px;
   min-height: 28px;
-  font-size: 12px;
   white-space: nowrap;
-}
-.fields input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--accent-primary);
 }
 .fields kbd {
   font:
@@ -85,13 +62,6 @@
 .search {
   flex: 0 1 340px;
   min-width: 160px;
-  height: 32px;
-  border: 1px solid var(--accent-primary);
-  border-radius: 5px;
-  padding: 0 8px;
-  color: var(--text-primary);
-  background: var(--bg-input);
-  font-size: 14px;
 }
 .needleRow {
   display: flex;
@@ -101,16 +71,12 @@
   min-width: 0;
 }
 .statusArea {
-  position: relative;
   flex: 0 0 132px;
   height: 32px;
 }
 .searchStatus {
   width: 100%;
   height: 100%;
-  padding: 0;
-  border: 0;
-  background: transparent;
   text-align: left;
   display: flex;
   align-items: center;
@@ -123,18 +89,8 @@
   color: var(--text-secondary);
 }
 .statusDetails {
-  position: absolute;
-  right: 0;
-  top: 100%;
-  z-index: 20;
   width: max-content;
   max-width: 280px;
-  padding: 6px 8px;
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-size: 12px;
 }
 .scanIndicator {
   flex: 0 0 1em;
@@ -147,9 +103,6 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-.more {
-  min-height: 32px;
 }
 .diagnostics {
   margin-top: 12px;
@@ -194,33 +147,6 @@
 .range {
   flex-wrap: wrap;
 }
-.basis {
-  display: inline-flex;
-  border: 1px solid var(--border-color);
-  border-radius: 5px;
-  overflow: hidden;
-}
-.basis button {
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  border: 0;
-  border-right: 1px solid var(--border-color);
-  padding: 6px 8px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.basis button:last-child {
-  border-right: 0;
-}
-.basis button[aria-pressed="true"] {
-  color: var(--text-primary);
-  background: color-mix(
-    in srgb,
-    var(--accent-primary) 24%,
-    var(--bg-secondary)
-  );
-  box-shadow: inset 0 -2px var(--accent-primary);
-}
 .age {
   gap: 4px;
   font:
@@ -235,14 +161,8 @@
   font-size: 12px;
   white-space: nowrap;
 }
-.limit input {
-  width: 36px;
-  min-height: 28px;
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  color: var(--text-primary);
-  background: var(--bg-secondary);
-  padding: 2px 4px;
+.limitInput {
+  width: 3.5rem;
 }
 .ageField {
   position: relative;
@@ -255,7 +175,7 @@
   border-radius: 4px;
 }
 .ageField > span,
-.ageField > input {
+.ageInput {
   grid-area: 1 / 1;
   font: inherit;
 }
@@ -263,7 +183,8 @@
   visibility: hidden;
   white-space: pre;
 }
-.ageField > input {
+/* Chromeless: the frame above draws the box and sizes it to the text. */
+.ageInput {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -277,7 +198,7 @@
   color: var(--text-primary);
   text-align: left;
 }
-.ageField:first-child input {
+.ageField:first-child .ageInput {
   text-align: right;
 }
 .ageField:focus-within {
@@ -310,59 +231,17 @@
   align-items: center;
   gap: 5px;
 }
-.scope button {
+.scope .selectionCount {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
   gap: 4px;
-  padding: 0;
-  color: var(--text-secondary);
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  text-decoration: none;
-  font-size: 12px;
-}
-.scope button:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-.scope .selectionCount {
+  min-height: 30px;
   color: var(--text-primary);
+  font-size: inherit;
   text-decoration: underline;
   text-underline-offset: 3px;
-  min-height: 30px;
-}
-.scope .selectMatched {
-  min-height: 30px;
-  padding: 0 8px;
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  white-space: nowrap;
 }
 .selectionCancelIcon {
-  color: var(--error-color);
-}
-.scope .onlySelected {
-  min-height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  white-space: nowrap;
-}
-.scope .onlySelected[aria-pressed="true"] {
-  background: color-mix(
-    in srgb,
-    var(--accent-primary) 24%,
-    var(--bg-secondary)
-  );
-  border-color: var(--accent-primary);
-  color: var(--text-primary);
-}
-.scope .clearSelection {
-  width: 34px;
-  height: 32px;
   color: var(--error-color);
 }
 .statusFilters {
@@ -372,21 +251,6 @@
 }
 .statusFilters > span {
   margin-right: 3px;
-}
-.statusFilters button {
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border-color);
-  border-radius: 3px;
-}
-.statusFilters button[aria-pressed="true"] {
-  background: color-mix(
-    in srgb,
-    var(--accent-primary) 24%,
-    var(--bg-secondary)
-  );
-  border-color: var(--accent-primary);
-  color: var(--text-primary);
 }
 .results {
   display: grid;
@@ -444,12 +308,8 @@
     overflow: auto;
   }
 }
-.manager label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 32px;
-  font-size: 12px;
+.managerChoice {
+  padding-block: 7px;
 }
 .manager small {
   color: var(--text-secondary);
@@ -478,15 +338,13 @@
   .fields kbd {
     display: none;
   }
-  .fields label {
+  .fields .field {
     min-height: 30px;
   }
   .search {
     flex: 1;
     width: 0;
     min-width: 0;
-    height: 36px;
-    font-size: 16px;
   }
   .needleRow {
     flex-basis: 100%;
@@ -497,9 +355,6 @@
   .range {
     width: 100%;
     justify-content: space-between;
-  }
-  .basis button {
-    padding: 7px 8px;
   }
   .ageField {
     height: 32px;
@@ -512,8 +367,5 @@
   }
   .statusFilters {
     gap: 2px;
-  }
-  .statusFilters button {
-    width: 26px;
   }
 }

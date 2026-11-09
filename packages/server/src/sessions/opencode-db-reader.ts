@@ -1,5 +1,11 @@
 import { statSync } from "node:fs";
-import { createRequire } from "node:module";
+import { realpath } from "node:fs/promises";
+import { getProjectIdentityKey, isAbsolutePath } from "../projects/paths.js";
+import {
+  loadSqliteDriver,
+  type SqliteDatabase,
+  type SqliteStatement,
+} from "../storage/sqlite.js";
 import type {
   OpenCodeMessage,
   OpenCodeSessionEntry,
@@ -21,65 +27,34 @@ import type {
  * absence/lock/old-schema returns null so callers fall through to the export and
  * file-tree readers.
  *
- * Mechanism: Node's built-in `node:sqlite` (Node >= 22.5), loaded via a guarded
- * dynamic import so older runtimes (the package targets node >= 20) degrade to
- * the fallbacks rather than crashing — and so the published package keeps its
- * zero-native-dependency property (no `better-sqlite3` build per install).
+ * Mechanism: the common Node/Bun SQLite adapter opens the native file read-only.
+ * SQL statements are reused per handle and released on replacement or close.
+ * No transcript-store write, checkpoint, or fallback file creation is allowed.
  */
 
-/** Minimal structural view of the `node:sqlite` API we use (read-only). */
-interface SqliteStatement {
-  get(...params: unknown[]): unknown;
-  all(...params: unknown[]): unknown[];
-}
-interface SqliteDatabase {
-  prepare(sql: string): SqliteStatement;
-  close(): void;
-}
-type SqliteCtor = new (
-  path: string,
-  options?: { readOnly?: boolean },
-) => SqliteDatabase;
-
-const nodeRequire = createRequire(import.meta.url);
-let sqliteCtor: SqliteCtor | null | undefined;
-
-/**
- * Resolve the `node:sqlite` `DatabaseSync` constructor once, or null when the
- * runtime lacks it (Node < 22.5). Loaded via `createRequire` rather than a
- * static/dynamic `import` for two reasons: it degrades to null on old runtimes
- * (the package targets node >= 20) instead of crashing at module load, and it
- * sidesteps vite/vitest's module runner, which tries (and fails) to transform
- * this builtin since it postdates vite's bundled builtin list. The module is
- * built into Node, so this adds no dependency; the one-time experimental-API
- * warning it prints is left intact (suppressing it reliably needs a global
- * `emitWarning` override that would risk swallowing unrelated warnings).
- */
-function loadSqliteCtor(): SqliteCtor | null {
-  if (sqliteCtor === undefined) {
-    try {
-      sqliteCtor =
-        (nodeRequire("node:sqlite") as { DatabaseSync?: SqliteCtor })
-          .DatabaseSync ?? null;
-    } catch {
-      sqliteCtor = null;
-    }
-  }
-  return sqliteCtor;
+interface ReadQueries {
+  prepare(sql: string): Pick<SqliteStatement, "get" | "all">;
 }
 
 /**
  * Global opt-out for the direct opencode.db reader (default **on**). Set
  * `OPENCODE_DB_READER=0` (or `false`/`off`/`no`) to disable it: the reader then
- * never opens the DB and never imports `node:sqlite`, and the OpenCode session
+ * never opens the DB or loads a SQLite driver, and the OpenCode session
  * paths fall back to the CLI export / legacy file tree exactly as before. This
- * keeps the whole sqlite dependency conditional and switchable — CI, or any
- * environment that prefers not to exercise the builtin, simply leaves it off.
+ * retains the direct-reader opt-out independently of YA's required own database.
  * Checked at the single `ensureDb` choke point, so one guard covers every query.
  */
-function openCodeDbReaderEnabled(): boolean {
+export function openCodeDbReaderEnabled(): boolean {
   const v = process.env.OPENCODE_DB_READER?.trim().toLowerCase();
   return v !== "0" && v !== "false" && v !== "off" && v !== "no";
+}
+
+/** Native directory membership, distinct from OpenCode's shared project ids. */
+export interface OpenCodeProjectScope {
+  readonly directory: string;
+  readonly canonicalDirectory?: string;
+  /** Operation-scoped native spellings; never retained across enumerations. */
+  readonly directorySpellings?: ReadonlySet<string>;
 }
 
 /** Session-level metadata read straight from the `session` table row. */
@@ -98,6 +73,7 @@ export interface OpenCodeDbSessionRow {
 export interface OpenCodeDbCatalogRow {
   id: string;
   worktree: string;
+  directory: string;
   title: string | null;
   timeCreated: number | null;
   timeUpdated: number | null;
@@ -112,6 +88,12 @@ export interface OpenCodeDbChildSessionRow {
   timeUpdated: number | null;
 }
 
+/** Raw compact native rows; the relationship adapter owns identity/scope proof. */
+export interface OpenCodeRelationshipSnapshot {
+  rows: Array<Record<string, unknown>>;
+  hasParentIds: boolean;
+}
+
 interface DbRow {
   [column: string]: unknown;
 }
@@ -120,10 +102,24 @@ export class OpenCodeDbReader {
   private db: SqliteDatabase | null | undefined = undefined;
   /** inode+mtime of the db file at open, to reopen if the file is replaced. */
   private dbStamp: string | undefined;
-  /** worktree -> project.id (or null when this worktree has no DB project). */
-  private projectIdCache = new Map<string, string | null>();
-  /** Cached `session.parent_id` presence; reset when the handle reopens. */
-  private sessionParentIdColumn: boolean | undefined;
+  private closed = false;
+  /** Positive project ids only, valid until this native handle is replaced. */
+  private projectIdCache = new Map<string, string>();
+  // The reader has a fixed set of SQL strings, never SQL keyed by a session.
+  private readonly statements = new Map<string, SqliteStatement>();
+  private readonly queries: ReadQueries = {
+    prepare: (sql) => {
+      const existing = this.statements.get(sql);
+      if (existing) return existing;
+      if (!this.db) throw new Error("OpenCode database reader is closed");
+      const statement = this.db.prepare(sql);
+      this.statements.set(sql, statement);
+      return statement;
+    },
+  };
+  private sessionColumns: Set<string> | undefined;
+  private relationshipStatement: SqliteStatement | undefined;
+  private relationshipSql: string | undefined;
 
   constructor(private databasePath: string) {}
 
@@ -133,6 +129,7 @@ export class OpenCodeDbReader {
    * stale handle. Returns null when the file is absent or sqlite is unavailable.
    */
   private ensureDb(): SqliteDatabase | null {
+    if (this.closed) return null;
     // Global opt-out (default on). When off, never touch the file or
     // node:sqlite — every query returns null and callers fall back.
     if (!openCodeDbReaderEnabled()) return null;
@@ -140,7 +137,7 @@ export class OpenCodeDbReader {
     let stamp: string;
     try {
       const st = statSync(this.databasePath);
-      stamp = `${st.ino}:${st.mtimeMs}:${st.size}`;
+      stamp = `${st.dev}:${st.ino}:${st.mtimeMs}:${st.ctimeMs}:${st.size}`;
     } catch {
       // File absent/unreadable: drop any cached handle and report unavailable.
       this.closeHandle();
@@ -150,13 +147,13 @@ export class OpenCodeDbReader {
     if (this.db && this.dbStamp === stamp) return this.db;
     if (this.db && this.dbStamp !== stamp) this.closeHandle();
 
-    const Ctor = loadSqliteCtor();
-    if (!Ctor) {
+    const driver = loadSqliteDriver();
+    if (!driver) {
       this.db = null;
       return null;
     }
     try {
-      this.db = new Ctor(this.databasePath, { readOnly: true });
+      this.db = driver.open(this.databasePath, { readOnly: true });
       this.dbStamp = stamp;
       return this.db;
     } catch {
@@ -167,6 +164,12 @@ export class OpenCodeDbReader {
   }
 
   private closeHandle(): void {
+    this.relationshipStatement?.finalize();
+    this.relationshipStatement = undefined;
+    this.relationshipSql = undefined;
+    for (const statement of this.statements.values()) statement.finalize();
+    this.statements.clear();
+    this.projectIdCache.clear();
     if (this.db) {
       try {
         this.db.close();
@@ -176,24 +179,116 @@ export class OpenCodeDbReader {
     }
     this.db = undefined;
     this.dbStamp = undefined;
-    this.sessionParentIdColumn = undefined;
+    this.sessionColumns = undefined;
   }
 
   /** project.id for a worktree path, cached. Null when no DB / no such project. */
   async getProjectId(worktree: string): Promise<string | null> {
-    const cached = this.projectIdCache.get(worktree);
-    if (cached !== undefined) return cached;
-
-    const resolved = await this.run((db) => {
+    return this.run((db) => {
+      const cached = this.projectIdCache.get(worktree);
+      if (cached !== undefined) return cached;
       const row = db
         .prepare("SELECT id FROM project WHERE worktree = ?")
         .get(worktree) as DbRow | undefined;
       const id = row?.id;
-      return typeof id === "string" ? id : null;
+      if (typeof id !== "string") return null;
+      this.projectIdCache.set(worktree, id);
+      return id;
     });
-    const value = resolved ?? null;
-    this.projectIdCache.set(worktree, value);
-    return value;
+  }
+
+  async hasProject(scope: OpenCodeProjectScope): Promise<boolean> {
+    if (await this.getProjectId(scope.directory)) return true;
+    if (
+      scope.canonicalDirectory &&
+      scope.canonicalDirectory !== scope.directory &&
+      (await this.getProjectId(scope.canonicalDirectory))
+    )
+      return true;
+    const aliases = JSON.stringify([...(await this.directoryAliases(scope))]);
+    return Boolean(
+      await this.run((db) =>
+        db
+          .prepare(
+            `SELECT 1 AS found FROM session s JOIN project p ON p.id = s.project_id WHERE (${this.directoryExpression(db)} IN (SELECT value FROM json_each(?)) OR p.worktree IN (SELECT value FROM json_each(?))) LIMIT 1`,
+          )
+          .get(aliases, aliases),
+      ),
+    );
+  }
+
+  /**
+   * Resolve unique native directory spellings, rather than realpath per session.
+   * This compact metadata query reads no messages/parts and bounds filesystem
+   * concurrency. Keep the proof request-local: aliases may be retargeted while
+   * an unchanged native database remains open.
+   */
+  async resolveProjectScope(
+    scope: OpenCodeProjectScope,
+  ): Promise<OpenCodeProjectScope> {
+    return { ...scope, directorySpellings: await this.directoryAliases(scope) };
+  }
+
+  private async directoryAliases(
+    scope: OpenCodeProjectScope,
+  ): Promise<ReadonlySet<string>> {
+    if (scope.directorySpellings !== undefined) return scope.directorySpellings;
+    const paths =
+      (await this.run((db) =>
+        db
+          .prepare(
+            this.sessionTableHasColumn(db, "directory")
+              ? "SELECT directory AS path FROM session WHERE directory IS NOT NULL AND directory != '' GROUP BY directory UNION SELECT worktree AS path FROM project"
+              : "SELECT DISTINCT worktree AS path FROM project",
+          )
+          .all<DbRow>(),
+      )) ?? [];
+    const matches = new Set([
+      scope.directory,
+      scope.canonicalDirectory ?? scope.directory,
+    ]);
+    for (let offset = 0; offset < paths.length && !this.closed; offset += 5) {
+      const batch = paths.slice(offset, offset + 5);
+      const results = await Promise.all(
+        batch.map(async (row) =>
+          typeof row.path === "string" &&
+          (await this.belongsToDirectory(row.path, scope))
+            ? row.path
+            : null,
+        ),
+      );
+      for (const path of results) if (path) matches.add(path);
+    }
+    return matches;
+  }
+
+  private directoryExpression(db: ReadQueries): string {
+    return this.sessionTableHasColumn(db, "directory")
+      ? "COALESCE(NULLIF(s.directory, ''), p.worktree)"
+      : "p.worktree";
+  }
+
+  private async belongsToDirectory(
+    directory: unknown,
+    scope: OpenCodeProjectScope,
+  ): Promise<boolean> {
+    if (typeof directory !== "string" || !isAbsolutePath(directory))
+      return false;
+    if (scope.directorySpellings)
+      return !this.closed && scope.directorySpellings.has(directory);
+    if (
+      getProjectIdentityKey(directory) ===
+      getProjectIdentityKey(scope.canonicalDirectory ?? scope.directory)
+    )
+      return !this.closed;
+    const physical = await realpath(directory).catch(() => directory);
+    const expected =
+      scope.canonicalDirectory ??
+      (await realpath(scope.directory).catch(() => scope.directory));
+    return (
+      !this.closed &&
+      getProjectIdentityKey(physical) === getProjectIdentityKey(expected)
+    );
   }
 
   /**
@@ -203,14 +298,14 @@ export class OpenCodeDbReader {
    */
   async getSessionRow(
     sessionId: string,
-    projectId: string,
+    scope: OpenCodeProjectScope,
   ): Promise<OpenCodeDbSessionRow | null> {
-    return this.run((db) => {
+    const result = await this.run((db) => {
       const row = db
         .prepare(
-          "SELECT id, title, model, time_created, time_updated FROM session WHERE id = ? AND project_id = ?",
+          `SELECT s.id, s.title, s.model, s.time_created, s.time_updated, ${this.directoryExpression(db)} AS directory, p.worktree AS worktree FROM session s JOIN project p ON p.id = s.project_id WHERE s.id = ?`,
         )
-        .get(sessionId, projectId) as DbRow | undefined;
+        .get(sessionId) as DbRow | undefined;
       if (!row || typeof row.id !== "string") return null;
 
       const count = db
@@ -218,22 +313,48 @@ export class OpenCodeDbReader {
         .get(sessionId) as DbRow | undefined;
 
       return {
-        id: row.id,
-        title: typeof row.title === "string" ? row.title : null,
-        model: parseModel(row.model),
-        timeCreated: numberOrNull(row.time_created),
-        timeUpdated: numberOrNull(row.time_updated),
-        messageCount: numberOrNull(count?.c) ?? 0,
+        directory: row.directory,
+        worktree: row.worktree,
+        row: {
+          id: row.id,
+          title: typeof row.title === "string" ? row.title : null,
+          model: parseModel(row.model),
+          timeCreated: numberOrNull(row.time_created),
+          timeUpdated: numberOrNull(row.time_updated),
+          messageCount: numberOrNull(count?.c) ?? 0,
+        },
       };
+    });
+    return result &&
+      ((await this.belongsToDirectory(result.directory, scope)) ||
+        (await this.belongsToDirectory(result.worktree, scope)))
+      ? result.row
+      : null;
+  }
+
+  /** Native directory and legacy umbrella used to fence fallback acquisition. */
+  async getSessionProjects(
+    sessionId: string,
+  ): Promise<{ directory: string; worktree: string } | null> {
+    return this.run((db) => {
+      const row = db
+        .prepare(
+          `SELECT ${this.directoryExpression(db)} AS directory, p.worktree AS worktree FROM session s JOIN project p ON p.id = s.project_id WHERE s.id = ?`,
+        )
+        .get<DbRow>(sessionId);
+      return typeof row?.directory === "string" &&
+        typeof row.worktree === "string"
+        ? { directory: row.directory, worktree: row.worktree }
+        : null;
     });
   }
 
   /** Lightweight freshness probe: latest `time_updated` + message count. */
   async getSessionMeta(
     sessionId: string,
-    projectId: string,
+    scope: OpenCodeProjectScope,
   ): Promise<{ timeUpdated: number; messageCount: number } | null> {
-    const row = await this.getSessionRow(sessionId, projectId);
+    const row = await this.getSessionRow(sessionId, scope);
     if (!row) return null;
     return {
       timeUpdated: row.timeUpdated ?? 0,
@@ -243,15 +364,16 @@ export class OpenCodeDbReader {
 
   /** All sessions for a project (id + updated time), for enumeration. */
   async listSessionRows(
-    projectId: string,
+    scope: OpenCodeProjectScope,
   ): Promise<{ id: string; timeUpdated: number }[]> {
+    const aliases = JSON.stringify([...(await this.directoryAliases(scope))]);
     return (
       (await this.run((db) => {
         const rows = db
           .prepare(
-            "SELECT id, time_updated FROM session WHERE project_id = ? ORDER BY time_updated DESC",
+            `SELECT s.id, s.time_updated FROM session s JOIN project p ON p.id = s.project_id WHERE (${this.directoryExpression(db)} IN (SELECT value FROM json_each(?)) OR p.worktree IN (SELECT value FROM json_each(?))) ORDER BY s.time_updated DESC`,
           )
-          .all(projectId) as DbRow[];
+          .all(aliases, aliases) as DbRow[];
         const out: { id: string; timeUpdated: number }[] = [];
         for (const row of rows) {
           if (typeof row.id === "string") {
@@ -277,18 +399,23 @@ export class OpenCodeDbReader {
       (await this.run((db) => {
         const rows = db
           .prepare(
-            "SELECT s.id AS id, s.title AS title, s.time_created AS time_created, s.time_updated AS time_updated, p.worktree AS worktree FROM session s JOIN project p ON p.id = s.project_id",
+            `SELECT s.id AS id, s.title AS title, s.time_created AS time_created, s.time_updated AS time_updated, ${this.directoryExpression(db)} AS directory, CASE WHEN p.id = 'global' THEN ${this.directoryExpression(db)} ELSE p.worktree END AS worktree FROM session s JOIN project p ON p.id = s.project_id`,
           )
           .all() as DbRow[];
         const out: OpenCodeDbCatalogRow[] = [];
         for (const row of rows) {
           if (typeof row.id !== "string") continue;
-          if (typeof row.worktree !== "string" || row.worktree.length === 0) {
+          if (
+            typeof row.directory !== "string" ||
+            !isAbsolutePath(row.directory)
+          ) {
             continue;
           }
           out.push({
             id: row.id,
-            worktree: row.worktree,
+            worktree:
+              typeof row.worktree === "string" ? row.worktree : row.directory,
+            directory: row.directory,
             title: typeof row.title === "string" ? row.title : null,
             timeCreated: numberOrNull(row.time_created),
             timeUpdated: numberOrNull(row.time_updated),
@@ -304,37 +431,111 @@ export class OpenCodeDbReader {
    * `parent_id` or the parent has no children. Does not read message/part rows.
    */
   async listChildSessionRows(
-    projectId: string,
+    scope: OpenCodeProjectScope,
     parentSessionId: string,
   ): Promise<OpenCodeDbChildSessionRow[]> {
+    const aliases = JSON.stringify([...(await this.directoryAliases(scope))]);
     return (
       (await this.run((db) => {
         if (!this.sessionTableHasParentId(db)) return [];
         const rows = db
           .prepare(
-            "SELECT id, parent_id, title, agent, time_updated FROM session WHERE project_id = ? AND parent_id = ?",
+            `SELECT s.id, s.parent_id, s.title, s.agent, s.time_updated FROM session s JOIN project p ON p.id = s.project_id WHERE (${this.directoryExpression(db)} IN (SELECT value FROM json_each(?)) OR p.worktree IN (SELECT value FROM json_each(?))) AND s.parent_id = ?`,
           )
-          .all(projectId, parentSessionId) as DbRow[];
+          .all(aliases, aliases, parentSessionId) as DbRow[];
         return parseChildSessionRows(rows);
       })) ?? []
     );
   }
 
   /**
+   * Strict acquisition boundary: failure is never an authoritative empty set.
+   * One statement reads descendants and the ancestors of selected legacy ids
+   * from one committed WAL snapshot. No messages, parts, writes or checkpoints.
+   * Unlike the tolerant replay methods, this method deliberately throws.
+   */
+  async readRelationshipSnapshot(
+    parentSessionId: string,
+    relatedSessionIds: readonly string[] = [],
+    additionalParentIds: readonly string[] = [],
+  ): Promise<OpenCodeRelationshipSnapshot> {
+    const db = this.ensureDb();
+    if (!db) throw new Error("OpenCode native relationship store unavailable");
+    // Schema reads are constant-sized and fresh, including WAL-only migrations.
+    // The generated SELECT has one replaceable statement slot, not a cache
+    // entry for every optional-column combination encountered over its lifetime.
+    const columns = new Set(
+      this.queries
+        .prepare("PRAGMA table_info(session)")
+        .all<DbRow>()
+        .flatMap((row) => (typeof row.name === "string" ? [row.name] : [])),
+    );
+    if (!columns.has("id") || !columns.has("project_id"))
+      throw new Error("OpenCode native relationship schema unavailable");
+    const hasParentIds = columns.has("parent_id");
+    const optional = (column: string, limit: number) =>
+      columns.has(column)
+        ? `CASE WHEN length(s.${column}) <= ${limit} THEN s.${column} ELSE NULL END`
+        : "NULL";
+    const rawDirectory = columns.has("directory")
+      ? "COALESCE(NULLIF(s.directory, ''), p.worktree)"
+      : "p.worktree";
+    const directory = `CASE WHEN length(${rawDirectory}) <= 4096 THEN ${rawDirectory} ELSE NULL END`;
+    const updated = columns.has("time_updated")
+      ? "CASE WHEN s.time_updated BETWEEN 0 AND 8640000000000000 THEN s.time_updated ELSE NULL END"
+      : "NULL";
+    const wanted = hasParentIds
+      ? `WITH RECURSIVE descendants(id) AS (
+      SELECT value FROM json_each(?) UNION SELECT s.id FROM session s JOIN descendants d ON s.parent_id = d.id
+    ), targets(id) AS (
+      SELECT id FROM descendants UNION SELECT value FROM json_each(?)
+    ), lineage(id) AS (
+      SELECT id FROM targets UNION SELECT s.parent_id FROM session s JOIN lineage l ON s.id = l.id WHERE s.parent_id IS NOT NULL AND s.parent_id != ''
+    )`
+      : `WITH lineage(id) AS (SELECT value FROM json_each(?) UNION SELECT value FROM json_each(?))`;
+    const sql = `${wanted}
+      SELECT ${optional("id", 1024)} AS id,
+        ${optional("parent_id", 1024)} AS parent_id,
+        ${columns.has("title") ? "substr(s.title, 1, 256)" : "NULL"} AS title,
+        ${columns.has("agent") ? "substr(s.agent, 1, 256)" : "NULL"} AS agent,
+        ${directory} AS directory, CASE WHEN length(p.worktree) <= 4096 THEN p.worktree ELSE NULL END AS worktree,
+        ${updated} AS time_updated
+      FROM session s LEFT JOIN project p ON p.id = s.project_id
+      WHERE s.id IN (SELECT id FROM lineage)`;
+    if (this.relationshipSql !== sql) {
+      this.relationshipStatement?.finalize();
+      this.relationshipStatement = undefined;
+      this.relationshipSql = undefined;
+      this.relationshipStatement = db.prepare(sql);
+      this.relationshipSql = sql;
+    }
+    return {
+      rows: this.relationshipStatement!.all<DbRow>(
+        JSON.stringify([...new Set([parentSessionId, ...additionalParentIds])]),
+        JSON.stringify(relatedSessionIds),
+      ),
+      hasParentIds,
+    };
+  }
+
+  /**
    * Every child session id in the store. Used to keep `parent_id` rows out of
    * top-level catalogs. Empty when `parent_id` is absent.
    */
-  async listChildSessionIds(projectId?: string): Promise<string[]> {
+  async listChildSessionIds(scope?: OpenCodeProjectScope): Promise<string[]> {
+    const aliases = scope
+      ? JSON.stringify([...(await this.directoryAliases(scope))])
+      : undefined;
     return (
       (await this.run((db) => {
         if (!this.sessionTableHasParentId(db)) return [];
         const rows = (
-          projectId
+          scope
             ? db
                 .prepare(
-                  "SELECT id FROM session WHERE project_id = ? AND parent_id IS NOT NULL AND parent_id != ''",
+                  `SELECT s.id FROM session s JOIN project p ON p.id = s.project_id WHERE (${this.directoryExpression(db)} IN (SELECT value FROM json_each(?)) OR p.worktree IN (SELECT value FROM json_each(?))) AND s.parent_id IS NOT NULL AND s.parent_id != ''`,
                 )
-                .all(projectId)
+                .all(aliases!, aliases!)
             : db
                 .prepare(
                   "SELECT id FROM session WHERE parent_id IS NOT NULL AND parent_id != ''",
@@ -392,17 +593,24 @@ export class OpenCodeDbReader {
     );
   }
 
-  private sessionTableHasParentId(db: SqliteDatabase): boolean {
-    if (this.sessionParentIdColumn !== undefined) {
-      return this.sessionParentIdColumn;
+  private sessionTableHasColumn(db: ReadQueries, column: string): boolean {
+    if (!this.sessionColumns) {
+      try {
+        this.sessionColumns = new Set(
+          db
+            .prepare("PRAGMA table_info(session)")
+            .all<DbRow>()
+            .flatMap((row) => (typeof row.name === "string" ? [row.name] : [])),
+        );
+      } catch {
+        this.sessionColumns = new Set();
+      }
     }
-    try {
-      const cols = db.prepare("PRAGMA table_info(session)").all() as DbRow[];
-      this.sessionParentIdColumn = cols.some((col) => col.name === "parent_id");
-    } catch {
-      this.sessionParentIdColumn = false;
-    }
-    return this.sessionParentIdColumn;
+    return this.sessionColumns.has(column);
+  }
+
+  private sessionTableHasParentId(db: ReadQueries): boolean {
+    return this.sessionTableHasColumn(db, "parent_id");
   }
 
   /** First user message's first text part — the title fallback. */
@@ -516,11 +724,11 @@ export class OpenCodeDbReader {
   }
 
   /** Run a query callback against the handle, mapping any failure to null. */
-  private async run<T>(fn: (db: SqliteDatabase) => T): Promise<T | null> {
+  private async run<T>(fn: (db: ReadQueries) => T): Promise<T | null> {
     const db = this.ensureDb();
     if (!db) return null;
     try {
-      return fn(db);
+      return fn(this.queries);
     } catch {
       // A locked/old-schema/corrupt read must fall through, never throw.
       return null;
@@ -528,6 +736,7 @@ export class OpenCodeDbReader {
   }
 
   close(): void {
+    this.closed = true;
     this.closeHandle();
   }
 }

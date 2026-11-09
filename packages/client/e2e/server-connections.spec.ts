@@ -239,10 +239,10 @@ test("server connections keeps drafts responsive during populated-list updates a
     .scrollIntoViewIfNeeded();
   await recordUiCapture(page, "server-connections-desktop-form");
   await page
-    .getByLabel("Remote Access username", { exact: true })
+    .getByRole("textbox", { name: "Remote Access username", exact: true })
     .pressSequentially("build-owner");
   await page
-    .getByLabel("Remote Access password", { exact: true })
+    .getByLabel(/^Remote Access password(?: \*)?$/)
     .pressSequentially("test-owner-password");
   await page.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(
@@ -279,10 +279,10 @@ test("server connections keeps drafts responsive during populated-list updates a
     })
     .click();
   await expect(
-    page.getByLabel("Remote Access username", { exact: true }),
+    page.getByRole("textbox", { name: "Remote Access username", exact: true }),
   ).toHaveValue("build-owner");
   await page
-    .getByLabel("Remote Access password", { exact: true })
+    .getByLabel(/^Remote Access password(?: \*)?$/)
     .pressSequentially("test-owner-password");
   await page
     .getByRole("button", {
@@ -422,9 +422,9 @@ test("refresh status keeps the saved host visible and an older source cannot cre
   await page
     .getByRole("button", { name: "Sign in again", exact: true })
     .click();
-  await expect(
-    page.getByLabel("Remote Access password", { exact: true }),
-  ).toHaveValue("");
+  await expect(page.getByLabel(/^Remote Access password(?: \*)?$/)).toHaveValue(
+    "",
+  );
   await expect(
     page.getByLabel("Automatic sign-in", { exact: true }),
   ).toBeChecked();
@@ -653,6 +653,7 @@ test("removal confirms one direction, preserves the reverse, and refuses a stale
   await expect(
     page.getByRole("button", { name: "Connect a server", exact: true }),
   ).toBeFocused();
+  await page.setViewportSize({ width: 1000, height: 600 });
   await outgoing
     .getByRole("button", {
       name: "View Windows workstation details",
@@ -672,17 +673,41 @@ test("removal confirms one direction, preserves the reverse, and refuses a stale
   await expect(
     page
       .getByRole("dialog")
-      .getByText("Fleet-managed access is separate and will remain.", {
+      .getByText("Access through your account is separate and will remain.", {
         exact: true,
       }),
   ).toBeVisible();
+  await recordUiCapture(page, "server-connections-account-access-desktop");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await page.setViewportSize({ width: 375, height: 812 });
+  await outgoing
+    .getByRole("button", {
+      name: "View Windows workstation details",
+      exact: true,
+    })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Stop local use", exact: true })
+    .click();
+  await expect(
+    page
+      .getByRole("dialog")
+      .getByText("Access through your account is separate and will remain.", {
+        exact: true,
+      }),
+  ).toBeVisible();
+  await recordUiCapture(page, "server-connections-account-access-phone");
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Remove connection", exact: true })
     .click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("status")).toContainText(
-    "Manual connection removed. Fleet-managed access remains.",
+    "Manual connection removed. Access through your account remains.",
   );
   await expect(
     outgoing.getByText("Windows workstation", { exact: true }),
@@ -728,7 +753,7 @@ test("an empty installation can connect immediately and an environment kill swit
     .getByRole("button", { name: "Connect a server", exact: true })
     .click();
   await expect(
-    page.getByLabel("Remote Access password", { exact: true }),
+    page.getByLabel(/^Remote Access password(?: \*)?$/),
   ).toBeVisible();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.setViewportSize({ width: 375, height: 812 });

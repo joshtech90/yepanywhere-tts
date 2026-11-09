@@ -11,6 +11,7 @@ import {
   type SourceContextMenuAction,
   useSourceContextMenu,
 } from "../components/SourceContextMenu";
+import { IconButton } from "../components/ui/Button";
 import { writeClipboardText } from "../lib/clipboard";
 import { useReviewCommentDraft } from "../hooks/useReviewCommentDraft";
 import { ReviewCommentWindow } from "./ReviewCommentWindow";
@@ -22,6 +23,7 @@ import {
   useDiffLineInteractions,
 } from "./useDiffLineInteractions";
 import type { TranslationFn } from "../i18n";
+import { reviewNewSessionFromDefault } from "../lib/sourceControlNavigationState";
 
 /**
  * Source-review commenting over a rendered diff (topic:
@@ -130,7 +132,9 @@ export function DiffCommentController({
         handleSubmit(
           text,
           target,
-          target === "new" ? defaultSession?.newSession : undefined,
+          target === "new"
+            ? reviewNewSessionFromDefault(defaultSession)
+            : undefined,
         )
       }
       t={t}
@@ -289,12 +293,12 @@ function DiffCommentLayer({
   return (
     <>
       {activeLine && (
-        <button
-          type="button"
+        <IconButton
+          label={t("sourceMoreActions")}
+          variant="secondary"
+          size="dense"
           className={styles.menuTrigger}
           style={{ top: activeLine.top }}
-          aria-label={t("sourceMoreActions")}
-          title={t("sourceMoreActions")}
           onClick={(event) => {
             const resolved = resolveActiveLine();
             if (!resolved) return;
@@ -309,7 +313,7 @@ function DiffCommentLayer({
           }}
         >
           ⋯
-        </button>
+        </IconButton>
       )}
       {lineMenu}
     </>

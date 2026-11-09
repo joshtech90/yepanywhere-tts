@@ -1,3 +1,5 @@
+import { relatedQuery } from "./relationship-graph-contracts.js";
+import type { SessionRelationshipRead } from "../sessions/session-relationship-read.js";
 import { receiptFollowQuery } from "./receipt-follow.js";
 import {
   createSessionRequest,
@@ -40,6 +42,7 @@ import {
 } from "./contracts.js";
 
 export interface CoreApiSources {
+  relationships?: SessionRelationshipRead;
   peerAuthentication?: () => boolean;
   /** Cheap local display facts; does not discover providers or probe peers. */
   serverMetadata?(): ApiServerMetadata;
@@ -94,7 +97,15 @@ export class CoreApi {
       sessionId?: string;
       receiptId?: string;
       body?: unknown;
-      query?: PageQuery & ConversationFollowQuery & { operation?: string };
+      query?: PageQuery &
+        ConversationFollowQuery & {
+          operation?: string;
+          includeRelated?: string;
+          relatedLimit?: string;
+          relatedCursor?: string;
+          relatedDirection?: string;
+          relatedType?: string;
+        };
       signal?: AbortSignal;
       /** Established by a trusted launch authenticator, never a request field. */
       launch?: ApiLaunchContext;
@@ -371,7 +382,22 @@ export class CoreApi {
           );
         input.signal?.throwIfAborted();
         assertPeerOperation(caller, operation);
-        return commands.create(project, body.data, input.launch, authenticated);
+        return commands.create(
+          project,
+          body.data,
+          input.launch,
+          authenticated,
+          async () => {
+            this.commandAccess(caller, input.launch);
+            assertPeerOperation(caller, operation);
+            if (!visible(project.id))
+              throw new CoreApiError(
+                "forbidden",
+                "Project creation authority is no longer active",
+                403,
+              );
+          },
+        );
       }
       case "sendMessage": {
         const commands = this.commandAccess(caller, input.launch);
@@ -483,18 +509,37 @@ export class CoreApi {
             nextCursor: null,
           };
         }
-        return (
-          this.sources.commands?.store.relationships(
-            input.sessionId!,
-            Number(query.data.cursor ?? 0),
-            Number(query.data.limit ?? 50),
-          ) ?? {
-            sessionId: input.sessionId!,
-            creation: null,
-            initiated: [],
-            nextCursor: null,
-          }
-        );
+        const parsed = relatedQuery.safeParse(input.query ?? {});
+        if (!parsed.success)
+          throw new CoreApiError(
+            "invalid_request",
+            "Invalid related relationship query",
+            400,
+          );
+        const related =
+          parsed.data.includeRelated === "true"
+            ? await this.sources.relationships?.({
+                sessionId: input.sessionId!,
+                query: {
+                  limit: parsed.data.relatedLimit,
+                  cursor: parsed.data.relatedCursor,
+                  direction: parsed.data.relatedDirection,
+                  type: parsed.data.relatedType,
+                },
+                signal: input.signal,
+              })
+            : undefined;
+        const receipts = this.sources.commands?.store.relationships(
+          input.sessionId!,
+          Number(query.data.cursor ?? 0),
+          Number(query.data.limit ?? 50),
+        ) ?? {
+          sessionId: input.sessionId!,
+          creation: null,
+          initiated: [],
+          nextCursor: null,
+        };
+        return { ...receipts, ...(related ? { related } : {}) };
       }
       case "followConversation": {
         const parsed = followQuery.safeParse(input.query ?? {});

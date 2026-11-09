@@ -14,12 +14,13 @@ import type {
   ProjectCodeNameChangedEvent,
   ProjectQueueChangedEvent,
   ProjectsChangedEvent,
-  ProviderName,
   SessionCreationProvenance,
+  SessionCreationStatus,
   ProviderRuntimeStatus,
   PromptSuggestionMode,
   SafeRestartChangedEvent,
   SessionCatalogUpdatedEvent,
+  SessionProviderPhase,
   RecentsChangedEvent,
   TranscriptDisplayObject,
   UrlProjectId,
@@ -29,7 +30,14 @@ import type { SessionOwnership, SessionSummary } from "../supervisor/types.js";
 export type FileChangeType = "create" | "modify" | "delete";
 
 /** Provider that owns the watched directory */
-export type WatchProvider = "claude" | "gemini" | "codex" | "pi";
+export type WatchProvider =
+  | "claude"
+  | "gemini"
+  | "codex"
+  | "pi"
+  | "grok"
+  | "opencode"
+  | "antigravity";
 
 export interface FileChangeEvent {
   type: "file-change";
@@ -37,6 +45,8 @@ export interface FileChangeEvent {
   provider: WatchProvider;
   path: string;
   relativePath: string;
+  /** Native watch root; graph consumers canonicalize it, never a YA id. */
+  nativeStorageScope?: string;
   changeType: FileChangeType;
   timestamp: string;
   /** Exact source-file facts when the watcher observed an existing file. */
@@ -64,18 +74,6 @@ export interface SessionStatusEvent {
 export interface SessionCreatedEvent {
   type: "session-created";
   session: SessionSummary;
-  timestamp: string;
-}
-
-/** Event emitted when a temporary public session ID becomes canonical. */
-export interface SessionIdRemappedEvent {
-  type: "session-id-remapped";
-  oldSessionId: string;
-  newSessionId: string;
-  /** Base64url-encoded project path (UrlProjectId format) */
-  projectId: UrlProjectId;
-  processId: string;
-  provider: ProviderName;
   timestamp: string;
 }
 
@@ -112,6 +110,20 @@ export interface ProcessStateEvent {
   activity: AgentActivity;
   /** Type of pending input (only set when activity is "waiting-input") */
   pendingInputType?: PendingInputType;
+  timestamp: string;
+}
+
+/**
+ * A session's provider phase moved without a row activity change: a
+ * foreground wait started or ended, or background work changed. Row-only;
+ * it carries no activity and must not trigger turn or idle work.
+ */
+export interface SessionProviderPhaseEvent {
+  type: "session-provider-phase-changed";
+  sessionId: string;
+  projectId: UrlProjectId;
+  /** Null when the session no longer has a provider phase. */
+  providerPhase: SessionProviderPhase | null;
   timestamp: string;
 }
 
@@ -195,6 +207,9 @@ export interface SessionQueuePersistenceChangedEvent {
 
 /** Event emitted when session metadata changes (title, archived, starred) */
 export interface SessionMetadataChangedEvent {
+  /** Committed startup state; absence leaves the existing status unchanged. */
+  creation?: SessionCreationStatus;
+  nativeSessionId?: string;
   nonHumanUserTurn?: NonHumanUserTurn | null;
   creationProvenance?: SessionCreationProvenance;
   type: "session-metadata-changed";
@@ -359,11 +374,11 @@ export type BusEvent =
   | FileChangeEvent
   | SessionStatusEvent
   | SessionCreatedEvent
-  | SessionIdRemappedEvent
   | SourceChangeEvent
   | BackendReloadedEvent
   | SessionSeenEvent
   | ProcessStateEvent
+  | SessionProviderPhaseEvent
   | ProcessTerminatedEvent
   | ReviewResponseChangedEvent
   | ProviderRuntimeStatusChangedEvent

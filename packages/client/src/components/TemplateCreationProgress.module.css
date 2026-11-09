@@ -24,14 +24,6 @@
 }
 .toggle {
   justify-self: start;
-  min-height: 36px;
-  padding: 6px 10px;
-  border: 1px solid var(--border-input);
-  border-radius: 6px;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font: inherit;
-  cursor: pointer;
 }
 .log {
   max-height: 180px;
@@ -39,7 +31,7 @@
   margin: 0;
   padding: 10px;
   border-radius: 6px;
-  background: var(--bg-primary);
+  background: var(--bg-surface);
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

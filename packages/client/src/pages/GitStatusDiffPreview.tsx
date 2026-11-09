@@ -8,6 +8,7 @@ import type {
 } from "@yep-anywhere/shared";
 import {
   forwardRef,
+  type CSSProperties,
   type ReactNode,
   type RefObject,
   useCallback,
@@ -22,6 +23,7 @@ import { api } from "../api/client";
 import { CopyButton } from "../components/CopyButton";
 import { FileRevisionLink } from "../components/FileRevisionLink";
 import { MarkdownPreview } from "../components/MarkdownPreview";
+import { IconButton } from "../components/ui/Button";
 import { renderFixedFontRichContent } from "../components/ui/FixedFontMathToggle";
 import { Modal } from "../components/ui/Modal";
 import { useDiffViewMode } from "../hooks/useDiffViewMode";
@@ -336,6 +338,7 @@ export const GitDiffPreview = forwardRef<
               actions: headerActions,
               revision: (
                 <FileRevisionLink
+                  showAuthor
                   projectId={projectId}
                   path={file.path}
                   origPath={
@@ -427,6 +430,7 @@ export function GitDiffModal({
     >
       <div className="git-diff-preview-header-actions">
         <FileRevisionLink
+          showAuthor
           projectId={projectId}
           path={file.path}
           origPath={revisionForDiffSource(source) ? undefined : file.origPath}
@@ -798,6 +802,8 @@ function GitDiffContent({
   }, []);
   const [viewMode, setViewMode] = useDiffViewMode();
   const [paneWidth, setPaneWidth] = useState(0);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [toolbarHeight, setToolbarHeight] = useState(0);
   const sourceKind = source.kind;
   const sourceBaseSha =
     source.kind === "commit"
@@ -828,11 +834,14 @@ function GitDiffContent({
   useEffect(() => {
     const el = contentRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver((entries) => {
-      const width = entries[0]?.contentRect.width;
-      if (typeof width === "number") setPaneWidth(width);
-    });
+    const measure = () => {
+      setPaneWidth(el.clientWidth);
+      setToolbarHeight(toolbarRef.current?.offsetHeight ?? 0);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
     observer.observe(el);
+    if (toolbarRef.current) observer.observe(toolbarRef.current);
     return () => observer.disconnect();
   }, []);
 
@@ -1089,7 +1098,8 @@ function GitDiffContent({
       return;
     }
     const scrollRoot = getDiffScrollRoot(content);
-    const threshold = scrollRoot.getBoundingClientRect().top + 52;
+    const threshold =
+      scrollRoot.getBoundingClientRect().top + toolbarHeight + 1;
     let index = 0;
     for (let i = 0; i < hunks.length; i++) {
       const hunk = hunks[i];
@@ -1101,7 +1111,7 @@ function GitDiffContent({
         ? current
         : { index, count: hunks.length },
     );
-  }, [renderedHunks]);
+  }, [renderedHunks, toolbarHeight]);
 
   const jumpToHunk = useCallback(
     (direction: -1 | 1): boolean => {
@@ -1178,27 +1188,23 @@ function GitDiffContent({
   const hunkNavigation =
     hunkPosition.count > 0 ? (
       <span className="diff-hunk-navigation">
-        <button
-          type="button"
-          className="diff-hunk-step"
+        <IconButton
+          label={t("sourcePreviousHunkShortcut")}
+          size="small"
           onClick={jumpToPreviousHunk}
-          title={t("sourcePreviousHunkShortcut")}
-          aria-label={t("sourcePreviousHunkShortcut")}
         >
           ‹
-        </button>
+        </IconButton>
         <span className="diff-hunk-indicator">
           {hunkPosition.index + 1}/{hunkPosition.count}
         </span>
-        <button
-          type="button"
-          className="diff-hunk-step"
+        <IconButton
+          label={t("sourceNextHunkShortcut")}
+          size="small"
           onClick={jumpToNextHunk}
-          title={t("sourceNextHunkShortcut")}
-          aria-label={t("sourceNextHunkShortcut")}
         >
           ›
-        </button>
+        </IconButton>
       </span>
     ) : null;
 
@@ -1206,97 +1212,64 @@ function GitDiffContent({
     <>
       {hunkNavigation}
       {onToggleIgnoreWhitespace && (
-        <button
-          type="button"
-          className={`diff-context-toggle diff-toolbar-icon-button ${
-            ignoreWhitespace ? "active" : ""
-          }`}
+        <IconButton
+          label={
+            ignoreWhitespace
+              ? t("gitStatusIgnoreWhitespaceActive")
+              : t("gitStatusIgnoreWhitespace")
+          }
+          size="small"
           onClick={onToggleIgnoreWhitespace}
-          title={
-            ignoreWhitespace
-              ? t("gitStatusIgnoreWhitespaceActive")
-              : t("gitStatusIgnoreWhitespace")
-          }
-          aria-label={
-            ignoreWhitespace
-              ? t("gitStatusIgnoreWhitespaceActive")
-              : t("gitStatusIgnoreWhitespace")
-          }
           aria-pressed={ignoreWhitespace}
         >
           <span className="diff-whitespace-glyph" aria-hidden="true">
             _+
           </span>
-        </button>
+        </IconButton>
       )}
       {hasMarkdownPreview && (
-        <button
-          type="button"
-          className={`diff-context-toggle diff-toolbar-icon-button ${
-            showingMarkdownPreview ? "active" : ""
-          }`}
+        <IconButton
+          label={
+            showingMarkdownPreview ? t("gitStatusDiff") : t("gitStatusPreview")
+          }
+          size="small"
           onClick={handleToggleMarkdownPreview}
-          title={
-            showingMarkdownPreview ? t("gitStatusDiff") : t("gitStatusPreview")
-          }
-          aria-label={
-            showingMarkdownPreview ? t("gitStatusDiff") : t("gitStatusPreview")
-          }
           aria-pressed={showingMarkdownPreview}
         >
           <MarkdownModeIcon showDiff={showingMarkdownPreview} />
-        </button>
+        </IconButton>
       )}
-      <button
-        type="button"
-        className={`diff-context-toggle diff-toolbar-icon-button ${
-          showFullContext ? "active" : ""
-        }`}
+      <IconButton
+        label={
+          contextLoading
+            ? t("gitStatusLoading")
+            : showFullContext
+              ? t("gitStatusDiffOnly")
+              : t("gitStatusFullContext")
+        }
+        size="small"
         onClick={handleToggleContext}
         disabled={contextLoading}
-        title={
-          contextLoading
-            ? t("gitStatusLoading")
-            : showFullContext
-              ? t("gitStatusDiffOnly")
-              : t("gitStatusFullContext")
-        }
-        aria-label={
-          contextLoading
-            ? t("gitStatusLoading")
-            : showFullContext
-              ? t("gitStatusDiffOnly")
-              : t("gitStatusFullContext")
-        }
         aria-pressed={showFullContext}
       >
         <ContextModeIcon expanded={showFullContext} />
-      </button>
-      <button
-        type="button"
-        className={`diff-context-toggle diff-toolbar-icon-button ${
-          hideRemovedLines ? "active" : ""
-        }`}
+      </IconButton>
+      <IconButton
+        label={
+          hideRemovedLines
+            ? t("gitStatusShowRemovedLines")
+            : t("gitStatusHideRemovedLines")
+        }
+        size="small"
         onClick={handleToggleRemovedLines}
         disabled={contextLoading}
-        title={
-          hideRemovedLines
-            ? t("gitStatusShowRemovedLines")
-            : t("gitStatusHideRemovedLines")
-        }
-        aria-label={
-          hideRemovedLines
-            ? t("gitStatusShowRemovedLines")
-            : t("gitStatusHideRemovedLines")
-        }
         aria-pressed={hideRemovedLines}
       >
         <RemovedLinesIcon hidden={hideRemovedLines} />
-      </button>
+      </IconButton>
       <CopyButton
         value={resolveCopyContent}
         title={t("fileViewerCopyContent")}
-        className="diff-context-toggle diff-toolbar-icon-button"
         disabled={
           contextLoading ||
           !!previewSkipped ||
@@ -1305,19 +1278,15 @@ function GitDiffContent({
         icon="content"
       />
       {!showingMarkdownPreview && !plainDiff && !hideRemovedLines && (
-        <button
-          type="button"
-          className="diff-context-toggle diff-toolbar-icon-button"
+        <IconButton
+          label={`${t("diffViewModeTitle")}: ${t(
+            diffViewModeLabelKey(viewMode),
+          )}`}
+          size="small"
           onClick={cycleViewMode}
-          title={`${t("diffViewModeTitle")}: ${t(
-            diffViewModeLabelKey(viewMode),
-          )}`}
-          aria-label={`${t("diffViewModeTitle")}: ${t(
-            diffViewModeLabelKey(viewMode),
-          )}`}
         >
           <DiffViewModeIcon mode={viewMode} />
-        </button>
+        </IconButton>
       )}
     </>
   );
@@ -1365,6 +1334,7 @@ function GitDiffContent({
     <>
       {paneHeader ? (
         <DiffPaneToolbar
+          toolbarRef={toolbarRef}
           title={paneHeader.title}
           path={paneHeader.path}
           actions={paneHeader.actions}
@@ -1382,6 +1352,7 @@ function GitDiffContent({
       <div
         className="diff-modal-content source-diff-pane diff-gutter-aligned"
         ref={mountContent}
+        style={{ "--diff-sticky-top": `${toolbarHeight}px` } as CSSProperties}
       >
         {plainDiff && !previewSkipped && !showingMarkdownPreview && (
           <div className={styles.plainNotice}>
@@ -1428,7 +1399,11 @@ function DiffPaneToolbar({
   actions,
   revision,
   children,
-}: DiffPaneHeader & { children?: ReactNode }) {
+  toolbarRef,
+}: DiffPaneHeader & {
+  children?: ReactNode;
+  toolbarRef?: RefObject<HTMLDivElement | null>;
+}) {
   const directoryPath =
     path && path !== title
       ? path.endsWith(title)
@@ -1436,7 +1411,10 @@ function DiffPaneToolbar({
         : path
       : "";
   return (
-    <div className={`git-diff-pane-toolbar ${headerStyles.header}`}>
+    <div
+      ref={toolbarRef}
+      className={`git-diff-pane-toolbar ${headerStyles.header}`}
+    >
       <div className={headerStyles.identity}>
         <span className="git-diff-file-identity" title={path || title}>
           {directoryPath && (

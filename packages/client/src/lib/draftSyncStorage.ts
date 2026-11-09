@@ -374,6 +374,35 @@ export const draftStorage = {
     if (a && draftAddress(key)) clients.get(a.source)?.edit(key, null);
   },
 };
+
+export interface CapturedDraftSubmission {
+  key: string;
+  physicalKey: string;
+  raw: string | null;
+}
+
+/** Clear only the captured account/slot; cached coordinator state is not proof. */
+export function confirmCapturedDraftSubmission(
+  captured: CapturedDraftSubmission,
+): boolean {
+  if (draftStorage.physicalKey(captured.key) !== captured.physicalKey)
+    return false;
+  const address = draftAddress(captured.key);
+  const coordinator = address && clients.get(address.source);
+  if (coordinator) return coordinator.confirmCapturedSubmission(captured);
+  if (localStorage.getItem(captured.physicalKey) !== captured.raw) return false;
+  draftStorage.removeItem(captured.key);
+  return true;
+}
+
+/** Release a failed capture without restoring over the live or sibling draft. */
+export function cancelCapturedDraftSubmission(
+  captured: CapturedDraftSubmission,
+): void {
+  if (draftStorage.physicalKey(captured.key) !== captured.physicalKey) return;
+  const address = draftAddress(captured.key);
+  if (address) clients.get(address.source)?.cancelCapturedSubmission(captured);
+}
 /**
  * The tab holding the window focus claims it in the storage its siblings
  * share, so a background tab can tell that someone may be typing there.
@@ -1276,6 +1305,41 @@ export class DraftSyncClient {
     this.persist(e);
     return result.snapshot.payload.attachments;
   }
+  confirmCapturedSubmission(captured: CapturedDraftSubmission): boolean {
+    const entry = this.entries.get(captured.key);
+    if (
+      this.stopped ||
+      !entry ||
+      physical(entry.key, entry.address) !== captured.physicalKey
+    )
+      return false;
+    const current = localStorage.getItem(captured.physicalKey);
+    // Complete only the original server-side submission; never manufacture one
+    // from a newer draft merely because an HTTP receipt arrived.
+    if (
+      entry.saved.submitted &&
+      draftPayloadEqual(
+        entry.saved.submitted.payload,
+        payload(entry.address, captured.raw),
+      )
+    )
+      void this.confirm(entry.key);
+    if (current !== captured.raw) {
+      this.storage({ key: captured.physicalKey, newValue: current });
+      return false;
+    }
+    if (entry.saved.raw !== captured.raw) return false;
+    // No await between the physical-slot check and the coordinator-owned clear.
+    // A delayed sibling storage event cannot authorize deleting its newer value.
+    const latest = localStorage.getItem(captured.physicalKey);
+    if (latest !== captured.raw) {
+      this.storage({ key: captured.physicalKey, newValue: latest });
+      return false;
+    }
+    this.apply(entry, EMPTY_DRAFT);
+    return true;
+  }
+
   async confirm(key: string): Promise<void> {
     const e = this.register(key);
     if (!e) return;
@@ -1330,6 +1394,43 @@ export class DraftSyncClient {
       if (this.started) this.release(key);
     }
   }
+  cancelCapturedSubmission(captured: CapturedDraftSubmission): void {
+    const e = this.entries.get(captured.key);
+    const submitted = e?.saved.submitted;
+    if (
+      this.stopped ||
+      !e ||
+      !submitted ||
+      physical(e.key, e.address) !== captured.physicalKey ||
+      !draftPayloadEqual(submitted.payload, payload(e.address, captured.raw))
+    )
+      return;
+    // Physical storage may already hold a sibling edit whose event is queued.
+    // Adoption never writes its body, unlike restoring/merging resume().
+    let latest = e.saved.raw;
+    if (e.error !== "local") {
+      try {
+        latest = localStorage.getItem(captured.physicalKey);
+      } catch {
+        e.error = "local";
+      }
+    }
+    if (latest !== e.saved.raw)
+      this.storage({ key: captured.physicalKey, newValue: latest });
+    const recovery = draftPayloadEqual(
+      payload(e.address, latest),
+      submitted.payload,
+    )
+      ? e.saved.recovery
+      : encode(e.address, submitted.payload, null);
+    // Invalidate in-flight submission work; retain its immutable retry receipt.
+    e.saved = { ...e.saved, raw: latest, recovery, submitted: undefined };
+    e.needsRecovery = false;
+    this.persist(e);
+    this.schedule(e, 0);
+    status();
+  }
+
   resume(key: string): void {
     const e = this.entries.get(key);
     if (e) {
@@ -1514,7 +1615,7 @@ export class DraftSyncClient {
    * Adoption never writes draft bodies or sync metadata, so no tab can echo
    * another's change. Session presence markers can be repaired separately.
    */
-  private storage = (event: StorageEvent) => {
+  private storage = (event: Pick<StorageEvent, "key" | "newValue">) => {
     if (!event.key) return;
     for (const e of this.entries.values()) {
       if (physical(e.key, e.address) === event.key) {

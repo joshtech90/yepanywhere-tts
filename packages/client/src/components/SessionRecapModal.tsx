@@ -13,7 +13,11 @@ import { useProviders } from "../hooks/useProviders";
 import { useI18n } from "../i18n";
 import { getRecapModeDescription } from "../lib/recapModes";
 import { RecapAfterSecondsControl } from "./RecapAfterSecondsControl";
+import styles from "./SessionRecapModal.module.css";
+import { Button } from "./ui/Button";
+import { Select } from "./ui/Field";
 import { Modal } from "./ui/Modal";
+import { SegmentedControl } from "./ui/SegmentedControl";
 
 interface SessionRecapModalProps {
   sessionId: string;
@@ -192,23 +196,19 @@ export function SessionRecapModal({
             <strong>{t("sessionRecapModeTitle")}</strong>
             <p>{t("sessionRecapModeDescription")}</p>
           </div>
-          <div className="font-size-selector model-settings-chip-group">
-            {RECAP_MODE_ORDER.map((mode) => {
-              const available = modeAvailability[mode];
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  className={`font-size-option ${recapMode === mode ? "active" : ""}`}
-                  onClick={() => setRecapMode(mode)}
-                  disabled={isLoading || isSaving || !available}
-                  title={getRecapModeDescription(mode, t, recapAfterSeconds)}
-                >
-                  {modeLabel(mode, t)}
-                </button>
-              );
-            })}
-          </div>
+          <SegmentedControl
+            className="model-settings-chip-group"
+            aria-label={t("sessionRecapModeTitle")}
+            options={RECAP_MODE_ORDER.map((mode) => ({
+              value: mode,
+              label: modeLabel(mode, t),
+              tooltip: getRecapModeDescription(mode, t, recapAfterSeconds),
+              disabled: !modeAvailability[mode],
+            }))}
+            value={recapMode}
+            onChange={setRecapMode}
+            disabled={isLoading || isSaving}
+          />
           <p className="recap-mode-caption">
             {getRecapModeDescription(recapMode, t, recapAfterSeconds)}
           </p>
@@ -229,8 +229,8 @@ export function SessionRecapModal({
               <strong>{t("helperSideModelTitle")}</strong>
               <p>{t("helperSideModelDescription")}</p>
             </div>
-            <select
-              className="settings-select"
+            <Select
+              className={styles.modelSelect}
               value={effectiveHelperSideModel}
               onChange={(event) => setHelperSideModel(event.target.value)}
               disabled={isLoading || isSaving}
@@ -240,29 +240,23 @@ export function SessionRecapModal({
                   {model.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         )}
 
         {error && <p className="settings-warning">{error}</p>}
 
         <div className="model-switch-actions">
-          <button
-            type="button"
-            className="settings-button settings-button-secondary"
-            onClick={onClose}
-            disabled={isSaving}
-          >
+          <Button onClick={onClose} disabled={isSaving}>
             {t("modalCancel")}
-          </button>
-          <button
-            type="button"
-            className="settings-button"
+          </Button>
+          <Button
+            variant="primary"
             onClick={() => void save()}
             disabled={isLoading || isSaving || !modeAvailability[recapMode]}
           >
             {isSaving ? t("providersSaving") : t("sessionRecapSave")}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

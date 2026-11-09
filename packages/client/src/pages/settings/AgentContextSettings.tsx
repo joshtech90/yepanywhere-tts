@@ -3,6 +3,9 @@ import {
   LATEX_MATH_RENDERING_CLIENT_CAPABILITY,
   buildEffectiveAgentContext,
 } from "@yep-anywhere/shared";
+import { Button } from "../../components/ui/Button";
+import { Checkbox } from "../../components/ui/Checkbox";
+import { Textarea } from "../../components/ui/Field";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useI18n } from "../../i18n";
 import { SettingsItem } from "./SettingsItem";
@@ -146,8 +149,8 @@ export function AgentContextSettings() {
             <strong>{t("agentContextGlobalInstructions")}</strong>
             <p>{t("agentContextGlobalInstructionsDescription")}</p>
           </div>
-          <textarea
-            className="settings-textarea"
+          <Textarea
+            mono
             value={instructions}
             onChange={(e) => {
               const value = e.target.value.slice(0, MAX_LENGTH);
@@ -172,13 +175,13 @@ export function AgentContextSettings() {
                 max: MAX_LENGTH.toLocaleString(),
               })}
             </span>
-            <button
+            <Button
+              variant="primary"
               type="submit"
-              className="settings-button"
               disabled={!hasChanges || isSaving}
             >
               {isSaving ? t("providersSaving") : t("providersSave")}
-            </button>
+            </Button>
           </div>
         </SettingsItem>
 
@@ -199,11 +202,9 @@ export function AgentContextSettings() {
             <strong>{t("agentContextSuggestedLatexTitle")}</strong>
             <p>{t("agentContextSuggestedLatexDescription")}</p>
           </div>
-          <input
-            type="checkbox"
+          <Checkbox
             checked={latexMathRendering}
-            onChange={(e) => {
-              const nextLatexMathRendering = e.target.checked;
+            onCheckedChange={(nextLatexMathRendering) => {
               setLatexMathRendering(nextLatexMathRendering);
               recomputeHasChanges({
                 latexMathRendering: nextLatexMathRendering,

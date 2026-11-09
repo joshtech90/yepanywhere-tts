@@ -1,3 +1,8 @@
+import { seedHistoricalReceiptAlias } from "../support/legacy-session-aliases.js";
+import {
+  PeerDirectory,
+  fixturePeerGrant,
+} from "../../src/peer-api/directory.js";
 import { Hono } from "hono";
 import { createV0Routes } from "../../src/routes/v0/index.js";
 import { request } from "node:http";
@@ -341,7 +346,7 @@ it("persists request identity across reopen, marks interrupted work uncertain, a
       queueId: "native-queue",
     });
     expect(relaunched).toBe(0);
-    f.store.remap("parent", "canonical-parent");
+    seedHistoricalReceiptAlias(f.store, "parent", "canonical-parent");
     const remapped = await f.core.call("createSession", SUPERUSER, {
       body,
       launch: { ...launch, id: "canonical-parent" },
@@ -351,7 +356,7 @@ it("persists request identity across reopen, marks interrupted work uncertain, a
       creator: { sessionId: "canonical-parent", launchId: "launch-a" },
     });
     f.store.update(id, { sessionId: "child", state: "accepted" });
-    f.store.remap("child", "canonical-child");
+    seedHistoricalReceiptAlias(f.store, "child", "canonical-child");
     expect(
       f.store.relationships("canonical-child", 0, 50).creation,
     ).toMatchObject({ id, sessionId: "canonical-child" });
@@ -436,6 +441,57 @@ it("rechecks current enablement after async catalog lookup and before reservatio
     expect(launched).toBe(0);
     expect(f.commands.replayCreate(body)).toBeUndefined();
   } finally {
+    f.close();
+  }
+});
+
+it("rechecks a queued peer creation's actual grant before native dispatch without replacing its trusted creator", async () => {
+  let authority: (() => Promise<void>) | undefined;
+  const f = fixture({
+    start: async (
+      _project,
+      _request,
+      _receipt,
+      _settled,
+      _failed,
+      _consumed,
+      _admitted,
+      authorize,
+    ) => {
+      authority = authorize;
+      return { queueId: "owned-queued-command" };
+    },
+  });
+  const grant = fixturePeerGrant(
+    "source-peer",
+    "owned-peer-token-at-least-thirty-two-characters",
+    ["p"],
+    ["createSession"],
+  );
+  const directory = new PeerDirectory([grant]);
+  const lease = directory.authenticate(
+    "owned-peer-token-at-least-thirty-two-characters",
+    { sessionId: "source-session", launchId: "source-launch" },
+  );
+  f.enable();
+  try {
+    const created = await f.core.read("createSession", lease.principal, {
+      body,
+    });
+    await f.commands.idle();
+    expect(authority).toBeTypeOf("function");
+    await authority!();
+    directory.revoke(grant.id);
+    await expect(authority!()).rejects.toThrow("Peer credential is not active");
+    expect(f.store.get((created as { id: string }).id)?.creator).toMatchObject({
+      principal: { kind: "peer" },
+      serverId: "source-peer",
+      sessionId: "source-session",
+      authentication: { credentialId: grant.id },
+    });
+  } finally {
+    lease.release();
+    directory.close();
     f.close();
   }
 });

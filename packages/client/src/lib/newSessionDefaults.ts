@@ -3,6 +3,7 @@ import {
   isWithdrawnCodexModel,
   type ModelInfo,
   type NewSessionDefaults,
+  type ProviderInfo,
   type ProviderName,
   type ProviderSessionDefaults,
   type ThinkingMode,
@@ -94,6 +95,8 @@ function compactProviderDefaults(
     const routerPolicy = nonEmpty(defaults.routerPolicy);
     if (routerAccountId) compacted.routerAccountId = routerAccountId;
     if (routerPolicy) compacted.routerPolicy = routerPolicy;
+    if (defaults.routerClaudeAiConnectors === true)
+      compacted.routerClaudeAiConnectors = true;
   }
   if (defaults.thinkingMode) compacted.thinkingMode = defaults.thinkingMode;
   if (defaults.effortLevel) compacted.effortLevel = defaults.effortLevel;
@@ -121,6 +124,7 @@ export function getProviderSessionDefaults(
     routerPoolId: scoped.routerPoolId,
     routerAccountId: scoped.routerAccountId,
     routerPolicy: scoped.routerPolicy,
+    routerClaudeAiConnectors: scoped.routerClaudeAiConnectors,
     thinkingMode: scoped.thinkingMode ?? seed.thinkingMode ?? undefined,
     effortLevel: scoped.effortLevel ?? seed.effortLevel ?? undefined,
     helperSideModel: scoped.helperSideModel ?? undefined,
@@ -146,5 +150,22 @@ export function withProviderSessionDefaults(
       ...defaults?.providers,
       [providerName]: providerDefaults,
     },
+  };
+}
+
+/**
+ * Stand-in row for seeding the form before any provider has been probed.
+ *
+ * It carries no status or capability claims: it exists so the saved provider
+ * and its provider-local model defaults can resolve, and it is replaced by the
+ * probed row the moment one arrives. It is never rendered as a provider card.
+ */
+export function unprobedProviderRow(name: ProviderName): ProviderInfo {
+  return {
+    name,
+    displayName: name,
+    installed: false,
+    authenticated: false,
+    enabled: false,
   };
 }

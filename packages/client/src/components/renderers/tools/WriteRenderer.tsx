@@ -5,6 +5,7 @@ import type { ZodError } from "zod";
 import { useOptionalSessionMetadata } from "../../../contexts/SessionMetadataContext";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { useVisibilityAwareTextTooltip } from "../../../hooks/useTooltipAppearance";
+import { useI18n } from "../../../i18n";
 import { isMarkdownLikeFile } from "../../../lib/markdownFiles";
 import { getPathBasename, makeDisplayPath } from "../../../lib/text";
 import { validateToolResult } from "../../../lib/validateToolResult";
@@ -16,9 +17,16 @@ import {
 import { SchemaWarning } from "../../SchemaWarning";
 import { ShikiHtml } from "../../ShikiHtml";
 import { SessionFilePathLink } from "../../SessionFilePathLink";
+import { Button, ButtonBase } from "../../ui/Button";
 import { FilePathDisplay } from "../../ui/FilePathDisplay";
+import { SegmentedControl } from "../../ui/SegmentedControl";
 import { getOutputTailTooltip } from "./outputPreview";
 import type { WriteInput, WriteResult } from "./types";
+
+const MARKDOWN_VIEW_OPTIONS = [
+  { value: "source", label: "Source" },
+  { value: "preview", label: "Preview" },
+] as const;
 
 const MAX_LINES_COLLAPSED = 30;
 const PREVIEW_LINES = 3;
@@ -77,29 +85,23 @@ function WriteModalContent({
   file: NonNullable<WriteResult["file"]>;
   input?: WriteInputWithAugment;
 }) {
+  const { t } = useI18n();
   const [showPreview, setShowPreview] = useState(false);
   const lines = file.content.split("\n");
 
   const isMarkdown = isMarkdownLikeFile(file.filePath);
   const hasMarkdownPreview = isMarkdown && !!input?._renderedMarkdownHtml;
 
-  // Toggle button for markdown files
+  // Source/Preview choice for markdown files
   const toggleButton = hasMarkdownPreview && (
     <div className="markdown-view-toggle">
-      <button
-        type="button"
-        className={`toggle-btn ${!showPreview ? "active" : ""}`}
-        onClick={() => setShowPreview(false)}
-      >
-        Source
-      </button>
-      <button
-        type="button"
-        className={`toggle-btn ${showPreview ? "active" : ""}`}
-        onClick={() => setShowPreview(true)}
-      >
-        Preview
-      </button>
+      <SegmentedControl
+        size="small"
+        aria-label={t("sourceViewMode")}
+        options={MARKDOWN_VIEW_OPTIONS}
+        value={showPreview ? "preview" : "source"}
+        onChange={(view) => setShowPreview(view === "preview")}
+      />
     </div>
   );
 
@@ -264,13 +266,14 @@ function WriteToolResult({
         </pre>
       </div>
       {needsCollapse && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="small"
           className="expand-button"
           onClick={() => setIsExpanded(!isExpanded)}
         >
           {isExpanded ? "Show less" : `Show all ${lines.length} lines`}
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -363,11 +366,7 @@ function WriteCollapsedPreview({
 
   return (
     <>
-      <button
-        type="button"
-        className="write-collapsed-preview"
-        onClick={handleClick}
-      >
+      <ButtonBase className="write-collapsed-preview" onClick={handleClick}>
         <div className="write-preview-lines">
           <FilePathDisplay displayPath={displayPath} />
           {" · "}
@@ -389,7 +388,7 @@ function WriteCollapsedPreview({
           )}
           {isTruncated && <div className="write-preview-fade" />}
         </div>
-      </button>
+      </ButtonBase>
       {isModalOpen && (
         <ActivityDetailModal
           title={

@@ -8,7 +8,8 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
-import { createNodeWebSocket } from "@hono/node-ws";
+import { upgradeWebSocket } from "@hono/node-server";
+import { WebSocketServer } from "ws";
 import type {
   RelayEvent,
   RelayRequest,
@@ -64,7 +65,7 @@ import { attachUnifiedUpgradeHandler } from "../../src/frontend/index.js";
 import { RemoteSessionService } from "../../src/remote-access/RemoteSessionService.js";
 import { RemoteAccessService } from "../../src/remote-access/index.js";
 import { createWsRelayRoutes } from "../../src/routes/ws-relay.js";
-import { MockClaudeSDK } from "../../src/sdk/mock.js";
+import { ScriptedClaudeProvider } from "../support/scripted-provider.js";
 import { UploadManager } from "../../src/uploads/manager.js";
 import { EventBus } from "../../src/watcher/index.js";
 
@@ -108,7 +109,7 @@ describe("Secure WebSocket Transport E2E", () => {
   let testDir: string;
   let server: ReturnType<typeof serve>;
   let serverPort: number;
-  let mockSdk: MockClaudeSDK;
+  let mockSdk: ScriptedClaudeProvider;
   let eventBus: EventBus;
   let authService: AuthService;
   let remoteAccessService: RemoteAccessService;
@@ -131,7 +132,7 @@ describe("Secure WebSocket Transport E2E", () => {
     await mkdir(dataDir, { recursive: true });
 
     // Create services
-    mockSdk = new MockClaudeSDK();
+    mockSdk = new ScriptedClaudeProvider();
     eventBus = new EventBus();
     authService = new AuthService({
       dataDir,
@@ -154,7 +155,7 @@ describe("Secure WebSocket Transport E2E", () => {
 
     // Create the app
     const { app, supervisor } = createApp({
-      sdk: mockSdk,
+      provider: mockSdk,
       projectsDir: testDir,
       eventBus,
       authService,
@@ -162,7 +163,7 @@ describe("Secure WebSocket Transport E2E", () => {
     });
 
     // Add WebSocket support
-    const { upgradeWebSocket, wss } = createNodeWebSocket({ app });
+    const wss = new WebSocketServer({ noServer: true });
 
     // Add WebSocket relay route with remote access enabled
     const baseUrl = "http://localhost:0";
@@ -182,19 +183,20 @@ describe("Secure WebSocket Transport E2E", () => {
     app.get("/api/ws", wsRelayHandler);
 
     // Start server on random port
-    server = serve({ fetch: app.fetch, port: 0 }, (info) => {
-      serverPort = info.port;
-      console.log(
-        `[WS Secure Test] Server running on port ${serverPort} with remote access enabled`,
-      );
-    });
+    server = serve(
+      { fetch: app.fetch, websocket: { server: wss }, port: 0 },
+      (info) => {
+        serverPort = info.port;
+        console.log(
+          `[WS Secure Test] Server running on port ${serverPort} with remote access enabled`,
+        );
+      },
+    );
 
     // Attach the unified upgrade handler
     attachUnifiedUpgradeHandler(server, {
       frontendProxy: undefined,
       isApiPath: (urlPath) => urlPath.startsWith("/api"),
-      app,
-      wss,
     });
 
     // Wait for server to be ready

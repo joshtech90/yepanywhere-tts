@@ -16,13 +16,6 @@
   line-height: 1.5;
 }
 
-.choice {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 44px;
-}
-
 .hours {
   display: grid;
   grid-template-columns: 1fr 100px;
@@ -30,44 +23,17 @@
   gap: 8px;
 }
 
-.hours input[type="range"] {
+.slider {
   grid-column: 1 / -1;
   width: 100%;
   margin: 0;
   min-height: 32px;
 }
 
-.hours input[type="number"],
-.actions button {
-  min-height: 44px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  padding: 8px 12px;
-  font: inherit;
-}
-
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-}
-
-.actions button:disabled {
-  opacity: 0.5;
-}
-
-.actions .scan {
-  color: var(--success-color);
-  border-color: var(--success-color);
-  background: color-mix(in srgb, var(--success-color) 12%, var(--bg-secondary));
-}
-
-.actions .reset {
-  color: var(--error-color);
-  border-color: var(--error-color);
-  background: color-mix(in srgb, var(--error-color) 12%, var(--bg-secondary));
 }
 
 .exploration {
@@ -89,24 +55,4 @@
   margin: 0;
   font-size: 14px;
   font-weight: 500;
-}
-
-.close {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 24px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.close:hover {
-  background: var(--bg-primary);
-  color: var(--text-primary);
 }

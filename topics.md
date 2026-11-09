@@ -76,7 +76,6 @@
 - mobile-transcript-horizontal-overflow - Fixed outer session viewport with
   renderer-owned code/tool scrollers and swipeable turn galleries.
 - session-defaults - New-session default scoping: all-provider controls vs provider/model economics controls.
-- floating-new-session-composer - Non-session-page `+` quick composer, new-session prefill, and click-time non-browser speech prewarm.
 - permission-mode - Provider-independent approval preference with model-capability-gated Auto fallback.
 - codex-sessions - Codex rollout storage, compression representation, and YA's durable read assumptions.
 - codex-user-turn-provenance - Use Codex's persisted user-turn lifecycle to distinguish real prompts from user-role contextual response items.
@@ -130,8 +129,8 @@
   thought-toggle right-click gesture (registered retroactively; series
   began at fd47ecb2).
 - composer-model-visibility - Provider/model identity echoed adjacent to
-  composers (New Session chip, floating composer chip; the session-composer
-  float was removed as redundant with the header badge).
+  composers (New Session chip; the session-composer float was removed as
+  redundant with the header badge).
 - provider-output-contract - Single spec for normalized provider output
   (message envelope, tool results, status, lineage links); named TS types
   as the type definition, validation kept off hot paths.
@@ -225,6 +224,8 @@
   bang-composer completion/help UI proposal.
 - ui-testing - Capture-confirmed browser QA by default, with an explicit
   user-owned visual-verification handoff that skips agent capture work.
+- ui-design - Design language layers, shared controls and the dev-only design
+  playground, mockup lifecycle, and relocatable mockup exports and captures.
 - source-control - Repository-navigation workbench: changes, commits, files,
   blame, diffs, responsive panes, and links to relevant agent sessions.
 - aligned-markdown-diffs - Resumable source-positioned Markdown rendering that
@@ -472,3 +473,19 @@
 - http-api-v0 — server-addressed unstable HTTP API and isolated core.
 
 - peer-access — directional v0 routing, manual enrollment and optional fleet login.
+
+- managed-viewer-publication - Separate viewer content from lifecycle updates.
+
+- antigravity-discovery — native ACP provider and shared catalog/project discovery.
+
+- native-provider-integration — actual provider executables with scripted local model APIs.
+
+- session-relationships — Durable typed session relationships, producer evidence and nonblocking native-child discovery.
+
+- codex-native-thread-index - Codex state_5.sqlite thread index as change signal and listing source; scan fan-out and log volume.
+
+- catalog-identity-projection-cost - Per-read cost of projecting retained catalog rows to public session identities.
+
+- required-sqlite - Required SQLite storage (renamed from optional-sqlite on
+  2026-11-09): runtime adapters, data directory placement, transaction cost,
+  and retiring designs that assumed no database.

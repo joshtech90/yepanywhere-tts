@@ -1,7 +1,9 @@
 # UI design and mockup exports
 
-> YA UI proposals use real client components in isolated Vite fixtures,
-> exported as relocatable HTML, CSS, JavaScript, fonts, and linked captures.
+> YA's design language is moving onto a small set of shared controls that are
+> shown and captured in a dev-only design playground. UI proposals use real
+> client components in isolated Vite fixtures, exported as relocatable HTML,
+> CSS, JavaScript, fonts and linked captures.
 
 Topic: ui-design
 
@@ -29,7 +31,412 @@ This is fixture configuration, not a change to the application's default.
 Keep related controls grouped, allow long content to scroll, and inspect the
 real desktop and phone renders under [UI testing](ui-testing.md).
 
+## Shared controls and the design playground
+
+Status: direction selected 2026-11-08.
+[Plan 182](../docs/tactical/182-design-playground-and-shared-controls.md)
+sequences the work. The playground, its token page, the undefined-property
+limit, the button and switch census, the shared button family, the
+shared switch and segmented control, the shared popover and menu, and the
+shared fields have landed. For controls without a
+shared version yet, the owners above remain the reference.
+
+**Buttons.** `src/components/ui/Button.tsx` owns the button family:
+
+- `Button`: variants `primary` (brand green), `secondary` (the default),
+  `outline`, `ghost`, `danger` and `danger-outline`; sizes `default`,
+  `small` and `dense`. `dense` (22 px) is for controls inside dense rows
+  (tool rows, code lines, hover-revealed copy actions): on coarse pointers
+  it keeps its drawn size and extends its hit area invisibly, so the row
+  does not grow.
+- `IconButton`: icon-only; its required `label` is the accessible name and
+  the tooltip, following the user's tooltip setting (`data-tooltip` for
+  `TooltipLayer` when themed, `title` when native). `tooltip` replaces the
+  tooltip text when it should say more than the name (a gesture hint, a
+  freshness state). Defaults to `ghost`; a ghost with `aria-pressed="true"`
+  shows as a bordered, filled chip.
+- `ButtonBase`: an unstyled button for clickable rows, cards, disclosure
+  arrows and chips. Its reset has zero specificity, so the owner's styles
+  always win, including ancestor rules such as `.list button`; it keeps the
+  focus ring. Its text is `--font-size-base` rather than inherited, the
+  size raw buttons had, so a swapped row keeps its text size; an owner whose
+  row should follow its context sets `font-size: inherit`.
+- `buttonClassName()`: the same look for an `<a>` or router `Link` that is a
+  button-shaped navigation target.
+
+All of them default `type` to `button`, so none submits a form unless asked,
+pass ordinary button attributes through (including `data-testid`) and take
+`ref`. `busy` shows a spinner, sets `aria-busy` and ignores clicks and form
+submission while keeping focus. Coarse pointers get 44 px (default and
+icon) and 36 px (small) controls. A text glyph used as an icon (×, ↑)
+renders larger than label text. A caller's `className` adds layout only
+(margins, flex placement, width); the control owns colors, borders,
+padding, size and type. A caller rule that must override the control's look is compounded
+(`.chip.disabled`), because two single-class rules resolve by stylesheet
+order.
+
+Which variant: the single main submit or confirm action of a form or
+dialog is `primary`; a destructive confirm is `danger`; a destructive action
+beside others (Remove, Delete, Revoke, Forget) is `danger-outline`; Cancel,
+Close and every other action is `secondary`; an inline text action ("Show
+more", "Copy", "Edit") is `ghost` `small`; an icon-only button is an
+`IconButton`. `outline` remains for the few places that must differ from a
+neighbouring secondary.
+
+Client buttons are on the shared controls except those the allowlist
+below names: tabs (a later family), listbox options, the composer's
+controls, the crash fallback page, and 15 pre-existing `role="button"`
+elements.
+`pnpm buttons:check` (part of `pnpm lint`) keeps it so. It rejects:
+
+- a banned legacy class: any button, switch or option class from
+  `design/census/mapping.ts` without global rules (`toggle-switch`,
+  `font-size-option`, …), plus those recorded in the allowlist's
+  `bannedClasses`, so restoring a deleted rule does not lift the ban;
+- a raw `<button>` outside `ui/Button.tsx` and the shared selection and
+  menu controls, unless it has a tab role or sits in a composer file;
+- a new `role="button"` element (use `ButtonBase`);
+- a CSS rule, module or global, whose selector reaches a bare `button`
+  element and sets look or size properties (`.panel button { background:
+  …; min-height: … }`), which would outrank `ButtonBase`'s reset and tie
+  with `Button`'s variants;
+- a `role="switch"`, `role="radio"` or `role="radiogroup"` (as an
+  attribute, in a conditional, or as a `role:` prop) outside
+  `ui/Switch.tsx` and `ui/SegmentedControl.tsx`. A `role="option"` button
+  (a listbox in a dropdown) counts as a raw button;
+- a menu role (`menu`, `menuitem`, `menuitemradio`, `menuitemcheckbox`,
+  `menubar`) outside `ui/Menu.tsx`;
+- a press or focus listener (`mousedown`, `pointerdown`, `touchstart`,
+  `click`, `focusin`) on the document, its body or the window (also
+  through a `doc` or `*Document` variable) outside `ui/Popover.tsx`: the
+  mark of a hand-rolled outside dismissal. Plumbing that needs one (drag
+  and text selection, pull to refresh, the tooltip layer, link routing in
+  share frames) is allowlisted with its reason;
+- a raw `<input>` (text types, number, checkbox, radio; not range, file,
+  hidden or color), `<select>` or `<textarea>` outside `ui/Field.tsx`,
+  `ui/Checkbox.tsx` and `ui/Switch.tsx`, and a CSS rule whose selector
+  styles a bare `input`, `select` or `textarea` element with look or size
+  properties (`.form input { border: … }`); the legacy field classes
+  (`settings-input`, `settings-select`, …) once their rules are gone.
+
+Exceptions sit in `design/census/button-allowlist.json`, each with a count
+and a reason; counts only fall (`--record`), and a later family inherits
+the entries that name it. The Census/Buttons "Button elements" state lists
+what is left.
+
+**Switches and segmented controls.** `src/components/ui/Switch.tsx` is the
+on/off control: a native checkbox with `role="switch"` drawn as the 44×24
+track the settings pages always had. Space toggles it and assistive
+technology announces it as a switch. `onCheckedChange(checked, event)`
+reports changes. Name it with `label` (visible text beside the track;
+clicking the text toggles) or, in a row whose own text names it,
+`aria-label`. On coarse pointers its hit area grows to 44 px tall without
+growing the row.
+
+`src/components/ui/SegmentedControl.tsx` picks one value of several. It is a
+radio group: `role="radiogroup"` with `role="radio"` options, one tab stop
+(the selected option, else the first enabled one), and arrow keys, Home and
+End that move focus and select, skipping disabled options. It has two looks
+with one behavior: `segmented` (default; options in one track, the selected
+one filled in the primary green) for short labels, and `cards` (each option
+framed, the selected one outlined in green) for options with an icon, a
+swatch or a description line. `layout` is `inline`, `fill` (equal widths
+across the row) or `stack` (one option per row); `size` is `default` or
+`small`. Options take `icon`, `description`, `disabled`, `ariaLabel` (for an
+icon-only option), `tooltip` (through `TooltipLayer`, as on `IconButton`)
+and a `className` that lands on the label text, for content styling such
+as a font preview; a `description` describes its option rather than
+adding to its name. Name the group with `aria-label` or
+`aria-labelledby`. A group whose change saves to the server sets
+`activation="manual"`: arrows move focus, Space or Enter selects, so
+arrowing across options does not send a write per key. Disabled options
+are `aria-disabled` rather than natively disabled, so a group disabled
+while it saves keeps keyboard focus.
+
+Which control: one setting on or off is a `Switch`; one of several values
+is a `SegmentedControl`; one thing on or off in a toolbar stays an
+`IconButton` or ghost `Button` with `aria-pressed`, and so does a
+multi-select chip filter. Radios inside a dropdown are `Menu` radio items;
+a choice whose options sit in separate rows is a `Radio` (Fields, below).
+
+**Menus and popovers.** `src/components/ui/Popover.tsx` is the anchored
+floating surface: menus, dropdowns, pickers and small panels that open from
+a trigger (`anchorRef`), a measured rect (`anchorRect`) or a point
+(`anchorPoint`, a context menu at the pointer). It renders through a portal
+into `document.body` at `--z-popover`, above modals and below tooltips, on
+the raised `--bg-elevated` panel with `--shadow-lg`. A script places it: it
+flips to the side with more room, shifts to stay in the viewport, caps its
+height to the room left, and follows scrolling, resizing and its own size.
+It closes on a press outside the surface and its trigger (document capture
+phase, so a row or `Modal` that stops its own events cannot hide the
+press), and the click that ends that press is swallowed, as the old
+dismiss overlays did, so dismissing a menu never also presses what lay
+under it (a row, a link, a dialog's backdrop). It also closes on Escape,
+when its trigger is hidden (a parked page) or scrolled out of view, and
+optionally on the phone back gesture (`closeOnBackGesture`). Inside a
+`Modal` it portals into the dialog element, so assistive technology does
+not treat it as outside the modal dialog. Escape goes through `Modal`'s layer stack
+(`useModalLayer`), so inside a dialog the popover closes first; a field
+inside it can keep Escape for itself through `onEscapeKeyDown`. Focus inside
+the surface returns to the trigger when it closes. A popover opened from
+another (a submenu) is nested: presses inside it are not outside its parent.
+`phoneSheet` presents a long picker as a bottom sheet over a backdrop on
+phones (≤768 px), and `maxHeight` caps a long list below the room left.
+`surface` is `panel` (menus: 4 px padding, small type), `card` (help text
+and small forms: roomier padding) or `plain` (the content frames itself).
+
+`src/components/ui/Menu.tsx` puts `role="menu"` on a `Popover`. Opened
+from the keyboard it focuses the first item (a radio menu its checked
+one); opened by pointer it leaves focus where it was, as menus here
+always did, so a click never pulls focus out of the composer, and the
+first arrow key brings focus in. Arrows wrap, Home and End jump, a letter
+jumps to the next item whose label starts with it, Tab closes. `MenuItem` takes `icon`,
+`description`, `shortcut`, `tone="danger"`, `tooltip` (a disabled item stays
+focusable, `aria-disabled`, so its tooltip can say why) and `checked` with
+`kind` (`menuitemcheckbox` or `menuitemradio`); selecting closes the menu
+unless `keepOpen` or the handler calls `preventDefault()`. `MenuLinkItem`
+is an item that is a link (`href`, with `onNavigate` to route in-app), so
+copying the link and modifier or middle clicks work as on any link and
+keep the menu open. A radio menu opens on its checked item. `MenuGroup`
+labels a group and `MenuSeparator` divides. `useMenuTrigger()` wires the
+trigger: `aria-haspopup="menu"`, `aria-expanded`, toggle on click,
+ArrowDown to open.
+
+Why not the Popover API's top layer: it would cover the tooltip layer; `Modal`'s capture-phase Escape handler cancels the key before a
+popover's close request, so popovers need the layer stack anyway; and
+`popover="auto"`'s light dismiss races React-owned open state on the
+trigger's own click. CSS anchor positioning is missing from older iOS
+WebKit (the native shell). One script path places every popover, and
+`Modal`'s anchored mode shares its placement function. `Modal` stays a
+portal `div` rather than `<dialog>`: moving it is the dialog family's
+decision (plan 182, family 7).
+
+Which control: a list of actions is a `Menu`; a one-of-several choice in a
+dropdown is a `Menu` of radio items, and a filter with several selections a
+`Menu` of checkbox items; anything else floating (help text, a small form, a
+list of links with other content) is a `Popover` with its own role
+(`dialog`, `status`). Completion lists driven by a text field stay
+listboxes, and hover cards stay with `TooltipLayer`'s timing.
+
+**Fields.** `src/components/ui/Field.tsx` owns the text fields:
+`TextInput` (a single-line `<input>` of any text type, number included),
+`Textarea` and `Select` (a native `<select>` with a chevron drawn in the
+text color). They share one box: `--bg-input` with an `--border-input`
+border, 32 px tall (44 px on coarse pointers), small type, the
+`--focus-border` ring every control uses, a red border while
+`aria-invalid`, and `size="small"` (26 px) for dense rows. `mono` sets the
+code font for commands, paths, tokens and ids; `unit` puts a muted unit
+after a narrow number box without spinners (`inputClassName` then sizes
+the box). Inputs and textareas fill their container, selects size to
+their options, and the open option list is pinned to the theme's colors. They
+are plain elements with no state of their own, so the caller's `value` and
+`onChange` reach the element untouched and typing costs nothing beyond the
+caller's render (the 100 ms rule in [AGENTS.md](../AGENTS.md)). Width
+defaults to the container's at zero specificity, so a caller's single
+layout class wins; the control owns everything else.
+
+`Field` is a label above one control, with an optional `hint` and `error`
+below: it names the control with `<label htmlFor>`, links the hint and
+error through `aria-describedby`, marks the control `aria-invalid` while
+`error` is set and `required` when asked. The control picks these up from
+context, so `<Field label="URL" hint="…"><TextInput … /></Field>` needs no
+ids; inside a `Field` the Field's id wins over the control's. A settings row whose own title names its control passes `aria-label`
+instead.
+
+`src/components/ui/Checkbox.tsx` has `Checkbox` and `Radio`: native inputs
+in the accent green, with an optional `label` (clicking it toggles) and a
+muted `description` line that describes rather than names, and
+`onCheckedChange(checked, event)`. `indeterminate` shows a mixed state.
+
+Which control: one setting on or off that applies at once is a `Switch`; a
+checkbox picks several independent things (a selection, a filter, an
+"also do this" beside a form's submit); one of several values shown
+together is a `SegmentedControl`; `Radio` is only for a choice whose
+options sit in separate rows or cards (the default among listed services).
+
+**Layers.** The design language has four layers. Each lower layer may not
+depend on a higher one:
+
+1. **Tokens:** the theme custom properties in `src/styles/index.css`
+   (color, spacing, radius, type, shadow and the layer scale `--z-modal`,
+   `--z-popover`, `--z-tooltip`). Other fixed surfaces still carry their
+   own numbers, some above `--z-modal` (the source editor, the fullscreen
+   file viewer and its toolbar, the prompt history rail); popovers stay
+   above them, and moving them onto the scale is open. A token used in client CSS must be defined in every client
+   theme, and `pnpm css:check` rejects a read of a property no client source
+   defines ([CSS architecture](css-architecture.md#contract)). Surfaces are
+   `--bg-surface` (the page), `--bg-secondary`/`--bg-tertiary` (panels),
+   `--bg-elevated` (popovers, menus, raised cards) and `--bg-input` (fields);
+   `--bg-error`, `--bg-warning`, `--bg-success` and `--bg-selected` are tints
+   mixed from each theme's status and primary colors; `--shadow-sm/md/lg`
+   is the elevation scale; `--radius-full` makes a pill. Values every theme
+   shares, the dark defaults and the tints live in one `[data-theme]` block
+   before the theme blocks, so a nested theme (a playground cell) resolves
+   its own.
+2. **Controls:** prop-driven shared components in `src/components/ui/`, each
+   with its own CSS Module. The planned set is `Button`, `IconButton`,
+   `Switch`, `SegmentedControl`, `Checkbox`, `Field`, `Popover`, `Menu`,
+   `Banner`, `Badge`, `Spinner` and `Tabs`, beside the existing `Modal` and
+   `TooltipLayer`. A control renders from props alone: no server, router or
+   app-level context. Needing a service makes it a pattern or a scene.
+3. **Patterns:** reusable compositions of controls, such as a settings row,
+   a confirm dialog or an icon toolbar group.
+4. **Scenes:** real surfaces rendered with fixture data. Server-backed data
+   reaches a scene through injected services (React context), never through
+   bundler aliasing of production modules.
+
+**Unification rules.**
+
+- Control families are unified one at a time, each finished before the next:
+  census, build the shared control, swap every use, delete the old CSS, ban
+  the old way. The plan owns the order; composer controls are excluded until
+  their own pass.
+- Each family's variants are chosen from its census page: every legacy
+  variant rendered next to the proposed canonical set. The
+  legacy-to-variant mapping lives in `packages/client/design/census/`, and
+  the swap follows it.
+- A swap adopts the canonical variant even where the old style differed;
+  design changes are accepted and fallout is fixed as noticed. It is a quick
+  cut in a few area-sized commits, not an opportunistic burn-down.
+- A legacy class whose uses reach zero has its rules deleted in the same
+  slice, global stylesheets included. Once a family is swept, lint rejects
+  its old classes outright, and new code uses the shared control.
+
+**Playground.** `packages/client/design.html` is a separate entry served by
+the Vite dev server, so it opens at `/design.html` on the YA dev port (local
+or Tailscale). No production build lists it as an input, and it is not
+reachable on relay or hosted clients. Biome rejects any import of
+`packages/client/design/`, a `*.specimen.tsx` file or the playground's data
+module from production client code.
+
+Example files are `*.specimen.tsx`: beside their component under `src/`, or
+under `packages/client/design/` for playground-only pages. They use a
+Storybook-compatible subset of Component Story Format: a default export
+`{ title, component?, parameters }`, where `parameters.layer` is `token`,
+`control`, `pattern`, `scene` or `census`, and one exported function per
+state, optionally named with `storyName`. Decorators, args, loaders and play
+functions are not supported. Ids follow Storybook's rules: `Census/Buttons`
+is `census-buttons`, and its `LegacyByVariant` state is
+`census-buttons--legacy-by-variant`. States keep source order.
+
+| URL (after `/design.html`) | Shows |
+| --- | --- |
+| `#/` | Index, grouped by layer |
+| `#/<specimen-id>` | Every state, one column per theme (verydark, dark, light) |
+| `#/<state-id>` | One state across the themes |
+| `…?theme=light` | One theme only |
+| `…?phone` | Grid cells as 375 px frames, so media queries respond |
+| `#/<state-id>?iso&theme=light` | The state alone on a bare page, for capture |
+
+Every page except an isolated state has a sidebar listing the layers and
+their specimens, with the current specimen's states expanded beneath it. Its
+top holds the global view settings: themes shown (all, or one of the three)
+and width (natural or phone). They live in the URL (`?theme=light`,
+`?phone`), and every playground link carries them, so a choice holds while
+navigating. With one theme chosen the whole page, sidebar included, takes
+that theme; with all three, each cell carries its own and the shell stays
+dark. Below 760 px wide the sidebar
+becomes a drawer behind a **Pages** button, which closes on following a link,
+Escape or a tap outside it, and the theme columns stack. Specimens with
+`parameters.width: "fill"` (census and token pages) always stack their themes,
+and their rows wrap details under the name rather than narrowing a column.
+Each grid cell carries its own `data-theme`, so theme tokens resolve per cell.
+An isolated page marks `[data-design-ready]` once fonts load; a state still
+loading data marks an element `data-design-pending`, and capture waits for it
+to go. A state that throws renders its error in place and logs a console
+error.
+
+```bash
+pnpm -s design:index                       # JSON: every specimen, state and URL
+pnpm -s design:shot census-buttons         # each state, dark theme, 1000 px
+pnpm -s design:shot tokens--colors --theme all --phone
+pnpm -s design:shot controls-button--variants --grid --theme all
+pnpm -s design:shot census-buttons --url http://localhost:3400
+```
+
+`design:index` parses the example files statically, so it needs no browser or
+server; check it before writing a new control. `design:shot` starts a
+private dev server for the checkout on a free loopback port (with its own
+optimizer cache) and closes it afterwards, unless `--url` names a running
+one. It captures full-page PNGs in the system Chrome inside its sandbox and
+writes them with the same `capture.json`, `links.md` and image commentary as
+`artifact:capture`, under `.artifacts/design-shots/`. Page errors, console
+errors, failed requests and HTTP errors fail it with exit 3; invalid
+arguments exit 2. Inspect the images before claiming visual quality.
+
+The playground's pages:
+
+- **Tokens:** every theme color resolved in each theme, the spacing, radius,
+  elevation and type scales, and the undefined properties (none since the
+  2026-11-09 token pass; the page lists any a future baseline records).
+- **Controls/Button:** every variant, size and state of the shared button
+  family.
+- **Controls/Switch** and **Controls/SegmentedControl:** each state, both
+  looks, sizes and layouts.
+- **Census/Buttons:** every global and CSS Module class named like a
+  button (`button`, `btn`), grouped by its destination in
+  `design/census/mapping.ts` (a shared variant, `ButtonBase`, a later
+  family, composer-excluded, or dead), each legacy sample beside the shared
+  control it becomes, with rows whose rules a swap already deleted marked
+  so; an **Unmapped** state listing any such class without a row; and
+  **Button elements, by directory**, which finds buttons by element rather
+  than class name: every raw `<button>`, every shared `Button`,
+  `IconButton` and `ButtonBase`, every `<a>`, `Link` or `<label>` whose
+  className names a button or calls `buttonClassName()`, and every element
+  with `role="button"`, each with its file, line and className expression.
+  Raw buttons that belong to a later family (menu or tab roles, the
+  composer's files) are counted apart from those still to swap. The scan
+  (`design/buttonElements.ts`, classification in `design/buttonFamilies.ts`)
+  parses production TSX with the TypeScript compiler.
+- **Controls/Field:** text inputs, selects and textareas in every state,
+  `Field` with hint and error, and checkboxes and radios.
+- **Census/Fields:** each legacy field class with its live use count,
+  grouped by the shared control it became, kept as a regression view.
+- **Census/Switches and segmented controls:** the shared controls, each
+  mapped legacy style with its live use count (all swept), every unmapped
+  global class and every matching CSS Module class, each rendered
+  standalone, kept as a regression view.
+
+Global class counts are static whole-token counts in production
+TypeScript, served by a dev-only Vite plugin and refreshed when sources
+change; classes built at runtime are not seen.
+
+No visual-regression test of the playground runs in CI. Screenshots are
+taken on demand.
+
+**Screen tour.** `pnpm -s design:tour --label before` captures the main
+screens (projects, a session, new session, the file viewer, source control
+and every settings section) in dark and light at 1000×600 and 375×812. It
+runs `e2e/tour/screen-tour.tour.ts` through `playwright.tour.config.ts`,
+which reuses the E2E suite's global setup: a freshly built client and an
+isolated server with the fixture profile, never the operator's YA. The
+relay is not started. Each capture is the viewport as a user first sees it,
+written through `recordUiCapture` into `.artifacts/design-tour/<label>/` and
+presented by the suite's teardown. `--grep settings` limits it to matching
+screens; an existing label directory is refused (exit 2) and a failed screen
+exits 3. Settings sections also get a dark 1000×2400 capture, because their
+panes scroll inside the page where a full-page screenshot cannot reach
+controls below the fold, and every screen gets a dark touch-phone capture
+(375×812 with `isMobile` and `hasTouch`) so coarse-pointer sizing shows; the
+plain phone captures are a narrow desktop viewport. The `.tour.ts` suffix
+keeps it out of the ordinary E2E run and CI.
+A control-family batch runs it before and after its swap to review the
+fallout side by side.
+
+**Mockup lifecycle.** A proposal mockup is temporary. Delete it in the change
+that implements or abandons the proposal; git history keeps it. Do not leave
+proposal fixtures checked in after the real UI ships. When the playground
+lands, proposals become proposal scenes that declare their owning tactical
+plan or gap, and a check fails once that owner is gone or marked done.
+Reference scenes render only real components and are kept. The existing
+`packages/client/mockups/` directories are scheduled for deletion once the
+export tests below move to a playground export.
+
 ## Authoring and commands
+
+This section describes the current export fixture. Plan 182 replaces it with
+a static export of the playground, after which the `mockup:*` commands are
+removed.
 
 The retained example is `packages/client/mockups/projects/`: an HTML entry,
 React source importing the actual `ProjectCard`, and a fixture-owned CSS
@@ -91,13 +498,18 @@ For an already-built HTML entry or an existing HTTP(S) artifact URL, use the
 committed command from the checkout root:
 
 ```bash
-pnpm --filter @yep-anywhere/client exec playwright install chromium
+pnpm --filter @yep-anywhere/client exec playwright install chrome
 pnpm -s artifact:capture path/to/index.html --json
 pnpm -s artifact:capture path/to/index.html --out .artifacts/captures/review-1 --json
 ```
 
 The first command is one-time browser setup after the normal `pnpm install`
-or `pnpm setup:core`. No private dotfiles, `~/agents` checkout, Python, relay
+or `pnpm setup:core`; skip it where Google Chrome is already installed. The
+capture renders agent-authored pages, so it runs them in the system's Google
+Chrome, which the OS keeps current with security fixes, rather than in
+Playwright's pinned Chromium build, which lags them; and, like every Chromium
+launch in this repository, inside Chrome's sandbox. `pnpm lint` rejects a
+launch that omits `chromiumSandbox: true`. No private dotfiles, `~/agents` checkout, Python, relay
 installation, running YA server, or configured artifact hostname is required.
 The helper uses the existing Node/tsx, Playwright, shared capability code, and
 server MIME table. It is development tooling and is not imported by the app.
@@ -392,6 +804,17 @@ inspection controls remain owned by [the HTML viewer gap](../gaps/html-document-
   Storybook catalogue: uses the existing builder without runtime dependencies
   or a second UI implementation. A project with established stories can use
   its static exporter, but must prove the same completeness and viewing path.
+- **A self-built playground**, versus Storybook, Ladle or React Cosmos
+  (re-evaluated 2026-11-08): Storybook 10.3+ adds an agent-oriented MCP
+  addon, but its dev-dependency and configuration surface means continual
+  security upkeep for capability the Vite entry and `artifact:capture`
+  already provide. Example files keep a Storybook-compatible subset so that
+  choice stays reversible. The machine-readable index follows React Cosmos's
+  fixture list.
+- **Injected services for scenes**, versus bundler aliases or a faked network
+  layer: aliases silently break when module paths move, and a network fake
+  would duplicate the server contract. Context injection matches the ongoing
+  client refactor.
 - **A directory plus ordinary HTML metadata**, versus mandatory single-file
   inlining or browser-specific bundle navigation: preserves modules and fonts
   and works with the existing artifact grant. The current export includes the

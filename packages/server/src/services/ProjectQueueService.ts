@@ -1,11 +1,10 @@
+import type { SessionCreationStore } from "../sessions/SessionCreationStore.js";
+import { parseCreationProvenance } from "../sessions/creation-provenance.js";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
-  ALL_PERMISSION_MODES,
-  ALL_PROVIDERS,
   type CreateProjectQueueItemRequest,
-  type PermissionMode,
   type ProjectQueueChangedEvent,
   type ProjectQueueCreatedFrom,
   type ProjectQueueDispatchPauseReason,
@@ -16,13 +15,11 @@ import {
   type ProjectQueueResponse,
   type ProjectQueueStagedAttachments,
   type ProjectQueueTarget,
-  type ProviderName,
   QUEUEABLE_YA_COMMANDS,
   type QueuedYaCommand,
   type QueuedYaCommandProblem,
-  type ShowThinking,
+  type SessionCreationProvenance,
   type StagedAttachmentRef,
-  type ThinkingOption,
   type UpdateProjectQueueItemRequest,
   type UploadedFile,
   type UrlProjectId,
@@ -35,6 +32,15 @@ import type {
   PreparedQueueAttachmentTransfer,
 } from "../uploads/AttachmentStagingService.js";
 import type { EventBus } from "../watcher/EventBus.js";
+import {
+  isRecord,
+  normalizeTarget,
+  optionalPermissionMode,
+  optionalString,
+  ProjectQueueValidationError,
+} from "./project-queue-target.js";
+
+export { ProjectQueueValidationError } from "./project-queue-target.js";
 
 const CURRENT_VERSION = 3;
 const MAX_MESSAGE_PREVIEW_LENGTH = 180;
@@ -62,13 +68,6 @@ export interface ProjectQueueServiceOptions {
   dataDir: string;
   eventBus?: EventBus;
   attachmentStagingService?: AttachmentStagingService;
-}
-
-export class ProjectQueueValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ProjectQueueValidationError";
-  }
 }
 
 /** A well-formed item the queuing user's launch policy does not allow. */
@@ -107,19 +106,6 @@ function applyLaunchPolicy(
 ): void {
   const refusal = policy?.(draft);
   if (refusal) throw new ProjectQueueLaunchRefusedError(refusal);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function optionalString(value: unknown, field: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string") {
-    throw new ProjectQueueValidationError(`${field} must be a string`);
-  }
-  const trimmed = value.trim();
-  return trimmed || undefined;
 }
 
 function optionalNonNegativeInteger(value: unknown): number | undefined {
@@ -162,72 +148,6 @@ function normalizeDispatchState(
     reason: "restart",
     pausedAt: new Date().toISOString(),
   };
-}
-
-function optionalProvider(value: unknown): ProviderName | undefined {
-  if (value === undefined) return undefined;
-  if (
-    typeof value !== "string" ||
-    !ALL_PROVIDERS.includes(value as ProviderName)
-  ) {
-    throw new ProjectQueueValidationError("target.provider is invalid");
-  }
-  return value as ProviderName;
-}
-
-function optionalPermissionMode(value: unknown): PermissionMode | undefined {
-  if (value === undefined) return undefined;
-  if (
-    typeof value !== "string" ||
-    !ALL_PERMISSION_MODES.includes(value as PermissionMode)
-  ) {
-    throw new ProjectQueueValidationError("mode is invalid");
-  }
-  return value as PermissionMode;
-}
-
-function optionalThinking(value: unknown): ThinkingOption | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || !value.trim()) {
-    throw new ProjectQueueValidationError("target.thinking is invalid");
-  }
-  return value.trim() as ThinkingOption;
-}
-
-function optionalShowThinking(value: unknown): ShowThinking | undefined {
-  if (value === undefined) return undefined;
-  if (value !== "default" && value !== "on" && value !== "off") {
-    throw new ProjectQueueValidationError("target.showThinking is invalid");
-  }
-  return value;
-}
-
-function optionalSandboxLevel(
-  value: unknown,
-): "none" | "project-write" | undefined {
-  if (value === undefined) return undefined;
-  if (value !== "none" && value !== "project-write") {
-    throw new ProjectQueueValidationError("target.sandboxLevel is invalid");
-  }
-  return value;
-}
-
-function optionalSandboxNetworkFirewall(
-  value: unknown,
-  sandboxLevel: "none" | "project-write" | undefined,
-): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "boolean") {
-    throw new ProjectQueueValidationError(
-      "target.sandboxNetworkFirewall is invalid",
-    );
-  }
-  if (value && sandboxLevel !== "project-write") {
-    throw new ProjectQueueValidationError(
-      "target.sandboxNetworkFirewall requires project-write sandboxing",
-    );
-  }
-  return sandboxLevel === "project-write" ? value : undefined;
 }
 
 function normalizeUploadedFile(value: unknown, index: number): UploadedFile {
@@ -536,50 +456,6 @@ function withDerivedYaCommand(
   return yaCommand ? { ...message, yaCommand } : message;
 }
 
-function normalizeTarget(raw: unknown): ProjectQueueTarget {
-  if (!isRecord(raw)) {
-    throw new ProjectQueueValidationError("target must be an object");
-  }
-
-  const common = {
-    provider: optionalProvider(raw.provider),
-    mode: optionalPermissionMode(raw.mode),
-    model: optionalString(raw.model, "target.model"),
-    serviceTier: optionalString(raw.serviceTier, "target.serviceTier"),
-    executor: optionalString(raw.executor, "target.executor"),
-    thinking: optionalThinking(raw.thinking),
-    showThinking: optionalShowThinking(raw.showThinking),
-  };
-
-  if (raw.type === "existing-session") {
-    const sessionId = optionalString(raw.sessionId, "target.sessionId");
-    if (!sessionId) {
-      throw new ProjectQueueValidationError("target.sessionId is required");
-    }
-    return {
-      type: "existing-session",
-      sessionId,
-      ...common,
-    };
-  }
-
-  if (raw.type === "new-session") {
-    const sandboxLevel = optionalSandboxLevel(raw.sandboxLevel);
-    return {
-      type: "new-session",
-      title: optionalString(raw.title, "target.title"),
-      sandboxLevel,
-      sandboxNetworkFirewall: optionalSandboxNetworkFirewall(
-        raw.sandboxNetworkFirewall,
-        sandboxLevel,
-      ),
-      ...common,
-    };
-  }
-
-  throw new ProjectQueueValidationError("target.type is invalid");
-}
-
 function normalizeCreatedFrom(
   raw: unknown,
 ): ProjectQueueCreatedFrom | undefined {
@@ -648,6 +524,12 @@ function normalizeProjectQueueItem(
       createdAt,
       updatedAt,
       createdFrom: normalizeCreatedFrom(raw.createdFrom),
+      creationProvenance: parseCreationProvenance(raw.creationProvenance),
+      creationSessionId: optionalString(
+        raw.creationSessionId,
+        "creationSessionId",
+      ),
+      creationRetryId: optionalString(raw.creationRetryId, "creationRetryId"),
       createdByUser: optionalString(raw.createdByUser, "createdByUser"),
       status,
       lastError,
@@ -676,9 +558,15 @@ function summarizeItem(item: ProjectQueueItem): ProjectQueueItemSummary {
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     createdFrom: item.createdFrom,
+    ...(item.creationProvenance
+      ? { creationProvenance: { ...item.creationProvenance } }
+      : {}),
     ...(item.createdByUser ? { createdByUser: item.createdByUser } : {}),
     status: item.status,
     attachmentCount,
+    ...(item.creationSessionId
+      ? { creationSessionId: item.creationSessionId }
+      : {}),
     lastError: item.lastError,
     lastAttemptAt: item.lastAttemptAt,
   };
@@ -708,7 +596,14 @@ function cloneItem(item: ProjectQueueItem): ProjectQueueItem {
         : {}),
     },
     ...(item.createdFrom ? { createdFrom: { ...item.createdFrom } } : {}),
+    ...(item.creationProvenance
+      ? { creationProvenance: { ...item.creationProvenance } }
+      : {}),
   };
+}
+
+export function projectQueueCreationRequestId(itemId: string): string {
+  return `project-queue-${itemId}`;
 }
 
 export class ProjectQueueService {
@@ -720,6 +615,9 @@ export class ProjectQueueService {
     dispatchState: RUNNING_DISPATCH_STATE,
   };
   private initialized = false;
+  private creationStore?: SessionCreationStore;
+  private creationGeneration = -1;
+
   private mutationQueue: Promise<void> = Promise.resolve();
   private attachmentStagingService?: AttachmentStagingService;
 
@@ -785,10 +683,38 @@ export class ProjectQueueService {
       };
     }
     this.initialized = true;
+    this.creationGeneration = -1;
+    this.reconcileCreationAssociations();
+  }
+
+  attachCreationStore(store: SessionCreationStore | undefined): void {
+    this.creationStore = store;
+    this.creationGeneration = -1;
+    this.reconcileCreationAssociations();
+  }
+
+  /** Queue backlog only, compact indexed reads when the durable control generation changes. */
+  private reconcileCreationAssociations(): void {
+    const store = this.creationStore;
+    if (!store) return;
+    const generation = store.generation;
+    if (generation === this.creationGeneration) return;
+    for (const item of this.state.items) {
+      if (item.creationSessionId) continue;
+      const sessionId = store.getPublicSessionId(
+        item.createdByUser
+          ? { kind: "limited", username: item.createdByUser }
+          : { kind: "superuser" },
+        projectQueueCreationRequestId(item.id),
+      );
+      if (sessionId) item.creationSessionId = sessionId;
+    }
+    this.creationGeneration = generation;
   }
 
   listProject(projectId: UrlProjectId): ProjectQueueResponse {
     this.ensureInitialized();
+    this.reconcileCreationAssociations();
     return {
       projectId,
       items: this.state.items
@@ -800,6 +726,7 @@ export class ProjectQueueService {
 
   listAll(): ProjectQueueItemSummary[] {
     this.ensureInitialized();
+    this.reconcileCreationAssociations();
     return this.state.items.map(summarizeItem);
   }
 
@@ -873,12 +800,21 @@ export class ProjectQueueService {
     projectId: UrlProjectId;
     projectPath: string;
     request: CreateProjectQueueItemRequest;
+    /** Normalized at request ingress, independently of creator authority. */
+    creationProvenance: SessionCreationProvenance;
     /** The limited user queuing it; absent for the superuser. */
     createdByUser?: string;
     launchPolicy?: ProjectQueueLaunchPolicy;
   }): Promise<ProjectQueueItemSummary> {
     return this.withMutation(async () => {
       this.ensureInitialized();
+      const creationProvenance = parseCreationProvenance(
+        params.creationProvenance,
+      );
+      if (!creationProvenance)
+        throw new ProjectQueueValidationError(
+          "Creation provenance is required",
+        );
       const now = new Date().toISOString();
       const itemId = randomUUID();
       const target = normalizeTarget(params.request.target);
@@ -905,6 +841,7 @@ export class ProjectQueueService {
         createdAt: now,
         updatedAt: now,
         createdFrom,
+        creationProvenance,
         ...(params.createdByUser
           ? { createdByUser: params.createdByUser }
           : {}),
@@ -939,6 +876,7 @@ export class ProjectQueueService {
     const { launchPolicy, editor } = options;
     return this.withMutation(async () => {
       this.ensureInitialized();
+      this.reconcileCreationAssociations();
       const index = this.findProjectItemIndex(projectId, itemId);
       if (index === -1) return null;
       const existing = this.state.items[index]!;
@@ -947,6 +885,10 @@ export class ProjectQueueService {
           "Cannot update an item while it is dispatching",
         );
       }
+      if (existing.creationSessionId)
+        throw new ProjectQueueValidationError(
+          "This item has an admitted session; open it or queue changed input as a new item",
+        );
       const normalizedTarget =
         request.target !== undefined
           ? normalizeTarget(request.target)
@@ -1009,6 +951,7 @@ export class ProjectQueueService {
   async deleteItem(projectId: UrlProjectId, itemId: string): Promise<boolean> {
     return this.withMutation(async () => {
       this.ensureInitialized();
+      this.reconcileCreationAssociations();
       const index = this.findProjectItemIndex(projectId, itemId);
       if (index === -1) return false;
       if (this.state.items[index]?.status === "dispatching") {
@@ -1032,6 +975,7 @@ export class ProjectQueueService {
   ): Promise<ProjectQueueItemSummary | null> {
     return this.withMutation(async () => {
       this.ensureInitialized();
+      this.reconcileCreationAssociations();
       const index = this.findProjectItemIndex(projectId, itemId);
       if (index === -1) return null;
       const existing = this.state.items[index]!;
@@ -1044,6 +988,7 @@ export class ProjectQueueService {
         ...existing,
         status: "queued",
         lastError: undefined,
+        creationRetryId: randomUUID(),
         startupFailureCount: undefined,
         updatedAt: new Date().toISOString(),
       };
@@ -1061,6 +1006,7 @@ export class ProjectQueueService {
   ): Promise<ProjectQueueItemSummary | null> {
     return this.withMutation(async () => {
       this.ensureInitialized();
+      this.reconcileCreationAssociations();
       const index = this.findProjectItemIndex(projectId, itemId);
       if (index === -1) return null;
       const existing = this.state.items[index]!;
@@ -1120,6 +1066,28 @@ export class ProjectQueueService {
     });
   }
 
+  /** Persist association before native effects; the deterministic admission key repairs crash gaps. */
+  async recordSessionCreation(
+    projectId: UrlProjectId,
+    itemId: string,
+    sessionId: string,
+  ): Promise<void> {
+    await this.withMutation(async () => {
+      const index = this.findProjectItemIndex(projectId, itemId);
+      const item = this.state.items[index];
+      if (
+        item?.status !== "dispatching" ||
+        (item.creationSessionId && item.creationSessionId !== sessionId)
+      )
+        throw new ProjectQueueValidationError(
+          "Queue creation association is no longer current",
+        );
+      this.state.items[index] = { ...item, creationSessionId: sessionId };
+      await this.save();
+      this.emitChange(projectId, "updated", itemId);
+    });
+  }
+
   async claimNextDispatchableItem(
     projectId: UrlProjectId,
   ): Promise<ProjectQueueItem | null> {
@@ -1133,6 +1101,7 @@ export class ProjectQueueService {
     return this.withMutation(async () => {
       this.ensureInitialized();
       if (this.isDispatchPaused()) return null;
+      this.reconcileCreationAssociations();
       const index = itemId
         ? this.findProjectItemIndex(projectId, itemId)
         : this.state.items.findIndex((item) => item.projectId === projectId);
@@ -1160,6 +1129,7 @@ export class ProjectQueueService {
   ): Promise<ProjectQueueItemSummary | null> {
     return this.withMutation(async () => {
       this.ensureInitialized();
+      this.reconcileCreationAssociations();
       const index = this.findProjectItemIndex(projectId, itemId);
       if (index === -1) return null;
       const existing = this.state.items[index]!;
@@ -1177,13 +1147,22 @@ export class ProjectQueueService {
     });
   }
 
+  /**
+   * Requeue an item whose launch failed before reaching the provider, or
+   * mark it failed after repeated failures. `renewCreationRetry` is for a
+   * new-session item whose durable creation failed before any provider
+   * started (a router refusal): the automatic retry needs its own retry
+   * identity, which is safe because nothing was delivered.
+   */
   async recordRetryableStartupFailure(
     projectId: UrlProjectId,
     itemId: string,
     error: string,
+    options: { renewCreationRetry?: boolean } = {},
   ): Promise<ProjectQueueItemSummary | null> {
     return this.withMutation(async () => {
       this.ensureInitialized();
+      this.reconcileCreationAssociations();
       const index = this.findProjectItemIndex(projectId, itemId);
       if (index === -1) return null;
       const existing = this.state.items[index]!;
@@ -1202,6 +1181,9 @@ export class ProjectQueueService {
         lastAttemptAt: now,
         startupFailureCount,
         updatedAt: now,
+        ...(options.renewCreationRetry && status === "queued"
+          ? { creationRetryId: randomUUID() }
+          : {}),
       };
 
       const projectIndexes = this.getProjectItemIndexes(projectId);
@@ -1234,6 +1216,7 @@ export class ProjectQueueService {
   ): Promise<boolean> {
     return this.withMutation(async () => {
       this.ensureInitialized();
+      this.reconcileCreationAssociations();
       const index = this.findProjectItemIndex(projectId, itemId);
       if (index === -1) return false;
       const [completed] = this.state.items.splice(index, 1);
@@ -1252,6 +1235,7 @@ export class ProjectQueueService {
   ): Promise<ProjectQueueItemSummary | null> {
     return this.withMutation(async () => {
       this.ensureInitialized();
+      this.reconcileCreationAssociations();
       const index = this.findProjectItemIndex(projectId, itemId);
       if (index === -1) return null;
       const existing = this.state.items[index]!;
@@ -1420,7 +1404,7 @@ export class ProjectQueueService {
       const preparedRefsById = new Map(
         validatedRetainedRefs.map((ref) => [ref.id, ref]),
       );
-      // Transfer preserves input order, but copies synced drafts with new IDs.
+      // Transfer preserves input order; sync-enabled stores copy with new IDs.
       // Resolve by the submitted ID and persist the returned queue-owned ref.
       for (const [index, requestedRef] of addedRefs.entries()) {
         const preparedRef = transferredAddedRefs[index];

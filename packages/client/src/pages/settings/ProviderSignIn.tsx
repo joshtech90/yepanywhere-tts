@@ -1,6 +1,8 @@
 import type { ProviderLoginFlow, ProviderName } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { Button, buttonClassName } from "../../components/ui/Button";
+import { TextInput } from "../../components/ui/Field";
 import { useToastContext } from "../../contexts/ToastContext";
 import { useI18n } from "../../i18n";
 import styles from "./ProviderSignIn.module.css";
@@ -147,7 +149,7 @@ export function ProviderSignIn({
         {problem && <p role="alert">{problem}</p>}
         {flow.url ? (
           <a
-            className="settings-button"
+            className={buttonClassName()}
             href={flow.url}
             target="_blank"
             rel="noopener noreferrer"
@@ -163,13 +165,13 @@ export function ProviderSignIn({
               {t("providersSignInEnterCode")}
             </span>
             <code className={styles.userCode}>{flow.userCode}</code>
-            <button
-              type="button"
-              className="settings-button"
+            <Button
+              variant="ghost"
+              size="small"
               onClick={() => void copyUserCode(flow.userCode as string)}
             >
               {t("providersSignInCopyCode")}
-            </button>
+            </Button>
           </div>
         )}
         {flow.acceptsCode && flow.url && !flow.codeSubmitted && (
@@ -183,8 +185,8 @@ export function ProviderSignIn({
               void submitCode();
             }}
           >
-            <input
-              type="text"
+            <TextInput
+              mono
               className={styles.codeInput}
               value={code}
               onChange={(event) => setCode(event.target.value)}
@@ -193,13 +195,13 @@ export function ProviderSignIn({
               autoComplete="off"
               spellCheck={false}
             />
-            <button
+            <Button
+              variant="primary"
               type="submit"
-              className="settings-button"
               disabled={busy || !code.trim()}
             >
               {t("providersSignInSubmitCode")}
-            </button>
+            </Button>
           </form>
         )}
         {flow.codeSubmitted && (
@@ -215,14 +217,9 @@ export function ProviderSignIn({
           </pre>
         )}
         <div className={styles.row}>
-          <button
-            type="button"
-            className="settings-button"
-            onClick={() => void cancel()}
-            disabled={busy}
-          >
+          <Button onClick={() => void cancel()} disabled={busy}>
             {t("providersSignInCancel")}
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -254,25 +251,15 @@ export function ProviderSignIn({
         </>
       )}
       <div className={styles.row}>
-        <button
-          type="button"
-          className="settings-button"
-          onClick={() => void start()}
-          disabled={busy}
-        >
+        <Button onClick={() => void start()} disabled={busy}>
           {busy
             ? t("providersSignInStarting")
             : t("providersSignIn", { provider: displayName })}
-        </button>
+        </Button>
         {supportsHostTerminal && (
-          <button
-            type="button"
-            className="settings-button"
-            onClick={() => void openTerminal()}
-            disabled={busy}
-          >
+          <Button onClick={() => void openTerminal()} disabled={busy}>
             {t("providersSignInHostTerminal")}
-          </button>
+          </Button>
         )}
       </div>
     </div>

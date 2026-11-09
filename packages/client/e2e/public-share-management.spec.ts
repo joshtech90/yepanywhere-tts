@@ -100,7 +100,7 @@ test("left and right click open the same share manager", async ({
     .locator("header.session-header")
     .getByLabel("Session options")
     .click();
-  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Share", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("Manage Public Shares")).toBeVisible();
   await expect(
@@ -117,8 +117,8 @@ test("left and right click open the same share manager", async ({
   await indicator.click({ button: "right" });
   await expect(dialog.getByText("Manage Public Shares")).toBeVisible();
   await expect(
-    dialog.getByRole("button", { name: "This session", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
+    dialog.getByRole("radio", { name: "This session", exact: true }),
+  ).toBeChecked();
   await expect(
     dialog.getByRole("button", { name: "Frozen", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
@@ -165,8 +165,8 @@ test("left and right click open the same share manager", async ({
   await indicator.click();
   await expect(dialog.getByText("Manage Public Shares")).toBeVisible();
   await expect(
-    dialog.getByRole("button", { name: "This session", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
+    dialog.getByRole("radio", { name: "This session", exact: true }),
+  ).toBeChecked();
 
   const captureDirectory = process.env.YEP_PUBLIC_SHARE_CAPTURE_DIR;
   await dialog
@@ -229,11 +229,11 @@ test("left and right click open the same share manager", async ({
   }
 
   await dialog
-    .getByRole("button", { name: "All projects", exact: true })
+    .getByRole("radio", { name: "All projects", exact: true })
     .click();
   await expect(
-    dialog.getByRole("button", { name: "All projects", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
+    dialog.getByRole("radio", { name: "All projects", exact: true }),
+  ).toBeChecked();
   await expect(
     dialog.getByRole("button", {
       name: "Review all Live share links in All projects for revocation",
@@ -268,11 +268,11 @@ test("left and right click open the same share manager", async ({
   // race the newly installed menu scroll listener.
   await sessionRow.scrollIntoViewIfNeeded();
   await sessionRow.getByLabel("Session options").click();
-  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Share", exact: true }).click();
   await expect(dialog.getByText("Manage Public Shares")).toBeVisible();
   await expect(
-    dialog.getByRole("button", { name: "This session", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
+    dialog.getByRole("radio", { name: "This session", exact: true }),
+  ).toBeChecked();
   await expect(dialog.getByText("Public Read-Only Share")).toHaveCount(0);
   await page.keyboard.press("Escape");
 
@@ -311,7 +311,7 @@ test("share type labels fit beside creation actions", async ({
     .locator("header.session-header")
     .getByLabel("Session options")
     .click();
-  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Share", exact: true }).click();
 
   const dialog = page.getByRole("dialog");
   const liveFilter = dialog.getByRole("button", {

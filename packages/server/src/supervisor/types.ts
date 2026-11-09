@@ -90,6 +90,7 @@ export interface SessionSandboxPolicy {
 
 // Session metadata (light, for lists)
 export interface SessionSummary {
+  creation?: AppSessionSummary["creation"];
   id: string;
   projectId: UrlProjectId;
   /** Human-readable project basename for display; projectId remains canonical. */
@@ -248,6 +249,7 @@ export type ProcessState =
 
 // Process info (for API responses)
 export interface ProcessInfo {
+  steering?: import("@yep-anywhere/shared").ProviderSteeringState;
   id: string;
   sessionId: string;
   projectId: UrlProjectId;
@@ -340,7 +342,6 @@ export type ProcessEvent =
     }
   /** The served model changed, e.g. a reply named the model behind an alias. */
   | { type: "model-resolved"; model: string }
-  | { type: "session-id-changed"; oldSessionId: string; newSessionId: string }
   | {
       type: "context-window-observed";
       model: string;

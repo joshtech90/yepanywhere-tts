@@ -608,9 +608,9 @@ describe("LocalMediaModal", () => {
       .querySelector<HTMLElement>(`.${imageViewerStyles.stage}`);
     expect(imageSurface).toBeTruthy();
     if (!imageSurface) return;
-    fireEvent.click(screen.getByRole("button", { name: "100%" }));
+    fireEvent.click(screen.getByRole("radio", { name: "100%" }));
     expect(hasClass(imageSurface, imageViewerStyles.zoom)).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Fit" }));
     expect(hasClass(imageSurface, imageViewerStyles.fit)).toBe(true);
 
     const image = screen.getByRole("img", { name: "plot.png" });
@@ -618,7 +618,10 @@ describe("LocalMediaModal", () => {
     expect(
       screen.getAllByRole("menuitem").map((item) => item.textContent),
     ).toEqual(["Open", "Download", "Copy image", "Copy absolute file path"]);
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss image menu" }));
+    // Escape closes the menu, not the Modal under it.
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.getByRole("dialog")).toBeTruthy();
     Object.defineProperties(image, {
       naturalHeight: { configurable: true, value: 1080 },
       naturalWidth: { configurable: true, value: 1920 },
@@ -673,7 +676,7 @@ describe("LocalMediaModal", () => {
 
     dispatchTouchPointer("pointerup", 1, 300);
     dispatchTouchPointer("pointerup", 2, 700);
-    fireEvent.click(screen.getByRole("button", { name: "100%" }));
+    fireEvent.click(screen.getByRole("radio", { name: "100%" }));
     await act(
       () =>
         new Promise<void>((resolve) => {
@@ -931,7 +934,7 @@ describe("LocalMediaModal", () => {
     );
 
     await screen.findByRole("img", { name: "plot.png" });
-    fireEvent.click(screen.getByRole("button", { name: "100%" }));
+    fireEvent.click(screen.getByRole("radio", { name: "100%" }));
     const stage = screen
       .getByRole("dialog")
       .querySelector<HTMLElement>(`.${imageViewerStyles.stage}`);

@@ -14,6 +14,7 @@ import {
 import { useI18n } from "../i18n";
 import { FilterDropdown } from "./FilterDropdown";
 import styles from "./RouterPoolSelector.module.css";
+import { Button } from "./ui/Button";
 export interface RouterSelection {
   sourceKey: string;
   poolId: string;
@@ -102,8 +103,6 @@ const WINDOW_SHORT_KEYS = {
   seven_day_opus: "routerWindowShortWeeklyOpus",
   seven_day_sonnet: "routerWindowShortWeeklySonnet",
   seven_day_oauth_apps: "routerWindowShortWeeklyApps",
-  "codex:primary": "routerWindowShortFiveHour",
-  "codex:secondary": "routerWindowShortWeekly",
 } as const;
 
 type OverviewAccount = AgentAuthRouterOverview["accounts"][number];
@@ -119,6 +118,9 @@ export type RouterBinding = NonNullable<AppSessionSummary["routerBinding"]>;
 export function routerBindingChip(
   t: Translate,
   binding: RouterBinding,
+  action:
+    | "routerChipTooltipOpen"
+    | "routerChipTooltipSwitch" = "routerChipTooltipOpen",
 ): { label: string; tooltip: string } {
   const policy = binding.policyLabel ?? binding.policy;
   const names = [binding.poolName, binding.accountDisplayName].filter(Boolean);
@@ -133,7 +135,7 @@ export function routerBindingChip(
       }),
       policy && t("routerChipTooltipPolicy", { policy }),
       binding.reason,
-      t("routerChipTooltipOpen"),
+      t(action),
     ]
       .filter(Boolean)
       .join("\n"),
@@ -265,6 +267,11 @@ function quotaExhausted(
   account: OverviewAccount,
   concreteModel: string | undefined,
 ): boolean {
+  if (
+    account.provider === "codex" &&
+    account.quota?.ordinaryUsageAllowed !== undefined
+  )
+    return !account.quota.ordinaryUsageAllowed;
   return (account.windows ?? []).some(
     (w) => w.remainingPercent === 0 && windowApplies(w, concreteModel),
   );
@@ -280,7 +287,10 @@ export function tightestRemaining(
       (w) => w.remainingPercent !== null && windowApplies(w, concreteModel),
     )
     .map((w) => w.remainingPercent as number);
-  return percents.length ? Math.min(...percents) : null;
+  const remaining = percents.length ? Math.min(...percents) : null;
+  return remaining === 0 && account.quota?.ordinaryUsageAllowed === true
+    ? null
+    : remaining;
 }
 
 /**
@@ -461,19 +471,37 @@ function AccountQuota({ account }: { account: OverviewAccount }) {
       }
     >
       {windows.map((w) => (
-        <span key={w.bucket} className={remainingTone(w.remainingPercent)}>
-          {w.remainingPercent === null
-            ? t("routerQuotaLineUnknown", { window: windowShortLabel(t, w) })
-            : w.resetsAt
-              ? t("routerQuotaLine", {
-                  window: windowShortLabel(t, w),
-                  percent: Math.round(w.remainingPercent),
-                  reset: formatReset(w.resetsAt),
-                })
-              : t("routerQuotaLineNoReset", {
-                  window: windowShortLabel(t, w),
-                  percent: Math.round(w.remainingPercent),
-                })}
+        <span
+          key={w.bucket}
+          className={remainingTone(
+            account.quota?.ordinaryUsageAllowed && w.remainingPercent === 0
+              ? null
+              : w.remainingPercent,
+          )}
+        >
+          {account.quota?.ordinaryUsageAllowed && w.remainingPercent === 0
+            ? t("subscriptionUsageAllowed")
+            : w.remainingPercent === null
+              ? t("routerQuotaLineUnknown", { window: windowShortLabel(t, w) })
+              : w.resetsAt
+                ? t("routerQuotaLine", {
+                    window: windowShortLabel(t, w),
+                    percent: Math.round(w.remainingPercent),
+                    reset: formatReset(w.resetsAt),
+                  })
+                : t("routerQuotaLineNoReset", {
+                    window: windowShortLabel(t, w),
+                    percent: Math.round(w.remainingPercent),
+                  })}
+          {w.remainingCapacityUnits != null && (
+            <>
+              {" "}
+              ·{" "}
+              {t("subscriptionUsageCapacity", {
+                units: w.remainingCapacityUnits,
+              })}
+            </>
+          )}
         </span>
       ))}
       {age && <span className={styles.quotaUnknown}>{age}</span>}
@@ -731,9 +759,14 @@ export function RouterPoolSelector({
         {error ? (
           <div className={styles.status} role="alert">
             <span>{t("routerDiscoveryFailed")}</span>
-            <button type="button" className={styles.retry} onClick={retry}>
+            <Button
+              variant="ghost"
+              size="small"
+              className={styles.retry}
+              onClick={retry}
+            >
               {t("routerRetry")}
-            </button>
+            </Button>
           </div>
         ) : unavailable ? (
           <div className={`${styles.status} ${styles.warning}`} role="status">

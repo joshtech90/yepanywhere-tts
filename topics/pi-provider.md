@@ -14,6 +14,75 @@ Candidate designs that are not current behavior, including YA-supplied web
 search/fetch tools for pi, live in
 [`pi-provider.sketches.md`](pi-provider.sketches.md).
 
+## Queued native compaction completion
+
+A successful Pi `compact` RPC is completion evidence: Pi writes the native
+compaction entry and clears manual-compaction state before replying. YA validates
+the returned summary, retained-entry identity and token count, then reports
+`completion: "completed"` to the shared command owner. A dispatch acknowledgement
+alone never releases following queued input. Claude/Codex keep their existing
+native boundary plus terminal-event path.
+
+Queued compact holds later A/B until confirmed completion, then submits them as
+separate turns. Native refusal leaves the failed compact visible and later input
+held until explicit cancellation. Transport loss, timeout or malformed success
+is uncertain and cannot release later input on guessed success. Hard shutdown
+joins native abort; it does not turn an interrupted compact into success.
+The native suite proves persisted compaction, its summary in the next request,
+separate following turns, controlled model refusal and abort while summarizing.
+Existing hosted workers adopt these provider changes only after worker restart;
+this does not add a public Pi command inventory or new UI control.
+
+## Live model selection acknowledgement
+
+YA applies a live model selection only after native RPC `set_model` returns
+`success: true`. A native refusal or transport failure propagates to the caller;
+YA retains the previous requested/resolved selection. An unavailable model must
+not be reported as successfully applied. The native integration scenario proves
+invalid-selection refusal, a valid change in the next actual model request and
+reapplication on cold launch. It does not add a new provider/model route.
+
+## Durable ordinary text creation
+
+The optional `session-creation-pi-text` capability (global id 145) selects the
+owner-only [saved-intent acceptance lifecycle](session-identity.md#qualified-claude-text-acceptance--november-2).
+YA commits its public UUID, prompt/settings/source and initial-input identity
+before launch. Pi allocates its native session ID; `get_state` binds that handle
+without replacing the public ID in URLs, events, metadata or collections.
+History, discovery and cold continuation resolve the stored native address.
+
+The canonical native scope is `PI_CODING_AGENT_DIR/sessions`, using Pi's native
+home default when unset/empty. The configured YA reader root must match that
+scope. New managed launches refuse a changed native home/storage environment
+before spawning; native `get_state` must report a session file inside the
+admitted scope, in the reader-discoverable `root/<project>/*.jsonl` layout,
+before any prompt is delivered. Root-level or more deeply nested files refuse
+without input. Pi may defer creating that file
+until the first conversation message, so an absent file alone does not fail
+startup. Unsupported input/caller shapes and older servers without this exact
+optional bit retain the existing entry points; the global receipts capability
+remains unadvertised.
+
+Only a successful native RPC `prompt` response confirms the exact input UUID
+associated with that request. Pi 1.4.0 emits it after prompt preflight succeeds
+with started, queued or handled disposition. SDK echoes, queue pulls and stream
+events are presentation only. Refused/unknown responses leave input unconfirmed;
+owner loss preserves uncertainty and cannot replay the saved prompt. Turn
+completion still follows the existing settled-turn boundary below. Native input
+confirmation is not a promise of a successful model answer or persisted reply.
+Hosting additionally requires `session-creation-pi-v1` from both host and worker;
+older generations refuse before native effects without replacing incumbents.
+
+Controlled local/hosted browser checks cover confirmation, streaming, both turns
+after reload/restart/continuation, native refusal, owner loss and an outside-scope
+file. Actual published 0.8.0/0.11.0 clients receive idle native-file updates under
+the public ID after restart. The real Pi 1.4.0 executable also passes creation,
+native JSONL reads and cold continuation against an owned local model endpoint,
+including original conversation context and exactly two model requests. This is
+Node 22/macOS qualification; no external model account, Linux/Windows or Bun
+hosting qualification is claimed. The [implementation ledger](../docs/tactical/171-durable-session-identity-and-creation.md)
+records bounded checks, sole review and remaining provider gates.
+
 ## What pi is (confirmed against the local checkout, 2026-06-21)
 
 A TypeScript monorepo coding agent. The fork at `~/pi` (`origin
@@ -360,6 +429,53 @@ matching `/tree` semantics, not every branch. This makes reload / attach-to-an-
 externally-(TUI-)owned pi session render without spawning pi, exactly as the
 OpenCode DB reader did for unowned OpenCode sessions
 ([`opencode-backend.md`](opencode-backend.md) § *Direct SQLite reader*).
+
+### Scoped YA identity and native refresh
+
+Pi history/discovery uses the canonical native sessions root and native file
+handle; public lists, metadata and focused change events retain the YA id.
+The app's existing scoped reader pool also covers private Pi roots. Original
+transcript membership comes from the native header, while YA's working-project
+overlay remains public metadata. Native catalogue/index keys and JSONL bytes
+are unchanged. Discovery adopts verified native facts once; an existing scoped
+binding wins over the native spelling, including across profile reopen.
+Unqualified legacy readers retain their explicit compatibility path, while a
+qualified cache row without native proof cannot invent a public native-id alias.
+
+Discovery's five-second directory cache does not certify current file contents.
+Selected files are re-statted before parsing; parsed entries are keyed by
+physical device/inode/mtime/ctime/size, so an append with a fixed last-write
+stamp and a replacement invalidate the previous parse. The bounded 64-file LRU
+retains one version per file. Closing a pooled reader is terminal, clears its
+caches and fences pending proof/parse results. Focused viewers share existing
+native directory watches and release them on final unsubscribe; events use
+the public id/current project and physical native path. A closed view creates
+no Pi polling or new process. This does not enable differing-id Pi launches;
+that remains in [plan 171](../docs/tactical/171-durable-session-identity-and-creation.md).
+
+Scoped cold continuation passes the proved absolute native file to `--session`,
+while YA Process, API and event identity stay public. Before CLI discovery or
+launch, its canonical path must be inside the actual launch environment's
+`PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and match the
+stored native scope. A configured `PI_CODING_AGENT_SESSION_DIR` must also contain
+that file. A YA reader-only `PI_SESSIONS_DIR` override cannot certify a different
+native launch namespace. The bounded session header must name the selected
+native id and physical working project; a missing, invalid or conflicting file
+refuses rather than letting Pi allocate a replacement.
+
+An empty agent-directory override uses Pi's home default. Tilde expansion uses
+the native process home; scoped continuation refuses a changed `HOME` or
+`USERPROFILE` in its child-environment overrides before CLI effects. Explicit
+agent-directory selection remains supported without changing that home.
+
+Pi 1.1.0's CLI restores cwd from the opened header. Scoped continuation therefore
+refuses a changed working-project overlay before launch; callers must select the
+original physical project. After `get_state`, both returned native id and actual
+file must match before any queued input or settings command is sent. A startup
+failure retains its real child handle until exit; spawn/pipe errors reject
+pending RPC requests. Process exit or abort releases an idle input wait, including
+abort before the first iterator pull. This qualifies continuation only, not new
+Pi creation ownership or its separate durable user-turn-id gap.
 
 ### Thinking replay parity — fixed 2026-06-24
 

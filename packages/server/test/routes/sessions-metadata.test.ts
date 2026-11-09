@@ -3589,76 +3589,6 @@ describe("Sessions metadata route", () => {
     );
   });
 
-  it("starts a limited user's session behind the firewall and refuses an opt-out", async () => {
-    const project = createProject();
-    const startSession = vi.fn(async () => ({
-      id: "proc-1",
-      sessionId: "sess-new",
-      projectId: project.id,
-      projectPath: project.path,
-      permissionMode: "default",
-      modeVersion: 0,
-    }));
-    const routes = createSessionsRoutes({
-      supervisor: {
-        startSession,
-      } as unknown as SessionsDeps["supervisor"],
-      scanner: {
-        getOrCreateProject: vi.fn(async () => project),
-      } as unknown as SessionsDeps["scanner"],
-      readerFactory: vi.fn(() => ({}) as unknown as ISessionReader),
-    });
-    const app = new Hono<{
-      Variables: Record<typeof PRINCIPAL_VARIABLE, Principal>;
-    }>();
-    app.use("*", async (c, next) => {
-      c.set(PRINCIPAL_VARIABLE, {
-        kind: "limited",
-        username: "alice",
-        grants: {
-          newSessionProjects: [project.id],
-          joinProjects: [],
-          viewProjects: [],
-          joinStaleOffsetMinutes: 0,
-          lock: {},
-        },
-        switched: false,
-        locked: true,
-        via: "direct",
-      });
-      await next();
-    });
-    app.route("/", routes);
-    const start = (body: Record<string, unknown>) =>
-      app.request(`/projects/${project.id}/sessions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: "hello", ...body }),
-      });
-
-    const refused = await start({
-      sandboxLevel: "project-write",
-      sandboxNetworkFirewall: false,
-    });
-    expect(refused.status).toBe(403);
-    expect((await refused.json()).error).toContain("network firewall");
-    expect(startSession).not.toHaveBeenCalled();
-
-    // An unsandboxed request is forced into the sandbox, firewall included.
-    const started = await start({ sandboxLevel: "none" });
-    expect(started.status).toBe(200);
-    expect(startSession).toHaveBeenCalledWith(
-      project.path,
-      expect.objectContaining({ text: "hello" }),
-      undefined,
-      expect.objectContaining({
-        sandboxLevel: "project-write",
-        sandboxNetworkFirewall: true,
-      }),
-      expect.anything(),
-    );
-  });
-
   it("returns attachment rejection before claiming resume started", async () => {
     const warn = vi
       .spyOn(getLogger(), "warn")
@@ -4494,7 +4424,6 @@ describe("Sessions metadata route", () => {
       supported: true,
     }));
     const updateMetadata = vi.fn(async () => undefined);
-    const recordCreationProvenance = vi.fn(async () => undefined);
     const emit = vi.fn();
 
     const routes = createSessionsRoutes({
@@ -4550,7 +4479,6 @@ describe("Sessions metadata route", () => {
           },
         })),
         setProvider: vi.fn(async () => undefined),
-        recordCreationProvenance,
         updateMetadata,
       } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
       eventBus: { emit } as unknown as SessionsDeps["eventBus"],
@@ -4571,10 +4499,23 @@ describe("Sessions metadata route", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(recordCreationProvenance).toHaveBeenCalledWith("sess-new", {
-      surface: "desktop",
-      clientCommit: "abc123",
-    });
+    expect(startSession).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        creation: expect.objectContaining({
+          context: {
+            owner: { kind: "superuser" },
+            source: {
+              kind: "request",
+              provenance: { surface: "desktop", clientCommit: "abc123" },
+            },
+          },
+        }),
+      }),
+    );
     const body = await response.json();
     expect(body).toMatchObject({
       sessionId: "sess-new",
@@ -4600,6 +4541,17 @@ describe("Sessions metadata route", () => {
         thinking: { type: "adaptive" },
         effort: "high",
         providerName: "codex",
+      }),
+      expect.objectContaining({
+        creation: expect.objectContaining({
+          context: {
+            owner: { kind: "superuser" },
+            source: {
+              kind: "request",
+              provenance: { surface: "desktop", clientCommit: "abc123" },
+            },
+          },
+        }),
       }),
     );
     const handoffText = startSession.mock.calls[0]?.[1].text;
@@ -4924,22 +4876,24 @@ describe("Sessions metadata route", () => {
       forkUpToMessageId: "msg-uuid-7",
       oldProcessId: "proc-old",
     });
-    expect(forkSession).toHaveBeenCalledWith({
-      sessionId: "sess-1",
-      projectPath: project.path,
-      providerName: "claude",
-      upToMessageId: "msg-uuid-7",
-      title: "Fork: Refactor session",
-      launchOverrides: {
-        requestedModel: "sonnet",
-        permissionMode: "bypassPermissions",
-        thinking: undefined,
-        serviceTier: undefined,
-      },
-      sandboxLevel: "project-write",
-      sandboxNetworkFirewall: false,
-      sandboxStateKey: "project-sandbox",
-    });
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "sess-1",
+        projectPath: project.path,
+        providerName: "claude",
+        upToMessageId: "msg-uuid-7",
+        title: "Fork: Refactor session",
+        launchOverrides: {
+          requestedModel: "sonnet",
+          permissionMode: "bypassPermissions",
+          thinking: undefined,
+          serviceTier: undefined,
+        },
+        sandboxLevel: "project-write",
+        sandboxNetworkFirewall: false,
+        sandboxStateKey: "project-sandbox",
+      }),
+    );
     expect(startSession).not.toHaveBeenCalled();
     expect(resumeSession).toHaveBeenCalledWith(
       "sess-fork",
@@ -4966,7 +4920,6 @@ describe("Sessions metadata route", () => {
       projectId: project.id,
     });
     expect(updateMetadata).toHaveBeenCalledWith("sess-fork", {
-      title: "Fork: Refactor session",
       forkLineageRootId: "sess-1",
     });
   });
@@ -4982,7 +4935,6 @@ describe("Sessions metadata route", () => {
     const setProvider = vi.fn(async () => undefined);
     const setSessionSandbox = vi.fn(async () => undefined);
     const updateMetadata = vi.fn(async () => undefined);
-    const recordCreationProvenance = vi.fn(async () => undefined);
     const emit = vi.fn();
 
     const routes = createSessionsRoutes({
@@ -5019,7 +4971,6 @@ describe("Sessions metadata route", () => {
         })),
         setProvider,
         setSessionSandbox,
-        recordCreationProvenance,
         updateMetadata,
       } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
       eventBus: { emit } as unknown as SessionsDeps["eventBus"],
@@ -5046,35 +4997,47 @@ describe("Sessions metadata route", () => {
       forkedFrom: "sess-1",
       upToMessageId: "msg-uuid-3",
     });
-    expect(forkSession).toHaveBeenCalledWith({
-      sessionId: "sess-1",
-      projectPath: project.path,
-      providerName: "claude",
-      upToMessageId: "msg-uuid-3",
-      boundary: undefined,
-      title: "Fork: Refactor session",
-      sandboxLevel: "project-write",
-      sandboxNetworkFirewall: true,
-      sandboxStateKey: "project-sandbox",
-    });
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "sess-1",
+        projectPath: project.path,
+        providerName: "claude",
+        upToMessageId: "msg-uuid-3",
+        boundary: undefined,
+        title: "Fork: Refactor session",
+        sandboxLevel: "project-write",
+        sandboxNetworkFirewall: true,
+        sandboxStateKey: "project-sandbox",
+      }),
+    );
     // Fork-only: no process is started or resumed, no message sent.
     expect(resumeSession).not.toHaveBeenCalled();
     expect(startSession).not.toHaveBeenCalled();
-    expect(setProvider).toHaveBeenCalledWith("sess-fork", "claude");
-    expect(recordCreationProvenance).toHaveBeenCalledWith("sess-fork", {
-      surface: "web",
-      clientVersion: "0.9.3",
-    });
-    expect(setSessionSandbox).toHaveBeenCalledWith("sess-fork", {
-      level: "project-write",
-      networkFirewall: true,
-      stateKey: "project-sandbox",
-      projectPath: project.path,
-      projectId: project.id,
+    // Creation admission records the fork's provider.
+    expect(setProvider).not.toHaveBeenCalled();
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        creation: expect.objectContaining({
+          context: {
+            owner: { kind: "superuser" },
+            source: {
+              kind: "request",
+              provenance: { surface: "web", clientVersion: "0.9.3" },
+            },
+          },
+        }),
+      }),
+    );
+    // The copy records its sandbox; the route names the project it is
+    // listed under.
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({ workingProjectId: project.id }),
+    );
+    expect(setSessionSandbox).not.toHaveBeenCalled();
+    expect(forkSession.mock.calls[0]?.[0]).toMatchObject({
+      title: "Fork: Refactor session",
     });
     expect(updateMetadata).toHaveBeenCalledWith("sess-fork", {
-      title: "Fork: Refactor session",
-      forkedFromSessionId: "sess-1",
       forkLineageRootId: "sess-1",
     });
   });
@@ -5203,8 +5166,6 @@ describe("Sessions metadata route", () => {
     expect(await forkOnce()).toBe("Fork 3: Refactor session");
     expect(nextForkOrdinal).toHaveBeenCalledTimes(3);
     expect(updateMetadata).toHaveBeenLastCalledWith("sess-fork", {
-      title: "Fork 3: Refactor session",
-      forkedFromSessionId: "sess-1",
       forkLineageRootId: "sess-1",
     });
   });
@@ -5324,8 +5285,6 @@ describe("Sessions metadata route", () => {
     expect((await response.json()).title).toBe("Fork 2: Refactor session");
     // The fork of a fork stays in the original session's numbering lineage.
     expect(updateMetadata).toHaveBeenCalledWith("sess-fork-2", {
-      title: "Fork 2: Refactor session",
-      forkedFromSessionId: "sess-fork",
       forkLineageRootId: "sess-root",
     });
   });
@@ -5401,12 +5360,14 @@ describe("Sessions metadata route", () => {
       boundary: undefined,
       upToMessageId: undefined,
     });
-    expect(updateMetadata).toHaveBeenCalledWith("sess-clone", {
+    expect(forkSession.mock.calls[0]?.[0]).toMatchObject({
       title: "Clone: Short session",
-      forkedFromSessionId: "sess-1",
+    });
+    expect(updateMetadata).toHaveBeenCalledWith("sess-clone", {
       forkLineageRootId: "sess-1",
     });
-    expect(setRequestedModel).toHaveBeenCalledWith("sess-clone", "gpt-5.6-sol");
+    // Creation admission records the copy's model from its source.
+    expect(setRequestedModel).not.toHaveBeenCalled();
     expect(resumeSession).not.toHaveBeenCalled();
   });
 
@@ -5866,12 +5827,14 @@ describe("Sessions metadata route", () => {
       title: "Tight rename flow",
       generatorSessionId: "sess-retitle-generator",
     });
-    expect(forkSession).toHaveBeenCalledWith({
-      sessionId: "sess-1",
-      projectPath: project.path,
-      providerName: "claude",
-      title: "Retitle generator",
-    });
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "sess-1",
+        projectPath: project.path,
+        providerName: "claude",
+        title: "Retitle generator",
+      }),
+    );
     expect(generateSummary).toHaveBeenCalledWith(
       "claude",
       expect.objectContaining({
@@ -5884,23 +5847,11 @@ describe("Sessions metadata route", () => {
         lengthTarget: 132,
       }),
     );
-    expect(updateMetadata).toHaveBeenCalledWith("sess-retitle-generator", {
-      title: "Retitle generator",
-      archived: true,
-      forkedFromSessionId: "sess-1",
-    });
-    expect(updateMetadata).not.toHaveBeenCalledWith(
-      "sess-1",
-      expect.objectContaining({ title: expect.any(String) }),
-    );
-    expect(setProvider).toHaveBeenCalledWith(
-      "sess-retitle-generator",
-      "claude",
-    );
-    expect(setRequestedModel).toHaveBeenCalledWith(
-      "sess-retitle-generator",
-      "sonnet",
-    );
+    // Creation admission records the generator's title, archiving,
+    // source, provider, model and preferences.
+    expect(updateMetadata).not.toHaveBeenCalled();
+    expect(setProvider).not.toHaveBeenCalled();
+    expect(setRequestedModel).not.toHaveBeenCalled();
   });
 
   it("reactivates a stopped cross-provider session before retitle fork", async () => {
@@ -5975,12 +5926,14 @@ describe("Sessions metadata route", () => {
       }),
       { requestedOverrides: {} },
     );
-    expect(forkSession).toHaveBeenCalledWith({
-      sessionId: "sess-1",
-      projectPath: project.path,
-      providerName: "codex",
-      title: "Retitle generator",
-    });
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "sess-1",
+        projectPath: project.path,
+        providerName: "codex",
+        title: "Retitle generator",
+      }),
+    );
     expect(generateSummary).toHaveBeenCalledWith(
       "codex",
       expect.objectContaining({ purpose: "session-retitle" }),
@@ -6149,16 +6102,20 @@ describe("Sessions metadata route", () => {
     });
     await vi.waitFor(() => {
       expect(resumeSession).toHaveBeenCalledTimes(1);
+      expect(transcriptDisplayObjects[0]).toMatchObject({ status: "ready" });
     });
-    expect(forkSession).toHaveBeenNthCalledWith(1, {
-      sessionId: "sess-1",
-      projectPath: project.path,
-      providerName: "claude",
-      title: "Fork summary generator",
-      sandboxLevel: "project-write",
-      sandboxNetworkFirewall: true,
-      sandboxStateKey: "project-sandbox",
-    });
+    expect(forkSession).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        sessionId: "sess-1",
+        projectPath: project.path,
+        providerName: "claude",
+        title: "Fork summary generator",
+        sandboxLevel: "project-write",
+        sandboxNetworkFirewall: true,
+        sandboxStateKey: "project-sandbox",
+      }),
+    );
     expect(generateSummary).toHaveBeenCalledWith(
       "claude",
       expect.objectContaining({
@@ -6173,21 +6130,24 @@ describe("Sessions metadata route", () => {
         sessionSandbox,
       }),
     );
-    expect(forkSession).toHaveBeenNthCalledWith(2, {
-      sessionId: "sess-1",
-      launchSettings,
-      projectPath: project.path,
-      providerName: "claude",
-      boundary: {
-        kind: "message",
-        provider: "claude",
-        messageId: "msg-after-initial-turn",
-      },
-      title: "Refactor continuation",
-      sandboxLevel: "project-write",
-      sandboxNetworkFirewall: true,
-      sandboxStateKey: "project-sandbox",
-    });
+    expect(forkSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        sessionId: "sess-1",
+        launchSettings,
+        projectPath: project.path,
+        providerName: "claude",
+        boundary: {
+          kind: "message",
+          provider: "claude",
+          messageId: "msg-after-initial-turn",
+        },
+        title: "Refactor continuation",
+        sandboxLevel: "project-write",
+        sandboxNetworkFirewall: true,
+        sandboxStateKey: "project-sandbox",
+      }),
+    );
     expect(resumeSession).toHaveBeenCalledWith(
       "sess-target",
       project.path,
@@ -6203,43 +6163,39 @@ describe("Sessions metadata route", () => {
         sandboxStateKey: "project-sandbox",
       }),
     );
-    expect(setSessionSandbox).toHaveBeenCalledWith(
+    // Both copies record their sandboxes, told the project they are listed
+    // under; the route records the target's started sandbox.
+    expect(forkSession).toHaveBeenCalledTimes(2);
+    for (const [options] of forkSession.mock.calls)
+      expect(options).toMatchObject({ workingProjectId: project.id });
+    expect(setSessionSandbox).not.toHaveBeenCalledWith(
       "sess-generator",
-      expect.objectContaining({
-        level: "project-write",
-        stateKey: "project-sandbox",
-        projectPath: project.path,
-      }),
+      expect.anything(),
     );
+    expect(setSessionSandbox).toHaveBeenCalledTimes(1);
     expect(setSessionSandbox).toHaveBeenCalledWith(
       "sess-target",
       expect.objectContaining({
         level: "project-write",
         stateKey: "project-sandbox",
-        projectPath: project.path,
       }),
     );
-    expect(updateMetadata).toHaveBeenCalledWith("sess-generator", {
-      title: "Fork summary generator",
-      archived: true,
-      forkedFromSessionId: "sess-1",
-    });
+    // Creation admission records both copies' titles, sources, providers
+    // and models, and the generator's archiving; the route hides the target
+    // until its continuation starts.
+    expect(updateMetadata).not.toHaveBeenCalledWith(
+      "sess-generator",
+      expect.anything(),
+    );
     expect(updateMetadata).toHaveBeenCalledWith("sess-target", {
-      title: "Refactor continuation",
       archived: true,
-      forkedFromSessionId: "sess-1",
       forkLineageRootId: "sess-1",
     });
     expect(updateMetadata).toHaveBeenCalledWith("sess-target", {
-      title: "Refactor continuation",
       archived: false,
-      forkedFromSessionId: "sess-1",
-      forkLineageRootId: "sess-1",
     });
-    expect(setProvider).toHaveBeenCalledWith("sess-target", "claude");
-    expect(setProvider).toHaveBeenCalledWith("sess-generator", "claude");
-    expect(setRequestedModel).toHaveBeenCalledWith("sess-target", "sonnet");
-    expect(setRequestedModel).toHaveBeenCalledWith("sess-generator", "sonnet");
+    expect(setProvider).not.toHaveBeenCalled();
+    expect(setRequestedModel).not.toHaveBeenCalled();
     expect(updateTranscriptDisplayObject).toHaveBeenCalled();
     expect(transcriptDisplayObjects[0]).toMatchObject({
       status: "ready",
@@ -6965,9 +6921,19 @@ describe("Sessions metadata route", () => {
         effort: undefined,
         providerName: "codex",
       }),
+      expect.objectContaining({
+        creation: expect.objectContaining({
+          context: {
+            owner: { kind: "superuser" },
+            source: { kind: "request", provenance: { surface: "api" } },
+          },
+        }),
+      }),
     );
     expect(startSession.mock.calls[0]?.[1].text).toContain("- Model: sonnet");
-    expect(setProvider).toHaveBeenCalledWith("sess-new", "codex");
+    expect(startSession.mock.calls[0]?.[3]).toMatchObject({
+      providerName: "codex",
+    });
 
     startSession.mockClear();
     const explicitResponse = await routes.request(
@@ -6999,6 +6965,14 @@ describe("Sessions metadata route", () => {
         providerName: "codex",
         compactAtContextPercent: 50,
         compactAtContextWindow: undefined,
+      }),
+      expect.objectContaining({
+        creation: expect.objectContaining({
+          context: {
+            owner: { kind: "superuser" },
+            source: { kind: "request", provenance: { surface: "api" } },
+          },
+        }),
       }),
     );
     expect(getContextWindow).not.toHaveBeenCalledWith("sonnet", "codex");

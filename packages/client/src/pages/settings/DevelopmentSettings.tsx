@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSchemaValidationContext } from "../../contexts/SchemaValidationContext";
 import { useOptionalRemoteConnection } from "../../contexts/RemoteConnectionContext";
+import { Button, buttonClassName } from "../../components/ui/Button";
+import { Select } from "../../components/ui/Field";
+import { Switch } from "../../components/ui/Switch";
 import { useDeveloperMode } from "../../hooks/useDeveloperMode";
 import { useReloadNotifications } from "../../hooks/useReloadNotifications";
 import { useSchemaValidation } from "../../hooks/useSchemaValidation";
@@ -170,14 +173,11 @@ export function DevelopmentSettings() {
           label={t("developmentSchemaTitle")}
           description={t("developmentSchemaDescription")}
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={validationSettings.enabled}
-              onChange={(e) => setValidationEnabled(e.target.checked)}
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            aria-label={t("developmentSchemaTitle")}
+            checked={validationSettings.enabled}
+            onCheckedChange={(checked) => setValidationEnabled(checked)}
+          />
         </SettingsItem>
         {ignoredTools.length > 0 && (
           <SettingsItem
@@ -197,13 +197,9 @@ export function DevelopmentSettings() {
               </>
             }
           >
-            <button
-              type="button"
-              className="settings-button settings-button-secondary"
-              onClick={clearIgnoredTools}
-            >
+            <Button onClick={clearIgnoredTools}>
               {t("developmentClearIgnored")}
-            </button>
+            </Button>
           </SettingsItem>
         )}
         {relayMonitorUrl && (
@@ -212,7 +208,7 @@ export function DevelopmentSettings() {
             description={t("developmentRelayMonitorDescription")}
           >
             <a
-              className="settings-button settings-button-secondary"
+              className={buttonClassName()}
               href={relayMonitorUrl}
               target="_blank"
               rel="noreferrer"
@@ -225,15 +221,11 @@ export function DevelopmentSettings() {
           label={t("developmentRelayDebugTitle")}
           description={t("developmentRelayDebugDescription")}
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              aria-label={t("developmentRelayDebugTitle")}
-              checked={relayDebugEnabled}
-              onChange={(e) => setRelayDebugEnabled(e.target.checked)}
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            aria-label={t("developmentRelayDebugTitle")}
+            checked={relayDebugEnabled}
+            onCheckedChange={(checked) => setRelayDebugEnabled(checked)}
+          />
         </SettingsItem>
         <SettingsItem
           label={t("developmentDiagnosticsTitle")}
@@ -243,14 +235,13 @@ export function DevelopmentSettings() {
             label: "client console logs",
           }}
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={remoteLogCollectionEnabled}
-              onChange={(e) => setRemoteLogCollectionEnabled(e.target.checked)}
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            aria-label={t("developmentDiagnosticsTitle")}
+            checked={remoteLogCollectionEnabled}
+            onCheckedChange={(checked) =>
+              setRemoteLogCollectionEnabled(checked)
+            }
+          />
         </SettingsItem>
         <SettingsItem
           label={t("developmentRetainRejectedSrpTitle")}
@@ -260,30 +251,23 @@ export function DevelopmentSettings() {
             label: "rejected SRP debugging",
           }}
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              aria-label={t("developmentRetainRejectedSrpTitle")}
-              checked={retainRejectedSrpSessions}
-              onChange={(e) => setRetainRejectedSrpSessions(e.target.checked)}
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            aria-label={t("developmentRetainRejectedSrpTitle")}
+            checked={retainRejectedSrpSessions}
+            onCheckedChange={(checked) => setRetainRejectedSrpSessions(checked)}
+          />
         </SettingsItem>
         <SettingsItem
           label={t("developmentServiceWorkerTitle")}
           description={t("developmentServiceWorkerDescription")}
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={serverSettings?.serviceWorkerEnabled ?? true}
-              onChange={(e) =>
-                updateServerSetting("serviceWorkerEnabled", e.target.checked)
-              }
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            aria-label={t("developmentServiceWorkerTitle")}
+            checked={serverSettings?.serviceWorkerEnabled ?? true}
+            onCheckedChange={(checked) =>
+              updateServerSetting("serviceWorkerEnabled", checked)
+            }
+          />
         </SettingsItem>
       </div>
 
@@ -321,8 +305,7 @@ export function DevelopmentSettings() {
           }
         >
           <div className="settings-item-actions">
-            <select
-              className="settings-select"
+            <Select
               value={sessionScrollBehaviorMode}
               onChange={(event) =>
                 setSessionScrollBehaviorMode(
@@ -336,7 +319,7 @@ export function DevelopmentSettings() {
                   {t(sessionScrollMemoryModeLabelKeys[mode])}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
         </SettingsItem>
       </div>
@@ -368,9 +351,8 @@ export function DevelopmentSettings() {
               </>
             }
           >
-            <button
-              type="button"
-              className={`settings-button ${unsafeToRestart ? "settings-button-danger" : ""}`}
+            <Button
+              variant={unsafeToRestart ? "danger" : "secondary"}
               onClick={handleRestartServer}
               disabled={restarting}
             >
@@ -379,7 +361,7 @@ export function DevelopmentSettings() {
                 : unsafeToRestart
                   ? t("developmentRestartAnyway")
                   : t("developmentRestart")}
-            </button>
+            </Button>
           </SettingsItem>
         </div>
       )}

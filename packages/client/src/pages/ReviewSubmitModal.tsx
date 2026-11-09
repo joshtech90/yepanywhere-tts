@@ -5,16 +5,19 @@ import type {
 import { deriveReviewSubmissionName } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { GlobalSessionItem } from "../api/client";
 import type { ReviewPreviewItem } from "../api/reviewClient";
+import { Button } from "../components/ui/Button";
+import { Checkbox } from "../components/ui/Checkbox";
+import { Field, Select, TextInput } from "../components/ui/Field";
 import { Modal } from "../components/ui/Modal";
+import { useProjectReviewSessions } from "../hooks/useProjectReviewSessions";
 import {
   getAvailableProviders,
   getDefaultProvider,
   useProviders,
 } from "../hooks/useProviders";
 import { notifyReviewCommentsChanged } from "../lib/reviewCommentsBus";
-import { loadProjectSessions, reviewSessionLabel } from "../lib/reviewSessions";
+import { reviewSessionLabel } from "../lib/reviewSessions";
 import type { TranslationFn } from "../i18n";
 import { generateUUID } from "../lib/uuid";
 import styles from "./ReviewSubmitModal.module.css";
@@ -58,8 +61,8 @@ export function ReviewSubmitModal({
   if (submissionsEnabled && !submissionIdRef.current) {
     submissionIdRef.current = generateUUID();
   }
-  const [sessions, setSessions] = useState<GlobalSessionItem[] | null>(null);
-  const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const { sessions, error: sessionsError } =
+    useProjectReviewSessions(projectId);
   const { providers, loading: providersLoading } = useProviders();
   const availableProviders = useMemo(
     () => getAvailableProviders(providers),
@@ -83,31 +86,9 @@ export function ReviewSubmitModal({
   // Load the project's sessions so a review can target any of them, not just a
   // fresh one or the recent review session.
   useEffect(() => {
-    let cancelled = false;
-    loadProjectSessions(projectId)
-      .then((result) => {
-        if (cancelled) return;
-        setSessions(result);
-        if (!targetTouchedRef.current) {
-          setTargetSessionId(
-            recentReviewSessionId
-              ? recentReviewSessionId
-              : (result[0]?.id ?? "new"),
-          );
-        }
-      })
-      .catch((cause) => {
-        if (cancelled) return;
-        setSessionsError(
-          cause instanceof Error
-            ? cause.message
-            : t("sourceReviewSessionsUnavailable"),
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, recentReviewSessionId, t]);
+    if (!sessions || targetTouchedRef.current) return;
+    setTargetSessionId(recentReviewSessionId ?? sessions[0]?.id ?? "new");
+  }, [recentReviewSessionId, sessions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -234,9 +215,8 @@ export function ReviewSubmitModal({
 
         {items && items.length > 0 && (
           <div className={styles.destination}>
-            <label className={styles.field}>
-              <span>{t("sourceReviewTargetLegend")}</span>
-              <select
+            <Field label={t("sourceReviewTargetLegend")}>
+              <Select
                 value={targetSessionId}
                 onChange={(event) => {
                   targetTouchedRef.current = true;
@@ -263,8 +243,8 @@ export function ReviewSubmitModal({
                     )}
                   </option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </Field>
 
             {sessionsError && (
               <div className={styles.targetError}>
@@ -274,9 +254,8 @@ export function ReviewSubmitModal({
 
             {targetSessionId === "new" && (
               <div className={styles.newSession}>
-                <label className={styles.field}>
-                  <span>{t("sourceReviewProvider")}</span>
-                  <select
+                <Field label={t("sourceReviewProvider")}>
+                  <Select
                     value={providerName}
                     disabled={
                       providersLoading || availableProviders.length === 0
@@ -291,11 +270,10 @@ export function ReviewSubmitModal({
                         {provider.displayName}
                       </option>
                     ))}
-                  </select>
-                </label>
-                <label className={styles.field}>
-                  <span>{t("sourceReviewModel")}</span>
-                  <select
+                  </Select>
+                </Field>
+                <Field label={t("sourceReviewModel")}>
+                  <Select
                     value={model}
                     disabled={!selectedProvider}
                     onChange={(event) => setModel(event.target.value)}
@@ -306,8 +284,8 @@ export function ReviewSubmitModal({
                         {providerModel.name}
                       </option>
                     ))}
-                  </select>
-                </label>
+                  </Select>
+                </Field>
               </div>
             )}
           </div>
@@ -315,27 +293,28 @@ export function ReviewSubmitModal({
 
         <div className={styles.actions}>
           {submissionsEnabled && (
-            <label className={`${styles.field} ${styles.name}`}>
-              <span>{t("sourceReviewSubmissionName")}</span>
-              <input
+            <Field
+              label={t("sourceReviewSubmissionName")}
+              className={styles.name}
+            >
+              <TextInput
                 value={name}
                 maxLength={120}
                 placeholder={derivedName}
                 onChange={(event) => setName(event.target.value)}
               />
-            </label>
+            </Field>
           )}
-          <button type="button" onClick={onClose} disabled={busy}>
+          <Button onClick={onClose} disabled={busy}>
             {t("cancel")}
-          </button>
-          <button
-            type="button"
-            className={styles.go}
+          </Button>
+          <Button
+            variant="primary"
             onClick={submit}
             disabled={busy || queued || included.size === 0}
           >
             {t("sourceReviewSubmitReview", { count: included.size })}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>
@@ -362,16 +341,25 @@ function ReviewPreviewRow({
 
   return (
     <li className={`${styles.row} ${gone ? styles.stale : ""}`}>
-      <label className={styles.rowHead}>
-        <input type="checkbox" checked={checked} onChange={onToggle} />
-        <span className={styles.location}>{location}</span>
-        {gone && (
-          <span className={styles.staleLabel}>{t("sourceReviewStale")}</span>
-        )}
-        {!gone && item.relocation.moved && (
-          <span className={styles.movedLabel}>{t("sourceReviewMoved")}</span>
-        )}
-      </label>
+      <Checkbox
+        checked={checked}
+        onCheckedChange={onToggle}
+        label={
+          <>
+            <span className={styles.location}>{location}</span>
+            {gone && (
+              <span className={styles.staleLabel}>
+                {t("sourceReviewStale")}
+              </span>
+            )}
+            {!gone && item.relocation.moved && (
+              <span className={styles.movedLabel}>
+                {t("sourceReviewMoved")}
+              </span>
+            )}
+          </>
+        }
+      />
       <div className={styles.rowText}>{item.comment.text}</div>
     </li>
   );

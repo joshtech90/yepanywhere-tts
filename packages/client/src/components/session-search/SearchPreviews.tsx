@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useHref, useNavigate } from "react-router-dom";
 import type { SessionContentDiagnostic } from "@yep-anywhere/shared";
 import {
   getMessageId,
@@ -11,6 +11,9 @@ import { useI18n } from "../../i18n";
 import { getSessionDisplayTitle } from "../../utils";
 import { SearchDetail } from "./SearchDetail";
 import { renderHighlightedText } from "../SearchPreview";
+import { IconButton } from "../ui/Button";
+import { Menu, MenuItem, MenuLinkItem, useMenuTrigger } from "../ui/Menu";
+import type { PopoverPoint } from "../ui/Popover";
 import previewStyles from "../UserTurnNavigator.module.css";
 import { limitTurnMatches, type SearchMatch } from "./model";
 import styles from "./SearchPreviews.module.css";
@@ -191,37 +194,34 @@ export function SearchPreviews({
     >
       {!!shown.length && (
         <>
-          <button
-            type="button"
+          <IconButton
+            size="small"
             className={styles.expand}
-            title={t("sessionSearchAllMatches")}
-            aria-label={t("sessionSearchAllMatches")}
+            label={t("sessionSearchAllMatches")}
             onClick={onExpand}
           >
             ↗
-          </button>
+          </IconButton>
           <div className={styles.adjustLimit} data-search-limit-controls>
             {canDecrease && (
-              <button
-                type="button"
+              <IconButton
+                size="small"
                 className={styles.decrease}
-                title={t("sessionSearchDecreaseLimit")}
-                aria-label={t("sessionSearchDecreaseLimit")}
+                label={t("sessionSearchDecreaseLimit")}
                 onClick={() => onAdjustLimit(-1, shownPerRole, root.current!)}
               >
                 −
-              </button>
+              </IconButton>
             )}
             {canIncrease && (
-              <button
-                type="button"
+              <IconButton
+                size="small"
                 className={styles.increase}
-                title={t("sessionSearchIncreaseLimit")}
-                aria-label={t("sessionSearchIncreaseLimit")}
+                label={t("sessionSearchIncreaseLimit")}
                 onClick={() => onAdjustLimit(1, shownPerRole, root.current!)}
               >
                 +
-              </button>
+              </IconButton>
             )}
           </div>
         </>
@@ -354,34 +354,14 @@ export function MatchPreview({
 }) {
   const { t } = useI18n();
   const [hover, setHover] = useState(false);
-  const [menu, setMenu] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  const menuButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!menu) return;
-    root.current
-      ?.querySelector<HTMLButtonElement>("[role='menuitem']")
-      ?.focus();
-    const outside = (event: Event) => {
-      if (event.target instanceof Node && !root.current?.contains(event.target))
-        setMenu(false);
-    };
-    const dismissOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      setMenu(false);
-      menuButton.current?.focus();
-    };
-    window.addEventListener("pointerdown", outside, true);
-    window.addEventListener("focusin", outside, true);
-    window.addEventListener("keydown", dismissOnEscape, true);
-    return () => {
-      window.removeEventListener("pointerdown", outside, true);
-      window.removeEventListener("focusin", outside, true);
-      window.removeEventListener("keydown", dismissOnEscape, true);
-    };
-  }, [menu]);
+  const menu = useMenuTrigger();
+  // Set when the menu opened at the pointer (right-click on the match).
+  const [menuPoint, setMenuPoint] = useState<PopoverPoint | null>(null);
+  const closeMenu = () => {
+    menu.close();
+    setMenuPoint(null);
+  };
+  const navigate = useNavigate();
   const { context } = useTurnContext(
     { session, match },
     hover && (match.role === "title" || match.searchText === undefined),
@@ -392,12 +372,13 @@ export function MatchPreview({
     match.role === "title"
       ? match.fullText
       : (match.searchText ?? context?.text);
+  const fullHref = useHref(href);
   const label = t(`sessionSearchField_${match.role}`);
   return (
-    <div ref={root} className={styles.match}>
+    <div className={styles.match}>
       <Link
         to={href}
-        title={menu ? undefined : (text ?? match.preview)}
+        title={menu.open ? undefined : (text ?? match.preview)}
         onClick={(event) => {
           if (
             event.button !== 0 ||
@@ -408,14 +389,15 @@ export function MatchPreview({
           )
             return;
           event.preventDefault();
-          setMenu(false);
+          closeMenu();
           onZoom({ session, match });
         }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         onContextMenu={(event) => {
           event.preventDefault();
-          setMenu(true);
+          setMenuPoint({ x: event.clientX, y: event.clientY });
+          menu.setOpen(true);
         }}
       >
         <span className={`${previewStyles.facsimileTag} ${styles.chip}`}>
@@ -426,13 +408,14 @@ export function MatchPreview({
           {renderHighlightedText(match.preview, query)}
         </span>
       </Link>
-      <button
-        ref={menuButton}
-        type="button"
-        aria-label={t("sessionSearchMatchMenu")}
-        aria-haspopup="menu"
-        aria-expanded={menu}
-        onClick={() => setMenu((value) => !value)}
+      <IconButton
+        {...menu.triggerProps}
+        size="small"
+        label={t("sessionSearchMatchMenu")}
+        onClick={() => {
+          setMenuPoint(null);
+          menu.setOpen(!menu.open);
+        }}
       >
         <svg
           width="18"
@@ -445,24 +428,28 @@ export function MatchPreview({
           <circle cx="9" cy="9" r="1.4" />
           <circle cx="14" cy="9" r="1.4" />
         </svg>
-      </button>
-      {menu && (
-        <div className={styles.menu} role="menu">
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setMenu(false);
-              onZoom({ session, match });
-            }}
-          >
-            {t("sessionSearchZoom")}
-          </button>
-          <Link role="menuitem" to={href}>
-            {t("sessionSearchOpenTurn")}
-          </Link>
-        </div>
-      )}
+      </IconButton>
+      <Menu
+        open={menu.open}
+        onClose={closeMenu}
+        anchorRef={menu.anchorRef}
+        anchorPoint={menuPoint}
+        placement={menuPoint ? "bottom-start" : "bottom-end"}
+        aria-label={t("sessionSearchMatchMenu")}
+      >
+        <MenuItem onSelect={() => onZoom({ session, match })}>
+          {t("sessionSearchZoom")}
+        </MenuItem>
+        <MenuLinkItem
+          href={fullHref}
+          onNavigate={(event) => {
+            event.preventDefault();
+            navigate(href);
+          }}
+        >
+          {t("sessionSearchOpenTurn")}
+        </MenuLinkItem>
+      </Menu>
     </div>
   );
 }

@@ -30,12 +30,8 @@
   min-width: 0;
   padding: 2px 4px;
   margin-left: -4px;
-  border: 0;
   border-radius: 4px;
-  background: none;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
+  font-size: inherit;
 }
 .home:hover:not(:disabled) {
   background: var(--bg-secondary);
@@ -70,12 +66,7 @@
   opacity: 0.7;
 }
 .crumb {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
+  font-size: inherit;
 }
 .crumb:hover {
   color: var(--text-primary);
@@ -103,10 +94,6 @@
   border: 0;
   background: white;
 }
-.viewer .livePreviewToggle[aria-pressed="true"] {
-  background: var(--accent-color);
-  color: var(--accent-contrast);
-}
 .details {
   overflow: auto;
   padding: 16px;
@@ -120,44 +107,18 @@
   border-inline-start: 3px solid var(--warning-color);
   color: var(--warning-color);
 }
-.details label {
-  display: block;
+.field {
   margin-block: 12px;
 }
-/* A wrapped checkbox label continues under its text, not under the box. */
-.details label.checkLabel {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
+/* Its own row, not beside the button before it. */
+.checkLabel {
+  width: 100%;
+  margin-block: 12px;
 }
 .details button {
   margin: 4px;
-  min-height: 32px;
-  padding: 5px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm, 4px);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  cursor: pointer;
   /* Icon-and-text buttons sit level with plain ones in a row. */
   vertical-align: middle;
-}
-.details button.iconLabel {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.details input:not([type="checkbox"]) {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px;
-  margin-top: 6px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font: inherit;
 }
 .details fieldset {
   min-width: 0;
@@ -172,6 +133,16 @@
 }
 .details dd {
   margin: 4px 0 12px;
+}
+/* Edit sits after the command text, level with it. */
+.details .commandEdit {
+  margin-inline-start: 8px;
+}
+.commandField {
+  margin-block: 4px;
+}
+.commandEditor > div button:first-child {
+  margin-inline-start: 0;
 }
 .inlineSettings {
   min-width: 0;

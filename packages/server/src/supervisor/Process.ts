@@ -1,3 +1,5 @@
+import { parseProviderSteeringState } from "@yep-anywhere/shared";
+import { observeProviderInputIds } from "../sdk/providers/creation-runtime-identity.js";
 import { randomUUID } from "node:crypto";
 import { applyStandingPermissionMode } from "./standingPermissionMode.js";
 import type {
@@ -25,6 +27,8 @@ import type {
   ThinkingConfig,
   UserQuestionAnswers,
   UrlProjectId,
+  NativeSessionId,
+  YaSessionId,
 } from "@yep-anywhere/shared";
 import {
   DEFAULT_RECAP_AFTER_SECONDS,
@@ -36,6 +40,7 @@ import {
   isClaudeProviderName,
   isLocalCommandEchoTurn,
   normalizeRecapAfterSeconds,
+  parseNativeSessionId,
   stripPatientQueuePrefix,
 } from "@yep-anywhere/shared";
 import {
@@ -118,6 +123,10 @@ type ClaudeSessionState = "idle" | "running" | "requires_action";
 type DeferredQueueEntry = {
   message: UserMessage;
   timestamp: string;
+  compact?: {
+    state: "pending" | "compacting" | "failed" | "unconfirmed";
+    reason?: string;
+  };
   /**
    * Needle of the assistant output the composer had last seen, captured
    * at enqueue (composition context is a queue-time fact, unlike elapsed
@@ -382,6 +391,15 @@ function parseIsoMs(value: string | null | undefined): number | null {
   if (!value) return null;
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
+}
+
+/** Provider tool-result rows use the user role, but are not echoed input. */
+function isProviderToolResult(message: SDKMessage): boolean {
+  return (
+    message.type === "user" &&
+    Array.isArray(message.message?.content) &&
+    message.message.content.some((block) => block.type === "tool_result")
+  );
 }
 
 /**
@@ -922,9 +940,24 @@ export interface DeferredDeliveryOptions {
   turnTimestamps?: "off" | "before" | "after";
 }
 
+/** Synchronous control-plane boundary; unconfirmed deltas do no store work. */
+export interface ManagedProcessIdentity {
+  readonly sessionId: YaSessionId;
+  /** Persist/validate native evidence before making it observable. */
+  bindNative(id: NativeSessionId): void;
+  /** Recheck the durable attempt before accepting another user turn. */
+  assertInputAdmission(): void;
+  /** Provider-confirmed input ids, rather than local queue pulls. */
+  observeProviderInput(uuid: string): void;
+  /** Close unconfirmed startup ownership when its provider iterator ends. */
+  ownerExited?(): void;
+}
+
 export interface ProcessConstructorOptions extends ProcessOptions {
-  /** Provider message queue, undefined for mock SDK */
-  queue?: AgentMessageQueue;
+  /** Opt-in permanent YA identity. Retained callers keep their remap contract. */
+  managedIdentity?: ManagedProcessIdentity;
+  /** Provider-owned message queue, shared by real and scripted providers. */
+  queue: AgentMessageQueue;
   /** Abort function from real SDK */
   abortFn?: () => void | Promise<void>;
   /** Release a reload-safe proxy without terminating its provider session. */
@@ -935,6 +968,7 @@ export interface ProcessConstructorOptions extends ProcessOptions {
    * message, so provider identity settles at construction instead.
    */
   initializedSessionId?: string;
+  initialSteering?: import("@yep-anywhere/shared").ProviderSteeringState;
   /** Check if underlying CLI process is still alive (for stale detection) */
   isProcessAlive?: () => boolean;
   /** Return true when an idle process should stay owned for an explicit feature. */
@@ -1038,9 +1072,14 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   toolResultMediaStore?: ToolResultMediaStore;
 }
 
+class NativeSessionBindingError extends Error {}
+
 export class Process {
+  private steering:
+    | import("@yep-anywhere/shared").ProviderSteeringState
+    | undefined;
   readonly id: string;
-  private _sessionId: string;
+  private readonly _sessionId: string;
   readonly projectPath: string;
   readonly projectId: UrlProjectId;
   private readonly projectDisplayName: ProjectDisplayNameResolver;
@@ -1060,8 +1099,7 @@ export class Process {
    */
   appliedRewindRecordId: string | undefined;
 
-  private legacyQueue: UserMessage[] = [];
-  private messageQueue: AgentMessageQueue | null;
+  private readonly messageQueue: AgentMessageQueue;
   private unsubscribeMessageQueueYielded: (() => void) | undefined;
   private deferredDeliveryOverrides: DeferredDeliveryOptions | undefined;
   private sessionQueuePersistenceService:
@@ -1093,8 +1131,9 @@ export class Process {
   private static readonly BUCKET_SWAP_INTERVAL_MS = 15_000;
 
   /**
-   * Replay position of each buffered message, assigned once when first
-   * buffered, so a resubscribing client can skip what it already received.
+   * Replay position of each buffered message. Tool-result state updates get a
+   * fresh position; other messages keep their original position on rebuffer.
+   * A resubscribing client can skip what it already received.
    * Every buffered message is emitted synchronously after being buffered, so
    * a subscriber that has received a live message has received every message
    * buffered at or before `lastReplaySeq` at that moment.
@@ -1223,10 +1262,9 @@ export class Process {
     | ((sessionId: string) => void | Promise<void>)
     | null;
   private readonly providerStartsOnFirstMessage: boolean;
-
-  /** Resolvers waiting for the real session ID */
-  private sessionIdResolvers: Array<(id: string) => void> = [];
-  private sessionIdResolved = false;
+  private nativeSessionIdResolved = false;
+  private readonly managedIdentity: ManagedProcessIdentity | undefined;
+  private nativeSessionId: NativeSessionId | undefined;
   private readonly providerSessionIdSettlement: Promise<string>;
   private resolveProviderSessionIdSettlement: ((id: string) => void) | null =
     null;
@@ -1295,6 +1333,28 @@ export class Process {
   private _inputIntentVersion = 0;
   /** Monotonic marker for accepted real user turns. */
   private _userTurnVersion = 0;
+  private queuedCompaction: {
+    entry: DeferredQueueEntry;
+    started: boolean;
+    fallback: boolean;
+    inputYielded: boolean;
+    dispatched: boolean;
+    boundary: boolean;
+    ready: boolean;
+    failed?: string;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+
+  /** Reservation includes failed work until the user cancels it safely. */
+  get queuedCompactionBlocksInput(): boolean {
+    return (
+      this.queuedCompaction !== null ||
+      this.deferredQueue.some(
+        (entry) => entry.compact && entry.compact.state !== "pending",
+      )
+    );
+  }
+
   private _compactAtContextPercent: number | undefined;
   private _compactAtContextWindow: number | undefined;
   private _forceYaOrchestratedCompaction: boolean;
@@ -1326,6 +1386,13 @@ export class Process {
     this.sdkIterator = coalesceStreamingSnapshots(sdkIterator);
     this.id = randomUUID();
     this._sessionId = options.sessionId;
+    this.managedIdentity = options.managedIdentity;
+    if (
+      this.managedIdentity &&
+      this.managedIdentity.sessionId !== options.sessionId
+    ) {
+      throw new Error("Managed process identity differs from its YA session");
+    }
     this.projectPath = options.projectPath;
     this.projectId = options.projectId;
     this.projectDisplayName = options.projectDisplayName ?? getProjectName;
@@ -1335,8 +1402,8 @@ export class Process {
         ? { type: "idle", since: this.startedAt }
         : { type: "in-turn" };
 
-    // Real SDK provides these, mock SDK doesn't
-    this.messageQueue = options.queue ?? null;
+    this.messageQueue = options.queue;
+    this.steering = options.initialSteering;
     this.deferredDeliveryOverrides = options.deferredDelivery;
     this.sessionQueuePersistenceService =
       options.sessionQueuePersistenceService;
@@ -1422,8 +1489,8 @@ export class Process {
     });
     void this.providerSessionIdSettlement.catch(() => undefined);
     if (options.initializedSessionId) {
-      this._sessionId = options.initializedSessionId;
-      this.sessionIdResolved = true;
+      this.bindNativeId(options.initializedSessionId);
+      this.nativeSessionIdResolved = true;
       this.resolveProviderSessionId(options.initializedSessionId);
     }
 
@@ -1449,8 +1516,16 @@ export class Process {
     // Start bucket swap timer for bounded message history
     this.startBucketSwapTimer();
 
-    this.unsubscribeMessageQueueYielded = this.messageQueue?.subscribeYielded?.(
+    this.unsubscribeMessageQueueYielded = this.messageQueue.subscribeYielded?.(
       (messages) => {
+        const compact = this.queuedCompaction;
+        if (
+          compact?.fallback &&
+          messages.some(
+            (message) => message.uuid === compact.entry.message.uuid,
+          )
+        )
+          compact.inputYielded = true;
         const external = [...messages]
           .reverse()
           .find(
@@ -1703,10 +1778,7 @@ export class Process {
   }
 
   get queueDepth(): number {
-    if (this.messageQueue) {
-      return this.messageQueue.depth;
-    }
-    return this.legacyQueue.length;
+    return this.messageQueue.depth;
   }
 
   private get deferredQueueDepth(): number {
@@ -1719,6 +1791,7 @@ export class Process {
     return this.deferredQueue.some(
       (entry) =>
         usesPatientDeliveryPath(entry, this.provider) ||
+        !!entry.compact ||
         !isCompactionGateOpen(entry),
     );
   }
@@ -1753,7 +1826,7 @@ export class Process {
     });
   }
 
-  private getProviderRetentionSnapshot(): ProviderRetentionSnapshot {
+  getProviderRetentionSnapshot(): ProviderRetentionSnapshot {
     return (
       this.getProviderRetentionFn?.() ?? {
         retained: false,
@@ -2294,6 +2367,7 @@ export class Process {
       `Interrupting process: ${this._sessionId}`,
     );
 
+    if (this.queuedCompactionBlocksInput) return false;
     const interrupted = await this.interruptFn();
 
     if (interrupted !== false) {
@@ -2310,7 +2384,7 @@ export class Process {
     // After interrupt, drain all queued messages (direct + deferred) and deliver
     // as a single concatenated batch with the interrupt preamble so the agent
     // knows to treat prior work as resumable.
-    if (interrupted !== false && this.messageQueue) {
+    if (interrupted !== false) {
       const directDrained = this.messageQueue.drainAsync
         ? await this.messageQueue.drainAsync()
         : this.messageQueue.drain();
@@ -2328,10 +2402,14 @@ export class Process {
       if (all.length > 0) {
         // Effort overrides own a whole turn, including after an interrupt.
         // Retain order without merging their text into another turn's effort.
-        if (all.some((message) => message.metadata?.turnEffort)) {
+        if (
+          all.some(
+            (message) => message.metadata?.turnEffort || message.queuedCompact,
+          )
+        ) {
           for (const [index, message] of all.entries()) {
             this.deferMessage(
-              index === 0
+              index === 0 && !message.queuedCompact
                 ? this.concatMessages([message], {
                     interrupted: true,
                     preamble: options?.preamble,
@@ -2570,8 +2648,18 @@ export class Process {
       persistOutput?: (message: DurableLocalCommandMessage) => Promise<void>;
     },
   ): Promise<ProviderCommandResult> {
+    if (this.managedIdentity) {
+      const inputError = this.inputRejectionError();
+      if (inputError) return { handled: true, error: inputError };
+    }
     if (!this.runProviderCommandFn) {
       return { handled: false };
+    }
+    if (this.queuedCompactionBlocksInput) {
+      return {
+        handled: true,
+        error: "Queued compaction must settle before another command",
+      };
     }
     const result = await this.runProviderCommandFn(command, argument);
     if (result.handled && result.output) {
@@ -2655,7 +2743,7 @@ export class Process {
 
   /** Whether the provider has reported the canonical session id for this run. */
   get providerSessionIdSettled(): boolean {
-    return this.sessionIdResolved;
+    return this.nativeSessionIdResolved;
   }
 
   /**
@@ -2664,7 +2752,7 @@ export class Process {
    * be dispatched out of band ahead of that delivery.
    */
   get awaitingFirstMessageToStart(): boolean {
-    return this.providerStartsOnFirstMessage && !this.sessionIdResolved;
+    return this.providerStartsOnFirstMessage && !this.nativeSessionIdResolved;
   }
 
   async appendConversationContext(
@@ -2957,6 +3045,10 @@ export class Process {
     });
 
     this.setState({ type: "terminated", reason, error });
+    this.failQueuedCompaction(
+      "Provider ended before queued compaction completed",
+    );
+    this.releaseQueuedCompaction();
     this.emit({
       type: "terminated",
       reason,
@@ -2993,29 +3085,6 @@ export class Process {
     );
     this.setState({ type: "terminated", reason, error: failure });
     this.emit({ type: "terminated", reason, error: failure });
-  }
-
-  /**
-   * Wait for the real session ID from the SDK's init message.
-   * Returns immediately if already received, or waits with a timeout.
-   */
-  waitForSessionId(timeoutMs = 5000): Promise<string> {
-    if (this.sessionIdResolved) {
-      return Promise.resolve(this._sessionId);
-    }
-
-    return new Promise((resolve) => {
-      this.sessionIdResolvers.push(resolve);
-
-      // Timeout fallback - resolve with current ID even if not updated
-      setTimeout(() => {
-        const index = this.sessionIdResolvers.indexOf(resolve);
-        if (index >= 0) {
-          this.sessionIdResolvers.splice(index, 1);
-          resolve(this._sessionId);
-        }
-      }, timeoutMs);
-    });
   }
 
   /**
@@ -3085,6 +3154,7 @@ export class Process {
     }
 
     const info: ProcessInfo = {
+      steering: this.steering,
       id: this.id,
       sessionId: this._sessionId,
       projectId: this.projectId,
@@ -3149,9 +3219,20 @@ export class Process {
     return [...expiredSteerEchoes, ...buffered];
   }
 
-  /** Buffer a message for replay, keeping any replay position it already has. */
+  /** Tool-result snapshots replace older states; every update gets a fresh cursor. */
   private bufferForReplay(message: SDKMessage): void {
-    if (!this.replaySeqs.has(message)) {
+    const toolResult = Boolean(message.uuid) && isProviderToolResult(message);
+    if (toolResult) {
+      // Keep the latest full state, including during bucket handover. Retaining
+      // each growing output snapshot would multiply replay memory by chunk count.
+      for (const bucket of [this.previousBucket, this.currentBucket]) {
+        const index = bucket.findIndex(
+          (old) => old.uuid === message.uuid && isProviderToolResult(old),
+        );
+        if (index !== -1) bucket.splice(index, 1);
+      }
+    }
+    if (toolResult || !this.replaySeqs.has(message)) {
       this.lastReplaySeq += 1;
       this.replaySeqs.set(message, this.lastReplaySeq);
     }
@@ -3808,11 +3889,9 @@ export class Process {
     message: UserMessage,
     composeAnchor?: string | null,
   ): UserMessage {
-    const prepared = this.withProviderDeliveryPriority(
-      this.applyComposeAnchor(
-        this.applyTurnTimestamp(this.expandEmulatedSlashCommand(message)),
-        composeAnchor,
-      ),
+    const prepared = this.applyComposeAnchor(
+      this.applyTurnTimestamp(this.expandEmulatedSlashCommand(message)),
+      composeAnchor,
     );
     const mode = applyStandingPermissionMode(
       prepared.mode ?? this._permissionMode,
@@ -3825,25 +3904,20 @@ export class Process {
     return { ...prepared, mode };
   }
 
-  private withProviderDeliveryPriority(message: UserMessage): UserMessage {
-    if (!isClaudeProviderName(this.provider)) {
-      return message;
-    }
-
-    const deliveryIntent = message.metadata?.deliveryIntent;
-    if (deliveryIntent === "steer") {
-      return {
-        ...message,
-        priority: message.metadata?.steerNow ? "now" : "next",
-      };
-    }
-    if (deliveryIntent === "deferred" || deliveryIntent === "patient") {
-      return { ...message, priority: "later" };
-    }
-    return message;
+  /** Local completion during reload does not mean the hosted provider ended. */
+  get isDetachingForServerReload(): boolean {
+    return this.viewerLifecycle.isDetachingForServerReload;
   }
 
   private inputRejectionError(): string | null {
+    if (this.managedIdentity && this.iteratorDone) {
+      return "Process provider stream has ended";
+    }
+    try {
+      this.managedIdentity?.assertInputAdmission();
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
     if (this.viewerLifecycle.isDetachingForServerReload) {
       return "Process is detaching for server reload";
     }
@@ -3852,6 +3926,11 @@ export class Process {
     }
     if (this._state.type === "terminated") {
       return `Process terminated: ${this._state.reason}`;
+    }
+    // Message-driven providers may report false before their first input
+    // creates the child. Require an established owner before using that signal.
+    if (this.nativeSessionIdResolved && this.isProcessAlive === false) {
+      return "Process terminated: provider process is no longer alive";
     }
     if (this.transportFailed) {
       // Terminated in all but state while its failure notice publishes; say
@@ -3979,70 +4058,59 @@ export class Process {
       });
     }
 
-    if (this.messageQueue) {
-      // If provider supports in-turn steering, prefer that over queue-after-turn behavior.
-      if (
-        this._state.type === "in-turn" &&
-        this.steerFn &&
-        options?.allowSteer !== false
-      ) {
-        if (!hidden && shouldEmitMessage(sdkMessage)) {
-          this.activeSteerEchoes.set(uuid, sdkMessage);
-        }
-        const steerMessage: UserMessage = {
-          ...messageWithUuid,
-          // Mirror MessageQueue's attachment expansion for steer payloads.
-          text: content,
-          attachments: undefined,
-        };
-        void this.steerFn(steerMessage)
-          .then((steered) => {
-            if (!steered) {
-              this.messageQueue?.push(messageWithUuid);
-            } else if (!this.steerUsesMessageQueue) {
-              this.emitNonHumanUserTurn(messageWithUuid, uuid);
-            }
-          })
-          .catch((error) => {
-            const log = getLogger();
-            log.warn(
-              {
-                event: "process_steer_failed",
-                sessionId: this._sessionId,
-                processId: this.id,
-                provider: this.provider,
-                error: error instanceof Error ? error.message : String(error),
-              },
-              "Steer failed; falling back to queued message",
-            );
-            this.messageQueue?.push(messageWithUuid);
-          });
-        return { success: true, position: 0 };
+    // If provider supports in-turn steering, prefer that over queue-after-turn behavior.
+    if (
+      this._state.type === "in-turn" &&
+      this.steerFn &&
+      options?.allowSteer !== false
+    ) {
+      if (!hidden && shouldEmitMessage(sdkMessage)) {
+        this.activeSteerEchoes.set(uuid, sdkMessage);
       }
-
-      // Transition to running if we were idle
-      if (this._state.type === "idle") {
-        this.transitionToInTurnForWake("user-message");
-      }
-      // Pass message with UUID so SDK uses the same UUID we emitted via SSE
-      const position = this.messageQueue.push(messageWithUuid);
-      this.recordApiInput(messageWithUuid, uuid);
-      return { success: true, position };
+      const steerMessage: UserMessage = {
+        ...messageWithUuid,
+        // Mirror MessageQueue's attachment expansion for steer payloads.
+        text: content,
+        attachments: undefined,
+      };
+      void this.steerFn(steerMessage)
+        .then((steered) => {
+          if (!steered) {
+            this.messageQueue.push(messageWithUuid);
+          } else if (!this.steerUsesMessageQueue) {
+            this.emitNonHumanUserTurn(messageWithUuid, uuid);
+          }
+        })
+        .catch((error) => {
+          const log = getLogger();
+          log.warn(
+            {
+              event: "process_steer_failed",
+              sessionId: this._sessionId,
+              processId: this.id,
+              provider: this.provider,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            "Steer failed; falling back to queued message",
+          );
+          this.messageQueue.push(messageWithUuid);
+        });
+      return { success: true, position: 0 };
     }
 
-    // Legacy behavior for mock SDK
-    this.legacyQueue.push(messageWithUuid);
-    this.recordApiInput(messageWithUuid, uuid);
+    // Transition to running if we were idle
     if (this._state.type === "idle") {
-      this.processNextInQueue();
+      this.transitionToInTurnForWake("user-message");
     }
-    return { success: true, position: this.legacyQueue.length };
+    // Pass message with UUID so SDK uses the same UUID we emitted via SSE
+    const position = this.messageQueue.push(messageWithUuid);
+    this.recordApiInput(messageWithUuid, uuid);
+    return { success: true, position };
   }
 
   /**
    * Queue a message to be sent to the SDK.
-   * For real SDK, pushes to MessageQueue.
-   * For mock SDK, uses legacy queue behavior.
+   * Pushes to the provider-owned message queue.
    *
    * @returns Object with success status and queue position or error
    */
@@ -4069,11 +4137,11 @@ export class Process {
   }
   /** Native input consumption, distinct from YA's optimistic user echo. */
   hasConsumedApiInput(id: string): boolean {
-    return this.messageQueue?.hasYieldedApiInput?.(id) ?? false;
+    return this.messageQueue.hasYieldedApiInput?.(id) ?? false;
   }
   observeApiInputConsumed(listener: (id: string) => void): () => void {
     return (
-      this.messageQueue?.subscribeYielded?.((messages) => {
+      this.messageQueue.subscribeYielded?.((messages) => {
         for (const message of messages) {
           for (const id of apiInputIds(message)) listener(id);
         }
@@ -4089,6 +4157,9 @@ export class Process {
     position?: number;
     error?: string;
   } {
+    if (message.queuedCompact || this.queuedCompactionBlocksInput) {
+      return this.deferMessage(message);
+    }
     if (message.metadata?.turnEffort && this._state.type !== "idle") {
       return this.deferMessage({
         ...message,
@@ -4212,7 +4283,12 @@ export class Process {
       return 0;
     }
 
-    const entries = this.deferredQueue.filter(hasPatientQueueIntent);
+    if (this.queuedCompactionBlocksInput) return 0;
+    const entries = this.deferredQueue.filter(
+      (entry) =>
+        hasPatientQueueIntent(entry) &&
+        (!entry.compact || entry.compact.state === "pending"),
+    );
     if (entries.length === 0) {
       return 0;
     }
@@ -4294,9 +4370,10 @@ export class Process {
       return { success: false, deferred: false, error: inputError };
     }
     const acceptedMessage = this.acceptRecapResumeSignal(message);
+    if (acceptedMessage.queuedCompact)
+      acceptedMessage.tempId ??= `compact-${randomUUID()}`;
     const canPromoteIfReady = !!(
       options?.promoteIfReady &&
-      this.messageQueue &&
       // Only Claude waits for the verified-idle patient delivery path;
       // elsewhere durable patient intent uses ordinary deferred timing and
       // promotes immediately like any other deferred turn.
@@ -4306,6 +4383,8 @@ export class Process {
       ) &&
       // A compact-first item must reach its delivery boundary through the
       // queue so the Supervisor can evaluate usage before it is sent.
+      !acceptedMessage.queuedCompact &&
+      !this.queuedCompactionBlocksInput &&
       !compactionGateFor(acceptedMessage) &&
       this._state.type === "idle"
     );
@@ -4354,10 +4433,20 @@ export class Process {
         ? { persistedQueueId: options.persistedQueueId }
         : {}),
       ...(compactionGate ? { compactionGate } : {}),
+      ...(acceptedMessage.queuedCompact
+        ? { compact: { state: "pending" as const } }
+        : {}),
     };
     this.deferredQueue.push(entry);
     this.persistPatientDeferredEntry(entry);
     this.emitDeferredQueueChange("queued", acceptedMessage.tempId);
+    if (
+      acceptedMessage.queuedCompact &&
+      options?.promoteIfReady !== false &&
+      this._state.type === "idle"
+    ) {
+      this.promoteDeferredAfterCompactionGate();
+    }
     return { success: true, deferred: true };
   }
 
@@ -4466,11 +4555,15 @@ export class Process {
       (entry) => entry.message.tempId === tempId,
     );
     if (index === -1) return false;
+    const entry = this.deferredQueue[index]!;
+    if (this.queuedCompaction?.entry === entry) return false;
     const [removed] = this.deferredQueue.splice(index, 1);
     if (removed) {
       this.deletePersistedPatientDeferredEntries([removed], "cancelled");
     }
     this.emitDeferredQueueChange("cancelled", tempId);
+    if (removed?.compact && this._state.type === "idle")
+      void this.transitionToIdle();
     return true;
   }
 
@@ -4479,15 +4572,7 @@ export class Process {
    * has not consumed yet.
    */
   cancelUnconfirmedSteerMessage(tempId: string): boolean {
-    const removed = [
-      ...(this.messageQueue?.removeByTempId(tempId) ?? []),
-      ...this.legacyQueue.filter((message) =>
-        this.userMessageMatchesTempId(message, tempId),
-      ),
-    ];
-    this.legacyQueue = this.legacyQueue.filter(
-      (message) => !this.userMessageMatchesTempId(message, tempId),
-    );
+    const removed = this.messageQueue.removeByTempId(tempId);
     if (!removed.length) return false;
     for (const id of removed.flatMap(apiInputIds)) {
       this.acceptedApiInputs.delete(id);
@@ -4502,15 +4587,6 @@ export class Process {
 
     this.removeBufferedEchoByTempId(tempId);
     return true;
-  }
-
-  private userMessageMatchesTempId(
-    message: UserMessage,
-    tempId: string,
-  ): boolean {
-    return (
-      message.tempId === tempId || message.tempIds?.includes(tempId) === true
-    );
   }
 
   private sdkMessageMatchesTempId(
@@ -4564,6 +4640,22 @@ export class Process {
         (entry.message.documents?.length ?? 0);
 
       return {
+        ...(entry.compact
+          ? {
+              operation: "compact" as const,
+              cancellable: this.queuedCompaction?.entry !== entry,
+              ...(entry.compact.state !== "pending"
+                ? {
+                    compactionGate: {
+                      state: entry.compact.state,
+                      ...(entry.compact.reason
+                        ? { reason: entry.compact.reason }
+                        : {}),
+                    },
+                  }
+                : {}),
+            }
+          : {}),
         ...(entry.persistedQueueId
           ? {
               id: entry.persistedQueueId,
@@ -4615,7 +4707,9 @@ export class Process {
     }
 
     const drainedEntries = this.deferredQueue;
-    const drained = drainedEntries.map((entry) => entry.message);
+    const drained = drainedEntries
+      .filter((entry) => !entry.compact || entry.compact.state === "pending")
+      .map((entry) => entry.message);
     const firstTempId = drained[0]?.tempId;
     this.deferredQueue = [];
     this.deletePersistedPatientDeferredEntries(drainedEntries, reason);
@@ -4631,11 +4725,9 @@ export class Process {
   async drainPendingUserMessages(
     reason: "cancelled" | "promoted" = "promoted",
   ): Promise<UserMessage[]> {
-    const queuedMessages = this.messageQueue
-      ? this.messageQueue.drainAsync
-        ? await this.messageQueue.drainAsync()
-        : this.messageQueue.drain()
-      : [];
+    const queuedMessages = this.messageQueue.drainAsync
+      ? await this.messageQueue.drainAsync()
+      : this.messageQueue.drain();
     return [...queuedMessages, ...this.drainDeferredMessages(reason)];
   }
 
@@ -5087,6 +5179,10 @@ export class Process {
    * orphaned processes that continue running after Yep stops tracking them.
    */
   terminate(reason: string): void {
+    if (this.managedIdentity) {
+      void this.terminateAndWait(reason).catch(() => undefined);
+      return;
+    }
     if (!this.viewerLifecycle.hasUnverifiedProviderOwnership) {
       // Kill the underlying CLI process first (if available), so it doesn't
       // continue running as an orphan after we unregister from the Supervisor.
@@ -5134,6 +5230,10 @@ export class Process {
   }
 
   async abort(): Promise<ProcessAbortResult> {
+    if (this.managedIdentity) {
+      this.transportFailed = true;
+      this.viewerLifecycle.beginTeardownVerification();
+    }
     const activeAbort = this.abortInFlight;
     if (activeAbort) return activeAbort;
 
@@ -5141,6 +5241,14 @@ export class Process {
     this.abortInFlight = attempt;
     try {
       return await attempt;
+    } catch (error) {
+      if (this.managedIdentity && !this.isTerminated) {
+        this.retainLifecycleTeardownFailure(
+          "managed provider abort teardown failed",
+          error,
+        );
+      }
+      throw error;
     } finally {
       if (this.abortInFlight === attempt) {
         this.abortInFlight = null;
@@ -5259,6 +5367,26 @@ export class Process {
     this.listeners.clear();
   }
 
+  private bindNativeId(value: string): void {
+    let nativeId: NativeSessionId;
+    try {
+      nativeId = parseNativeSessionId(value);
+    } catch {
+      throw new NativeSessionBindingError(
+        "Provider reported an invalid native session id",
+      );
+    }
+    if (this.nativeSessionId && this.nativeSessionId !== nativeId) {
+      throw new NativeSessionBindingError(
+        "Provider changed an established native session id",
+      );
+    }
+    // A repeated init still crosses the attempt fence; it must not revive a
+    // deleted/retried session. No control-store call occurs on token deltas.
+    this.managedIdentity?.bindNative(nativeId);
+    this.nativeSessionId = nativeId;
+  }
+
   private async processMessages(): Promise<void> {
     try {
       while (!this.iteratorDone) {
@@ -5267,21 +5395,74 @@ export class Process {
 
         if (result.done) {
           this.iteratorDone = true;
-          if (!this.sessionIdResolved) {
+          if (!this.nativeSessionIdResolved) {
             this.rejectProviderSessionId(
               new Error(
                 "Provider session completed before reporting a session id",
               ),
             );
           }
-          // Don't transition to idle if we're waiting for input
-          if (this._state.type !== "waiting-input") {
+          // Reload ends this controller's iterator, not the hosted worker.
+          // Its replacement owns the surviving provider and callbacks.
+          if (
+            this.detachForServerReloadFn &&
+            this.viewerLifecycle.isDetachingForServerReload
+          )
+            break;
+          if (this.managedIdentity) {
+            // Do not publish idle/promote deferred turns into an ended stream.
+            // Fire-and-observe: verification may await this loop's finally.
+            void this.terminateAndWait("provider stream completed").catch(
+              () => undefined,
+            );
+          } else if (this._state.type !== "waiting-input") {
             this.transitionToIdle({ applyPendingEffort: false });
           }
           break;
         }
 
         let message = this.withTimestamp(result.value);
+        if (
+          this.managedIdentity &&
+          isClaudeSdkApiErrorMessage(this.provider, message)
+        ) {
+          // Fatal native frames still publish their useful failure text. Close
+          // both admissions before status/message listeners or materialization.
+          this.transportFailed = true;
+          this.viewerLifecycle.beginTeardownVerification();
+        }
+
+        if (
+          message.session_id &&
+          (!this.nativeSessionId ||
+            (message.type === "system" && message.subtype === "init"))
+        ) {
+          this.bindNativeId(message.session_id);
+        }
+        if (message.session_id) {
+          if (message.session_id !== this.nativeSessionId) {
+            throw new NativeSessionBindingError(
+              "Provider output does not match its native binding",
+            );
+          }
+          message = { ...message, session_id: this._sessionId };
+        }
+        if (
+          this.managedIdentity &&
+          message.type === "user" &&
+          message.uuid &&
+          !this.nativeSessionId
+        ) {
+          throw new Error("Provider input arrived before native binding");
+        }
+        if (this.managedIdentity && this.nativeSessionId) {
+          observeProviderInputIds(
+            message,
+            isClaudeProviderName(this.provider),
+            (id) => this.managedIdentity!.observeProviderInput(id),
+          );
+        }
+
         if (this.toolResultMediaMaterializer) {
           message =
             await this.toolResultMediaMaterializer.materializeMessage(message);
@@ -5292,6 +5473,12 @@ export class Process {
           await this.localNoticePublication;
         }
         const receivedAt = new Date();
+        if (
+          message.type === "system" &&
+          message.subtype === "init" &&
+          message.steering
+        )
+          this.steering = parseProviderSteeringState(message.steering);
         this._lastMessageTime = receivedAt;
         this._lastProviderMessageTime = receivedAt;
         if (isProviderContentMessage(message)) {
@@ -5316,6 +5503,7 @@ export class Process {
         // already echoed at queue time.
         const isDuplicateUserEcho =
           message.type === "user" &&
+          !isProviderToolResult(message) &&
           Boolean(message.uuid) &&
           (this.currentBucket.some((m) => m.uuid === message.uuid) ||
             this.previousBucket.some((m) => m.uuid === message.uuid));
@@ -5346,16 +5534,16 @@ export class Process {
           message.session_id
         ) {
           const log = getLogger();
-          const oldSessionId = this._sessionId;
-          this._sessionId = message.session_id;
-          this.sessionIdResolved = true;
-          this.resolveProviderSessionId(this._sessionId);
+          this.nativeSessionIdResolved = true;
+          this.resolveProviderSessionId(
+            this.nativeSessionId ?? this._sessionId,
+          );
 
           log.info(
             {
               event: "session_id_received",
               sessionId: this._sessionId,
-              previousTempId: oldSessionId,
+              nativeSessionId: this.nativeSessionId,
               processId: this.id,
               projectId: this.projectId,
             },
@@ -5363,22 +5551,6 @@ export class Process {
           );
 
           this.publishAgentctlSessionId(this._sessionId);
-
-          // Emit session-id-changed event so Supervisor can update its mapping
-          // This is critical for ExternalSessionTracker to correctly identify owned sessions
-          if (oldSessionId !== this._sessionId) {
-            this.emit({
-              type: "session-id-changed",
-              oldSessionId,
-              newSessionId: this._sessionId,
-            });
-          }
-
-          // Resolve any waiters
-          for (const resolve of this.sessionIdResolvers) {
-            resolve(this._sessionId);
-          }
-          this.sessionIdResolvers = [];
         }
 
         // The served model, as each main-thread reply names it. A subagent's
@@ -5394,6 +5566,7 @@ export class Process {
           this.emit({ type: "model-resolved", model: this._resolvedModel });
         }
 
+        this.observeQueuedCompaction(message);
         this.promoteIdleForProviderWork(message, receivedAt);
 
         // Emit to SSE subscribers
@@ -5410,13 +5583,20 @@ export class Process {
         }
 
         if (isClaudeSdkApiErrorMessage(this.provider, message)) {
-          this.requestProviderAbortWithoutWaiting(
-            "Claude SDK API error; restart required",
-          );
+          if (!this.managedIdentity) {
+            this.requestProviderAbortWithoutWaiting(
+              "Claude SDK API error; restart required",
+            );
+          }
           this.markTerminated(
             "Claude SDK API error; restart required",
             new Error(describeClaudeSdkApiError(message)),
           );
+          if (this.managedIdentity) {
+            void this.terminateAndWait(
+              "Claude SDK API error; restart required",
+            ).catch(() => undefined);
+          }
           return;
         }
 
@@ -5478,6 +5658,11 @@ export class Process {
     } catch (error) {
       const err = error as Error;
       this.rejectProviderSessionId(err);
+      if (
+        this.detachForServerReloadFn &&
+        this.viewerLifecycle.isDetachingForServerReload
+      )
+        return;
 
       if (
         this.viewerLifecycle.hasUnverifiedProviderOwnership &&
@@ -5501,13 +5686,22 @@ export class Process {
         `Process error: ${this._sessionId} - ${err.message}`,
       );
 
+      // Listeners run synchronously and may submit input from the error event.
+      // Close admission before publishing it or awaiting the failure notice.
+      const verifyOwnership =
+        Boolean(this.managedIdentity) ||
+        err instanceof NativeSessionBindingError;
+      const providerTerminated =
+        verifyOwnership || this.isProcessTerminationError(err);
+      if (providerTerminated) this.transportFailed = true;
+      if (verifyOwnership) {
+        // Close replacement ownership before synchronous error listeners run.
+        this.viewerLifecycle.beginTeardownVerification();
+      }
       this.clearRetryingProviderRuntimeStatus();
       this.emit({ type: "error", error: err });
 
-      // Detect process termination errors - set flag synchronously BEFORE markTerminated
-      // to prevent race where queueMessage is called before state changes to terminated
-      if (this.isProcessTerminationError(err)) {
-        this.transportFailed = true;
+      if (providerTerminated) {
         const turnWasRunning =
           this._state.type === "in-turn" ||
           this._state.type === "waiting-input";
@@ -5518,6 +5712,13 @@ export class Process {
         this.markTerminated("underlying process terminated", err, {
           failureNotice,
         });
+        if (verifyOwnership) {
+          // terminateAndWait retains/logs failed verification. Do not await here:
+          // no-liveness adapters verify this same iterator's exit promise.
+          void this.terminateAndWait(
+            "provider identity or managed stream failed",
+          ).catch(() => undefined);
+        }
         return;
       }
 
@@ -5529,9 +5730,24 @@ export class Process {
         }
       }
     } finally {
-      // Resolve exit promise on both normal completion and non-terminating errors
-      // so abort() doesn't hang waiting for it. (markTerminated already resolves
-      // it for termination errors, and guards against double-resolve.)
+      this.failQueuedCompaction(
+        "Provider stream ended before compaction was confirmed",
+      );
+      this.releaseQueuedCompaction();
+      try {
+        this.managedIdentity?.ownerExited?.();
+      } catch (error) {
+        getLogger().error(
+          {
+            event: "creation_owner_exit_record_failed",
+            sessionId: this._sessionId,
+            error,
+          },
+          "Could not record creation owner exit",
+        );
+      }
+      // Resolve on every iterator exit so teardown can verify this loop without
+      // circular waiting. markTerminated may already have resolved it.
       if (this._exitResolve) {
         this._exitResolve();
         this._exitResolve = null;
@@ -5543,17 +5759,26 @@ export class Process {
    * Check if an error indicates the underlying Claude process was terminated.
    */
   private isProcessTerminationError(error: Error): boolean {
-    const message = error.message || "";
-    return (
-      message.includes("ProcessTransport is not ready") ||
-      message.includes("not ready for writing") ||
-      message.includes("process exited") ||
-      message.includes("SIGTERM") ||
-      message.includes("SIGKILL") ||
-      // SDK wraps spawn errors as "Failed to spawn Claude Code process: spawn <cmd> ENOENT"
-      // where <cmd> varies (e.g., "node", "claude"), so check for ENOENT broadly
-      message.includes("ENOENT")
-    );
+    // SDK initialization may wrap a missing executable without preserving
+    // ENOENT in its outer message. Bound cause traversal also handles cycles.
+    let cause: unknown = error;
+    for (let depth = 0; depth < 4 && cause instanceof Error; depth++) {
+      const message = cause.message || "";
+      if (
+        message.includes("ProcessTransport is not ready") ||
+        message.includes("not ready for writing") ||
+        message.includes("process exited") ||
+        message.includes("SIGTERM") ||
+        message.includes("SIGKILL") ||
+        message.includes("Claude Code native binary not found") ||
+        message.includes("Claude Code executable not found") ||
+        // SDK wraps spawn errors; the executable spelling varies.
+        message.includes("ENOENT")
+      )
+        return true;
+      cause = cause.cause;
+    }
+    return false;
   }
 
   /**
@@ -5628,6 +5853,10 @@ export class Process {
   }): Promise<void> | void {
     this.viewerLifecycle.suspendIdleDeadline();
     this.clearRetryingProviderRuntimeStatus();
+    if (this.queuedCompactionBlocksInput) {
+      this.setState({ type: "idle", since: new Date() });
+      return;
+    }
 
     // A provider turn boundary ends the special steering-retention window.
     // Move any aged-out echoes back into the ordinary replay window to cover
@@ -5688,7 +5917,6 @@ export class Process {
       this.setState({ type: "idle", since: new Date() });
     }
     this.flushPendingRecapRequest();
-    this.processNextInQueue();
   }
 
   private flushPendingRecapRequest(): void {
@@ -5809,7 +6037,7 @@ export class Process {
    * consecutively-composed turns into one `--------`-separated provider turn.
    */
   private promoteEligibleDeferredAfterTurn(): boolean {
-    if (this.deferredQueue.length === 0 || !this.messageQueue) {
+    if (this.queuedCompactionBlocksInput || this.deferredQueue.length === 0) {
       return false;
     }
 
@@ -5824,7 +6052,12 @@ export class Process {
     }
 
     const { joinWindowSeconds } = this.resolveDeferredDelivery();
-    const group = this.leadingJoinGroup(eligible, joinWindowSeconds);
+    if (eligible[0]?.compact) return this.startQueuedCompaction(eligible[0]);
+    const compactIndex = eligible.findIndex((entry) => entry.compact);
+    const group = this.leadingJoinGroup(
+      compactIndex < 0 ? eligible : eligible.slice(0, compactIndex),
+      joinWindowSeconds,
+    );
     const anchors = this.deferredComposeAnchors(group);
     const providerMessages = group.map((entry, index) =>
       this.prepareProviderMessage(entry.message, anchors[index]),
@@ -5852,6 +6085,178 @@ export class Process {
       group.length === 1 ? group[0]!.message.tempId : undefined,
     );
     return true;
+  }
+
+  private startQueuedCompaction(entry: DeferredQueueEntry): boolean {
+    if (
+      this.queueDepth > 0 ||
+      this.getProviderRetentionSnapshot().retained ||
+      this.queuedCompactionBlocksInput ||
+      this.inputRejectionError()
+    )
+      return false;
+    entry.compact = { state: "compacting" };
+    // A patient command stops being replayable before any provider effect.
+    const timer = setTimeout(() => {
+      if (this.queuedCompaction?.entry !== entry) return;
+      entry.compact = {
+        state: "unconfirmed",
+        reason:
+          "Compaction outcome unconfirmed after 180s; wait for completion or stop the session",
+      };
+      this.emitDeferredQueueChange("queued", entry.message.tempId);
+    }, 180_000);
+    timer.unref?.();
+    const operation = {
+      entry,
+      started: false,
+      fallback: false,
+      inputYielded: false,
+      dispatched: false,
+      boundary: false,
+      ready: false,
+      timer,
+    };
+    this.queuedCompaction = operation;
+    this.setState({ type: "in-turn" });
+    this.emitDeferredQueueChange("queued", entry.message.tempId);
+    void this.dispatchQueuedCompaction(operation);
+    return true;
+  }
+
+  private async dispatchQueuedCompaction(
+    operation: NonNullable<Process["queuedCompaction"]>,
+  ): Promise<void> {
+    try {
+      await this.waitForPatientQueuePersistenceIdle();
+      if (this.queuedCompaction !== operation || this.inputRejectionError())
+        return;
+      if (operation.entry.persistedQueueId) {
+        await this.sessionQueuePersistenceService?.deleteItem(
+          operation.entry.persistedQueueId,
+        );
+        if (this.queuedCompaction !== operation || this.inputRejectionError())
+          return;
+      }
+      const command = operation.entry.message.queuedCompact!;
+      operation.started = true;
+      const result = this.runProviderCommandFn
+        ? await this.runProviderCommandFn(command.command, command.argument)
+        : { handled: false };
+      if (this.queuedCompaction !== operation || this.inputRejectionError())
+        return;
+      if (result.handled && result.error) {
+        operation.dispatched = true;
+        if (!result.uncertain) operation.ready = true;
+        this.failQueuedCompaction(result.error);
+        this.completeQueuedCompactionIfReady();
+        if (!result.uncertain && !this.inputRejectionError())
+          void this.transitionToIdle();
+        return;
+      }
+      if (!result.handled) {
+        if (!this.messageQueue.subscribeYielded)
+          throw new Error("Provider cannot confirm queued compact input");
+        operation.fallback = true;
+        operation.entry.message.uuid ??= randomUUID();
+        const queued = this.queuePreparedMessage(
+          {
+            ...operation.entry.message,
+            queuedCompact: undefined,
+            metadata: { ...operation.entry.message.metadata, hidden: true },
+          },
+          { allowSteer: false },
+        );
+        if (!queued.success) {
+          this.failQueuedCompaction(queued.error ?? "Compact dispatch failed");
+          this.releaseQueuedCompaction();
+          return;
+        }
+      }
+      const completed =
+        result.handled &&
+        result.completion === "completed" &&
+        !result.uncertain;
+      if (completed) {
+        operation.boundary = true;
+        operation.ready = true;
+      }
+      operation.dispatched = true;
+      this.completeQueuedCompactionIfReady();
+      if (completed && !this.inputRejectionError())
+        await this.transitionToIdle();
+    } catch (error) {
+      if (this.queuedCompaction === operation) {
+        operation.dispatched = true;
+        if (!operation.started) operation.ready = true;
+        this.failQueuedCompaction(
+          error instanceof Error ? error.message : String(error),
+        );
+        this.completeQueuedCompactionIfReady();
+        if (!operation.started && !this.inputRejectionError())
+          this.transitionToIdle();
+      }
+    }
+  }
+
+  private failQueuedCompaction(reason: string): void {
+    const operation = this.queuedCompaction;
+    if (!operation) return;
+    operation.failed = reason;
+    operation.entry.compact = { state: "failed", reason };
+    clearTimeout(operation.timer);
+    this.emitDeferredQueueChange("queued", operation.entry.message.tempId);
+  }
+
+  private releaseQueuedCompaction(): void {
+    if (this.queuedCompaction) clearTimeout(this.queuedCompaction.timer);
+    this.queuedCompaction = null;
+  }
+
+  private observeQueuedCompaction(message: SDKMessage): void {
+    const operation = this.queuedCompaction;
+    if (!operation?.started || (operation.fallback && !operation.inputYielded))
+      return;
+    if (
+      message.type === "system" &&
+      (message.subtype === "compact_boundary" ||
+        message.compact_result === "success")
+    )
+      operation.boundary = true;
+    if (
+      (message.type === "error" && message.codexWillRetry !== true) ||
+      message.is_error ||
+      message.compact_result === "failed"
+    ) {
+      this.failQueuedCompaction(
+        typeof message.compact_error === "string"
+          ? message.compact_error
+          : typeof message.error === "string"
+            ? message.error
+            : "Provider compaction failed",
+      );
+    }
+    if (message.type === "result") {
+      operation.ready = true;
+      this.completeQueuedCompactionIfReady();
+    }
+  }
+
+  private completeQueuedCompactionIfReady(): void {
+    const operation = this.queuedCompaction;
+    if (!operation?.ready || !operation.dispatched) return;
+    if (!operation.boundary && !operation.failed)
+      this.failQueuedCompaction("Provider ended without confirming compaction");
+    this.releaseQueuedCompaction();
+    if (!operation.failed) {
+      this.deferredQueue = this.deferredQueue.filter(
+        (entry) => entry !== operation.entry,
+      );
+      this.emitDeferredQueueChange("promoted", operation.entry.message.tempId);
+    } else
+      this.emitDeferredQueueChange("queued", operation.entry.message.tempId);
+    if (this._state.type === "idle" && !operation.failed)
+      this.transitionToIdle();
   }
 
   private noteDueCompactionGate(held: DeferredQueueEntry | null): void {
@@ -5930,8 +6335,8 @@ export class Process {
     now?: number;
   }): { promoted: boolean; nextPatienceMsRemaining: number | null } {
     if (
+      this.queuedCompactionBlocksInput ||
       this.deferredQueue.length === 0 ||
-      !this.messageQueue ||
       this._state.type !== "idle"
     ) {
       return { promoted: false, nextPatienceMsRemaining: null };
@@ -5973,7 +6378,16 @@ export class Process {
     // re-arms this check on the fresh idle boundary (observeProcessEvents). That
     // is what makes "fully done" + "never batch" pop one message at a time.
     const { joinWindowSeconds } = this.resolveDeferredDelivery();
-    const group = this.leadingJoinGroup(eligible, joinWindowSeconds);
+    if (eligible[0]?.compact)
+      return {
+        promoted: this.startQueuedCompaction(eligible[0]),
+        nextPatienceMsRemaining,
+      };
+    const compactIndex = eligible.findIndex((entry) => entry.compact);
+    const group = this.leadingJoinGroup(
+      compactIndex < 0 ? eligible : eligible.slice(0, compactIndex),
+      joinWindowSeconds,
+    );
     const anchors = this.deferredComposeAnchors(group);
     const providerMessages = group.map((entry, index) =>
       this.prepareProviderMessage(entry.message, anchors[index]),
@@ -6045,10 +6459,17 @@ export class Process {
     const group = this.deferredQueue
       .slice(0, targetIndex + 1)
       .filter((entry) => entry.message.metadata?.deliveryIntent === "patient");
-    if (group.some((entry) => entry.message.metadata?.turnEffort)) {
+    if (
+      this.queuedCompactionBlocksInput ||
+      group.some((entry) => entry.message.metadata?.turnEffort || entry.compact)
+    ) {
       return {
         success: false,
-        error: "Effort modifiers require a new turn and remain queued",
+        error:
+          group.some((entry) => entry.compact) ||
+          this.queuedCompactionBlocksInput
+            ? "Queued compaction cannot be steered; wait for it to settle"
+            : "Effort modifiers require a new turn and remain queued",
       };
     }
     const anchors = this.deferredComposeAnchors(group);
@@ -6092,25 +6513,6 @@ export class Process {
       steered === 1 ? group[0]!.message.tempId : undefined,
     );
     return { success: true, steered };
-  }
-
-  /**
-   * Process next message in legacy queue (for mock SDK).
-   */
-  private processNextInQueue(): void {
-    if (this.legacyQueue.length === 0) return;
-
-    const nextMessage = this.legacyQueue.shift();
-    if (nextMessage) {
-      // The delivery receipt belongs to consumption, not to enqueue, so a
-      // cancelled entry leaves none.
-      if (nextMessage.uuid) {
-        this.emitNonHumanUserTurn(nextMessage, nextMessage.uuid);
-      }
-      // In real implementation with MessageQueue, this happens automatically
-      // For mock SDK, we just transition back to running
-      this.transitionToInTurnForWake("user-message");
-    }
   }
 
   /**

@@ -46,7 +46,7 @@ describe("Codex clone route", () => {
         payload: { type: "user_message", message: "Prime the cache" },
       })}\n`,
     );
-    return { sessionId, filePath };
+    return { nativeSessionId: sessionId, filePath };
   });
 
   beforeEach(async () => {
@@ -136,12 +136,14 @@ describe("Codex clone route", () => {
       sessionId: "native-fork",
       messageCount: Number.MAX_SAFE_INTEGER,
     });
-    expect(forkSession).toHaveBeenCalledWith({
-      sessionId: "source-session",
-      projectPath,
-      providerName: "codex",
-      title: "Quick answer: why?",
-    });
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "source-session",
+        projectPath,
+        providerName: "codex",
+        title: "Quick answer: why?",
+      }),
+    );
     expect(getSessionFilePath).not.toHaveBeenCalled();
     expect(getSession).not.toHaveBeenCalled();
   });
@@ -212,13 +214,12 @@ describe("Codex clone route", () => {
         sandboxStateKey: "source-state",
       }),
     );
-    expect(setSessionSandbox).toHaveBeenCalledWith("sandbox-fork", {
-      level: "project-write",
-      networkFirewall: false,
-      stateKey: "child-state",
-      projectPath,
-      projectId,
-    });
+    // The copy records its sandbox; the route names the project it is
+    // listed under.
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({ projectPath, workingProjectId: projectId }),
+    );
+    expect(setSessionSandbox).not.toHaveBeenCalled();
   });
 
   it("registers the native fork so it opens without invalidating discovery", async () => {
@@ -271,12 +272,12 @@ describe("Codex clone route", () => {
     expect(clonedSummary).not.toBeNull();
     expect(clonedSummary?.id).toBe(body.sessionId);
     expect(codexScanner.invalidateCache).not.toHaveBeenCalled();
-    expect(updateMetadata).toHaveBeenCalledWith(body.sessionId, {
-      title: "Prime the cache [cloned]",
-      parentSessionId: undefined,
-      parentSessionKind: undefined,
-      forkedFromSessionId: "source-session",
-    });
+    // The copy carries its title to creation admission, which records it
+    // with the source; the route writes neither again.
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Prime the cache [cloned]" }),
+    );
+    expect(updateMetadata).not.toHaveBeenCalled();
   });
 
   it("stores parent metadata for /btw clones", async () => {
@@ -313,11 +314,11 @@ describe("Codex clone route", () => {
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as { sessionId: string };
+    // A link to a parent other than the source is the route's alone; the
+    // title and source travel to creation admission with the copy.
     expect(updateMetadata).toHaveBeenCalledWith(body.sessionId, {
-      title: "/btw inspect this side path",
       parentSessionId: "parent-session",
       parentSessionKind: "btw-aside",
-      forkedFromSessionId: "source-session",
     });
   });
 

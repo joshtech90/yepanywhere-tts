@@ -10,6 +10,8 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
+import { Button, ButtonBase } from "../components/ui/Button";
+import { Field, Select, Textarea } from "../components/ui/Field";
 import type { TranslationFn } from "../i18n";
 import { notifyReviewCommentsChanged } from "../lib/reviewCommentsBus";
 import styles from "./ReviewSubmissionsPanel.module.css";
@@ -171,8 +173,7 @@ export function ReviewSubmissionsPanel({
       <ul className={styles.submissionList}>
         {submissions.map((submission) => (
           <li key={submission.id}>
-            <button
-              type="button"
+            <ButtonBase
               className={`${styles.submissionButton} ${
                 submission.id === selected.id ? styles.active : ""
               }`.trimEnd()}
@@ -187,35 +188,37 @@ export function ReviewSubmissionsPanel({
                   aria-label={t("sourceReviewUnread")}
                 />
               )}
-            </button>
+            </ButtonBase>
           </li>
         ))}
         {nextCursor && (
           <li>
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="small"
               className={styles.loadMore}
               onClick={() => void loadSubmissions(nextCursor)}
             >
               {t("sourceReviewLoadOlder")}
-            </button>
+            </Button>
           </li>
         )}
       </ul>
 
-      <label className={styles.mobileSelector}>
-        <span>{t("sourceReviewSelectSubmission")}</span>
-        <select
-          value={selected.id}
-          onChange={(event) => setSelectedId(event.target.value)}
-        >
-          {submissions.map((submission) => (
-            <option key={submission.id} value={submission.id}>
-              {submissionLabel(submission, t)}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className={styles.mobileSelector}>
+        <Field label={t("sourceReviewSelectSubmission")}>
+          <Select
+            value={selected.id}
+            onChange={(event) => setSelectedId(event.target.value)}
+          >
+            {submissions.map((submission) => (
+              <option key={submission.id} value={submission.id}>
+                {submissionLabel(submission, t)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
 
       <article className={styles.detail}>
         {error && <div className={styles.error}>{error}</div>}
@@ -299,15 +302,15 @@ function SubmissionDetail({
           </div>
         </div>
         <div className={styles.detailActions}>
-          <button
-            type="button"
+          <Button
+            size="small"
             disabled={refreshingResponse}
             onClick={() => void refreshResponse()}
           >
             {refreshingResponse
               ? t("sourceReviewRefreshingResponse")
               : t("sourceReviewRefreshResponse")}
-          </button>
+          </Button>
           {detail.submission.targetSessionId ? (
             <Link
               className={styles.sessionLink}
@@ -469,7 +472,7 @@ function ReviewSiteCard({
       {error && <div className={styles.error}>{error}</div>}
       {!hasPending && (
         <div className={styles.followUp}>
-          <textarea
+          <Textarea
             aria-label={t("sourceReviewFollowUp")}
             value={followUp}
             maxLength={20_000}
@@ -478,21 +481,17 @@ function ReviewSiteCard({
           />
           <div className={styles.siteActions}>
             {!site.resolvedAt && (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void resolve()}
-              >
+              <Button disabled={busy} onClick={() => void resolve()}>
                 {t("sourceReviewResolve")}
-              </button>
+              </Button>
             )}
-            <button
-              type="button"
+            <Button
+              variant="primary"
               disabled={busy || !followUp.trim()}
               onClick={() => void addFollowUp()}
             >
               {t("sourceReviewAddFollowUp")}
-            </button>
+            </Button>
           </div>
         </div>
       )}

@@ -1,8 +1,12 @@
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, rm } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { mkdir, realpath, rm, symlink } from "node:fs/promises";
+import {
+  loadSqliteDriver,
+  openSqliteOrThrow,
+} from "../../src/storage/sqlite.js";
+import type { OpenCodeSessionReader } from "../../src/sessions/opencode-reader.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UrlProjectId } from "@yep-anywhere/shared";
@@ -11,22 +15,6 @@ import { normalizeSession } from "../../src/sessions/normalization.js";
 
 const projectId = "test-project" as UrlProjectId;
 const PROJECT_HASH = "8e8fabade65fcb7be147f1c1f44eeb5f36a09680";
-
-// node:sqlite postdates vite's builtin list, so vitest's module runner can't
-// transform an `import` of it; require it natively (the reader does the same).
-// The supported Node floor includes SQLite. If an alternate runtime lacks
-// this particular builtin, preserve the reader's guarded fallback and skip
-// this suite instead of throwing at import time.
-const nodeRequire = createRequire(import.meta.url);
-type DatabaseSyncCtor = typeof import("node:sqlite").DatabaseSync;
-let DatabaseSync: DatabaseSyncCtor | undefined;
-try {
-  ({ DatabaseSync } = nodeRequire(
-    "node:sqlite",
-  ) as typeof import("node:sqlite"));
-} catch {
-  DatabaseSync = undefined;
-}
 
 interface MessageSpec {
   id: string;
@@ -46,34 +34,41 @@ function buildDb(
     worktree: string;
     sessionId: string;
     title: string;
+    nativeProjectId?: string;
+    directory?: string;
     model: Record<string, unknown>;
     messages: MessageSpec[];
     omitTranscriptTables?: boolean;
     extraSessions?: {
       sessionId: string;
       parentId?: string;
+      directory?: string;
       title: string;
       agent?: string | null;
       messages?: MessageSpec[];
     }[];
   },
 ): void {
-  const db = new (DatabaseSync as DatabaseSyncCtor)(dbPath);
+  const db = openSqliteOrThrow(dbPath);
+  const nativeProjectId = opts.nativeProjectId ?? PROJECT_HASH;
+  const directoryColumn =
+    opts.directory !== undefined ||
+    opts.extraSessions?.some((session) => session.directory !== undefined);
   db.exec(
     "CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL, time_created INTEGER, time_updated INTEGER)",
   );
   db.exec(
-    "CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, title TEXT, agent TEXT, model TEXT, time_created INTEGER, time_updated INTEGER)",
+    `CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, title TEXT, agent TEXT, model TEXT, time_created INTEGER, time_updated INTEGER${directoryColumn ? ", directory TEXT" : ""})`,
   );
   db.prepare(
     "INSERT INTO project (id, worktree, time_created, time_updated) VALUES (?, ?, ?, ?)",
-  ).run(PROJECT_HASH, opts.worktree, 1000, 5000);
+  ).run(nativeProjectId, opts.worktree, 1000, 5000);
   const insertSession = db.prepare(
     "INSERT INTO session (id, project_id, parent_id, title, agent, model, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
   );
   insertSession.run(
     opts.sessionId,
-    PROJECT_HASH,
+    nativeProjectId,
     null,
     opts.title,
     null,
@@ -84,7 +79,7 @@ function buildDb(
   for (const extra of opts.extraSessions ?? []) {
     insertSession.run(
       extra.sessionId,
-      PROJECT_HASH,
+      nativeProjectId,
       extra.parentId ?? null,
       extra.title,
       extra.agent ?? null,
@@ -92,6 +87,18 @@ function buildDb(
       2000,
       6000,
     );
+  }
+
+  if (directoryColumn) {
+    const directory = db.prepare(
+      "UPDATE session SET directory = ? WHERE id = ?",
+    );
+    directory.run(opts.directory ?? opts.worktree, opts.sessionId);
+    for (const extra of opts.extraSessions ?? [])
+      directory.run(
+        extra.directory ?? opts.directory ?? opts.worktree,
+        extra.sessionId,
+      );
   }
 
   if (!opts.omitTranscriptTables) {
@@ -163,13 +170,14 @@ const richMessages: MessageSpec[] = [
   },
 ];
 
-describe.skipIf(!DatabaseSync)(
+describe.skipIf(!loadSqliteDriver())(
   "OpenCodeSessionReader (direct SQLite db reader)",
   () => {
     let testDir: string;
     let projectPath: string;
     let databasePath: string;
     let spawnMock: ReturnType<typeof vi.fn>;
+    const readers = new Set<OpenCodeSessionReader>();
 
     beforeEach(async () => {
       testDir = join(tmpdir(), `opencode-db-test-${randomUUID()}`);
@@ -196,21 +204,30 @@ describe.skipIf(!DatabaseSync)(
     });
 
     afterEach(async () => {
+      for (const reader of readers) reader.close();
+      readers.clear();
       vi.restoreAllMocks();
+      vi.doUnmock("node:fs/promises");
       vi.resetModules();
       await rm(testDir, { recursive: true, force: true });
     });
 
-    async function makeReader() {
+    async function makeReader(
+      directory = projectPath,
+      nativeStorageScope?: string,
+    ) {
       const { OpenCodeSessionReader } = await import(
         "../../src/sessions/opencode-reader.js"
       );
-      return new OpenCodeSessionReader({
+      const reader = new OpenCodeSessionReader({
         storageDir: join(testDir, "missing-storage"),
         databasePath,
         opencodePath: "/fake/opencode",
-        projectPath,
+        projectPath: directory,
+        nativeStorageScope,
       });
+      readers.add(reader);
+      return reader;
     }
 
     it("omits the unfinished assistant tail only while an owned turn streams it", async () => {
@@ -488,6 +505,309 @@ describe.skipIf(!DatabaseSync)(
       // getSessionRow's message-count query hits a missing table -> reader returns
       // null and the call falls through (export yields nothing here).
       await expect(reader.getSession("ses_db", projectId)).resolves.toBeNull();
+    });
+
+    it("reuses native statements through refreshes and notices a formerly absent database", async () => {
+      const reader = await makeReader();
+      expect(await reader.getSessionSummary("ses_db", projectId)).toBeNull();
+      buildDb(databasePath, {
+        worktree: projectPath,
+        sessionId: "ses_db",
+        title: "native statement lifetime",
+        model: { id: "claude-opus-4.8", providerID: "github-copilot" },
+        messages: richMessages,
+      });
+      for (let index = 0; index < 100; index++) {
+        expect(
+          (await reader.getSessionSummary("ses_db", projectId))?.title,
+        ).toBe("native statement lifetime");
+        expect(
+          (await reader.getSession("ses_db", projectId))?.data.provider,
+        ).toBe("opencode");
+      }
+      // The portable statement ceiling catches prepare-per-query retention
+      // even on Node, where native statement reclamation would hide it.
+      reader.close();
+      expect(await reader.getSessionSummary("ses_db", projectId)).toBeNull();
+    });
+
+    it("does not reopen native storage or launch a fallback after retirement during proof", async () => {
+      const { OpenCodeDbReader } = await import(
+        "../../src/sessions/opencode-db-reader.js"
+      );
+      const reader = await makeReader();
+      let entered = () => {};
+      let release = () => {};
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const original = OpenCodeDbReader.prototype.getSessionRow;
+      vi.spyOn(OpenCodeDbReader.prototype, "getSessionRow").mockImplementation(
+        async function (...args) {
+          entered();
+          await held;
+          return original.apply(this, args);
+        },
+      );
+      const pending = reader.getSession("ses_db", projectId);
+      await started;
+      reader.close();
+      release();
+      expect(await pending).toBeNull();
+      expect(spawnMock).not.toHaveBeenCalled();
+    });
+
+    it("proves the actual DB-only native scope and refuses ambient CLI fallback for bound roots", async () => {
+      buildDb(databasePath, {
+        worktree: projectPath,
+        sessionId: "ses_bound",
+        title: "bound source",
+        model: {},
+        messages: richMessages,
+      });
+      const scope = await realpath(testDir);
+      const reader = await makeReader(projectPath, scope);
+      const { parseNativeSessionId } = await import("@yep-anywhere/shared");
+      expect(
+        await reader.getNativeSessionRef(parseNativeSessionId("ses_bound")),
+      ).toEqual({ family: "opencode", storageScope: scope, id: "ses_bound" });
+      expect(await reader.getSessionFilePath("ses_bound")).toBe(databasePath);
+      expect(
+        await reader.getNativeSessionRef(parseNativeSessionId("ses_missing")),
+      ).toBeNull();
+      expect(await reader.getSession("ses_missing", projectId)).toBeNull();
+      expect(spawnMock).not.toHaveBeenCalled();
+      reader.close();
+      expect(
+        await reader.getNativeSessionRef(parseNativeSessionId("ses_bound")),
+      ).toBeNull();
+    });
+
+    it("keeps global-project session directories separate in history, lists and native catalogue rows", async () => {
+      const other = join(testDir, "other-workspace");
+      await mkdir(other);
+      const original = await realpath(projectPath);
+      const otherDirectory = await realpath(other);
+      buildDb(databasePath, {
+        worktree: "/",
+        nativeProjectId: "global",
+        directory: original,
+        sessionId: "ses_global_a",
+        title: "workspace A history",
+        model: {},
+        messages: richMessages,
+        extraSessions: [
+          {
+            sessionId: "ses_global_b",
+            directory: otherDirectory,
+            title: "workspace B history",
+            messages: richMessages.map((message) => ({
+              ...message,
+              id: "other-" + message.id,
+              parts: message.parts.map((part) => ({
+                ...part,
+                id: "other-" + part.id,
+              })),
+            })),
+          },
+          {
+            sessionId: "ses_global_child",
+            parentId: "ses_global_a",
+            directory: original,
+            title: "child A",
+            messages: richMessages.map((message) => ({
+              ...message,
+              id: "child-" + message.id,
+              parts: message.parts.map((part) => ({
+                ...part,
+                id: "child-" + part.id,
+              })),
+            })),
+          },
+        ],
+      });
+      const a = await makeReader();
+      const b = await makeReader(otherDirectory);
+      expect(
+        (await a.getSession("ses_global_a", projectId))?.summary.title,
+      ).toBe("workspace A history");
+      expect(
+        (await b.getSession("ses_global_b", projectId))?.summary.title,
+      ).toBe("workspace B history");
+      spawnMock.mockClear();
+      expect(await a.getSession("ses_global_b", projectId)).toBeNull();
+      expect(await b.getSession("ses_global_a", projectId)).toBeNull();
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(
+        (await a.listProviderChildSessions("ses_global_a")).map(
+          (row) => row.id,
+        ),
+      ).toEqual(["ses_global_child"]);
+      expect(await b.listProviderChildSessions("ses_global_a")).toEqual([]);
+      expect(
+        await b.getAgentSession("ses_global_child", "ses_global_a"),
+      ).toBeNull();
+      const legacyRoot = await makeReader("/");
+      expect(
+        (await legacyRoot.getSession("ses_global_a", projectId))?.summary.title,
+      ).toBe("workspace A history");
+      expect((await a.listSessions(projectId)).map((row) => row.id)).toEqual([
+        "ses_global_a",
+      ]);
+      expect(
+        (await b.listSessionFiles("unused")).map((row) => row.sessionId),
+      ).toEqual(["ses_global_b"]);
+      const { OpenCodeDbReader } = await import(
+        "../../src/sessions/opencode-db-reader.js"
+      );
+      const native = new OpenCodeDbReader(databasePath);
+      try {
+        const rows = await native.listAllSessionRows();
+        expect(rows).toHaveLength(3);
+        expect(
+          rows.map((row) => [row.id, row.directory, row.worktree]),
+        ).toEqual(
+          expect.arrayContaining([
+            ["ses_global_a", original, original],
+            ["ses_global_b", otherDirectory, otherDirectory],
+            ["ses_global_child", original, original],
+          ]),
+        );
+      } finally {
+        native.close();
+      }
+    });
+
+    it("enumerates stored symlink spellings from the physical project and rechecks retargeted aliases", async () => {
+      const physical = await realpath(projectPath);
+      const alias = join(testDir, "native-directory-alias");
+      await symlink(
+        projectPath,
+        alias,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      buildDb(databasePath, {
+        worktree: "/",
+        nativeProjectId: "global",
+        directory: alias,
+        sessionId: "ses_alias",
+        title: "alias parent",
+        model: {},
+        messages: richMessages,
+        extraSessions: [
+          {
+            sessionId: "ses_alias_child",
+            parentId: "ses_alias",
+            title: "alias child",
+          },
+          ...Array.from({ length: 12 }, (_, i) => ({
+            sessionId: `ses_alias_${i}`,
+            title: "same alias",
+            messages: richMessages.map((message) => ({
+              ...message,
+              id: `${i}-${message.id}`,
+              parts: message.parts.map((part) => ({
+                ...part,
+                id: `${i}-${part.id}`,
+              })),
+            })),
+          })),
+        ],
+      });
+      const resolvePath = vi.fn(realpath);
+      vi.doMock("node:fs/promises", async (importOriginal) => ({
+        ...(await importOriginal<typeof import("node:fs/promises")>()),
+        realpath: resolvePath,
+      }));
+      const reader = await makeReader(physical);
+      expect(
+        (await reader.listSessions(projectId)).map((row) => row.id),
+      ).toEqual(
+        expect.arrayContaining([
+          "ses_alias",
+          ...Array.from({ length: 12 }, (_, i) => `ses_alias_${i}`),
+        ]),
+      );
+      expect(
+        resolvePath.mock.calls.filter(([path]) => path === alias),
+      ).toHaveLength(1);
+      resolvePath.mockClear();
+      expect(
+        (await reader.listProviderChildSessions("ses_alias")).map(
+          (row) => row.id,
+        ),
+      ).toEqual(["ses_alias_child"]);
+      const { OpenCodeDbReader } = await import(
+        "../../src/sessions/opencode-db-reader.js"
+      );
+      const native = new OpenCodeDbReader(databasePath);
+      try {
+        const scope = { directory: physical, canonicalDirectory: physical };
+        expect(await native.hasProject(scope)).toBe(true);
+        expect(await native.listChildSessionIds(scope)).toEqual([
+          "ses_alias_child",
+        ]);
+        await rm(alias);
+        const other = join(testDir, "different-physical");
+        await mkdir(other);
+        await symlink(
+          other,
+          alias,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+        expect(await native.hasProject(scope)).toBe(false);
+        expect(await native.listSessionRows(scope)).toEqual([]);
+        expect(await native.listChildSessionRows(scope, "ses_alias")).toEqual(
+          [],
+        );
+        expect(await native.getSessionRow("ses_alias", scope)).toBeNull();
+      } finally {
+        native.close();
+      }
+      expect(spawnMock).not.toHaveBeenCalled();
+    });
+
+    it("preserves Git worktree links while reading a native subdirectory", async () => {
+      const nested = join(projectPath, "nested");
+      await mkdir(nested);
+      const directory = await realpath(nested);
+      buildDb(databasePath, {
+        worktree: projectPath,
+        directory,
+        sessionId: "ses_nested",
+        title: "nested native history",
+        model: {},
+        messages: richMessages,
+      });
+      const root = await makeReader();
+      const child = await makeReader(nested);
+      expect(
+        (await root.getSession("ses_nested", projectId))?.summary.title,
+      ).toBe("nested native history");
+      expect(
+        (await child.getSession("ses_nested", projectId))?.summary.title,
+      ).toBe("nested native history");
+      expect((await root.listSessions(projectId)).map((row) => row.id)).toEqual(
+        ["ses_nested"],
+      );
+      const { OpenCodeDbReader } = await import(
+        "../../src/sessions/opencode-db-reader.js"
+      );
+      const native = new OpenCodeDbReader(databasePath);
+      try {
+        expect(await native.listAllSessionRows()).toEqual([
+          expect.objectContaining({
+            id: "ses_nested",
+            worktree: projectPath,
+            directory,
+          }),
+        ]);
+      } finally {
+        native.close();
+      }
     });
 
     it("does not read the DB when OPENCODE_DB_READER is disabled", async () => {

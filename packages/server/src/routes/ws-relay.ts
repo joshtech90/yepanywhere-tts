@@ -41,8 +41,12 @@ import {
   createSendFn,
   handleMessage,
 } from "./ws-relay-handlers.js";
+import {
+  listenerPathFromIncoming,
+  recordWsConnectionPath,
+} from "../network/connection-path.js";
 
-// biome-ignore lint/suspicious/noExplicitAny: Complex third-party type from @hono/node-ws
+// biome-ignore lint/suspicious/noExplicitAny: Complex third-party type from @hono/node-server
 type UpgradeWebSocketFn = (createEvents: (c: Context) => WSEvents) => any;
 
 export interface WsRelayDeps {
@@ -331,6 +335,10 @@ export function createWsRelayRoutes(
       transport: "direct",
       peerAddress: getPeerAddress(c),
     });
+    recordWsConnectionPath(
+      connState,
+      listenerPathFromIncoming(c.env, c.req.header("host")),
+    );
     // Ping interval for dead connection detection (set in onOpen, cleared in onClose)
     let pingInterval: ReturnType<typeof setInterval> | null = null;
     // Encryption-aware send function (created on open, captures connState)

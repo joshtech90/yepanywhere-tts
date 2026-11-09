@@ -1,3 +1,4 @@
+import { legacySessionCreationApi } from "../lib/legacySessionCreation";
 import type {
   AgentAuthRouterOverview,
   AgentAuthRouterPoolInput,
@@ -93,6 +94,8 @@ import type {
   SessionStatus,
 } from "../types";
 import { authApi } from "./authClient";
+import type { CodexUpdateStatus } from "./codexUpdateStatus";
+import type { InboxResponse } from "./inbox";
 import { usersApi } from "./usersClient";
 import { browserProfilesApi } from "./browserProfilesClient";
 import { fileApi } from "./fileClient";
@@ -104,6 +107,7 @@ import { pushApi, pushSettingsApi } from "./pushClient";
 import { recentsApi } from "./recentsClient";
 import { projectsApi } from "./projectsClient";
 import { serverMetadataApi } from "./serverMetadataClient";
+import { networkBindingApi } from "./networkBindingClient";
 import { fetchJSON } from "./sourceApiFetch";
 import { createSessionApi } from "./sessionClient";
 
@@ -120,37 +124,7 @@ export interface PaginationInfo {
   truncatedBy?: "compact_boundary" | "user_turn";
 }
 
-/**
- * An item in the inbox representing a session that may need attention.
- */
-export interface InboxItem {
-  creationProvenance?: SessionCreationProvenance;
-  nonHumanUserTurn?: AppSessionSummary["nonHumanUserTurn"];
-  asyncQuestions?: AppSessionSummary["asyncQuestions"];
-  sessionId: string;
-  projectId: string;
-  projectName: string;
-  sessionTitle?: string | null;
-  updatedAt: string;
-  customTitle?: string;
-  isStarred?: boolean;
-  pendingInputType?: PendingInputType;
-  activity?: AgentActivity;
-  activityInferredFromInboxTier?: boolean;
-  hasUnread?: boolean;
-}
-
-/**
- * Inbox response with sessions categorized into priority tiers.
- */
-export interface InboxResponse {
-  catalog?: RetainedSessionCollectionState;
-  needsAttention: InboxItem[];
-  active: InboxItem[];
-  recentActivity: InboxItem[];
-  unread8h: InboxItem[];
-  unread24h: InboxItem[];
-}
+export type { InboxItem, InboxResponse } from "./inbox";
 
 /**
  * An item in the global sessions list.
@@ -289,6 +263,8 @@ export interface SessionOptions {
   routerAccountId?: string;
   routerPoolId?: string;
   routerPolicy?: string;
+  /** Sent only when router discovery reports claude.ai connector support. */
+  routerClaudeAiConnectors?: boolean;
   creationProvenance?: SessionCreationProvenance;
   /** @deprecated Old selection is rejected; use machineControl. */
   computerControl?: boolean;
@@ -349,45 +325,6 @@ export {
   uploadStagedFile,
   type UploadOptions,
 } from "./upload";
-
-export interface NetworkInterface {
-  /** Interface name (e.g., "eth0", "wlan0") */
-  name: string;
-  /** IP address */
-  address: string;
-  /** IPv4 or IPv6 */
-  family: "IPv4" | "IPv6";
-  /** Whether this is a loopback/internal interface */
-  internal: boolean;
-  /** Human-readable display name */
-  displayName: string;
-}
-
-export interface NetworkBindingState {
-  localhost: { port: number; overriddenByCli: boolean };
-  network: {
-    enabled: boolean;
-    host: string | null;
-    port: number | null;
-    overriddenByCli: boolean;
-  };
-  interfaces: NetworkInterface[];
-}
-
-export interface UpdateBindingRequest {
-  localhostPort?: number;
-  network?: {
-    enabled: boolean;
-    host?: string;
-    port?: number;
-  };
-}
-
-export interface UpdateBindingResponse {
-  success: boolean;
-  error?: string;
-  redirectUrl?: string;
-}
 
 /**
  * Overloaded so only a caller that sends `knownGeneration` has to narrow: the
@@ -515,19 +452,7 @@ export const api = {
   // Server metadata/admin API
   ...serverMetadataApi,
 
-  // Network binding API (runtime port/interface configuration)
-  getNetworkBinding: () => fetchJSON<NetworkBindingState>("/network-binding"),
-
-  setNetworkBinding: (request: UpdateBindingRequest) =>
-    fetchJSON<UpdateBindingResponse>("/network-binding", {
-      method: "PUT",
-      body: JSON.stringify(request),
-    }),
-
-  disableNetworkBinding: () =>
-    fetchJSON<UpdateBindingResponse>("/network-binding", {
-      method: "DELETE",
-    }),
+  ...networkBindingApi,
 
   // Provider API
   getProviders: (options?: { refresh?: boolean }) =>
@@ -815,176 +740,7 @@ export const api = {
       `/projects/${projectId}/sessions/${sessionId}/agents`,
     ),
 
-  startSession: (
-    projectId: string,
-    message: string,
-    options?: SessionOptions,
-    attachments?: UploadedFile[],
-    clientTimestamp?: number,
-    messageMetadata?: UserMessageMetadata,
-  ) =>
-    fetchJSON<{
-      sessionId: string;
-      processId: string;
-      projectId: string;
-      provider?: ProviderName;
-      model?: string;
-      permissionMode: PermissionMode;
-      appliedPermissionMode?: PermissionMode;
-      modeVersion: number;
-      recapAfterSeconds?: number;
-      sandboxEnforcement?: SessionSandboxEnforcement;
-      serverTimestamp: number;
-    }>(`/projects/${projectId}/sessions`, {
-      method: "POST",
-      body: JSON.stringify({
-        message,
-        mode: options?.mode,
-        model: options?.model,
-        serviceTier: options?.serviceTier,
-        thinking: options?.thinking,
-        showThinking: options?.showThinking,
-        provider: options?.provider,
-        computerControl: options?.computerControl,
-        machineControl: options?.machineControl,
-        routerAccountId: options?.routerAccountId,
-        routerPoolId: options?.routerPoolId,
-        routerPolicy: options?.routerPolicy,
-        executor: options?.executor,
-        sandboxLevel: options?.sandboxLevel,
-        sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
-        recapMode: options?.recapMode,
-        recapAfterSeconds: options?.recapAfterSeconds,
-        promptSuggestionMode: options?.promptSuggestionMode,
-        helperSideModel: options?.helperSideModel,
-        attachments,
-        clientTimestamp,
-        messageMetadata,
-        creationProvenance: options?.creationProvenance,
-      }),
-    }),
-
-  /**
-   * Create a session without sending an initial message.
-   * Use this for two-phase flow: create session, upload files, then send message.
-   */
-  createSession: (projectId: string, options?: SessionOptions) =>
-    fetchJSON<{
-      sessionId: string;
-      processId: string;
-      projectId: string;
-      permissionMode: PermissionMode;
-      appliedPermissionMode?: PermissionMode;
-      modeVersion: number;
-      recapAfterSeconds?: number;
-      sandboxEnforcement?: SessionSandboxEnforcement;
-      serverTimestamp: number;
-    }>(`/projects/${projectId}/sessions/create`, {
-      method: "POST",
-      body: JSON.stringify({
-        mode: options?.mode,
-        model: options?.model,
-        serviceTier: options?.serviceTier,
-        thinking: options?.thinking,
-        showThinking: options?.showThinking,
-        provider: options?.provider,
-        computerControl: options?.computerControl,
-        machineControl: options?.machineControl,
-        routerAccountId: options?.routerAccountId,
-        routerPoolId: options?.routerPoolId,
-        routerPolicy: options?.routerPolicy,
-        executor: options?.executor,
-        sandboxLevel: options?.sandboxLevel,
-        sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
-        recapMode: options?.recapMode,
-        recapAfterSeconds: options?.recapAfterSeconds,
-        promptSuggestionMode: options?.promptSuggestionMode,
-        helperSideModel: options?.helperSideModel,
-        creationProvenance: options?.creationProvenance,
-      }),
-    }),
-
-  startDetachedSession: (
-    message: string,
-    options?: SessionOptions,
-    attachments?: UploadedFile[],
-    clientTimestamp?: number,
-    messageMetadata?: UserMessageMetadata,
-  ) =>
-    fetchJSON<{
-      sessionId: string;
-      processId: string;
-      projectId: string;
-      permissionMode: PermissionMode;
-      appliedPermissionMode?: PermissionMode;
-      modeVersion: number;
-      recapAfterSeconds?: number;
-      sandboxEnforcement?: SessionSandboxEnforcement;
-      serverTimestamp: number;
-    }>(`/sessions`, {
-      method: "POST",
-      body: JSON.stringify({
-        message,
-        mode: options?.mode,
-        model: options?.model,
-        serviceTier: options?.serviceTier,
-        thinking: options?.thinking,
-        showThinking: options?.showThinking,
-        provider: options?.provider,
-        computerControl: options?.computerControl,
-        machineControl: options?.machineControl,
-        routerAccountId: options?.routerAccountId,
-        routerPoolId: options?.routerPoolId,
-        routerPolicy: options?.routerPolicy,
-        executor: options?.executor,
-        sandboxLevel: options?.sandboxLevel,
-        sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
-        recapMode: options?.recapMode,
-        recapAfterSeconds: options?.recapAfterSeconds,
-        promptSuggestionMode: options?.promptSuggestionMode,
-        helperSideModel: options?.helperSideModel,
-        attachments,
-        clientTimestamp,
-        messageMetadata,
-        creationProvenance: options?.creationProvenance,
-      }),
-    }),
-
-  createDetachedSession: (options?: SessionOptions) =>
-    fetchJSON<{
-      sessionId: string;
-      processId: string;
-      projectId: string;
-      permissionMode: PermissionMode;
-      appliedPermissionMode?: PermissionMode;
-      modeVersion: number;
-      recapAfterSeconds?: number;
-      sandboxEnforcement?: SessionSandboxEnforcement;
-      serverTimestamp: number;
-    }>(`/sessions/create`, {
-      method: "POST",
-      body: JSON.stringify({
-        mode: options?.mode,
-        model: options?.model,
-        serviceTier: options?.serviceTier,
-        thinking: options?.thinking,
-        showThinking: options?.showThinking,
-        provider: options?.provider,
-        computerControl: options?.computerControl,
-        machineControl: options?.machineControl,
-        routerAccountId: options?.routerAccountId,
-        routerPoolId: options?.routerPoolId,
-        routerPolicy: options?.routerPolicy,
-        executor: options?.executor,
-        sandboxLevel: options?.sandboxLevel,
-        sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
-        recapMode: options?.recapMode,
-        recapAfterSeconds: options?.recapAfterSeconds,
-        promptSuggestionMode: options?.promptSuggestionMode,
-        helperSideModel: options?.helperSideModel,
-        creationProvenance: options?.creationProvenance,
-      }),
-    }),
+  ...legacySessionCreationApi(fetchJSON),
 
   /**
    * Deliver a turn the server refused because its session went cold as the
@@ -1985,6 +1741,7 @@ export const DEFAULT_FILE_ACCESS: FileAccessSettings = {
 
 /** Server-wide settings that persist across restarts */
 export interface ServerSettings {
+  steeringModes?: import("@yep-anywhere/shared").SteeringModeSettings;
   issueAssociations?: import("@yep-anywhere/shared").IssueSettings;
   /** Opt-in project upload monitoring; absent means disabled. */
   rendez?: {
@@ -2134,6 +1891,8 @@ export interface ServerSettings {
   codexCyberAccessProgram?: CodexCyberAccessProgram | null;
   /** How the server handles Codex CLI updates */
   codexUpdatePolicy?: "auto" | "notify" | "off";
+  /** Minimum Codex version whose required-update dialog was dismissed. */
+  codexRequiredUpdateDismissed?: string | null;
   /** Keep eligible local Linux Codex runtimes across YA server reloads. */
   codexReloadSafeSessions?: boolean;
   /** Host MCP App views from Codex tool calls (topics/mcp-apps.md). */
@@ -2187,18 +1946,4 @@ export interface PublicShareStatusResponse {
   viewerBaseUrl: string | null;
   defaultViewerBaseUrl: string;
   viewerBaseUrlError?: string;
-}
-
-/** Status from the server's Codex CLI update checker */
-export interface CodexUpdateStatus {
-  installed: string | null;
-  installedPath: string | null;
-  installedPackage: string | null;
-  updateMethod: "npm" | "manual";
-  manualInstallCommand: string | null;
-  latest: string | null;
-  releaseUrl: string | null;
-  updateAvailable: boolean;
-  lastCheckedAt: number | null;
-  error: string | null;
 }

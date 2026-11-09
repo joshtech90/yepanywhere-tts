@@ -12,6 +12,8 @@ import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import { SettingsDocLink } from "../pages/settings/SettingsDocLink";
 import styles from "./AgentAuthRouterControls.module.css";
+import { Button } from "./ui/Button";
+import { Field, TextInput } from "./ui/Field";
 
 type Account = Awaited<
   ReturnType<typeof api.routerAccounts>
@@ -183,9 +185,8 @@ function RouterSettingsForSource() {
         )}
       </div>
       {showSocket && (
-        <label>
-          {t("routerSocket")}
-          <input
+        <Field label={t("routerSocket")}>
+          <TextInput
             value={path}
             onChange={(event) => setPath(event.target.value)}
             placeholder={
@@ -194,12 +195,12 @@ function RouterSettingsForSource() {
                 : t("routerSavedSocket")
             }
           />
-        </label>
+        </Field>
       )}
       <div className={styles.actions}>
         {showSocket && (
-          <button
-            type="button"
+          <Button
+            variant="primary"
             disabled={busy}
             onClick={() =>
               void run(async () => {
@@ -211,23 +212,19 @@ function RouterSettingsForSource() {
             {state === "disconnected"
               ? t("routerConnect")
               : t("routerRetryConnection")}
-          </button>
+          </Button>
         )}
-        <button type="button" disabled={busy} onClick={() => void run()}>
+        <Button disabled={busy} onClick={() => void run()}>
           {busy && loaded ? t("routerCheckingShort") : t("routerCheckStatus")}
-        </button>
+        </Button>
         {!showSocket && state === "connected" && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => setEditingSocket(true)}
-          >
+          <Button disabled={busy} onClick={() => setEditingSocket(true)}>
             {t("routerChangeSocket")}
-          </button>
+          </Button>
         )}
         {state !== "disconnected" && (
-          <button
-            type="button"
+          <Button
+            variant="danger-outline"
             disabled={busy}
             onClick={() =>
               void run(async () => {
@@ -239,7 +236,7 @@ function RouterSettingsForSource() {
             {state === "revocation-pending"
               ? t("routerFinishDisconnect")
               : t("routerDisconnectAction")}
-          </button>
+          </Button>
         )}
       </div>
       {error && error !== recovery?.issue?.message && (
@@ -250,13 +247,12 @@ function RouterSettingsForSource() {
           <strong>{t("routerPendingCleanup", { count: pending })}</strong>
           <p>{t("routerPendingCleanupHelp")}</p>
           {state === "connected" && (
-            <button
-              type="button"
+            <Button
               disabled={busy}
               onClick={() => void run(() => api.routerRetryCancellations())}
             >
               {t("routerRetryCleanup")}
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -274,8 +270,7 @@ function RouterSettingsForSource() {
             </strong>
             {!account.enabled && <p>{t("routerAccountDisabled")}</p>}
             <span>{t("routerRenewal", { state: account.renewal })}</span>
-            <button
-              type="button"
+            <Button
               disabled={busy || !account.enabled || !canReadAccounts}
               onClick={() =>
                 void run(async (id) => {
@@ -286,7 +281,7 @@ function RouterSettingsForSource() {
               }
             >
               {t("routerRefreshUsage")}
-            </button>
+            </Button>
             {usage[account.id] && (
               <div>
                 <p>

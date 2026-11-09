@@ -79,40 +79,12 @@
   width: 17px;
 }
 
-.createButton {
-  align-items: center;
-  display: inline-flex;
-  gap: 7px;
-  justify-content: center;
-}
-
 .createButton svg {
   height: 17px;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.6;
   width: 17px;
-}
-
-.manualCopy {
-  display: grid;
-  font-size: 0.76rem;
-  gap: 5px;
-}
-
-.manualCopy span {
-  color: var(--text-secondary);
-}
-
-.manualCopy input {
-  background: var(--bg-code);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  min-width: 0;
-  padding: 7px 8px;
-  width: 100%;
 }
 
 .inventory {

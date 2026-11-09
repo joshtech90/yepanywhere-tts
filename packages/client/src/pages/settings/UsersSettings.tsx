@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   LimitedUserSummary,
   PathGrant,
@@ -15,6 +22,9 @@ import {
   instructionBlocksError,
 } from "@yep-anywhere/shared";
 import { api } from "../../api/client";
+import { Button, IconButton } from "../../components/ui/Button";
+import { Field, Select, TextInput } from "../../components/ui/Field";
+import { Switch } from "../../components/ui/Switch";
 import { useActingPrincipal } from "../../hooks/useActingPrincipal";
 import { useProjects } from "../../hooks/useProjects";
 import { useProviders } from "../../hooks/useProviders";
@@ -361,20 +371,14 @@ export function UsersSettings() {
             description={t("advancedLimitedUsersDescription")}
             keywords={["limited users", "accounts", "enable", "disable"]}
           >
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={enabled}
-                disabled={settingsLoading || busy}
-                onChange={(event) =>
-                  void updateSetting(
-                    "limitedUsersEnabled",
-                    event.target.checked,
-                  )
-                }
-              />
-              <span className="toggle-slider" />
-            </label>
+            <Switch
+              aria-label={t("advancedLimitedUsersTitle")}
+              checked={enabled}
+              disabled={settingsLoading || busy}
+              onCheckedChange={(checked) =>
+                void updateSetting("limitedUsersEnabled", checked)
+              }
+            />
           </SettingsItem>
           <p className="settings-hint">{t("usersTrustWarning")}</p>
         </details>
@@ -394,10 +398,9 @@ export function UsersSettings() {
               selection?.kind === "edit" &&
               selection.username === user.username;
             return (
-              <button
+              <Button
                 key={user.username}
-                type="button"
-                className={`settings-button ${styles.userChip} ${user.disabled ? styles.userChipDisabled : ""}`}
+                className={`${styles.userChip} ${user.disabled ? styles.userChipDisabled : ""}`}
                 aria-pressed={selected}
                 title={user.disabled ? t("usersDisabledTitle") : undefined}
                 onClick={() =>
@@ -407,12 +410,11 @@ export function UsersSettings() {
                 }
               >
                 {user.username}
-              </button>
+              </Button>
             );
           })}
-          <button
-            type="button"
-            className={`settings-button ${styles.userChip}`}
+          <Button
+            className={styles.userChip}
             aria-pressed={selection?.kind === "create"}
             disabled={busy}
             onClick={() =>
@@ -422,7 +424,7 @@ export function UsersSettings() {
             }
           >
             + {t("usersAddUser")}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -530,14 +532,9 @@ function LimitedUserView({
             </>
           )}
         </dl>
-        <button
-          type="button"
-          className="settings-button"
-          disabled={busy}
-          onClick={onLogout}
-        >
+        <Button disabled={busy} onClick={onLogout}>
           {principal.switched ? t("usersReturnToSuperuser") : t("usersLogout")}
-        </button>
+        </Button>
       </div>
     </SettingsSection>
   );
@@ -570,31 +567,23 @@ function ProjectRootField({
         : t("usersProjectRootSetHint", { example: `${root}/my-project` });
 
   return (
-    <>
-      <label className={styles.field}>
-        <span>{t("usersProjectRootLabel")}</span>
-        <span className={styles.inputRow}>
-          <input
-            className={styles.input}
-            value={projectRoot}
-            placeholder={t("usersProjectRootPlaceholder")}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => onChange(event.target.value, false)}
-          />
-          {suggestion && (
-            <button
-              type="button"
-              className="settings-button"
-              onClick={() => onChange(suggestion, true)}
-            >
-              {t("usersProjectRootUseSuggestion", { path: suggestion })}
-            </button>
-          )}
-        </span>
-      </label>
-      <p className="settings-hint">{hint}</p>
-    </>
+    <Field label={t("usersProjectRootLabel")} hint={hint}>
+      <span className={styles.inputRow}>
+        <TextInput
+          className={styles.grow}
+          value={projectRoot}
+          placeholder={t("usersProjectRootPlaceholder")}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(event) => onChange(event.target.value, false)}
+        />
+        {suggestion && (
+          <Button onClick={() => onChange(suggestion, true)}>
+            {t("usersProjectRootUseSuggestion", { path: suggestion })}
+          </Button>
+        )}
+      </span>
+    </Field>
   );
 }
 
@@ -644,8 +633,7 @@ function ProjectAccessList({
               <span className={styles.projectName} title={project.path}>
                 {project.name}
               </span>
-              <select
-                className={styles.select}
+              <Select
                 value={access[project.id] ?? "none"}
                 aria-label={project.name}
                 onChange={(event) => {
@@ -662,22 +650,21 @@ function ProjectAccessList({
                 <option value="new-session">
                   {t("usersAccessNewSession")}
                 </option>
-              </select>
+              </Select>
             </li>
           ))}
         </ul>
       )}
       {(expanded || hiddenCount > 0) && (
-        <button
-          type="button"
-          className={`settings-button ${styles.projectExpand}`}
+        <Button
+          className={styles.projectExpand}
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
         >
           {expanded
             ? t("usersProjectsHideNoAccess")
             : t("usersProjectsShowNoAccess", { count: hiddenCount })}
-        </button>
+        </Button>
       )}
     </>
   );
@@ -713,8 +700,8 @@ function DirectoryAccessList({
           {grants.map((grant, index) => (
             // Rows have no identity beyond their position while edited.
             <li key={index} className={styles.directoryRow}>
-              <input
-                className={styles.input}
+              <TextInput
+                className={styles.directoryPath}
                 value={grant.path}
                 placeholder={t("usersDirectoryPlaceholder")}
                 aria-label={t("usersDirectoryPath")}
@@ -724,8 +711,7 @@ function DirectoryAccessList({
                   update(index, { ...grant, path: event.target.value }, false)
                 }
               />
-              <select
-                className={styles.select}
+              <Select
                 value={grant.level}
                 aria-label={t("usersDirectoryLevel", { path: grant.path })}
                 onChange={(event) =>
@@ -744,11 +730,9 @@ function DirectoryAccessList({
                 <option value="new-session">
                   {t("usersAccessNewSession")}
                 </option>
-              </select>
-              <button
-                type="button"
-                className="settings-button"
-                aria-label={t("usersDirectoryRemove", { path: grant.path })}
+              </Select>
+              <IconButton
+                label={t("usersDirectoryRemove", { path: grant.path })}
                 onClick={() =>
                   onChange(
                     grants.filter((_, i) => i !== index),
@@ -757,24 +741,21 @@ function DirectoryAccessList({
                 }
               >
                 ×
-              </button>
+              </IconButton>
             </li>
           ))}
         </ul>
       )}
       <span className={styles.inputRow}>
-        <button
-          type="button"
-          className="settings-button"
+        <Button
           onClick={() =>
             onChange([...grants, { path: "", level: "view" }], false)
           }
         >
           {t("usersDirectoryAdd")}
-        </button>
+        </Button>
         {roots.length > 0 && (
-          <select
-            className={styles.select}
+          <Select
             value=""
             aria-label={t("usersDirectoryFromUser")}
             onChange={(event) => {
@@ -791,7 +772,7 @@ function DirectoryAccessList({
                 {user.username} — {user.projectRoot}
               </option>
             ))}
-          </select>
+          </Select>
         )}
       </span>
     </>
@@ -822,44 +803,31 @@ function CreateUserForm({
       }}
     >
       <h3 className={styles.editorTitle}>{t("usersAddUser")}</h3>
-      <label className={styles.field}>
-        <span>{t("usersUsernameLabel")}</span>
-        <input
-          className={styles.input}
+      <Field label={t("usersUsernameLabel")}>
+        <TextInput
           value={username}
           placeholder={t("usersUsernamePlaceholder")}
           autoComplete="off"
           onChange={(event) => setUsername(event.target.value)}
         />
-      </label>
-      <label className={styles.field}>
-        <span>{t("usersPasswordLabel")}</span>
-        <input
-          className={styles.input}
+      </Field>
+      <Field label={t("usersPasswordLabel")}>
+        <TextInput
           type="password"
           value={password}
           placeholder={t("usersPasswordPlaceholder")}
           autoComplete="new-password"
           onChange={(event) => setPassword(event.target.value)}
         />
-      </label>
+      </Field>
       {error && <p className="form-error">{error}</p>}
       <div className={styles.editorActions}>
-        <button
-          type="submit"
-          className="settings-button settings-button-primary"
-          disabled={busy}
-        >
+        <Button type="submit" variant="primary" disabled={busy}>
           {t("usersCreateUser")}
-        </button>
-        <button
-          type="button"
-          className="settings-button"
-          disabled={busy}
-          onClick={onCancel}
-        >
+        </Button>
+        <Button disabled={busy} onClick={onCancel}>
           {t("usersCancel")}
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -972,6 +940,7 @@ function UserEditor({
     return provider?.models ?? [];
   }, [providers, draft.provider]);
   const lock = lockSummary(user);
+  const noProjectHintId = useId();
 
   return (
     <div
@@ -997,32 +966,17 @@ function UserEditor({
           </span>
         </div>
         <div className={styles.userActions}>
-          <label className={styles.enabledToggle}>
-            <input
-              type="checkbox"
-              checked={draft.enabled}
-              onChange={(event) =>
-                change({ ...draft, enabled: event.target.checked }, true)
-              }
-            />
-            {t("usersEnabledLabel")}
-          </label>
-          <button
-            type="button"
-            className="settings-button"
-            disabled={busy || !draft.enabled}
-            onClick={onActAs}
-          >
+          <Switch
+            label={t("usersEnabledLabel")}
+            checked={draft.enabled}
+            onCheckedChange={(enabled) => change({ ...draft, enabled }, true)}
+          />
+          <Button disabled={busy || !draft.enabled} onClick={onActAs}>
             {t("usersActAs")}
-          </button>
-          <button
-            type="button"
-            className="settings-button settings-button-danger-subtle"
-            disabled={busy}
-            onClick={onDelete}
-          >
+          </Button>
+          <Button variant="danger-outline" disabled={busy} onClick={onDelete}>
             {t("usersDelete")}
-          </button>
+          </Button>
         </div>
       </div>
       {saveError && (
@@ -1034,10 +988,8 @@ function UserEditor({
       <details className={styles.account} open={!supportsInstructions}>
         <summary>{t("usersAccountAndAccess")}</summary>
         <div className={styles.accountFields}>
-          <label className={styles.field}>
-            <span>{t("usersNewPasswordLabel")}</span>
-            <input
-              className={styles.input}
+          <Field label={t("usersNewPasswordLabel")}>
+            <TextInput
               type="password"
               value={draft.password}
               placeholder={t("usersNewPasswordPlaceholder")}
@@ -1046,66 +998,41 @@ function UserEditor({
                 change({ ...draft, password: event.target.value }, false)
               }
             />
-          </label>
+          </Field>
 
           <p className={styles.subhead}>{t("usersProjectRootHeading")}</p>
           {support.noProject && (
-            <div>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={draft.allowNoProjectSessions}
-                  onChange={(event) =>
-                    change(
-                      {
-                        ...draft,
-                        allowNoProjectSessions: event.target.checked,
-                      },
-                      true,
-                    )
-                  }
-                />{" "}
-                {t("usersAllowNoProject")}
-              </label>
-              <p className="settings-hint">{t("usersAllowNoProjectHint")}</p>
+            <div className={styles.switchWithHint}>
+              <Switch
+                label={t("usersAllowNoProject")}
+                aria-describedby={noProjectHintId}
+                checked={draft.allowNoProjectSessions}
+                onCheckedChange={(allowNoProjectSessions) =>
+                  change({ ...draft, allowNoProjectSessions }, true)
+                }
+              />
+              <p id={noProjectHintId} className="settings-hint">
+                {t("usersAllowNoProjectHint")}
+              </p>
             </div>
           )}
           {support.appLinks && (
-            <div>
-              <label className={styles.field}>
-                <span>
-                  <input
-                    type="checkbox"
-                    checked={draft.allowPublicApps}
-                    onChange={(event) =>
-                      change(
-                        { ...draft, allowPublicApps: event.target.checked },
-                        true,
-                      )
-                    }
-                  />{" "}
-                  {t("usersAllowPublicApps")}
-                </span>
-              </label>
-              <label className={styles.field}>
-                <span>
-                  <input
-                    type="checkbox"
-                    checked={draft.allowPrivateAppLinks}
-                    onChange={(event) =>
-                      change(
-                        {
-                          ...draft,
-                          allowPrivateAppLinks: event.target.checked,
-                        },
-                        true,
-                      )
-                    }
-                  />{" "}
-                  {t("usersAllowPrivateAppLinks")}
-                </span>
-              </label>
-            </div>
+            <>
+              <Switch
+                label={t("usersAllowPublicApps")}
+                checked={draft.allowPublicApps}
+                onCheckedChange={(allowPublicApps) =>
+                  change({ ...draft, allowPublicApps }, true)
+                }
+              />
+              <Switch
+                label={t("usersAllowPrivateAppLinks")}
+                checked={draft.allowPrivateAppLinks}
+                onCheckedChange={(allowPrivateAppLinks) =>
+                  change({ ...draft, allowPrivateAppLinks }, true)
+                }
+              />
+            </>
           )}
           <ProjectRootField
             projectRoot={draft.projectRoot}
@@ -1126,10 +1053,8 @@ function UserEditor({
           <p className={styles.subhead}>{t("usersLockHeading")}</p>
           <p className="settings-hint">{t("usersLockHint")}</p>
           <div className={styles.lockRow}>
-            <label className={styles.field}>
-              <span>{t("usersLockProvider")}</span>
-              <select
-                className={styles.select}
+            <Field label={t("usersLockProvider")}>
+              <Select
                 value={draft.provider}
                 onChange={(event) =>
                   change(
@@ -1144,12 +1069,10 @@ function UserEditor({
                     {provider.displayName}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label className={styles.field}>
-              <span>{t("usersLockModel")}</span>
-              <select
-                className={styles.select}
+              </Select>
+            </Field>
+            <Field label={t("usersLockModel")}>
+              <Select
                 value={draft.model}
                 disabled={!draft.provider}
                 onChange={(event) =>
@@ -1162,12 +1085,10 @@ function UserEditor({
                     {model.name}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label className={styles.field}>
-              <span>{t("usersLockEffort")}</span>
-              <select
-                className={styles.select}
+              </Select>
+            </Field>
+            <Field label={t("usersLockEffort")}>
+              <Select
                 value={draft.effort}
                 onChange={(event) =>
                   change({ ...draft, effort: event.target.value }, true)
@@ -1179,8 +1100,8 @@ function UserEditor({
                     {effort}
                   </option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </Field>
           </div>
 
           <p className={styles.subhead}>{t("usersProjectsHeading")}</p>
@@ -1203,10 +1124,11 @@ function UserEditor({
             </>
           )}
 
-          <label className={styles.field}>
-            <span>{t("usersJoinOffsetLabel")}</span>
-            <input
-              className={styles.input}
+          <Field
+            label={t("usersJoinOffsetLabel")}
+            hint={t("usersJoinOffsetHint")}
+          >
+            <TextInput
               type="number"
               min={JOIN_STALE_OFFSET_MIN_MINUTES}
               max={JOIN_STALE_OFFSET_MAX_MINUTES}
@@ -1221,8 +1143,7 @@ function UserEditor({
                 )
               }
             />
-          </label>
-          <p className="settings-hint">{t("usersJoinOffsetHint")}</p>
+          </Field>
         </div>
       </details>
       {supportsInstructions && (

@@ -12,10 +12,14 @@ import {
   normalizeHostIdentityIcon,
   serverHasCapability,
 } from "@yep-anywhere/shared";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { PublicShareStatusResponse } from "../../api/client";
 import { PublicShareManagerModal } from "../../components/PublicShareManagerModal";
 import { RemoteAccessSetup } from "../../components/RemoteAccessSetup";
+import { Button } from "../../components/ui/Button";
+import { TextInput } from "../../components/ui/Field";
+import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import { Switch } from "../../components/ui/Switch";
 import { useOptionalRemoteConnection } from "../../contexts/RemoteConnectionContext";
 import { usePublicShareStatus } from "../../hooks/usePublicShareStatus";
 import { useHostAwakeStatus } from "../../hooks/useHostAwakeStatus";
@@ -25,6 +29,7 @@ import { useI18n } from "../../i18n";
 import { buildFrontendReloadUrl } from "../../lib/frontendReload";
 import { getHostById } from "../../lib/hostStorage";
 import { markSwitchHostReload } from "../../lib/switchHostReload";
+import styles from "./RemoteAccessSettings.module.css";
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { HideInSettingsSearch } from "./SettingsSearchContext";
@@ -62,6 +67,7 @@ function HostIdentitySettings({
   const [saving, setSaving] = useState(false);
   const normalizedDraft = normalizeHostIdentityIcon(draft);
   const draftInvalid = draft.trim().length > 0 && normalizedDraft === null;
+  const invalidId = useId();
 
   useEffect(() => setDraft(currentIcon), [currentIcon]);
 
@@ -84,28 +90,22 @@ function HostIdentitySettings({
       className="settings-item--wide-control host-identity-settings"
     >
       <div className="host-identity-controls">
-        <div
-          className="host-identity-presets"
-          role="group"
+        <SegmentedControl
+          activation="manual"
+          variant="cards"
           aria-label={t("hostIdentityPresetsAria")}
-        >
-          {HOST_IDENTITY_PRESETS.map((icon) => (
-            <button
-              key={icon}
-              type="button"
-              className={`host-identity-preset${currentIcon === icon ? " active" : ""}`}
-              aria-label={t("hostIdentityUsePreset", { icon })}
-              aria-pressed={currentIcon === icon}
-              disabled={disabled || saving}
-              onClick={() => {
-                setDraft(icon);
-                void save({ icon });
-              }}
-            >
-              {icon}
-            </button>
-          ))}
-        </div>
+          options={HOST_IDENTITY_PRESETS.map((icon) => ({
+            value: icon,
+            label: <span className={styles.presetEmoji}>{icon}</span>,
+            ariaLabel: t("hostIdentityUsePreset", { icon }),
+          }))}
+          value={currentIcon}
+          onChange={(icon) => {
+            setDraft(icon);
+            void save({ icon });
+          }}
+          disabled={disabled || saving}
+        />
         <form
           className="host-identity-custom"
           onSubmit={(event) => {
@@ -115,9 +115,11 @@ function HostIdentitySettings({
             }
           }}
         >
-          <input
-            className="settings-input host-identity-input"
+          <TextInput
+            className="host-identity-input"
             value={draft}
+            invalid={draftInvalid}
+            aria-describedby={draftInvalid ? invalidId : undefined}
             maxLength={MAX_HOST_IDENTITY_ICON_CODE_UNITS}
             aria-label={t("hostIdentityCustomLabel")}
             placeholder={t("hostIdentityCustomPlaceholder")}
@@ -137,9 +139,7 @@ function HostIdentitySettings({
             }}
           />
           {currentIcon && (
-            <button
-              type="button"
-              className="settings-button settings-button-secondary"
+            <Button
               data-host-identity-clear
               disabled={disabled || saving}
               onClick={() => {
@@ -148,11 +148,14 @@ function HostIdentitySettings({
               }}
             >
               {t("hostIdentityClear")}
-            </button>
+            </Button>
           )}
         </form>
         {draftInvalid && (
-          <p className="settings-warning host-identity-validation">
+          <p
+            id={invalidId}
+            className="settings-warning host-identity-validation"
+          >
             {t("hostIdentityInvalid")}
           </p>
         )}
@@ -188,6 +191,7 @@ function HostAwakeSettings({
   const { t } = useI18n();
   const [floorDraft, setFloorDraft] = useState(String(batteryFloorPercent));
   const [saving, setSaving] = useState(false);
+  const floorInvalidId = useId();
   const enabled = mode !== "off";
   const unavailable =
     status?.state === "unsupported" ||
@@ -263,37 +267,32 @@ function HostAwakeSettings({
               </p>
             )}
             {!enabled && (
-              <button
-                type="button"
-                className="settings-button settings-button-secondary"
+              <Button
                 disabled={statusLoading || saving}
                 onClick={() => void onRefresh()}
               >
                 {t("hostAwakeRefresh")}
-              </button>
+              </Button>
             )}
           </>
         }
       >
-        <label className="toggle-switch">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={
-              settingsLoading ||
-              statusLoading ||
-              saving ||
-              !status ||
-              (unavailable && !enabled)
-            }
-            onChange={(event) =>
-              void update({
-                hostAwakeMode: event.target.checked ? "idle" : "off",
-              })
-            }
-          />
-          <span className="toggle-slider" />
-        </label>
+        <Switch
+          checked={enabled}
+          disabled={
+            settingsLoading ||
+            statusLoading ||
+            saving ||
+            !status ||
+            (unavailable && !enabled)
+          }
+          onCheckedChange={(checked) =>
+            void update({
+              hostAwakeMode: checked ? "idle" : "off",
+            })
+          }
+          aria-label={t("hostAwakeTitle")}
+        />
       </SettingsItem>
 
       {enabled &&
@@ -313,9 +312,11 @@ function HostAwakeSettings({
                 }
               }}
             >
-              <input
+              <TextInput
                 type="number"
-                className="settings-input settings-input-small"
+                unit="%"
+                invalid={!validFloor}
+                aria-describedby={validFloor ? undefined : floorInvalidId}
                 min={1}
                 max={100}
                 step={1}
@@ -324,19 +325,18 @@ function HostAwakeSettings({
                 disabled={saving}
                 onChange={(event) => setFloorDraft(event.target.value)}
               />
-              <span aria-hidden="true">%</span>
-              <button
+              <Button
+                variant="primary"
                 type="submit"
-                className="settings-button"
                 disabled={
                   saving || !validFloor || parsedFloor === batteryFloorPercent
                 }
               >
                 {t("hostAwakeBatteryFloorSave")}
-              </button>
+              </Button>
             </form>
             {!validFloor && (
-              <p className="settings-warning">
+              <p id={floorInvalidId} className="settings-warning">
                 {t("hostAwakeBatteryFloorInvalid")}
               </p>
             )}
@@ -503,15 +503,12 @@ export function RemoteAccessSettings() {
           </>
         }
       >
-        <label className="toggle-switch">
-          <input
-            type="checkbox"
-            checked={publicSharesEnabled}
-            disabled={isLoading}
-            onChange={(e) => void updatePublicSharesEnabled(e.target.checked)}
-          />
-          <span className="toggle-slider" />
-        </label>
+        <Switch
+          checked={publicSharesEnabled}
+          disabled={isLoading}
+          onCheckedChange={(checked) => void updatePublicSharesEnabled(checked)}
+          aria-label={t("advancedPublicShareTitle")}
+        />
       </SettingsItem>
 
       {/* Limited users live in Settings → Users, beside the list they govern. */}
@@ -530,13 +527,9 @@ export function RemoteAccessSettings() {
             "viewer",
           ]}
         >
-          <button
-            type="button"
-            className="settings-button settings-button-secondary"
-            onClick={() => setShowPublicShareManagement(true)}
-          >
+          <Button onClick={() => setShowPublicShareManagement(true)}>
             {t("advancedPublicShareManageButton")}
-          </button>
+          </Button>
         </SettingsItem>
       )}
 
@@ -593,20 +586,14 @@ export function RemoteAccessSettings() {
             </>
           }
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={settings?.persistRemoteSessionsToDisk ?? true}
-              disabled={isLoading}
-              onChange={(e) =>
-                void updateSetting(
-                  "persistRemoteSessionsToDisk",
-                  e.target.checked,
-                )
-              }
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            checked={settings?.persistRemoteSessionsToDisk ?? true}
+            disabled={isLoading}
+            onCheckedChange={(checked) =>
+              void updateSetting("persistRemoteSessionsToDisk", checked)
+            }
+            aria-label={t("developmentPersistRemoteTitle")}
+          />
         </SettingsItem>
       </div>
 
@@ -614,67 +601,54 @@ export function RemoteAccessSettings() {
     </>
   );
 
-  // When connected via relay, show connection info and logout
-  if (remoteConnection) {
-    // Get current host display name from hostStorage
-    const currentHost = remoteConnection.currentHostId
-      ? getHostById(remoteConnection.currentHostId)
-      : null;
-    const displayName =
-      currentHost?.displayName ||
-      remoteConnection.storedUsername ||
-      t("remoteAccessDefaultHost");
-
-    return (
-      <SettingsSection description={t("remoteAccessConnectedDescription")}>
-        <AppsSettingsLink />
-        {hostAwakeConfig}
-        {publicShareConfig}
-        {yaClientInfo}
-        <div className="settings-group">
-          <SettingsItem
-            label={t("remoteAccessCurrentHostTitle")}
-            description={displayName}
-          >
-            <div className="settings-item-actions">
-              <button
-                type="button"
-                className="settings-button"
-                onClick={handleSwitchHost}
-              >
-                {t("sidebarSwitchHost")}
-              </button>
-            </div>
-          </SettingsItem>
-          {hostIdentityItem}
-          {currentHost?.relayUrl && (
-            <SettingsItem
-              label={t("remoteAccessRelayUrlTitle")}
-              description={currentHost.relayUrl}
-            />
-          )}
-          <SettingsItem
-            label={t("remoteAccessLogoutTitle")}
-            description={t("remoteAccessLogoutDescription")}
-          >
-            <button
-              type="button"
-              className="settings-button settings-button-danger"
-              onClick={() => remoteConnection.disconnect()}
-            >
-              {t("remoteAccessLogout")}
-            </button>
-          </SettingsItem>
+  // This Remote Access link's own host, relay and logout: connection info and
+  // a session action, not server settings. Everything below it renders the
+  // same for direct and Remote Access clients (topics/connection-safe-settings.md).
+  const currentHost = remoteConnection?.currentHostId
+    ? getHostById(remoteConnection.currentHostId)
+    : null;
+  const remoteSessionGroup = remoteConnection && (
+    <div className="settings-group">
+      <SettingsItem
+        id="remote-access-session-host"
+        label={t("remoteAccessCurrentHostTitle")}
+        description={
+          currentHost?.displayName ||
+          remoteConnection.storedUsername ||
+          t("remoteAccessDefaultHost")
+        }
+      >
+        <div className="settings-item-actions">
+          <Button onClick={handleSwitchHost}>{t("sidebarSwitchHost")}</Button>
         </div>
-        {persistSessionsToggle}
-      </SettingsSection>
-    );
-  }
+      </SettingsItem>
+      {currentHost?.relayUrl && (
+        <SettingsItem
+          id="remote-access-session-relay"
+          label={t("remoteAccessRelayUrlTitle")}
+          description={currentHost.relayUrl}
+        />
+      )}
+      <SettingsItem
+        id="remote-access-session-logout"
+        label={t("remoteAccessLogoutTitle")}
+        description={t("remoteAccessLogoutDescription")}
+      >
+        <Button variant="danger" onClick={() => remoteConnection.disconnect()}>
+          {t("remoteAccessLogout")}
+        </Button>
+      </SettingsItem>
+    </div>
+  );
 
-  // Server-side: show relay configuration
   return (
-    <SettingsSection>
+    <SettingsSection
+      description={
+        remoteConnection ? t("remoteAccessConnectedDescription") : undefined
+      }
+    >
       <AppsSettingsLink />
+      {remoteSessionGroup}
       {hostIdentityItem && (
         <div className="settings-group">{hostIdentityItem}</div>
       )}

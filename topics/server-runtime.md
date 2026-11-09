@@ -33,7 +33,7 @@ package, installer, compiler requirement or sidecar. The Node experimental
 SQLite warning remains visible: it is an accepted upstream runtime diagnostic,
 not a reason to suppress warnings globally. Runtime eligibility does not imply
 that SQLite successfully opened. SQLite is required: a server that cannot open
-it does not start, under the [storage startup policy](optional-sqlite.md#startup-policy).
+it does not start, under the [storage startup policy](required-sqlite.md#startup-policy).
 Feature enablement remains separate.
 
 Desktop uses its exact hash-pinned private Bun from `runtime-versions.json`.
@@ -162,6 +162,16 @@ afresh. Do not delete the data directory or reset remote pairing to fix a
 runtime version mismatch.
 
 ## Verification
+
+npm publication additionally requires the
+[installed-package acceptance gate](native-provider-testing.md#installed-npm-package-acceptance)
+on Linux. It launches the packed CLI outside the checkout with an isolated
+home and normal provider-host discovery, then verifies real Claude/Codex
+API/tool/stream/history paths against local scripted model APIs. Publishing
+uses the same accepted tarball and checks its version and SHA-256; a successful
+mock-SDK startup alone cannot qualify a release. The
+[release guide](../docs/development/releasing.md#releasing-to-npm) owns commands
+and retained evidence.
 
 The Server Runtime And SQLite workflow tests patched Node 22.23.4, 24.22.1
 and 26.12.1 on Linux, macOS and Windows. It checks the generated engine

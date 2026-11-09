@@ -29,7 +29,10 @@ See also: [`provider-abstraction.md`](provider-abstraction.md),
 (agent-facing scripts as a consumer of this seam),
 [`docs/tactical/053-sessions-route-refactor-ledger.md`](../docs/tactical/053-sessions-route-refactor-ledger.md)
 (running ledger of `sessions.ts` extraction refactors that reshape where
-this REST surface lives).
+this REST surface lives),
+[`docs/tactical/177-session-launch-service.md`](../docs/tactical/177-session-launch-service.md)
+(folds the route-level copies of "launch a session" into one service, the
+first step toward a launch call a headless host can make).
 
 Status: **proposal / not yet built.** The initial shaping decisions are
 resolved (see *Decisions*); one (the OpenAI-adapter session mapping) remains
@@ -389,6 +392,45 @@ from the core. Thin; depends entirely on resolving the stateless-request →
 stateful-session `OPEN:` mapping decision. Ships last because it is the most
 opinionated and the least load-bearing for the primary (experiment) use case.
 
+## Session launch metadata owners
+
+A headless host or script that launches a session needs to know which layer
+saves what a later resume reads, so the launch call can live below the REST
+routes. Decided 2026-11-06 in
+[plan 177 step 5](../docs/tactical/177-session-launch-service.md#part-1-one-owner-per-field):
+
+- **Creation admission** (`SessionCreationStore.admit`) owns everything a
+  new session or transcript copy is created with: provider, requested model
+  and launch settings, prompt-suggestion and recap preferences, sandbox
+  level, a copy's title and source, a `/btw` link to the copy's source, an
+  internal helper's archiving and a limited user as creator. It saves them
+  before the session exists, so a queued launch or a server restart keeps
+  them.
+- **The Supervisor** owns what a running process changes: the launch
+  settings it runs with, and the sandbox it confines once it starts or a
+  copy is made. A caller names the project a copy is listed under
+  (`workingProjectId`) rather than writing the copy's sandbox record. A
+  restart and a fork-summary continuation still write their started
+  sandbox record themselves; plan 177 says why.
+- **The launch caller** owns only what admission is not told: a handoff's
+  title, a fork's lineage root, the fork-summary target's archiving, a
+  `/btw` link to a parent other than the source, the preferences a restart
+  fork or fork-summary continuation resolved when it started, a restart
+  handoff's started recap delay, and the started sandbox record of a
+  restart or fork-summary continuation. It announces new
+  sessions to open lists without writing admission's fields again.
+
+The launch pieces a caller uses live in `packages/server/src/sessions/`, not
+in the routes: the resume and successor launch settings
+(`session-launch-settings.ts`), the reading of a Supervisor launch result
+(`session-launch-outcome.ts`), the launch-metadata writers
+(`session-launch-metadata.ts`), the sandbox inheritance rules, the
+compact settings and the successor title rules
+(`session-successor-titles.ts`). They are plain modules that take the
+services they read;
+[plan 177 part 2](../docs/tactical/177-session-launch-service.md#part-2-the-shared-launch-code-moves-below-the-routes)
+says why there is no single service object.
+
 ## Design tensions and mandates that constrain this
 
 - **Resource Quiescence is non-negotiable** (`architecture-mandates.md`). Every
@@ -484,9 +526,16 @@ place.
    thinking/effort ride the request; tools blocked and thinking off unless
    explicitly asked; per-turn overrides allowed.
 
+### Resolved (2026-11-06)
+
+7. **Session launch metadata → one owner per field**
+   (§ *Session launch metadata owners*). Creation admission saves what a
+   session is created with, the Supervisor what a running process changes,
+   and the launch caller only what admission is not told.
+
 ### Still open
 
-7. **OpenAI adapter session mapping** (only if D6 is in scope soon): how does a
+8. **OpenAI adapter session mapping** (only if D6 is in scope soon): how does a
    stateless `messages[]` request map to session identity — ephemeral per call,
    caller-supplied id, or prefix-hash reuse?
 

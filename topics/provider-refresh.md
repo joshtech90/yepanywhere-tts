@@ -61,6 +61,10 @@ its runtime leases, verification, and cache-generation contract.
    section below. Capture the exact version, relevant `--help`
    output, model list, generated protocol check, and a small session/export
    sample when schema drift is the risk.
+   For qualified families, run the applicable [native provider scenarios](native-provider-testing.md)
+   against the actual target executable, record its version, and align test
+   pins with the audited target. Scripted local model APIs cost no inference;
+   replayed outputs alone do not qualify the new runtime.
 3. Diff YA-visible shape, not raw prose. Prefer normalized fingerprints:
    model ids plus metadata fields YA uses; flag names and accepted positions;
    generated file add/remove/change list; event or part-type coverage counts;
@@ -95,7 +99,31 @@ matching upstream release tags when the version changed; the real zero-token
 probe covers the production model-discovery command but intentionally does not
 exercise authenticated assistant events or persisted sessions.
 
-Current refresh, 2026-10-23 (Pi 1.4.0): the installed binary passes the
+Recheck, 2026-11-06: installed Pi and npm `latest` are both 1.5.0, so
+there is nothing new to audit. The installed binary still passes the
+zero-token RPC contract and the effort-retry test, and the pinned
+native scenarios pass (10).
+
+Current refresh, 2026-11-04 (Pi 1.5.0): `pi update --self` moves the
+managed install from 1.4.0 to 1.5.0; `PI_EXECUTABLE` names that managed
+launcher, not a fork. The installed binary passes the zero-token RPC
+contract and the local-server effort-retry integration test, and the
+pinned 1.5.0 native scenarios pass 9/9 on Linux x64. Against the
+installed 1.4.0 release, `dist/modes/rpc` is unchanged, sessions stay
+format v3 with the same entry types, and `dist/cli.js` remains beside
+the `dist/bundle/cli.js` bin. Agent-core changes only tool-schema
+typing: tool arguments now validate through `@earendil-works/pi-schema`
+instead of TypeBox, which YA's extension never reaches because it
+registers a command and no tools. The extension calls YA makes
+(`registerCommand`, `appendEntry`, `navigateTree`, session-manager reads)
+are unchanged apart from added keybinding hints. Assistant messages may
+carry `responseModel` and usage may carry `cost.totalFromProvider`; both
+are additive and ignored. `--model` now accepts provider ids containing
+slashes. No adapter change is needed; root compatibility advances to
+1.5.0. No authenticated turn ran; the evidence is the installed `dist`
+diff, the package changelog and the scripted native scenarios.
+
+Previous refresh, 2026-10-23 (Pi 1.4.0): the installed binary passes the
 zero-token RPC contract and the local-server effort-retry integration test
 with `PI_EXECUTABLE` set explicitly to the managed launcher. Against the
 installed 1.3.0 release, `dist/modes/rpc` and the session manager are
@@ -253,7 +281,37 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible ([provider-version-support](provider-version-support.md)).
 
-Current source refresh, 2026-10-29 (0.166.0):
+Recheck, 2026-11-04: installed Codex is still `0.166.0`, npm `latest`, and
+`pnpm codex:protocol:check` reports no drift. Nothing to refresh.
+
+Current source refresh, 2026-11-06 (0.167.0, generated types only):
+
+- Installed Codex is `codex-cli 0.167.0`, npm `latest`; the official
+  `rust-v0.167.0` tag resolves to `086ccc833`. `expectedVersion`,
+  `compatibleThroughVersion`, the native test pin, and the reference
+  checkout record `0.167.0`.
+- Regeneration changes four subset files. Audio inputs (`UserInput`
+  `audio`, `ContentItem` `input_audio`) may now reference an uploaded
+  `fileId`/`file_id` instead of a URL; YA sends no audio, and
+  `CodexInputAudioContentSchema` already treats `audio_url` as optional
+  and passes other fields through.
+- New control, not adopted: managed `requirements.toml` prefix rules with
+  `decision = "prompt-user"` (upstream #58045) raise a command approval
+  with `kind: "humanCommand"` that accepts only a one-time
+  accept/decline/cancel. Codex sends it only to connections that
+  initialize with `experimentalApi` and the new `requiredHumanApproval`
+  capability (`app-server/src/outgoing_message.rs`); YA declares only
+  `experimentalApi`, so such approvals never reach YA. Adopting it is a design refresh:
+  YA would need a one-time-only approval prompt that never offers session
+  or persistent approval. Trigger: a user who runs managed `prompt-user`
+  rules under YA.
+- A zero-token `model/list` returns the same nine models as 0.166.0, in
+  YA's preferred order, `gpt-6.1-sol` default at low effort.
+- No credentialed smoke ran. Server type checking, the server provider
+  suites (838 tests), and the 17 Codex and Codex OSS native scenarios on
+  the pinned 0.167.0 executable pass.
+
+Previous source refresh, 2026-10-29 (0.166.0):
 
 - Installed Codex is `codex-cli 0.166.0`, which is npm `latest`; the
   official `rust-v0.166.0` tag resolves to `6ff1e1ca3`, 1,335 commits after
@@ -1332,7 +1390,68 @@ Previous-model registry review:
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
 
-Current source refresh, 2026-10-28 (Claude Code 2.1.312 / SDK 0.3.312):
+Current source refresh, 2026-11-06 (Claude Code 2.1.319 / SDK 0.3.319):
+
+- The SDK and matching native packages advance from 0.3.318 to 0.3.319;
+  the bundled Linux executable and the standalone install both report
+  Claude Code 2.1.319. Compatibility markers advance together.
+- The declaration delta is additive and unused by YA: a
+  `set_has_subscribers` control request that matters only under
+  `CLAUDE_CODE_STREAM_EVENT_HOLD_MS`, which YA does not set; a
+  `check_permissions` option on direct `mcp_call` control requests; a
+  `denyInsteadOfPrompting` permission setting; a Windows
+  `disableWindowsBashCommandSplit` setting; and a
+  `session_security_tier_below_org_policy` bridge credential refusal.
+  `session_writes_lost` is now documented as sent only on a status-0
+  exit; YA's warning row is unchanged.
+- A no-turn handshake from a scratch directory against each bundled
+  executable returns identical results for 0.3.318 and 0.3.319: 8 model
+  rows with the same names and efforts and the same 71 commands. `/goal`
+  and `/loop` remain native. (Earlier counts came from a different probe
+  setup and are not comparable.)
+- Server type checking, the server provider and Claude route suites,
+  the shared Claude transcript-schema tests (52), and the Claude native
+  scenarios (11) pass. One clone-route test timed out at 5 s under the
+  parallel run and passes alone in under 1 s.
+- No assistant turn ran, so authenticated generation and 2.1.319
+  transcripts are not covered. Existing provider-host workers must
+  restart to adopt the update.
+
+Previous source refresh, 2026-11-04 (Claude Code 2.1.318 / SDK 0.3.318):
+
+- The SDK and matching native packages advance from 0.3.312 to 0.3.318;
+  the bundled Linux executable reports Claude Code 2.1.318, ahead of the
+  standalone 2.1.314 install. Compatibility markers advance together.
+- The declaration delta is additive for YA: a `system/session_writes_lost`
+  message (transcript or `~/.claude.json` writes lost to ENOSPC/EDQUOT,
+  sent once at exit), `pending_elicitation_requests` on initialize,
+  `onFailure: 'continue' | 'block'` on hook matchers with an initialize
+  `hook_on_failure_supported` flag, `credential_expires_at` on results,
+  `lossy` on file reads, startup failure reasons
+  `sandbox_required_unavailable`, `initialize_not_first` and
+  `config_file_invalid`, `blockWritesOutsideWorkingDirectories` and
+  related permission settings, and a `prewarm` export from `core`.
+  `still_queued` now also lists messages read but not yet queued. YA's
+  only hook is a `Stop` callback, where `onFailure` is ignored.
+- The Read tool output drops its `file_unchanged` variant, and the
+  2.1.318 executable no longer contains the string. YA's Read renderer
+  keeps accepting it for older transcripts. Other tool-output additions
+  (`timedOut` on Glob/Grep, task `description`, artifact paging) are
+  unused.
+- YA projects `session_writes_lost` as a warning row naming the cause
+  and what was not saved (user direction, 2026-11-04); other unknown
+  system subtypes are still skipped.
+- A no-turn handshake against each bundled executable returns the same 13
+  model rows, with identical names and efforts, and the same 55 commands
+  for 0.3.312 and 0.3.318. `/goal` and `/loop` remain native. The 14
+  Claude provider test files (150 tests), transcript-schema tests (26),
+  and server type checking pass.
+- No assistant turn ran and no 2.1.318 transcript exists locally, so
+  authenticated generation and persisted-schema coverage are not
+  established. Existing provider-host workers must restart to adopt the
+  update.
+
+Previous source refresh, 2026-10-28 (Claude Code 2.1.312 / SDK 0.3.312):
 
 - The SDK and matching native packages advance from 0.3.309 to 0.3.312;
   the bundled Linux executable and the standalone install both report
@@ -2063,7 +2182,37 @@ Difference detectors:
 - `@agentclientprotocol/sdk` changes enough to alter `ACPClient` request,
   notification, or permission typings.
 
-Current compatibility audit, 2026-10-23 (1.0.67, no adapter change):
+Current compatibility audit, 2026-11-04 (1.0.70, no adapter change):
+
+- Installed Grok is `grok 1.0.70 (f50904eaee6c) [stable]`, already the
+  latest stable per `grok update --check`; ACP `initialize` reports agent
+  1.0.70, protocol 1. Public `xai-org/grok-build` is unchanged since
+  2026-10-16 (git `2bdd1d6a`, crate 1.0.45) and now trails by 25 patches.
+  Release notes for 1.0.68–1.0.70 were not retrieved.
+- `grok models`, `models_cache.json` and a no-token `session/new` list the
+  same four models, default `grok-4.7`, every model at `high`; cache fields
+  YA reads are unchanged. `--help` for top-level, `agent` and `agent stdio`
+  differs from 1.0.67 only in two help strings.
+- Side-by-side no-token probes of the 1.0.67 and 1.0.70 binaries
+  (`initialize`, `session/new`, `session/load` with `_meta.noReplay`) match:
+  capabilities, `configOptions`, slash-command metadata keys and
+  notification methods. No reverse requests were sent.
+- Grok answers a skill-directory reload with an unsolicited JSON-RPC
+  response (`id: "skills-reload"`); ACP SDK 0.12.0 logs "Got response to
+  unknown request" and drops it. The string is in 1.0.67 too, so this is
+  not new, and it is harmless.
+- Local doc changes cover terminal keys, update-channel and version pins,
+  experiments, daemon-route MCP for workflows, and `mkdir`/`touch`
+  auto-approval; none touches the `--no-leader stdio` path. Every tool
+  name `grok-tool-normalization.ts` matches still occurs in the binary.
+- Native test pins move to 1.0.70 (`artifacts.json` SHA-256s;
+  the Linux artifact is byte-identical to the installed binary). The five
+  native Grok scenarios pass against it: queued turn with a real tool,
+  gentle interject, rate-limit retry, cancel and continue, cold resume.
+  The five Grok provider/reader test files (81 tests) pass. No paid model
+  turn ran.
+
+Previous compatibility audit, 2026-10-23 (1.0.67, no adapter change):
 
 - Installed Grok is `grok 1.0.67 (2fe064390d07) [stable]`; ACP
   `initialize` reports agent 1.0.67, protocol 1. Public `xai-org/grok-build`
@@ -2082,7 +2231,7 @@ Current compatibility audit, 2026-10-23 (1.0.67, no adapter change):
 - The four Grok provider/reader test files (73 tests) pass. No live prompt
   ran; the probe left two empty sessions under `~/.grok/sessions/`.
 
-Previous compatibility audit, 2026-10-16 (1.0.60, no adapter change):
+Earlier compatibility audit, 2026-10-16 (1.0.60, no adapter change):
 
 - Installed Grok is `grok 1.0.60 (01a8e1c591c0) [stable]`; ACP `initialize`
   reports agent 1.0.60, protocol 1. Public `xai-org/grok-build` is git
@@ -2129,8 +2278,9 @@ official agent SDKs inject into spawned non-leader agents, against
 `session/set_config_option` for mid-session model/effort and `session/close`
 for shutdown.
 
-Status: Grok ACP is current through installed 1.0.67, subject to the
-live-prompt coverage gap. Root `compatibleThroughVersion` records `1.0.67`.
+Status: Grok ACP is current through installed 1.0.70; scripted native
+scenarios cover the agent loop, but no live paid prompt has run. Root
+`compatibleThroughVersion` records `1.0.70`.
 
 Previous source refresh, 2026-08-16:
 
@@ -2238,7 +2388,74 @@ Difference detectors:
   [provider-model-glyphs](provider-model-glyphs.md), not necessarily the
   provider runtime.
 
-Current read-only audit, 2026-06-05:
+Current refresh, 2026-11-04 (OpenCode 1.19.5): `opencode upgrade` moves
+the official-installer binary from 1.18.31 to 1.19.5. The OpenAPI
+documents served by isolated `opencode serve` instances of both releases
+have the same paths; every route YA calls (`/session`,
+`/session/{id}/message`, `/session/{id}/abort`, `/session/status`,
+`/event`, permission reply, question reply/reject) and every event,
+message and part schema is identical. Only `Config`/`ProviderConfig`
+change: model `reasoning_options` (1.19.3) generate the `variants` map
+that `opencode models --verbose` still reports in the same field shape,
+which YA reads for effort levels. A fresh `opencode.db` has an identical
+SQLite schema, and `serve`, `export` and `acp` help are unchanged. The
+1.18.32–1.19.5 notes otherwise cover provider fixes, discontinued
+session sharing (1.19.1) and a bundled Bun 1.4.4. No adapter change is
+needed. OpenCode 2 ships separately as `@opencode/cli` (2.2.5) and is
+reached only through `opencode upgrade --major`; 1.x update checks stay
+on npm `opencode-ai`, so 1.19.5 is the current 1.x release. No model
+turn ran. The pinned native-scenario executable remains 1.18.9; its
+four multi-turn scenarios failed only at their 5/10-second time limits
+on a host at load ~51 (16 cores), so they neither qualify nor fault
+1.19.5.
+
+OpenCode 2 evaluation, 2026-11-04 (`@opencode/cli` 2.2.5, Linux x64):
+**unsupported; the current adapter cannot start a session.** It was
+installed side by side under a scratch npm prefix, leaving the user's
+official-installer 1.19.5 in place, and probed in isolated
+`HOME`/`XDG_*` roots. `serve` is now "the v2 API": every v1 route YA
+calls is gone (`POST /session` and `/session/{id}/message|abort`
+answer 405; `GET /session`, `/session/status` and `/event` fall
+through to the web app's HTML). The replacement surface lives under
+`/api/`: `POST /api/session`, an asynchronous
+`POST /api/session/{id}/prompt` that returns an inbox receipt at once,
+`/interrupt`, `/api/session/active`, `/api/event`,
+`/api/session/{id}/permission/{requestID}/reply` and forms in place
+of questions. The served `/openapi.json` (OpenAPI 3.1, 139 paths)
+leaves event payloads untyped. A live capture and the binary's event
+names show a new vocabulary: `session.inbox.*`, `session.execution.*`,
+`session.step.*`, `session.text|reasoning.{started,delta,ended}`,
+`session.tool.*`, `permission.asked/replied` and `form.*`. Nothing
+YA consumes survives (`message.updated`, `message.part.*`,
+`session.status`, `session.idle`, `question.asked`). `serve` always
+requires HTTP Basic authentication and generates a password when none
+is supplied.
+
+Driving YA's production `OpenCodeProvider` against 2.2.5 fails both
+launch shapes. An unprotected launch reports `Failed to create
+session: 405`; a protected launch reports `OpenCode server failed to
+start`, because its invalid-credential readiness probe receives the web
+app's HTML with status 200 instead of a 401. The same driver
+against 1.19.5 creates a native session in both shapes. Other CLI
+breaks: `models --verbose` is refused, so effort variants are lost
+and only plain ids remain, and top-level `export` moved to `session
+export`. Plain CLI commands run through a background service: YA's own
+`opencode models` call left a detached `opencode serve --service`
+daemon running after it returned. The DB stays at
+`opencode/opencode.db`. 2.2.5 migrates a 1.x DB in place on first
+open: the legacy `session`/`message`/`part` rows remain. The probe's one
+session and two messages were copied into the new `session_v2` and
+`session_message` tables, and `session_part` stayed empty. New 2.x
+sessions are stored in those new tables. 1.19.5 still opens the migrated DB, lists and
+reads pre-upgrade sessions, and creates new ones. Whether 1.x sees
+2.x-created sessions was not checked. The only model turn tried used
+the free `opencode/big-pickle`, which returned a free-usage-limit 429,
+so no assistant text, tool or permission event was observed. The
+native scenarios pin `opencode-ai` 1.18.9 with no path override and
+were not run against 2.2.5. Blockers and the proposed path are in
+[the OpenCode 2 gap](../gaps/opencode-2-unsupported.md).
+
+Previous read-only audit, 2026-06-05:
 
 - Installed OpenCode is still `1.15.13`, matching the existing
   [opencode-backend](opencode-backend.md) local sample version.
@@ -2247,10 +2464,13 @@ Current read-only audit, 2026-06-05:
   runtime data and the provider already queries it dynamically.
 - `opencode acp --help` exists, but YA still uses `opencode serve`.
 
-Status: OpenCode is not due for a routine version refresh from the local binary
-state. It has a design-refresh candidate if YA wants to evaluate the ACP backend
-instead of the current HTTP/SSE backend, and the dynamic model catalog may
-justify a separate glyph/UI polish pass.
+Status: no source refresh is due on the 1.x line, which remains the
+only supported OpenCode release line. OpenCode 2 needs a design refresh:
+a second adapter for the v2 API, event model and storage tables (see
+the 2026-11-04 evaluation above). The ACP backend in place of the
+current HTTP/SSE backend is the other design-refresh candidate. Moving
+the native-scenario pin from 1.18.9 to 1.19.5 waits for a quieter host
+to rerun those scenarios.
 
 ## Package Cross-Checks
 
@@ -2258,9 +2478,9 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.306` | `0.3.306` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.318` | `0.3.318` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `1.9.0` | Active ACP client dependency for Grok/Gemini |
 
-Claude SDK observed 2026-10-21; ACP SDK observed 2026-10-16.
+Claude SDK observed 2026-11-04; ACP SDK observed 2026-10-16.
 
 Treat both rows as provider-refresh inputs.

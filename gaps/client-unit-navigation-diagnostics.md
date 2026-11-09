@@ -16,3 +16,25 @@ then prevent/replace only its irrelevant document navigation or move its real
 navigation assertion to a browser boundary, preserving the intended behavior.
 
 Found 2026-10-30 while implementing the isolated local HTTP v0 API.
+
+2026-11-01: plan 171's phase-2 workspace run repeats the same two asynchronous
+navigation diagnostics (7,064 client tests pass). The slice changes server
+identity/storage and native detail reads, and its 79 focused checks are clean.
+The diagnostic still cannot be attributed from its timer-only stack; no global
+link behavior or jsdom suppression was introduced. Evidence: ignored
+`tasks/session-identity/phase-2-test.log`.
+
+2026-11-04: the relationship-writer workspace run repeats the same two
+timer-only navigation diagnostics while all 7,110 client tests pass. The slice
+changes SQL ownership and server admission only; its focused writer/admission
+checks are clean. Attribution still requires a separate client fixture audit,
+so no global navigation or jsdom suppression was added. Evidence: ignored
+`tasks/session-relationships/slice-4-qualified-unit.log`.
+
+2026-11-06: hiding healthy session-creation notices repeats the same two
+timer-only jsdom navigation diagnostics in the passing Node 24.22.1 workspace
+run (7,127 client tests). The focused startup component checks and browser
+no-flash/typing checks are clean. Neither navigation event can be attributed
+from these stacks, so changing global links or suppressing jsdom diagnostics
+would expand this presentation fix into an unrelated fixture audit. Evidence:
+ignored `tasks/creation-notice-test-node24.log`.

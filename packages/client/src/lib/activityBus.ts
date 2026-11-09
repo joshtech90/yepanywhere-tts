@@ -12,11 +12,13 @@ import type {
   ProjectsChangedEvent,
   ProviderName,
   SessionCreationProvenance,
+  SessionCreationStatus,
   ProviderRuntimeStatus,
   PromptSuggestionMode,
   SafeRestartChangedEvent,
   SafeRestartState,
   SessionCatalogUpdatedEvent,
+  SessionProviderPhase,
   RecentsChangedEvent,
   TranscriptDisplayObject,
   UrlProjectId,
@@ -100,6 +102,15 @@ export interface ProcessStateEvent {
   timestamp: string;
 }
 
+/** Row-only provider phase change; carries no activity. */
+export interface SessionProviderPhaseEvent {
+  type: "session-provider-phase-changed";
+  sessionId: string;
+  projectId: UrlProjectId;
+  providerPhase: SessionProviderPhase | null;
+  timestamp: string;
+}
+
 export interface ReviewResponseChangedEvent {
   type: "review-response-changed";
   projectId: UrlProjectId;
@@ -116,6 +127,9 @@ export interface ProviderRuntimeStatusChangedEvent {
 }
 
 export interface SessionMetadataChangedEvent {
+  /** Optional on older servers; ordinary startup recovery remains available. */
+  creation?: SessionCreationStatus;
+  nativeSessionId?: string;
   nonHumanUserTurn?: NonHumanUserTurn | null;
   creationProvenance?: SessionCreationProvenance;
   type: "session-metadata-changed";
@@ -192,6 +206,14 @@ export interface WorkerActivityEvent {
   timestamp: string;
 }
 
+/** The server's listening sockets changed (Local Access). */
+export interface NetworkBindingChangedEvent {
+  type: "network-binding-changed";
+  localhostPort: number;
+  network: { enabled: true; host: string | null; port: number | null } | null;
+  timestamp: string;
+}
+
 export type { SafeRestartChangedEvent, SafeRestartState };
 
 export function getInterruptibleSessionCount(
@@ -257,6 +279,7 @@ export interface ActivityEventMap {
   "session-updated": SessionUpdatedEvent;
   "session-seen": SessionSeenEvent;
   "process-state-changed": ProcessStateEvent;
+  "session-provider-phase-changed": SessionProviderPhaseEvent;
   "review-response-changed": ReviewResponseChangedEvent;
   "provider-runtime-status-changed": ProviderRuntimeStatusChangedEvent;
   "project-queue-changed": ProjectQueueChangedEvent;
@@ -273,6 +296,7 @@ export interface ActivityEventMap {
   // Dev mode events
   "source-change": SourceChangeEvent;
   "backend-reloaded": undefined;
+  "network-binding-changed": NetworkBindingChangedEvent;
   "worker-activity-changed": WorkerActivityEvent;
   "safe-restart-changed": SafeRestartChangedEvent;
   reconnect: undefined;
@@ -671,6 +695,7 @@ class ActivityBus {
       "session-updated",
       "session-seen",
       "process-state-changed",
+      "session-provider-phase-changed",
       "review-response-changed",
       "provider-runtime-status-changed",
       "project-queue-changed",
@@ -685,6 +710,7 @@ class ActivityBus {
       "cache-miss-billing-expected-expiry",
       "source-change",
       "backend-reloaded",
+      "network-binding-changed",
       "worker-activity-changed",
       "safe-restart-changed",
       "reconnect",

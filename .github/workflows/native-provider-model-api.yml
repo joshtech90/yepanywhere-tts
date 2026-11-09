@@ -1,0 +1,135 @@
+name: Native provider model API qualification
+
+# Linux's complete native suite is qualified. Gate only its relevant source;
+# the slower app/browser matrix and worker controls remain explicit dispatches.
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/native-provider-model-api.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".npmrc"
+      - "packages/server/package.json"
+      - "packages/server/vitest*.config.ts"
+      - "packages/shared/package.json"
+      - "packages/shared/src/**"
+      - "packages/server/src/**"
+      - "packages/server/test/native-provider/**"
+      - "packages/client/e2e/support/standalone-environment.ts"
+      - "packages/client/e2e/support/process-lifecycle.ts"
+      - "packages/client/e2e/support/provider-host-runtime.ts"
+      - "packages/server/test/setup/**"
+      - "scripts/safe-home.js"
+      - "scripts/perf-suite/host-profile.mjs"
+      - "scripts/install-native-provider-tests.mjs"
+      - "scripts/run-native-*.mjs"
+      - "scripts/run-with-safe-home.js"
+  pull_request:
+    paths:
+      - ".github/workflows/native-provider-model-api.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".npmrc"
+      - "packages/server/package.json"
+      - "packages/server/vitest*.config.ts"
+      - "packages/shared/package.json"
+      - "packages/shared/src/**"
+      - "packages/server/src/**"
+      - "packages/server/test/native-provider/**"
+      - "packages/client/e2e/support/standalone-environment.ts"
+      - "packages/client/e2e/support/process-lifecycle.ts"
+      - "packages/client/e2e/support/provider-host-runtime.ts"
+      - "packages/server/test/setup/**"
+      - "scripts/safe-home.js"
+      - "scripts/perf-suite/host-profile.mjs"
+      - "scripts/install-native-provider-tests.mjs"
+      - "scripts/run-native-*.mjs"
+      - "scripts/run-with-safe-home.js"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Native boundary to qualify
+        type: choice
+        default: all
+        options: [all, providers, app]
+      workers:
+        description: Vitest workers for controlled native qualification
+        type: choice
+        default: auto
+        options: [auto, "2", "4", "1"]
+
+permissions:
+  contents: read
+
+# Superseded automatic checks cancel; explicit manual controls have unique groups.
+concurrency:
+  group: native-model-api-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NATIVE_TEST_WORKERS: ${{ inputs.workers == 'auto' && '2' || inputs.workers || '2' }}
+
+jobs:
+  native-provider-model-api:
+    if: github.event_name != 'workflow_dispatch' || inputs.suite != 'app'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.23.4
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @yep-anywhere/shared build
+      - name: Install official checksum-verified test executables
+        run: pnpm test:providers:install
+      - name: Provide Antigravity's native nobody group alias
+        # Its Google native bootstrap resolves this name before ACP initialize.
+        # Ubuntu calls nobody's existing primary group nogroup. Preserve its GID.
+        run: |
+          if ! getent group nobody >/dev/null; then
+            sudo groupadd --non-unique --gid "$(id -g nobody)" nobody
+          fi
+          getent group nobody
+      - name: Real executables, owned profiles and scripted loopback models
+        run: pnpm test:providers:all --maxWorkers="$NATIVE_TEST_WORKERS"
+
+  native-app-reload:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite != 'providers'
+    strategy:
+      fail-fast: false
+      matrix:
+        # The held Playwright supports this Ubuntu image, not 26.04.
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # M1 run 42115449136 used 8m57s before the wider cold-mount guard.
+    # 20min is 2.23x that observed job; provider/Linux budgets are unchanged.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 10 }}
+    env:
+      # Same-source M1 control qualifies one app worker; explicit controls win.
+      NATIVE_TEST_WORKERS: ${{ inputs.workers && inputs.workers != 'auto' && inputs.workers || (matrix.os == 'macos-latest' && '1' || '2') }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.23.4
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @yep-anywhere/shared build
+      - run: pnpm test:providers:app --maxWorkers="$NATIVE_TEST_WORKERS"
+      - run: pnpm --filter @yep-anywhere/client exec playwright install --with-deps chromium
+      - uses: ./.github/actions/allow-chromium-sandbox
+      - run: pnpm test:providers:app --browser
+      - name: Preserve native app browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-app-${{ matrix.os }}-${{ github.run_attempt }}
+          path: packages/client/test-results/native-app-*/**

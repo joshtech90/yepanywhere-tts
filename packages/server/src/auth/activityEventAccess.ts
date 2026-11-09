@@ -84,8 +84,8 @@ export function limitedActivityEvent(
       return inSession(event.sessionId);
 
     case "session-status-changed":
-    case "session-id-remapped":
     case "process-state-changed":
+    case "session-provider-phase-changed":
     case "process-terminated":
     case "review-response-changed":
     case "provider-runtime-status-changed":

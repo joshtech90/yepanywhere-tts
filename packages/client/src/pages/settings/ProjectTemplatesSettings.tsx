@@ -6,6 +6,9 @@ import {
   type ProjectTemplateSourcesConfig,
 } from "@yep-anywhere/shared";
 import { fetchJSON } from "../../api/sourceApiFetch";
+import { Button } from "../../components/ui/Button";
+import { Checkbox } from "../../components/ui/Checkbox";
+import { Field, TextInput } from "../../components/ui/Field";
 import { useActingPrincipal } from "../../hooks/useActingPrincipal";
 import { useI18n } from "../../i18n";
 import { generateUUID } from "../../lib/uuid";
@@ -205,17 +208,12 @@ export function ProjectTemplatesSettings() {
           void save();
         }}
       >
-        <label className={styles.enabled}>
-          <input
-            type="checkbox"
-            disabled={!state}
-            checked={draft.enabled}
-            onChange={(event) =>
-              setDraft({ ...draft, enabled: event.target.checked })
-            }
-          />
-          {t("templatesEnable")}
-        </label>
+        <Checkbox
+          label={t("templatesEnable")}
+          disabled={!state}
+          checked={draft.enabled}
+          onCheckedChange={(enabled) => setDraft({ ...draft, enabled })}
+        />
         <p>{t("templatesLayerHelp")}</p>
         {draft.sources.map((source, index) => (
           <fieldset className={styles.source} key={source.id} disabled={!state}>
@@ -228,14 +226,15 @@ export function ProjectTemplatesSettings() {
               ? (["location"] as const)
               : (["location", "revision"] as const)
             ).map((field) => (
-              <label className={styles.field} key={field}>
-                {t(
+              <Field
+                key={field}
+                label={t(
                   field === "location"
                     ? "templatesRepository"
                     : "templatesRevision",
                 )}
-                <input
-                  className="settings-input"
+              >
+                <TextInput
                   value={source[field]}
                   onBlur={
                     field === "location"
@@ -261,12 +260,10 @@ export function ProjectTemplatesSettings() {
                     }))
                   }
                 />
-              </label>
+              </Field>
             ))}
             <div className={styles.actions}>
-              <button
-                className="settings-button"
-                type="button"
+              <Button
                 disabled={index === 0 || busy}
                 onClick={() =>
                   setDraft((previous) => {
@@ -280,10 +277,9 @@ export function ProjectTemplatesSettings() {
                 }
               >
                 {t("templatesMoveUp")}
-              </button>
-              <button
-                className="settings-button"
-                type="button"
+              </Button>
+              <Button
+                variant="danger-outline"
                 disabled={draft.sources.length === 1 || busy}
                 onClick={() =>
                   setDraft((previous) => ({
@@ -295,23 +291,19 @@ export function ProjectTemplatesSettings() {
                 }
               >
                 {t("templatesRemoveSource")}
-              </button>
+              </Button>
               {draft.enabled && !isLocalLocation(source.location) && (
-                <button
-                  className="settings-button"
-                  type="button"
+                <Button
                   disabled={busy || !state}
                   onClick={() => void save(source.id)}
                 >
                   {t("templatesUpdateHead")}
-                </button>
+                </Button>
               )}
             </div>
           </fieldset>
         ))}
-        <button
-          className="settings-button"
-          type="button"
+        <Button
           disabled={!state || busy || draft.sources.length >= 20}
           onClick={() =>
             setDraft((previous) => ({
@@ -330,16 +322,12 @@ export function ProjectTemplatesSettings() {
           }
         >
           {t("templatesAddSource")}
-        </button>
+        </Button>
         <p>{t("templatesFetchHelp")}</p>
         <div className={styles.actions}>
-          <button
-            className="settings-button"
-            type="submit"
-            disabled={busy || !state}
-          >
+          <Button variant="primary" type="submit" disabled={busy || !state}>
             {draft.enabled ? t("templatesFetch") : t("templatesSave")}
-          </button>
+          </Button>
         </div>
       </form>
       <div className={styles.status} role="status">

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   redundantVhostEmail,
   vhostOauthPolicy,
@@ -6,7 +6,10 @@ import {
   type VhostOauthLogEntry,
   type VhostOauthStatus,
 } from "@yep-anywhere/shared";
+import { Button, IconButton } from "../../components/ui/Button";
+import { Field, Select, TextInput } from "../../components/ui/Field";
 import { Modal } from "../../components/ui/Modal";
+import { Switch } from "../../components/ui/Switch";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useI18n } from "../../i18n";
 import { downloadBlob } from "../../lib/imageActions";
@@ -86,20 +89,17 @@ export function VhostOauthProviderSettings({
             update={update}
             id={newId}
           />
-          <button type="button" onClick={() => setNewId(undefined)}>
-            {t("cancel")}
-          </button>
+          <Button onClick={() => setNewId(undefined)}>{t("cancel")}</Button>
         </section>
       ) : (
         entries.length < 8 && (
-          <button
-            type="button"
+          <Button
             onClick={() =>
               setNewId(entries.length ? generateUUID() : "default")
             }
           >
             {t("vhostOauthAddProvider")}
-          </button>
+          </Button>
         )
       )}
     </div>
@@ -121,26 +121,22 @@ function ProviderToggle({
   const [error, setError] = useState("");
   return (
     <div>
-      <label className={styles.toggle}>
-        <input
-          type="checkbox"
-          checked={pending ?? enabled}
-          disabled={pending !== undefined}
-          onChange={async (event) => {
-            const value = event.target.checked;
-            setPending(value);
-            setError("");
-            try {
-              await update(path, { enabled: value });
-            } catch (failure) {
-              setError(String(failure));
-            } finally {
-              setPending(undefined);
-            }
-          }}
-        />
-        {label}
-      </label>
+      <Switch
+        label={label}
+        checked={pending ?? enabled}
+        disabled={pending !== undefined}
+        onCheckedChange={async (value) => {
+          setPending(value);
+          setError("");
+          try {
+            await update(path, { enabled: value });
+          } catch (failure) {
+            setError(String(failure));
+          } finally {
+            setPending(undefined);
+          }
+        }}
+      />
       {error && <p role="alert">{error}</p>}
     </div>
   );
@@ -161,6 +157,7 @@ function ProviderEditor({
   const [pendingEnabled, setPendingEnabled] = useState<boolean>();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const enabledHintId = useId();
   const hasSavedSecret =
     status.secretConfigured &&
     provider.kind === status.provider.kind &&
@@ -170,39 +167,35 @@ function ProviderEditor({
   return (
     <div className={styles.settings}>
       {status.enabled !== undefined && (
-        <>
-          <label className={styles.toggle}>
-            <input
-              type="checkbox"
-              checked={pendingEnabled ?? status.enabled}
-              disabled={busy}
-              onChange={async (event) => {
-                const enabled = event.target.checked;
-                setPendingEnabled(enabled);
-                setBusy(true);
-                setMessage("");
-                try {
-                  await update("/artifacts/vhosts/oauth/enabled", { enabled });
-                } catch (error) {
-                  setMessage(String(error));
-                } finally {
-                  setPendingEnabled(undefined);
-                  setBusy(false);
-                }
-              }}
-            />
-            {t("vhostOauthEnabled")}
-          </label>
-          <p>{t("vhostOauthEnabledHint")}</p>
-        </>
+        <Switch
+          label={t("vhostOauthEnabled")}
+          aria-describedby={enabledHintId}
+          checked={pendingEnabled ?? status.enabled}
+          disabled={busy}
+          onCheckedChange={async (enabled) => {
+            setPendingEnabled(enabled);
+            setBusy(true);
+            setMessage("");
+            try {
+              await update("/artifacts/vhosts/oauth/enabled", { enabled });
+            } catch (error) {
+              setMessage(String(error));
+            } finally {
+              setPendingEnabled(undefined);
+              setBusy(false);
+            }
+          }}
+        />
+      )}
+      {status.enabled !== undefined && (
+        <p id={enabledHintId}>{t("vhostOauthEnabledHint")}</p>
       )}
       <p>
         {t(status.locked ? "vhostOauthEnvironment" : "vhostOauthProviderHint")}
       </p>
       <fieldset disabled={status.locked || busy} className={styles.fields}>
-        <label>
-          {t("vhostOauthProvider")}
-          <select
+        <Field label={t("vhostOauthProvider")}>
+          <Select
             value={
               provider.kind === "oidc" && provider.issuer === GOOGLE_ISSUER
                 ? "google"
@@ -219,55 +212,50 @@ function ProviderEditor({
             <option value="entra">Microsoft Entra</option>
             <option value="google">Google</option>
             <option value="oidc">{t("vhostOauthCustomProvider")}</option>
-          </select>
-        </label>
+          </Select>
+        </Field>
         {provider.kind === "oidc" && provider.issuer === GOOGLE_ISSUER && (
           <p>{t("vhostOauthGoogleHint")}</p>
         )}
         {provider.kind === "entra" ? (
-          <label>
-            {t("vhostOauthTenant")}
-            <input
+          <Field label={t("vhostOauthTenant")}>
+            <TextInput
               value={provider.tenantId}
               onChange={(e) =>
                 setProvider({ ...provider, tenantId: e.target.value })
               }
             />
-          </label>
+          </Field>
         ) : (
-          <label>
-            {t("vhostOauthIssuer")}
-            <input
+          <Field label={t("vhostOauthIssuer")}>
+            <TextInput
               type="url"
               value={provider.issuer}
               onChange={(e) =>
                 setProvider({ ...provider, issuer: e.target.value })
               }
             />
-          </label>
+          </Field>
         )}
-        <label>
-          {t("vhostOauthClientId")}
-          <input
+        <Field label={t("vhostOauthClientId")}>
+          <TextInput
             value={provider.clientId}
             onChange={(e) =>
               setProvider({ ...provider, clientId: e.target.value })
             }
           />
-        </label>
-        <label>
-          {t("vhostOauthCallback")}
-          <input
+        </Field>
+        <Field label={t("vhostOauthCallback")}>
+          <TextInput
             type="url"
             value={provider.callbackUrl}
             onChange={(e) =>
               setProvider({ ...provider, callbackUrl: e.target.value })
             }
           />
-        </label>
-        <label>
-          {t("vhostOauthSecret")}
-          <input
+        </Field>
+        <Field label={t("vhostOauthSecret")}>
+          <TextInput
             type="password"
             autoComplete="new-password"
             value={secret}
@@ -276,10 +264,9 @@ function ProviderEditor({
             }
             onChange={(e) => setSecret(e.target.value)}
           />
-        </label>
-        <label>
-          {t("vhostOauthIp")}
-          <select
+        </Field>
+        <Field label={t("vhostOauthIp")} hint={t("vhostOauthIpHint")}>
+          <Select
             value={provider.visitorIp}
             onChange={(e) =>
               setProvider({
@@ -291,12 +278,11 @@ function ProviderEditor({
             <option value="peer">{t("vhostOauthIpPeer")}</option>
             <option value="cloudflare">Cloudflare</option>
             <option value="x-real-ip">X-Real-IP</option>
-          </select>
-        </label>
-        <p>{t("vhostOauthIpHint")}</p>
+          </Select>
+        </Field>
         {!status.locked && (
-          <button
-            type="button"
+          <Button
+            variant="primary"
             onClick={async () => {
               setBusy(true);
               setMessage("");
@@ -320,12 +306,12 @@ function ProviderEditor({
             }}
           >
             {t("vhostOauthConfigure")}
-          </button>
+          </Button>
         )}
       </fieldset>
       {id && id !== "default" && status.secretConfigured && (
-        <button
-          type="button"
+        <Button
+          variant="danger-outline"
           disabled={busy}
           onClick={async () => {
             setBusy(true);
@@ -344,7 +330,7 @@ function ProviderEditor({
           }}
         >
           {t("vhostOauthRemoveProvider")}
-        </button>
+        </Button>
       )}
       {message && <p role="status">{message}</p>}
     </div>
@@ -374,6 +360,7 @@ export function VhostOauthEmails({
   const first = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const hintId = useId();
   // biome-ignore lint/correctness/useExhaustiveDependencies: focusRequest reselects the first email when the host's access label is clicked again.
   useEffect(() => {
     if (!enabled) return;
@@ -399,29 +386,25 @@ export function VhostOauthEmails({
   }
   return (
     <div className={styles.settings}>
-      <label className={styles.toggle}>
-        <input
-          type="checkbox"
-          checked={enabled}
-          disabled={
-            disabled ||
-            busy ||
-            (!enabled && (!status.configured || status.enabled === false))
-          }
-          onChange={(e) => {
-            void persist(
-              e.target.checked ? rows.map((row) => row.value) : null,
-            );
-            if (e.target.checked)
-              requestAnimationFrame(() => {
-                first.current?.focus();
-                first.current?.select();
-              });
-          }}
-        />
-        {t("vhostOauthRequired")}
-      </label>
-      <p>
+      <Switch
+        label={t("vhostOauthRequired")}
+        aria-describedby={`${hintId}-required`}
+        checked={enabled}
+        disabled={
+          disabled ||
+          busy ||
+          (!enabled && (!status.configured || status.enabled === false))
+        }
+        onCheckedChange={(checked) => {
+          void persist(checked ? rows.map((row) => row.value) : null);
+          if (checked)
+            requestAnimationFrame(() => {
+              first.current?.focus();
+              first.current?.select();
+            });
+        }}
+      />
+      <p id={`${hintId}-required`}>
         {t(
           enabled && (!status.configured || status.enabled === false)
             ? "vhostOauthBlocked"
@@ -441,10 +424,12 @@ export function VhostOauthEmails({
             return (
               <div key={row.id}>
                 <div className={styles.emailRow}>
-                  <input
+                  <TextInput
                     ref={index === 0 ? first : undefined}
-                    className={redundant ? styles.redundant : undefined}
                     aria-label={t("vhostOauthEmail", { number: index + 1 })}
+                    aria-describedby={
+                      redundant ? `${hintId}-redundant-${row.id}` : undefined
+                    }
                     value={row.value}
                     autoComplete="off"
                     spellCheck={false}
@@ -466,10 +451,9 @@ export function VhostOauthEmails({
                       }
                     }}
                   />
-                  <button
-                    type="button"
+                  <IconButton
                     disabled={disabled}
-                    aria-label={t("vhostOauthRemoveEmail", {
+                    label={t("vhostOauthRemoveEmail", {
                       number: index + 1,
                     })}
                     onClick={() => {
@@ -479,18 +463,20 @@ export function VhostOauthEmails({
                     }}
                   >
                     −
-                  </button>
+                  </IconButton>
                 </div>
                 {redundant && (
-                  <small className={styles.redundantHint}>
+                  <small
+                    id={`${hintId}-redundant-${row.id}`}
+                    className={styles.redundantHint}
+                  >
                     {t("vhostOauthRedundant", { email: redundant })}
                   </small>
                 )}
               </div>
             );
           })}
-          <button
-            type="button"
+          <Button
             disabled={disabled || rows.length >= 32}
             onClick={() =>
               setRows((current) => [
@@ -500,7 +486,7 @@ export function VhostOauthEmails({
             }
           >
             {t("vhostOauthAddEmail")}
-          </button>
+          </Button>
           {rows.length === 0 && <p>{t("vhostOauthNobody")}</p>}
         </>
       )}
@@ -545,15 +531,14 @@ export function VhostOauthLogs({
       title={host ?? t("vhostOauthAllLogs")}
       onClose={onClose}
       actions={
-        <button type="button" onClick={() => setRevision((value) => value + 1)}>
+        <Button onClick={() => setRevision((value) => value + 1)}>
           {t("vhostOauthRefresh")}
-        </button>
+        </Button>
       }
     >
       <div className={styles.settings}>
         <p>{t("vhostOauthLogHint")}</p>
-        <button
-          type="button"
+        <Button
           disabled={!entries?.length}
           onClick={() =>
             downloadBlob(
@@ -569,7 +554,7 @@ export function VhostOauthLogs({
           }
         >
           {t("vhostOauthDownload")}
-        </button>
+        </Button>
         {error && <p role="alert">{error}</p>}
         {entries?.length === 0 && <p>{t("vhostOauthNoLogs")}</p>}
         <div className={styles.logEntries}>

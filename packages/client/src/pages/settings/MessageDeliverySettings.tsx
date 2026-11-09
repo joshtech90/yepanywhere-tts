@@ -1,5 +1,6 @@
 import {
   type BusyComposerDefaultAction,
+  type ClientDefaults,
   DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
@@ -18,22 +19,34 @@ import {
   formatDurationSeconds,
   parseDurationSeconds,
   serverHasCapability,
+  SERVER_CAPABILITIES,
+  type SteeringModeSettings,
+  type ProviderName,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
+import { Select, TextInput } from "../../components/ui/Field";
+import { Switch } from "../../components/ui/Switch";
 import {
   type AttachmentUploadQuality,
   useAttachmentUploadQuality,
 } from "../../hooks/useAttachmentUploadQuality";
 import { useKeepMobileKeyboardOpenAfterDelivery } from "../../hooks/useKeepMobileKeyboardOpenAfterDelivery";
+import { useBackgroundSessionCreation } from "../../hooks/useBackgroundSessionCreation";
 import { useQuestionAsideSetting } from "../../hooks/useQuestionAsideSetting";
 import { api } from "../../api/client";
 import { useProjects } from "../../hooks/useProjects";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
+import styles from "./MessageDeliverySettings.module.css";
 
 import { SettingsItem } from "./SettingsItem";
+import { ProviderSteeringSettings } from "./ProviderSteeringSettings";
+import {
+  SteerNowProviderOverrides,
+  useSupportsSteerNowProviderDefaults,
+} from "./SteerNowProviderDefaults";
 import { ProjectQueueReadinessSettings } from "./ProjectQueueReadinessSettings";
 import { RendezSettings, type RendezSettingsValue } from "./RendezSettings";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
@@ -126,27 +139,38 @@ function PatientCompactThresholdItem({
           onDraftChange={setDraft}
           onCommit={commit}
         />
-        <span className="output-appearance-number-wrap">
-          <input
-            type="number"
-            className="settings-input-small output-appearance-number"
-            min={1}
-            max={PATIENT_COMPACT_OFF_PERCENT}
-            step={1}
-            value={draft}
-            aria-label={label}
-            onChange={(e) => setDraft(Number(e.target.value))}
-            onBlur={() => commit(draft)}
-          />
-          <span className="output-appearance-unit">%</span>
-        </span>
+        <TextInput
+          type="number"
+          unit="%"
+          min={1}
+          max={PATIENT_COMPACT_OFF_PERCENT}
+          step={1}
+          value={draft}
+          aria-label={label}
+          onChange={(e) => setDraft(Number(e.target.value))}
+          onBlur={() => commit(draft)}
+        />
       </span>
       <span className="settings-hint">{valueHint}</span>
     </SettingsItem>
   );
 }
 
+/** Same per-provider values, treating absent keys as unset. */
+function sameProviderValues<T>(
+  a: Partial<Record<ProviderName, T>>,
+  b: Partial<Record<ProviderName, T>>,
+): boolean {
+  return (
+    Object.keys(a).length === Object.keys(b).length &&
+    Object.entries(a).every(
+      ([provider, mode]) => b[provider as ProviderName] === mode,
+    )
+  );
+}
+
 interface MessageDeliveryBaseline {
+  steeringModes: SteeringModeSettings;
   joinWindowSeconds: number;
   projectQueueQuietSeconds: number;
   clearloopInactivitySeconds: number;
@@ -156,12 +180,16 @@ interface MessageDeliveryBaseline {
   bangCommandsEnabled: boolean;
   busyComposerDefaultAction: BusyComposerDefaultAction;
   steerNowDefault: boolean;
+  steerNowDefaultByProvider: NonNullable<
+    ClientDefaults["steerNowDefaultByProvider"]
+  >;
   patientQueueDefault: boolean;
   patientQueueCompactAtPercent: number | undefined;
   topicShiftCompactAtPercent: number | undefined;
   projectQueueCtrlEnterEnabled: boolean;
   keepMobileKeyboardOpenAfterDelivery: boolean;
   questionAsidesEnabled: boolean;
+  backgroundSessionCreation: boolean;
   attachmentQuality: AttachmentUploadQuality;
   rendez: RendezSettingsValue;
 }
@@ -229,6 +257,13 @@ export function MessageDeliverySettings() {
   useSettingsPaneTitle(t("messageDeliveryTitle"));
   const { settings, isLoading, error, updateSettings } = useServerSettings();
   const { version } = useVersion();
+  const supportsProviderSteering = serverHasCapability(
+    version,
+    SERVER_CAPABILITIES.providerSteeringModes.name,
+  );
+
+  const supportsSteerNowProviderDefaults =
+    useSupportsSteerNowProviderDefaults();
 
   const supportsReadinessCheck = serverHasCapability(
     version,
@@ -255,6 +290,8 @@ export function MessageDeliverySettings() {
     keepMobileKeyboardOpenAfterDelivery,
     setKeepMobileKeyboardOpenAfterDelivery,
   } = useKeepMobileKeyboardOpenAfterDelivery();
+  const { backgroundSessionCreation, setBackgroundSessionCreation } =
+    useBackgroundSessionCreation();
   const { questionAsidesEnabled, setQuestionAsidesEnabled } =
     useQuestionAsideSetting();
   const [attachmentQuality, setAttachmentQuality] =
@@ -333,6 +370,7 @@ export function MessageDeliverySettings() {
   useEffect(() => {
     if (settings && !baselineRef.current) {
       baselineRef.current = {
+        steeringModes: { ...settings.steeringModes },
         joinWindowSeconds: settings.deferredJoinWindowSeconds ?? 0,
         projectQueueQuietSeconds:
           clampProjectQueueQuietSeconds(settings.projectQueueQuietSeconds) ??
@@ -350,6 +388,8 @@ export function MessageDeliverySettings() {
           settings.clientDefaults?.busyComposerDefaultAction ?? "steer",
         steerNowDefault:
           settings.clientDefaults?.steerNowDefault ?? DEFAULT_STEER_NOW_ENABLED,
+        steerNowDefaultByProvider:
+          settings.clientDefaults?.steerNowDefaultByProvider ?? {},
         patientQueueDefault:
           settings.clientDefaults?.patientQueueDefault ?? false,
         patientQueueCompactAtPercent:
@@ -361,6 +401,7 @@ export function MessageDeliverySettings() {
           DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
         keepMobileKeyboardOpenAfterDelivery,
         questionAsidesEnabled,
+        backgroundSessionCreation,
         attachmentQuality,
         rendez: settings.rendez ?? RENDEZ_OFF,
       };
@@ -369,6 +410,7 @@ export function MessageDeliverySettings() {
     attachmentQuality,
     keepMobileKeyboardOpenAfterDelivery,
     questionAsidesEnabled,
+    backgroundSessionCreation,
     settings,
   ]);
 
@@ -534,6 +576,16 @@ export function MessageDeliverySettings() {
       shownBangCommands !== baseline.bangCommandsEnabled ||
       shownBusyDefaultAction !== baseline.busyComposerDefaultAction ||
       shownSteerNowDefault !== baseline.steerNowDefault ||
+      (supportsSteerNowProviderDefaults &&
+        !sameProviderValues(
+          settings?.clientDefaults?.steerNowDefaultByProvider ?? {},
+          baseline.steerNowDefaultByProvider,
+        )) ||
+      (supportsProviderSteering &&
+        !sameProviderValues(
+          settings?.steeringModes ?? {},
+          baseline.steeringModes,
+        )) ||
       shownPatientQueueDefault !== baseline.patientQueueDefault ||
       (supportsTopicShift &&
         (settings?.clientDefaults?.patientQueueCompactAtPercent !==
@@ -544,6 +596,7 @@ export function MessageDeliverySettings() {
       keepMobileKeyboardOpenAfterDelivery !==
         baseline.keepMobileKeyboardOpenAfterDelivery ||
       questionAsidesEnabled !== baseline.questionAsidesEnabled ||
+      backgroundSessionCreation !== baseline.backgroundSessionCreation ||
       attachmentQuality !== baseline.attachmentQuality ||
       (supportsRendez && !sameRendezChoices(shownRendez, baseline.rendez)));
 
@@ -551,6 +604,7 @@ export function MessageDeliverySettings() {
     const snapshot = baselineRef.current;
     if (!snapshot) return;
     setQuestionAsidesEnabled(snapshot.questionAsidesEnabled);
+    setBackgroundSessionCreation(snapshot.backgroundSessionCreation);
     setAttachmentQuality(snapshot.attachmentQuality);
     setDraftJoinWindow(null);
     setDraftProjectQueueQuiet(null);
@@ -566,13 +620,16 @@ export function MessageDeliverySettings() {
       snapshot.keepMobileKeyboardOpenAfterDelivery,
     );
     await updateSettings({
+      ...(supportsProviderSteering
+        ? { steeringModes: snapshot.steeringModes }
+        : {}),
       ...(supportsRendez
         ? {
             rendez: {
               ...settings?.rendez,
               enabled: snapshot.rendez.enabled,
               projects: snapshot.rendez.projects,
-              delivery: snapshot.rendez.delivery,
+              delivery: snapshot.rendez.delivery ?? "auto",
             },
           }
         : {}),
@@ -590,6 +647,9 @@ export function MessageDeliverySettings() {
         ...{ bangCommandsEnabled: snapshot.bangCommandsEnabled },
         busyComposerDefaultAction: snapshot.busyComposerDefaultAction,
         steerNowDefault: snapshot.steerNowDefault,
+        ...(supportsSteerNowProviderDefaults
+          ? { steerNowDefaultByProvider: snapshot.steerNowDefaultByProvider }
+          : {}),
         patientQueueDefault: snapshot.patientQueueDefault,
         ...(supportsTopicShift
           ? {
@@ -609,8 +669,11 @@ export function MessageDeliverySettings() {
     setAttachmentQuality,
     setKeepMobileKeyboardOpenAfterDelivery,
     setQuestionAsidesEnabled,
+    setBackgroundSessionCreation,
     supportsClearloop,
     supportsReadinessCheck,
+    supportsProviderSteering,
+    supportsSteerNowProviderDefaults,
     supportsRendez,
     supportsTopicShift,
     settings?.rendez,
@@ -665,8 +728,7 @@ export function MessageDeliverySettings() {
               : t("attachmentQualityHd")
           }
         >
-          <select
-            className="settings-select"
+          <Select
             aria-label={t("attachmentQualityTitle")}
             value={attachmentQuality}
             onChange={(event) =>
@@ -677,7 +739,7 @@ export function MessageDeliverySettings() {
           >
             <option value="sd">{t("attachmentQualitySd")}</option>
             <option value="hd">{t("attachmentQualityHd")}</option>
-          </select>
+          </Select>
         </SettingsItem>
         <SettingsItem
           label={t("messageDeliveryJoinWindowTitle")}
@@ -698,18 +760,15 @@ export function MessageDeliverySettings() {
               aria-label={t("messageDeliveryJoinWindowTitle")}
               onCommit={(value) => setDraftJoinWindow(String(value))}
             />
-            <span className="output-appearance-number-wrap">
-              <input
-                type="number"
-                className="settings-input-small output-appearance-number"
-                min={0}
-                max={JOIN_WINDOW_MAX_SECONDS}
-                value={shownJoinWindowText}
-                onChange={(e) => setDraftJoinWindow(e.target.value)}
-                aria-label={t("messageDeliveryJoinWindowTitle")}
-              />
-              <span className="output-appearance-unit">s</span>
-            </span>
+            <TextInput
+              type="number"
+              unit="s"
+              min={0}
+              max={JOIN_WINDOW_MAX_SECONDS}
+              value={shownJoinWindowText}
+              onChange={(e) => setDraftJoinWindow(e.target.value)}
+              aria-label={t("messageDeliveryJoinWindowTitle")}
+            />
           </span>
           <span className="settings-hint">
             {shownJoinWindowSeconds === 0
@@ -747,17 +806,14 @@ export function MessageDeliverySettings() {
                   setDraftClearloopInactivity(formatDurationSeconds(value))
                 }
               />
-              <span className="output-appearance-number-wrap">
-                <input
-                  type="text"
-                  inputMode="text"
-                  className="settings-input-small output-appearance-number"
-                  value={shownClearloopInactivityText}
-                  onChange={(e) => setDraftClearloopInactivity(e.target.value)}
-                  aria-label={t("messageDeliveryClearloopTitle")}
-                  aria-invalid={shownClearloopInactivitySeconds === null}
-                />
-              </span>
+              <TextInput
+                inputMode="text"
+                className={styles.duration}
+                value={shownClearloopInactivityText}
+                onChange={(e) => setDraftClearloopInactivity(e.target.value)}
+                aria-label={t("messageDeliveryClearloopTitle")}
+                invalid={shownClearloopInactivitySeconds === null}
+              />
             </span>
             <span className="settings-hint">
               {shownClearloopInactivitySeconds === null
@@ -792,18 +848,15 @@ export function MessageDeliverySettings() {
                   aria-label={t("messageDeliveryProjectQueueQuietTitle")}
                   onCommit={(value) => setDraftProjectQueueQuiet(String(value))}
                 />
-                <span className="output-appearance-number-wrap">
-                  <input
-                    type="number"
-                    className="settings-input-small output-appearance-number"
-                    min={0}
-                    max={MAX_PROJECT_QUEUE_QUIET_SECONDS}
-                    value={shownProjectQueueQuietText}
-                    onChange={(e) => setDraftProjectQueueQuiet(e.target.value)}
-                    aria-label={t("messageDeliveryProjectQueueQuietTitle")}
-                  />
-                  <span className="output-appearance-unit">s</span>
-                </span>
+                <TextInput
+                  type="number"
+                  unit="s"
+                  min={0}
+                  max={MAX_PROJECT_QUEUE_QUIET_SECONDS}
+                  value={shownProjectQueueQuietText}
+                  onChange={(e) => setDraftProjectQueueQuiet(e.target.value)}
+                  aria-label={t("messageDeliveryProjectQueueQuietTitle")}
+                />
               </span>
               <span className="settings-hint">
                 {shownProjectQueueQuietSeconds === 0
@@ -830,11 +883,9 @@ export function MessageDeliverySettings() {
           description={t("messageDeliveryComposeAnchorsDescription")}
           doc="topics/compose-time-context-anchors.md#opt-in-staleness-anchors-yep_compose_anchors1"
         >
-          <input
-            type="checkbox"
+          <Switch
             checked={shownAnchors}
-            onChange={(e) => {
-              const next = e.target.checked;
+            onCheckedChange={(next) => {
               setDraftAnchors(next);
               void updateSettings({ composeAnchorsEnabled: next }).catch(() => {
                 // surfaced via the hook's error state
@@ -849,8 +900,7 @@ export function MessageDeliverySettings() {
           description={t("messageDeliveryTurnTimestampsDescription")}
           doc="topics/compose-time-context-anchors.md#opt-in-turn-timestamps-turntimestamps--yep_turn_timestamps"
         >
-          <select
-            className="settings-select"
+          <Select
             value={shownTurnTimestamps}
             onChange={(event) => {
               const next = event.target.value as TurnTimestampsPlacement;
@@ -869,7 +919,19 @@ export function MessageDeliverySettings() {
             <option value="after">
               {t("messageDeliveryTurnTimestampsAfter")}
             </option>
-          </select>
+          </Select>
+        </SettingsItem>
+
+        <SettingsItem
+          as="label"
+          label={t("sessionCreationBackgroundSettingTitle")}
+          description={t("sessionCreationBackgroundSettingDescription")}
+        >
+          <Switch
+            checked={backgroundSessionCreation}
+            onCheckedChange={(checked) => setBackgroundSessionCreation(checked)}
+            aria-label={t("sessionCreationBackgroundSettingTitle")}
+          />
         </SettingsItem>
 
         <SettingsItem
@@ -877,10 +939,9 @@ export function MessageDeliverySettings() {
           label={t("questionAsideSettingTitle")}
           description={t("questionAsideSettingDescription")}
         >
-          <input
-            type="checkbox"
+          <Switch
             checked={questionAsidesEnabled}
-            onChange={(event) => setQuestionAsidesEnabled(event.target.checked)}
+            onCheckedChange={(checked) => setQuestionAsidesEnabled(checked)}
             aria-label={t("questionAsideSettingTitle")}
           />
         </SettingsItem>
@@ -891,11 +952,9 @@ export function MessageDeliverySettings() {
             label={t("messageDeliveryBangCommandsTitle")}
             description={t("messageDeliveryBangCommandsDescription")}
           >
-            <input
-              type="checkbox"
+            <Switch
               checked={shownBangCommands}
-              onChange={(e) => {
-                const next = e.target.checked;
+              onCheckedChange={(next) => {
                 setDraftBangCommands(next);
                 void updateSettings({
                   clientDefaults: { bangCommandsEnabled: next },
@@ -913,11 +972,10 @@ export function MessageDeliverySettings() {
           label={t("messageDeliveryKeepMobileKeyboardOpenTitle")}
           description={t("messageDeliveryKeepMobileKeyboardOpenDescription")}
         >
-          <input
-            type="checkbox"
+          <Switch
             checked={keepMobileKeyboardOpenAfterDelivery}
-            onChange={(event) =>
-              setKeepMobileKeyboardOpenAfterDelivery(event.target.checked)
+            onCheckedChange={(checked) =>
+              setKeepMobileKeyboardOpenAfterDelivery(checked)
             }
             aria-label={t("messageDeliveryKeepMobileKeyboardOpenTitle")}
           />
@@ -928,8 +986,7 @@ export function MessageDeliverySettings() {
           description={t("appearanceToolbarDefaultActionDescription")}
           doc="site/src/content/docs/sessions-and-approvals.md#steer-queue-and-interrupt"
         >
-          <select
-            className="settings-select"
+          <Select
             value={shownBusyDefaultAction}
             onChange={(event) => {
               const next = event.target.value as BusyComposerDefaultAction;
@@ -949,7 +1006,7 @@ export function MessageDeliverySettings() {
             <option value="queue">
               {t("appearanceToolbarDefaultActionQueue")}
             </option>
-          </select>
+          </Select>
         </SettingsItem>
 
         <SettingsItem
@@ -957,12 +1014,15 @@ export function MessageDeliverySettings() {
           label={t("messageDeliverySteerNowDefaultTitle")}
           description={t("messageDeliverySteerNowDefaultDescription")}
           doc="topics/steer-queue-provider-differences.md#levels-of-soon-urgency-ladder-short-of-hard-interrupt"
+          after={
+            supportsSteerNowProviderDefaults && (
+              <SteerNowProviderOverrides globalDefault={shownSteerNowDefault} />
+            )
+          }
         >
-          <input
-            type="checkbox"
+          <Switch
             checked={shownSteerNowDefault}
-            onChange={(e) => {
-              const next = e.target.checked;
+            onCheckedChange={(next) => {
               setDraftSteerNow(next);
               void updateSettings({
                 clientDefaults: { steerNowDefault: next },
@@ -974,17 +1034,24 @@ export function MessageDeliverySettings() {
           />
         </SettingsItem>
 
+        {supportsProviderSteering && (
+          <ProviderSteeringSettings
+            value={settings?.steeringModes ?? {}}
+            onChange={(steeringModes) => {
+              void updateSettings({ steeringModes }).catch(() => {});
+            }}
+          />
+        )}
+
         <SettingsItem
           as="label"
           label={t("messageDeliveryPatientQueueDefaultTitle")}
           description={t("messageDeliveryPatientQueueDefaultDescription")}
           descriptionLayout="full-width-on-narrow"
         >
-          <input
-            type="checkbox"
+          <Switch
             checked={shownPatientQueueDefault}
-            onChange={(e) => {
-              const next = e.target.checked;
+            onCheckedChange={(next) => {
               setDraftPatientQueue(next);
               void updateSettings({
                 clientDefaults: { patientQueueDefault: next },
@@ -1035,11 +1102,9 @@ export function MessageDeliverySettings() {
             label={t("messageDeliveryProjectQueueShortcutTitle")}
             description={t("messageDeliveryProjectQueueShortcutDescription")}
           >
-            <input
-              type="checkbox"
+            <Switch
               checked={shownProjectQueueCtrlEnter}
-              onChange={(e) => {
-                const next = e.target.checked;
+              onCheckedChange={(next) => {
                 setDraftProjectQueueCtrlEnter(next);
                 void updateSettings({
                   clientDefaults: { projectQueueCtrlEnterEnabled: next },

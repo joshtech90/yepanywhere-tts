@@ -1,7 +1,13 @@
 import "../../startupEnv.js";
 import type { PermissionMode } from "@yep-anywhere/shared";
+import { nativeSessionFamily } from "@yep-anywhere/shared";
 import { prepareSessionSandbox } from "../../session-sandbox.js";
 import { getModuleEnv } from "../../yaModuleEnv.js";
+import {
+  BOUND_RUNTIME_FEATURE,
+  parseBoundRuntimeIdentity,
+  sameBoundRuntimeIdentity,
+} from "./bound-runtime-identity.mjs";
 import {
   copyAgentctlBashEnvInto,
   createAgentctlSessionEnvBridge,
@@ -19,6 +25,8 @@ import type { ProviderName, StartSessionOptions } from "./types.js";
 import { withInstructionRestoration } from "./instruction-restoration.js";
 
 interface WorkerLaunchRequest {
+  creation?: unknown;
+  binding?: unknown;
   providerName: ProviderName;
   options: StartSessionOptions & {
     browserDebugEnvironment?: Record<string, string>;
@@ -99,7 +107,53 @@ async function main(): Promise<void> {
   });
 
   try {
+    // Sent before reading launch input or preparing any provider resources.
+    // Managed creation support is advertised only after its owner is qualified.
+    if (typeof process.send === "function" && process.connected) {
+      process.send({
+        type: "launchHello",
+        protocolVersion: 1,
+        features: [
+          "session-creation-owner-v1",
+          "session-creation-codex-v1",
+          "session-creation-opencode-v1",
+          "session-creation-pi-v1",
+          "session-creation-adapters-v1",
+          "session-creation-sandbox-v1",
+          BOUND_RUNTIME_FEATURE,
+        ],
+      });
+    }
     const request = await readLaunchRequest();
+    if (request.creation !== undefined)
+      owner.setCreationIdentity(request.creation);
+    if (request.binding !== undefined) owner.setBoundIdentity(request.binding);
+    const binding =
+      request.binding === undefined
+        ? undefined
+        : parseBoundRuntimeIdentity(request.binding);
+    if (
+      binding &&
+      (nativeSessionFamily(request.providerName) !== binding.native.family ||
+        request.options.resumeSessionId !== binding.native.id ||
+        !sameBoundRuntimeIdentity(binding, {
+          version: 1,
+          sessionId: request.options.publicSessionId,
+          native: request.options.nativeResumeSource?.native,
+        }))
+    )
+      throw new Error("Native binding does not match provider continuation");
+    const creation = owner.creationEvidence()?.identity;
+    if (
+      creation &&
+      (nativeSessionFamily(request.providerName) !==
+        creation.nativeNamespace.family ||
+        request.options.newSessionId !== creation.nativeSessionId ||
+        request.options.resumeSessionId !== undefined ||
+        (request.options.initialMessage !== undefined &&
+          request.options.initialMessage.uuid !== creation.initialInputId))
+    )
+      throw new Error("Creation identity does not match provider launch");
     owner.setIssuedPeerGrantId(request.options.agentApi?.peerGrantId);
     const {
       browserDebugEnvironment: initialBrowserDebugEnvironment,
@@ -110,21 +164,6 @@ async function main(): Promise<void> {
       const provider = getRawProvider(request.providerName);
       if (!provider)
         throw new Error(`Unknown provider ${request.providerName}`);
-      if (request.providerName === "claude-gateway") {
-        await provider.getAvailableModels();
-        await ClaudeGatewayProvider.retainOwnedGatewayProcessGroups(
-          (processGroupId) => {
-            // A worker with no live channel still gives the child up: the
-            // gateway is a shared service that has to outlive this session
-            // either way, and killing it on this worker's exit is worse than
-            // the runtime host not knowing about it.
-            if (typeof process.send === "function" && process.connected) {
-              process.send({ type: "retainedProcessGroup", processGroupId });
-            }
-          },
-        );
-      }
-
       const sandboxOptions = providerOptions.sessionSandboxOptions;
       if (
         sandboxOptions &&
@@ -141,21 +180,63 @@ async function main(): Promise<void> {
       const sessionSandbox = sandboxOptions
         ? await prepareSessionSandbox(sandboxOptions)
         : undefined;
+      if (creation) {
+        const namespace = await provider.getNewSessionNamespace?.(
+          providerOptions.cwd,
+          sessionSandbox,
+        );
+        if (
+          !namespace ||
+          namespace.family !== creation.nativeNamespace.family ||
+          namespace.storageScope !== creation.nativeNamespace.storageScope
+        )
+          throw new Error(
+            "Creation native namespace does not match this worker",
+          );
+      }
+      if (request.providerName === "claude-gateway") {
+        await (provider as ClaudeGatewayProvider).validateNativeResumeSource({
+          ...providerOptions,
+          sessionSandbox,
+        });
+        await provider.getAvailableModels();
+        await ClaudeGatewayProvider.retainOwnedGatewayProcessGroups(
+          (processGroupId) => {
+            // A worker with no live channel still gives the child up: the
+            // gateway is a shared service that has to outlive this session
+            // either way, and killing it on this worker's exit is worse than
+            // the runtime host not knowing about it.
+            if (typeof process.send === "function" && process.connected) {
+              process.send({ type: "retainedProcessGroup", processGroupId });
+            }
+          },
+        );
+      }
+
       const agentctlSessionEnvBridge = createAgentctlSessionEnvBridge(
-        providerOptions.resumeSessionId,
+        creation?.sessionId ??
+          binding?.sessionId ??
+          providerOptions.resumeSessionId,
         () => ({ ...hooks.getBrowserDebugEnvironment() }),
       );
       copyAgentctlBashEnvInto(process.env, agentctlSessionEnvBridge, {
-        sessionId: providerOptions.resumeSessionId,
+        sessionId:
+          creation?.sessionId ??
+          binding?.sessionId ??
+          providerOptions.resumeSessionId,
       });
       try {
         const session = await provider.startSession({
           ...providerOptions,
+          ...(creation ? { publicSessionId: creation.sessionId } : {}),
           getSessionChildEnv: () => ({
             ...hooks.getBrowserDebugEnvironment(),
           }),
           sessionSandbox,
           sessionSandboxOptions: undefined,
+          onNativeInputConsumed: creation
+            ? hooks.onNativeInputConsumed
+            : undefined,
           onToolApproval: hooks.onToolApproval,
           onAgentApiRead: hooks.onAgentApiRead,
           shouldEmitLiveDeltas: hooks.shouldEmitLiveDeltas,

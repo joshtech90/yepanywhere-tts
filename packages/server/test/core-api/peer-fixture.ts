@@ -20,7 +20,7 @@ import {
 } from "../../src/core-api/conversation.js";
 export async function protectedProfile(
   cleanup: (() => void | Promise<void>)[],
-  fleetOptions: {
+  identityServiceOptions: {
     allowInsecureLoopback?: boolean;
     fetch?: typeof fetch;
     runtimeControl?: { envOverride?: boolean };
@@ -85,7 +85,10 @@ export async function protectedProfile(
             type: "assistant",
             uuid: "answer",
             content: [
-              { type: "text", text: "Protected fleet workflow completed." },
+              {
+                type: "text",
+                text: "Protected identity service workflow completed.",
+              },
             ],
           },
         ],
@@ -111,7 +114,12 @@ export async function protectedProfile(
       },
     ],
   };
-  const manager = new PeerAccessManager(id, directory, undefined, fleetOptions);
+  const manager = new PeerAccessManager(
+    id,
+    directory,
+    undefined,
+    identityServiceOptions,
+  );
   await manager.initialize();
   cleanup.push(() => manager.close());
   const router = manager.bind(

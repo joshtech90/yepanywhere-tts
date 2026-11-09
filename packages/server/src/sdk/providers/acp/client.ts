@@ -23,6 +23,36 @@ import {
 } from "@agentclientprotocol/sdk";
 import { getLogger } from "../../../logging/logger.js";
 import { stripYaControlPlaneCredentials } from "../env-filter.js";
+import {
+  processTreeSpawnOptions,
+  signalProcessTree,
+} from "../../../utils/processTree.js";
+
+class ACPConnectionClosedError extends Error {
+  constructor() {
+    super("ACP connection closed");
+  }
+}
+
+/** Only our own closed-transport rejection is normal during requested abort. */
+export function isRequestedACPClosure(
+  error: unknown,
+  signal: AbortSignal,
+): boolean {
+  return signal.aborted && error instanceof ACPConnectionClosedError;
+}
+
+/** The ACP SDK can reject with a JSON-RPC error object rather than Error. */
+export function acpErrorMessage(error: unknown): string {
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof error.message === "string"
+  )
+    return error.message;
+  return String(error);
+}
 
 /**
  * Configuration for spawning an ACP agent.
@@ -88,10 +118,24 @@ export class ACPClient {
   private process: ChildProcess | null = null;
   private connection: ClientSideConnection | null = null;
   private log = getLogger();
+  private disposed = false;
+  private processExit: Promise<void> = Promise.resolve();
+  private processClosed = true;
+  private readonly pending = new Set<(error: Error) => void>();
+  private resolveClosed!: () => void;
+  /** Conversation teardown, independently of actual OS child exit. */
+  readonly closed = new Promise<void>((resolve) => {
+    this.resolveClosed = resolve;
+  });
 
   /** OS PID of the spawned ACP agent child process */
   get pid(): number | undefined {
     return this.process?.pid;
+  }
+
+  get isProcessAlive(): boolean {
+    // A launcher can exit before its agent child closes the inherited pipes.
+    return !!this.process?.pid && !this.processClosed;
   }
   private onSessionUpdate: SessionUpdateCallback | null = null;
   private onPermissionRequest: PermissionRequestCallback | null = null;
@@ -128,6 +172,9 @@ export class ACPClient {
    * Connect to an ACP agent by spawning it as a subprocess.
    */
   async connect(config: ACPClientConfig): Promise<void> {
+    if (this.disposed || this.process) {
+      throw new Error("ACP client is closed or already owns a process");
+    }
     this.log.debug(
       { command: config.command, args: config.args },
       "Spawning ACP agent",
@@ -146,6 +193,14 @@ export class ACPClient {
       stdio: ["pipe", "pipe", "pipe"],
       env: childEnv,
       shell: process.platform === "win32",
+      ...processTreeSpawnOptions,
+    });
+    this.processClosed = false;
+    this.processExit = new Promise<void>((resolve) => {
+      this.process!.once("close", () => {
+        this.processClosed = true;
+        resolve();
+      });
     });
 
     this.process.stderr?.on("data", (data: Buffer) => {
@@ -157,15 +212,20 @@ export class ACPClient {
 
     this.process.on("error", (err) => {
       this.log.error({ err }, "ACP agent process error");
+      this.close();
     });
 
     this.process.on("exit", (code, signal) => {
       this.log.debug({ code, signal }, "ACP agent process exited");
+      this.close();
     });
 
     if (!this.process.stdin || !this.process.stdout) {
       throw new Error("Failed to get stdin/stdout from spawned ACP process");
     }
+    this.process.stdin.on("error", () => {
+      void this.close();
+    });
 
     // Create the NDJSON stream for ACP protocol
     const stream = ndJsonStream(
@@ -177,6 +237,7 @@ export class ACPClient {
     const createClient = (_agent: Agent): Client => this.createClientHandlers();
 
     this.connection = new ClientSideConnection(createClient, stream);
+    void this.connection.closed.then(() => this.close());
   }
 
   /**
@@ -223,6 +284,41 @@ export class ACPClient {
     return client;
   }
 
+  private request<T>(
+    operation: (connection: ClientSideConnection) => Promise<T>,
+  ): Promise<T> {
+    const connection = this.connection;
+    if (!connection || this.disposed) {
+      return Promise.reject(
+        new Error("ACPClient not connected. Call connect() first."),
+      );
+    }
+    // This pinned SDK leaves requests pending after EOF/write failure. Track
+    // only in-flight calls; completed calls must not accumulate close listeners.
+    return new Promise<T>((resolve, reject) => {
+      const closed = (error: Error) => {
+        this.pending.delete(closed);
+        reject(error);
+      };
+      this.pending.add(closed);
+      try {
+        operation(connection).then(
+          (value) => {
+            this.pending.delete(closed);
+            resolve(value);
+          },
+          (error) => {
+            this.pending.delete(closed);
+            reject(error);
+          },
+        );
+      } catch (error) {
+        this.pending.delete(closed);
+        reject(error);
+      }
+    });
+  }
+
   /**
    * Initialize the ACP connection.
    * Must be called after connect() and before newSession().
@@ -236,14 +332,16 @@ export class ACPClient {
 
     this.log.debug({ capabilities }, "Initializing ACP connection");
 
-    const result = await this.connection.initialize({
-      protocolVersion: 1,
-      clientInfo: {
-        name: "yepanywhere",
-        version: "1.0.0",
-      },
-      clientCapabilities: capabilities,
-    });
+    const result = await this.request((connection) =>
+      connection.initialize({
+        protocolVersion: 1,
+        clientInfo: {
+          name: "yepanywhere",
+          version: "1.0.0",
+        },
+        clientCapabilities: capabilities,
+      }),
+    );
 
     this.log.debug({ result }, "ACP initialization complete");
     return result;
@@ -260,10 +358,12 @@ export class ACPClient {
 
     this.log.debug({ cwd }, "Creating new ACP session");
 
-    const result = await this.connection.newSession({
-      cwd,
-      mcpServers: [],
-    });
+    const result = await this.request((connection) =>
+      connection.newSession({
+        cwd,
+        mcpServers: [],
+      }),
+    );
 
     this.log.debug({ sessionId: result.sessionId }, "ACP session created");
     return result.sessionId;
@@ -288,12 +388,14 @@ export class ACPClient {
 
     this.log.debug({ sessionId, cwd, meta }, "Loading existing ACP session");
 
-    await this.connection.loadSession({
-      sessionId,
-      cwd,
-      mcpServers: [],
-      ...(meta ? { _meta: meta } : {}),
-    });
+    await this.request((connection) =>
+      connection.loadSession({
+        sessionId,
+        cwd,
+        mcpServers: [],
+        ...(meta ? { _meta: meta } : {}),
+      }),
+    );
   }
 
   /**
@@ -308,11 +410,13 @@ export class ACPClient {
 
     this.log.debug({ sessionId, cwd }, "Resuming existing ACP session");
 
-    const result = await this.connection.unstable_resumeSession({
-      sessionId,
-      cwd,
-      mcpServers: [],
-    });
+    const result = await this.request((connection) =>
+      connection.unstable_resumeSession({
+        sessionId,
+        cwd,
+        mcpServers: [],
+      }),
+    );
 
     this.log.debug({ result }, "ACP session resumed");
     return sessionId;
@@ -335,10 +439,12 @@ export class ACPClient {
       "Sending ACP prompt",
     );
 
-    const result = await this.connection.prompt({
-      sessionId,
-      prompt: [{ type: "text", text }],
-    });
+    const result = await this.request((connection) =>
+      connection.prompt({
+        sessionId,
+        prompt: [{ type: "text", text }],
+      }),
+    );
 
     this.log.debug({ result }, "ACP prompt complete");
     return result;
@@ -356,30 +462,43 @@ export class ACPClient {
       throw new Error("ACPClient not connected. Call connect() first.");
     }
     this.log.debug({ method }, "Sending ACP extension method");
-    return this.connection.extMethod(method, params);
+    return this.request((connection) => connection.extMethod(method, params));
   }
 
   /**
    * Check if the client is connected.
    */
   get isConnected(): boolean {
-    return (
-      this.connection !== null && this.process !== null && !this.process.killed
-    );
+    return this.connection !== null && !this.disposed && this.isProcessAlive;
   }
 
   /**
    * Close the connection and kill the agent process.
    */
-  close(): void {
-    if (this.process && !this.process.killed) {
+  close(): Promise<void> {
+    if (this.disposed) return this.processExit;
+    this.disposed = true;
+    for (const reject of this.pending) reject(new ACPConnectionClosedError());
+    this.pending.clear();
+    if (this.isProcessAlive) {
       this.log.debug("Closing ACP client");
-      this.process.kill("SIGTERM");
+      const child = this.process!;
+      signalProcessTree(child, "SIGTERM");
+      // Native launchers may respawn or leave a worker holding stdio/model
+      // connections. Bound shutdown of the owned tree, not only its leader.
+      const escalation = setTimeout(
+        () => signalProcessTree(child, "SIGKILL"),
+        2_000,
+      );
+      escalation.unref();
+      void this.processExit.then(() => clearTimeout(escalation));
     }
-    this.process = null;
+    // Keep the actual handle/PID until exit can be observed by the owner.
     this.connection = null;
     this.onSessionUpdate = null;
     this.onPermissionRequest = null;
     this.onExtensionMethod = null;
+    this.resolveClosed();
+    return this.processExit;
   }
 }

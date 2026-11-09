@@ -11,11 +11,7 @@
 
 .error,
 .killed {
-  border-color: color-mix(
-    in srgb,
-    var(--accent-danger, #d33) 45%,
-    var(--border-color)
-  );
+  border-color: color-mix(in srgb, var(--error-color) 45%, var(--border-color));
 }
 
 .header {
@@ -71,12 +67,12 @@
 }
 
 .exitNonzero {
-  color: var(--accent-danger, #d33);
+  color: var(--error-color);
   font-weight: 600;
 }
 
 .error[role="alert"] {
-  color: var(--accent-danger, #d33);
+  color: var(--error-color);
 }
 
 .preview {
@@ -112,25 +108,4 @@
   flex-wrap: wrap;
   gap: var(--space-1);
   margin-top: var(--space-1);
-}
-
-.action {
-  padding: 0 var(--space-2);
-  height: 22px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  font-size: var(--font-size-xs);
-  cursor: pointer;
-}
-
-.action:hover {
-  color: var(--text-primary);
-  border-color: var(--accent-primary);
-}
-
-.actionDelete:hover {
-  color: var(--accent-danger, #d33);
-  border-color: var(--accent-danger, #d33);
 }

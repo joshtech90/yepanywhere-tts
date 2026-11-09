@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { detectNestedHarnessLaunch } from "../src/nested-harness-launch.js";
+import {
+  detectNestedHarnessLaunch,
+  detectScopedNestedHarnessLaunch,
+  detectExplicitScopedNestedHarnessLaunch,
+} from "../src/nested-harness-launch.js";
 
 const CHILD = "28dad9a6-9c40-4d90-af7e-84d0ed4db9a4";
 
@@ -130,4 +134,90 @@ describe("detectNestedHarnessLaunch", () => {
       detectNestedHarnessLaunch(`bash -lc 'claude --resume ${CHILD} --print'`),
     ).toBeUndefined();
   });
+});
+
+describe("durable scoped harness selection", () => {
+  it("selects a single explicit directory and named inherited-store invocation", () => {
+    for (const command of [
+      `cd '/owned/project space' && claude --session-id ${CHILD} --print go`,
+      `unset CLAUDECODE; cd '/owned/project space' && env CLAUDECODE= /opt/claude --resume=${CHILD} --print go`,
+    ])
+      expect(detectScopedNestedHarnessLaunch(command)).toMatchObject({
+        sessionId: CHILD,
+        workingDirectory: "/owned/project space",
+      });
+  });
+  it("withholds shell branching, store overrides, forks, expansion and unnamed invocations", () => {
+    for (const command of [
+      `claude --session-id ${CHILD} -p go`,
+      `cd /owned && claude -p go # --session-id ${CHILD}`,
+      `cd /owned && claude -pc --session-id ${CHILD}`,
+      `cd /owned && claude -pw --session-id ${CHILD}`,
+      `cd /owned && claude --session-id ${CHILD} -p go &`,
+      `cd /owned && claude --session-id ${CHILD} --help`,
+      `cd /owned && claude --session-id ${CHILD} --version`,
+      `cd /owned && claude --session-id ${CHILD} --no-session-persistence -p go`,
+      `cd /owned; claude --session-id ${CHILD} -p go`,
+      `cd /owned || claude --session-id ${CHILD} -p go`,
+      `cd /owned && claude --session-id ${CHILD} -p go | cat`,
+      `cd /owned && HOME=/foreign claude --session-id ${CHILD} -p go`,
+      `cd /owned && env CLAUDE_CONFIG_DIR=/foreign claude --session-id ${CHILD} -p go`,
+      `cd /owned && claude --resume ${CHILD} --fork-session -p go`,
+      `cd /owned && claude --session-id ${CHILD} --settings /foreign -p go`,
+      `cd /owned && claude --session-id ${CHILD} --worktree -p go`,
+      `cd /owned && claude --session-id ${CHILD} --resume ${CHILD} -p go`,
+      'cd "$ROOT" && claude --resume ' + CHILD + " -p go",
+      `cd /owned && claude --session-id ${CHILD} -p \`hostname\``,
+      `cd /owned && claude -p go`,
+      `cat <<EOF\ncd /owned && claude --session-id ${CHILD} -p go\nEOF`,
+      `echo 'cd /owned && claude --session-id ${CHILD} -p go'`,
+    ])
+      expect(detectScopedNestedHarnessLaunch(command), command).toBeUndefined();
+  });
+});
+
+it("selects only literal system-env profiles while preserving the inherited selector's rejection", () => {
+  const command = `cd '/owned/project space' && /usr/bin/env CLAUDE_CONFIG_DIR='/owned/profile space' CLAUDECODE= /owned/claude --session-id ${CHILD} --print go`;
+  expect(detectExplicitScopedNestedHarnessLaunch(command)).toEqual({
+    harness: "claude",
+    sessionId: CHILD,
+    workingDirectory: "/owned/project space",
+    configDirectory: "/owned/profile space",
+  });
+  expect(detectScopedNestedHarnessLaunch(command)).toBeUndefined();
+  for (const candidate of [
+    command.replace("/usr/bin/env", "env"),
+    command.replace("/usr/bin/env", "/usr/bin/env -S"),
+    command.replace("/owned/claude", "claude"),
+    command.replace("CLAUDECODE=", "HOME=/foreign"),
+    command.replace("CLAUDECODE=", "BASH_ENV=/foreign"),
+    command.replace("CLAUDECODE=", "CLAUDE_CONFIG_DIR=/second"),
+    command.replace("CLAUDECODE=", "exec"),
+    command.replace("'/owned/profile space'", "relative"),
+    command.replace("/owned/profile space", "$ROOT"),
+    ...[
+      "/owned/../profile",
+      "/owned/./profile",
+      "/owned//profile",
+      "/owned/profile/",
+      "/owned/{a,b}",
+      "/owned/*",
+      "/owned/?",
+      "/owned/[ab]",
+      "/owned/~",
+      "/owned/\u0001profile",
+    ].map((path) => command.replace("/owned/profile space", path)),
+    command.replace("/owned/project space", "/owned/{a,b}"),
+    command.replace("/owned/claude", "/owned/./claude"),
+    command.replace("--print", "--settings /foreign --print"),
+    command.replace("--print", "--fork-session --print"),
+    command + " &",
+    command + " | cat",
+    command + " && echo done",
+    `echo ${JSON.stringify(command)}`,
+  ])
+    expect(
+      detectExplicitScopedNestedHarnessLaunch(candidate),
+      candidate,
+    ).toBeUndefined();
 });

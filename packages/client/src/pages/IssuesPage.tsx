@@ -15,6 +15,14 @@ import { useLongPress } from "../hooks/useLongPress";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import { PageHeader } from "../components/PageHeader";
+import {
+  Button,
+  ButtonBase,
+  buttonClassName,
+  IconButton,
+} from "../components/ui/Button";
+import { Checkbox } from "../components/ui/Checkbox";
+import { Field, Select, TextInput } from "../components/ui/Field";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { useSourceContextMenu } from "../components/SourceContextMenu";
 import { IssueSessionRow } from "./IssueSessionRow";
@@ -76,7 +84,6 @@ function IssueBrowser() {
   const projectId = params.get("projectId") ?? "";
   const menu = useSourceContextMenu(t, {
     menu: t("issuesItemActions"),
-    dismiss: t("issuesCancel"),
   });
   useEffect(() => {
     let disposed = false;
@@ -272,7 +279,8 @@ function IssueBrowser() {
   return (
     <main className={styles.page}>
       <div className={styles.controls}>
-        <input
+        <TextInput
+          className={styles.search}
           type="search"
           aria-label={t("issuesSearch")}
           placeholder={t("issuesSearch")}
@@ -282,11 +290,10 @@ function IssueBrowser() {
             setOffset(0);
           }}
         />
-        <button
+        <IconButton
           className={styles.toolbarIcon}
-          type="button"
-          aria-label={t("issuesRefresh")}
-          title={supportsContent ? t("issuesRefreshHint") : t("issuesRefresh")}
+          label={t("issuesRefresh")}
+          tooltip={supportsContent ? t("issuesRefreshHint") : undefined}
           disabled={busy || refreshing}
           {...refreshPress.handlers}
           onClick={refreshPress.click(() => refresh(false))}
@@ -314,9 +321,13 @@ function IssueBrowser() {
             <path d="M20 7v5h-5M4 17v-5h5" />
             <path d="M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 17.9 17" />
           </svg>
-        </button>
+        </IconButton>
         <Link
-          className={styles.toolbarIcon}
+          className={buttonClassName({
+            variant: "ghost",
+            icon: true,
+            className: styles.toolbarIcon,
+          })}
           to={`${base}/settings/issues`}
           aria-label={t("issuesSettings")}
           title={t("issuesSettings")}
@@ -375,18 +386,16 @@ function IssueBrowser() {
             </span>
           ))}
         </div>
-        <label className={styles.choice}>
-          <input
-            type="checkbox"
-            checked={dismissed}
-            onChange={(e) => {
-              setDismissed(e.target.checked);
-              setOffset(0);
-              setSessionOffset(0);
-            }}
-          />
-          {t("issuesShowDismissed")}
-        </label>
+        <Checkbox
+          className={styles.choice}
+          label={t("issuesShowDismissed")}
+          checked={dismissed}
+          onCheckedChange={(checked) => {
+            setDismissed(checked);
+            setOffset(0);
+            setSessionOffset(0);
+          }}
+        />
       </details>
       {sessionId && (
         <p>
@@ -402,10 +411,12 @@ function IssueBrowser() {
         >
           <div className={styles.listHeading}>
             {supportedIssueSort ? (
-              <label className={styles.issueSort}>
-                {t("issuesSortLabel")}
-                <select
-                  aria-label={t("issuesSortLabel")}
+              <div className={styles.issueSort}>
+                <label htmlFor="issues-sort">{t("issuesSortLabel")}</label>
+                <Select
+                  id="issues-sort"
+                  className={styles.issueSortSelect}
+                  size="small"
                   value={issueSort}
                   onChange={(e) => {
                     setIssueSort(e.target.value as IssueSort);
@@ -417,8 +428,8 @@ function IssueBrowser() {
                       {t(`issuesSort_${value}`)}
                     </option>
                   ))}
-                </select>
-              </label>
+                </Select>
+              </div>
             ) : (
               t("issuesKeyOrder")
             )}
@@ -432,8 +443,7 @@ function IssueBrowser() {
               className={`${styles.item} ${selected?.id === item.id ? styles.selected : ""}`}
             >
               <div className={styles.itemRow}>
-                <button
-                  type="button"
+                <ButtonBase
                   className={styles.itemSelect}
                   aria-pressed={selected?.id === item.id}
                   onClick={() => select(item)}
@@ -461,11 +471,10 @@ function IssueBrowser() {
                     )}
                   </span>
                   {item.unresolved && <small>{t("issuesUnresolved")}</small>}
-                </button>
-                <button
-                  type="button"
+                </ButtonBase>
+                <IconButton
                   className={styles.iconButton}
-                  aria-label={t("issuesItemMenu", { key: item.key })}
+                  label={t("issuesItemMenu", { key: item.key })}
                   onClick={(e) =>
                     menu.openFromButton(e, [
                       {
@@ -485,7 +494,7 @@ function IssueBrowser() {
                   }
                 >
                   ⋯
-                </button>
+                </IconButton>
               </div>
               {editing?.item.id === item.id && (
                 <form
@@ -498,32 +507,31 @@ function IssueBrowser() {
                   {editing.kind === "delete" ? (
                     <p>{t("issuesDeleteHelp")}</p>
                   ) : (
-                    <>
-                      <label htmlFor="issue-edit-value">
-                        {t(
-                          editing.kind === "title"
-                            ? "issuesTitleOverride"
-                            : "issuesResolveHelp",
-                        )}
-                      </label>
-                      <input
-                        id="issue-edit-value"
-                        aria-label={t(
-                          editing.kind === "title"
-                            ? "issuesTitleOverride"
-                            : "issuesResolveUrl",
-                        )}
+                    <Field
+                      id="issue-edit-value"
+                      label={t(
+                        editing.kind === "title"
+                          ? "issuesTitleOverride"
+                          : "issuesResolveUrl",
+                      )}
+                      hint={
+                        editing.kind === "url"
+                          ? t("issuesResolveHelp")
+                          : undefined
+                      }
+                      required={editing.kind === "url"}
+                    >
+                      <TextInput
                         type={editing.kind === "title" ? "text" : "url"}
                         maxLength={editing.kind === "title" ? 512 : 4096}
-                        required={editing.kind === "url"}
                         value={value}
                         onChange={(e) => setValue(e.target.value)}
                       />
-                    </>
+                    </Field>
                   )}
                   <div className={styles.actions}>
-                    <button
-                      className={styles.button}
+                    <Button
+                      variant={editing.kind === "delete" ? "danger" : "primary"}
                       disabled={
                         busy ||
                         (editing.kind === "url" && !detail?.sessions.length)
@@ -537,14 +545,10 @@ function IssueBrowser() {
                             ? "issuesResolve"
                             : "issuesDeleteConfirm",
                       )}
-                    </button>
-                    <button
-                      className={styles.button}
-                      type="button"
-                      onClick={() => setEditing(undefined)}
-                    >
+                    </Button>
+                    <Button onClick={() => setEditing(undefined)}>
                       {t("issuesCancel")}
-                    </button>
+                    </Button>
                   </div>
                 </form>
               )}
@@ -552,22 +556,14 @@ function IssueBrowser() {
           ))}
           <div className={styles.actions}>
             {offset > 0 && (
-              <button
-                className={styles.button}
-                type="button"
-                onClick={() => setOffset(Math.max(0, offset - 50))}
-              >
+              <Button onClick={() => setOffset(Math.max(0, offset - 50))}>
                 {t("issuesPrevious")}
-              </button>
+              </Button>
             )}
             {result?.nextOffset != null && (
-              <button
-                className={styles.button}
-                type="button"
-                onClick={() => setOffset(result.nextOffset!)}
-              >
+              <Button onClick={() => setOffset(result.nextOffset!)}>
                 {t("issuesNext")}
-              </button>
+              </Button>
             )}
           </div>
         </section>
@@ -578,14 +574,12 @@ function IssueBrowser() {
           >
             <div className={styles.actions}>
               <h2>{selected.title ?? selected.key}</h2>
-              <button
-                type="button"
-                className={styles.iconButton}
-                aria-label={t("issuesClose")}
+              <IconButton
+                label={t("issuesClose")}
                 onClick={() => setSelected(undefined)}
               >
                 ×
-              </button>
+              </IconButton>
             </div>
             {selected.url && (
               <a
@@ -605,7 +599,9 @@ function IssueBrowser() {
             )}
             <div className={styles.sessionHeading}>
               <h3>{t("issuesAssociatedSessions")}</h3>
-              <select
+              <Select
+                className={styles.sortSelect}
+                size="small"
                 aria-label={t("issuesSessionSort")}
                 value={sort}
                 onChange={(e) => {
@@ -615,7 +611,7 @@ function IssueBrowser() {
               >
                 <option value="activity">{t("issuesActivityNewest")}</option>
                 <option value="oldest">{t("issuesActivityOldest")}</option>
-              </select>
+              </Select>
             </div>
             {!detail && (
               <p className={styles.muted}>{t("issuesLoadingSessions")}</p>
@@ -636,24 +632,18 @@ function IssueBrowser() {
             ))}
             <div className={styles.actions}>
               {sessionOffset > 0 && (
-                <button
-                  className={styles.button}
-                  type="button"
+                <Button
                   onClick={() =>
                     setSessionOffset(Math.max(0, sessionOffset - 50))
                   }
                 >
                   {t("issuesPreviousSessions")}
-                </button>
+                </Button>
               )}
               {detail?.nextOffset != null && (
-                <button
-                  className={styles.button}
-                  type="button"
-                  onClick={() => setSessionOffset(detail.nextOffset!)}
-                >
+                <Button onClick={() => setSessionOffset(detail.nextOffset!)}>
                   {t("issuesNextSessions")}
-                </button>
+                </Button>
               )}
             </div>
           </section>

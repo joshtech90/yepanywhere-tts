@@ -11,6 +11,9 @@ import {
   type IssueSettings as Settings,
 } from "@yep-anywhere/shared";
 import { useEffect, useRef, useState } from "react";
+import { Button } from "../../components/ui/Button";
+import { Field, Select, TextInput } from "../../components/ui/Field";
+import { Switch } from "../../components/ui/Switch";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useVersion } from "../../hooks/useVersion";
 import { useServerSettings } from "../../hooks/useServerSettings";
@@ -96,18 +99,14 @@ function IssueSettingsControls() {
         label={t("issuesEnable")}
         description={t("issuesRetention")}
       >
-        <span className={`toggle-switch ${styles.toggle}`}>
-          <input
-            type="checkbox"
-            aria-label={t("issuesEnable")}
-            checked={settings?.enabled ?? false}
-            disabled={!settings || busy}
-            onChange={(e) =>
-              settings && void save({ ...settings, enabled: e.target.checked })
-            }
-          />
-          <span className="toggle-slider" />
-        </span>
+        <Switch
+          aria-label={t("issuesEnable")}
+          checked={settings?.enabled ?? false}
+          disabled={!settings || busy}
+          onCheckedChange={(checked) =>
+            settings && void save({ ...settings, enabled: checked })
+          }
+        />
       </SettingsItem>
       <SettingsItem
         id="issue-discovery-scope"
@@ -119,7 +118,7 @@ function IssueSettingsControls() {
             : t("issuesViewedHelp")
         }
       >
-        <select
+        <Select
           className={styles.control}
           aria-label={t("issuesScope")}
           value={settings?.scope ?? "viewed"}
@@ -134,11 +133,11 @@ function IssueSettingsControls() {
         >
           <option value="viewed">{t("issuesViewed")}</option>
           <option value="recent">{t("issuesRecent")}</option>
-        </select>
+        </Select>
       </SettingsItem>
       {settings?.scope === "recent" && (
         <SettingsItem id="issue-discovery-days" label={t("issuesDays")}>
-          <input
+          <TextInput
             className={styles.days}
             type="number"
             aria-label={t("issuesDays")}
@@ -177,19 +176,14 @@ function IssueSettingsControls() {
         label={t("issuesAggressiveMatching")}
         description={t("issuesAggressiveHelp")}
       >
-        <span className={`toggle-switch ${styles.toggle}`}>
-          <input
-            type="checkbox"
-            aria-label={t("issuesAggressiveMatching")}
-            checked={settings?.aggressiveMatching ?? false}
-            disabled={!settings || busy}
-            onChange={(e) =>
-              settings &&
-              void save({ ...settings, aggressiveMatching: e.target.checked })
-            }
-          />
-          <span className="toggle-slider" />
-        </span>
+        <Switch
+          aria-label={t("issuesAggressiveMatching")}
+          checked={settings?.aggressiveMatching ?? false}
+          disabled={!settings || busy}
+          onCheckedChange={(checked) =>
+            settings && void save({ ...settings, aggressiveMatching: checked })
+          }
+        />
       </SettingsItem>
       <SettingsItem
         id="issue-known-projects"
@@ -279,6 +273,7 @@ function CacheTtlControl({
           {label(values[position] ?? null)}
         </output>
         <input
+          className={styles.slider}
           id={`${id}-slider`}
           type="range"
           min={0}
@@ -393,21 +388,17 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
             label={t("issuesGithubStatusEnable")}
             description={t("issuesGithubStatusHelp")}
           >
-            <span className={`toggle-switch ${styles.toggle}`}>
-              <input
-                type="checkbox"
-                aria-label={t("issuesGithubStatusEnable")}
-                checked={statusEnabled}
-                disabled={busy}
-                onChange={(e) =>
-                  void save({
-                    ...settings,
-                    githubStatusEnabled: e.target.checked,
-                  })
-                }
-              />
-              <span className="toggle-slider" />
-            </span>
+            <Switch
+              aria-label={t("issuesGithubStatusEnable")}
+              checked={statusEnabled}
+              disabled={busy}
+              onCheckedChange={(checked) =>
+                void save({
+                  ...settings,
+                  githubStatusEnabled: checked,
+                })
+              }
+            />
           </SettingsItem>
           <SettingsItem
             as="label"
@@ -415,21 +406,17 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
             label={t("issuesGithubCliEnable")}
             description={t("issuesGithubCliHelp")}
           >
-            <span className={`toggle-switch ${styles.toggle}`}>
-              <input
-                type="checkbox"
-                aria-label={t("issuesGithubCliEnable")}
-                checked={cli.enabled}
-                disabled={busy}
-                onChange={(e) =>
-                  void save({
-                    ...settings,
-                    githubCli: { ...cli, enabled: e.target.checked },
-                  })
-                }
-              />
-              <span className="toggle-slider" />
-            </span>
+            <Switch
+              aria-label={t("issuesGithubCliEnable")}
+              checked={cli.enabled}
+              disabled={busy}
+              onCheckedChange={(checked) =>
+                void save({
+                  ...settings,
+                  githubCli: { ...cli, enabled: checked },
+                })
+              }
+            />
           </SettingsItem>
           <SettingsItem
             id="issue-github-account"
@@ -437,7 +424,7 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
             label={t("issuesGithubAccount")}
             description={t("issuesGithubAccountHelp")}
           >
-            <select
+            <Select
               className={styles.control}
               aria-label={t("issuesGithubAccount")}
               value={cli.account}
@@ -460,7 +447,7 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
                   {account}
                 </option>
               ))}
-            </select>
+            </Select>
           </SettingsItem>
           <SettingsItem
             id="issue-github-cache"
@@ -468,9 +455,7 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
             label={t("issuesGithubCache")}
             description={t("issuesGithubCacheHelp")}
           >
-            <button
-              type="button"
-              className={styles.action}
+            <Button
               disabled={busy || !!saving}
               onClick={() => {
                 setSaving("cache");
@@ -482,7 +467,7 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
               }}
             >
               {t("issuesGithubCacheClear")}
-            </button>
+            </Button>
           </SettingsItem>
         </>
       )}
@@ -492,16 +477,12 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
         label={t("issuesConfirmEnable")}
         description={t("issuesConfirmHelp")}
       >
-        <span className={`toggle-switch ${styles.toggle}`}>
-          <input
-            type="checkbox"
-            aria-label={t("issuesConfirmEnable")}
-            checked={confirmation.enabled}
-            disabled={busy}
-            onChange={(e) => update({ enabled: e.target.checked })}
-          />
-          <span className="toggle-slider" />
-        </span>
+        <Switch
+          aria-label={t("issuesConfirmEnable")}
+          checked={confirmation.enabled}
+          disabled={busy}
+          onCheckedChange={(checked) => update({ enabled: checked })}
+        />
       </SettingsItem>
       {confirmation.enabled && (
         <>
@@ -509,7 +490,7 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
             id="issue-confirm-jira-site"
             label={t("issuesJiraSite")}
           >
-            <input
+            <TextInput
               className={styles.control}
               type="url"
               aria-label={t("issuesJiraSite")}
@@ -523,7 +504,7 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
             id="issue-confirm-jira-email"
             label={t("issuesJiraEmail")}
           >
-            <input
+            <TextInput
               className={styles.control}
               type="email"
               aria-label={t("issuesJiraEmail")}
@@ -591,9 +572,8 @@ function CredentialControl({
           </li>
         ))}
       </ul>
-      <label className={styles.stacked}>
-        {t("issuesCredentialOverride")}
-        <input
+      <Field label={t("issuesCredentialOverride")} className={styles.stacked}>
+        <TextInput
           type="password"
           aria-label={`${label}: ${t("issuesCredentialOverride")}`}
           autoComplete="new-password"
@@ -603,24 +583,24 @@ function CredentialControl({
           disabled={busy}
           onChange={(e) => setKey(e.target.value)}
         />
-      </label>
-      <button
-        type="button"
+      </Field>
+      <Button
+        variant="primary"
         disabled={busy || !key.trim()}
         onClick={() => {
           void store(credential.provider, key.trim()).then(() => setKey(""));
         }}
       >
         {t("issuesCredentialSave")}
-      </button>
+      </Button>
       {stored?.present && (
-        <button
-          type="button"
+        <Button
+          variant="danger-outline"
           disabled={busy}
           onClick={() => void store(credential.provider, "")}
         >
           {t("issuesCredentialClear")}
-        </button>
+        </Button>
       )}
     </fieldset>
   );
@@ -632,9 +612,9 @@ function BlocklistControl({ settings, busy, save }: ControlProps) {
   const current = settings.jiraKeyBlocklist ?? [...DEFAULT_JIRA_KEY_BLOCKLIST];
   return (
     <SettingsItem id="issue-jira-blocklist" label={t("issuesBlocklist")}>
-      <input
-        type="text"
-        className={`${styles.control} ${styles.names}`}
+      <TextInput
+        mono
+        className={styles.control}
         aria-label={t("issuesBlocklist")}
         defaultValue={current.join(" ")}
         disabled={busy}

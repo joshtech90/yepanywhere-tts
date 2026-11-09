@@ -1,11 +1,30 @@
+import {
+  captureClaudeCopyBoundary,
+  type ClaudeCopyBoundary,
+} from "./claude-copy-boundary.js";
 /**
  * Legacy Claude storage cloning. Codex clones use the native fork adapter.
  */
 
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { open } from "node:fs/promises";
-import { join } from "node:path";
+import { open, realpath } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+
+/** Until scoped cold launch is qualified, copies must remain CLI-discoverable. */
+export async function assertClaudeCopyRoot(
+  storageScope: string,
+  configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+): Promise<void> {
+  const projects = await realpath(join(configDir, "projects")).catch(
+    () => undefined,
+  );
+  if (!projects || dirname(storageScope) !== projects)
+    throw new Error(
+      "Claude copy source is outside the launch transcript store; scoped resume is not qualified",
+    );
+}
 
 /** A session id names one file in the directory, never a path. */
 const CLONE_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -20,6 +39,7 @@ function assertCloneSessionId(sessionId: string): void {
  * Result of cloning a session.
  */
 export interface CloneResult {
+  copyBoundary?: ClaudeCopyBoundary;
   /** The new session ID */
   newSessionId: string;
   /** Number of JSONL entries copied */
@@ -74,6 +94,8 @@ export async function cloneClaudeSession(
   assertCloneSessionId(targetId);
 
   // Transform each line: update session_id if present
+  let copiedEntries = 0;
+  let copyBoundary: ClaudeCopyBoundary | undefined;
   const transformedLines = lines.map((line) => {
     try {
       const entry = JSON.parse(line) as Record<string, unknown>;
@@ -83,6 +105,14 @@ export async function cloneClaudeSession(
         entry.session_id = targetId;
       }
 
+      const tip = captureClaudeCopyBoundary([entry]);
+      if (tip)
+        copyBoundary = {
+          kind: "claude-rows",
+          entries: copiedEntries + 1,
+          anchor: { index: copiedEntries, uuid: tip.anchor.uuid },
+        };
+      copiedEntries++;
       return JSON.stringify(entry);
     } catch {
       // Keep malformed lines as-is (shouldn't happen, but be safe)
@@ -104,8 +134,14 @@ export async function cloneClaudeSession(
     await target.close();
   }
 
+  if (copyBoundary) {
+    copyBoundary.entries = copiedEntries;
+    if (copiedEntries - copyBoundary.anchor.index > 256)
+      copyBoundary = undefined;
+  }
   return {
     newSessionId: targetId,
     entries: lines.length,
+    copyBoundary,
   };
 }

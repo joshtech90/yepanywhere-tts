@@ -18,6 +18,54 @@ export interface CapabilityIdAllocation {
  * before the general 0.7.1 ID contract.
  */
 export const CAPABILITY_ID_ALLOCATIONS = {
+  agentAuthRouterSessionSwitch: {
+    id: 155,
+    direction: "server",
+    name: "agent-auth-router-session-switch",
+    introducedIn: "0.11.1",
+  },
+  projectQueueRouterSelection: {
+    id: 154,
+    direction: "server",
+    name: "project-queue-router-selection",
+    introducedIn: "0.11.1",
+  },
+  connectionSafeSettings: {
+    id: 153,
+    direction: "server",
+    name: "connection-safe-settings",
+    introducedIn: "0.11.1",
+  },
+  providerSteerNowDefaults: {
+    id: 152,
+    direction: "server",
+    name: "provider-steer-now-defaults",
+    introducedIn: "0.11.1",
+  },
+  sessionRelationships: {
+    id: 151,
+    direction: "server",
+    name: "session-relationships",
+    introducedIn: "0.11.1",
+  },
+  projectAppStartCommand: {
+    id: 150,
+    direction: "server",
+    name: "project-app-start-command",
+    introducedIn: "0.11.1",
+  },
+  providerSteeringModes: {
+    id: 149,
+    direction: "server",
+    name: "provider-steering-modes",
+    introducedIn: "0.11.1",
+  },
+  queuedSessionCompaction: {
+    id: 148,
+    direction: "server",
+    name: "queued-session-compaction",
+    introducedIn: "0.11.1",
+  },
   voiceInput: {
     id: 0,
     direction: "server",
@@ -870,8 +918,46 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "peer-connections",
     introducedIn: "0.11.1",
   },
-  newSessionSelectionMode: {
+  sessionCreationAdmission: {
+    id: 147,
+    direction: "server",
+    name: "session-creation-admission-v1",
+    introducedIn: "0.11.1",
+  },
+  stagedSessionCreation: {
+    id: 146,
+    direction: "server",
+    name: "session-creation-staged-attachments",
+    introducedIn: "0.11.1",
+  },
+  piTextCreation: {
+    id: 145,
+    direction: "server",
+    name: "session-creation-pi-text",
+    introducedIn: "0.11.1",
+  },
+  opencodeTextCreation: {
+    id: 144,
+    direction: "server",
+    name: "session-creation-opencode-text",
+    introducedIn: "0.11.1",
+  },
+  codexTextCreation: {
+    id: 143,
+    direction: "server",
+    name: "session-creation-codex-text",
+    introducedIn: "0.11.1",
+  },
+  claudeTextCreation: {
     id: 142,
+    direction: "server",
+    name: "session-creation-claude-text",
+    introducedIn: "0.11.1",
+  },
+  // Fork-only allocation; kept far above upstream's range so upstream's next
+  // allocations cannot collide with it.
+  newSessionSelectionMode: {
+    id: 200,
     direction: "server",
     name: "new-session-selection-mode",
     introducedIn: "0.11.1",

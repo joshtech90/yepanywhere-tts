@@ -682,7 +682,9 @@ test.describe("Full Relay Integration", () => {
       const downloadPromise = page.waitForEvent("download", {
         timeout: 60_000,
       });
-      await page.locator(".file-viewer-download-btn").click();
+      await page
+        .getByRole("button", { name: "Download File", exact: true })
+        .click();
       const download = await downloadPromise;
       expect(download.suggestedFilename()).toBe(fileName);
       expect(download.url()).toContain("/__ya-download/");
@@ -1294,7 +1296,7 @@ test.describe("Full Relay Integration", () => {
     });
     await loginViaRelay(page, remotePreviewURL, relayWsURL);
     await page.goto(remoteRelayUrl(remotePreviewURL, "settings/development"));
-    const toggle = page.getByRole("checkbox", {
+    const toggle = page.getByRole("switch", {
       name: "Retain rejected SRP sessions for debugging",
     });
     await toggle.locator("..").click();
@@ -1379,7 +1381,7 @@ test.describe("Full Relay Integration", () => {
     ).toBe(1);
     await page.goto(remoteRelayUrl(remotePreviewURL, "settings/development"));
     await page
-      .getByRole("checkbox", {
+      .getByRole("switch", {
         name: "Retain rejected SRP sessions for debugging",
       })
       .locator("..")

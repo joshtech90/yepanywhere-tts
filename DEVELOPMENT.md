@@ -91,6 +91,28 @@ catch-up paths, read `topics/architecture-mandates.md`. In particular, an idle
 provider session and a closed client tab must never indefinitely consume server
 resources.
 
+## Oversized Source Files
+
+Production source files over 1,500 lines are frozen at a recorded budget, and
+`pnpm lint` fails when one grows or a new file crosses the threshold. When a
+change needs code in such a hub (`app.ts`, `routes/sessions.ts`,
+`SessionPage.tsx`, `Supervisor.ts`, `Process.ts`, `codex.ts`, and the rest of
+`scripts/source-file-budgets.json`):
+
+- Put the new logic in a domain-named module beside the hub, and keep only the
+  wiring (import, call, mount, prop) in the hub. `helpers.ts`/`utils.ts`
+  buckets are not domain names.
+- If even the wiring exceeds the budget, first land a separate move-only
+  extraction from that file, preferably a seam already named in the
+  [refactor ledger](docs/tactical/058-typescript-module-boundary-refactor.md).
+- After any extraction, run `pnpm source:budgets --record` in the same commit
+  so the freed lines stay freed.
+- Never raise a budget to get lint green. A raise needs maintainer approval
+  and a `raise` record; see the
+  [growth guard](topics/typescript-module-boundary-refactor.md#growth-guard).
+- Do not shorten a barrel with `export *`; lint rejects it. Name re-exports
+  explicitly ([code quality](docs/development/code-quality.md#name-re-exports-explicitly)).
+
 ## Project Directory Storage
 
 Before adding or changing any YA-managed write inside a selected project or
@@ -160,7 +182,7 @@ are not a requirement to read every neighboring document.
 | Source edits or OS-sensitive behavior | [Testing](docs/development/testing.md): required checks, Linux/macOS/Windows coverage, and platform limitations. |
 | Adding, reviewing, removing, or accelerating tests at any level | [Test value and CI cost](docs/development/testing.md#test-value-and-ci-cost): retention by likely regression value, authority to remove shallow tests, and runtime in seconds. |
 | Choosing a test level, adding or changing browser tests, or deciding local E2E scope | [E2E testing](topics/e2e-testing.md): unique boundary, cost, retry evidence, and focused local verification. |
-| Source formatting, warning cleanup, or a commit | [Code quality](docs/development/code-quality.md): warning-free checks, exact-file formatting, and no routine import/export reordering. |
+| Source formatting, warning cleanup, or a commit | [Code quality](docs/development/code-quality.md): warning-free checks, exact-file formatting, no routine import/export reordering, and explicit re-exports (no `export *`). |
 | Authentication, named principals, project/session access grants, hosted issuer trust, or peer authorization | [Security](topics/security.md) and [principals and grants](topics/principals-and-grants.md): state how the proposed slice relates to the shared vocabulary before choosing a feature-local identity or authorization shape. |
 | Any change in `packages/client`, UI copy, or a chatty client console | [Client development](docs/development/client.md): English-only i18n additions and `pnpm console:scan`. |
 | Client styles, a legacy stylesheet, or a React component emitting legacy global classes | [CSS architecture](topics/css-architecture.md): CSS Modules, containment, and the `css:touched` ownership check. Run `pnpm css:check` for style changes. |
@@ -168,15 +190,18 @@ are not a requirement to read every neighboring document.
 | UI tweaks or browser verification | [UI testing](topics/ui-testing.md): final desktop/phone captures by default, produced through the repository's artifact capture facility so the images are presented rather than only archived; browser fallback and explicit user-owned visual verification. |
 | A test timeout, or a CI-only test failure | [Test time budgets](topics/test-time-budgets.md): budgets come from measured runs at 2-4x the observed maximum, counting a limit a run timed out at; rewrite an assertion whose subject was never the clock. |
 | UI rendering boundaries or shared views | [UI architecture](topics/ui-architecture.md). |
+| React state ownership, effects that publish state, external-store snapshots, or subscriptions | [React state patterns](topics/react-state-patterns.md): convergence, stable snapshots, narrow subscriptions, and lifecycle ownership. |
 | Rendering or rich-renderer changes | [Rendering performance](packages/client/RENDERING_PERFORMANCE.md). |
 | Benchmark/regression evidence or measurement-host selection | [Performance regression suite](topics/performance-regression-suite.md#performance-measurement-hosts), before treating measurements as regression evidence. |
 | Device streaming, `/api/devices`, `deviceBridge`, or `packages/device-bridge` | [Device control testing](docs/development/testing.md#device-control-testing): emulator testing is scoped to this feature. |
 | Chromebook testing or debugging | [ChromeOS debugging](docs/development/testing.md#chromeos-debugging): use the chromeos-testbed CLI. |
 | Codex provider schemas, scanner, normalization, app-server protocol, or target-version/API/protocol refreshes | [Provider development](docs/development/providers.md): inspect pinned upstream source; read-only audits may proceed, but enacting Codex compatibility edits requires user approval. |
+| Provider integration tests or refactors to scheduling, steering, tools, cancellation or native persistence | [Native provider testing](topics/native-provider-testing.md): prefer actual executables against scripted local model APIs, semantic action/assertion scenarios, and explicit qualification limits. |
 | Any provider refresh, transcript schema, or tool-result schema change | [Provider development](docs/development/providers.md) and the applicable [provider refresh](topics/provider-refresh.md) sections; preserve audited-through version markers and run schema validation. |
-| SQLite adapter changes, SQL callers, statement lifetimes, or test ceilings | [Runtime-portable SQLite](topics/optional-sqlite.md#runtime-portable-sqlite): use the shared runtime intersection, reuse prepared statements, and obtain maintainer consensus before widening the boundary. |
+| SQLite adapter changes, SQL callers, statement lifetimes, or test ceilings | [Runtime-portable SQLite](topics/required-sqlite.md#runtime-portable-sqlite): use the shared runtime intersection, reuse prepared statements, and obtain maintainer consensus before widening the boundary. |
 | Dependencies, install scripts, lockfile updates, or audit findings | [Dependency maintenance](docs/development/dependencies.md): install-script allowlist and advisory justifications/revisit triggers. |
 | Creating/editing tactical plans or retiring completed plans/gaps | [Documentation and plans](docs/development/documentation.md): descriptive step names and durable-content migration before retirement. |
+| Moving code between modules, splitting a large file, or a `source-file-budgets` lint failure | [Module boundary refactor discipline](topics/typescript-module-boundary-refactor.md): move-only slices, naming, tripwires, and the growth guard. |
 | Creating a commit | [Commit conventions](docs/development/commits.md): motivation, wrapping, provenance, and series trailers. |
 | Local instances, ports, profiles, or provider/feature environment configuration | [Local development](docs/development/local-development.md). |
 | Server/client logs or maintenance diagnostics | [Debugging](docs/development/debugging.md). |

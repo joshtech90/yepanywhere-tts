@@ -15,6 +15,8 @@ import {
 } from "../components/SourceContextMenu";
 import { SearchMatchText } from "../components/SearchMatchText";
 import { SourceShortcutHelp } from "../components/SourceShortcutHelp";
+import { Button } from "../components/ui/Button";
+import { TextInput } from "../components/ui/Field";
 import {
   handleSourceListKeyDown,
   suppressSourceKeyboardTooltips,
@@ -198,12 +200,14 @@ export function CommitRevisionPane({
     <>
       <div className="commit-list-column">
         <div className="source-search-field">
-          <input
+          <TextInput
             ref={searchInputRef}
             type="search"
+            size="small"
             className="source-search-input"
             value={searchQuery}
             placeholder={t("sourceSearchCommits")}
+            aria-label={t("sourceShortcutSearch")}
             aria-keyshortcuts="/"
             onFocus={onSearchIndexRequested}
             onKeyDown={(event) => {
@@ -435,13 +439,9 @@ export function CommitRevisionPane({
             </ol>
             {listError && <div className="git-diff-error">{listError}</div>}
             {hasMore && !searchActive && (
-              <button
-                type="button"
-                className="commit-load-more"
-                onClick={onLoadMore}
-              >
+              <Button className={styles.loadMore} onClick={onLoadMore}>
                 {t("sourceLoadMore")}
-              </button>
+              </Button>
             )}
           </>
         )}

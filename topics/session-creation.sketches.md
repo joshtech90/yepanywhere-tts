@@ -5,13 +5,46 @@ selected [YA-owned session identity](session-identity.md) as its foundation.
 Persist a session before provider startup and keep its public id and failure
 history even when no provider session/transcript exists. This reopens the
 new-session portion of [plan 150](../docs/tactical/150-ya-owned-session-ids.md#november-1-selected-follow-up),
-not its entire fork/clone program. Implementation, detailed API/schema choices
-and release qualification remain pending. The
+not its entire fork/clone program. The November 2 ordinary Claude/Codex text
+workflow is implemented, followed by independently gated OpenCode and Pi
+ordinary owner text creation. Broader proposal/release/OS qualification remains
+pending. Exact API/capability and evidence boundaries live in
+[the identity contract](session-identity.md#qualified-claude-text-acceptance--november-2). The
 [roadmap](../docs/roadmap/README.md) records scope and priority.
 
-## Problem and current behavior
+## Active implementation scope — November 2
 
-New Session couples request submission, provider startup and navigation.
+The maintainer selected a narrow first milestone: ordinary Claude and Codex text
+creation, including routed/account-pinned Claude, saved before provider startup,
+a stable session URL, visible startup/failure/uncertainty and prompt access after
+refresh. Safe acknowledgement preserves newer drafts. Claude accepts a chosen id;
+Codex's native thread id is an explicit binding. [Plan 171's active milestone](../docs/tactical/171-durable-session-identity-and-creation.md#active-milestone--claude-and-codex-creation-november-2)
+records the three larger implementation slices and focused/browser qualification.
+
+The [November 3 consolidation](session-identity.md#creation-consolidation--november-3)
+now includes attachments, retained providers/callers, restricted launches and
+fork/clone admission. The optional background action/shortcut is implemented
+under the contract below. Automated uncertain retry remains later work. The broader proposal below is
+retained as direction; it is not a prerequisite to deliver this first milestone.
+Use a narrowly gated text-creation contract without claiming the complete
+`session-creation-receipts` guarantee. Existing-server fallback remains required.
+
+## Consolidation endpoint
+
+The selected refactor endpoint is one stable creation contract, with legacy
+creation implementations removed as their callers migrate. The new durable
+text path is the foundation for that consolidation. Existing public routes may
+remain compatibility adapters to the common owner; supported older-server
+client fallback is a separate compatibility requirement.
+[Plan 171](../docs/tactical/171-durable-session-identity-and-creation.md#completion-target--one-creation-contract-retired-legacy-implementations)
+records the caller migration/deletion sequence and completion criteria. Adding
+provider coverage alone does not meet those criteria. The optional UI proposals
+below follow the common contract rather than introducing another creation path.
+
+## Problem and retained legacy behavior
+
+Before this milestone, New Session coupled request submission, provider startup
+and navigation. The retained legacy paths below still have that coupling.
 `NewSessionForm.handleStartSession` waits for the start response, clears the
 draft and opens the returned session. Attachments use a longer sequence:
 create a message-less provider session, materialize/upload files, then queue
@@ -56,6 +89,43 @@ Existing work to preserve and extend:
 
 ## Proposed user behavior
 
+### Implemented optional background creation — November 3
+
+Settings → Message Delivery → **Create sessions in background** is a
+browser-local preference, default off, with the pane's normal Undo behavior.
+When enabled, ordinary New Session accepts Command-Enter from its composer.
+There is no separate creation button. A small **?** in the existing toolbar
+shows Command-Enter and the full-pane editing shortcut; its visibility follows
+**Toolbar → Keyboard shortcuts**, including the existing phone default. Hiding
+help does not disable Command-Enter. The shortcut requires `session-creation-admission-v1`
+(bit 147); supported older servers keep ordinary creation with no background
+shortcut/help or new request. This uses the existing admission payload and source/
+principal-scoped recovery identity; there is no new endpoint or launch engine.
+Launch dialogs, Project Queue and existing-session delivery keep their own
+interaction contracts.
+
+Acceptance keeps the form and project/provider/model/options, conditionally
+clears only captured text/files, focuses the composer and shows the latest
+accepted session's **Open saved session** action. Newer text or files survive.
+The confirmation reports saved intent, not successful provider delivery; Open
+shows that session's current startup/failure status. It does not start another
+status poller. Later provider updates never navigate the form. Accepted attempts
+remain server-owned after navigation, reload or tab close, although the latest
+confirmation itself is local to the mounted form. Source/account changes hide
+another owner's confirmation.
+
+Ordinary submit/Enter, Ctrl-Enter and full-pane editing retain their behavior.
+Command-Enter respects IME composition, applies only in the composer and carries
+the background intent through pending speech finalization. A final spoken send
+cannot override that pending manual intent or
+send before successful settlement. Shortcut help discloses the current speech
+prefix, and ordinary Start retains its existing prefix cue. Failure keeps input
+recoverable. Lost acknowledgement retains the original operation across reload;
+**Check saved session** is explicit read-only recovery/open, with conditional
+draft settlement and no duplicate create.
+
+### Remaining proposal
+
 Separate durable request acceptance, provider startup and navigation.
 
 | Action | Proposed behavior |
@@ -65,7 +135,8 @@ Separate durable request acceptance, provider startup and navigation.
 | Command-Enter | Invoke Create in background when that option is enabled. |
 | Ordinary submit | Retain the existing intent to open the created session, including existing Enter/newline preferences. |
 
-Provide a visible button/menu alternative for touch and keyboard discovery.
+The maintainer selected shortcut-only background creation on November 3; the
+optional **?** is discovery/help, not another creation action.
 Keep background creation configurable and default-off under
 [vanilla defaults](vanilla-defaults.md) unless a later product decision
 explicitly changes that default. The maintainer's requested shortcut is
@@ -255,3 +326,9 @@ automatic restart policies are separate work. Permanent ids for new YA-created
 sessions are selected; bulk replacement of existing public ids, the full
 fork/clone redesign, a new scheduler, cross-account continuation and managed
 delegation are not required by this proposal.
+
+OpenCode ordinary owner text creation now joins the narrow saved-intent flow
+behind its own optional bit; see the [native proof and storage boundary](opencode-backend.md#durable-ordinary-text-creation).
+This does not expand the sketches' global receipts, attachment or background
+Queue migration scope. Pi ordinary owner text creation is independently
+qualified behind its own optional capability; see its [RPC proof and storage boundary](pi-provider.md#durable-ordinary-text-creation).

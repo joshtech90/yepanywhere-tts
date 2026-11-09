@@ -1,0 +1,170 @@
+{
+  "$comment": "Line budgets for production source files over the threshold fixed in scripts/check-source-file-budgets.mjs. Owned by topics/typescript-module-boundary-refactor.md#growth-guard. Lower with `pnpm source:budgets --record`; never raise without maintainer approval and a raise record.",
+  "updated": "2026-11-09",
+  "files": {
+    "packages/client/src/api/client.ts": {
+      "maxLines": 1913
+    },
+    "packages/client/src/components/blocks/ToolCallRow.tsx": {
+      "maxLines": 1953
+    },
+    "packages/client/src/components/FileViewer.tsx": {
+      "maxLines": 2709
+    },
+    "packages/client/src/components/LocalMediaModal.tsx": {
+      "maxLines": 1901
+    },
+    "packages/client/src/components/MessageInput.tsx": {
+      "maxLines": 3185
+    },
+    "packages/client/src/components/MessageInputToolbar.tsx": {
+      "maxLines": 3802
+    },
+    "packages/client/src/components/MessageList.tsx": {
+      "maxLines": 5701,
+      "raise": {
+        "from": 5702,
+        "reason": "Removing the export-star renderSelectors barrel splits its one import into per-module imports from the owning sessionDetail concern modules. Maintainer-approved 2026-11-06."
+      }
+    },
+    "packages/client/src/components/NewSessionForm.tsx": {
+      "maxLines": 3120
+    },
+    "packages/client/src/components/renderers/tools/EditRenderer.tsx": {
+      "maxLines": 1813
+    },
+    "packages/client/src/components/RenderItemComponent.tsx": {
+      "maxLines": 1723
+    },
+    "packages/client/src/components/Sidebar.tsx": {
+      "maxLines": 1624
+    },
+    "packages/client/src/components/UserTurnNavigator.tsx": {
+      "maxLines": 1562
+    },
+    "packages/client/src/hooks/useSession.ts": {
+      "maxLines": 2808
+    },
+    "packages/client/src/hooks/useSessionMessages.ts": {
+      "maxLines": 1805
+    },
+    "packages/client/src/lib/clientSummaryState.ts": {
+      "maxLines": 2222
+    },
+    "packages/client/src/lib/connection/RelayProtocol.ts": {
+      "maxLines": 1621
+    },
+    "packages/client/src/lib/connection/SecureConnection.ts": {
+      "maxLines": 2095
+    },
+    "packages/client/src/lib/draftSyncStorage.ts": {
+      "maxLines": 1747
+    },
+    "packages/client/src/lib/speechProviders/YaServerProvider.ts": {
+      "maxLines": 1940
+    },
+    "packages/client/src/pages/GitStatusDiffPreview.tsx": {
+      "maxLines": 1683
+    },
+    "packages/client/src/pages/SessionPage.tsx": {
+      "maxLines": 3621
+    },
+    "packages/client/src/pages/settings/AppearanceSettings.tsx": {
+      "maxLines": 1823
+    },
+    "packages/client/src/pages/WorkingTreeBrowser.tsx": {
+      "maxLines": 1548
+    },
+    "packages/server/src/app.ts": {
+      "maxLines": 4624
+    },
+    "packages/server/src/augments/safe-markdown.ts": {
+      "maxLines": 1951
+    },
+    "packages/server/src/indexes/SessionIndexService.ts": {
+      "maxLines": 2448
+    },
+    "packages/server/src/metadata/SessionMetadataService.ts": {
+      "maxLines": 1550
+    },
+    "packages/server/src/projects/projectWorktreeSubscriptionManager.ts": {
+      "maxLines": 1741
+    },
+    "packages/server/src/projects/scanner.ts": {
+      "maxLines": 1629
+    },
+    "packages/server/src/review/ReviewCommentService.ts": {
+      "maxLines": 1665
+    },
+    "packages/server/src/routes/public-shares.ts": {
+      "maxLines": 1891
+    },
+    "packages/server/src/routes/sessions.ts": {
+      "maxLines": 5264
+    },
+    "packages/server/src/routes/ws-relay-handlers.ts": {
+      "maxLines": 3066
+    },
+    "packages/server/src/sdk/providers/claude.ts": {
+      "maxLines": 3114
+    },
+    "packages/server/src/sdk/providers/codex-oss.ts": {
+      "maxLines": 1615
+    },
+    "packages/server/src/sdk/providers/grok-acp.ts": {
+      "maxLines": 1854
+    },
+    "packages/server/src/sdk/providers/opencode.ts": {
+      "maxLines": 1965
+    },
+    "packages/server/src/sdk/providers/pi.ts": {
+      "maxLines": 1520
+    },
+    "packages/server/src/sdk/providers/provider-runtime-host.ts": {
+      "maxLines": 2066
+    },
+    "packages/server/src/sdk/providers/provider-session-owner.ts": {
+      "maxLines": 1532
+    },
+    "packages/server/src/server-main.ts": {
+      "maxLines": 1824
+    },
+    "packages/server/src/services/ProjectQueueService.ts": {
+      "maxLines": 1532
+    },
+    "packages/server/src/services/SecurityClientService.ts": {
+      "maxLines": 1753
+    },
+    "packages/server/src/services/SessionCatalogService.ts": {
+      "maxLines": 1569
+    },
+    "packages/server/src/session-sandbox.ts": {
+      "maxLines": 1588
+    },
+    "packages/server/src/sessions/codex-reader.ts": {
+      "maxLines": 4002
+    },
+    "packages/server/src/sessions/normalization.ts": {
+      "maxLines": 2451
+    },
+    "packages/server/src/sessions/opencode-reader.ts": {
+      "maxLines": 1877
+    },
+    "packages/server/src/supervisor/Process.ts": {
+      "maxLines": 6582
+    },
+    "packages/server/src/supervisor/Supervisor.ts": {
+      "maxLines": 6953
+    },
+    "packages/shared/src/app-types.ts": {
+      "maxLines": 1504
+    },
+    "packages/shared/src/index.ts": {
+      "maxLines": 1918,
+      "raise": {
+        "from": 1721,
+        "reason": "The export-star ban expands the package barrel's 16 star re-exports into 187 explicit names; the package's export surface is unchanged. Maintainer-approved 2026-11-06."
+      }
+    }
+  }
+}

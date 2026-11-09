@@ -1,3 +1,4 @@
+import { nativeStorageScope } from "./native-storage-scope.js";
 /**
  * CodexOSS Provider - Local models via Codex CLI with --oss flag.
  *
@@ -12,6 +13,9 @@
  */
 
 import { type ChildProcess, exec, spawn } from "node:child_process";
+import { realpath } from "node:fs/promises";
+import { homedir, userInfo } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import {
@@ -25,6 +29,8 @@ import {
   qualifiedGatewayModelId,
   tomlString,
   unionModelCatalogs,
+  fromUrlProjectId,
+  parseNativeSessionId,
   type EffortLevel,
   type GatewayEndpointEffortProbe,
   type GatewayModelEffort,
@@ -45,7 +51,8 @@ import {
 } from "../../services/ProviderInstallationCoordinator.js";
 import { probeServiceEffort } from "../../services/GatewayEffortProbe.js";
 import { findCodexCliPath } from "../cli-detection.js";
-import { MessageQueue } from "../messageQueue.js";
+import { MessageQueue, type QueuedSDKUserMessage } from "../messageQueue.js";
+import { readFirstLine } from "../../utils/jsonl.js";
 import type { SDKMessage } from "../types.js";
 import { stripYaControlPlaneCredentials } from "./env-filter.js";
 import type {
@@ -54,7 +61,10 @@ import type {
   AuthStatus,
   StartSessionOptions,
 } from "./types.js";
-import { inactiveProviderSessionOptionsResult } from "./types.js";
+import {
+  assertProviderForkSource,
+  inactiveProviderSessionOptionsResult,
+} from "./types.js";
 
 const log = getLogger().child({ component: "codex-oss-provider" });
 
@@ -195,6 +205,8 @@ type CodexItem =
  * CodexOSS Provider - spawns Codex CLI with --oss for local models.
  */
 export class CodexOSSProvider implements AgentProvider {
+  readonly supportsNativeResumeSource = true;
+  readonly initializesOnFirstMessage = true;
   readonly name = "codex-oss" as const;
   readonly displayName = "CodexOSS";
   readonly supportsPermissionMode = false;
@@ -674,7 +686,89 @@ export class CodexOSSProvider implements AgentProvider {
   /**
    * Start a new CodexOSS session.
    */
+  async getNewSessionNamespace(cwd: string) {
+    return {
+      family: "codex" as const,
+      storageScope: await nativeStorageScope(
+        resolve(
+          await realpath(cwd),
+          join(
+            process.env.CODEX_HOME ||
+              join(
+                process.platform === "win32" ? userInfo().homedir : homedir(),
+                ".codex",
+              ),
+            "sessions",
+          ),
+        ),
+      ),
+    };
+  }
+
   async startSession(options: StartSessionOptions): Promise<AgentSession> {
+    const source = options.nativeResumeSource;
+    if (source) {
+      if (
+        !options.resumeSessionId ||
+        !source.filePath ||
+        options.executor ||
+        options.sessionSandbox
+      )
+        throw new Error(
+          "Codex OSS scoped continuation requires its local native source",
+        );
+      assertProviderForkSource(
+        {
+          nativeSessionId: parseNativeSessionId(options.resumeSessionId),
+          nativeSource: source,
+        },
+        this.name,
+      );
+      // UUIDs select thread/resume directly in pinned Codex. A name can miss
+      // lookup and fall back to thread/start; it cannot address a scoped owner.
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          options.resumeSessionId,
+        )
+      )
+        throw new Error("Codex OSS scoped continuation requires a native UUID");
+      const home =
+        process.env.CODEX_HOME ||
+        join(
+          process.platform === "win32" ? userInfo().homedir : homedir(),
+          ".codex",
+        );
+      if (!isAbsolute(home))
+        throw new Error(
+          "Codex OSS scoped continuation requires an absolute native home",
+        );
+      const scope = await realpath(join(home, "sessions"));
+      const file = await realpath(source.filePath);
+      const path = relative(scope, file);
+      if (
+        scope !== source.native.storageScope ||
+        !path ||
+        path === ".." ||
+        path.startsWith(".." + sep) ||
+        isAbsolute(path)
+      )
+        throw new Error(
+          "Codex OSS continuation is outside the launch session store",
+        );
+      const line = await readFirstLine(file, 1024 * 1024);
+      const header = line ? JSON.parse(line) : null;
+      if (
+        header?.type !== "session_meta" ||
+        header.payload?.id !== source.native.id ||
+        typeof header.payload.cwd !== "string" ||
+        !isAbsolute(header.payload.cwd) ||
+        (await realpath(header.payload.cwd)) !==
+          (await realpath(fromUrlProjectId(source.projectId)))
+      )
+        throw new Error(
+          "Codex OSS continuation header does not match its native source",
+        );
+    }
     const gatewayRoute = await this.launchGatewayRoute(options);
     const installationLease =
       await this.installationCoordinator.acquireRuntimeLease(
@@ -682,7 +776,10 @@ export class CodexOSSProvider implements AgentProvider {
       );
     const queue = new MessageQueue();
     const abortController = new AbortController();
-    const pidRef: { value?: number } = {};
+    const runtime: { process?: ChildProcess; exit: Promise<number | null> } = {
+      exit: Promise.resolve(null),
+    };
+    const input = queue[Symbol.asyncIterator]();
 
     if (options.initialMessage) {
       queue.push(options.initialMessage);
@@ -691,14 +788,21 @@ export class CodexOSSProvider implements AgentProvider {
     const sessionIterator = this.runSession(
       options,
       gatewayRoute,
-      queue,
+      input,
       abortController.signal,
-      pidRef,
+      runtime,
     );
     const iterator = (async function* () {
       try {
         yield* sessionIterator;
       } finally {
+        await input.return();
+        if (
+          runtime.process?.exitCode === null &&
+          runtime.process.signalCode === null
+        )
+          runtime.process.kill("SIGTERM");
+        await runtime.exit;
         await installationLease.release();
       }
     })();
@@ -706,7 +810,17 @@ export class CodexOSSProvider implements AgentProvider {
     return {
       iterator,
       queue,
-      abort: () => abortController.abort(),
+      abort: async () => {
+        abortController.abort();
+        await input.return();
+        if (
+          runtime.process?.exitCode === null &&
+          runtime.process.signalCode === null
+        )
+          runtime.process.kill("SIGTERM");
+        await runtime.exit;
+        await installationLease.release();
+      },
       ...(gatewayRoute ? { gatewayServiceId: gatewayRoute.serviceId } : {}),
       setSessionOptions: async (requested) =>
         inactiveProviderSessionOptionsResult(
@@ -714,7 +828,7 @@ export class CodexOSSProvider implements AgentProvider {
           "The Codex OSS CLI adapter exposes no automatic title, recap, progress-summary, or prompt-suggestion generator",
         ),
       get pid() {
-        return pidRef.value;
+        return runtime.process?.pid;
       },
     };
   }
@@ -746,11 +860,13 @@ export class CodexOSSProvider implements AgentProvider {
   private async *runSession(
     options: StartSessionOptions,
     gatewayRoute: ModelCatalogRoute | null,
-    queue: MessageQueue,
+    input: AsyncIterable<QueuedSDKUserMessage>,
     signal: AbortSignal,
-    pidRef: { value?: number },
+    runtime: { process?: ChildProcess; exit: Promise<number | null> },
   ): AsyncIterableIterator<SDKMessage> {
+    if (signal.aborted) return;
     const codexPath = await this.findCodexPath();
+    if (signal.aborted) return;
     if (!codexPath) {
       yield {
         type: "error",
@@ -785,7 +901,7 @@ export class CodexOSSProvider implements AgentProvider {
       } as SDKMessage;
     }
 
-    const messageGen = queue;
+    const messageGen = input;
     let isFirstNewMessage = !options.resumeSessionId;
     for await (const message of messageGen) {
       if (signal.aborted) break;
@@ -799,14 +915,17 @@ export class CodexOSSProvider implements AgentProvider {
       }
       isFirstNewMessage = false;
 
-      // Emit user message with UUID from queue to enable deduplication
-      // The UUID was set by Process.queueMessage() and passed through MessageQueue
-      yield {
+      // A first exec turn has no native identity until thread.started. Never
+      // expose a fabricated pending id to the identity owner.
+      const userMessage = {
         type: "user",
         uuid: message.uuid,
-        session_id: currentSessionId || `pending-${Date.now()}`,
         message: { role: "user", content: userPrompt },
-      } as SDKMessage;
+      };
+      if (currentSessionId)
+        yield { ...userMessage, session_id: currentSessionId } as SDKMessage;
+
+      if (signal.aborted) break;
 
       // Increment turn number and reset accumulators for this new turn
       turnNumber++;
@@ -836,6 +955,7 @@ export class CodexOSSProvider implements AgentProvider {
 
       // Spawn codex process
       let codexProcess: ChildProcess;
+      let processError: Error | undefined;
       try {
         log.debug(
           {
@@ -860,7 +980,17 @@ export class CodexOSSProvider implements AgentProvider {
           },
           shell: process.platform === "win32",
         });
-        pidRef.value = codexProcess.pid;
+        runtime.process = codexProcess;
+        runtime.exit = new Promise((resolve) =>
+          codexProcess.once("close", resolve),
+        );
+        codexProcess.once("error", (error) => {
+          processError = error;
+        });
+        codexProcess.stdin?.on("error", (error) => {
+          processError = error;
+          codexProcess.kill("SIGTERM");
+        });
 
         // For first turn, send prompt via stdin
         // For resume, prompt is passed as argument
@@ -908,19 +1038,22 @@ export class CodexOSSProvider implements AgentProvider {
           stderr += chunk.toString();
         });
 
-        // For resume turns (no JSON), we need to parse text output
-        // The format is: header lines, then "codex" line, then response text
-        let inCodexResponse = false;
-        const textResponseLines: string[] = [];
-
         for await (const line of rl) {
           if (signal.aborted) break;
 
-          // First try JSON parsing (works for first turn with --json)
+          // Both new and resumed exec turns use the native JSONL event protocol.
           const event = this.parseEvent(line);
           if (event) {
             // Update session ID from thread.started (only on first turn)
             if (event.type === "thread.started") {
+              if (
+                options.nativeResumeSource &&
+                event.thread_id !== options.resumeSessionId
+              ) {
+                throw new Error(
+                  "Codex OSS continuation opened a different native thread",
+                );
+              }
               log.debug(
                 { threadId: event.thread_id, turnNumber },
                 "Captured thread_id from thread.started",
@@ -935,7 +1068,22 @@ export class CodexOSSProvider implements AgentProvider {
                   cwd: options.cwd,
                 } as SDKMessage;
               }
+              if (isFirstTurn)
+                yield {
+                  ...userMessage,
+                  session_id: currentSessionId,
+                } as SDKMessage;
               continue;
+            }
+
+            // Exec owns one immutable prompt per child. Its native turn-start
+            // event proves acceptance; our earlier user echo does not.
+            if (
+              event.type === "turn.started" &&
+              currentSessionId &&
+              message.uuid
+            ) {
+              options.onNativeInputConsumed?.(currentSessionId, message.uuid);
             }
 
             // Handle item events specially to accumulate streaming tokens
@@ -998,54 +1146,11 @@ export class CodexOSSProvider implements AgentProvider {
             for (const msg of messages) {
               yield msg;
             }
-            continue;
-          }
-
-          // Text output parsing for resume turns (no JSON)
-          // Format: header, "codex", response lines, duplicate of response
-          if (line === "codex") {
-            inCodexResponse = true;
-            continue;
-          }
-
-          if (inCodexResponse) {
-            // Accumulate response lines
-            textResponseLines.push(line);
-            // Emit progressive updates
-            accumulatedText = textResponseLines.join("\n");
-            yield {
-              type: "assistant",
-              session_id: currentSessionId,
-              uuid: `response-turn${turnNumber}`,
-              message: { role: "assistant", content: accumulatedText },
-            } as SDKMessage;
-          }
-        }
-
-        // For text output, deduplicate the response (it appears twice)
-        if (!isFirstTurn && textResponseLines.length > 0) {
-          // The response is duplicated, so take first half
-          const halfLen = Math.floor(textResponseLines.length / 2);
-          if (
-            halfLen > 0 &&
-            textResponseLines.slice(0, halfLen).join("\n") ===
-              textResponseLines.slice(halfLen).join("\n")
-          ) {
-            accumulatedText = textResponseLines.slice(0, halfLen).join("\n");
-            yield {
-              type: "assistant",
-              session_id: currentSessionId,
-              uuid: `response-turn${turnNumber}`,
-              message: { role: "assistant", content: accumulatedText },
-            } as SDKMessage;
           }
         }
 
         // Wait for exit
-        const exitCode = await new Promise<number | null>((resolve) => {
-          codexProcess.on("close", resolve);
-          codexProcess.on("error", () => resolve(null));
-        });
+        const exitCode = await runtime.exit;
 
         if (exitCode !== 0 && stderr) {
           log.warn(
@@ -1058,6 +1163,14 @@ export class CodexOSSProvider implements AgentProvider {
         yield {
           type: "result",
           session_id: currentSessionId,
+          ...(exitCode !== 0 || processError
+            ? {
+                error:
+                  processError?.message ??
+                  (stderr.trim().slice(0, 2000) ||
+                    `Codex exited with status ${exitCode}`),
+              }
+            : {}),
         } as SDKMessage;
       } finally {
         clearTimeout(timeoutId);
@@ -1088,21 +1201,26 @@ export class CodexOSSProvider implements AgentProvider {
     }
     args.push(...this.reasoningEffortArgs(options, route));
 
-    // Sandbox mode
-    if (options.permissionMode === "bypassPermissions") {
-      args.push("-s", "danger-full-access");
-    } else {
-      args.push("-s", "workspace-write");
-    }
+    args.push(...this.sandboxArgs(options));
 
     return args;
+  }
+
+  private sandboxArgs(options: StartSessionOptions): string[] {
+    return [
+      "-s",
+      options.permissionMode === "bypassPermissions"
+        ? "danger-full-access"
+        : "workspace-write",
+    ];
   }
 
   /**
    * Build CLI arguments for subsequent turns: `codex exec resume <session_id> <prompt> -c ...`
    *
-   * Note: The resume subcommand doesn't support --oss or --json flags directly.
-   * We must use -c config overrides to specify the model provider and model.
+   * The audited CLI accepts global --json on resume. Keep every turn on the
+   * same event protocol; human-readable headings are not a response boundary.
+   * Provider selection still uses -c because resume has no --oss option.
    */
   private buildResumeTurnArgs(
     options: StartSessionOptions,
@@ -1113,9 +1231,13 @@ export class CodexOSSProvider implements AgentProvider {
     const service = this.serviceById(route.serviceId);
     const args: string[] = [
       "exec",
+      // Resume reloads configuration rather than inheriting the previous
+      // turn's sandbox. Keep the launch policy explicit before the subcommand.
+      ...this.sandboxArgs(options),
       "resume",
       sessionId,
       prompt,
+      "--json",
       ...(service
         ? this.serviceLaunchArgs(service)
         : ["-c", `model_provider=${tomlString(this.localProvider)}`]),

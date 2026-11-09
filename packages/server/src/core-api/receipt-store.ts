@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { SqliteDatabase, SqliteStatement } from "../storage/sqlite.js";
 import { CoreApiError } from "./errors.js";
+import { profileSessionRelationships } from "../sessions/SessionRelationshipWriter.js";
 import {
   receiptSchema,
   type ApiReceipt,
@@ -65,7 +66,12 @@ export class ApiReceiptStore {
         };
       });
   }
-  constructor(private readonly database: SqliteDatabase) {}
+  constructor(
+    private readonly database: SqliteDatabase,
+    readonly relationshipWriter = profileSessionRelationships(database),
+  ) {
+    relationshipWriter.assertProfileConnection(database);
+  }
   private statement(sql: string) {
     let statement = this.statements.get(sql);
     if (!statement) {
@@ -214,6 +220,9 @@ export class ApiReceiptStore {
         receipt.state,
         JSON.stringify(receipt),
       );
+      this.relationshipWriter.receiptWithinTransaction(receipt, (id) =>
+        this.resolveId(id),
+      );
       return { created: true, receipt };
     });
   }
@@ -225,18 +234,35 @@ export class ApiReceiptStore {
         "state" | "sessionId" | "queueId" | "delivery" | "failure"
       >
     >,
-    publish = true,
+  ) {
+    const result = this.database.transaction(() =>
+      this.updateWithinTransaction(id, patch),
+    );
+    if (result?.changed) this.publish(result.receipt);
+    return result?.receipt;
+  }
+  private updateWithinTransaction(
+    id: string,
+    patch: Partial<
+      Pick<
+        ApiReceipt,
+        "state" | "sessionId" | "queueId" | "delivery" | "failure"
+      >
+    >,
   ) {
     const previous = this.get(id);
     if (!previous) return;
     const next = receiptSchema.parse({ ...previous, ...patch });
-    if (JSON.stringify(next) === JSON.stringify(previous)) return previous;
+    if (JSON.stringify(next) === JSON.stringify(previous))
+      return { receipt: previous, changed: false };
     next.updatedAt = new Date().toISOString();
     this.statement(
       "UPDATE agent_api_receipts SET session_id = ?, state = ?, receipt_json = ? WHERE id = ?",
     ).run(next.sessionId, next.state, JSON.stringify(next), id);
-    if (publish) this.publish(next);
-    return next;
+    this.relationshipWriter.receiptWithinTransaction(next, (id) =>
+      this.resolveId(id),
+    );
+    return { receipt: next, changed: true };
   }
   /** A crash/reload cannot prove whether an external startup crossed its boundary. */
   recoverInterrupted() {
@@ -249,7 +275,7 @@ export class ApiReceiptStore {
         const receipt = this.decode(row)!;
         if (receipt.state === "accepted" && receipt.delivery === "consumed")
           continue;
-        const next = this.update(
+        const next = this.updateWithinTransaction(
           receipt.id,
           receipt.state === "accepted"
             ? {
@@ -261,9 +287,8 @@ export class ApiReceiptStore {
                 },
               }
             : { state: "uncertain", delivery: "uncertain" },
-          false,
         );
-        if (next) recovered.push(next);
+        if (next?.changed) recovered.push(next.receipt);
       }
     });
     for (const receipt of recovered) this.publish(receipt);
@@ -284,55 +309,6 @@ export class ApiReceiptStore {
       initiated: rows.slice(0, limit).map((row) => this.decode(row)!),
       nextCursor: rows.length > limit ? String(offset + limit) : null,
     };
-  }
-  /** Canonicalization updates both ends without inventing a parenting relation. */
-  remap(oldId: string, newId: string) {
-    if (oldId === newId) return;
-    const changed: ApiReceipt[] = [];
-    this.database.transaction(() => {
-      const rows = this.statement(
-        "SELECT id, scope_key, receipt_json FROM agent_api_receipts WHERE session_id = ? OR source_session_id = ? LIMIT 10000",
-      ).all<{ id: string; scope_key: string; receipt_json: string }>(
-        oldId,
-        oldId,
-      );
-      if (!rows.length) return;
-      this.statement(
-        "INSERT INTO agent_api_session_aliases (id,target) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET target=excluded.target",
-      ).run(oldId, newId);
-      for (const row of rows) {
-        const previous = this.decode(row)!;
-        const next = {
-          ...previous,
-          updatedAt: new Date().toISOString(),
-          sessionId: previous.sessionId === oldId ? newId : previous.sessionId,
-          creator: {
-            ...previous.creator,
-            sessionId:
-              previous.creator.principal.kind !== "peer" &&
-              previous.creator.sessionId === oldId
-                ? newId
-                : previous.creator.sessionId,
-          },
-        };
-        const scope = JSON.parse(row.scope_key) as unknown[];
-        if (previous.creator.principal.kind !== "peer" && scope[1] === oldId)
-          scope[1] = newId;
-        if (previous.kind === "sendMessage" && scope[4] === oldId)
-          scope[4] = newId;
-        this.statement(
-          "UPDATE agent_api_receipts SET scope_key = ?, session_id = ?, source_session_id = ?, receipt_json = ? WHERE id = ?",
-        ).run(
-          JSON.stringify(scope),
-          next.sessionId,
-          next.creator.sessionId,
-          JSON.stringify(next),
-          row.id,
-        );
-        changed.push(next);
-      }
-    });
-    for (const receipt of changed) this.publish(receipt);
   }
   close() {
     this.listeners.clear();

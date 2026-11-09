@@ -6,6 +6,8 @@ import {
   type SpeechBackendSetupStatus,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Button, ButtonBase } from "../../components/ui/Button";
+import { Switch } from "../../components/ui/Switch";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useI18n } from "../../i18n";
 import { useServerSettings } from "../../hooks/useServerSettings";
@@ -230,35 +232,27 @@ export function SpeechBackendSetup() {
               key={row.id}
               aria-label={t(BACKEND_LABEL_KEYS[row.id])}
             >
-              <label
-                className={styles.enable}
-                data-locked={row.enabledByEnv || undefined}
-              >
-                <input
-                  type="checkbox"
-                  checked={
-                    pendingToggle?.id === row.id
-                      ? pendingToggle.enabled
-                      : row.enabled
-                  }
-                  disabled={row.enabledByEnv || saving}
-                  aria-describedby={
-                    row.enabledByEnv ? `${row.id}-environment-lock` : undefined
-                  }
-                  onChange={(event) =>
-                    void toggle(row, event.currentTarget.checked)
-                  }
-                  aria-label={t(
-                    status?.liveEnablement
-                      ? "speechBackendSetupEnableNowLabel"
-                      : "speechBackendSetupEnableLabel",
-                    {
-                      backend: t(BACKEND_LABEL_KEYS[row.id]),
-                    },
-                  )}
-                />
-                <strong>{t(BACKEND_LABEL_KEYS[row.id])}</strong>
-              </label>
+              <Switch
+                label={<strong>{t(BACKEND_LABEL_KEYS[row.id])}</strong>}
+                checked={
+                  pendingToggle?.id === row.id
+                    ? pendingToggle.enabled
+                    : row.enabled
+                }
+                disabled={row.enabledByEnv || saving}
+                aria-describedby={
+                  row.enabledByEnv ? `${row.id}-environment-lock` : undefined
+                }
+                onCheckedChange={(checked) => void toggle(row, checked)}
+                aria-label={t(
+                  status?.liveEnablement
+                    ? "speechBackendSetupEnableNowLabel"
+                    : "speechBackendSetupEnableLabel",
+                  {
+                    backend: t(BACKEND_LABEL_KEYS[row.id]),
+                  },
+                )}
+              />
               {row.enabledByEnv && (
                 <p
                   className={styles.environmentLock}
@@ -276,19 +270,15 @@ export function SpeechBackendSetup() {
               )}
               {row.id === "ya-whisper" &&
                 typeof status?.whisperGpu === "boolean" && (
-                  <div>
-                    <label className={styles.enable}>
-                      <input
-                        type="checkbox"
-                        checked={pendingWhisperGpu ?? status.whisperGpu}
-                        disabled={saving || (!row.enabled && !row.advertised)}
-                        onChange={(event) =>
-                          void setWhisperGpu(event.currentTarget.checked)
-                        }
-                      />
-                      <span>{t("speechBackendSetupWhisperGpu")}</span>
-                    </label>
-                    <p className="settings-hint">
+                  <div className={styles.gpu}>
+                    <Switch
+                      label={t("speechBackendSetupWhisperGpu")}
+                      aria-describedby={`${row.id}-gpu-help`}
+                      checked={pendingWhisperGpu ?? status.whisperGpu}
+                      disabled={saving || (!row.enabled && !row.advertised)}
+                      onCheckedChange={(checked) => void setWhisperGpu(checked)}
+                    />
+                    <p className="settings-hint" id={`${row.id}-gpu-help`}>
                       {t("speechBackendSetupWhisperGpuHelp")}
                     </p>
                   </div>
@@ -310,16 +300,10 @@ export function SpeechBackendSetup() {
                 {englishModelWer(row.defaultModel)}
               </span>
               <div className={styles.backendActions}>
-                <button
-                  type="button"
-                  className={styles.install}
-                  disabled={running}
-                  onClick={() => void install(row.id)}
-                >
+                <Button disabled={running} onClick={() => void install(row.id)}>
                   {t("speechBackendSetupInstall")}
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <ButtonBase
                   className={styles.modelLink}
                   onClick={() =>
                     setModelPage(
@@ -330,7 +314,7 @@ export function SpeechBackendSetup() {
                   }
                 >
                   {t("speechBackendSetupModelAccess")}
-                </button>
+                </ButtonBase>
               </div>
               <p className={styles.meta}>
                 {row.enabledByEnv
@@ -376,13 +360,9 @@ export function SpeechBackendSetup() {
                 ?.pixiEnvironment ?? "stt"}{" "}
               hf auth login
             </code>
-            <button
-              type="button"
-              className={styles.install}
-              onClick={() => setModelPage(undefined)}
-            >
+            <Button onClick={() => setModelPage(undefined)}>
               {t("speechBackendSetupCloseModel")}
-            </button>
+            </Button>
           </section>
         )}
         <label
@@ -403,9 +383,7 @@ export function SpeechBackendSetup() {
             t("speechBackendSetupConsoleEmpty")}
         </pre>
         <div className={styles.actions}>
-          <button
-            type="button"
-            className={styles.restart}
+          <Button
             disabled={
               restarting || running || status?.restartAvailable !== true
             }
@@ -416,7 +394,7 @@ export function SpeechBackendSetup() {
                 ? "speechBackendSetupRestartScheduled"
                 : "speechBackendSetupRestart",
             )}
-          </button>
+          </Button>
           {status?.liveEnablement && (
             <p className="settings-hint">
               {t("speechBackendSetupRestartOnlyDisable")}

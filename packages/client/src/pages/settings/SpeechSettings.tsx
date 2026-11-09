@@ -18,6 +18,8 @@ import {
 import { SpeechSmartTurnControls } from "../../components/SpeechSmartTurnControls";
 import { SpeechMessagePrefixControls } from "../../components/SpeechMessagePrefixControls";
 import { WhisperModelControls } from "../../components/WhisperModelControls";
+import { Select, TextInput } from "../../components/ui/Field";
+import { Switch } from "../../components/ui/Switch";
 import { SpeechBackendSetup } from "./SpeechBackendSetup";
 import { useCanAdministerHost } from "../../hooks/useActingPrincipal";
 import { useModelSettings } from "../../hooks/useModelSettings";
@@ -388,16 +390,12 @@ export function SpeechSettings() {
             </>
           }
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={voiceInputEnabled && serverVoiceEnabled}
-              disabled={versionLoading || !serverVoiceEnabled}
-              onChange={(event) => setVoiceInputEnabled(event.target.checked)}
-              aria-label={t("speechSettingsVoiceInputTitle")}
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            checked={voiceInputEnabled && serverVoiceEnabled}
+            disabled={versionLoading || !serverVoiceEnabled}
+            onCheckedChange={(checked) => setVoiceInputEnabled(checked)}
+            aria-label={t("speechSettingsVoiceInputTitle")}
+          />
         </SettingsItem>
 
         {showParakeetModelControls && (
@@ -407,9 +405,8 @@ export function SpeechSettings() {
             className="model-settings-item"
           >
             <div className="speech-backend-settings-field">
-              <select
+              <Select
                 id={parakeetModelPresetId}
-                className="settings-select speech-parakeet-model-select"
                 value={selectedParakeetPreset}
                 onChange={(event) => {
                   const preset = event.currentTarget.value;
@@ -452,10 +449,9 @@ export function SpeechSettings() {
                     </option>
                   );
                 })}
-              </select>
-              <input
+              </Select>
+              <TextInput
                 id={parakeetModelInputId}
-                className="settings-input"
                 value={parakeetSpeechModel}
                 placeholder={t(
                   recentModels
@@ -553,11 +549,10 @@ export function SpeechSettings() {
           description={t("speechSettingsXaiKeyDescription")}
           className="model-settings-item"
         >
-          <input
+          <TextInput
             type="password"
             id="xai-stt-api-key"
             name="xai-stt-api-key"
-            className="settings-input"
             value={browserXaiSttApiKey}
             placeholder={t("speechSettingsXaiKeyPlaceholder")}
             autoComplete="new-password"
@@ -573,60 +568,44 @@ export function SpeechSettings() {
           label={t("speechSettingsUnspokenPunctuationTitle")}
           description={t("speechSettingsUnspokenPunctuationDescription")}
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={unspokenPunctuation}
-              onChange={(event) => setUnspokenPunctuation(event.target.checked)}
-              aria-label={t("speechSettingsUnspokenPunctuationTitle")}
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            checked={unspokenPunctuation}
+            onCheckedChange={(checked) => setUnspokenPunctuation(checked)}
+            aria-label={t("speechSettingsUnspokenPunctuationTitle")}
+          />
         </SettingsItem>
 
         <SettingsItem
           label={t("speechSettingsKeepMicWarmTitle")}
           description={t("speechSettingsKeepMicWarmDescription")}
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={keepMicWarm}
-              onChange={(event) => setKeepMicWarm(event.target.checked)}
-              aria-label={t("speechSettingsKeepMicWarmTitle")}
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            checked={keepMicWarm}
+            onCheckedChange={(checked) => setKeepMicWarm(checked)}
+            aria-label={t("speechSettingsKeepMicWarmTitle")}
+          />
         </SettingsItem>
 
         <SettingsItem
           label={t("speechSettingsReducePlaybackTitle")}
           description={t("speechSettingsReducePlaybackDescription")}
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={reducePlayback}
-              onChange={(event) => setReducePlayback(event.target.checked)}
-              aria-label={t("speechSettingsReducePlaybackTitle")}
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            checked={reducePlayback}
+            onCheckedChange={(checked) => setReducePlayback(checked)}
+            aria-label={t("speechSettingsReducePlaybackTitle")}
+          />
         </SettingsItem>
 
         <SettingsItem
           label={t("speechSettingsAudioWorkletTitle")}
           description={t("speechSettingsAudioWorkletDescription")}
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={audioWorklet}
-              onChange={(event) => setAudioWorklet(event.target.checked)}
-              aria-label={t("speechSettingsAudioWorkletTitle")}
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            checked={audioWorklet}
+            onCheckedChange={(checked) => setAudioWorklet(checked)}
+            aria-label={t("speechSettingsAudioWorkletTitle")}
+          />
         </SettingsItem>
 
         <SettingsItem

@@ -90,6 +90,7 @@ export function createCodexForkSummaryThreadResumeParams(
 ): ThreadResumeParams {
   const params: ThreadResumeParams = {
     threadId: request.generatorSessionId,
+    ...(request.nativeSource ? { path: request.nativeSource.filePath } : {}),
     model: request.model ?? null,
     cwd: request.cwd,
     approvalPolicy: "untrusted",

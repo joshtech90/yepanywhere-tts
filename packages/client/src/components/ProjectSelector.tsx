@@ -1,14 +1,12 @@
 import { projectDisplayName } from "@yep-anywhere/shared";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useProjects } from "../hooks/useProjects";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import type { Project } from "../types";
 import styles from "./ProjectSelector.module.css";
-
-const DESKTOP_BREAKPOINT = 769;
+import { ButtonBase } from "./ui/Button";
+import { Menu, MenuItem, useMenuTrigger } from "./ui/Menu";
 
 interface ProjectSelectorProps {
   /** Currently selected project ID */
@@ -21,7 +19,7 @@ interface ProjectSelectorProps {
 
 /**
  * A dropdown selector for choosing which project to create a session in.
- * Shows as a clickable title that opens a dropdown (desktop) or bottom sheet (mobile).
+ * Shows as a clickable title that opens a menu (desktop) or bottom sheet (phone).
  */
 export function ProjectSelector({
   currentProjectId,
@@ -29,12 +27,7 @@ export function ProjectSelector({
   onProjectChange,
 }: ProjectSelectorProps) {
   const { t } = useI18n();
-  const [isOpen, setIsOpen] = useState(false);
-  const [isDesktop, setIsDesktop] = useState(
-    () => window.innerWidth >= DESKTOP_BREAKPOINT,
-  );
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const sheetRef = useRef<HTMLDivElement>(null);
+  const menu = useMenuTrigger();
   const navigate = useNavigate();
   const basePath = useRemoteBasePath();
 
@@ -45,11 +38,6 @@ export function ProjectSelector({
   const displayName = currentProject
     ? projectDisplayName(currentProject)
     : (currentProjectName ?? t("projectSelectorFallback"));
-
-  const handleButtonClick = () => {
-    buttonRef.current?.blur();
-    setIsOpen(true);
-  };
 
   const handleProjectSelect = (project: Project) => {
     if (project.id !== currentProjectId) {
@@ -63,76 +51,6 @@ export function ProjectSelector({
         );
       }
     }
-    setIsOpen(false);
-  };
-
-  const handleClose = useCallback(() => {
-    setIsOpen(false);
-  }, []);
-
-  // Track desktop vs mobile
-  useEffect(() => {
-    const handleResize = () => {
-      setIsDesktop(window.innerWidth >= DESKTOP_BREAKPOINT);
-    };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
-  // Close on Escape
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        handleClose();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown, true);
-    return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, [isOpen, handleClose]);
-
-  // Close on click outside (desktop)
-  useEffect(() => {
-    if (!isOpen || !isDesktop) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        sheetRef.current &&
-        !sheetRef.current.contains(e.target as Node) &&
-        buttonRef.current &&
-        !buttonRef.current.contains(e.target as Node)
-      ) {
-        handleClose();
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isOpen, isDesktop, handleClose]);
-
-  // Lock body scroll on mobile when open
-  useEffect(() => {
-    if (isOpen && !isDesktop) {
-      document.body.style.overflow = "hidden";
-      return () => {
-        document.body.style.overflow = "";
-      };
-    }
-  }, [isOpen, isDesktop]);
-
-  // Focus sheet when opened
-  useEffect(() => {
-    if (isOpen) {
-      sheetRef.current?.focus();
-    }
-  }, [isOpen]);
-
-  const handleOverlayClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      e.preventDefault();
-      e.stopPropagation();
-      handleClose();
-    }
   };
 
   // Don't show selector if only one project
@@ -140,85 +58,16 @@ export function ProjectSelector({
     return <span className="session-title">{displayName}</span>;
   }
 
-  const optionsContent = (
-    <div className={styles.options}>
-      {projects.map((project) => {
-        const isSelected = project.id === currentProjectId;
-        return (
-          <button
-            key={project.id}
-            type="button"
-            className={`${styles.option} ${isSelected ? styles.selected : ""}`}
-            onClick={() => handleProjectSelect(project)}
-          >
-            <span className={styles.name}>{projectDisplayName(project)}</span>
-            <span className={styles.meta}>
-              {t("projectSelectorSessionsCount", {
-                count: project.sessionCount,
-              })}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-
-  const mobileSheet =
-    isOpen && !isDesktop
-      ? createPortal(
-          // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click closes the sheet; Escape is handled globally
-          // biome-ignore lint/a11y/useKeyWithClickEvents: Escape key handled globally
-          <div
-            className={styles.overlay}
-            onClick={handleOverlayClick}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div
-              ref={sheetRef}
-              className={styles.sheet}
-              role="dialog"
-              tabIndex={-1}
-              aria-label={t("projectSelectorSelectProject")}
-            >
-              <div className={styles.header}>
-                <span className={styles.title}>
-                  {t("projectSelectorSelectProject")}
-                </span>
-              </div>
-              {optionsContent}
-            </div>
-          </div>,
-          document.body,
-        )
-      : null;
-
-  const desktopDropdown =
-    isOpen && isDesktop ? (
-      <div
-        ref={sheetRef}
-        className={styles.dropdown}
-        role="dialog"
-        tabIndex={-1}
-        aria-label={t("projectSelectorSelectProject")}
-      >
-        {optionsContent}
-      </div>
-    ) : null;
-
   return (
     // `project-selector-container`, `project-selector-button`, and
     // `project-selector-text` stay literal: the `.source-header-identity`
     // rules in styles/index.css reach in by those names to constrain and
     // truncate the identity row, and a focused style test asserts them.
     <div className={`project-selector-container ${styles.container}`}>
-      <button
-        ref={buttonRef}
-        type="button"
+      <ButtonBase
+        {...menu.triggerProps}
         className={`project-selector-button ${styles.button}`}
-        onClick={handleButtonClick}
         title={t("projectSelectorChangeProject")}
-        aria-haspopup="listbox"
-        aria-expanded={isOpen}
       >
         <span className={`project-selector-text ${styles.text}`}>
           {displayName}
@@ -237,9 +86,30 @@ export function ProjectSelector({
         >
           <polyline points="6 9 12 15 18 9" />
         </svg>
-      </button>
-      {desktopDropdown}
-      {mobileSheet}
+      </ButtonBase>
+      <Menu
+        open={menu.open}
+        onClose={menu.close}
+        anchorRef={menu.anchorRef}
+        placement="bottom-start"
+        phoneSheet
+        aria-label={t("projectSelectorSelectProject")}
+        className={styles.menu}
+      >
+        {projects.map((project) => (
+          <MenuItem
+            key={project.id}
+            kind="radio"
+            checked={project.id === currentProjectId}
+            description={t("projectSelectorSessionsCount", {
+              count: project.sessionCount,
+            })}
+            onSelect={() => handleProjectSelect(project)}
+          >
+            {projectDisplayName(project)}
+          </MenuItem>
+        ))}
+      </Menu>
     </div>
   );
 }

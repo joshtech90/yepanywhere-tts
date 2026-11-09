@@ -1,3 +1,4 @@
+import { nativeStorageScope } from "./native-storage-scope.js";
 /**
  * Gemini ACP Provider implementation using Agent Client Protocol.
  *
@@ -10,8 +11,9 @@
 import { exec, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type {
   RequestPermissionRequest,
@@ -21,6 +23,7 @@ import type {
   ToolKind,
 } from "@agentclientprotocol/sdk";
 import type { ModelCatalogStatus, ModelInfo } from "@yep-anywhere/shared";
+import { fromUrlProjectId, parseNativeSessionId } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
 import { selectCommandLookupTarget } from "../cli-detection.js";
 import { whichCommand } from "../which-command.js";
@@ -31,7 +34,11 @@ import type {
   SDKMessage,
   ToolApprovalResult,
 } from "../types.js";
-import { ACPClient } from "./acp/client.js";
+import {
+  ACPClient,
+  acpErrorMessage,
+  isRequestedACPClosure,
+} from "./acp/client.js";
 import { stripYaControlPlaneCredentials } from "./env-filter.js";
 import type {
   AgentProvider,
@@ -40,6 +47,7 @@ import type {
   ProviderName,
   StartSessionOptions,
 } from "./types.js";
+import { assertProviderForkSource } from "./types.js";
 
 /** Standard Gemini models (always available) */
 const GEMINI_MODELS: ModelInfo[] = [
@@ -89,6 +97,7 @@ interface GeminiSettings {
  * The agent controls its own loop; we execute filesystem/terminal operations.
  */
 export class GeminiACPProvider implements AgentProvider {
+  readonly supportsNativeResumeSource = true;
   readonly name: ProviderName = "gemini-acp";
   readonly displayName = "Gemini (ACP)";
   // In Phase 1, permission modes don't do anything since we have no tools
@@ -266,7 +275,62 @@ export class GeminiACPProvider implements AgentProvider {
   /**
    * Start a new Gemini ACP session.
    */
+  async getNewSessionNamespace(cwd: string) {
+    return {
+      family: "gemini" as const,
+      storageScope: await nativeStorageScope(
+        resolve(
+          await realpath(cwd),
+          join(process.env.GEMINI_CLI_HOME || homedir(), ".gemini", "tmp"),
+        ),
+      ),
+    };
+  }
+
   async startSession(options: StartSessionOptions): Promise<AgentSession> {
+    const source = options.nativeResumeSource;
+    if (source) {
+      if (
+        !options.resumeSessionId ||
+        !source.filePath ||
+        options.executor ||
+        options.sessionSandbox
+      )
+        throw new Error(
+          "Gemini scoped continuation requires its local native source",
+        );
+      assertProviderForkSource(
+        {
+          nativeSessionId: parseNativeSessionId(options.resumeSessionId),
+          nativeSource: source,
+        },
+        this.name,
+      );
+      const home = process.env.GEMINI_CLI_HOME || homedir();
+      if (!isAbsolute(home))
+        throw new Error(
+          "Gemini scoped continuation requires an absolute native home",
+        );
+      const scope = await realpath(join(home, ".gemini", "tmp"));
+      const path = relative(scope, await realpath(source.filePath));
+      if (
+        scope !== source.native.storageScope ||
+        !path ||
+        path === ".." ||
+        path.startsWith(".." + sep) ||
+        isAbsolute(path)
+      )
+        throw new Error(
+          "Gemini continuation is outside the launch session store",
+        );
+      if (
+        (await realpath(fromUrlProjectId(source.projectId))) !==
+        (await realpath(options.cwd))
+      )
+        throw new Error(
+          "Gemini continuation cannot change its native working project",
+        );
+    }
     const queue = new MessageQueue();
     const abortController = new AbortController();
 
@@ -288,11 +352,12 @@ export class GeminiACPProvider implements AgentProvider {
       queue,
       abort: () => {
         abortController.abort();
-        client.close();
+        return client.close();
       },
       get pid() {
         return client.pid;
       },
+      isProcessAlive: () => client.isProcessAlive,
     };
   }
 
@@ -305,6 +370,7 @@ export class GeminiACPProvider implements AgentProvider {
     queue: MessageQueue,
     signal: AbortSignal,
   ): AsyncIterableIterator<SDKMessage> {
+    if (signal.aborted) return;
     const geminiPath = await this.findGeminiPath();
     if (!geminiPath) {
       yield {
@@ -362,6 +428,13 @@ export class GeminiACPProvider implements AgentProvider {
       );
     }
 
+    const input = queue[Symbol.asyncIterator]();
+    const stopInput = () => {
+      void input.return();
+    };
+    signal.addEventListener("abort", stopInput);
+    void client.closed.then(stopInput);
+    if (signal.aborted) stopInput();
     try {
       // Connect to the ACP agent
       const connectStart = Date.now();
@@ -386,24 +459,11 @@ export class GeminiACPProvider implements AgentProvider {
       // Use session/resume for existing sessions, session/new for fresh sessions.
       let sessionId: string;
       if (options.resumeSessionId) {
-        try {
-          sessionId = await client.resumeSession(
-            options.resumeSessionId,
-            options.cwd,
-          );
-          this.log.debug({ sessionId }, "ACP session resumed");
-        } catch (resumeErr) {
-          // If resume fails, fall back to creating a new session
-          this.log.warn(
-            { err: resumeErr, resumeSessionId: options.resumeSessionId },
-            "Failed to resume ACP session, creating new session",
-          );
-          sessionId = await client.newSession(options.cwd);
-          this.log.debug(
-            { sessionId, originalSessionId: options.resumeSessionId },
-            "Created new ACP session (resume failed)",
-          );
-        }
+        sessionId = await client.resumeSession(
+          options.resumeSessionId,
+          options.cwd,
+        );
+        this.log.debug({ sessionId }, "ACP session resumed");
       } else {
         sessionId = await client.newSession(options.cwd);
         this.log.debug({ sessionId }, "ACP session created");
@@ -418,10 +478,7 @@ export class GeminiACPProvider implements AgentProvider {
       } as SDKMessage;
 
       // Process messages from the queue
-      const messageGen = queue[Symbol.asyncIterator]();
-      const stopWaitingForMessage = () => void messageGen.return();
-      signal.addEventListener("abort", stopWaitingForMessage, { once: true });
-      if (signal.aborted) stopWaitingForMessage();
+      const messageGen = input;
       let isFirstNewMessage = true;
       for await (const message of messageGen) {
         if (signal.aborted) break;
@@ -469,6 +526,9 @@ export class GeminiACPProvider implements AgentProvider {
         )) {
           yield msg;
         }
+        await promptPromise;
+        if (!signal.aborted)
+          options.onNativeInputConsumed?.(sessionId, userUuid);
         this.log.debug(
           { durationMs: Date.now() - promptStart },
           "Gemini prompt complete",
@@ -481,13 +541,16 @@ export class GeminiACPProvider implements AgentProvider {
         } as SDKMessage;
       }
     } catch (err) {
+      if (isRequestedACPClosure(err, signal)) return;
       this.log.error({ err }, "Gemini ACP session error");
       yield {
         type: "error",
-        error: err instanceof Error ? err.message : String(err),
+        error: acpErrorMessage(err),
       } as SDKMessage;
     } finally {
-      client.close();
+      signal.removeEventListener("abort", stopInput);
+      await input.return();
+      await client.close();
     }
   }
 
@@ -671,7 +734,8 @@ export class GeminiACPProvider implements AgentProvider {
       })
       .catch((err) => {
         promptDone = true;
-        this.log.error({ err }, "Prompt error");
+        if (!isRequestedACPClosure(err, signal))
+          this.log.error({ err }, "Prompt error");
       });
 
     // Track text content for assistant messages
@@ -931,16 +995,18 @@ export class GeminiACPProvider implements AgentProvider {
       });
 
       proc.on("close", () => {
+        clearTimeout(timeoutId);
         // Check if the help output mentions experimental-acp
         resolve(output.includes("experimental-acp"));
       });
 
       proc.on("error", () => {
+        clearTimeout(timeoutId);
         resolve(false);
       });
 
       // Timeout after 5 seconds
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         proc.kill();
         resolve(false);
       }, 5000);

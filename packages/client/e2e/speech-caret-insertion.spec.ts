@@ -1,5 +1,7 @@
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
 
 const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
@@ -9,7 +11,12 @@ const speechSessionIds = {
   laterFinal: "speech-caret-002",
   sendInterim: "speech-caret-003",
   stopInterim: "speech-caret-004",
+  typingInterim: "speech-caret-005",
+  heldSend: "speech-caret-006",
 } as const;
+test.use({ draftSessionIds: [speechSessionIds.typingInterim] });
+const sessionPath = (sessionId: string) =>
+  `/projects/${projectId}/sessions/${sessionId}`;
 
 interface FakeSpeechResultInput {
   transcript: string;
@@ -24,12 +31,7 @@ async function dismissOnboardingIfVisible(page: Page) {
   await expect(dialog).not.toBeVisible();
 }
 
-async function openBrowserSpeechComposer(
-  page: Page,
-  baseURL: string,
-  sessionId: string,
-  initialText = "",
-) {
+async function installFakeSpeechRecognition(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem("yep-anywhere-voice-input-enabled", "true");
     localStorage.setItem("yep-anywhere-speech-method", "browser-native");
@@ -68,14 +70,22 @@ async function openBrowserSpeechComposer(
       }
 
       stop() {
-        queueMicrotask(() => {
+        const finish = () => {
           const finalText = (
             window as unknown as { finalSpeechOnStop?: string }
           ).finalSpeechOnStop;
           if (finalText)
             this.emit([{ transcript: finalText, isFinal: true }], 0);
           this.onend?.call(this, new Event("end"));
-        });
+        };
+        const held = window as unknown as {
+          holdSpeechStop?: boolean;
+          releaseSpeechStop?: () => void;
+        };
+        // A held stop keeps the recognizer finalizing until the test
+        // releases it, as a slow transcription backend would.
+        if (held.holdSpeechStop) held.releaseSpeechStop = finish;
+        else queueMicrotask(finish);
       }
 
       abort() {}
@@ -108,11 +118,28 @@ async function openBrowserSpeechComposer(
       value: FakeSpeechRecognition,
     });
   });
+}
 
-  await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
+async function openBrowserSpeechComposer(
+  page: Page,
+  baseURL: string,
+  path: string,
+  initialText = "",
+) {
+  await installFakeSpeechRecognition(page);
+  await page.goto(`${baseURL}${path}`);
   await dismissOnboardingIfVisible(page);
   const textarea = page.locator("[data-composer-input]");
   await expect(textarea).toBeVisible();
+  await startSpeechWithDraft(page, textarea, initialText);
+  return textarea;
+}
+
+async function startSpeechWithDraft(
+  page: Page,
+  textarea: Locator,
+  initialText: string,
+) {
   if (initialText) {
     await textarea.fill(initialText);
     await textarea.evaluate((element) => {
@@ -124,7 +151,6 @@ async function openBrowserSpeechComposer(
   await expect(
     page.getByRole("button", { name: "Stop voice input" }),
   ).toHaveAttribute("data-speech-method", "browser-native");
-  return textarea;
 }
 
 async function emitSpeechResults(
@@ -153,7 +179,7 @@ test("moves only the next fragment when the caret changes mid-interim", async ({
   const textarea = await openBrowserSpeechComposer(
     page,
     baseURL,
-    speechSessionIds.moveInterim,
+    sessionPath(speechSessionIds.moveInterim),
     "existing text",
   );
 
@@ -207,7 +233,7 @@ test("moves a later final-only browser result to the live caret", async ({
   const textarea = await openBrowserSpeechComposer(
     page,
     baseURL,
-    speechSessionIds.laterFinal,
+    sessionPath(speechSessionIds.laterFinal),
   );
 
   await emitSpeechResults(page, [
@@ -233,10 +259,21 @@ test("sends the final ASR wording with its prefix when Send is pressed", async (
   page,
   baseURL,
 }) => {
+  // Observe the speech finalization/send boundary directly. Native provider
+  // resume is covered separately; this fixture's hostname store is imported
+  // history, not a provider launch store.
+  let submitted: { message: string } | undefined;
+  await page.route("**/api/projects/*/sessions/*/resume", (route) => {
+    expect(route.request().method()).toBe("POST");
+    submitted = route.request().postDataJSON();
+    return route.fulfill({
+      json: { processId: "speech-send-fixture", permissionMode: "default" },
+    });
+  });
   const textarea = await openBrowserSpeechComposer(
     page,
     baseURL,
-    speechSessionIds.sendInterim,
+    sessionPath(speechSessionIds.sendInterim),
     "alpha omega",
   );
 
@@ -255,11 +292,97 @@ test("sends the final ASR wording with its prefix when Send is pressed", async (
   });
   await page.getByRole("button", { name: /^Send/ }).click();
 
-  await expect(
-    page.getByRole("main").getByText("🎤 final wording alpha omega", {
-      exact: true,
-    }),
-  ).toBeVisible();
+  await expect
+    .poll(() => submitted?.message)
+    .toBe("🎤 final wording alpha omega");
+  await expect(textarea).toHaveValue("");
+});
+
+// Send pressed while dictation is finalizing sets the draft aside and
+// empties the box (docs/tactical/184-message-box-send-routes.md slice 0).
+// The user types the next message while the transcript is still pending;
+// the transcript lands halfway through and typing goes straight on, so
+// later keys overlap the set-aside draft's delivery. Every key must show
+// within 100 ms, and none may join the sent message.
+test("keeps keys typed while a dictated Send settles", async ({
+  page,
+  baseURL,
+}) => {
+  let submitted: { message: string } | undefined;
+  await page.route("**/api/projects/*/sessions/*/resume", (route) => {
+    submitted = route.request().postDataJSON();
+    return route.fulfill({
+      json: { processId: "speech-held-send", permissionMode: "default" },
+    });
+  });
+  const textarea = await openBrowserSpeechComposer(
+    page,
+    baseURL,
+    sessionPath(speechSessionIds.heldSend),
+    "set aside draft",
+  );
+  await emitSpeechResults(page, [{ transcript: "spoken", isFinal: false }]);
+  await expect(page.locator(".speech-interim-inline")).toHaveText("spoken");
+  await page.evaluate(() => {
+    Object.assign(window, {
+      holdSpeechStop: true,
+      finalSpeechOnStop: "spoken words",
+    });
+  });
+  await page.getByRole("button", { name: /^Send/ }).click();
+  await expect(textarea).toHaveValue("");
+  expect(submitted).toBeUndefined();
+  await textarea.focus();
+
+  await textarea.evaluate((element) => {
+    const field = element as HTMLTextAreaElement & {
+      acks: { value: string; latency: number }[];
+    };
+    field.acks = [];
+    field.addEventListener("keydown", (event) =>
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() =>
+          field.acks.push({
+            value: field.value,
+            latency: performance.now() - event.timeStamp,
+          }),
+        ),
+      ),
+    );
+  });
+  const acksOf = () =>
+    textarea.evaluate(async (element) => {
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      );
+      return (
+        element as HTMLTextAreaElement & {
+          acks: { value: string; latency: number }[];
+        }
+      ).acks;
+    });
+
+  const keys = "next message";
+  for (const [index, character] of [...keys].entries()) {
+    if (index === 4) {
+      await page.evaluate(() =>
+        (
+          window as unknown as { releaseSpeechStop: () => void }
+        ).releaseSpeechStop(),
+      );
+    }
+    await page.keyboard.type(character);
+    await expect.poll(async () => (await acksOf()).length).toBe(index + 1);
+  }
+  await expect
+    .poll(() => submitted?.message)
+    .toBe("🎤 set aside draft spoken words");
+  const acks = await acksOf();
+  expect(acks.map((ack) => ack.value)).toEqual(
+    [...keys].map((_, index) => keys.slice(0, index + 1)),
+  );
+  expect(Math.max(...acks.map((ack) => ack.latency))).toBeLessThan(100);
+  await expect(textarea).toHaveValue(keys);
 });
 
 test("commits the interim text visible when Stop is pressed", async ({
@@ -269,7 +392,7 @@ test("commits the interim text visible when Stop is pressed", async ({
   const textarea = await openBrowserSpeechComposer(
     page,
     baseURL,
-    speechSessionIds.stopInterim,
+    sessionPath(speechSessionIds.stopInterim),
     "alpha omega",
   );
 
@@ -287,3 +410,175 @@ test("commits the interim text visible when Stop is pressed", async ({
   await expect(textarea).toHaveValue("provisional words alpha omega");
   await expect(page.locator(".speech-interim-inline")).toHaveCount(0);
 });
+
+/**
+ * Seeds a short Claude session the in-session box can open, and returns a
+ * function that appends an assistant row and waits until the page shows it.
+ */
+function seedTypingSession(page: Page) {
+  const directory = join(
+    e2ePaths.claudeSessionsDir,
+    hostname(),
+    mockProjectPath.replace(/[/\\]/g, "-"),
+  );
+  mkdirSync(directory, { recursive: true });
+  const sessionId = speechSessionIds.typingInterim;
+  const start = Date.parse("2026-11-01T00:00:00.000Z");
+  const row = (
+    uuid: string,
+    parentUuid: string | null,
+    index: number,
+    message: object,
+    type: string,
+  ) =>
+    JSON.stringify({
+      type,
+      uuid,
+      parentUuid,
+      cwd: mockProjectPath,
+      sessionId,
+      timestamp: new Date(start + index * 1000).toISOString(),
+      message,
+    });
+  const sessionFile = join(directory, `${sessionId}.jsonl`);
+  writeFileSync(
+    sessionFile,
+    [
+      row(
+        "typing-user-0",
+        null,
+        0,
+        { role: "user", content: "Dictation typing fixture" },
+        "user",
+      ),
+      row(
+        "typing-assistant-0",
+        "typing-user-0",
+        1,
+        { role: "assistant", content: [{ type: "text", text: "Reply 0" }] },
+        "assistant",
+      ),
+    ].join("\n"),
+  );
+  let parentUuid = "typing-assistant-0";
+  let updates = 0;
+  return async () => {
+    updates += 1;
+    const uuid = `typing-concurrent-${updates}`;
+    const text = `Concurrent reply ${updates}`;
+    appendFileSync(
+      sessionFile,
+      `\n${row(uuid, parentUuid, updates + 1, { role: "assistant", content: [{ type: "text", text }] }, "assistant")}`,
+    );
+    parentUuid = uuid;
+    await expect(page.getByText(text, { exact: true })).toBeVisible();
+  };
+}
+
+// Both message boxes share their dictation code
+// (docs/tactical/178-shared-composer-dictation.md). After 20 finals have
+// landed in the open speech target (each a chunk every keystroke maps
+// through the edit) and with an interim showing, the caret moves to the
+// start of a long draft and the user types there while the recognizer
+// revises the interim and, in a session, the transcript updates. Each key
+// must show within 100 ms, and the fragment in flight stays at its first
+// target in both boxes (plan 178 D10).
+for (const box of ["in-session", "new-session"] as const) {
+  test(`shows each key typed during dictation within 100 ms (${box})`, async ({
+    page,
+    baseURL,
+  }) => {
+    const updateTranscript =
+      box === "in-session" ? seedTypingSession(page) : async () => {};
+    const longDraft = Array.from(
+      { length: 120 },
+      (_, index) => `Line ${index} of a long dictated prompt draft.`,
+    ).join("\n");
+    const textarea = await openBrowserSpeechComposer(
+      page,
+      baseURL,
+      box === "in-session"
+        ? sessionPath(speechSessionIds.typingInterim)
+        : `/new-session?projectId=${projectId}`,
+      longDraft,
+    );
+    if (box === "in-session") {
+      await expect(page.getByText("Reply 0", { exact: true })).toBeVisible();
+    }
+    const finals = Array.from({ length: 20 }, (_, index) => ({
+      transcript: `chunk ${index}`,
+      isFinal: true,
+    }));
+    let dictated = longDraft;
+    for (let index = 0; index < finals.length; index += 1) {
+      await emitSpeechResults(page, finals.slice(0, index + 1), index);
+      dictated += ` ${finals[index]?.transcript}`;
+      await expect(textarea).toHaveValue(dictated);
+    }
+    const emitInterim = (transcript: string, isFinal = false) =>
+      emitSpeechResults(
+        page,
+        [...finals, { transcript, isFinal }],
+        finals.length,
+      );
+    await emitInterim("spoken words");
+    await expect(page.locator(".speech-interim-inline")).toHaveText(
+      "spoken words",
+    );
+
+    await textarea.evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    await textarea.click({ position: { x: 12, y: 10 } });
+    await expect(textarea).toHaveJSProperty("selectionStart", 0);
+    await textarea.evaluate((element) => {
+      const field = element as HTMLTextAreaElement & {
+        acks: { value: string; latency: number }[];
+      };
+      field.acks = [];
+      field.addEventListener("keydown", (event) =>
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() =>
+            field.acks.push({
+              value: field.value,
+              latency: performance.now() - event.timeStamp,
+            }),
+          ),
+        ),
+      );
+    });
+    // Waits out the two frames a pending acknowledgement takes.
+    const acksOf = () =>
+      textarea.evaluate(async (element) => {
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        );
+        return (
+          element as HTMLTextAreaElement & {
+            acks: { value: string; latency: number }[];
+          }
+        ).acks;
+      });
+
+    const keys = "Typed first. ";
+    for (const [index, character] of [...keys].entries()) {
+      if (index % 4 === 2) {
+        await emitInterim(`spoken words ${index}`);
+        await expect(page.locator(".speech-interim-inline")).toHaveText(
+          `spoken words ${index}`,
+        );
+      }
+      if (index === Math.floor(keys.length / 2)) await updateTranscript();
+      await page.keyboard.type(character);
+      await expect.poll(async () => (await acksOf()).length).toBe(index + 1);
+    }
+    const acks = await acksOf();
+    expect(acks.map((ack) => ack.value)).toEqual(
+      [...keys].map((_, index) => keys.slice(0, index + 1) + dictated),
+    );
+    expect(Math.max(...acks.map((ack) => ack.latency))).toBeLessThan(100);
+
+    await emitInterim("spoken words final", true);
+    await expect(textarea).toHaveValue(`${keys}${dictated} spoken words final`);
+  });
+}

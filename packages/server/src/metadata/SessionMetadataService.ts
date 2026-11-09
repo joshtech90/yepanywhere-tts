@@ -32,6 +32,12 @@ import {
   sanitizeSessionTitle,
 } from "@yep-anywhere/shared";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import { SessionCreationStore } from "../sessions/SessionCreationStore.js";
+import { SessionIdentityStore } from "../sessions/SessionIdentityStore.js";
+import {
+  profileSessionRelationships,
+  type SessionRelationshipWriter,
+} from "../sessions/SessionRelationshipWriter.js";
 import type { SqliteDatabase, SqliteStatement } from "../storage/sqlite.js";
 
 export type { EffectiveSessionLaunchSettings } from "@yep-anywhere/shared";
@@ -56,6 +62,7 @@ export interface SessionMetadata {
     policyLabel?: string;
     reason?: string;
     observedAt?: string;
+    claudeAiConnectors?: boolean;
     id: string;
     routerId: string;
     accountId: string;
@@ -153,6 +160,8 @@ export interface SessionMetadata {
   automationPausedUntilUserTurn?: boolean;
   /** Settled YA host filesystem confinement for every launch of this session. */
   sandboxLevel?: SessionSandboxLevel;
+  /** Private monotonic provenance; absent means earlier confinement is unknown. */
+  sandboxEverConfined?: boolean;
   /** Public-only egress selection; absent means on for project-write. */
   sandboxNetworkFirewall?: boolean;
   /** Opaque key for the canonical project's private provider runtime state. */
@@ -230,6 +239,68 @@ export function goalCommandOf(
 }
 
 export class SessionMetadataService {
+  private identityStore?: SessionIdentityStore;
+  private creationStore?: SessionCreationStore;
+  private relationshipWriter?: SessionRelationshipWriter;
+
+  /** Admission, receipts and native acquisition share one profile SQL index. */
+  get relationships(): SessionRelationshipWriter {
+    this.relationshipWriter ??= profileSessionRelationships(this.database);
+    return this.relationshipWriter;
+  }
+
+  /** One durable creation owner on the same profile connection as metadata. */
+  get creations(): SessionCreationStore {
+    this.creationStore ??= new SessionCreationStore(this.database, this);
+    return this.creationStore;
+  }
+
+  /** Internal transaction participants cannot silently select another profile. */
+  assertProfileConnection(database: SqliteDatabase): void {
+    if (database !== this.database)
+      throw new Error("Creation requires the profile connection");
+  }
+
+  /** One indexed identity owner per metadata/profile connection. */
+  get identities(): SessionIdentityStore {
+    this.identityStore ??= new SessionIdentityStore(this.database);
+    return this.identityStore;
+  }
+
+  /**
+   * Internal admission transaction: only a new identity may publish metadata.
+   * Domain writes and metadata use this exact connection; mirrors change only
+   * after COMMIT. The callback must contain synchronous SQLite operations only.
+   */
+  commitNewSession<T>(
+    database: SqliteDatabase,
+    sessionId: string,
+    metadata: SessionMetadata,
+    write: () => T,
+  ): T {
+    this.assertProfileConnection(database);
+    if (this.state.sessions[sessionId])
+      throw new Error("Creation cannot replace existing session metadata");
+    const text = JSON.stringify(metadata);
+    const snapshot: SessionMetadata = JSON.parse(text);
+    const relationships = this.relationships;
+    const result = this.database.transaction(() => {
+      const value = write();
+      if (
+        value !== null &&
+        (typeof value === "object" || typeof value === "function") &&
+        "then" in value
+      )
+        throw new Error("Creation transaction requires synchronous writes");
+      this.statements.upsert.run(sessionId, text);
+      relationships.metadataWithinTransaction(sessionId, snapshot);
+      return value;
+    });
+    this.state.sessions[sessionId] = snapshot;
+    this.revision += 1;
+    return result;
+  }
+
   private state: SessionMetadataState;
   private dataDir: string;
   private legacyFilePath: string;
@@ -238,16 +309,17 @@ export class SessionMetadataService {
     selectImport: SqliteStatement;
     insertImport: SqliteStatement;
     selectAll: SqliteStatement;
+    selectOne: SqliteStatement;
     upsert: SqliteStatement;
     remove: SqliteStatement;
   };
-  /** Last JSON written per session, so a save writes only changed rows. */
-  private persisted = new Map<string, string>();
-  /** Session ID rewrites seen since process start; small ID pairs. */
-  private sessionIdAliases = new Map<string, string>();
+  /** Pending mutations only; cleared after a successful synchronous commit. */
+  private dirtySessionIds = new Set<string>();
   private unsavedGoalObservations = new Set<string>();
   private metadataSaver = createCoalescingSaver(() => this.doSave());
   private save = this.metadataSaver.flush;
+  /** Advances on every change to `state.sessions`; see `getRevision`. */
+  private revision = 0;
 
   constructor(options: SessionMetadataServiceOptions) {
     this.dataDir =
@@ -267,6 +339,9 @@ export class SessionMetadataService {
       ),
       selectAll: this.database.prepare(
         "SELECT session_id, metadata FROM session_metadata",
+      ),
+      selectOne: this.database.prepare(
+        "SELECT metadata FROM session_metadata WHERE session_id = ?",
       ),
       upsert: this.database.prepare(
         "INSERT INTO session_metadata (session_id, metadata) VALUES (?, ?) ON CONFLICT (session_id) DO UPDATE SET metadata = excluded.metadata",
@@ -294,14 +369,13 @@ export class SessionMetadataService {
       this.state.sessions[row.session_id] = JSON.parse(
         row.metadata,
       ) as SessionMetadata;
-      this.persisted.set(row.session_id, row.metadata);
     }
     console.log(
-      `[SessionMetadataService] Loaded ${this.persisted.size} sessions from the database`,
+      `[SessionMetadataService] Loaded ${Object.keys(this.state.sessions).length} sessions from the database`,
     );
 
     let changed = false;
-    for (const metadata of Object.values(this.state.sessions)) {
+    for (const [sessionId, metadata] of Object.entries(this.state.sessions)) {
       if (!metadata.transcriptDisplayObjects) {
         continue;
       }
@@ -329,9 +403,11 @@ export class SessionMetadataService {
         )
       ) {
         metadata.transcriptDisplayObjects = recovered;
+        this.dirtySessionIds.add(sessionId);
         changed = true;
       }
     }
+    this.revision += 1;
     if (changed) {
       await this.save();
     }
@@ -398,7 +474,7 @@ export class SessionMetadataService {
    * Get metadata for a session.
    */
   getMetadata(sessionId: string): SessionMetadata | undefined {
-    return this.state.sessions[this.resolveSessionId(sessionId)];
+    return this.state.sessions[sessionId];
   }
 
   /**
@@ -406,6 +482,14 @@ export class SessionMetadataService {
    */
   getAllMetadata(): Record<string, SessionMetadata> {
     return { ...this.state.sessions };
+  }
+
+  /**
+   * Changes whenever session metadata does, so callers can memoize
+   * projections of `getAllMetadata` instead of rescanning every session.
+   */
+  getRevision(): number {
+    return this.revision;
   }
 
   /** Distinct providers persisted by prior successful YA session boundaries. */
@@ -455,31 +539,35 @@ export class SessionMetadataService {
   }
 
   getTranscriptDisplayObjects(sessionId: string): TranscriptDisplayObject[] {
-    return [
-      ...(this.state.sessions[this.resolveSessionId(sessionId)]
-        ?.transcriptDisplayObjects ?? []),
-    ];
+    return (this.state.sessions[sessionId]?.transcriptDisplayObjects ?? []).map(
+      (object) => {
+        if (
+          object.kind !== "fork-summary" ||
+          object.targetSessionId ||
+          !/^[A-Za-z0-9_-]{1,100}$/.test(object.id)
+        )
+          return object;
+        // Recover the projection if admission committed before its association.
+        // Indexed, compact point lookup; no prompt decoding or background loop.
+        const sessionId = this.creations.getPublicSessionId(
+          { kind: "superuser" },
+          `fork-summary-target-${object.id}`,
+        );
+        return sessionId ? { ...object, targetSessionId: sessionId } : object;
+      },
+    );
   }
 
   getRecapMessages(sessionId: string): DurableRecapMessage[] {
-    return [
-      ...(this.state.sessions[this.resolveSessionId(sessionId)]
-        ?.recapMessages ?? []),
-    ];
+    return [...(this.state.sessions[sessionId]?.recapMessages ?? [])];
   }
 
   getSyntheticDoneMessages(sessionId: string): DurableSyntheticDoneMessage[] {
-    return [
-      ...(this.state.sessions[this.resolveSessionId(sessionId)]
-        ?.syntheticDoneMessages ?? []),
-    ];
+    return [...(this.state.sessions[sessionId]?.syntheticDoneMessages ?? [])];
   }
 
   getLocalCommandMessages(sessionId: string): DurableLocalCommandMessage[] {
-    return [
-      ...(this.state.sessions[this.resolveSessionId(sessionId)]
-        ?.localCommandMessages ?? []),
-    ];
+    return [...(this.state.sessions[sessionId]?.localCommandMessages ?? [])];
   }
 
   async addLocalCommandMessage(
@@ -499,14 +587,11 @@ export class SessionMetadataService {
   }
 
   getRewindRecords(sessionId: string): SessionRewindRecord[] {
-    return [
-      ...(this.state.sessions[this.resolveSessionId(sessionId)]
-        ?.rewindRecords ?? []),
-    ];
+    return [...(this.state.sessions[sessionId]?.rewindRecords ?? [])];
   }
 
   getPendingRewind(sessionId: string): SessionPendingRewind | undefined {
-    return this.state.sessions[this.resolveSessionId(sessionId)]?.pendingRewind;
+    return this.state.sessions[sessionId]?.pendingRewind;
   }
 
   /** Record a rewind and arm it for the next provider resume. */
@@ -550,7 +635,7 @@ export class SessionMetadataService {
     sourceSessionId: string,
     targetSessionId: string,
   ): Promise<void> {
-    const source = this.state.sessions[this.resolveSessionId(sourceSessionId)];
+    const source = this.state.sessions[sourceSessionId];
     if (!source?.rewindRecords?.length && !source?.pendingRewind) return;
     this.updateSessionMetadata(targetSessionId, (metadata) => ({
       ...metadata,
@@ -580,7 +665,7 @@ export class SessionMetadataService {
   }
 
   getClearloop(sessionId: string): SessionClearloopJob | undefined {
-    return this.state.sessions[this.resolveSessionId(sessionId)]?.clearloop;
+    return this.state.sessions[sessionId]?.clearloop;
   }
 
   async setClearloop(
@@ -596,7 +681,7 @@ export class SessionMetadataService {
 
   /** Last observed goal command for a session, whichever provider reported it. */
   getGoalCommand(sessionId: string): SlashCommand | undefined {
-    return goalCommandOf(this.getMetadata(this.resolveSessionId(sessionId)));
+    return goalCommandOf(this.getMetadata(sessionId));
   }
 
   async observeCommandInventory(
@@ -606,7 +691,6 @@ export class SessionMetadataService {
     const goal = findGoalCommand(commands);
     // An inventory without goal state is unknown, not evidence of a clear.
     if (readGoalDetails(goal)?.goalObjective === undefined) return;
-    sessionId = this.resolveSessionId(sessionId);
     const previous = this.getGoalCommand(sessionId);
     if (
       JSON.stringify(previous) === JSON.stringify(goal) &&
@@ -1014,6 +1098,11 @@ export class SessionMetadataService {
       ...metadata,
       ...(sandbox.provider ? { provider: sandbox.provider } : {}),
       sandboxLevel: sandbox.level,
+      sandboxEverConfined:
+        sandbox.level === "project-write" ||
+        metadata.sandboxEverConfined === true
+          ? true
+          : metadata.sandboxEverConfined,
       sandboxNetworkFirewall:
         sandbox.level === "project-write"
           ? sandbox.networkFirewall !== false
@@ -1103,36 +1192,6 @@ export class SessionMetadataService {
   }
 
   /**
-   * Move metadata from a provisional process ID to the provider's canonical
-   * session ID. The in-memory alias also redirects writes that began before
-   * the provider announced the canonical ID but finish after this remap.
-   */
-  async remapSessionId(
-    provisionalSessionId: string,
-    canonicalSessionId: string,
-  ): Promise<void> {
-    if (provisionalSessionId === canonicalSessionId) return;
-
-    const sourceId = this.resolveSessionId(provisionalSessionId);
-    const targetId = this.resolveSessionId(canonicalSessionId);
-    this.sessionIdAliases.set(provisionalSessionId, targetId);
-    if (sourceId !== targetId) {
-      this.sessionIdAliases.set(sourceId, targetId);
-    }
-
-    const source = this.state.sessions[sourceId];
-    if (!source || sourceId === targetId) return;
-
-    this.state.sessions[targetId] = {
-      ...source,
-      ...this.state.sessions[targetId],
-    };
-    const { [sourceId]: _, ...remaining } = this.state.sessions;
-    this.state.sessions = remaining;
-    await this.save();
-  }
-
-  /**
    * Set the initial prompt accepted for a new session.
    * Used as a durable recovery source if provider startup fails before JSONL
    * persistence writes the user message.
@@ -1174,13 +1233,11 @@ export class SessionMetadataService {
     await this.flushPendingWrites();
   }
 
-  /**
-   * Update metadata for a session (title, archived, starred).
-   */
+  /** Update a session's metadata; a null `routerBinding` removes the pin. */
   async updateMetadata(
     sessionId: string,
     updates: {
-      routerBinding?: SessionMetadata["routerBinding"];
+      routerBinding?: SessionMetadata["routerBinding"] | null;
       title?: string;
       archived?: boolean;
       starred?: boolean;
@@ -1201,7 +1258,8 @@ export class SessionMetadataService {
   ): Promise<void> {
     this.updateSessionMetadata(sessionId, (metadata) => {
       const result = { ...metadata };
-      if (updates.routerBinding) result.routerBinding = updates.routerBinding;
+      if (updates.routerBinding !== undefined)
+        result.routerBinding = updates.routerBinding ?? undefined;
 
       // Handle title
       if (updates.title !== undefined) {
@@ -1302,9 +1360,11 @@ export class SessionMetadataService {
     sessionId: string,
     updater: (current: SessionMetadata) => SessionMetadata,
   ): void {
-    const resolvedSessionId = this.resolveSessionId(sessionId);
+    const resolvedSessionId = sessionId;
     const existing = this.state.sessions[resolvedSessionId] ?? {};
     const updated = updater(existing);
+    this.revision += 1;
+    this.dirtySessionIds.add(resolvedSessionId);
 
     // Remove undefined values and check if entry should be deleted
     const cleaned: SessionMetadata = {};
@@ -1401,6 +1461,13 @@ export class SessionMetadataService {
     if (updated.sandboxLevel) {
       cleaned.sandboxLevel = updated.sandboxLevel;
     }
+    if (
+      existing.sandboxEverConfined === true ||
+      updated.sandboxEverConfined === true
+    )
+      cleaned.sandboxEverConfined = true;
+    else if (updated.sandboxEverConfined === false)
+      cleaned.sandboxEverConfined = false;
     if (updated.sandboxNetworkFirewall !== undefined) {
       cleaned.sandboxNetworkFirewall = updated.sandboxNetworkFirewall;
     }
@@ -1419,8 +1486,7 @@ export class SessionMetadataService {
 
     if (Object.keys(cleaned).length === 0) {
       // Remove the entry entirely if empty
-      const { [resolvedSessionId]: _, ...rest } = this.state.sessions;
-      this.state.sessions = rest;
+      delete this.state.sessions[resolvedSessionId];
     } else {
       this.state.sessions[resolvedSessionId] = cleaned;
     }
@@ -1431,40 +1497,40 @@ export class SessionMetadataService {
    * Useful when a session is deleted.
    */
   async clearSession(sessionId: string): Promise<void> {
-    const resolvedSessionId = this.resolveSessionId(sessionId);
+    const resolvedSessionId = sessionId;
     if (this.state.sessions[resolvedSessionId]) {
-      const { [resolvedSessionId]: _, ...rest } = this.state.sessions;
-      this.state.sessions = rest;
+      delete this.state.sessions[resolvedSessionId];
+      this.dirtySessionIds.add(resolvedSessionId);
+      this.revision += 1;
       await this.save();
     }
   }
 
-  private resolveSessionId(sessionId: string): string {
-    let resolved = sessionId;
-    const visited = new Set<string>();
-    while (!visited.has(resolved)) {
-      visited.add(resolved);
-      const next = this.sessionIdAliases.get(resolved);
-      if (!next) break;
-      resolved = next;
-    }
-    return resolved;
-  }
-
   private async doSave(): Promise<void> {
     const changed = new Map<string, string>();
-    for (const [sessionId, metadata] of Object.entries(this.state.sessions)) {
+    const removed: string[] = [];
+    for (const sessionId of this.dirtySessionIds) {
+      const metadata = this.state.sessions[sessionId];
+      if (!metadata) {
+        removed.push(sessionId);
+        continue;
+      }
       const text = JSON.stringify(metadata);
-      if (this.persisted.get(sessionId) !== text) changed.set(sessionId, text);
+      const persisted = this.statements.selectOne.get<{ metadata: string }>(
+        sessionId,
+      );
+      if (persisted?.metadata !== text) changed.set(sessionId, text);
     }
-    const removed = [...this.persisted.keys()].filter(
-      (sessionId) => !(sessionId in this.state.sessions),
-    );
-    if (changed.size === 0 && removed.length === 0) return;
+    if (changed.size === 0 && removed.length === 0) {
+      this.dirtySessionIds.clear();
+      return;
+    }
     try {
+      const relationships = this.relationships;
       this.database.transaction(() => {
         for (const [sessionId, text] of changed) {
           this.statements.upsert.run(sessionId, text);
+          relationships.metadataWithinTransaction(sessionId, JSON.parse(text));
         }
         for (const sessionId of removed) {
           this.statements.remove.run(sessionId);
@@ -1474,9 +1540,7 @@ export class SessionMetadataService {
       console.error("[SessionMetadataService] Failed to save state:", error);
       throw error;
     }
-    for (const [sessionId, text] of changed)
-      this.persisted.set(sessionId, text);
-    for (const sessionId of removed) this.persisted.delete(sessionId);
+    this.dirtySessionIds.clear();
   }
 
   /** Where session metadata is stored, for diagnostics. */

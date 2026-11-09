@@ -1,4 +1,7 @@
-import type { SessionClearloopBadge } from "@yep-anywhere/shared";
+import type {
+  SessionClearloopBadge,
+  SessionProviderPhase,
+} from "@yep-anywhere/shared";
 import {
   type ReactNode,
   useCallback,
@@ -55,8 +58,15 @@ import { SessionMenu } from "./SessionMenu";
 import { LegacySessionShareModal } from "./SessionShareModal";
 import { SessionStatusBadge } from "./StatusBadge";
 import { ClearloopRemainingBadge } from "./ClearloopRemainingBadge";
+import {
+  SessionProviderPhaseMark,
+  SessionProviderPhasePill,
+} from "./SessionProviderPhase";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import styles from "./SessionListItem.module.css";
+import { ButtonBase } from "./ui/Button";
+import { Checkbox } from "./ui/Checkbox";
+import { TextInput } from "./ui/Field";
 import { useSessionHasApp } from "../lib/sessionApps";
 
 export interface SessionNavigationIntent {
@@ -84,6 +94,8 @@ interface SessionListItemProps {
   updatedAt?: string;
   hasUnread?: boolean;
   activity?: AgentActivity;
+  /** Card rows refine the activity dot with what the provider is doing. */
+  providerPhase?: SessionProviderPhase;
   pendingInputType?: PendingInputType;
   contextUsage?: ContextUsage;
   status?: SessionStatus;
@@ -205,6 +217,7 @@ export function SessionListItem({
   updatedAt,
   hasUnread: hasUnreadProp,
   activity,
+  providerPhase,
   pendingInputType,
   contextUsage,
   status,
@@ -471,9 +484,12 @@ export function SessionListItem({
     }
   };
 
-  const handleCheckboxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCheckboxChange = (
+    checked: boolean,
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
     e.stopPropagation();
-    onSelect?.(sessionId, e.target.checked);
+    onSelect?.(sessionId, checked);
   };
 
   // Activity indicator for compact mode
@@ -837,28 +853,25 @@ export function SessionListItem({
       {/* Checkbox for multi-select (only shown when onSelect is provided) */}
       {onSelect && searchPreviews !== undefined && (
         <label className={styles.searchSelection}>
-          <input
-            type="checkbox"
+          <Checkbox
+            className={styles.searchCheckbox}
             checked={isSelected}
-            onChange={handleCheckboxChange}
+            onCheckedChange={handleCheckboxChange}
             aria-label={t("sessionSearchSelect", { title: displayTitle })}
           />
         </label>
       )}
       {onSelect && searchPreviews === undefined && (
-        <input
-          type="checkbox"
-          className="session-list-item__checkbox"
+        <Checkbox
           checked={isSelected}
-          onChange={handleCheckboxChange}
+          onCheckedChange={handleCheckboxChange}
           onClick={(e) => e.stopPropagation()}
           aria-label={`Select ${displayTitle}`}
         />
       )}
 
       {mode === "compact" && providerChildren.length > 0 && (
-        <button
-          type="button"
+        <ButtonBase
           className={styles.providerChildrenDisclosure}
           aria-label={providerChildrenDisclosureLabel}
           aria-expanded={providerChildrenExpanded}
@@ -877,15 +890,15 @@ export function SessionListItem({
           <svg viewBox="0 0 12 12" aria-hidden="true">
             <path d="m4 2 4 4-4 4" />
           </svg>
-        </button>
+        </ButtonBase>
       )}
 
       <div className={styles.body}>
         {isEditing ? (
-          <input
+          <TextInput
             ref={attachRenameInput}
-            type="text"
-            className="session-rename-input"
+            size="small"
+            aria-label={t("sessionRenameTitleLabel")}
             value={renameValue}
             onChange={(e) => setRenameValue(e.target.value)}
             onBlur={handleRenameBlur}
@@ -911,7 +924,11 @@ export function SessionListItem({
                   {...titleTooltipAttributes}
                 >
                   {isStarred && <StarIcon filled size={12} />}
-                  {showCardThinkingIndicator && <ThinkingIndicator />}
+                  {showCardThinkingIndicator && (
+                    <SessionProviderPhaseMark
+                      phase={isNewSession ? undefined : providerPhase?.phase}
+                    />
+                  )}
                   {isBtwAside && (
                     // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
                     <span
@@ -996,6 +1013,11 @@ export function SessionListItem({
                       {customBadge.label}
                     </span>
                   )}
+                  {showActivityIndicator &&
+                    activity === "in-turn" &&
+                    providerPhase && (
+                      <SessionProviderPhasePill providerPhase={providerPhase} />
+                    )}
                   {showStatusBadge && status && (
                     <SessionStatusBadge
                       status={status}
@@ -1135,7 +1157,6 @@ export function SessionListItem({
             }
             useEllipsisIcon
             overlayTrigger
-            useFixedPositioning
             onOpenChange={handleMenuOpenChange}
             className="session-list-item__menu"
           />

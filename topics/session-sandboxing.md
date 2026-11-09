@@ -17,6 +17,15 @@ environments exclude YA operator credentials. Other providers,
 remote executors, and non-Linux hosts still fail an enabled launch before
 provider work begins.
 
+[Durable creation](session-identity.md#creation-consolidation--november-3)
+saves requested sandbox policy before preparation; unsupported or unavailable
+enforcement leaves a saved failed session without native launch. The actual
+prepared private transcript root supplies the native namespace. The private
+`session-creation-sandbox-v1` host/worker gate refuses older loaded owners
+without an unconfined fallback. Copy admission retains its inherited exact
+source/state root. This changes identity/startup ownership, not the supported
+Linux enforcement matrix or the threat model below.
+
 **Pending limited-user extension:** the approved
 [personal workspace direction](limited-users.md#approved-workspace-direction-2026-09-21-not-implemented)
 uses a limited user's configured Create in directory (default `~/username`)
@@ -654,6 +663,13 @@ New-session derivatives must not silently weaken confinement:
 - an explicit transcript fork, clone (including a `/btw` aside),
   fork-after-summary target, retitle helper, recap fork, handoff, or
   restart-as-new flow inherits the source level;
+- a new session started from a session's composer (start now or Project
+  Queue) and a Source Review session opened from a session carry the
+  source's level and firewall, which session payloads report as
+  `sandboxLevel`/`sandboxNetworkFirewall`; from the composer the sandbox
+  follows to another provider that can run inside it and is refused for one
+  that cannot, and the composer refuses while the source has not loaded
+  (plan 183);
 - an explicit fork cannot override the source level;
 - a separately created New Session settles its own visible pre-launch choice;
   and

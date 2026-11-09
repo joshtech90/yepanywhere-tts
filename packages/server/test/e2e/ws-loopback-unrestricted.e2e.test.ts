@@ -3,7 +3,8 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
-import { createNodeWebSocket } from "@hono/node-ws";
+import { upgradeWebSocket } from "@hono/node-server";
+import { WebSocketServer } from "ws";
 import type {
   RelayRequest,
   RelayResponse,
@@ -16,7 +17,7 @@ import { createApp } from "../setup/create-app.js";
 import { attachUnifiedUpgradeHandler } from "../../src/frontend/index.js";
 import { RemoteAccessService } from "../../src/remote-access/index.js";
 import { createWsRelayRoutes } from "../../src/routes/ws-relay.js";
-import { MockClaudeSDK } from "../../src/sdk/mock.js";
+import { ScriptedClaudeProvider } from "../support/scripted-provider.js";
 import { UploadManager } from "../../src/uploads/manager.js";
 import { EventBus } from "../../src/watcher/index.js";
 
@@ -24,7 +25,7 @@ describe("WebSocket Loopback Policy E2E", () => {
   let testDir: string;
   let server: ReturnType<typeof serve>;
   let serverPort: number;
-  let mockSdk: MockClaudeSDK;
+  let mockSdk: ScriptedClaudeProvider;
   let eventBus: EventBus;
 
   beforeAll(async () => {
@@ -38,7 +39,7 @@ describe("WebSocket Loopback Policy E2E", () => {
       `{"type":"user","cwd":"${projectPath}","message":{"content":"Hello"}}\n`,
     );
 
-    mockSdk = new MockClaudeSDK();
+    mockSdk = new ScriptedClaudeProvider();
     eventBus = new EventBus();
 
     const dataDir = join(testDir, "data");
@@ -53,12 +54,12 @@ describe("WebSocket Loopback Policy E2E", () => {
     await remoteAccessService.configure("loopback-test-password");
 
     const { app, supervisor } = createApp({
-      sdk: mockSdk,
+      provider: mockSdk,
       projectsDir: testDir,
       eventBus,
     });
 
-    const { upgradeWebSocket, wss } = createNodeWebSocket({ app });
+    const wss = new WebSocketServer({ noServer: true });
     const uploadManager = new UploadManager({
       uploadsDir: join(testDir, "uploads"),
     });
@@ -73,14 +74,15 @@ describe("WebSocket Loopback Policy E2E", () => {
     });
     app.get("/api/ws", wsRelayHandler);
 
-    server = serve({ fetch: app.fetch, port: 0 }, (info) => {
-      serverPort = info.port;
-    });
+    server = serve(
+      { fetch: app.fetch, websocket: { server: wss }, port: 0 },
+      (info) => {
+        serverPort = info.port;
+      },
+    );
     attachUnifiedUpgradeHandler(server, {
       frontendProxy: undefined,
       isApiPath: (urlPath) => urlPath.startsWith("/api"),
-      app,
-      wss,
     });
 
     await new Promise<void>((resolve) => setTimeout(resolve, 100));

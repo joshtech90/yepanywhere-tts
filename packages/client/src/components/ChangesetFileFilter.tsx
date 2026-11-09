@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { TranslationFn } from "../i18n";
+import { IconButton } from "./ui/Button";
+import { TextInput } from "./ui/Field";
 
 /**
  * Compact disclosure for filtering one commit/working-tree file corpus.
@@ -34,22 +36,20 @@ export function ChangesetFileFilter({
 
   return (
     <span className={`changeset-file-filter ${open ? "open" : ""}`}>
-      <button
-        type="button"
-        className="source-detail-action source-detail-icon-action changeset-file-filter-toggle"
-        title={t("sourceFilterFiles")}
-        aria-label={t("sourceFilterFiles")}
+      <IconButton
+        size="small"
+        label={t("sourceFilterFiles")}
         aria-expanded={open}
         disabled={disabled}
         onClick={toggle}
       >
         <SearchIcon />
-      </button>
+      </IconButton>
       {open && (
-        <input
+        <TextInput
           ref={inputRef}
           type="search"
-          className="changeset-file-filter-input"
+          size="small"
           value={query}
           placeholder={t("sourceFilterFiles")}
           aria-label={t("sourceFilterFiles")}

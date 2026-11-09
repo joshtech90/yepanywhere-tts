@@ -5,8 +5,26 @@ import {
   useId,
   useRef,
 } from "react";
+import {
+  ButtonBase,
+  type ButtonBaseProps,
+  IconButton,
+} from "../../components/ui/Button";
 import { useI18n } from "../../i18n";
 import styles from "./SettingsCollection.module.css";
+
+/** A collection row's expand toggle: the row's name as one button. */
+export function SettingsCollectionToggle({
+  className,
+  ...props
+}: ButtonBaseProps) {
+  return (
+    <ButtonBase
+      {...props}
+      className={className ? `${styles.toggle} ${className}` : styles.toggle}
+    />
+  );
+}
 
 /**
  * Props that make a whole table row the click target for its expand toggle.
@@ -68,15 +86,13 @@ export function SettingsCollection({
             <div className={styles.heading}>
               <h4 id={titleId}>{title}</h4>
               {actions}
-              <button
+              <IconButton
                 ref={close}
-                type="button"
                 onClick={dismiss}
-                aria-label={t("settingsCollectionMinimize")}
-                title={t("settingsCollectionMinimize")}
+                label={t("settingsCollectionMinimize")}
               >
                 <span aria-hidden="true">_</span>
-              </button>
+              </IconButton>
             </div>
             {detail}
           </section>

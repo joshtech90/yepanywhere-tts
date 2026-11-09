@@ -94,7 +94,7 @@ Assistant invocation/context is a compelling optional direction, but
 remains research/docs only: no device investigation or implementation spike is
 authorized. The companion remains a separate release.
 
-Last updated: 2026-11-01.
+Last updated: 2026-11-05.
 
 This is Yep Anywhere's canonical product-priority overview. Keep initiative
 status, the next action, and major blockers here; keep implementation steps in
@@ -170,6 +170,19 @@ common source, and all four release workflows passed. Android public-beta
 promotion remains a separate delivery step.
 
 ## 1. Publish the desktop and mobile apps with continuous delivery
+
+The npm release workflow now requires clean installed-package acceptance before
+publication: credential-free production startup, real Claude/Codex tool and
+stream round trips against local scripted models, and history after a server
+restart. It publishes the exact accepted tarball with a checked version/hash;
+the reusable job also covers relevant PRs. Local macOS full-gate and Linux
+startup-regression checks pass. The first complete
+[hosted Linux x64 acceptance](https://github.com/kzahel/yepanywhere/actions/runs/41796036263)
+passes on `1e2371350`, including both real CLI paths and archive verification.
+See
+[the acceptance contract](../../topics/native-provider-testing.md#installed-npm-package-acceptance)
+for its qualification limits. Visual release goldens remain separate follow-up
+work.
 
 **Highest priority.** Make Yep Anywhere available as supported public releases
 on desktop, iOS, and Android, with CI covering every distribution and a
@@ -573,13 +586,95 @@ across genuinely different implementations. Useful controlled regressions may
 survive without the legacy runtime. See the
 [freeze and retention criteria](../../topics/core-house-cleaning.md#frozen-gemini-and-future-antigravity-support).
 
+**Antigravity checkpoint, 2026-11-03:** a separate opt-in local ACP provider
+reuses Google's saved native login without YA authentication management.
+macOS arm64 live tests established native creation, text streaming, stable YA
+identity and cold continuation on the existing account plan. Controlled child
+tests cover approvals, cancellation, native replay and refused continuation.
+The shared catalog now discovers native Antigravity projects and contributes
+Pi/Grok/OpenCode projects through the same projection. Metadata-only browsing
+starts no agent process; native-store changes reuse the retained refresh owner.
+This is a preview; Linux/Windows qualification, larger histories, focused native
+observation, shared-host ownership and the broader tool/media matrix remain
+open. See the
+[provider contract](../../topics/antigravity.md). Legacy Gemini remains frozen.
+
+**Scoping direction, 2026-11-03:** use Antigravity discovery and eventual
+legacy Gemini execution retirement to consolidate shared native-store catalog,
+project contribution and exact reader-resolution paths. Preserve read-only
+Gemini history. The [discussion scope](../../topics/antigravity.md#discovery-and-cleanup-scope--discussion-2026-11-03)
+extends plan 093. Shared discovery, exact child/vocabulary reader selection and
+catalog-backed queue titles are implemented. Broader reader migration and
+owner-aware focused observation remain; Grok/Antigravity ACP transport sharing
+is assessed separately. The [ACP comparison and recommendation](../../topics/acp.md)
+records proposed composition and Copilot/registry boundaries without selecting
+implementation or changing priority. The remaining sequence is still under
+discussion; this does not reopen the archived core or select a new transcript
+store.
+
 Rows 1, 2, 3 and 11 are the completed removal set. The independent review
 closed direct-fork and background-candidate SSH boundaries; plan 161 records
 the verification. The purpose is a smaller local core that can reliably run
-queued `/compact` followed by message delivery. Choose a reduced plan for
-that outcome; the archived refactor remains paused. Neither Gemini upkeep nor
-shipping AGY is a prerequisite, and API delegation is separate work. Other
+queued `/compact` followed by message delivery. The maintainer selected
+[the bounded session-queue plan](../tactical/173-queued-compact-delivery.md)
+on November 3. Regular/patient compact operations and their composer workflow
+are implemented, qualified locally and accepted by the requested Opus 5.5 High
+review after bounded repairs. The archived general core remains paused. Neither Gemini
+upkeep nor shipping AGY is a prerequisite, and API delegation is separate work. Other
 Kyle-led candidates remain follow-ups; graehl-led work is outside this pass.
+The November 3 compatibility audit selected two bounded removals: the
+mock-only Process input scheduler and the deprecated Gemini stream-JSON
+adapter. Provider queues are now required for both production and scripted
+sessions; the separate test-only scheduling path is removed. The deprecated
+Gemini stream-JSON adapter and exclusive event parser/tests are also removed;
+discovery keeps both Gemini names on ACP, while historical readers and
+normalization/display coverage remain. Both changes pass workspace/static
+checks. This does not raise provider-version floors or expand frozen Gemini.
+The maintainer's next bounded architecture slice,
+[shared steering and native urgency](../tactical/174-shared-steering-and-native-urgency.md),
+is implemented with provider capability facts and adapter-owned translation. Claude retains
+per-message Now; Codex adds an opt-in launch-scoped Immediate experiment with
+gentle as the default and native configuration authoritative. Real standalone
+Claude/Codex trials verify generation interruption and continued cache hits,
+with incomplete aborted-generation usage explicitly recorded. Grok advertises
+its existing gentle interjection; Pi/Antigravity audits do not enable speculative
+urgency controls. This does not restart the archived general core program.
+The maintainer selected [native provider integration scenarios](../tactical/175-native-provider-integration-scenarios.md)
+as the evidence base for further provider refactors. The November 4 foundation
+passes 20 native queue/tool/history/steering cases across ten production launch
+paths: Claude, Gateway, Ollama, Codex app-server/exec, Pi, OpenCode, Grok,
+Gemini ACP and Antigravity. Exact test-only runtimes use scripted loopback model
+APIs and private roots, with no inference. The ordinary suite retains the fast
+Claude/Codex baseline; an explicit all-provider command exercises the full set.
+Native Codex OSS coverage exposed and repaired resumed-turn output parsing.
+The [qualification matrix](../../topics/native-provider-testing.md#all-provider-adoption-matrix)
+and [plan](../tactical/175-native-provider-integration-scenarios.md) track depth
+and platform acceptance. The retained depth now passes 65 cases in 52.68 s
+locally: actual-tool cold resume, cancellation/continuation, model restoration,
+all-provider rate-limit recovery and Claude/Codex/Pi queued compact. Pi now
+validates synchronous native completion/persistence; refusal, model failure
+and abort retain the queue until success or explicit cancellation. It drove
+narrow fixes for Codex usage/control identity, Pi
+model acknowledgement, OpenCode port collision and ACP worker-tree teardown.
+A separate real source-app suite now proves Claude/Codex HTTP/WebSocket
+admission, requested API/frontend replacement, abrupt Hono loss, approval and
+dense-tool continuity, volatile queue blockers and native owner identity. Four
+API cases and six browser cases (three repetitions per provider, no retries)
+pass on macOS arm64, including draft retention, sequential typing and history
+after refresh. It also repaired a Codex started-snapshot enrichment race.
+The [opportunity backlog](../tactical/175-native-provider-integration-scenarios.md#opportunity-backlog-and-recommended-next-work)
+keeps the unlocked testing/refactor candidates in one place. Suggested next
+selections are native input identity/manual batching, wrapper/host terminal
+faults and reviewed platform/upgrade gates; authenticated/relay recovery and
+other depth remain candidates. The [input investigation](../tactical/175-native-provider-integration-scenarios.md#input-batching-investigation-and-recommendation)
+reproduced hidden transport joining with real Claude/Codex/Pi and led to
+implemented FIFO transport plus native grouped-input identity reconciliation.
+The UI resolves original-input links to the native grouped row; explicit
+join/interrupt provenance and Pi's durable mapping remain separate. Linux/macOS
+app jobs join the explicit manual acceptance workflow; promote reviewed platform passes to change gates. The historical
+macOS interruption gap stays open and hosting stays opt-in. Linux/Windows
+acceptance and remaining ownership/fault interleavings remain explicit;
+the comprehensive matrix does not select new UI controls or thaw legacy Gemini.
 Release-delivery work remains independently required; local sessions,
 same-host provider ownership, ordinary queues, direct/relay access and native
 client transport remain retained foundations.
@@ -598,27 +693,391 @@ host rather than adding another core runtime. These are recommendations, not
 newly selected implementation work or a decision to replace provider-native
 history.
 
+[Current-client convergence and legacy retirement](../tactical/171-durable-session-identity-and-creation.md#selected-cleanup--current-clients-and-legacy-removal)
+is complete: bit 147 covers combined prompt/files/options and explicit empty
+preparation, all runtime execution uses AgentProvider, and the four old browser
+POST creation URLs and provisional public-ID replacement are removed. Public
+identity is final before native startup; native conflicts close input and retain
+ownership until verified teardown. Current clients preserve supported older-server
+writes and remap handling in explicit compatibility boundaries. Native history
+and persisted old receipt-alias reads remain supported. One Sol review per slice,
+focused Claude/Codex browser checks, actual npm 0.11.0 compatibility, owned profile/
+performance-harness smokes and full workspace gates pass; broader account/platform
+qualification is not claimed by this cleanup.
+
+New Session startup freshness now publishes committed delivery state to the open
+view, preserves it against older snapshots and recovers on foreground/reconnect.
+Healthy startup keeps creation and saved-prompt notices hidden; failure,
+uncertainty or exhausted status checks expose recovery. Captured draft
+acknowledgement removes the sidebar badge without reload. This is a bounded
+reliability correction to the implemented creation flow; broader provider/platform
+qualification is unchanged.
+
+The next product slice, optional [background New Session creation](../../topics/session-creation.sketches.md#implemented-optional-background-creation--november-3),
+uses that shared contract: a default-off browser setting enables Command-Enter,
+keeps the form after acceptance and preserves newer drafts. The optional **?**
+shares Toolbar shortcut-help visibility; there is no separate creation button.
+The latest confirmation opens the saved session for startup status. It adds no
+provider lifecycle or status polling path. Focused Claude/Codex qualification,
+desktop/phone captures and one Sol review are recorded in plan 171.
+
+The New Session Project Queue action now uses captured draft acknowledgement: acceptance preserves newer text/files and
+refusal keeps recovery data. Sync-enabled staging also preserves originals
+while their first draft save races enqueue. The remaining
+[older-server/custom-launch/template clears](../../gaps/new-session-draft-clear-captures-after-submission.md)
+stay explicit follow-ups; queue dispatch and enqueue receipt protocols are
+unchanged. One Sol review's cancellation and delayed-project-publication
+findings are corrected, with physical sibling-storage and departed-owner
+regressions. Owned browser typing, attachment/reload/refusal checks and final
+workspace gates pass; the earlier known Rendez watcher failure remains recorded
+in its gap.
+
+Current consolidation status (November 3): all production native creation
+callers now share permanent-public-ID admission, including restricted starts,
+legacy initial inputs, forks/clones and template preparation. Duplicate
+Supervisor create bodies, Queue's new-session engine and route metadata
+callbacks are retired. [Plan 171's final ingress inventory](../tactical/171-durable-session-identity-and-creation.md#final-consolidation-slice--november-3)
+records the accepted cut: warning-free static checks, 6,924 server/7,067 client
+cases, six local/hosted browser cases, selected Bun and actual Claude CLI
+qualification pass. Existing HTTP compatibility and
+older-server client fallback remain supported. Optional background/shortcut UX,
+automatic uncertain retry, broad receipts advertisement and wider OS/release
+qualification remain separate. The old six-source gap is narrowed to native
+copy result-loss reconciliation; saved public resources retain their source.
+The dated rollout history below describes intermediate gates.
+
 For new-session creation, the maintainer selected
 [YA-owned session identity and startup lifecycle](../../topics/session-identity.md)
 on 2026-11-01: persist a session before provider launch, keep its public id,
 and retain saved/failed startup state without requiring a native transcript.
 This reopens the new-session portion of plan 150 as the foundation for the
 [creation/navigation proposal](../../topics/session-creation.sketches.md), not
-the archived general core or full fork/clone program. Documentation and the
-core release-corpus audit are recorded; schema/API choices, legacy refresh
-qualification, storage bounds and implementation remain pending.
+the archived general core or full fork/clone program. Concrete schema/API choices, storage bounds and the core release-corpus audit
+are recorded; provider/startup implementation and legacy refresh qualification
+remain in progress.
+Active scope, narrowed November 2: complete text-session creation for Claude and
+Codex as three larger slices: Claude end to end (including routed/account-pinned
+launch), Codex through the same stable-ID lifecycle/UI, then recovery
+qualification. One Sol 6.1 High review per slice; focused checks during
+implementation. Saved startup/failure/uncertainty and safe draft acknowledgement
+are the user milestone. Broader providers, attachments, automated retry, optional
+background creation and the remaining provenance callers follow separately.
+The historical progress below is foundation evidence, not completion of that UI.
+The Claude text UI/API slice now has owned-profile browser evidence for routed
+creation, saved failure across restart, typing during acceptance and recovery
+after leaving the form. Its one Sol review found two draft/recovery defects;
+their exact interleavings now pass after correction. Codex now uses the same
+workflow with explicit native-ID binding and native acknowledgement; controlled
+local/host browser checks and a standalone live installed-provider smoke pass.
+Recovery fault qualification now passes lost-reply, surviving-worker and
+local/host owner-loss cases, with ten focused E2E cases passing together and a
+local Bun owner-loss check. Each slice received one Sol review, with material
+findings corrected and focused-verified. The narrowed milestone is complete; other-provider,
+attachment/caller and cross-platform release qualification remain follow-ups. The maintainer
+has now selected a bounded [release-qualification slice](../tactical/171-durable-session-identity-and-creation.md#release-qualification--selected-next-slice)
+for actual provider versions, relay interruption, worker saturation, source/draft
+retirement and supported-server fallback. Actual Codex 0.166.0/live model and
+published-server 0.8.0/0.11.0 compatibility pass. Browser checks found and fixed
+stranded pre-dispatch queue status after restart; draft/account isolation, relay
+interruption/host switching and router refusal pass in the combined 18-case run.
+The single Sol review found competing startup could invalidate a live queue;
+controller provenance now preserves live owners, with focused duplicate-startup
+and exactly-once promotion evidence on Node/Bun. The bounded slice is complete:
+18 combined browser cases, focused post-review recovery and the full 6,888-case
+server suite pass; static checks and corrected client browser files pass.
+Live Claude now also passes creation, native acknowledgement, standalone restart
+and continuation after explicit sign-in and a grant restricted to the owned test
+integration; that integration is verified revoked after qualification. The live
+browser workflow also passes offline completion, reconnect catch-up, reload and
+UI continuation with exactly-once native inputs and recorded web provenance.
+The bounded Project Queue provenance repair is implemented and ACCEPTed by its
+sole Sol 6.1 High review: enqueue source survives restart/retry and is saved
+before native launch, including worker deferral/staged attachments. Six real
+integration cases and Node/Bun cold detail/Global Sessions/Inbox checks pass.
+Static checks pass; full tests retain the separately tracked rendez watcher
+failure. Broader Queue identity/receipt migration, attachments in ordinary
+creation stay separate. Native v0/peer source now enters the same pre-launch
+metadata writer. Its sole Sol review found a swallowed test assertion; the
+corrected focused cases and full runtime/static checks pass. Four other source
+omissions remain. The maintainer
+authorized bounded OpenCode and subsequent Pi identity/qualification slices.
+OpenCode ordinary text creation is implemented behind optional capability
+144, with separate native allocation/input proof and host feature negotiation;
+controlled local/hosted lifecycle and published-client observation pass.
+Its sole Sol review identified empty-XDG scope mismatch, corrected across
+creation/read/resume with focused real-native regression coverage. Full tests
+and static checks pass. The earlier free-model endpoint failed, but subsequent
+OpenCode 1.18.18/OpenAI subscription OAuth smoke with `openai/gpt-6.1-sol` passes
+live creation, native input proof, cold continuation and both exact answers
+after two owned restarts, with one native session/two inputs and one public id.
+This live API/storage qualification is local-owner Node 22/macOS.
+[Its provider contract](../../topics/opencode-backend.md#durable-ordinary-text-creation)
+requires observable DB/JSON storage for new durable launches; export-only history
+remains readable. Pi ordinary owner text creation now has optional capability 145, reader/native
+scope validation, native prompt-preflight evidence and separate host negotiation.
+Controlled local/hosted lifecycle/failure checks, published-client idle native
+watch/reload and actual Pi 1.4.0 creation/continuation against an owned local model
+endpoint pass. Its sole Sol review found a reader-invisible file-layout gap;
+startup now refuses root/deep paths before input, with focused regressions.
+Final static and full workspace checks pass (6,896 server/7,067 client), after
+one assembled-host approval barrier failure passed focused and final full runs;
+[the diagnostic gap](../../gaps/full-suite-timing-and-diagnostics.md) preserves
+that unresolved ordering evidence. Other provider/input/platform shapes retain
+their rollout gates.
+
+The selected [consolidation endpoint](../tactical/171-durable-session-identity-and-creation.md#completion-target--one-creation-contract-retired-legacy-implementations)
+is one stable session-creation contract with the superseded implementations
+removed during caller migration. Project Queue ordinary owner text and staged
+Claude/Codex attachments now use that common admission/dispatch owner. Stable promotion identity, saved-session
+recovery and safe explicit retry are qualified. Accepted files survive staging
+cleanup and Queue completion, with transactional capacity and digest checks;
+exact capability 146 preserves the older-server create/materialize/send flow.
+Both sole reviews' material findings are corrected, including interrupted Queue
+association, unfinished pasted-file acknowledgement, definitive refusal recovery
+and default-provider attachment eligibility. Focused storage/native/browser and
+static checks pass. The latest full run passes 6,908 server/7,067 client cases;
+an earlier Queue run exposed the still-tracked intermittent Rendez watcher gap.
+Qualified owner native API/peer, keyed review, maintenance/text successors and
+legacy create-only endpoints now also enter the common owner, with trusted input
+UUIDs and explicit empty preparation. Qualified review starts no longer use the process-local successful-start
+cache. Retained registry providers now expose their native namespace to that
+same admission owner, including Claude wrappers, Grok, frozen Gemini ACP and
+Codex OSS. Allocated-provider proof/loss/cold-continuation tests pass; the
+superseded review cache is removed. Focused integration, owned local/hosted native/browser, Bun and real Claude CLI
+preparation qualification pass; the full workspace suite passes. Remaining work is
+new fork/clone resources and retained restricted/input shapes,
+followed by the final bypass/deletion audit. Compatibility routes may remain thin adapters into the same owner.
+[The ledger](../tactical/171-durable-session-identity-and-creation.md#consolidation-progress-ledger)
+separates completed scope from the remaining legacy implementation retirement.
+
 [Plan 171](../tactical/171-durable-session-identity-and-creation.md) defines
 bounded identity/creation slices, standalone-profile tests, Sol 6.1 High review
 after each implementation slice and commits as work proceeds. Plan review is
 accepted after corrections; concrete schema/API entry-gate work and runtime
-implementation have not started. This does not displace release delivery or
+design are now independently accepted by Sol 6.1 High, including bounded attempts,
+durable recovery keys and retained-fork source uncertainty. Typed identities,
+scoped binding storage and bound Claude/Codex detail/history are implemented and
+independently accepted. Claude/Codex discovery/collection projection and scoped
+summary sources are also accepted, including native/public-key collisions and
+project-membership checks. Focused Claude/Codex watches also translate stored
+native sources and cancel abandoned resolution. Retained fork/clone source
+translation is independently accepted, including native/public separation,
+torn-record tolerance and refusal of unqualified cold-launch namespaces before
+copy. Child lineage/account settings remain public. The standalone process fixture is
+also independently accepted, with poisoned-parent config/shell checks and
+Node-coordinated Node/Bun creation/history/restart/cleanup. Instruction, issue and
+Conversation reads are independently accepted with native scope and original
+project authority, public observations and catalogue-upgrade recovery. Process and
+child-list projections are independently accepted with native source/public
+parent separation, empty working-project recovery and standalone Node/Bun
+child-content restart evidence. Native vocabulary reads, optional-question
+metadata joins and pooled maintenance history comparison are independently
+accepted, with Node/Bun native-file and metadata-collision evidence. Claude/Codex
+external file observation is independently accepted with bounded source work,
+public ownership/project events, native thread/leaf separation and cancellation
+before database teardown. Cold/warm/in-flight reader and batch/project-transition
+regressions are qualified, along with standalone Node/Bun append/restart
+observations. OpenCode native-source migration is independently accepted with
+canonical DB/JSON roots, native/public projection, physical project-alias proof,
+root-scoped summary computation and focused DB/WAL refresh. Real Node/Bun
+HTTP/WebSocket/restart checks retain the YA id; launch remapping is still gated.
+Pi source migration is also independently accepted: native-root adoption,
+indexed metadata and focused fixed-mtime append refresh preserve the YA id;
+terminal reader retirement discards pending results. Node/Bun HTTP/WebSocket,
+restart and retirement-race checks pass. Grok native-source migration is
+independently accepted: scoped history/metadata, late replay-file observation,
+proven child reads and media under an empty working-project move pass focused
+and owned Node/Bun restart probes. Canonical native acquisition refuses a
+conflicting directory spelling, including after warmed-summary replacement.
+Final workspace gates pass. Frozen Gemini native-source migration is
+independently accepted: scoped header/hash reads, root enumeration, original
+physical aliases, public observation and retirement races pass focused checks
+and owned Node/Bun HTTP/WebSocket/restart probes. Qualified missing native
+proof is omitted from the catalogue. Warm index edit/create invalidation uses
+the retained observation owner and passes Node/Bun probes. Final workspace
+gates pass; protocol and launch mapping remain frozen.
+Fork-backed retitle, handoff-summary and recap sources are also independently
+accepted. Public generator ids resolve once to scoped native inputs; Codex
+refuses another returned thread, and actual pinned Claude SDK/CLI probes verify
+account-home, directory-alias, long-key and physical-cwd selection using only
+owned local fake model endpoints. Unsafe fallbacks and symlink-relative home
+resolution were corrected after review; final workspace gates pass.
+The durable-creation storage foundation is independently accepted: migration
+18 commits exact text, required creator/source, identity, saved settings,
+operation and first attempt atomically; metadata mirrors publish after commit.
+Request/retry replay, generation fences, uncertainty and deletion tombstones
+pass real SQLite/reopen checks on Node 22 and pinned Bun. Wrapped fatal-startup errors now close input admission before synchronous
+error callbacks, and established dead owners reject new input while lazy first
+input remains valid. Independent review, actual pinned SDK Node/Bun missing-
+executable probes and full Node 22 checks pass. Durable runtime creation and
+public capabilities are unchanged. Saved/failed records are now readable through
+ordinary detail/metadata under existing project/creator access, without a native
+transcript or project directory. Their exact source/prompt survive reopen;
+saved facts do not borrow native-alias activity, and ordinary unbound resume
+refuses. Review, standalone Node/Bun HTTP probes and full Node 26 checks pass.
+Collection visibility is independently accepted: Saved/Failed rows appear in both list
+implementations, inbox and project cards, and bound records remain readable
+before their native transcript exists. An atomic control revision participates
+in conditionals and stats invalidation. Hidden projects remain hidden, startup
+updates imply no unread provider content, and mixed bound/native counts use
+identity union. Focused, standalone Node/Bun and complete Node 26 checks pass;
+equal-id Claude integration is next. Native-allocation quarantine is also
+independently accepted: dispatch records the selected namespace before effects,
+early unknown transcripts cannot become duplicate public sessions, and matching
+binding releases only its own claim. Unknown outcomes retain quarantine across
+restart/deletion; legacy reads and watches cannot bypass it. A deterministic
+watch race and a retained-preview regression were corrected after review;
+focused, owned Node/Bun probes and complete Node 26 workspace checks pass.
+The additional launch-choice snapshot and independent first-input UUID are also
+independently accepted, with real SQLite/replay/reopen and Node 22/Bun checks.
+Static gates pass; its two full runs hit the separately tracked Rendez restart
+failure, which remains open. A private saved-request Claude dispatcher and
+permanent-identity Process boundary are independently accepted, including actual
+pinned SDK/CLI input evidence against an owned local fake model on Node 22,
+Node 26 and Bun. Verified teardown retains failed owners, normal completion
+closes input, and native scopes include symlinked directory leaves. Final
+lint/format/typecheck and the complete Node 26 workspace pass; the initial red
+Rendez run remains recorded without claiming a watcher fix. Ordinary
+caller rollout is independently accepted for qualified project/detached superuser
+Claude text requests, including saved startup failure and versioned first-input
+metadata. Existing response/queue behavior stays compatible; actual owned Node/Bun
+HTTP/SDK/CLI/profile-restart qualification passes using a local fake model.
+Deferred starts retain copied values without the full HTTP request. Final
+lint/format/typecheck and the complete Node 26 workspace pass.
+Default-wrapper consolidation is independently accepted so omitted-provider Claude
+requests reach the same owner; an owned Node HTTP/SDK/CLI/profile-restart
+probes pass on Node and Bun. Focused and final lint/format/typecheck/full
+workspace checks pass. The hosted creation contract and non-enabling startup
+handshake are also independently accepted: unsupported workers receive no
+launch input, old workers retain their behavior, and owned Node 22/26
+deadline/verified-cleanup probes pass. Focused assembled-host and complete
+workspace checks pass. Managed worker evidence and attach fencing remain
+gated, alongside remaining input shapes and router/sandbox integration.
+Worker-held attempt/native/input evidence and protocol-2 attach are now
+independently accepted after correcting child/self identity bootstrap.
+Scoped stale/forged attachment and terminal admission checks pass; actual
+pinned SDK/CLI probes cover detached delivery and replay, and a real Bash
+tool verifies public bridge/self/API identity before any controller publication.
+Owned Node 22/26 worker and Node/Bun owner qualification pass, as do final
+workspace gates. The managed feature remains unadvertised until host transport,
+saved-attempt reconciliation and Hono replacement are qualified.
+Hosted transport and saved-attempt reconciliation are independently accepted:
+exact protocol-2 claims pin ownership, current-attempt worker proof survives
+Hono replacement, and full owner loss retains uncertainty without prompt
+replay. Owned Node 22/26 pinned SDK/CLI and clean compiled-startup probes pass.
+Deferred local fallback, destructive configuration/compact replacement and
+uncertain native-command ingress refuse before effects. The private managed
+feature is enabled only for qualified hosted Claude text; the global receipts
+capability and broader rollout remain gated.
+Local Claude/Codex scoped cold continuation is independently accepted: native
+id/path selection is separate from public Process/events and child authority;
+exact attachment, deletion/generation races and failed bridge cleanup are
+qualified. Owned pinned SDK/CLI two-turn/profile-restart probes pass on Node 22,
+Node 26 and Bun, including competing same-id native history. Legacy hosted
+incumbents retain claim-only attachment; unsupported fresh hosted workers and
+restart-only configuration replacement refuse before destructive effects.
+Published 0.8.0/0.11.0 owned Claude/Codex observation now passes standalone
+browser qualification: existing API and released-composer submission retain one
+pending/confirmed/durable user turn, one public URL/collection identity and no
+native-id browser requests. Real pinned Claude SDK/CLI and controlled Codex
+app-server fixtures are used without external model calls. Sequential typing
+acknowledges each character within 20 ms in these fixtures. Other provider/skew
+and future draft-volume gates remain.
+OpenCode scoped cold continuation is independently accepted for native DB,
+JSON and proved fileless-export sources. Native HTTP control retains N while
+public identity stays P. Private authenticated loopback ownership prevents an
+unrelated port from receiving input, and failed startup retains its real child
+until exit. Real app/store/protocol/reopen and standalone Node 22/26/Bun probes
+pass. Ordinary owner text now uses the independently qualified optional
+capability 144 for observable DB/JSON stores; export-only remains read/resume.
+The real 1.18.18 executable now passes live subscription-model creation and
+cold continuation with `openai/gpt-6.1-sol` in an authorized standalone profile.
+The original free-model endpoint error remains a separate availability result;
+other OS/runtime and live hosted/browser matrices remain unqualified.
+Pi scoped cold continuation is independently accepted after correcting native
+home and empty-directory handling. Exact file/header/project and launch scope
+are checked before effects; returned native attachment is verified before input.
+Changed child home or working project refuses explicitly. Public identity stays
+YA across real app/store/OS RPC/reopen and standalone Node 22/26/Bun probes.
+Startup failure and idle teardown retain/verify actual process evidence; final
+static and complete workspace checks passed for that foundation. Ordinary owner
+text now uses optional capability 145 with native RPC preflight proof, local/hosted
+browser qualification and real Pi 1.4.0 creation/continuation against an owned
+local model endpoint. External model accounts and other OS/runtime matrices
+remain unqualified.
+Retained Grok/Gemini ACP cold continuation is independently accepted with
+pre-effect native scope/project checks, native RPC/public identity separation,
+Grok tool-shell identity and real child/pending-call teardown. Failed Gemini
+resume now refuses without a fresh allocation; its recorded gap is resolved
+without protocol or registry changes. Real app/store/OS peer/reopen and all
+nine standalone provider/alias × Node 22/26/Bun restart probes pass. Standalone
+Gemini native/reader roots now agree. Final static and complete workspace checks
+pass; native CLI/model, other-OS and hosted cold-worker evidence are separate.
+The Rendez instability and remaining creation/host/variant gates stay open.
+Local provider-variant continuation is independently accepted after correcting
+the Gateway autostart-refusal fixture. Gateway/Ollama share Claude's native
+environment boundary, with Gateway validation before readiness. Codex OSS
+validates native UUID/store/header before routing/leases and retains actual
+failure/teardown evidence through its existing per-turn exec transport. Focused
+and all nine standalone variant/runtime probes pass; actual pinned Claude SDK
+and controlled OSS CLI peers use no external model. Static checks pass. Both
+workspace runs retain the existing Rendez restart failure (6,882 other server /
+7,064 client cases pass); this does not establish a watcher fix or full green.
+Hosted continuation and the later creation/receipt/observation gates remain open.
+Remaining provider/host cold resumes,
+remaining provider observation,
+released-client qualification and native source consumers are next; durable
+admission, split-id launches and release qualification remain gated. This does not displace release delivery or
 require queued-compaction work first.
 
 The [creation-provenance admission notes](../../topics/session-creation-provenance.sketches.md)
 are incorporated into plan 171's admission/caller slices and six-path coverage
 ledger. Original request source must survive deferral/retry and appear on
-saved/failed sessions; the [audited source omissions](../../gaps/session-creation-source-missing-launch-paths.md)
-remain open until each affected path is implemented and verified.
+saved/failed sessions. The [source audit](../../gaps/session-creation-source-missing-launch-paths.md)
+is now narrowed to uncorrelated native-copy result loss; the six caller omissions
+are repaired by common admission.
+
+## Design language unification
+
+Selected by the maintainer on 2026-11-08 as active client work. The client has
+no shared button, switch, popover, menu, field or banner. It has two competing
+global button families, about 71 pasted copies of the switch markup, about 40
+hand-rolled popovers and menus, and several tokens that are used but never
+defined. [Plan 182](../tactical/182-design-playground-and-shared-controls.md)
+builds a self-built, dev-only design playground (`design.html`) with
+Storybook-compatible example files. It runs a census of existing variants
+before migrating each control, starting with `Switch` and then `Button`, and
+adds a ratchet so legacy patterns can only shrink. It replaces and then
+deletes the checked-in feature mockups and gives proposal scenes an
+owner-bound lifecycle check. Scenes receive server data through injected
+services, alongside the ongoing client refactor. There are no visual tests in
+CI. The [UI design topic](../../topics/ui-design.md#shared-controls-and-the-design-playground)
+owns the contract. The dev-only playground with `design:index`/`design:shot`,
+the token page, a `css:check` limit on undefined custom properties, and the
+button and switch census landed on 2026-11-08. The plan was then rewritten to
+unify one control family at a time as a quick cut (census, build, swap every
+use, delete the old CSS including global rules, ban the old way), accepting
+design changes. The button family landed on 2026-11-08 (every button on
+shared controls, legacy rules deleted, `pnpm buttons:check` in lint). On
+2026-11-09 the maintainer set the remaining order: the undefined-token pass,
+switches and segmented controls, menus and popovers, fields, banners,
+badges, spinners and tabs, a dialog pattern, and the composer last, each
+implemented, independently reviewed and committed before the next. The
+token pass landed on 2026-11-09: every custom property the client reads is
+defined, with new raised-surface, tint, shadow and radius tokens. The
+switch and segmented-control family landed the same day: every pasted
+toggle is the shared `Switch`, one-of-many pickers are `SegmentedControl`
+radio groups, and lint bans the old classes and roles. Menus and popovers
+landed the same day: a shared `Popover` (portal, script placement, outside
+press and layered Escape, focus return, phone sheet) and `Menu` replace
+23 hand-rolled menus, dropdowns and panels, with a `--z-modal`/
+`--z-popover`/`--z-tooltip` layer scale, and lint bans menu roles and
+document pointer listeners outside them. Fields landed the same day:
+`Field` (label, hint, error), `TextInput`, `Textarea`, `Select`, `Checkbox`
+and `Radio` replace about 320 raw fields and the `settings-input`,
+`settings-select`, form and login field styles, and lint bans raw field
+elements and rules that style them. Banners, badges, spinners and tabs are
+next.
 
 ## Later directions
 
@@ -701,7 +1160,13 @@ toolbar guidance ([site access contract](../../topics/trusted-client-packaging.m
 Website 1.13.0 adds a public Chrome extension guide at
 `/docs/chrome-extension`, with the store install link, related-session workflows,
 setup and current limits, linked from the homepage, download page, catalogs,
-docs and footer. This experiment does not displace release delivery.
+docs and footer. On 2026-11-02, isolated Chrome qualification established that
+the extension can reuse the managed HTTPS artifact viewer with third-party
+cookies blocked and no additional host permissions. The client and exact-origin
+content-host policies now support this path; content-host deployment and an
+extension release remain required for installed users. The synthetic 39-image
+guide, native resource loading, navigation/reload, worker restarts, teardown and
+sequential typing passed. This work does not displace release delivery.
 
 These remain candidates behind publishing and continuous delivery, not a
 ranked or approved implementation queue. Recheck current code and owning
@@ -721,7 +1186,14 @@ AAR owns the SHA-pinned cross-repository regression suite for both providers.
 Manual/Round robin allocation and a cached quota/eligibility overview are
 implemented. Since 2026-10-13, New Session remembers pool/account/policy per
 provider on the server, with silent fallback when unavailable or unsupported;
-API-created-session defaults remain deferred. YA respects router-owned pool grants and exposes read-only
+API-created-session defaults remain deferred. Since 2026-11-08
+([plan 183](../tactical/183-launch-paths-respect-router-selection.md)),
+Project Queue, templates, the composer's New session, Agent API children of
+routed sessions and Source Review sessions carry the pool or account, or
+refuse; none falls back to the direct login. Since 2026-11-08
+([plan 185](../tactical/185-switch-session-router-account.md)) the session
+header's account chip moves an existing session to another pool account or
+to Direct (no automatic failover). YA respects router-owned pool grants and exposes read-only
 management guidance; legacy routers retain their scoped editor. Advanced
 balancing, clone/helper inheritance, Windows and constrained sandbox support
 remain later work. On 2026-10-03 the maintainer deferred the next
@@ -736,17 +1208,17 @@ displace release delivery.
 
 | Direction | Existing context / decision still needed |
 | --- | --- |
-| Session creation acceptance and background creation | [YA-owned session identity](../../topics/session-identity.md) is the selected foundation as of 2026-11-01: permanent public ids, durable sessions before provider launch and retained startup outcomes without native transcripts. The [creation/navigation proposal](../../topics/session-creation.sketches.md) builds durable acceptance, optional Create in background / Command-Enter and safe draft/attachment recovery on it. The dated release-corpus audit records legacy responses, filename-based refresh and transcript-less-read concerns; implementation, concrete schema/API choices, storage bounds and provider/skew qualification remain pending. New-session work from plan 150 is reopened; the full fork/clone redesign stays deferred. |
+| Session creation acceptance and background creation | [YA-owned session identity](../../topics/session-identity.md) is the selected foundation as of 2026-11-01: permanent public ids, durable sessions before provider launch and retained startup outcomes without native transcripts. The [creation/navigation proposal](../../topics/session-creation.sketches.md) builds durable acceptance, optional Create in background / Command-Enter and safe draft/attachment recovery on it. The dated release-corpus audit records legacy responses, filename-based refresh and transcript-less-read concerns; permanent identity, bounded storage, provider adapters and caller consolidation are implemented under [plan 171](../tactical/171-durable-session-identity-and-creation.md#final-consolidation-slice--november-3). The single review and final checks pass as recorded there; optional background UX and wider release/OS qualification remain separate. New copy resources now admit before effects; the full workspace/lineage redesign stays deferred. |
 | Multi-machine experience across the full web and desktop clients | Preserve independent host access and [source runtimes](../../topics/client-source-runtime-topology.md). The Kyle-led alternate Conversation API/preview is deferred from the current removal pass under [core house cleaning](../../topics/core-house-cleaning.md), row 10; retain its current consumers and behavior. |
-| Agent API and access across installed machines | Updated direction, 2026-10-30: [unstable server-addressed HTTP v0](../../topics/http-api-v0.md), discoverable caller identity/access and session creation provenance on both ends. Agents manage their workflows; custom delegation/task lifecycles are not prerequisites. [Plan 165](../tactical/165-http-api-v0.md) starts with isolated core/HTTP tests and local/direct profiles before peer-grant UI and production enrollment. Persistent target-owned sessions and directional grants remain the remote direction, with the public encrypted relay as the usual route. The local read-only API/core, launch-bound bootstrap, served help/schema and opt-in documentation evals are implemented ([plan 166](../tactical/166-agent-api-bootstrap-and-documentation.md)); [Plan 167](../tactical/167-agent-session-commands-and-following.md) delivers compact reads/following, opt-in native creation/queued messaging, durable retry receipts and trusted provenance. [Plan 168](../tactical/168-peer-access-and-enrollment.md) implements directional peer routing and an optional enrollment/authentication sequence, with independent Sol and Daybreak Blue design reviews. The first isolated two-peer adapter is implemented and independently reviewed, including create/message/follow, scoped receipts, outbound provenance and revocation; production enrollment now adds owner-only management, distinct expiring SRP credentials, direct/encrypted-relay routing and separately granted native peer leases ([contract](../../topics/peer-access.md)). No managed delegation lifecycle is introduced. Node/Bun protected workflows, a light relay model trial and an owned native Windows enrollment/transport probe pass; packaged-provider/UI and the broader network matrix remain pending. The independently reviewed optional basic fleet service and target consumer now provide key-bound enrollment/session refresh, bounded directory/mailbox, signed/encrypted invitations, explicit manual/fleet credential selection and issuer-bound protected native workflows; a light fleet relay agent trial passes. External OIDC login is implemented and independently reviewed through an owned standards-protocol issuer: PKCE/JWKS validation, browser-only confirmation, live owner/revocation fences and the same protected native workflow ([fleet contract](../../topics/fleet-authentication.md)). [Peer UI direction](../../topics/peer-access.md#owner-ui-direction-relay-pairing-and-audit) now specifies owner-login pairing without a second approval, audit views on both ends, durable pairs across human relay-login changes and optional/changeable bidirectional access. Discovery sharing and full mesh remain future opt-in design work. [Plan 169](../tactical/169-server-connections-ui.md) now implements independently reviewed Server Connections settings, server-side direct/relay enrollment, independent directional renewal/revocation, identity icons/hostname/OS and audit/recent-session views. Isolated real SRP/relay and native create/message/follow workflows pass; browser typing and phone/desktop captures are reviewed. Windows qualification remains deferred. Agent-facing server descriptions now include optional saved names/host details, with no peer probes on listings and current details on individual requests ([contract](../../topics/http-api-v0.md#server-names-and-host-details)). [Plan 170](../tactical/170-peer-authentication-refresh.md) now delivers independently reviewed automatic direct/relay sign-in: short-lived access, a sliding 90-day inactivity deadline, durable lost-reply recovery, bounded quiet-profile scheduling and clear Settings recovery. Explicit fixed grants and each direction's authentication policy remain independent; typing and phone/desktop captures pass. Agent use of paired servers now defaults on without a separate Settings switch; the underlying opt-out remains, and browser-saved host logins stay independent. The Settings page now presents two compact device lists with independent confirmed removal; names open details/audit and connection settings are collapsed. Server Connections is now available by default without a UI enable switch; pairing remains explicit and the optional environment kill switch remains. Read-only UI, mesh behavior and live external-provider qualification remain follow-ups. This does not displace release delivery. |
+| Agent API and access across installed machines | Updated direction, 2026-10-30: [unstable server-addressed HTTP v0](../../topics/http-api-v0.md), discoverable caller identity/access and session creation provenance on both ends. Agents manage their workflows; custom delegation/task lifecycles are not prerequisites. [Plan 165](../tactical/165-http-api-v0.md) starts with isolated core/HTTP tests and local/direct profiles before peer-grant UI and production enrollment. Persistent target-owned sessions and directional grants remain the remote direction, with the public encrypted relay as the usual route. The local read-only API/core, launch-bound bootstrap, served help/schema and opt-in documentation evals are implemented ([plan 166](../tactical/166-agent-api-bootstrap-and-documentation.md)); [Plan 167](../tactical/167-agent-session-commands-and-following.md) delivers compact reads/following, opt-in native creation/queued messaging, durable retry receipts and trusted provenance. [Plan 168](../tactical/168-peer-access-and-enrollment.md) implements directional peer routing and an optional enrollment/authentication sequence, with independent Sol and Daybreak Blue design reviews. The first isolated two-peer adapter is implemented and independently reviewed, including create/message/follow, scoped receipts, outbound provenance and revocation; production enrollment now adds owner-only management, distinct expiring SRP credentials, direct/encrypted-relay routing and separately granted native peer leases ([contract](../../topics/peer-access.md)). No managed delegation lifecycle is introduced. Node/Bun protected workflows, a light relay model trial and an owned native Windows enrollment/transport probe pass; packaged-provider/UI and the broader network matrix remain pending. The independently reviewed optional basic Identity Service and target consumer now provide key-bound enrollment/session refresh, bounded directory/mailbox, signed/encrypted invitations, explicit manual/identity-service credential selection and issuer-bound protected native workflows; a light identity-service relay agent trial passes. External OIDC login is implemented and independently reviewed through an owned standards-protocol issuer: PKCE/JWKS validation, browser-only confirmation, live owner/revocation fences and the same protected native workflow ([identity-service contract](../../topics/identity-service.md)). [Peer UI direction](../../topics/peer-access.md#owner-ui-direction-relay-pairing-and-audit) now specifies owner-login pairing without a second approval, audit views on both ends, durable pairs across human relay-login changes and optional/changeable bidirectional access. Discovery sharing and full mesh remain future opt-in design work. [Plan 169](../tactical/169-server-connections-ui.md) now implements independently reviewed Server Connections settings, server-side direct/relay enrollment, independent directional renewal/revocation, identity icons/hostname/OS and audit/recent-session views. Isolated real SRP/relay and native create/message/follow workflows pass; browser typing and phone/desktop captures are reviewed. Windows qualification remains deferred. Agent-facing server descriptions now include optional saved names/host details, with no peer probes on listings and current details on individual requests ([contract](../../topics/http-api-v0.md#server-names-and-host-details)). [Plan 170](../tactical/170-peer-authentication-refresh.md) now delivers independently reviewed automatic direct/relay sign-in: short-lived access, a sliding 90-day inactivity deadline, durable lost-reply recovery, bounded quiet-profile scheduling and clear Settings recovery. Explicit fixed grants and each direction's authentication policy remain independent; typing and phone/desktop captures pass. Agent use of paired servers now defaults on without a separate Settings switch; the underlying opt-out remains, and browser-saved host logins stay independent. The Settings page now presents two compact device lists with independent confirmed removal; names open details/audit and connection settings are collapsed. Server Connections is now available by default without a UI enable switch; pairing remains explicit and the optional environment kill switch remains. [Plan 172](../tactical/172-identity-service-naming.md) delivers the reviewed terminology rename to Identity Service, preserving protocol/storage compatibility names. Read-only UI, mesh behavior and live external-provider qualification remain follow-ups. This does not displace release delivery. |
 | Authentication and delegated access | [Limited users](../../topics/limited-users.md) delivers local accounts and project grants. [Principals and grants](../../topics/principals-and-grants.md) coordinates the broader proposed invitation/account and issuer boundaries; it does not approve a universal grant protocol. The [2026-10-31 authentication sketch](../../topics/principals-and-grants.md#replaceable-authentication-and-a-basic-local-configuration) supports a basic local username/password configuration, optional OIDC and managed providers around common YA identity/enrollment/grant services; no central service is required. [Session notes and discussion](../../topics/session-notes-and-discussion.md) and [participatory Live Share](../../topics/relay-origin-and-share-gating.sketches.md#participatory-live-share) propose human-only notes/chat, owner-reviewed suggestions, and later explicit session-input grants. These remain later directions, not a newly ranked implementation queue. |
 | Related work across repositories | [Issues & PRs](../../topics/issue-session-associations.md) now has experimental, default-off automatic ticket/URL discovery from viewed sessions and a configurable recent-session window, durable evidence, search and correction controls. Conservative URL/known-prefix matching, durable Jira project learning, and session-grouped browsing are implemented and locally validated. SQLite migrations and compatibility gating are implemented. Multi-server issue grouping enters the simple-client demo above. GitHub items show their last-read open/draft/merged/closed state, with independent read-only checks, configurable gh/account use, durable merge facts and an expandable extension Merged PRs section ([plan 153](../tactical/153-durable-github-status-and-extension-groups.md)). Refresh remains demand-driven. Workstream/branch inference, Jira status and tracker synchronization remain deferred. |
 | Parallel work within one repository | YA-managed workstreams/lane checkout creation is removed under [core house cleaning](../../topics/core-house-cleaning.md). Do not continue its unfinished scheduler, sync or landing plan. Ordinary user-created Git worktrees and Source Control are distinct retained concerns. |
 | Scheduling | [Yacron](../../topics/yacron.md) and its [open gap](../../gaps/sketches/yacron-scheduler.md) remain deferred proposals, not prerequisites for house cleaning or the local core. Synthetic heartbeat and related graehl-led automatic-input policies are explicitly deferred for this pass in the [cleanup table](../../topics/core-house-cleaning.md); preserve their current behavior. |
 | Agent command runtime | Opt-in [`ya-agent self`](../../topics/agent-self.md) implements ownership and model/effort evidence reporting. Use operator-managed global instructions initially; defer automatic advertisement, private input, broader session access, and scheduling integration. |
-| Node 22 and built-in SQLite | Follow the approved [runtime cutover plan](../tactical/123-node-22-builtin-sqlite-cutover.md): raise the server runtime floor now, retain older-server hosted frontend support with advisory runtime warnings, and gate new SQLite-backed features by their exact capabilities before considering any separate frontend cutoff. Since 2026-10-11 SQLite is required: session metadata lives there and a server that cannot open it does not start ([plan 150](../tactical/150-ya-owned-session-ids.md) stage 1). New Claude sessions keep YA's id from creation, and clones of router-pinned sessions keep their account. On 2026-11-01 the maintainer reopened [durable new-session identity/startup ownership](../../topics/session-identity.md); implementation and the full fork/clone redesign have not landed. |
+| Node 22 and built-in SQLite | Follow the approved [runtime cutover plan](../tactical/123-node-22-builtin-sqlite-cutover.md): raise the server runtime floor now, retain older-server hosted frontend support with advisory runtime warnings, and gate new SQLite-backed features by their exact capabilities before considering any separate frontend cutoff. Since 2026-10-11 SQLite is required: session metadata lives there and a server that cannot open it does not start ([plan 150](../tactical/150-ya-owned-session-ids.md) stage 1). Provider summary indexes now also use the required database, with lazy JSON import and indexed selected-session reads ([validation contract](../../topics/session-index-validation.md)); fresh child discovery and rich-content augmentation remain separate detail-route latency work. New Claude sessions keep YA's id from creation, and clones of router-pinned sessions keep their account. On 2026-11-01 the maintainer reopened [durable new-session identity/startup ownership](../../topics/session-identity.md); the scoped identity/read/observation foundation is implemented under [plan 171](../tactical/171-durable-session-identity-and-creation.md), and the subsequent startup/caller consolidation is implemented. New forks/clones save their public id before effects; the full workspace/lineage redesign remains deferred. |
 | Source workflow depth and traceability | Build on [Source Control](../../topics/source-control.md), [review handoff](../../topics/source-review-to-session.md), and [commit/session attribution](../../gaps/sketches/committed-change-session-attribution.md). Additional Git or terminal controls need a concrete user workflow. |
-| Provider maturity and other deferred work | Consult the owning provider topics and [deferred backlog](../../topics/deferred-roadmap.md); its local ordering does not override this product priority. |
+| Provider maturity and other deferred work | Consult the owning provider topics and [deferred backlog](../../topics/deferred-roadmap.md); its local ordering does not override this product priority. The requested [durable relationship design](../../topics/session-relationships.md) coordinates provider children, trusted v0 creator receipts and YA lineage through existing identity/admission owners. Implementation is authorized in [plan 176](../tactical/176-durable-session-relationships.md). Shared SQL storage, qualified nonblocking Codex child reads, authoritative YA/v0/peer writers and bounded SQL reconciliation are published. Claude SQL child integration is published. Grok SQL child integration is published. OpenCode SQL/legacy child integration is independently reviewed and qualified, including WAL-only changes and a shared probe across 128 retained parents. Seven inference-free native child launch variants and Node/Bun desktop/phone typing pass locally. Retained collection joins and SQL fallback for Claude launch mappings are independently reviewed and qualified; child queries follow page/grant filtering. Current Codex v2 launch mappings and optional SQL anchors are independently reviewed and qualified, including bounded-window and restart handovers. Requested-parent metadata revalidation is independently reviewed and qualified: SQL reads remain immediate, native exact-parent refreshes share the bounded coordinator, and no per-session timer or corpus polling is added. Actual Claude/Codex parent tools now qualify the complete two-by-two local v0 creation matrix, canonical creator/receipt/native binding, retry deduplication and SQL preservation across API replacement; independent review and all eight opt-in native-app cases pass. Earlier concurrent OpenCode/Antigravity budget findings are resolved through measured case guards and retained semantic checks; cold resume also has internal phase attribution. Direct Codex reader discovery now shares the scoped header source and no longer maintains a separate parent-body child cache; independent review, all seven native child variants and root checks pass. The shared internal authorized query adapter now merges canonical/native SQL anchors and projects endpoints/evidence separately; native child reads are its first qualified consumer. Independent review, mixed-direction pagination with related inserts, all seven native child variants and root checks pass. Scoped live nested-harness SQL acquisition is independently reviewed and qualified, including finite unknown outcomes, restart-persistent pending correlation and direct SIGHUP coverage. All ten native-app cases, Node/Bun reopen checks and combined root gates pass. Historical evidence from already acquired admitted non-copy, known never-confined Claude rows is independently reviewed and qualified, including compact creation control reads, durable extraction progress, backpressure and monotonic confinement provenance. All ten native-app cases, Node/Bun reopen checks and root gates pass. Relationship fixture precision, completion barriers, SQL contention, typing measurement, queued fixture permissions, OSS resume sandbox drift and joined early app-fixture cleanup are independently reviewed and qualified. The two-worker app/browser run passes ten app cases and three browser cases on both Linux and macOS. The later provider-only Linux run at `3fcffd386` passes all 69 scenarios, including direct child variants, nested OpenCode and Antigravity reader-then-resume. Native phase marks attribute Antigravity's 16.217-second cold path; its guard follows the measured maximum. Relevant source changes now gate the complete Linux provider suite, while the app/browser matrix remains manual. Those results qualify that earlier relationship boundary. The subsequent tool-result repair at `06c549a79` passes Linux's 69 provider, ten app and three browser cases; macOS instead exhausts seven app-case budgets before its browser step, retained in the [hosted macOS gap](../../gaps/hosted-macos-native-app-case-timeouts.md). Literal POSIX Bash identity is locally qualified for explicit workdir and output/yield controls; [omitted turn cwd and execution settings](../../gaps/codex-bash-without-turn-cwd-or-with-login-still-duplicates.md) still need native proof. Current-native child commands are locally qualified to stay in child persistence and out of the parent's normalized event stream; the source-thread filter precedes parent usage, state and relationship interpretation. The macOS one-worker control was not acquired by a runner and supplies no acceptance. The separate Rendez watcher and creation-client findings remain open. New Claude forks and full-file clones now capture private native row fences for bounded historical acquisition. Independent review, all 69 native scenarios, ten app cases, Node/Bun SQL reopen and root checks pass locally; hosted acceptance for that source remains separate. Independent destination references and explicitly profile-bound owned Codex shell acquisition now pass twelve native-app cases, root checks and Node/Bun reopen. Independent review prompted compact legacy cursor retention and stricter literal paths. Implicit cross-family inheritance and older unmarked workers remain unknown. A same-source macOS one-worker control passes ten prior app cases, with a separate cold browser bootstrap finding before session-detail fetch or typing. Native qualification now offers an automatic worker choice (provider/Linux two, macOS app one) while honoring explicit controls. The cold initial composer guard follows the observed M1 lower bound and all three macOS initial mounts now pass. Current `568d097dd` also passes all twelve app cases on Linux and macOS, while full browser acceptance remains incomplete. The earlier `ddda13a4a` browser result was 126.2 ms; current source records 104.9 ms on Linux and 114.5/271 ms on macOS against the unchanged 100 ms gate, retained in the cross-platform [typing finding](../../gaps/hosted-native-input-acknowledgement-over-100ms.md). The macOS 20-minute job guard was derived from 8m57s; the latest 10m47s job leaves 1.85× headroom, tracked as a follow-up. Resumed 2026-11-06 with maintainer approval for a small temporary capability check and omission of new relationship visualization on older servers, without a legacy loader; typing-performance investigation is deferred from this workstream. Operator-authorized SQL pages and opt-in v0 integration now share a public allow-list and independent cursors. The Session Info consumer adds source-scoped reverse navigation without navigation-path requests; desktop/phone, high-fanout and parked-page checks pass. Existing native creation cases also qualify both public directions and filtered v0 projection across API replacement. The seven native-child launch variants qualify canonical-parent/read-only-child public pages across SQL reopen without added model exchanges. Unseen-corpus acquisition and remaining consumer/source consolidation stay tracked in the plan. |
 | CI browser reliability and cost | The [CI isolation campaign](../tactical/135-e2e-suite-cost-ratchet.md) owns worker profiles, mutable services and joined cleanup. CI exercises two workers per existing shard. The fixed-source pair passed both schedules, with the worker pair's slower job 47.8% shorter and combined jobs 41.2% shorter; each needed one retry. Subsequent worker revisions completed first-attempt E2E repeats. September 30 fixture-home and reload-environment isolation resolved seven reproduced local failures; the full four-worker suite then passed 352 cases without retries. Source CI 36712930735 and follow-up 36715163980 each passed all 353 browser cases without retries, the full unit suite and every native platform leg. October 1 source CI 36799408077 is red on new dependency advisories and Windows computer-control cleanup; its passing browser shards include one retry in the All Sessions reservation assertion. Server Runtime And SQLite 36799408196 also failed Windows Bun package readiness. Local repairs cover audit resolutions, asynchronous cleanup with native regression coverage, port-file publication, measured macOS identity-probe headroom, and the reservation oracle. Final local browser verification passed 360 cases without retries plus 20 reservation repetitions. Repair commit `17a085b59` passed all 24 jobs in [CI 36816545726](https://github.com/kzahel/yepanywhere/actions/runs/36816545726), including 361 browser cases without retries and every native platform leg; [runtime/SQLite 36816545797](https://github.com/kzahel/yepanywhere/actions/runs/36816545797) passed all 12 platform/runtime legs on the first run. The documentation follow-up [CI 36817606854](https://github.com/kzahel/yepanywhere/actions/runs/36817606854) also passed, but exposed a right-pane reload retry: late app metadata made historical output look fresh. A deterministic hook regression reproduced that defect; discovery now remembers initial tool URLs before their mappings resolve. Thirty local browser repetitions then passed without retries, retaining concurrent typing and reload assertions. Source CI 36820386055 exposed a separate Intel macOS assembled-inventory timeout: its one-second status budget was shorter than the three-second native identity-probe bound. That scenario now gives inventory four seconds, derived from the observed CI limit; its lifecycle and process-identity checks remain intact. October 2 repairs vendor the original signed libsodium archive under its unchanged checksum, keep Apps domain rows compact, align desktop/phone quick-hide coverage with the shared-panel behavior, isolate saved defaults, join project deletion, select the current ASR plan after microphone acquisition, cancel transcript restoration frames on unmount, and stabilize resume/audio/copy fixtures. The first viewer popup and complete 200 MiB HTML I/O fixture have measured readiness budgets; content and typing assertions remain intact. Source `3049a2efb` passed all 24 jobs in [CI 36981624484](https://github.com/kzahel/yepanywhere/actions/runs/36981624484), including 370 browser cases without retries, and all 12 [runtime/SQLite legs](https://github.com/kzahel/yepanywhere/actions/runs/36981624522). Documentation follow-up `3a0132625` also passed [all 24 CI jobs](https://github.com/kzahel/yepanywhere/actions/runs/36982022730) and [all 12 runtime legs](https://github.com/kzahel/yepanywhere/actions/runs/36982022718), again without browser retries. The latest applicable [desktop](https://github.com/kzahel/yepanywhere/actions/runs/36981299593) and [iOS simulator/device](https://github.com/kzahel/yepanywhere/actions/runs/36981299572) workflows are green. [Remote deployment](https://github.com/kzahel/yepanywhere/actions/runs/36983665641) passed after a transient Cloudflare asset-fetch 502 cleared. [Android 36981624479](https://github.com/kzahel/yepanywhere/actions/runs/36981624479) passed build/standard instrumentation but still missed the unchanged 100 ms input frame gate at 149.4 ms; four guest cores and the current software renderer alone did not establish acceptance. The probe now establishes the native input connection, loaded fonts and stable viewport before upload/typing, and records frame attribution for further hosted misses. [Readiness source CI](https://github.com/kzahel/yepanywhere/actions/runs/36985655035) and [runtime/SQLite](https://github.com/kzahel/yepanywhere/actions/runs/36985655018) passed all 24/12 jobs. Its one Home-key retry raced a bare DOM scroll write against initial follow work; the fixture now uses a real upward wheel gesture and waits at the boundary, with 20 local repetitions passing. [Android readiness run](https://github.com/kzahel/yepanywhere/actions/runs/36985655022) passed direct/security, then missed only the first relay-upload key at 108.7 ms. Frame attribution exposed unnecessary memo-shortcut visibility and empty reload-stack layout reads; both now avoid ordinary typing work, with regressions that fail on previous code. The fresh bundled app passed physical direct/100 MiB relay at 42.8/33.3 ms with zero overflows; browser audio and streaming-typing checks also passed. Final hosted platform acceptance remains required. Large-catalog typing independently passed 20 repetitions (500 characters) with an 11.1 ms maximum; its 100 ms gate stays unchanged. Focused browser verification retains the typing and row-height limits. The comparable median/p90 window remains the campaign acceptance blocker. The separate initial search-highlight, [live search discovery](../../gaps/browser-suite-artifact-and-search-failures.md), [Windows extraction](../../gaps/windows-archive-extraction-test-timeout.md), and [Codex fake-process waiter](../../gaps/codex-provider-unit-startup-timeouts.md) findings remain open with bounded diagnostics. |
 | macOS backend reload continuity | [Provider-host port](../tactical/128-macos-provider-host.md) has verification evidence for live Claude/Codex reload, approval, durable resume, concurrent sessions and terminal cleanup on Node source checkouts. Subsequent test-running sessions showed active-turn interruptions correlated with provider-owner exit, so macOS now defaults to ordinary in-Hono ownership and requires `YEP_PROVIDER_HOST_ENABLED=true` to opt in while the [interruption gap](../../gaps/macos-provider-host-turn-interruptions.md) is investigated. Linux remains enabled by default. Native CI still covers Linux, Apple Silicon/Intel Mac and Windows fallback. The separate [Claude project-alias history gap](../../gaps/claude-symlink-project-transcript-routing.md) remains open. This developer iteration work does not displace release delivery. |
 

@@ -74,7 +74,7 @@
   bottom: 0;
   width: 2px;
   margin-left: -1px;
-  background: var(--color-warning, #d29922);
+  background: var(--warning-color);
 }
 
 .caption {
@@ -117,17 +117,10 @@
   gap: 6px;
   width: 100%;
   min-height: 28px;
-  padding: 0;
   color: var(--text-secondary);
   font: inherit;
   font-size: var(--font-size-sm);
   text-align: left;
-  background: none;
-  border: 0;
-}
-
-button.head {
-  cursor: pointer;
 }
 
 button.head:hover {

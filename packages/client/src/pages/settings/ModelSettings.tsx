@@ -76,6 +76,9 @@ import {
 import { ProviderBadge } from "../../components/ProviderBadge";
 import { ModelSubscriptionUsage } from "../../components/ModelSubscriptionUsage";
 import { RecapAfterSecondsControl } from "../../components/RecapAfterSecondsControl";
+import { TextInput } from "../../components/ui/Field";
+import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import { Switch } from "../../components/ui/Switch";
 import {
   ShowThinkingControls,
   ThinkingControlsPanel,
@@ -670,28 +673,26 @@ export function ModelSettings() {
             valueText={selectedProvider?.displayName}
             className="new-session-provider-section session-default-provider-section settings-item--session-default-block settings-item--wide-control"
           >
-            <div className="provider-options">
-              {availableProviders.map((provider) => (
-                <button
-                  key={provider.name}
-                  type="button"
-                  className={`provider-option ${
-                    selectedProvider?.name === provider.name ? "selected" : ""
-                  }`}
-                  onClick={() => void handleProviderChange(provider.name)}
-                  disabled={providersLoading || settingsLoading}
-                >
+            <SegmentedControl
+              activation="manual"
+              variant="cards"
+              aria-label={
+                sessionDefaultCopy.provider.settings?.title ??
+                sessionDefaultCopy.provider.title
+              }
+              options={availableProviders.map((provider) => ({
+                value: provider.name,
+                label: provider.displayName,
+                icon: (
                   <span
                     className={`provider-option-dot provider-${provider.name}`}
                   />
-                  <div className="provider-option-content">
-                    <span className="provider-option-label">
-                      {provider.displayName}
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
+                ),
+              }))}
+              value={selectedProvider?.name}
+              onChange={(name) => void handleProviderChange(name)}
+              disabled={providersLoading || settingsLoading}
+            />
           </SettingsItem>
 
           <SettingsItem
@@ -772,35 +773,24 @@ export function ModelSettings() {
               valueText={modeLabels[effectiveDefaultPermissionMode]}
               className="new-session-mode-section session-default-mode-section settings-item--session-default-block settings-item--wide-control"
             >
-              <div className="mode-options">
-                {permissionModeOptions.map((modeValue) => (
-                  <button
-                    key={modeValue}
-                    type="button"
-                    className={`mode-option ${
-                      effectiveDefaultPermissionMode === modeValue
-                        ? "selected"
-                        : ""
-                    }`}
-                    onClick={() =>
-                      void updateNewSessionDefaults({
-                        permissionMode: modeValue,
-                      })
-                    }
-                    disabled={settingsLoading}
-                  >
+              <SegmentedControl
+                activation="manual"
+                variant="cards"
+                aria-label={sessionDefaultCopy.permission.title}
+                options={permissionModeOptions.map((modeValue) => ({
+                  value: modeValue,
+                  label: modeLabels[modeValue],
+                  description: modeDescriptions[modeValue],
+                  icon: (
                     <span className={`mode-option-dot mode-${modeValue}`} />
-                    <div className="mode-option-content">
-                      <span className="mode-option-label">
-                        {modeLabels[modeValue]}
-                      </span>
-                      <span className="mode-option-desc">
-                        {modeDescriptions[modeValue]}
-                      </span>
-                    </div>
-                  </button>
-                ))}
-              </div>
+                  ),
+                }))}
+                value={effectiveDefaultPermissionMode}
+                onChange={(modeValue) =>
+                  void updateNewSessionDefaults({ permissionMode: modeValue })
+                }
+                disabled={settingsLoading}
+              />
             </SettingsItem>
           )}
 
@@ -825,12 +815,10 @@ export function ModelSettings() {
               }
               className="new-session-helper-section session-default-sandbox-section settings-item--session-default-block"
             >
-              <input
-                type="checkbox"
+              <Switch
                 checked={savedDefaults?.sandboxLevel === "project-write"}
                 disabled={settingsLoading}
-                onChange={(event) => {
-                  const enabled = event.currentTarget.checked;
+                onCheckedChange={(enabled) => {
                   void updateNewSessionDefaults({
                     sandboxLevel: enabled ? "project-write" : "none",
                     sandboxNetworkFirewall: enabled ? true : undefined,
@@ -862,8 +850,7 @@ export function ModelSettings() {
               }
               className="new-session-helper-section session-default-sandbox-section settings-item--session-default-block"
             >
-              <input
-                type="checkbox"
+              <Switch
                 checked={
                   savedDefaults?.sandboxLevel === "project-write" &&
                   savedDefaults.sandboxNetworkFirewall !== false
@@ -872,9 +859,9 @@ export function ModelSettings() {
                   settingsLoading ||
                   savedDefaults?.sandboxLevel !== "project-write"
                 }
-                onChange={(event) => {
+                onCheckedChange={(checked) => {
                   void updateNewSessionDefaults({
-                    sandboxNetworkFirewall: event.currentTarget.checked,
+                    sandboxNetworkFirewall: checked,
                   });
                 }}
                 aria-label={t("newSessionSandboxNetworkFirewallLabel")}
@@ -911,31 +898,28 @@ export function ModelSettings() {
               }
               className="new-session-helper-section session-default-suggestions-section settings-item--session-default-block settings-item--wide-control"
             >
-              <div className="new-session-helper-options">
-                {availablePromptSuggestionModes.map((modeValue) => (
-                  <button
-                    key={modeValue}
-                    type="button"
-                    className={`new-session-helper-option ${
-                      selectedPromptSuggestionMode === modeValue
-                        ? "selected"
-                        : ""
-                    }`}
-                    onClick={() =>
-                      void updateNewSessionDefaults({
-                        promptSuggestionMode: modeValue,
-                      })
-                    }
-                    disabled={settingsLoading}
-                    title={promptSuggestionModeDescriptions[modeValue]}
-                  >
+              <SegmentedControl
+                activation="manual"
+                variant="cards"
+                aria-label={sessionDefaultCopy.suggestions.title}
+                options={availablePromptSuggestionModes.map((modeValue) => ({
+                  value: modeValue,
+                  label: promptSuggestionModeLabels[modeValue],
+                  tooltip: promptSuggestionModeDescriptions[modeValue],
+                  icon: (
                     <span
                       className={`mode-option-dot suggestion-${modeValue}`}
                     />
-                    <span>{promptSuggestionModeLabels[modeValue]}</span>
-                  </button>
-                ))}
-              </div>
+                  ),
+                }))}
+                value={selectedPromptSuggestionMode}
+                onChange={(modeValue) =>
+                  void updateNewSessionDefaults({
+                    promptSuggestionMode: modeValue,
+                  })
+                }
+                disabled={settingsLoading}
+              />
             </SettingsItem>
           </div>
 
@@ -966,34 +950,30 @@ export function ModelSettings() {
               ) : undefined
             }
           >
-            <div className="new-session-helper-options">
-              {availableRecapModes.map((modeValue) => (
-                <button
-                  key={modeValue}
-                  type="button"
-                  className={`new-session-helper-option ${
-                    selectedRecapMode === modeValue ? "selected" : ""
-                  }`}
-                  onClick={() =>
-                    void updateNewSessionDefaults({ recapMode: modeValue })
-                  }
-                  disabled={
-                    settingsLoading ||
-                    (canConfigureSessionSandbox &&
-                      savedDefaults?.sandboxLevel === "project-write" &&
-                      modeValue === "side-session")
-                  }
-                  title={getRecapModeDescription(
-                    modeValue,
-                    t,
-                    selectedRecapAfterSeconds,
-                  )}
-                >
-                  <span className={`mode-option-dot recap-${modeValue}`} />
-                  <span>{recapModeLabels[modeValue]}</span>
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              activation="manual"
+              variant="cards"
+              aria-label={sessionDefaultCopy.recap.title}
+              options={availableRecapModes.map((modeValue) => ({
+                value: modeValue,
+                label: recapModeLabels[modeValue],
+                tooltip: getRecapModeDescription(
+                  modeValue,
+                  t,
+                  selectedRecapAfterSeconds,
+                ),
+                icon: <span className={`mode-option-dot recap-${modeValue}`} />,
+                disabled:
+                  canConfigureSessionSandbox &&
+                  savedDefaults?.sandboxLevel === "project-write" &&
+                  modeValue === "side-session",
+              }))}
+              value={selectedRecapMode}
+              onChange={(modeValue) =>
+                void updateNewSessionDefaults({ recapMode: modeValue })
+              }
+              disabled={settingsLoading}
+            />
           </SettingsItem>
 
           {showHelperSideModel && (
@@ -1045,10 +1025,9 @@ export function ModelSettings() {
             }
             className="new-session-helper-section session-default-fork-summary-section settings-item--session-default-block"
           >
-            <input
-              type="checkbox"
+            <Switch
               checked={forkSummaryAutoOpen}
-              onChange={(e) => setForkSummaryAutoOpen(e.target.checked)}
+              onCheckedChange={(checked) => setForkSummaryAutoOpen(checked)}
               aria-label={t("modelSettingsForkSummaryAutoOpenLabel")}
             />
           </SettingsItem>
@@ -1096,14 +1075,12 @@ export function ModelSettings() {
                 }
                 className="new-session-helper-section session-default-force-ya-section settings-item--session-default-block"
               >
-                <input
-                  type="checkbox"
+                <Switch
                   checked={forceYaOrchestratedCompaction}
                   disabled={settingsLoading}
-                  onChange={(event) => {
+                  onCheckedChange={(checked) => {
                     void updateSetting("clientDefaults", {
-                      forceYaOrchestratedCompaction:
-                        event.currentTarget.checked,
+                      forceYaOrchestratedCompaction: checked,
                     });
                   }}
                   aria-label={t("modelSettingsForceYaCompactionLabel")}
@@ -1132,34 +1109,34 @@ export function ModelSettings() {
               className="new-session-helper-section session-default-cache-keepalive-section settings-item--session-default-block settings-item--wide-control"
             >
               <div className="session-default-cache-keepalive-controls">
-                <div className="new-session-helper-options">
-                  {PROMPT_CACHE_KEEPALIVE_MODE_ORDER.map((modeValue) => (
-                    <button
-                      key={modeValue}
-                      type="button"
-                      className={`new-session-helper-option ${
-                        selectedPromptCacheKeepalive.mode === modeValue
-                          ? "selected"
-                          : ""
-                      }`}
-                      onClick={() =>
-                        void updatePromptCacheKeepalive({ mode: modeValue })
-                      }
-                      disabled={settingsLoading}
-                      title={promptCacheKeepaliveModeDescriptions[modeValue]}
-                    >
-                      <span
-                        className={`mode-option-dot keepalive-${modeValue}`}
-                      />
-                      <span>{promptCacheKeepaliveModeLabels[modeValue]}</span>
-                    </button>
-                  ))}
-                </div>
+                <SegmentedControl
+                  activation="manual"
+                  variant="cards"
+                  aria-label={t("promptCacheKeepaliveTitle")}
+                  options={PROMPT_CACHE_KEEPALIVE_MODE_ORDER.map(
+                    (modeValue) => ({
+                      value: modeValue,
+                      label: promptCacheKeepaliveModeLabels[modeValue],
+                      tooltip: promptCacheKeepaliveModeDescriptions[modeValue],
+                      icon: (
+                        <span
+                          className={`mode-option-dot keepalive-${modeValue}`}
+                        />
+                      ),
+                    }),
+                  )}
+                  value={selectedPromptCacheKeepalive.mode}
+                  onChange={(modeValue) =>
+                    void updatePromptCacheKeepalive({ mode: modeValue })
+                  }
+                  disabled={settingsLoading}
+                />
                 <label className="prompt-cache-keepalive-cadence">
                   <span>{t("promptCacheKeepaliveCadenceLabel")}</span>
-                  <input
+                  <TextInput
                     key={`${selectedProvider.name}-${selectedPromptCacheKeepalive.inactivityMinutes}`}
                     type="number"
+                    unit={t("promptCacheKeepaliveCadenceUnit")}
                     min={1}
                     max={1440}
                     step={1}
@@ -1192,7 +1169,6 @@ export function ModelSettings() {
                       }
                     }}
                   />
-                  <span>{t("promptCacheKeepaliveCadenceUnit")}</span>
                 </label>
               </div>
             </SettingsItem>
@@ -1308,18 +1284,16 @@ export function ModelSettings() {
             description={t("modelSettingsModelDescription")}
             className="model-settings-item"
           >
-            <div className="font-size-selector model-settings-chip-group">
-              {MODEL_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  className={`font-size-option ${model === opt.value ? "active" : ""}`}
-                  onClick={() => setModel(opt.value)}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              className="model-settings-chip-group"
+              aria-label={t("modelSettingsModelTitle")}
+              options={MODEL_OPTIONS.map((opt) => ({
+                value: opt.value,
+                label: opt.label,
+              }))}
+              value={model}
+              onChange={setModel}
+            />
           </SettingsItem>
         </div>
       )}

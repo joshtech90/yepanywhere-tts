@@ -219,6 +219,18 @@ status, count, and menu affordances—not only rows currently mounted in the
 vertical-scroll window. Recompute it when the corpus or relevant font, size,
 or spacing metrics change.
 
+The default files width is a tight fit, not a fixed size. Until the user
+resizes the boundary, the pane takes the widest rendered row's untruncated
+demand: indent, status and state badges, path text, line counts, comment and
+review badges, row padding, the row menu, and the scrollbar. Path text is
+measured as text, because the path element stretches to fill its row. The fit
+is floored at the 220 px pane minimum and capped at the previous fixed
+defaults (380 px for Changes, 340 px beside history), so long paths still
+ellipsize as before. It re-measures when the file list's own rows change, as
+when status loads or a folder expands, and only ever grows within a mount, so
+filtering or collapsing does not jitter the boundary. A drag or keyboard
+resize ends fitting for that mount.
+
 ### Changed-file state and path recovery
 
 Changed-file rows use the compact git status code as the primary kind:
@@ -628,6 +640,29 @@ a separately sized or spaced monospace style.
 
 ## Navigation and diff controls
 
+Highlighted unified and side-by-side diffs share horizontal scroll groups.
+A hunk whose source rows and header fit the visible vertical scrollport has
+one slider beside its hunk range; both sides move by the same pixel offset.
+For a taller hunk, each isolated overflowing row or contiguous run of
+overflowing rows has its own inline slider in a strip at the run's right
+edge. The strip takes width only from the run's rows, and from following rows
+when the control is taller than the run; every other row keeps the full hunk
+width. Rows count as overflowing against that full width, so the control
+never makes a fitting row scroll; a following row that the strip would clip
+joins the run.
+Short rows remain fixed, and separate runs retain independent positions.
+Native horizontal scrolling and keyboard slider input move the same group.
+There are no per-line scrollbar tracks or nested vertical scrollports.
+
+Hunk headers stay visible while their hunk passes through the pane, and a
+long run's control stays available while scrolling through that run. Pane
+resizing and source typography changes recompute the grouping from rendered
+line widths and the available height. Regrouping can reset an affected run's
+horizontal position. Comment insertion retains the original line anchors
+and splits source above and below the editor; each visible segment owns its
+scroll groups. Plain text and after-side file projections keep their existing
+scroll behavior.
+
 One selected row drives the adjacent detail. Identity and state stay visible
 in list rows; primary quick actions belong in the selected detail banner; one
 shared ellipsis/context menu discloses the full action set. Right-click,
@@ -897,6 +932,10 @@ shared chrome covers ordinary and modal file viewers, expanded Edit details,
 Source Control current-content, commit, comparison, and diff panes, and blame.
 An immutable view resolves history from its selected revision; a live view
 resolves from `HEAD`. A not-yet-committed rename follows its original path.
+
+Source Control diff banners also display the author between the hash and age,
+without requiring hover. Narrow banners wrap the metadata and long author
+names instead of overflowing; other file surfaces keep their compact chrome.
 
 Live content adds **dirty** only when its bytes differ from the committed blob;
 a rename with identical content is not dirty. Immutable revision views are
@@ -1200,6 +1239,23 @@ version-implied from `0.7.1`) owns the local tracking-ref preview, now baseline
 in current clients. None broadens a published Source Control capability. See
 [server capabilities](server-capabilities.md) and
 [`063-source-control-hosted-compatibility.md`](../docs/tactical/063-source-control-hosted-compatibility.md).
+
+### Status freshness
+
+Git status outside Source Control may be up to about three seconds old.
+`GET /:projectId/git` shares one status read per project and untracked
+mode across sidebars, file views, other tabs and activity refreshes for that
+window. The Source Control view sends `?fresh` and always reads current
+status. A finished check-remote, pull or push drops the shared read, so the
+status after an operation is current. Only the request that performed a read
+reconciles dirty-file editors authoritatively (§ Dirty-file last editor): an
+older shared read must not clear an editor recorded after it began.
+
+Checks that only prove a cache current read HEAD from the repository's ref
+files rather than starting `git`: blame's per-file validator (file mtime and
+size plus HEAD), the author palette, and the file-projection manifest's HEAD.
+An unchanged file and an unchanged HEAD therefore cost no git process. The
+manifest's `HEAD^1` is memoized per HEAD commit.
 
 ## Dirty-file last editor
 

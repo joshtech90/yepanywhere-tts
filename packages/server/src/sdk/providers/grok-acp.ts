@@ -1,3 +1,4 @@
+import { nativeStorageScope } from "./native-storage-scope.js";
 /**
  * Grok Build ACP Provider implementation using Agent Client Protocol.
  *
@@ -46,8 +47,9 @@
 import { exec, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type {
   RequestPermissionRequest,
@@ -68,6 +70,8 @@ import type {
 import {
   canonicalizeSkillInvocations,
   DEFAULT_SUBAGENT_MAX_DEPTH,
+  fromUrlProjectId,
+  parseNativeSessionId,
 } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
 import {
@@ -84,7 +88,11 @@ import type {
   SDKMessage,
   ToolApprovalResult,
 } from "../types.js";
-import { ACPClient } from "./acp/client.js";
+import {
+  ACPClient,
+  acpErrorMessage,
+  isRequestedACPClosure,
+} from "./acp/client.js";
 import {
   copyAgentctlBashEnvInto,
   createAgentctlSessionEnvBridge,
@@ -108,6 +116,7 @@ import type {
   ProviderName,
   StartSessionOptions,
 } from "./types.js";
+import { assertProviderForkSource } from "./types.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -345,6 +354,7 @@ export interface GrokACPProviderConfig {
  * permission requests to YA's approval flow.
  */
 export class GrokACPProvider implements AgentProvider {
+  readonly supportsNativeResumeSource = true;
   readonly name: ProviderName = "grok";
   readonly displayName = "Grok Build";
   readonly supportsPermissionMode = true;
@@ -356,6 +366,11 @@ export class GrokACPProvider implements AgentProvider {
    * do not cancel the turn (`supportsSteerNow` stays unset).
    */
   readonly supportsSteering = true;
+  readonly steering = {
+    selection: "per-message",
+    modes: ["gentle"],
+    defaultMode: "gentle",
+  } as const;
 
   private readonly grokPath?: string;
   private readonly createClient: () => ACPClient;
@@ -535,7 +550,62 @@ export class GrokACPProvider implements AgentProvider {
   /**
    * Start a new Grok ACP session.
    */
+  async getNewSessionNamespace(cwd: string) {
+    return {
+      family: "grok" as const,
+      storageScope: await nativeStorageScope(
+        resolve(
+          await realpath(cwd),
+          join(process.env.GROK_HOME || join(homedir(), ".grok"), "sessions"),
+        ),
+      ),
+    };
+  }
+
   async startSession(options: StartSessionOptions): Promise<AgentSession> {
+    const source = options.nativeResumeSource;
+    if (source) {
+      if (
+        !options.resumeSessionId ||
+        !source.filePath ||
+        options.executor ||
+        options.sessionSandbox
+      )
+        throw new Error(
+          "Grok scoped continuation requires its local native source",
+        );
+      assertProviderForkSource(
+        {
+          nativeSessionId: parseNativeSessionId(options.resumeSessionId),
+          nativeSource: source,
+        },
+        this.name,
+      );
+      const home = process.env.GROK_HOME || join(homedir(), ".grok");
+      if (!isAbsolute(home))
+        throw new Error(
+          "Grok scoped continuation requires an absolute native home",
+        );
+      const scope = await realpath(join(home, "sessions"));
+      const path = relative(scope, await realpath(source.filePath));
+      if (
+        scope !== source.native.storageScope ||
+        !path ||
+        path === ".." ||
+        path.startsWith(".." + sep) ||
+        isAbsolute(path)
+      )
+        throw new Error(
+          "Grok continuation is outside the launch session store",
+        );
+      if (
+        (await realpath(fromUrlProjectId(source.projectId))) !==
+        (await realpath(options.cwd))
+      )
+        throw new Error(
+          "Grok continuation cannot change its native working project",
+        );
+    }
     const queue = new MessageQueue();
     const abortController = new AbortController();
 
@@ -550,7 +620,7 @@ export class GrokACPProvider implements AgentProvider {
       promptError: null,
     };
     const agentctlSessionEnvBridge = createAgentctlSessionEnvBridge(
-      options.resumeSessionId,
+      options.publicSessionId ?? options.resumeSessionId,
       options.getSessionChildEnv,
     );
     const iterator = this.runSession(
@@ -568,12 +638,14 @@ export class GrokACPProvider implements AgentProvider {
       queue,
       abort: () => {
         abortController.abort();
-        client.close();
+        const closed = client.close();
         agentctlSessionEnvBridge.cleanup();
+        return closed;
       },
       get pid() {
         return client.pid;
       },
+      isProcessAlive: () => client.isProcessAlive,
       publishAgentctlSessionId: (sessionId, browserDebugEnvironment) => {
         agentctlSessionEnvBridge.publishSessionId(
           sessionId,
@@ -598,6 +670,7 @@ export class GrokACPProvider implements AgentProvider {
     commandInventory: GrokCommandInventory,
     agentctlSessionEnvBridge: AgentctlSessionEnvBridge,
   ): AsyncIterableIterator<SDKMessage> {
+    if (signal.aborted) return;
     const grokPath = await this.findGrokPath();
     if (!grokPath) {
       agentctlSessionEnvBridge.cleanup();
@@ -650,6 +723,13 @@ export class GrokACPProvider implements AgentProvider {
       this.handleExtensionMethod(method, params, options, signal),
     );
 
+    const input = queue[Symbol.asyncIterator]();
+    const stopInput = () => {
+      void input.return();
+    };
+    signal.addEventListener("abort", stopInput);
+    void client.closed?.then(stopInput);
+    if (signal.aborted) stopInput();
     try {
       const connectStart = Date.now();
       const xaiApiKey = this.ambientXaiApiKey;
@@ -661,7 +741,7 @@ export class GrokACPProvider implements AgentProvider {
           : {}),
       };
       copyAgentctlBashEnvInto(extraEnv, agentctlSessionEnvBridge, {
-        sessionId: options.resumeSessionId,
+        sessionId: options.publicSessionId ?? options.resumeSessionId,
       });
       await client.connect({
         command: grokPath,
@@ -705,8 +785,7 @@ export class GrokACPProvider implements AgentProvider {
             { err: loadErr, resumeSessionId: options.resumeSessionId },
             "Failed to load Grok ACP session",
           );
-          const detail =
-            loadErr instanceof Error ? loadErr.message : String(loadErr);
+          const detail = acpErrorMessage(loadErr);
           throw new Error(
             `Failed to load Grok session ${options.resumeSessionId}: ${detail}`,
           );
@@ -716,7 +795,9 @@ export class GrokACPProvider implements AgentProvider {
         this.log.debug({ sessionId }, "Grok ACP session created");
       }
       runtime.sessionId = sessionId;
-      agentctlSessionEnvBridge.publishSessionId(sessionId);
+      agentctlSessionEnvBridge.publishSessionId(
+        options.publicSessionId ?? sessionId,
+      );
 
       // Emit init
       yield {
@@ -731,7 +812,7 @@ export class GrokACPProvider implements AgentProvider {
       } as SDKMessage;
 
       // Process messages from the queue (identical pattern to gemini-acp)
-      const messageGen = queue;
+      const messageGen = input;
       let isFirstNewMessage = true;
       for await (const message of messageGen) {
         if (signal.aborted) break;
@@ -771,7 +852,7 @@ export class GrokACPProvider implements AgentProvider {
           sessionId,
           userText,
           runtime,
-          { recordError: true },
+          { recordError: true, signal },
         );
         void promptPromise.catch(() => undefined);
 
@@ -785,6 +866,8 @@ export class GrokACPProvider implements AgentProvider {
           yield msg;
         }
         await promptPromise;
+        if (!signal.aborted)
+          options.onNativeInputConsumed?.(sessionId, userUuid);
         this.log.debug(
           { durationMs: Date.now() - promptStart },
           "Grok prompt complete",
@@ -796,15 +879,18 @@ export class GrokACPProvider implements AgentProvider {
         } as SDKMessage;
       }
     } catch (err) {
+      if (isRequestedACPClosure(err, signal)) return;
       this.log.error({ err }, "Grok ACP session error");
       yield {
         type: "error",
-        error: err instanceof Error ? err.message : String(err),
+        error: acpErrorMessage(err),
       } as SDKMessage;
     } finally {
+      signal.removeEventListener("abort", stopInput);
+      await input.return();
       runtime.sessionId = undefined;
       runtime.activePromptCount = 0;
-      client.close();
+      await client.close();
       agentctlSessionEnvBridge.cleanup();
     }
   }
@@ -1367,13 +1453,16 @@ export class GrokACPProvider implements AgentProvider {
     sessionId: string,
     text: string,
     runtime: GrokPromptRuntime,
-    options: { recordError?: boolean } = {},
+    options: { recordError?: boolean; signal?: AbortSignal } = {},
   ): Promise<unknown> {
     runtime.activePromptCount++;
     try {
       return await client.prompt(sessionId, text);
     } catch (err) {
-      if (options.recordError) {
+      if (
+        options.recordError &&
+        !(options.signal && isRequestedACPClosure(err, options.signal))
+      ) {
         runtime.promptError = err;
         this.log.error({ err }, "Grok prompt error");
       }

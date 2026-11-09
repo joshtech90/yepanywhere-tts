@@ -251,6 +251,13 @@ Restart-impact reporting applies the same eligibility test: a hosted active
 session is counted as interruptible whenever queued or volatile input prevents
 detach.
 
+Once intentional detach begins, completion or failure of the old controller's
+iterator retires only that controller. It must not abort the retained worker or
+resolve its pending approvals as denied. Old input admission stays closed;
+the replacement controller and existing host attachment deadline own subsequent
+recovery and cleanup. An unexpected managed stream exit outside this handoff
+still verifies provider teardown before replacement ownership is released.
+
 ### Sequenced replay and acknowledgement
 
 Every worker event receives a monotonically increasing sequence number before
@@ -821,12 +828,33 @@ mode still runs the backend from source, keeps the manual reload API and source
 change notification, and preserves the provider-host lifecycle above. Hono uses
 `NODE_ENV=production` in this mode, so development-only debug routes are absent.
 
-Startup builds before admitting the backend. Each requested reload builds into
-a separate directory while the incumbent backend remains available, then
-replaces Hono only after that build succeeds. A failed build keeps the incumbent
-backend and client. Source client edits therefore appear after a successful
-reload and browser refresh, rather than on each file save. Builds are rebuilt
-on each reload; there is no source-fingerprint build cache.
+Startup builds before admitting the backend. Each requested reload checks the
+client build's inputs and output. Unchanged inputs and intact output reuse the
+wrapper's current build; otherwise it builds into a separate directory while
+the incumbent backend remains available. Hono is replaced only after successful
+preparation. A failed build, or an input change detected across the build, keeps
+the incumbent backend and client. Source client edits therefore appear after a
+successful reload and browser refresh, rather than on each file save.
+
+The input fingerprint hashes file contents, including additions and deletions,
+under client `src`, `public`, `preboot`, shared `src`, and dependency `patches`;
+client/shared top-level files cover HTML, Vite plugins, configuration and env
+files. Root package/workspace/TypeScript/package-manager configuration and the
+pnpm source/installed lockfiles and install metadata also participate. Changes
+to the Git-derived app version, runtime identity or build environment invalidate
+reuse. Package installations are identified by their lockfiles and pnpm install
+metadata; hand-editing installed dependency code requires a wrapper restart.
+New build inputs outside these roots must join the fingerprint inventory.
+The client build environment is captured before runtime control credentials are
+added, and remains fixed for the wrapper lifetime. No environment values or
+source contents are stored in the cache record, only hashes.
+
+All emitted files are checked before reuse; missing or altered output forces a
+rebuild and is not carried into the new generation. Input checking and build
+preparation report elapsed milliseconds under `[ClientBuild]`. This optimization
+does not defer metadata initialization or provider recovery, and a fresh wrapper
+still builds once. An existing wrapper must restart to adopt this behavior;
+replacing Hono alone leaves the old wrapper code running.
 
 The static server revalidates HTML and gives hashed assets immutable browser
 cache headers. Each generation also carries its predecessor's original assets
@@ -835,6 +863,11 @@ Retention is bounded to those two asset generations; older tabs may need a
 refresh after further reloads. Build directories belong to the wrapper under
 `node_modules/.cache/ya-client/`; replaced directories and normal-shutdown
 builds are removed. Separate wrappers never write the same directory.
+
+**Design decision:** reuse only the incumbent wrapper's verified build, rather
+than adding a cross-wrapper disk cache. This removes unchanged-reload build work
+while retaining existing directory ownership, bounded asset retention and
+cleanup. Content hashes avoid accepting same-size, preserved-mtime source edits.
 
 For a local built `/new-session` document, HTML parsing starts module preloads
 for the app shell, navigation layout and New Session page plus their static
@@ -1163,6 +1196,27 @@ The smoke should use a deterministic fake or pinned provider fixture for CI and
 one real Codex run for integration confidence. Upstream's own rejoin tests are
 historical evidence for the retired app-server path but do not cover the shared
 worker's YA identity, normalization, fan-out, sandboxing, or teardown.
+
+## Real executable app qualification — 2026-11-04
+
+[Native provider testing](native-provider-testing.md#full-source-app-and-dev-reload-qualification)
+owns the separate `pnpm test:providers:app` and `--browser` scenarios. They use
+actual Claude/Codex executables against scripted model APIs through the real
+source wrapper, Hono, Vite and production provider host/worker. They complement
+the lower-level deterministic fault peers and paid/live acceptance.
+
+Local macOS arm64 acceptance covers requested API/frontend replacement and
+unexpected Hono loss during held output, a pending native approval, an actual
+running tool emitting dense output, volatile-queue safe-restart blockers,
+browser draft/typing/reconnect, subsequent turns and persisted history after
+refresh. Worker/native identities survive; owned processes are reaped afterward.
+Four API cases pass; six browser cases (three repetitions per provider) pass
+without retries. The separate manual workflow retains Linux/macOS acceptance.
+
+This bounded schedule did not reproduce or explain the historical macOS owner
+exit. Keep that gap open and keep macOS hosting opt-in. Wrapper/host death,
+terminal signal ladders, authenticated relay recovery and sustained real-world
+inference remain separate evidence; do not infer them from Hono replacement.
 
 ## Rejected Or Deferred Alternatives
 

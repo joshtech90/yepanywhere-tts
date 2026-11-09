@@ -1,10 +1,32 @@
+import {
+  agentApiCallerLaunch,
+  effectiveGlobalInstructions,
+  reviewLaunchDefaults,
+} from "./sessions/derived-launch-sources.js";
+import { AuthorizedRelationshipSource } from "./sessions/authorized-relationship-source.js";
+import { createSessionRelationshipRead } from "./sessions/session-relationship-read.js";
+import { createSessionRelationshipRoutes } from "./routes/session-relationships.js";
+import { ProviderChildRelationshipService } from "./sessions/ProviderChildRelationshipService.js";
+import { NestedHarnessRelationshipService } from "./sessions/NestedHarnessRelationshipService.js";
+import { CreationAttachments } from "./sessions/creation-attachments.js";
 import { localPeerHost } from "./peer-api/connection-contracts.js";
+import {
+  isYaSessionId,
+  isUrlProjectId,
+  parseNativeSessionId,
+  nativeSessionFamily,
+  nativeSessionRef,
+  parseYaSessionId,
+  type NativeSessionRef,
+} from "@yep-anywhere/shared";
 import { getAuthenticatedSrpTransport } from "./middleware/authenticated-transport.js";
 import type { PeerAccessManager } from "./peer-api/manager.js";
 import { createPeerOwnerBinding } from "./peer-api/owner-proof.js";
 import { createPeerManagementRoutes } from "./peer-api/routes.js";
 import { API_OWNER_VARIABLE } from "./core-api/contracts.js";
 import { ApiReceiptStore } from "./core-api/receipt-store.js";
+import { profileSessionRelationships } from "./sessions/SessionRelationshipWriter.js";
+import { reconcileSessionRelationships } from "./sessions/session-relationship-reconciliation.js";
 import { SessionCommands } from "./core-api/session-commands.js";
 import { nativeSessionCommandOwner } from "./core-api/native-session-commands.js";
 import type { MiddlewareHandler, Context } from "hono";
@@ -23,6 +45,7 @@ import { productionApiSources } from "./core-api/production-sources.js";
 import { createV0Routes } from "./routes/v0/index.js";
 import { PRINCIPAL_VARIABLE, SUPERUSER } from "./auth/principal.js";
 import { AgentAuthRouter } from "./services/AgentAuthRouter.js";
+import { readClaudeAiLogin } from "./sdk/providers/claude.js";
 import { createAgentAuthRouterRoutes } from "./routes/agent-auth-router.js";
 import { DraftStore } from "./drafts/DraftStore.js";
 import { createDraftRoutes } from "./routes/drafts.js";
@@ -79,7 +102,6 @@ import {
 } from "./middleware/allowed-hosts.js";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type {
-  AppSession,
   ProviderName,
   SafeRestartPreservedWork,
   UrlProjectId,
@@ -87,12 +109,13 @@ import type {
 import {
   DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
   clampClearloopInactivitySeconds,
+  getSessionDisplayTitle,
   toUrlProjectId,
+  fromUrlProjectId,
 } from "@yep-anywhere/shared";
 import {
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   DEFAULT_PROVIDER,
-  buildEffectiveAgentContext,
   clampProjectQueueQuietSeconds,
   DEFAULT_ISSUE_SETTINGS,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
@@ -106,7 +129,9 @@ import {
 import { Hono } from "hono";
 import { compress } from "hono/compress";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { realpath } from "node:fs/promises";
+import { hashProjectPath } from "./projects/gemini-project-map.js";
 import type { AuthService } from "./auth/AuthService.js";
 import { createAuthRoutes } from "./auth/routes.js";
 import type { UserUsageService } from "./auth/UserUsageService.js";
@@ -187,8 +212,9 @@ import {
   GROK_SESSIONS_DIR,
   PI_SESSIONS_DIR,
   decodeProjectId,
+  readCwdFromSessionFile,
   getProjectName,
-  grokSessionMediaRoots,
+  getProjectIdentityKey,
   type ProjectDisplayNameResolver,
 } from "./projects/paths.js";
 import { ProjectScanner } from "./projects/scanner.js";
@@ -221,7 +247,6 @@ import { createDevRoutes } from "./routes/dev.js";
 import { createDesktopBootstrapRoutes } from "./routes/desktop-bootstrap.js";
 import { createDeviceRoutes } from "./routes/devices.js";
 import { createFilesRoutes } from "./routes/files.js";
-import { canonicalizeManagedAttachmentPath } from "./uploads/attachmentAccess.js";
 import { createBangCommandsRoutes } from "./routes/bang-commands.js";
 import { BangCommandService } from "./services/BangCommandService.js";
 import {
@@ -250,6 +275,13 @@ import {
 } from "./routes/session-list-options.js";
 import { RetainedSessionCollections } from "./services/RetainedSessionCollections.js";
 import { collectionCatalogAdapters } from "./sessions/catalog-adapters/collection-catalog-adapters.js";
+import { readClaudeCatalogHead } from "./sessions/claude-summary.js";
+import { readCodexRolloutMetadata } from "./sessions/codex-discovery.js";
+import {
+  metadataForNativeCatalogRow,
+  projectCatalogIdentities,
+} from "./sessions/catalog-identity.js";
+import { resolveExistingSessionIdentity } from "./routes/session-existing-identity.js";
 import {
   providerCatalogFamily,
   type ProviderCatalogFamily,
@@ -264,12 +296,15 @@ import { createSupervisorReviewLauncher } from "./review/reviewSessionLauncher.j
 import { countBusyProcesses, health } from "./routes/health.js";
 import { createInboxRoutes } from "./routes/inbox.js";
 import { createNetworkBindingRoutes } from "./routes/network-binding.js";
-import { createOnboardingRoutes } from "./routes/onboarding.js";
-import { createHostAgentProcessesRoutes } from "./routes/host-agent-processes.js";
 import {
-  createProcessesRoutes,
-  describeCatalogSession,
-} from "./routes/processes.js";
+  formatListenerAddress,
+  type NetworkListenerControl,
+} from "./network/listeners.js";
+import { createOnboardingRoutes } from "./routes/onboarding.js";
+import { HostAgentProcessService } from "./services/HostAgentProcessService.js";
+import { describeNativeProcessSessions } from "./services/host-process-catalog.js";
+import { createHostAgentProcessesRoutes } from "./routes/host-agent-processes.js";
+import { createProcessesRoutes } from "./routes/processes.js";
 import {
   createGlobalProjectQueueRoutes,
   createProjectQueueRoutes,
@@ -278,13 +313,7 @@ import { createProjectsRoutes } from "./routes/projects.js";
 import { createDirectoryBrowseRoutes } from "./routes/directory-browse.js";
 import { createProvidersRoutes } from "./routes/providers.js";
 import { createCodexUpdateRoutes } from "./routes/codex-updates.js";
-import { createPublicFileShareRoutes } from "./routes/public-file-shares.js";
-import {
-  createPublicSharePublicRoutes,
-  createPublicShareRoutes,
-} from "./routes/public-shares.js";
-import { createPublicShareManagementFreezeRoutes } from "./routes/public-share-management-freeze.js";
-import { createPublicShareManagementRoutes } from "./routes/public-share-management.js";
+import { mountPublicShareRoutes } from "./routes/public-share-mounting.js";
 import { createRecentsRoutes } from "./routes/recents.js";
 import {
   createServerAdminRoutes,
@@ -333,7 +362,6 @@ import {
   type VersionRouteOptions,
 } from "./routes/version.js";
 import { createProviderHostRoutes } from "./routes/provider-host.js";
-import { WS_INTERNAL_AUTHENTICATED } from "./middleware/internal-auth.js";
 import {
   configureProviderRuntime,
   getAllProviders,
@@ -345,15 +373,8 @@ import type {
   CodexPlanToolMode,
 } from "@yep-anywhere/shared";
 import type { AgentProvider } from "./sdk/providers/types.js";
-import type {
-  ClaudeSDK,
-  PermissionMode,
-  RealClaudeSDKInterface,
-} from "./sdk/types.js";
-import {
-  PublicShareCaptureError,
-  type PublicShareService,
-} from "./services/PublicShareService.js";
+import type { PermissionMode } from "./sdk/types.js";
+import type { PublicShareService } from "./services/PublicShareService.js";
 import { AttachmentStagingService } from "./uploads/AttachmentStagingService.js";
 import type { BrowserProfileService } from "./services/BrowserProfileService.js";
 import type { BrowserSettingsBackupService } from "./services/BrowserSettingsBackupService.js";
@@ -403,11 +424,15 @@ import { createSpeechVocabularyRoutes } from "./routes/speech-vocabulary.js";
 import { CodexSessionReader } from "./sessions/codex-reader.js";
 import { createCodexSessionDiscoveryIndex } from "./sessions/codex-discovery.js";
 import { GeminiSessionReader } from "./sessions/gemini-reader.js";
+import { nativeCatalogAdapters } from "./sessions/catalog-adapters/native-catalog-registry.js";
+import { AntigravitySessionReader } from "./sessions/antigravity-reader.js";
 import { GrokSessionReader } from "./sessions/grok-reader.js";
 import { MergedSessionReader } from "./sessions/merged-reader.js";
 import { OpenCodeSessionReader } from "./sessions/opencode-reader.js";
 import { PiSessionReader } from "./sessions/pi-reader.js";
 import {
+  boundSessionSource,
+  resolveLegacySessionSource,
   findSessionListSummaryAcrossProviders,
   findSessionSummaryAcrossProviders,
   getSessionSourceForProvider,
@@ -441,22 +466,26 @@ export interface AppOptions {
   artifacts?: ArtifactConfig;
   /** Explicit provider override; null suppresses ambient provider discovery. */
   provider?: AgentProvider | null;
-  /** Legacy SDK interface for mock SDK (for testing) */
-  sdk?: ClaudeSDK;
-  /** Real SDK interface with full features */
-  realSdk?: RealClaudeSDKInterface;
   projectsDir?: string; // override for testing
   codexSessionsDir?: string; // override for testing
   geminiSessionsDir?: string; // override for testing
   grokSessionsDir?: string; // override for testing
   piSessionsDir?: string; // override for testing
+  antigravitySessionsDir?: string; // override for testing
   idleTimeoutMs?: number;
   /** Test-only session-detail augmentation delay for performance clock probes. */
   persistedAugmentDelayMs?: number;
   defaultPermissionMode?: PermissionMode;
   /** EventBus for file change events */
   eventBus?: EventBus;
-  /** WebSocket upgrader from @hono/node-ws (optional) */
+  /** Provider observer startup handover; internal, independent of wire events. */
+  subscribeProviderObservationReady?: (
+    listener: (family: ProviderCatalogFamily) => void,
+  ) => () => void;
+  subscribeNativeProviderFileChanges?: (
+    listener: (event: import("./watcher/EventBus.js").FileChangeEvent) => void,
+  ) => () => void;
+  /** WebSocket upgrader from @hono/node-server (optional) */
   upgradeWebSocket?: UploadDeps["upgradeWebSocket"];
   /** NotificationService for tracking session read state */
   notificationService?: NotificationService;
@@ -553,18 +582,7 @@ export interface AppOptions {
    * Holder for network binding change callbacks.
    * The callbacks are set after startServer() initializes the servers.
    */
-  networkBindingCallbackHolder?: {
-    onLocalhostPortChange?: (
-      port: number,
-    ) => Promise<{ success: boolean; error?: string; redirectUrl?: string }>;
-    onNetworkBindingChange?: (
-      config: { host: string; port: number } | null,
-    ) => Promise<{ success: boolean; error?: string }>;
-    /** Live accessor for the addresses the server is actually listening on. */
-    getActiveListeners?: () => string[];
-    /** Live localhost port after an optional port-0 bind. */
-    getLocalhostPort?: () => number;
-  };
+  networkBindingCallbackHolder?: { listeners?: NetworkListenerControl };
   /** ConnectedBrowsersService for tracking active browser connections */
   connectedBrowsers?: ConnectedBrowsersService;
   /** BrowserProfileService for tracking browser profile origins */
@@ -637,7 +655,10 @@ export interface AppResult {
   /** Project scanner for debug API access */
   scanner: ProjectScanner;
   /** Session reader factory for debug API access */
-  readerFactory: (project: Project) => ISessionReader;
+  readerFactory: (
+    project: Project,
+    native?: NativeSessionRef,
+  ) => ISessionReader;
   /** Close cached session readers and their owned parser workers. */
   disposeSessionReaders: () => Promise<void>;
   /** Stop push generation and supervisor automation before provider shutdown. */
@@ -726,6 +747,7 @@ export function createApp(options: AppOptions): AppResult {
         options.sessionMetadataService?.getAllMetadata() ?? {},
       ).some((metadata) => metadata.provider === "claude-ollama"),
     getProviderRuntimeSnapshot: () => ({
+      steeringModes: options.serverSettingsService?.getSetting("steeringModes"),
       codexCliPath: options.codexCliPath,
       codexPlanToolMode:
         options.serverSettingsService?.getSetting("codexPlanToolMode") ??
@@ -835,7 +857,6 @@ export function createApp(options: AppOptions): AppResult {
   let agentApiController: { read: ApiReadPort } | undefined;
   let apiCommands: SessionCommands | undefined;
   let apiReceipts: ApiReceiptStore | undefined;
-  let releaseApiRemaps: (() => void) | undefined;
   try {
     publicServerId = readServerIdentity(discoverySqlite.getDatabase());
   } catch (error) {
@@ -843,6 +864,17 @@ export function createApp(options: AppOptions): AppResult {
     throw error;
   }
   let draftStore: DraftStore | undefined;
+  // Embedders can supply metadata on another connection to this same profile.
+  // Share statements by exact connection; each source's graph write remains in
+  // its own transaction, while both connections read the same committed SQL.
+  const sessionRelationships = profileSessionRelationships(
+    discoverySqlite.getDatabase(),
+    publicServerId,
+  );
+  const authorizedRelationships = new AuthorizedRelationshipSource(
+    discoverySqlite.getDatabase(),
+    () => sessionRelationships.index,
+  );
   try {
     draftStore = new DraftStore(discoverySqlite.getDatabase());
   } catch (error) {
@@ -958,6 +990,19 @@ export function createApp(options: AppOptions): AppResult {
     return grants && withPathGrantProjects(grants, knownProjectsForGrants());
   };
   const sessionAccessResolver = new SessionAccessResolver({
+    getCreationSession: (sessionId) => {
+      if (sessionReadLifetime.signal.aborted || !isYaSessionId(sessionId))
+        return undefined;
+      const metadata = options.sessionMetadataService;
+      const identity = metadata?.identities?.resolveYa(sessionId);
+      return identity && metadata?.creations?.statusForSession(sessionId)
+        ? {
+            projectId: identity.projectId,
+            provider: identity.provider,
+            nativeBound: identity.native !== null,
+          }
+        : undefined;
+    },
     getLiveSession: (sessionId) => {
       const process = supervisor?.getProcessForSession(sessionId);
       if (!process) return undefined;
@@ -971,7 +1016,10 @@ export function createApp(options: AppOptions): AppResult {
       };
     },
     // The one retained catalog All Sessions and Inbox read, built below.
-    getCatalogVersion: () => retainedCollections?.getVersion(),
+    getCatalogVersion: () =>
+      sessionReadLifetime.signal.aborted
+        ? undefined
+        : `${retainedCollections?.getVersion() ?? ""}/${options.sessionMetadataService?.creations?.generation ?? 0}`,
     readCatalogRows: async () => {
       if (!retainedCollections) {
         throw new Error("Session catalog read before the app was built");
@@ -984,7 +1032,13 @@ export function createApp(options: AppOptions): AppResult {
         await retainedCollections.refresh();
         ({ rows } = await retainedCollections.read());
       }
-      return rows.map((row) => ({
+      return (
+        await projectCatalogIdentities(
+          rows,
+          options.sessionMetadataService,
+          sessionReadLifetime.signal,
+        )
+      ).map((row) => ({
         sessionId: row.sessionId,
         projectId: row.projectId,
         provider: row.provider ?? row.catalogFamily,
@@ -1188,7 +1242,26 @@ export function createApp(options: AppOptions): AppResult {
   // Sandboxed Claude sessions write their transcripts under the project's
   // private provider root (topics/session-sandboxing.md); every reader and
   // list of a project must include those directories.
-  const claudeSandboxSessionDirs = (): Map<string, string[]> => {
+  // Every project lookup asks, so the scan over all session metadata runs
+  // once per metadata revision.
+  let sandboxSessionDirsMemo:
+    | {
+        revision: number;
+        byProject: ReadonlyMap<string, readonly string[]>;
+      }
+    | undefined;
+  const claudeSandboxSessionDirs = (): ReadonlyMap<
+    string,
+    readonly string[]
+  > => {
+    const revision = options.sessionMetadataService?.getRevision() ?? 0;
+    if (sandboxSessionDirsMemo?.revision === revision)
+      return sandboxSessionDirsMemo.byProject;
+    const byProject = scanClaudeSandboxSessionDirs();
+    sandboxSessionDirsMemo = { revision, byProject };
+    return byProject;
+  };
+  const scanClaudeSandboxSessionDirs = (): Map<string, string[]> => {
     const byProject = new Map<string, string[]>();
     for (const metadata of Object.values(
       options.sessionMetadataService?.getAllMetadata() ?? {},
@@ -1221,7 +1294,31 @@ export function createApp(options: AppOptions): AppResult {
     }
     return byProject;
   };
+  let retainedCollections: RetainedSessionCollections | undefined;
+  const getCatalogFamilies =
+    options.getCatalogFamilies ??
+    (() =>
+      (options.sessionMetadataService?.getRecordedProviders() ?? []).map(
+        providerCatalogFamily,
+      ));
+  const nativeStores = () =>
+    nativeCatalogAdapters(getCatalogFamilies(), {
+      grokSessionsDir,
+      piSessionsDir,
+      antigravitySessionsDir: options.antigravitySessionsDir,
+    });
   const scanner = new ProjectScanner({
+    catalogProjects: {
+      read: (refresh) =>
+        retainedCollections?.readProjects(refresh) ??
+        Promise.resolve({ projects: [], complete: false, version: "starting" }),
+      peek: () =>
+        retainedCollections?.peekProjects() ?? {
+          projects: [],
+          complete: false,
+          version: "starting",
+        },
+    },
     getSandboxSessionDirs: claudeSandboxSessionDirs,
     projectsDir: options.projectsDir,
     codexScanner,
@@ -1246,6 +1343,15 @@ export function createApp(options: AppOptions): AppResult {
       options.projectMetadataService?.getAllProjects() ?? {},
     ))
       known.set(id, metadata.path);
+    if (!sessionReadLifetime.signal.aborted)
+      for (const row of options.sessionMetadataService?.creations?.listProjections() ??
+        []) {
+        if (row.deleted) continue;
+        const id =
+          options.sessionMetadataService?.getMetadata(row.sessionId)
+            ?.workingProjectId ?? row.projectId;
+        known.set(id, fromUrlProjectId(id));
+      }
     return [...known].map(([id, path]) => ({ id, path }));
   };
   const glossaryIndexService = new GlossaryIndexService();
@@ -1484,10 +1590,30 @@ export function createApp(options: AppOptions): AppResult {
         await localResourcePathPolicy.resolveAllowedFilePath(absolutePath);
       return resolved.ok ? resolved.file.resolvedPath : null;
     },
-    providerSourceRoots: ({ provider, projectPath, sessionId }) =>
-      provider === "grok"
-        ? grokSessionMediaRoots(grokSessionsDir, projectPath, sessionId)
-        : [],
+    providerSourceRoots: async ({ provider, projectPath, sessionId }) => {
+      if (provider !== "grok" || sessionReadLifetime.signal.aborted) return [];
+      const identity = await resolveExistingSessionIdentity({
+        sessionId,
+        requestProjectId: toUrlProjectId(projectPath),
+        preferredProvider: provider,
+        metadata: options.sessionMetadataService?.getMetadata(sessionId),
+        scanner,
+        providerDeps: sessionProviderResolutionDeps(),
+      });
+      if (
+        identity?.native?.family !== "grok" ||
+        sessionReadLifetime.signal.aborted
+      )
+        return [];
+      const reader = readerFactory(
+        { ...identity.transcriptProject, provider: identity.provider },
+        identity.native,
+      );
+      const file = await reader.getSessionFilePath?.(identity.native.id);
+      return file && !sessionReadLifetime.signal.aborted
+        ? [join(dirname(file), "images"), join(dirname(file), "videos")]
+        : [];
+    },
   });
   const bangCommandService =
     options.sessionMetadataService && options.dataDir
@@ -1499,6 +1625,95 @@ export function createApp(options: AppOptions): AppResult {
       : null;
   /** Least recently used first; bounded by `maxReaderCacheSize`. */
   const readerCache = createLruMap<string, ISessionReader>();
+  const sessionReadLifetime = new AbortController();
+  const relationshipRead = options.sessionMetadataService
+    ? createSessionRelationshipRead({
+        serverId: publicServerId,
+        source: (scope) => authorizedRelationships.scoped(() => scope),
+        identities: options.sessionMetadataService.identities,
+        metadata: options.sessionMetadataService,
+        isDeleted: (id) =>
+          isYaSessionId(id) &&
+          options.sessionMetadataService!.creations.statusForSession(id)
+            ?.state === "deleted",
+        signal: sessionReadLifetime.signal,
+      })
+    : undefined;
+  const relationshipReconciliation = reconcileSessionRelationships(
+    discoverySqlite.getDatabase(),
+    sessionRelationships,
+    sessionReadLifetime.signal,
+    (id) => apiReceipts!.resolveId(id),
+  ).catch((error) => {
+    getLogger().error(
+      { event: "session_relationship_reconciliation_failed", error },
+      "Session relationship reconciliation stopped; retained progress will resume on restart",
+    );
+  });
+  const providerChildRelationships = new ProviderChildRelationshipService(
+    discoverySqlite.getDatabase(),
+    publicServerId,
+    ({ sessionId }) =>
+      options.eventBus?.emit({
+        type: "session-metadata-changed",
+        sessionId,
+        timestamp: new Date().toISOString(),
+      }),
+    (error) =>
+      getLogger().debug(
+        { event: "provider_child_observation_failed", error },
+        "Provider child observation unavailable",
+      ),
+    () => sessionRelationships.index,
+  );
+  const harnessRelationships = new NestedHarnessRelationshipService(
+    discoverySqlite.getDatabase(),
+    sessionRelationships,
+    options.sessionMetadataService?.identities,
+    (sessionId) =>
+      options.eventBus?.emit({
+        type: "session-metadata-changed",
+        sessionId,
+        timestamp: new Date().toISOString(),
+      }),
+    (error) =>
+      getLogger().debug(
+        { event: "nested_harness_observation_unavailable", error },
+        "Nested harness evidence unavailable",
+      ),
+    (sessionId) => {
+      const metadata = options.sessionMetadataService;
+      const admission = metadata?.creations.admissionForSession(
+        parseYaSessionId(sessionId),
+      );
+      return (
+        admission && {
+          ...admission,
+          confined:
+            metadata!.getMetadata(sessionId)?.sandboxLevel !== "none" ||
+            metadata!.getMetadata(sessionId)?.sandboxEverConfined !== false,
+        }
+      );
+    },
+  );
+  const unsubscribeProviderChildChanges = options.eventBus?.subscribe(
+    (event) => {
+      if (event.type === "file-change") {
+        providerChildRelationships.notifyNativeFileChange(event);
+        harnessRelationships.notifyFileChange(event);
+      }
+    },
+  );
+  const unsubscribeProviderObservationReady =
+    options.subscribeProviderObservationReady?.((family) => {
+      providerChildRelationships.observationReady(family);
+      harnessRelationships.observationReady(family);
+    });
+  const unsubscribeNativeProviderFileChanges =
+    options.subscribeNativeProviderFileChanges?.((event) => {
+      providerChildRelationships.notifyNativeFileChange(event);
+      harnessRelationships.notifyFileChange(event);
+    });
   const projectFileCompletion = new ProjectFileCompletion(effectiveDataDir, {
     eventBus: options.eventBus,
   });
@@ -1514,13 +1729,80 @@ export function createApp(options: AppOptions): AppResult {
       console.warn(`[App] Failed to close session reader ${key}:`, error);
     }
   };
+  const focusedNativeFile = (
+    filePath: string,
+    native: Pick<NativeSessionRef, "family">,
+  ) => ({
+    filePath,
+    provider: native.family,
+    ...(native.family === "opencode" && filePath.endsWith("opencode.db")
+      ? { additionalFilePaths: [`${filePath}-wal`] }
+      : native.family === "grok"
+        ? {
+            additionalFilePaths: [
+              "chat_history.jsonl",
+              "events.jsonl",
+              "updates.jsonl",
+            ].map((name) => join(dirname(filePath), name)),
+          }
+        : {}),
+  });
   const focusedSessionWatchManager = new FocusedSessionWatchManager({
     scanner,
     codexScanner,
     geminiScanner,
+    resolveStoredSessionFile: async (
+      { sessionId, projectId, providerHint },
+      signal,
+    ) => {
+      if (signal.aborted || sessionReadLifetime.signal.aborted) return null;
+      const identity = isYaSessionId(sessionId)
+        ? options.sessionMetadataService?.identities?.resolveYa(sessionId)
+        : undefined;
+      if (!identity) {
+        const identities = options.sessionMetadataService?.identities;
+        if (!identities) return undefined;
+        if (!isUrlProjectId(projectId)) return null;
+        const project = await scanner.getOrCreateProject(projectId);
+        if (!project || signal.aborted) return null;
+        const deps = { ...sessionProviderResolutionDeps(), signal };
+        for (const source of getSessionSources(project, deps, providerHint)) {
+          const legacy = await resolveLegacySessionSource(
+            source,
+            sessionId,
+            project,
+            deps,
+          );
+          if (!legacy?.native || signal.aborted) continue;
+          const filePath = await legacy.source.reader.getSessionFilePath?.(
+            legacy.nativeSessionId,
+          );
+          if (signal.aborted) return null;
+          if (filePath && identities.canDiscoverNative(legacy.native))
+            return focusedNativeFile(filePath, legacy.native);
+        }
+        return null;
+      }
+      const native = identity.native;
+      if (
+        !native ||
+        !["claude", "codex", "opencode", "pi", "grok", "gemini"].includes(
+          native.family,
+        )
+      )
+        return null;
+      const project = await scanner.getOrCreateProject(identity.projectId);
+      if (!project || signal.aborted) return null;
+      const reader = readerFactory(
+        { ...project, provider: identity.provider },
+        native,
+      );
+      const filePath = await reader.getSessionFilePath?.(native.id);
+      return filePath ? focusedNativeFile(filePath, native) : null;
+    },
   });
   let conversationSubscriptions: ConversationSubscriptions | undefined;
-  let retainedCollections: RetainedSessionCollections | undefined;
+  let hostAgentProcessService: HostAgentProcessService | undefined;
   let issueIndexer: IssueIndexer | undefined;
   let issueConfirmer: IssueConfirmer | undefined;
   let issueContent: IssueContentRefresher | undefined;
@@ -1529,6 +1811,20 @@ export function createApp(options: AppOptions): AppResult {
   let vocabularyLearning: VocabularyLearning | undefined;
   let vocabularyKeyterms: VocabularyKeyterms | undefined;
   let unsubscribeVocabulary: (() => void) | undefined;
+  const unsubscribeCreationStatus = options.eventBus
+    ? options.sessionMetadataService?.creations.subscribeChanges(
+        (sessionId, creation) =>
+          options.eventBus!.emit({
+            type: "session-metadata-changed",
+            sessionId,
+            creation,
+            nativeSessionId:
+              options.sessionMetadataService!.identities.resolveYa(sessionId)
+                ?.native?.id,
+            timestamp: creation.updatedAt,
+          }),
+      )
+    : undefined;
   let sessionReadersDisposal: Promise<void> | undefined;
   const rendezCompose =
     draftStore && options.serverSettingsService && process.platform !== "win32"
@@ -1581,9 +1877,19 @@ export function createApp(options: AppOptions): AppResult {
     // Cache the promise before asynchronous cleanup can close shared services.
     sessionReadersDisposal ??= (async () => {
       await autoSessionTitleService?.stop();
+      sessionReadLifetime.abort();
+      unsubscribeProviderChildChanges?.();
+      unsubscribeProviderObservationReady?.();
+      unsubscribeNativeProviderFileChanges?.();
+      await providerChildRelationships.close();
+      authorizedRelationships.dispose();
+      await harnessRelationships.close();
+      await relationshipReconciliation;
+      unsubscribeCreationStatus?.();
+      hostAgentProcessService?.close();
+      externalTracker?.dispose();
       await options.peerAccess?.close();
       apiCommands?.close();
-      releaseApiRemaps?.();
       apiReceipts?.close();
       await supervisor.stopBackgroundTasks();
       await rendezCompose?.close();
@@ -1653,7 +1959,108 @@ export function createApp(options: AppOptions): AppResult {
    * Create a session reader appropriate for the project's provider.
    * Routes call this with the project to get the right reader.
    */
-  const readerFactory = (project: Project): ISessionReader => {
+  const readerFactory = (
+    project: Project,
+    native?: NativeSessionRef,
+  ): ISessionReader => {
+    if (native) {
+      if (nativeSessionFamily(project.provider) !== native.family) {
+        throw new Error("Native reader family does not match the YA session");
+      }
+      switch (native.family) {
+        case "claude": {
+          const mis = options.modelInfoService;
+          return getOrCreateReader(
+            `claude-bound::${native.storageScope}`,
+            () =>
+              new ClaudeSessionReader({
+                sessionDir: native.storageScope,
+                summaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
+                getContextWindow: mis
+                  ? (model, provider) => mis.getContextWindow(model, provider)
+                  : undefined,
+              }),
+          );
+        }
+        case "codex":
+          return getOrCreateReader(
+            `codex-extra::${native.storageScope}::${project.path}`,
+            () => {
+              const discoveryIndex = getCodexDiscoveryIndex(
+                native.storageScope,
+              );
+              return new CodexSessionReader({
+                sessionsDir: native.storageScope,
+                projectPath: project.path,
+                summaryParserWorkerMode: options.codexSummaryParserWorkerMode,
+                ...(discoveryIndex ? { discoveryIndex } : {}),
+              });
+            },
+          );
+        case "opencode":
+          return getOrCreateReader(
+            `opencode-bound::${native.storageScope}::${project.path}`,
+            () =>
+              new OpenCodeSessionReader({
+                projectPath: project.path,
+                databasePath: join(native.storageScope, "opencode.db"),
+                storageDir: join(native.storageScope, "storage"),
+                nativeStorageScope: native.storageScope,
+              }),
+          );
+        case "gemini":
+          return getOrCreateReader(
+            JSON.stringify(["gemini-bound", native.storageScope, project.path]),
+            () =>
+              new GeminiSessionReader({
+                sessionsDir: native.storageScope,
+                projectPath: project.path,
+                hashToCwd: realpath(project.path)
+                  .catch(() => project.path)
+                  .then(
+                    (physical) =>
+                      new Map([
+                        [hashProjectPath(project.path), project.path],
+                        [hashProjectPath(physical), project.path],
+                      ]),
+                  ),
+              }),
+          );
+        case "antigravity":
+          return getOrCreateReader(
+            `antigravity-bound::${native.storageScope}::${project.path}`,
+            () =>
+              new AntigravitySessionReader({
+                projectPath: project.path,
+                sessionsDir: native.storageScope,
+                catalogRows: async () =>
+                  (await retainedCollections?.read())?.rows ?? [],
+              }),
+          );
+        case "grok":
+          return getOrCreateReader(
+            JSON.stringify(["grok-bound", native.storageScope, project.path]),
+            () =>
+              new GrokSessionReader({
+                sessionsDir: native.storageScope,
+                projectPath: project.path,
+              }),
+          );
+        case "pi":
+          return getOrCreateReader(
+            `pi-bound::${native.storageScope}::${project.path}`,
+            () =>
+              new PiSessionReader({
+                sessionsDir: native.storageScope,
+                projectPath: project.path,
+              }),
+          );
+        default:
+          throw new Error(
+            "Native identity reader is not qualified for this provider",
+          );
+      }
+    }
     const mergedKey =
       project.mergedSessionDirs && project.mergedSessionDirs.length > 0
         ? `::merged=${project.mergedSessionDirs.join(",")}`
@@ -1786,6 +2193,17 @@ export function createApp(options: AppOptions): AppResult {
               projectPath: project.path,
             }),
         );
+      case "antigravity":
+        return getOrCreateReader(
+          `antigravity::${project.path}`,
+          () =>
+            new AntigravitySessionReader({
+              projectPath: project.path,
+              sessionsDir: options.antigravitySessionsDir,
+              catalogRows: async () =>
+                (await retainedCollections?.read())?.rows ?? [],
+            }),
+        );
       case "grok":
         return getOrCreateReader(
           `grok::${grokSessionsDir}::${project.path}`,
@@ -1806,19 +2224,19 @@ export function createApp(options: AppOptions): AppResult {
         );
     }
   };
-  const codexReaderFactory = (projectPath: string): CodexSessionReader =>
-    getOrCreateReader(
-      `codex-extra::${codexSessionsDir}::${projectPath}`,
-      () => {
-        const discoveryIndex = getCodexDiscoveryIndex(codexSessionsDir);
-        return new CodexSessionReader({
-          sessionsDir: codexSessionsDir,
-          projectPath,
-          summaryParserWorkerMode: options.codexSummaryParserWorkerMode,
-          ...(discoveryIndex ? { discoveryIndex } : {}),
-        });
-      },
-    );
+  const codexReaderFactory = (
+    projectPath: string,
+    nativeScope = codexSessionsDir,
+  ): CodexSessionReader =>
+    getOrCreateReader(`codex-extra::${nativeScope}::${projectPath}`, () => {
+      const discoveryIndex = getCodexDiscoveryIndex(nativeScope);
+      return new CodexSessionReader({
+        sessionsDir: nativeScope,
+        projectPath,
+        summaryParserWorkerMode: options.codexSummaryParserWorkerMode,
+        ...(discoveryIndex ? { discoveryIndex } : {}),
+      });
+    });
   const geminiReaderFactory = (projectPath: string): GeminiSessionReader =>
     getOrCreateReader(
       `gemini-extra::${geminiSessionsDir}::${projectPath}`,
@@ -1852,13 +2270,20 @@ export function createApp(options: AppOptions): AppResult {
     projectId: string,
     summaryOptions?: GetSessionSummaryOptions,
   ) => {
-    const project = await scanner.getProject(projectId);
-    if (!project) return null;
+    if (sessionReadersDisposal) return null;
+    const project = isUrlProjectId(projectId)
+      ? await scanner.getOrCreateProject(projectId)
+      : null;
+    if (!project || sessionReadersDisposal) return null;
     const resolved = await findSessionSummaryAcrossProviders(
       project,
       sessionId,
       project.id,
       {
+        signal: sessionReadLifetime.signal,
+        identities: options.sessionMetadataService?.identities,
+        getRecordedProvider: (id) =>
+          options.sessionMetadataService?.getProvider(id),
         readerFactory,
         codexSessionsDir,
         codexReaderFactory,
@@ -1877,8 +2302,15 @@ export function createApp(options: AppOptions): AppResult {
     );
     const summary = resolved?.summary ?? null;
     if (!summary) return null;
+    const publicProjectId =
+      options.sessionMetadataService?.getMetadata(sessionId)
+        ?.workingProjectId ?? summary.projectId;
     return applyRecapOverlayToSummary(
-      summary,
+      {
+        ...summary,
+        projectId: publicProjectId,
+        projectName: projectDisplayName(decodeProjectId(publicProjectId)),
+      },
       options.sessionMetadataService?.getRecapMessages(sessionId) ?? [],
     );
   };
@@ -1886,13 +2318,20 @@ export function createApp(options: AppOptions): AppResult {
     sessionId: string,
     projectId: string,
   ) => {
-    const project = await scanner.getProject(projectId);
-    if (!project) return null;
+    if (sessionReadersDisposal) return null;
+    const project = isUrlProjectId(projectId)
+      ? await scanner.getOrCreateProject(projectId)
+      : null;
+    if (!project || sessionReadersDisposal) return null;
     const resolved = await findSessionListSummaryAcrossProviders(
       project,
       sessionId,
       project.id,
       {
+        signal: sessionReadLifetime.signal,
+        identities: options.sessionMetadataService?.identities,
+        getRecordedProvider: (id) =>
+          options.sessionMetadataService?.getProvider(id),
         readerFactory,
         codexSessionsDir,
         codexReaderFactory,
@@ -1908,7 +2347,15 @@ export function createApp(options: AppOptions): AppResult {
       },
       options.sessionMetadataService?.getProvider(sessionId),
     );
-    return resolved?.summary ?? null;
+    if (!resolved) return null;
+    const publicProjectId =
+      options.sessionMetadataService?.getMetadata(sessionId)
+        ?.workingProjectId ?? resolved.summary.projectId;
+    return {
+      ...resolved.summary,
+      projectId: publicProjectId,
+      projectName: projectDisplayName(decodeProjectId(publicProjectId)),
+    };
   };
   const browserDebugService = new BrowserDebugService(
     Date.now,
@@ -1994,6 +2441,8 @@ export function createApp(options: AppOptions): AppResult {
       })
     : undefined;
   const sessionProviderResolutionDeps = () => ({
+    signal: sessionReadLifetime.signal,
+    identities: options.sessionMetadataService?.identities,
     readerFactory,
     codexSessionsDir,
     codexReaderFactory,
@@ -2056,15 +2505,13 @@ export function createApp(options: AppOptions): AppResult {
             : undefined,
       })
     : undefined;
-  // Session metadata is initialized before createApp; loops left running by
-  // a previous server process are closed out here.
+  // Close out loops a previous server process left running.
   void clearloopService?.reconcileAfterRestart();
   const getClearloopBadge: ClearloopBadgeResolver | undefined = clearloopService
     ? (sessionId) => clearloopService.getBadge(sessionId)
     : undefined;
 
-  // Every server surface names a project the same way: its chosen name, else
-  // its path's (topics/project-names.md).
+  // Every surface names a project the same way (topics/project-names.md).
   const projectMetadataForNames = options.projectMetadataService;
   const projectDisplayName: ProjectDisplayNameResolver = projectMetadataForNames
     ? (projectPath) =>
@@ -2074,8 +2521,12 @@ export function createApp(options: AppOptions): AppResult {
   const agentAuthRouter = new AgentAuthRouter(
     effectiveDataDir,
     options.sessionMetadataService,
+    readClaudeAiLogin,
   );
-  app.route("/api", createAgentAuthRouterRoutes(agentAuthRouter));
+  app.route(
+    "/api",
+    createAgentAuthRouterRoutes(agentAuthRouter, () => supervisor),
+  );
 
   const readAgentApi: ApiReadPort = async (operation, caller, input) => {
     if (
@@ -2090,6 +2541,17 @@ export function createApp(options: AppOptions): AppResult {
     return agentApiController.read(operation, caller, input);
   };
   supervisor = new Supervisor({
+    creationAttachments: options.sessionMetadataService
+      ? new CreationAttachments(
+          join(
+            dirname(attachmentStagingService.getStagingRoot()),
+            "creation-inputs",
+          ),
+          attachmentStagingService,
+          projectStoragePolicy,
+          options.sessionMetadataService.creations,
+        )
+      : undefined,
     agentAuthRouter,
     projectDisplayName,
     getLimitedUserInstructions: (username) =>
@@ -2099,18 +2561,13 @@ export function createApp(options: AppOptions): AppResult {
         options.serverSettingsService,
       ),
     onProcessInventoryChanged: () => {
-      // Gateway services that opted into auto-stop need to know when their
-      // last session goes away; the live process list is that answer.
+      // Auto-stopping gateway services watch the live process list.
       noteGatewayServiceUsage(gatewayServiceUsage(supervisor));
     },
-    sdk: options.sdk,
-    realSdk: options.realSdk,
     provider:
       options.provider !== undefined
         ? options.provider
-        : isProviderRuntimeHostAvailable()
-          ? resolveConfiguredProvider("claude")
-          : undefined,
+        : resolveConfiguredProvider("claude"),
     idleTimeoutMs: options.idleTimeoutMs,
     defaultPermissionMode: options.defaultPermissionMode,
     getStandingPermissionMode: getStandingPermissionMode,
@@ -2130,6 +2587,7 @@ export function createApp(options: AppOptions): AppResult {
     sessionQueuePersistenceService: options.sessionQueuePersistenceService,
     toolResultMediaStore,
     dirtyFileEditorService: options.dirtyFileEditorService,
+    harnessRelationships,
     sandboxStateRoot: join(effectiveDataDir, "session-sandboxes"),
     // Save executor for remote sessions to support resume
     onSessionExecutor: options.sessionMetadataService
@@ -2182,19 +2640,110 @@ export function createApp(options: AppOptions): AppResult {
           )
       : undefined,
     onSessionSummary: getSessionSummary,
+    resolveNativeSessionSource: async (sessionId, projectPath, provider) => {
+      const deps = {
+        signal: sessionReadLifetime.signal,
+        identities: options.sessionMetadataService?.identities,
+        readerFactory,
+        codexScanner,
+        codexSessionsDir,
+        codexReaderFactory,
+        geminiSessionsDir,
+        geminiReaderFactory,
+        geminiHashToCwd: geminiScanner.getHashToCwd(),
+        grokSessionsDir,
+        grokReaderFactory,
+        piSessionsDir,
+        piReaderFactory,
+      };
+      const identity = await resolveExistingSessionIdentity({
+        sessionId,
+        requestProjectId: toUrlProjectId(projectPath),
+        preferredProvider: provider,
+        metadata: options.sessionMetadataService?.getMetadata(sessionId),
+        scanner,
+        providerDeps: deps,
+      });
+      if (!identity)
+        throw new Error("Session has no readable native fork source");
+      const source = identity.native
+        ? {
+            reader: readerFactory(
+              { ...identity.transcriptProject, provider: identity.provider },
+              identity.native,
+            ),
+          }
+        : getSessionSourceForProvider(
+            identity.transcriptProject,
+            deps,
+            identity.provider,
+          );
+      const native =
+        identity.native ??
+        (await source?.reader.getNativeSessionRef?.(
+          parseNativeSessionId(sessionId),
+        ));
+      if (!native || native.family !== nativeSessionFamily(provider))
+        throw new Error(
+          "Session native fork source does not match the provider",
+        );
+      // A fileless native store still needs authoritative existence/membership
+      // proof; the stored binding alone cannot certify a live provider source.
+      const proven = identity.native
+        ? await source?.reader.getNativeSessionRef?.(native.id)
+        : native;
+      if (
+        !proven ||
+        proven.id !== native.id ||
+        proven.family !== native.family ||
+        proven.storageScope !== native.storageScope
+      )
+        throw new Error("Session has no matching readable native source");
+      const filePath = await source?.reader.getSessionFilePath?.(native.id);
+      if (sessionReadLifetime.signal.aborted)
+        throw new DOMException(
+          "Native source acquisition cancelled",
+          "AbortError",
+        );
+      return {
+        native,
+        ...(filePath ? { filePath } : {}),
+        projectId: identity.transcriptProjectId,
+      };
+    },
     recoverSessionLaunchSettings: async (sessionId, projectId, provider) => {
-      const project = await scanner.getProject(projectId);
+      const project = await scanner.getOrCreateProject(projectId);
       if (!project) return undefined;
-      const recoveryProvider = provider ?? project.provider;
+      const deps = sessionProviderResolutionDeps();
+      const bound = boundSessionSource(project, sessionId, deps);
+      if (bound === null) return undefined;
+      const recoveryProvider =
+        bound?.source.provider ?? provider ?? project.provider;
       if (recoveryProvider !== "codex" && recoveryProvider !== "codex-oss") {
         return undefined;
       }
-      const reader = readerFactory({
-        ...project,
-        provider: recoveryProvider,
-        sessionDir: codexSessionsDir,
-      });
-      return reader.getRecoveredLaunchSettings?.(sessionId);
+      const legacy = bound
+        ? undefined
+        : await resolveLegacySessionSource(
+            {
+              provider: recoveryProvider,
+              reader: readerFactory({
+                ...project,
+                provider: recoveryProvider,
+                sessionDir: codexSessionsDir,
+              }),
+              sessionDir: codexSessionsDir,
+              kind: "codex",
+            },
+            sessionId,
+            project,
+            deps,
+          );
+      return (
+        bound?.source.reader ?? legacy?.source.reader
+      )?.getRecoveredLaunchSettings?.(
+        bound?.nativeSessionId ?? legacy!.nativeSessionId,
+      );
     },
     getPromptCacheKeepaliveSettings: (providerName) => {
       const capability =
@@ -2222,11 +2771,26 @@ export function createApp(options: AppOptions): AppResult {
     getInstructionRestorationSettings: () =>
       options.serverSettingsService?.getSetting("instructionRestoration"),
     readInstructionHistory: async (sessionId, projectId, provider) => {
-      const project = await scanner.getProject(projectId);
+      const project = await scanner.getOrCreateProject(projectId);
       if (!project)
         throw new Error("Instruction history project is unavailable");
-      const reader = readerFactory({ ...project, provider });
-      const loaded = await reader.getSession(sessionId, projectId);
+      const deps = sessionProviderResolutionDeps();
+      const bound = boundSessionSource(project, sessionId, deps);
+      if (bound === null)
+        throw new Error("Instruction history has no native source");
+      const candidate = bound
+        ? undefined
+        : getSessionSourceForProvider(project, deps, provider);
+      const legacy = candidate
+        ? await resolveLegacySessionSource(candidate, sessionId, project, deps)
+        : undefined;
+      const reader = bound?.source.reader ?? legacy?.source.reader;
+      const loaded = reader
+        ? await reader.getSession(
+            bound?.nativeSessionId ?? legacy!.nativeSessionId,
+            bound?.projectId ?? projectId,
+          )
+        : null;
       if (!loaded)
         throw new Error(
           "Instruction history is unavailable for resumed session",
@@ -2286,6 +2850,110 @@ export function createApp(options: AppOptions): AppResult {
           supervisor,
           scanner,
           projectDisplayName,
+          resolveObservedSession: async (event, signal) => {
+            if (event.provider !== "claude" && event.provider !== "codex")
+              return undefined;
+            if (event.fileType !== "session" || event.changeType === "delete")
+              return null;
+            const file = await realpath(event.path).catch(() => null);
+            if (!file || signal.aborted) return null;
+            const scope =
+              event.provider === "claude"
+                ? dirname(file)
+                : await realpath(
+                    event.nativeStorageScope ?? codexSessionsDir,
+                  ).catch(() => null);
+            if (!scope || signal.aborted) return null;
+            if (event.provider === "codex") {
+              const suffix = relative(scope, file);
+              if (
+                !suffix ||
+                suffix === ".." ||
+                suffix.startsWith(`..${sep}`) ||
+                isAbsolute(suffix)
+              )
+                return null;
+            }
+            const meta =
+              event.provider === "codex"
+                ? await readCodexRolloutMetadata({
+                    sessionsDir: scope,
+                    filePath: file,
+                    discoveryIndex: getCodexDiscoveryIndex(scope),
+                  })
+                : undefined;
+            if (event.provider === "codex" && (!meta || meta.isSubagent))
+              return null;
+            const filename = basename(file);
+            const nativeId =
+              meta?.id ??
+              (filename.endsWith(".jsonl") && !filename.startsWith("agent-")
+                ? filename.slice(0, -6)
+                : undefined);
+            if (!nativeId || !isYaSessionId(nativeId) || signal.aborted)
+              return null;
+            const native = nativeSessionRef(
+              event.provider,
+              scope,
+              parseNativeSessionId(nativeId),
+            );
+            const identities = options.sessionMetadataService?.identities;
+            if (!identities) return undefined;
+            let identity = identities.lookupNative(native);
+            if (!identity && !identities.canDiscoverNative(native)) return null;
+            let discoveredProjectId: UrlProjectId | undefined;
+            if (!identity) {
+              if (identities.resolveYa(parseYaSessionId(nativeId))) return null;
+              // Explicit native discovery, using bounded physical source
+              // evidence before a legacy public id can enter ownership joins.
+              const cwd = meta?.cwd ?? (await readCwdFromSessionFile(file));
+              if (!cwd || !isAbsolute(cwd) || signal.aborted) return null;
+              discoveredProjectId = toUrlProjectId(cwd);
+            }
+            const project = await scanner.getOrCreateProject(
+              identity?.projectId ?? discoveredProjectId!,
+            );
+            if (!project || signal.aborted) return null;
+            const reader = readerFactory(
+              { ...project, provider: identity?.provider ?? event.provider },
+              native,
+            );
+            if (
+              reader.observeNativeSessionFile &&
+              !(await reader.observeNativeSessionFile(native, file, signal))
+            )
+              return null;
+            if (signal.aborted) return null;
+            const selectedFile = await reader.getSessionFilePath?.(native.id);
+            if (signal.aborted || !selectedFile) return null;
+            const selectedPath = await realpath(selectedFile).catch(() => null);
+            if (signal.aborted || selectedPath !== file) return null;
+            if (!identity) {
+              const createdAt =
+                meta?.timestamp ??
+                (await readClaudeCatalogHead(file)).createdAt ??
+                event.timestamp;
+              if (signal.aborted) return null;
+              identity = identities.adoptDiscoveredBatch([
+                {
+                  native,
+                  provider: event.provider,
+                  legacyProvider:
+                    options.sessionMetadataService?.getProvider(nativeId),
+                  projectId: project.id,
+                  createdAt,
+                },
+              ])[0];
+              if (!identity) return null;
+            }
+            return {
+              sessionId: identity.sessionId,
+              provider: identity.provider,
+              projectId:
+                options.sessionMetadataService?.getMetadata(identity.sessionId)
+                  ?.workingProjectId ?? identity.projectId,
+            };
+          },
           decayMs: 30000, // 30 seconds
           // Keeps a silent external Claude turn (long tool call) visible.
           // Claude keeps its per-process status files next to its config, not
@@ -2304,6 +2972,10 @@ export function createApp(options: AppOptions): AppResult {
           getSessionListSummary,
         })
       : undefined;
+
+  options.projectQueueService?.attachCreationStore(
+    options.sessionMetadataService?.creations,
+  );
 
   // Name new sessions with Claude's cheap helper model (Haiku) so every
   // provider gets consistent titles instead of truncated first messages. Off
@@ -2365,6 +3037,8 @@ export function createApp(options: AppOptions): AppResult {
             const sessions = await listSessionsAcrossProviders(
               project,
               {
+                // Public YA ids, which getSessionSummary resolves later.
+                identities: options.sessionMetadataService?.identities,
                 readerFactory,
                 sessionIndexService: options.sessionIndexService,
                 codexSessionsDir,
@@ -2407,6 +3081,7 @@ export function createApp(options: AppOptions): AppResult {
     projectQueueScheduler = new ProjectQueueScheduler({
       eventBus: options.eventBus,
       projectQueueService: options.projectQueueService,
+      creations: options.sessionMetadataService?.creations,
       supervisor,
       attachmentStagingService,
       sessionQueuePersistenceService: options.sessionQueuePersistenceService,
@@ -2423,11 +3098,7 @@ export function createApp(options: AppOptions): AppResult {
         options.sessionMetadataService?.getMetadata(process.sessionId)
           ?.workingProjectId ?? process.projectId,
       getGlobalInstructions: () =>
-        buildEffectiveAgentContext({
-          globalInstructions:
-            options.serverSettingsService?.getSetting("globalInstructions"),
-          hints: options.serverSettingsService?.getSetting("agentContextHints"),
-        }),
+        effectiveGlobalInstructions(options.serverSettingsService),
       isSessionAutomationPaused: (sessionId) =>
         options.sessionMetadataService?.getMetadata(sessionId)
           ?.automationPausedUntilUserTurn === true,
@@ -2453,45 +3124,6 @@ export function createApp(options: AppOptions): AppResult {
             offsetMinutes: grants.joinStaleOffsetMinutes,
           })
         );
-      },
-      onSessionStarted: async ({ item, process }) => {
-        if (item.target.type !== "new-session") return;
-        const metadata = options.sessionMetadataService;
-        if (!metadata) return;
-
-        if (item.createdByUser) {
-          // A limited user's queued session is theirs, like one they start
-          // directly (topics/limited-users.md § Delivery v1).
-          await metadata.recordSessionCreator(
-            process.sessionId,
-            item.createdByUser,
-          );
-        }
-
-        const provider = item.target.provider ?? process.provider;
-        if (provider) {
-          await metadata.setProvider(process.sessionId, provider);
-        }
-        if (item.target.executor) {
-          await metadata.setExecutor(process.sessionId, item.target.executor);
-        }
-        if (item.message.text.trim()) {
-          await metadata.setInitialPrompt(process.sessionId, item.message.text);
-        }
-        if (item.target.model) {
-          await metadata.setRequestedModel(
-            process.sessionId,
-            item.target.model,
-          );
-        }
-        await metadata.updateMetadata(process.sessionId, {
-          ...(process.promptSuggestionMode !== undefined
-            ? { promptSuggestionMode: process.promptSuggestionMode }
-            : {}),
-          ...(process.recapAfterSeconds !== undefined
-            ? { recapAfterSeconds: process.recapAfterSeconds }
-            : {}),
-        });
       },
     });
   }
@@ -2544,19 +3176,16 @@ export function createApp(options: AppOptions): AppResult {
       pushService: options.pushService,
       supervisor,
       projectDisplayName,
-      sessionTitle: async (projectId, sessionId) =>
-        (
-          await describeCatalogSession(
-            {
-              scanner,
-              readerFactory,
-              sessionIndexService: options.sessionIndexService,
-              sessionMetadataService: options.sessionMetadataService,
-            },
-            projectId,
-            sessionId,
-          )
-        )?.sessionTitle,
+      // Fork: name the session in the notification (custom title first).
+      sessionTitle: async (projectId, sessionId) => {
+        const summary = await getSessionSummary(sessionId, projectId);
+        const title = getSessionDisplayTitle({
+          customTitle:
+            options.sessionMetadataService?.getMetadata(sessionId)?.customTitle,
+          title: summary?.title ?? null,
+        });
+        return title === "Untitled" ? undefined : title;
+      },
     });
   }
 
@@ -2668,7 +3297,8 @@ export function createApp(options: AppOptions): AppResult {
       createServerInfoRoutes({
         host: options.serverHost,
         port: () =>
-          options.networkBindingCallbackHolder?.getLocalhostPort?.() ??
+          options.networkBindingCallbackHolder?.listeners?.current()
+            .localhostPort ??
           options.serverPort ??
           0,
         installId: options.installId,
@@ -2684,7 +3314,9 @@ export function createApp(options: AppOptions): AppResult {
     "/api/env-settings",
     createEnvSettingsRoutes({
       getActiveListeners: () =>
-        options.networkBindingCallbackHolder?.getActiveListeners?.() ?? [],
+        options.networkBindingCallbackHolder?.listeners
+          ?.activeAddresses()
+          .map(formatListenerAddress) ?? [],
     }),
   );
 
@@ -2718,22 +3350,7 @@ export function createApp(options: AppOptions): AppResult {
       createNetworkBindingRoutes({
         networkBindingService: options.networkBindingService,
         eventBus: options.eventBus,
-        onLocalhostPortChange: async (port) => {
-          const callback =
-            options.networkBindingCallbackHolder?.onLocalhostPortChange;
-          if (!callback) {
-            return { success: false, error: "Callback not configured" };
-          }
-          return callback(port);
-        },
-        onNetworkBindingChange: async (config) => {
-          const callback =
-            options.networkBindingCallbackHolder?.onNetworkBindingChange;
-          if (!callback) {
-            return { success: false, error: "Callback not configured" };
-          }
-          return callback(config);
-        },
+        listeners: () => options.networkBindingCallbackHolder?.listeners,
       }),
     );
   }
@@ -2766,6 +3383,28 @@ export function createApp(options: AppOptions): AppResult {
   app.route(
     "/api/projects",
     createProjectsRoutes({
+      providerChildRelationships,
+      readNativeSessionInventory: async () => {
+        if (
+          sessionReadLifetime.signal.aborted ||
+          !options.sessionMetadataService?.creations?.listProjections().length
+        )
+          return [];
+        const published = await retainedCollections?.readPublishedRows();
+        const rows = await projectCatalogIdentities(
+          published?.rows ?? [],
+          options.sessionMetadataService,
+          sessionReadLifetime.signal,
+        );
+        return rows.map((row) => ({
+          id: row.sessionId,
+          projectId:
+            options.sessionMetadataService?.getMetadata(row.sessionId)
+              ?.workingProjectId ?? row.projectId,
+          provider: row.provider ?? row.catalogFamily,
+        }));
+      },
+      signal: sessionReadLifetime.signal,
       scanner,
       projectAppStore,
       readerFactory,
@@ -2796,19 +3435,12 @@ export function createApp(options: AppOptions): AppResult {
     app.route(
       "/api/project-queue",
       createGlobalProjectQueueRoutes({
-        scanner,
-        readerFactory,
+        retainedCollections: {
+          readPublishedProjectRows: (id) =>
+            retainedCollections!.readPublishedProjectRows(id),
+        },
         projectQueueService: options.projectQueueService,
         projectQueueScheduler,
-        sessionIndexService: options.sessionIndexService,
-        codexSessionsDir,
-        codexReaderFactory,
-        geminiSessionsDir,
-        geminiReaderFactory,
-        grokSessionsDir,
-        grokReaderFactory,
-        piSessionsDir,
-        piReaderFactory,
         sessionMetadataService: options.sessionMetadataService,
         sessionQueuePersistenceService: options.sessionQueuePersistenceService,
       }),
@@ -2817,18 +3449,12 @@ export function createApp(options: AppOptions): AppResult {
       "/api/projects",
       createProjectQueueRoutes({
         scanner,
-        readerFactory,
+        retainedCollections: {
+          readPublishedProjectRows: (id) =>
+            retainedCollections!.readPublishedProjectRows(id),
+        },
         projectQueueService: options.projectQueueService,
         projectQueueScheduler,
-        sessionIndexService: options.sessionIndexService,
-        codexSessionsDir,
-        codexReaderFactory,
-        geminiSessionsDir,
-        geminiReaderFactory,
-        grokSessionsDir,
-        grokReaderFactory,
-        piSessionsDir,
-        piReaderFactory,
         sessionMetadataService: options.sessionMetadataService,
         userUsageService: options.userUsageService,
       }),
@@ -2857,14 +3483,32 @@ export function createApp(options: AppOptions): AppResult {
           if (process) {
             return process.projectId === project.id;
           }
-          return (await getSessionListSummary(sessionId, project.id)) !== null;
+          const summary = await getSessionListSummary(sessionId, project.id);
+          return summary?.projectId === project.id;
         },
       }),
     );
   }
   app.route(
     "/api",
+    createSessionRelationshipRoutes(
+      relationshipRead ??
+        (async () => {
+          throw new CoreApiError(
+            "relationships_unavailable",
+            "Relationships are unavailable",
+            503,
+          );
+        }),
+    ),
+  );
+  app.route(
+    "/api",
     createSessionsRoutes({
+      providerChildRelationships,
+      harnessRelationships,
+      getLimitedUserGrants: getActiveLimitedGrants,
+      signal: sessionReadLifetime.signal,
       onIssueWindow: (source, messages) =>
         issueIndexer?.observe(source, messages),
       supervisor,
@@ -2940,6 +3584,7 @@ export function createApp(options: AppOptions): AppResult {
   app.route(
     "/api/processes",
     createProcessesRoutes({
+      providerChildRelationships,
       agentAuthRouter,
       supervisor,
       scanner,
@@ -2991,23 +3636,26 @@ export function createApp(options: AppOptions): AppResult {
     }),
   );
   if (options.serverSettingsService) {
+    hostAgentProcessService = new HostAgentProcessService(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      describeNativeProcessSessions({
+        metadata: options.sessionMetadataService,
+        readRows: () =>
+          retainedCollections?.readPublishedRows() ??
+          Promise.resolve({ rows: [] }),
+      }),
+    );
     app.route(
       "/api/host-agent-processes",
       createHostAgentProcessesRoutes({
         supervisor,
         serverSettingsService: options.serverSettingsService,
         enabled: options.externalSessionsEnabled !== false,
-        describeSession: (sessionId, projectPath) =>
-          describeCatalogSession(
-            {
-              scanner,
-              readerFactory,
-              sessionIndexService: options.sessionIndexService,
-              sessionMetadataService: options.sessionMetadataService,
-            },
-            toUrlProjectId(projectPath),
-            sessionId,
-          ),
+        service: hostAgentProcessService,
       }),
     );
   }
@@ -3016,9 +3664,10 @@ export function createApp(options: AppOptions): AppResult {
   retainedCollections = new RetainedSessionCollections({
     dataDir: effectiveDataDir,
     eventBus: options.eventBus,
+    projectStores: nativeStores,
     shouldReadQuestions: (row) =>
       !(
-        options.sessionMetadataService?.getMetadata(row.sessionId)
+        metadataForNativeCatalogRow(row, options.sessionMetadataService)
           ?.isArchived ??
         isSessionAutoArchived(
           row,
@@ -3026,7 +3675,7 @@ export function createApp(options: AppOptions): AppResult {
             ?.activeAfterMs,
         )
       ),
-    adapters: (rows, signal, changedPaths) =>
+    adapters: (rows, signal, changedPaths, sources) =>
       collectionCatalogAdapters(
         {
           scanner,
@@ -3042,34 +3691,85 @@ export function createApp(options: AppOptions): AppResult {
           piSessionsDir,
           piReaderFactory,
           sessionIndexService: options.sessionIndexService,
-          getCatalogFamilies:
-            options.getCatalogFamilies ??
-            (() =>
-              (
-                options.sessionMetadataService?.getRecordedProviders() ?? []
-              ).map(providerCatalogFamily)),
+          getCatalogFamilies,
+          antigravitySessionsDir: options.antigravitySessionsDir,
         },
         rows,
         signal,
         changedPaths,
+        sources,
       ),
   });
   const conversationCatalog = retainedCollections;
   conversationSubscriptions = new ConversationSubscriptions(
     createConversationSource({
-      resolveRolloutPath: (row, id) =>
-        codexReaderFactory(row.projectPath).getSessionFilePath(id),
-      resolve: async (sessionId) => {
+      resolveRolloutPath: (row, nativeId) =>
+        row.nativeStorageScope
+          ? codexReaderFactory(
+              row.projectPath,
+              row.nativeStorageScope,
+            ).getSessionFilePath(parseNativeSessionId(nativeId))
+          : Promise.resolve(null),
+      resolve: async (sessionId, signal) => {
+        signal?.throwIfAborted();
+        const identity = isYaSessionId(sessionId)
+          ? options.sessionMetadataService?.identities.resolveYa(sessionId)
+          : undefined;
+        if (identity && !identity.native) return undefined;
         const { rows } = await conversationCatalog.read();
+        signal?.throwIfAborted();
+        if (identity?.native) {
+          const native = identity.native;
+          const candidates = rows.filter(
+            (row) =>
+              row.sessionId === native.id &&
+              row.catalogFamily === native.family &&
+              row.nativeStorageScope === native.storageScope,
+          );
+          const row = candidates.length === 1 ? candidates[0] : undefined;
+          const originalPath = decodeProjectId(identity.projectId);
+          if (
+            !row ||
+            row.projectId !== identity.projectId ||
+            getProjectIdentityKey(row.projectPath) !==
+              getProjectIdentityKey(originalPath)
+          )
+            return undefined;
+          return {
+            ...row,
+            sessionId: identity.sessionId,
+            provider: identity.provider,
+            nativeSessionId: native.id,
+            projectId: identity.projectId,
+            projectPath: originalPath,
+            projectIdentityKey: getProjectIdentityKey(originalPath),
+          };
+        }
+        // Explicit legacy native catalogue evidence; unrelated public claims
+        // never become fallback source addresses for a stored session.
         const candidates = rows.filter((row) => row.sessionId === sessionId);
-        return candidates.length === 1 ? candidates[0] : undefined;
+        const row = candidates.length === 1 ? candidates[0] : undefined;
+        // Saved pre-format-3 rows are not authority for an ancestor namespace.
+        // Leave the source unresolved so the incumbent catalogue publication
+        // can retry it once actual native scope evidence has been rebuilt.
+        if (!row || (row.catalogFamily === "codex" && !row.nativeStorageScope))
+          return undefined;
+        return (
+          await projectCatalogIdentities(
+            [row],
+            options.sessionMetadataService,
+            signal ?? sessionReadLifetime.signal,
+          )
+        )[0];
       },
       getProcess: (sessionId) => supervisor.getProcessForSession(sessionId),
       watch: (row, invalidate) =>
         focusedSessionWatchManager.subscribe(
           {
             sessionId: row.sessionId,
-            projectId: row.projectId,
+            projectId:
+              options.sessionMetadataService?.getMetadata(row.sessionId)
+                ?.workingProjectId ?? row.projectId,
             providerHint: row.provider ?? row.catalogFamily,
           },
           invalidate,
@@ -3099,16 +3799,22 @@ export function createApp(options: AppOptions): AppResult {
     const settings = options.serverSettingsService;
     const readerFor = async (
       projectId: string,
+      sessionId: string,
       provider?: import("@yep-anywhere/shared").ProviderName,
     ) => {
-      const project = await scanner.getProject(projectId);
+      if (!isUrlProjectId(projectId)) return null;
+      const project = await scanner.getOrCreateProject(projectId);
       if (!project) return null;
       const deps = sessionProviderResolutionDeps();
-      if (provider)
-        return (
-          getSessionSourceForProvider(project, deps, provider)?.reader ?? null
-        );
-      return getSessionSources(project, deps)[0]?.reader ?? null;
+      const bound = boundSessionSource(project, sessionId, deps);
+      if (bound !== undefined) return bound;
+      const source = provider
+        ? getSessionSourceForProvider(project, deps, provider)
+        : getSessionSources(project, deps)[0];
+      const legacy = source
+        ? await resolveLegacySessionSource(source, sessionId, project, deps)
+        : null;
+      return legacy ? { ...legacy, projectId: project.id } : null;
     };
     const issueSettings = () =>
       settings.getSetting("issueAssociations") ?? DEFAULT_ISSUE_SETTINGS;
@@ -3137,13 +3843,26 @@ export function createApp(options: AppOptions): AppResult {
       settings: issueSettings,
       confirm: () => confirmer.schedule(),
       candidates: async function* () {
-        yield* (await catalog.read()).rows;
+        yield* await projectCatalogIdentities(
+          (await catalog.read()).rows,
+          options.sessionMetadataService,
+          sessionReadLifetime.signal,
+        );
       },
       projectForSession: (id) =>
         options.sessionMetadataService?.getMetadata(id)?.workingProjectId,
       read: async (row, readOptions) => {
-        const reader = await readerFor(row.projectId, row.provider);
-        return reader?.readIssueTextBatch?.(row.sessionId, readOptions) ?? null;
+        const resolved = await readerFor(
+          row.projectId,
+          row.sessionId,
+          row.provider,
+        );
+        return (
+          resolved?.source.reader.readIssueTextBatch?.(
+            resolved.nativeSessionId,
+            readOptions,
+          ) ?? null
+        );
       },
     });
     issueIndexer = indexer;
@@ -3153,10 +3872,6 @@ export function createApp(options: AppOptions): AppResult {
           indexer.configure();
       }),
     );
-    const unmap = supervisor.observeSessionIdRemaps?.((oldId, newId) =>
-      indexer.remap(oldId, newId),
-    );
-    if (unmap) issueDisposers.push(unmap);
     const unsubscribe = options.eventBus?.subscribe((event) => {
       if (event.type === "session-catalog-updated" && !event.catalog.refreshing)
         indexer.refresh(event.catalog);
@@ -3189,10 +3904,20 @@ export function createApp(options: AppOptions): AppResult {
           )
             return { available: false };
           const physicalProject = metadata?.transcriptProjectId ?? projectId;
-          const reader = await readerFor(physicalProject, metadata?.provider);
-          const summary = await reader?.getSessionSummary(
+          const resolved = await readerFor(
+            physicalProject,
             sessionId,
-            physicalProject as import("@yep-anywhere/shared").UrlProjectId,
+            metadata?.provider,
+          );
+          if (
+            resolved &&
+            "native" in resolved &&
+            (metadata?.workingProjectId ?? resolved.projectId) !== projectId
+          )
+            return { available: false };
+          const summary = await resolved?.source.reader.getSessionSummary(
+            resolved.nativeSessionId,
+            resolved.projectId,
             { readMode: "head" },
           );
           return {
@@ -3205,13 +3930,18 @@ export function createApp(options: AppOptions): AppResult {
               ? { owner: "self" as const, processId: process.id }
               : summary?.ownership,
             activity: process?.getInfo().state,
-            provider: summary?.provider,
+            provider: resolved?.source.provider ?? summary?.provider,
             createdAt: summary?.createdAt,
           };
         },
         issueCredentials,
         confirmer,
-        async () => (await catalog.read()).rows,
+        async () =>
+          projectCatalogIdentities(
+            (await catalog.read()).rows,
+            options.sessionMetadataService,
+            sessionReadLifetime.signal,
+          ),
         statuses,
         content,
       ),
@@ -3267,6 +3997,7 @@ export function createApp(options: AppOptions): AppResult {
   app.route(
     "/api/inbox",
     createInboxRoutes({
+      signal: sessionReadLifetime.signal,
       retainedCollections,
       scanner,
       readerFactory,
@@ -3291,18 +4022,19 @@ export function createApp(options: AppOptions): AppResult {
     }),
   );
 
-  apiReceipts = new ApiReceiptStore(discoverySqlite.getDatabase());
+  apiReceipts = new ApiReceiptStore(
+    discoverySqlite.getDatabase(),
+    sessionRelationships,
+  );
   apiCommands = new SessionCommands(
     publicServerId,
     apiReceipts,
     nativeSessionCommandOwner({
       supervisor,
+      creations: options.sessionMetadataService?.creations,
+      callerLaunch: agentApiCallerLaunch(options, supervisor),
       globalInstructions: () =>
-        buildEffectiveAgentContext({
-          globalInstructions:
-            options.serverSettingsService?.getSetting("globalInstructions"),
-          hints: options.serverSettingsService?.getSetting("agentContextHints"),
-        }),
+        effectiveGlobalInstructions(options.serverSettingsService),
     }),
     () =>
       options.serverSettingsService?.getSetting("agentApiManagementEnabled") ===
@@ -3313,11 +4045,8 @@ export function createApp(options: AppOptions): AppResult {
         "Agent API command outcome persistence failed",
       ),
   );
-  releaseApiRemaps = supervisor.observeSessionIdRemaps?.((oldId, newId) => {
-    apiReceipts?.remap(oldId, newId);
-    options.peerAccess?.remap(oldId, newId);
-  });
   const coreSources: CoreApiSources = {
+    relationships: relationshipRead,
     peerAuthentication: () => !!options.peerAccess,
     serverMetadata: () =>
       localPeerHost(
@@ -3432,6 +4161,8 @@ export function createApp(options: AppOptions): AppResult {
   app.route(
     "/api/sessions",
     createGlobalSessionsRoutes({
+      providerChildRelationships,
+      signal: sessionReadLifetime.signal,
       retainedCollections,
       scanner,
       readerFactory,
@@ -3593,41 +4324,32 @@ export function createApp(options: AppOptions): AppResult {
       reviewResponseObserver.forget(event.processId);
       return;
     }
-    if (event.type === "session-id-remapped") {
-      const activeProcess = supervisor.getProcessForSession(event.newSessionId);
-      if (activeProcess) {
-        void reviewCommentService
-          .remapSubmissionSession(
-            activeProcess.projectPath,
-            event.oldSessionId,
-            event.newSessionId,
-          )
-          .catch((error) => {
-            console.warn(
-              `[sourceReviewResponseTurns] Could not remap review submissions from ${event.oldSessionId}:`,
-              error,
-            );
-          });
-      }
-    }
   });
   app.route(
     "/api/projects",
     createReviewCommentsRoutes({
+      signal: sessionReadLifetime.signal,
       scanner,
       service: reviewCommentService,
       launcher: createSupervisorReviewLauncher(
         supervisor,
         async (projectPath, submissionId, acceptance) => {
-          await reviewCommentService.acceptSubmission(projectPath, {
-            submissionId,
-            ...acceptance,
-            responseTurnLimit:
-              options.serverSettingsService?.getSetting(
-                "sourceReviewResponseTurns",
-              ) ?? 8,
-          });
+          const saved = await reviewCommentService.acceptSubmission(
+            projectPath,
+            {
+              submissionId,
+              ...acceptance,
+              responseTurnLimit:
+                options.serverSettingsService?.getSetting(
+                  "sourceReviewResponseTurns",
+                ) ?? 8,
+            },
+          );
+          if (!saved)
+            throw new Error("Review submission association is unavailable");
         },
+        options.sessionMetadataService?.creations,
+        reviewLaunchDefaults(options),
       ),
       isSubmissionsEnabled: sourceReviewSubmissionsEnabled,
       getResponseTurnLimit: () =>
@@ -3662,6 +4384,7 @@ export function createApp(options: AppOptions): AppResult {
     app.route(
       "/api/recents",
       createRecentsRoutes({
+        signal: sessionReadLifetime.signal,
         recentsService: options.recentsService,
         retainedCollections,
         projectDisplayName,
@@ -3797,7 +4520,7 @@ export function createApp(options: AppOptions): AppResult {
     void (async () => {
       try {
         const status = await codexUpdateChecker.getStatus();
-        if (status.updateAvailable && status.updateMethod === "npm") {
+        if (status.updateAvailable && status.updateMethod !== "manual") {
           const result = await codexUpdateChecker.install();
           if (result.success) {
             console.log(
@@ -3827,268 +4550,12 @@ export function createApp(options: AppOptions): AppResult {
     );
   }
 
-  // Public read-only session shares. Creation is authenticated under /api;
-  // public reads are secret-only and stay outside /api auth/mutation routes.
-  if (options.publicShareService) {
-    type PublicShareSessionDetailEnvelope = {
-      messages?: AppSession["messages"];
-      pagination?: unknown;
-      publicShareCapture?: { completedMessageCount?: unknown };
-      session?: AppSession;
-    };
-
-    const parsePublicShareSessionDetail = (
-      body: PublicShareSessionDetailEnvelope,
-      requireCompleteHistory: boolean,
-    ): AppSession | null => {
-      if (!body.session || typeof body.session !== "object") return null;
-      if (requireCompleteHistory) {
-        const completedMessageCount =
-          body.publicShareCapture?.completedMessageCount;
-        if (
-          !Array.isArray(body.messages) ||
-          body.pagination !== undefined ||
-          body.session.messages !== undefined ||
-          !Number.isInteger(body.session.messageCount) ||
-          body.session.messageCount < 0 ||
-          body.session.messageCount > body.messages.length ||
-          !Number.isInteger(completedMessageCount) ||
-          (completedMessageCount as number) < 0 ||
-          (completedMessageCount as number) > body.messages.length
-        ) {
-          throw new PublicShareCaptureError(
-            "Session detail did not provide complete history; retry frozen capture",
-            "incomplete-history",
-          );
-        }
-        return {
-          ...body.session,
-          messageCount: completedMessageCount as number,
-          messages: body.messages.slice(0, completedMessageCount as number),
-        };
-      }
-      return {
-        ...body.session,
-        messages: Array.isArray(body.session.messages)
-          ? body.session.messages
-          : (body.messages ?? []),
-      };
-    };
-
-    const fetchPublicShareSession = async (
-      projectId: UrlProjectId,
-      sessionId: string,
-      options: {
-        afterMessageId?: string;
-        requireCompleteHistory?: boolean;
-      } = {},
-    ): Promise<AppSession | null> => {
-      const searchParams = new URLSearchParams({ publicShare: "1" });
-      if (options.afterMessageId) {
-        searchParams.set("afterMessageId", options.afterMessageId);
-      }
-      if (options.requireCompleteHistory) {
-        searchParams.set("fullHistory", "1");
-        searchParams.set("fullHistoryReason", "public-share-capture");
-      }
-      const response = await app.fetch(
-        new Request(
-          `http://127.0.0.1/api/projects/${projectId}/sessions/${encodeURIComponent(sessionId)}?${searchParams}`,
-          { headers: { "X-Yep-Anywhere": "true" } },
-        ),
-        { [WS_INTERNAL_AUTHENTICATED]: true },
-      );
-      if (!response.ok) {
-        if (options.requireCompleteHistory && response.status !== 404) {
-          throw new PublicShareCaptureError(
-            "Complete session history is temporarily unavailable; retry frozen capture",
-            "incomplete-history",
-          );
-        }
-        return null;
-      }
-      let body: PublicShareSessionDetailEnvelope;
-      try {
-        body = (await response.json()) as PublicShareSessionDetailEnvelope;
-      } catch (error) {
-        if (options.requireCompleteHistory) {
-          throw new PublicShareCaptureError(
-            "Complete session history response was invalid; retry frozen capture",
-            "incomplete-history",
-          );
-        }
-        throw error;
-      }
-      return parsePublicShareSessionDetail(
-        body,
-        options.requireCompleteHistory ?? false,
-      );
-    };
-
-    const loadPublicShareSession = (
-      projectId: UrlProjectId,
-      sessionId: string,
-      options?: { afterMessageId?: string },
-    ): Promise<AppSession | null> =>
-      fetchPublicShareSession(projectId, sessionId, options);
-
-    const loadCompletePublicShareSession = (
-      projectId: UrlProjectId,
-      sessionId: string,
-    ): Promise<AppSession | null> =>
-      fetchPublicShareSession(projectId, sessionId, {
-        requireCompleteHistory: true,
-      });
-
-    const loadPublicShareSessionUpdatedAt = async (
-      projectId: UrlProjectId,
-      sessionId: string,
-    ): Promise<string | null> => {
-      const response = await app.fetch(
-        new Request(
-          `http://127.0.0.1/api/projects/${projectId}/sessions/${encodeURIComponent(sessionId)}/metadata`,
-          { headers: { "X-Yep-Anywhere": "true" } },
-        ),
-        { [WS_INTERNAL_AUTHENTICATED]: true },
-      );
-      if (!response.ok) {
-        return null;
-      }
-      const body = (await response.json()) as {
-        session?: { updatedAt?: string | null };
-      };
-      return body.session?.updatedAt ?? null;
-    };
-
-    const loadPublicShareSessionSummary = async (
-      projectId: UrlProjectId,
-      sessionId: string,
-    ): Promise<Pick<
-      AppSession,
-      | "customTitle"
-      | "fullTitle"
-      | "initialPrompt"
-      | "provider"
-      | "title"
-      | "updatedAt"
-    > | null> => {
-      const response = await app.fetch(
-        new Request(
-          `http://127.0.0.1/api/projects/${projectId}/sessions/${encodeURIComponent(sessionId)}/metadata`,
-          { headers: { "X-Yep-Anywhere": "true" } },
-        ),
-        { [WS_INTERNAL_AUTHENTICATED]: true },
-      );
-      if (!response.ok) {
-        return null;
-      }
-      const body = (await response.json()) as {
-        session?: Pick<
-          AppSession,
-          | "customTitle"
-          | "fullTitle"
-          | "initialPrompt"
-          | "provider"
-          | "title"
-          | "updatedAt"
-        >;
-      };
-      return body.session ?? null;
-    };
-
-    const fetchPublicShareProjectFile = async (
-      projectId: UrlProjectId,
-      filePath: string,
-      fileOptions: {
-        download?: boolean;
-        highlight?: boolean;
-        lineEnd?: number;
-        lineNumber?: number;
-        raw?: boolean;
-        projectRoot?: string;
-        viewMode?: "full" | "range";
-      },
-    ): Promise<Response> => {
-      const searchParams = new URLSearchParams({ path: filePath });
-      if (fileOptions.highlight) {
-        searchParams.set("highlight", "true");
-      }
-      if (fileOptions.lineNumber !== undefined) {
-        searchParams.set("line", String(fileOptions.lineNumber));
-      }
-      if (fileOptions.lineEnd !== undefined) {
-        searchParams.set("lineEnd", String(fileOptions.lineEnd));
-      }
-      if (fileOptions.viewMode === "range") {
-        searchParams.set("view", "range");
-      }
-      if (fileOptions.download) {
-        searchParams.set("download", "true");
-      }
-      const route = fileOptions.raw ? "files/raw" : "files";
-      const projectRoot = fileOptions.projectRoot ?? decodeProjectId(projectId);
-      const attachmentPath = canonicalizeManagedAttachmentPath(
-        filePath,
-        effectiveDataDir,
-      );
-      const shareFiles = createFilesRoutes({
-        scanner: {
-          getProject: async () => ({ path: projectRoot }),
-        } as unknown as ProjectScanner,
-        ...(attachmentPath
-          ? {
-              allowedPaths: () => [
-                join(effectiveDataDir, "projects"),
-                join(effectiveDataDir, "uploads"),
-              ],
-              includeProjects: () => false,
-            }
-          : { strictProjectFileAccess: true }),
-      });
-      return await shareFiles.request(`/${projectId}/${route}?${searchParams}`);
-    };
-
-    const publicShareDeps = {
-      publicShareService: options.publicShareService,
-      listProjectRoots: async () =>
-        (await scanner.listProjects()).map((project) => project.path),
-      loadSession: loadPublicShareSession,
-      loadCompleteSession: loadCompletePublicShareSession,
-      projectDisplayName,
-      loadSessionUpdatedAt: loadPublicShareSessionUpdatedAt,
-      loadSessionSummary: loadPublicShareSessionSummary,
-      fetchProjectFile: fetchPublicShareProjectFile,
-      dataDir: effectiveDataDir,
-      localFilePolicy: localResourcePathPolicy,
-      getRelayConfig: () =>
-        options.remoteAccessService?.getRelayConfig() ?? null,
-      getPublicSharesEnabled: () =>
-        options.serverSettingsService?.getSetting("publicSharesEnabled") ??
-        false,
-      getRemoteAccessEnabled: () =>
-        options.remoteAccessService?.isEnabled() ?? false,
-      getRelayStatus: () =>
-        options.relayClientService?.getState().status ?? null,
-      getYaClientBaseUrl: () =>
-        options.serverSettingsService?.getSetting("yaClientBaseUrl"),
-      getPublicShareViewerBaseUrl: () =>
-        options.serverSettingsService?.getSetting("publicShareViewerBaseUrl"),
-    };
-
-    app.route("/api/public-shares", createPublicShareRoutes(publicShareDeps));
-    app.route("/api", createPublicFileShareRoutes(publicShareDeps));
-    app.route(
-      "/api",
-      createPublicShareManagementRoutes({
-        publicShareService: options.publicShareService,
-      }),
-    );
-    app.route("/api", createPublicShareManagementFreezeRoutes(publicShareDeps));
-    app.route(
-      "/public-api/shares",
-      createPublicSharePublicRoutes(publicShareDeps),
-    );
-  }
+  mountPublicShareRoutes(app, options, {
+    scanner,
+    projectDisplayName,
+    effectiveDataDir,
+    localResourcePathPolicy,
+  });
 
   // Connections routes (list connected browser profiles)
   if (options.connectedBrowsers) {

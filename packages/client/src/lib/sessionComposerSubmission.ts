@@ -6,9 +6,12 @@ import type {
   UploadedFile,
 } from "@yep-anywhere/shared";
 import type { DraftControls } from "../hooks/useDraftPersistence";
+import {
+  imageDimensionOptions,
+  prepareComposerAttachmentUpload,
+} from "./composerAttachmentUpload";
 import { materializeDraftAttachmentsForSession } from "./draftAttachmentStaging";
 import type { DraftAttachmentState } from "./draftEnvelope";
-import { prepareImageUpload } from "./imageAttachmentResize";
 import {
   type ComposerAttachment,
   type ComposerStagedAttachment,
@@ -23,6 +26,8 @@ import { generateUUID } from "./uuid";
 
 export interface PreparedComposerSubmission {
   outgoingText: string;
+  /** Queued provider control must never fall back to a fresh resume turn. */
+  queuedCompact?: true;
   thinking?: ThinkingOption;
   slashCommand?: TurnEffort | "run";
   turnEffort?: TurnEffort;
@@ -257,7 +262,9 @@ export async function collectComposerAttachmentsForSubmission({
   uploadingStatus,
   uploadFailureMessage = "An attachment failed to upload. Attach it again before sending.",
   collectSyncedAttachments,
+  detach = true,
 }: {
+  detach?: boolean;
   currentAttachments: readonly ComposerAttachment[];
   pendingUploads: readonly Promise<ComposerAttachment | null>[];
   setComposerAttachments: (
@@ -295,6 +302,7 @@ export async function collectComposerAttachmentsForSubmission({
       }
     }
     const removeCollected = () => {
+      if (!detach) return;
       const sentIds = new Set(collectedAttachments.map((a) => a.id));
       setComposerAttachments(
         (prev) => prev.filter((attachment) => !sentIds.has(attachment.id)),
@@ -325,15 +333,6 @@ export async function collectComposerAttachmentsForSubmission({
   return collectedAttachments;
 }
 
-function imageDimensionOptions(
-  width: number | undefined,
-  height: number | undefined,
-): Pick<UploadOptions, "imageDimensions"> {
-  return width !== undefined && height !== undefined
-    ? { imageDimensions: { width, height } }
-    : {};
-}
-
 export async function uploadComposerAttachmentFile({
   file,
   sourceTransport,
@@ -353,17 +352,18 @@ export async function uploadComposerAttachmentFile({
   signal?: AbortSignal;
   onProgress?: (bytesUploaded: number, uploadFile: File) => void;
 }): Promise<ComposerAttachment> {
-  const preparedImage = file.type.startsWith("image/")
-    ? await prepareImageUpload(file, imageProfile)
-    : { file };
-  const uploadFile = preparedImage.file;
-  const uploadOptions: UploadOptions = {
-    signal,
-    onProgress: (bytesUploaded) => {
-      onProgress?.(bytesUploaded, uploadFile);
-    },
-    ...imageDimensionOptions(preparedImage.width, preparedImage.height),
-  };
+  // The progress wrapper is always passed, as before, even with no
+  // caller callback.
+  const { uploadFile, uploadOptions: preparedUploadOptions } =
+    await prepareComposerAttachmentUpload(
+      file,
+      imageProfile,
+      (bytesUploaded, preparedFile) => {
+        onProgress?.(bytesUploaded, preparedFile);
+      },
+    );
+  // Fork: the caller can cancel an upload that is still in flight.
+  const uploadOptions: UploadOptions = { ...preparedUploadOptions, signal };
 
   const previewUrl = uploadFile.type.startsWith("image/")
     ? URL.createObjectURL(uploadFile)

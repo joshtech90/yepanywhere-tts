@@ -124,9 +124,17 @@ The maintainer selected this direction on **2026-10-27**:
 - **Freeze legacy Gemini.** Keep its current execution mapping for now; no
   feature work, CLI/SDK refresh or protocol expansion is required for the core
   refactor. Both `gemini` and `gemini-acp` currently select the same ACP
-  adapter. The older stream-JSON adapter is deprecated. Freeze does not certify
-  current compatibility or excuse the known
-  [resume-to-new-session fallback](../gaps/gemini-acp-resume-starts-new-session.md).
+  adapter. The older stream-JSON adapter and its exclusive event parser/tests
+  are removed as of 2026-11-03. Discovery retains `gemini` as an alias of the
+  same ACP adapter, including `ENABLED_PROVIDERS=gemini`; it no longer probes a
+  different implementation from the one used for launch. Historical session
+  readers and their normalization remain. Freeze does not certify
+  current compatibility. Failed or unsupported ACP resume now fails explicitly
+  without issuing `session/new` or sending input to a fresh conversation; a
+  controlled failed-resume peer verifies this ownership boundary. Scoped cold
+  continuation validates the actual native home/store and original physical
+  project before CLI effects. This adds no protocol support or target refresh;
+  see [retained ACP ownership](provider-abstraction.md#retained-acp-continuation-and-teardown).
 - **Retention is conditional.** If either Gemini implementation forces extra
   core branches, lifecycle machinery, compatibility shims or qualification
   work, reconsider removing Gemini execution entirely. Do not finish or
@@ -145,6 +153,9 @@ The maintainer selected this direction on **2026-10-27**:
   integration. Prove create/resume, approvals, cancellation and identity in
   that slice. Neither shipping AGY nor refreshing shared ACP infrastructure is
   a prerequisite for cleanup or reliable queued compact/message delivery.
+  The [2026-11-03 opt-in preview](antigravity.md) establishes local macOS
+  creation and cold resume using native credentials; broader qualification
+  remains separate from cleanup.
 - **Keep retirement and migration explicit.** Preserve readable histories and
   refuse unsupported execution if Gemini is later removed. Never silently
   resume a Gemini record as a fresh session, another provider or Antigravity.
@@ -310,10 +321,23 @@ this decision ledger and roadmap as behavior actually changes; leave unresolved
 defects open until their remaining complaint is gone.
 
 The intended follow-on core outcome is queued `/compact` followed by reliable
-message delivery. Select a reduced plan around that observable result after
-cleanup; implementation remains paused until that plan is chosen. Do not
-restore the archived architecture or require Gemini/AGY qualification to begin.
+message delivery. The maintainer selected
+[queued compaction delivery](../docs/tactical/173-queued-compact-delivery.md)
+on November 3: existing regular/patient session queues, native dispatch,
+completion/readiness and the composer workflow, with one implementation review.
+That bounded plan is implemented and independently accepted, with local
+Claude, controlled Codex and owned-browser evidence. The archived general core
+stays paused.
+Do not restore the archived architecture or require Gemini/AGY qualification to begin.
 API delegation stays a separate future project.
+
+The subsequent [shared steering slice](../docs/tactical/174-shared-steering-and-native-urgency.md)
+keeps shared intent in the UI and native translation in provider adapters.
+Claude Now remains per message; Codex's opt-in Immediate trial applies at
+owner launch, preserves active owners and native configuration, and defaults
+to gentle. Standalone live trials and the other-provider audit are recorded
+in that plan. This is an incremental retained-provider improvement, not a
+replacement input scheduler or restoration of the archived core.
 
 ## Scope control
 

@@ -1,3 +1,4 @@
+import type { ProviderChildSource } from "./ProviderChildRelationshipService.js";
 /**
  * Session reader interface for provider-agnostic session reading.
  *
@@ -13,7 +14,14 @@ import type {
   UnifiedSession,
   UrlProjectId,
 } from "@yep-anywhere/shared";
-import type { Message, SessionSummary } from "../supervisor/types.js";
+import type { Message, SessionSummary, Project } from "../supervisor/types.js";
+import type { NativeSessionRef } from "@yep-anywhere/shared";
+
+/** Native scope is explicit when resolving an already bound YA identity. */
+export type SessionReaderFactory = (
+  project: Project,
+  native?: NativeSessionRef,
+) => ISessionReader;
 
 /**
  * Bounded session facts for collection routes that only need identity, title,
@@ -136,6 +144,15 @@ export interface LoadedSession {
   summary: SessionSummary;
   /** Source timestamp captured with the transcript rows in this snapshot. */
   transcriptSnapshotUpdatedAt: string;
+  /** Private reader evidence; count of newline-committed rows in data. */
+  committedEntries?: number;
+  /** Private native snapshot identity used only for append-fenced extraction. */
+  transcriptSourceVersion?: {
+    id: string;
+    size: number;
+    mtime: number;
+    ctime?: number;
+  };
   /** Provider read window used to avoid retaining known-hidden source bytes. */
   readWindow?:
     | {
@@ -195,9 +212,24 @@ export interface ISessionReader {
    */
   getLastAgentExcerpt?(sessionId: string): Promise<string | undefined>;
 
+  /** Accept one verified native file observation without rescanning its store. */
+  observeNativeSessionFile?(
+    native: NativeSessionRef,
+    filePath: string,
+    signal?: AbortSignal,
+  ): Promise<boolean>;
+
   /**
-   * Get summary metadata for a single session.
+   * Compact shared-store metadata has no reliable single-file freshness key.
+   * undefined delegates to ordinary file caching; null is a terminal absence.
+   * The index still owns/coalesces the request; this must not parse history.
    */
+  getSharedStoreSummary?(
+    sessionId: string,
+    projectId: UrlProjectId,
+  ): Promise<SessionSummary | null | undefined>;
+
+  /** Get summary metadata for a single session. */
   getSessionSummary(
     sessionId: string,
     projectId: UrlProjectId,
@@ -277,6 +309,11 @@ export interface ISessionReader {
     parentSessionId?: string,
   ): Promise<{ messages: Message[]; status: string } | null>;
 
+  /** Profile-index input; acquisition is scheduled outside transcript requests. */
+  getProviderChildSource?(
+    nativeParent: NativeSessionRef,
+  ): ProviderChildSource | undefined;
+
   /**
    * List provider-native child work attached to one canonical YA session,
    * most recently active first (see `sortProviderChildSessions`).
@@ -303,6 +340,15 @@ export interface ISessionReader {
    * Returns null if the session is not found.
    */
   getSessionFilePath?(sessionId: string): Promise<string | null>;
+
+  /** Native discovery evidence, including the actual root behind merged readers. */
+  getNativeSessionRef?(
+    sessionId: import("@yep-anywhere/shared").NativeSessionId,
+  ): Promise<NativeSessionRef | null>;
+  /** Batch discovery proof for list enrichment; canonicalize shared roots once. */
+  getNativeSessionRefs?(
+    ids: readonly string[],
+  ): Promise<ReadonlyMap<string, NativeSessionRef>>;
 
   /** Resolve the provider-native project path recorded by this session. */
   getSessionProjectPath?(sessionId: string): Promise<string | null>;

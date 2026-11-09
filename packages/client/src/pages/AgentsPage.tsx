@@ -14,6 +14,8 @@ import { ClearloopRemainingBadge } from "../components/ClearloopRemainingBadge";
 import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { PageHeader } from "../components/PageHeader";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
+import { Button, ButtonBase } from "../components/ui/Button";
+import { Popover } from "../components/ui/Popover";
 import { useHostAgentProcesses } from "../hooks/useHostAgentProcesses";
 import { type ProcessInfo, useProcesses } from "../hooks/useProcesses";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
@@ -199,6 +201,7 @@ function ProcessMetrics({
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLSpanElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const provider = getProviderLabel(observation.provider, t);
   const age = formatUptime(observation.startedAt);
   const cpu = observation.cpu
@@ -243,28 +246,6 @@ function ProcessMetrics({
   ].join("\n");
 
   useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof Node)) return;
-      const isTouchOnCard =
-        event.pointerType === "touch" &&
-        touchSurfaceRef?.current?.contains(event.target);
-      if (!wrapperRef.current?.contains(event.target) && !isTouchOnCard) {
-        setOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open, touchSurfaceRef]);
-
-  useEffect(() => {
     const touchSurface = touchSurfaceRef?.current;
     if (!touchSurface) return;
     const handlePointerUp = (event: PointerEvent) => {
@@ -293,15 +274,11 @@ function ProcessMetrics({
     <span
       // `agent-metrics-wrap` stays for the global ContextUsageIndicator
       // sibling rule in styles/index.css.
-      className={cx(
-        "agent-metrics-wrap",
-        styles.metricsWrap,
-        open && styles.metricsWrapOpen,
-      )}
+      className={cx("agent-metrics-wrap", styles.metricsWrap)}
       ref={wrapperRef}
     >
-      <button
-        type="button"
+      <ButtonBase
+        ref={triggerRef}
         className={styles.metrics}
         title={detail}
         aria-label={detail}
@@ -315,12 +292,22 @@ function ProcessMetrics({
         <span>{formatMemory(observation.memory.rootRssBytes)} RSS</span>
         <span aria-hidden>·</span>
         <span>{cpu}</span>
-      </button>
-      {open && (
-        <span className={styles.metricsPopover} role="status">
-          {detail}
-        </span>
-      )}
+      </ButtonBase>
+      <Popover
+        open={open}
+        onClose={() => setOpen(false)}
+        anchorRef={triggerRef}
+        // A touch tap on the card toggles the popover, so presses there
+        // are not outside it.
+        insideRefs={touchSurfaceRef ? [touchSurfaceRef] : undefined}
+        placement="bottom-end"
+        role="status"
+        // The process card is a Link; a click in the portaled popover still
+        // bubbles to it through the React tree.
+        onClick={(event) => event.stopPropagation()}
+      >
+        <span className={styles.metricsPopover}>{detail}</span>
+      </Popover>
     </span>
   );
 }
@@ -377,8 +364,9 @@ function ProcessCard({
             </span>
           )}
           {!isTerminated && onKill && (
-            <button
-              type="button"
+            <Button
+              variant="danger-outline"
+              size="small"
               className={styles.killButton}
               disabled={killing}
               onClick={(e) => {
@@ -390,7 +378,7 @@ function ProcessCard({
               title={t("agentsKillTitle" as never)}
             >
               {killing ? t("agentsKilling" as never) : t("agentsKill" as never)}
-            </button>
+            </Button>
           )}
         </div>
         {/* `agent-card-meta` stays for the global ContextUsageIndicator

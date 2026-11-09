@@ -21,6 +21,30 @@ receipts and provenance are specified below. Other planned resources remain
 absent.
 Existing `/api/*` and the separate own-session listener retain their contracts.
 
+Operator calls to the existing `relationships` resource can opt into the local
+structural projection with `includeRelated=true`. Its optional `related` field
+uses the [durable relationship page contract](session-relationships.md#operator-http-projection),
+with independently named `relatedLimit` (1–100), opaque `relatedCursor`,
+`relatedDirection` (`incoming`, `outgoing`, `both`; default `both`) and
+`relatedType` (one known relationship predicate). Direction/type apply only to
+the related page and are bound into its cursor; changing either requires
+starting without that cursor. Invalid filter values return 400. For example,
+`?includeRelated=true&relatedDirection=incoming&relatedType=created_session`
+reads accepted creation parents without changing receipt history.
+Receipt `limit`, numeric `cursor`, creation, initiated commands and outbound
+ledger retain their existing meanings. Without opt-in, no graph query runs.
+Absence of `related` on an older server means unsupported, not known empty.
+Peer projections and limited-user provenance restrictions remain unchanged.
+This local projection adds no remote traversal or new grant.
+An opted-in related-section error fails the whole reply; retry from a fresh
+related page, or omit opt-in to read receipts alone. This additive optional
+projection keeps revision `2026-11-01.1`: absence is its compatibility signal,
+and existing access servers need no revision-only upgrade for receipt reads.
+Unreleased source builds that first introduced `related` can ignore the later
+direction/type filters; no stable release contains that intermediate contract.
+Callers needing those filters against arbitrary source builds must validate
+returned predicates/directions or consult the generated query schema.
+
 - `/v0` returns public server id, revision `2026-11-01.1`, unstable status and
   discovery links. The documentation slice adds Markdown
   help at `/v0/help`, links help/me/schema from discovery, and generates field
@@ -126,6 +150,12 @@ in [cross-host delegation](cross-host-delegation.md). A created session need not
 be a child task. Creation does not imply automatic result delivery, parent
 wakeups, cancellation propagation, repository transfer or managed worktrees.
 Session migration remains the distinct [super-session proposal](federated-super-sessions.md).
+A session created by a session routed through the
+[Agent Auth Router](agent-auth-router.md) runs on the caller's pool (a fresh
+pick with the caller's policy) or explicit account (a new pin), with the
+caller's model when the request names none; another provider is refused with
+`admission_rejected` and the reason. It never falls back to the owner's
+direct login (plan 183).
 Scheduling remains valuable separate work under [Yacron](yacron.md), using the
 same supported session operations when implemented.
 
@@ -351,6 +381,13 @@ retention/export/pruning needs its own explicit idempotency-window contract.
 `GET /v0/servers/{serverId}/sessions/{sessionId}/relationships` returns the
 first recorded v0 creation receipt and a bounded page of initiated command
 receipts. `creation=null` does not prove that an older session was human-created.
+
+The [durable relationship design](session-relationships.md) proposes a shared
+application read model for these trusted creator facts, provider children and
+YA lineage. It preserves the receipt owner and does not reinterpret initiated
+message commands as parent/child creation. No response fields or authorization
+rules are changed by that proposal; extensions need their explicit contract.
+
 Both ends retain source/destination public server ids, trusted source session,
 launch, principal, request id and time. Source/destination are currently this
 same local profile; server-granted peer identity and cross-host routing remain
@@ -845,7 +882,10 @@ silently acquire newly added mutation operations.
 Keep current creation-source hints (`web`/`desktop`/`api`) and limited-user
 ownership, but add trusted creator facts: immediate principal, originating
 server/session/launch when authenticated, destination identity, request identity
-and time. Current `creationProvenance` is optional client/source metadata, not
+and time. Native local/peer creation now records the descriptive API surface
+before provider startup, including worker-deferred launch; see
+[creation provenance](session-creation-provenance.md#native-v0-and-peer-creation).
+Current `creationProvenance` is optional client/source metadata, not
 an authenticated agent-parent identity. The launch credential can establish
 local session attribution; caller-supplied ids cannot. Do not overload the
 existing fork or `/btw` parent fields. Attribute later submitted messages too.

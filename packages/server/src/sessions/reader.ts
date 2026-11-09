@@ -3,8 +3,13 @@ import {
   type IssueReadOptions,
 } from "./issue-text-reader.js";
 import { randomUUID } from "node:crypto";
-import { readFile, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { readFile, readdir, stat, lstat, open } from "node:fs/promises";
+import { iterateJsonlLines } from "../utils/jsonl.js";
+import { dirname, join } from "node:path";
+import { resolveNativeSessionRef } from "./SessionIdentityStore.js";
+import { createClaudeChildSource } from "./claude-child-source.js";
+import type { NativeSessionRef } from "@yep-anywhere/shared";
 import {
   type AgentStatus,
   type ClaudeProviderName,
@@ -121,6 +126,8 @@ interface AgentMeta {
  * agent sessions, orphaned tool detection, and context window tracking.
  */
 export class ClaudeSessionReader implements ISessionReader {
+  private retired = false;
+  private retirementListeners = new Set<() => void>();
   private allSessionDirs: string[];
   private resolveContextWindow: (
     model: string | undefined,
@@ -141,6 +148,11 @@ export class ClaudeSessionReader implements ISessionReader {
   }
 
   async close(): Promise<void> {
+    if (!this.retired) {
+      this.retired = true;
+      for (const listener of this.retirementListeners) listener();
+      this.retirementListeners.clear();
+    }
     const client = this.summaryParserClient;
     this.summaryParserClient = undefined;
     await client?.close();
@@ -320,6 +332,15 @@ export class ClaudeSessionReader implements ISessionReader {
     return null;
   }
 
+  async getNativeSessionRef(
+    sessionId: import("@yep-anywhere/shared").NativeSessionId,
+  ) {
+    const file = await this.getSessionFilePath(sessionId);
+    return file
+      ? resolveNativeSessionRef("claude", dirname(file), sessionId)
+      : null;
+  }
+
   async getSession(
     sessionId: string,
     projectId: UrlProjectId,
@@ -349,18 +370,27 @@ export class ClaudeSessionReader implements ISessionReader {
     // Note: Raw messages might not have UUIDs if they are old format or haven't been normalized.
     // But typically they do.
     let finalMessages = rawMessages;
+    let committedEntries = snapshot.committedEntries;
     if (afterMessageId) {
       const afterIndex = rawMessages.findIndex(
         (m) => "uuid" in m && m.uuid === afterMessageId,
       );
       if (afterIndex !== -1) {
         finalMessages = rawMessages.slice(afterIndex + 1);
+        committedEntries = Math.max(0, committedEntries - afterIndex - 1);
       }
     }
 
     return {
       summary,
       transcriptSnapshotUpdatedAt: snapshot.stats.mtime.toISOString(),
+      committedEntries,
+      transcriptSourceVersion: {
+        id: JSON.stringify([snapshot.stats.dev, snapshot.stats.ino]),
+        size: snapshot.stats.size,
+        mtime: snapshot.stats.mtimeMs,
+        ctime: snapshot.stats.ctimeMs,
+      },
       data: {
         provider: summary.provider as ClaudeProviderName,
         session: {
@@ -457,6 +487,7 @@ export class ClaudeSessionReader implements ISessionReader {
    * @returns Array of toolUseId → agentId mappings
    */
   async getAgentMappings(parentSessionId?: string): Promise<AgentMapping[]> {
+    if (this.retired) return [];
     const mappings: AgentMapping[] = [];
     const seenAgentIds = new Set<string>();
 
@@ -468,29 +499,42 @@ export class ClaudeSessionReader implements ISessionReader {
         );
 
         for (const file of agentFiles) {
+          if (this.retired) return [];
           // Extract agentId from filename: agent-{agentId}.jsonl
           const agentId = file.slice(6, -6); // Remove "agent-" prefix and ".jsonl" suffix
           if (seenAgentIds.has(agentId)) continue;
           seenAgentIds.add(agentId);
           const filePath = join(scanDir, file);
 
-          // Read agent metadata (agentType from meta.json, SDK 0.2.76+)
-          const meta = await this.readAgentMeta(filePath);
-
           try {
-            const content = await readFile(filePath, "utf-8");
-            const trimmed = content.trim();
-            if (!trimmed) continue;
-
-            // Check first few lines for parent_tool_use_id (legacy format)
-            const lines = trimmed.split("\n").slice(0, 5);
+            if (!(await lstat(filePath)).isFile()) continue;
+            const meta = await this.readAgentMeta(filePath);
+            if (this.retired) return [];
+            // Current SDK launch anchors are durable sidecar metadata. The
+            // transcript can still be empty, huge or temporarily unreadable.
+            if (meta.toolUseId) {
+              mappings.push({ ...meta, toolUseId: meta.toolUseId, agentId });
+              continue;
+            }
+            // Preserve older SDK header semantics without reading a long
+            // child's entire body. Initial blank lines did not count after
+            // the former whole-file trim; later blank lines still do.
+            let hasContent = false,
+              headerLines = 0;
             let foundToolUseId = false;
-            for (const line of lines) {
+            for await (const line of iterateJsonlLines(filePath)) {
+              if (this.retired) return [];
+              if (!hasContent && !line.trim()) continue;
+              hasContent = true;
+              headerLines++;
               try {
-                const msg = JSON.parse(line) as ClaudeSessionEntry & {
+                const msg = JSON.parse(line.trim()) as ClaudeSessionEntry & {
                   parent_tool_use_id?: string;
                 };
-                if (msg.parent_tool_use_id) {
+                if (
+                  typeof msg.parent_tool_use_id === "string" &&
+                  msg.parent_tool_use_id
+                ) {
                   mappings.push({
                     ...meta,
                     toolUseId: msg.parent_tool_use_id,
@@ -502,7 +546,9 @@ export class ClaudeSessionReader implements ISessionReader {
               } catch {
                 // Skip malformed lines
               }
+              if (headerLines >= 5) break;
             }
+            if (!hasContent) continue;
 
             // Current SDK metadata carries the launch tool call ID. Older
             // sidecars did not, so keep the agent-ID fallback for those files.
@@ -574,6 +620,20 @@ export class ClaudeSessionReader implements ISessionReader {
     return sortProviderChildSessions(children);
   }
 
+  getProviderChildSource(parent: NativeSessionRef) {
+    if (parent.family !== "claude") return undefined;
+    return createClaudeChildSource({
+      owner: this,
+      parent,
+      roots: this.allSessionDirs,
+      isRetired: () => this.retired,
+      onRetire: (listener) => {
+        this.retirementListeners.add(listener);
+        return () => this.retirementListeners.delete(listener);
+      },
+    });
+  }
+
   /**
    * Infer agent status from its messages.
    *
@@ -613,7 +673,41 @@ export class ClaudeSessionReader implements ISessionReader {
   private async readAgentMeta(agentFilePath: string): Promise<AgentMeta> {
     const metaPath = agentFilePath.replace(/\.jsonl$/, ".meta.json");
     try {
-      const raw = await readFile(metaPath, "utf-8");
+      const before = await lstat(metaPath);
+      if (!before.isFile() || before.size > 65536) return {};
+      const file = await open(
+        metaPath,
+        constants.O_RDONLY |
+          (process.platform === "win32"
+            ? 0
+            : constants.O_NOFOLLOW | constants.O_NONBLOCK),
+      );
+      let raw: string;
+      try {
+        const opened = await file.stat();
+        if (
+          !opened.isFile() ||
+          opened.dev !== before.dev ||
+          opened.ino !== before.ino ||
+          opened.size !== before.size ||
+          opened.mtimeMs !== before.mtimeMs ||
+          opened.ctimeMs !== before.ctimeMs
+        )
+          return {};
+        const buffer = Buffer.alloc(before.size + 1);
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+        const after = await file.stat();
+        if (
+          bytesRead !== before.size ||
+          after.size !== before.size ||
+          after.mtimeMs !== before.mtimeMs ||
+          after.ctimeMs !== before.ctimeMs
+        )
+          return {};
+        raw = buffer.subarray(0, bytesRead).toString("utf8");
+      } finally {
+        await file.close();
+      }
       const meta = JSON.parse(raw) as Record<string, unknown>;
       return {
         ...(typeof meta.agentType === "string" && {

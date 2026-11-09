@@ -1,0 +1,780 @@
+import {
+  type AppSessionSummary,
+  classifyQueuedYaCommand,
+  type ProviderName,
+  type QueuedYaCommand,
+  SERVER_CAPABILITIES,
+  type ServerCapabilitySource,
+  serverHasCapability,
+  startsWithSlashCommand,
+  type TurnEffort,
+} from "@yep-anywhere/shared";
+import {
+  isStaleSessionRedirect,
+  requiresHandoffAfterClaudeResumeError,
+} from "../api/refusal";
+import type { MessageSubmissionMetadata } from "../types/messageSubmission";
+import { requiresAttachmentOnlyServerUpdate } from "./attachmentSubmission";
+import { buildCorrectionText } from "./correctionText";
+import { providerSupportsLocalSessionSandbox } from "./providerCapabilities";
+import {
+  hasComposerDraftContent,
+  type PreparedComposerSubmission,
+} from "./sessionComposerSubmission";
+import {
+  resolveComposerSessionOperation,
+  resolveComposerSlashTurn,
+} from "./slashCommands";
+
+/**
+ * The session page's sending decisions, as plain functions of their inputs
+ * (docs/tactical/179-session-composer-send-decisions.md). The page performs
+ * what they return, in today's order.
+ */
+
+/** The message keys these decisions use. */
+export type ComposerSendMessageKey =
+  | "sessionCorrectionNoChanges"
+  | "queuedCompactRequiresUpdate"
+  | "queuedCompactSeparateAttachments"
+  | "turnEffortUnavailable"
+  | "routedSessionHandoffRequired"
+  | "sessionSendFailed"
+  | "sessionQueueFailed"
+  | "projectQueueComposerOnlyCommand"
+  | "projectQueueUnsupportedCommand"
+  | "projectQueueClearZero"
+  | "projectQueueCommandSyntax"
+  | "projectQueueCommandNeedsSession"
+  | "projectQueueCommandNoAttachments"
+  | "projectQueueNewSessionQueuedInProjectToast"
+  | "projectQueueNewSessionQueuedToast"
+  | "projectQueueSessionQueuedToast";
+
+type Translate = (
+  key: ComposerSendMessageKey,
+  vars?: Record<string, string>,
+) => string;
+
+/** What preparing a composer submission reads from the session page. */
+export interface ComposerSubmissionContext {
+  /** The original text of the turn being corrected, when correcting. */
+  correctionOriginalText: string | null;
+  rewindSupported: boolean;
+  manualCompactSupported: boolean;
+  queuedCompactionSupported: boolean;
+  syntheticDoneEnabled: boolean;
+  syntheticDoneSupported: boolean;
+  syntheticArchiveSupported: boolean;
+  syntheticTerminateSupported: boolean;
+  fileViewCommandSupported: boolean;
+  btwAsidesSupported: boolean;
+  turnEffortSupported: boolean;
+  attachmentCount: number;
+  pendingUploadCount: number;
+  t: Translate;
+}
+
+/** Restore `restoreText` to the composer and show `message`. */
+export interface ComposerSubmissionRefusal {
+  kind: "refuse";
+  message: string;
+  severity: "error" | "info";
+  restoreText: string;
+}
+
+export type ComposerLocalOperation =
+  | { kind: "session-boundary"; command: "done" | "archive" | "terminate" }
+  | { kind: "title"; title: string | null }
+  | { kind: "view"; argument: string };
+
+export type ComposerSubmissionFallback =
+  | ComposerSubmissionRefusal
+  | { kind: "drop" }
+  | { kind: "submit"; prepared: PreparedComposerSubmission };
+
+export type ComposerSubmissionDecision =
+  | ComposerSubmissionRefusal
+  /** A command YA runs itself. Correction mode ends first when it is set. */
+  | {
+      kind: "local";
+      operation: ComposerLocalOperation;
+      endCorrectionFirst: boolean;
+    }
+  /**
+   * Try the page's custom command handler; when it handles the command,
+   * correction mode ends afterwards (when set), else `fallback` applies.
+   */
+  | {
+      kind: "custom";
+      command: string;
+      argument: string;
+      endCorrectionIfHandled: boolean;
+      fallback: ComposerSubmissionFallback;
+    }
+  /** Nothing to send, and nothing to say. */
+  | { kind: "drop" }
+  | { kind: "submit"; prepared: PreparedComposerSubmission };
+
+/**
+ * Decides what a composer submission becomes: a refusal, a local command, a
+ * custom command, nothing, or a prepared submission.
+ */
+export function resolveComposerSubmission(
+  text: string,
+  queueIntent: boolean,
+  context: ComposerSubmissionContext,
+): ComposerSubmissionDecision {
+  const { t } = context;
+  const refuse = (
+    message: string,
+    severity: "error" | "info" = "error",
+    restoreText = text,
+  ): ComposerSubmissionRefusal => ({
+    kind: "refuse",
+    message,
+    severity,
+    restoreText,
+  });
+  // Recalling a turn and editing its slash command means "issue this command
+  // again", not "correct my last sentence". Correction framing prepends a
+  // line, which pushes `/goal ...` off offset 0 so the provider sends the
+  // command through as prose, and a stripping command like `/fast ...` would
+  // diff its bare argument against the unstripped original. So the whole
+  // submission below behaves as a fresh invocation, including re-issuing an
+  // unedited command the way shell history does. The decision reads the raw
+  // composer text because `resolveComposerSlashTurn` has already consumed the
+  // leading token by the time the outgoing text is built.
+  const issuesSlashCommand =
+    context.correctionOriginalText !== null && startsWithSlashCommand(text);
+  // The outgoing text for a candidate, or the "no changes" refusal when a
+  // correction would send its original unchanged.
+  const frame = (
+    candidate: string,
+  ): { text: string } | ComposerSubmissionRefusal => {
+    if (issuesSlashCommand || context.correctionOriginalText === null) {
+      return { text: candidate };
+    }
+    const correctionText = buildCorrectionText(
+      context.correctionOriginalText,
+      candidate,
+    );
+    return correctionText
+      ? { text: correctionText }
+      : refuse(t("sessionCorrectionNoChanges"), "info", candidate);
+  };
+  const hasAttachments =
+    context.attachmentCount > 0 || context.pendingUploadCount > 0;
+
+  const slashTurn = resolveComposerSlashTurn(text, {
+    rewindSupported: context.rewindSupported,
+  });
+  if (slashTurn.kind === "custom") {
+    if (
+      queueIntent &&
+      slashTurn.command === "compact" &&
+      context.manualCompactSupported
+    ) {
+      if (!context.queuedCompactionSupported) {
+        return refuse(t("queuedCompactRequiresUpdate"));
+      }
+      if (hasAttachments) {
+        return refuse(t("queuedCompactSeparateAttachments"));
+      }
+      return {
+        kind: "submit",
+        prepared: { outgoingText: text, queuedCompact: true },
+      };
+    }
+    const sessionOperation = resolveComposerSessionOperation({
+      text,
+      routesToFocusedAside: false,
+      syntheticDoneEnabled: context.syntheticDoneEnabled,
+      syntheticDoneSupported: context.syntheticDoneSupported,
+      syntheticArchiveSupported: context.syntheticArchiveSupported,
+      syntheticTerminateSupported: context.syntheticTerminateSupported,
+      hasAttachments,
+    });
+    if (sessionOperation.kind === "blocked") {
+      return refuse(sessionOperation.message);
+    }
+    // Commands YA runs itself never reach the send path that ends correction
+    // mode, so they end it here or the banner would outlive the command and
+    // wrap the next ordinary message.
+    if (sessionOperation.kind === "session-boundary") {
+      return {
+        kind: "local",
+        operation: {
+          kind: "session-boundary",
+          command: sessionOperation.command,
+        },
+        endCorrectionFirst: issuesSlashCommand,
+      };
+    }
+    if (sessionOperation.kind === "title") {
+      return {
+        kind: "local",
+        operation: { kind: "title", title: sessionOperation.title },
+        endCorrectionFirst: issuesSlashCommand,
+      };
+    }
+    if (slashTurn.command === "view" && context.fileViewCommandSupported) {
+      return {
+        kind: "local",
+        operation: { kind: "view", argument: slashTurn.argument },
+        endCorrectionFirst: issuesSlashCommand,
+      };
+    }
+    if (slashTurn.command === "btw" && !context.btwAsidesSupported) {
+      return refuse(
+        "/btw asides are available only for providers with a wired fork path.",
+      );
+    }
+    // Unhandled custom commands send their text as typed: no thinking, slash
+    // command or turn effort, and only a non-empty check.
+    const framed = frame(text);
+    return {
+      kind: "custom",
+      command: slashTurn.command,
+      argument: slashTurn.argument,
+      endCorrectionIfHandled: issuesSlashCommand,
+      fallback:
+        "kind" in framed
+          ? framed
+          : framed.text
+            ? { kind: "submit", prepared: { outgoingText: framed.text } }
+            : { kind: "drop" },
+    };
+  }
+
+  if (slashTurn.kind === "error") {
+    return refuse(slashTurn.message);
+  }
+
+  if (slashTurn.turnEffort && !context.turnEffortSupported) {
+    return refuse(t("turnEffortUnavailable"));
+  }
+
+  const framed = frame(slashTurn.text);
+  if ("kind" in framed) return framed;
+  if (!hasComposerDraftContent(framed.text, context.attachmentCount)) {
+    return { kind: "drop" };
+  }
+  return {
+    kind: "submit",
+    prepared: {
+      outgoingText: framed.text,
+      thinking: slashTurn.thinking,
+      slashCommand: slashTurn.command,
+      turnEffort: slashTurn.turnEffort,
+    },
+  };
+}
+
+/**
+ * Turn-effort metadata (plan 179 S7). `send` defaults to direct delivery,
+ * keeps the caller's intent and `steerNow`; `deferred` forces deferred
+ * delivery and clears `steerNow`.
+ */
+export function mergeTurnEffortMetadata(
+  metadata: MessageSubmissionMetadata | undefined,
+  turnEffort: TurnEffort,
+  variant: "send" | "deferred",
+): MessageSubmissionMetadata {
+  return variant === "send"
+    ? {
+        composition: {},
+        deliveryIntent: "direct",
+        ...metadata,
+        turnEffort,
+      }
+    : {
+        composition: {},
+        ...metadata,
+        deliveryIntent: "deferred",
+        turnEffort,
+        steerNow: undefined,
+      };
+}
+
+export type SendPlan =
+  /** A turn-effort turn while busy goes to the deferred queue instead. */
+  | { kind: "queue-instead" }
+  /** An attachment-only message to an old server: toast, keep nothing. */
+  | { kind: "refuse-attachment-only" }
+  | {
+      kind: "send";
+      metadata: MessageSubmissionMetadata | undefined;
+      /** A local control command: no in-turn or idle state change. */
+      localControl: boolean;
+    };
+
+/** What `handleSend` does with a prepared submission before any effect. */
+export function planSend({
+  prepared,
+  metadata,
+  processState,
+  goalActive,
+  preserveComposer,
+  localControlRequested,
+  version,
+  attachmentCount,
+}: {
+  prepared: PreparedComposerSubmission;
+  metadata: MessageSubmissionMetadata | undefined;
+  processState: string;
+  goalActive: boolean;
+  preserveComposer: boolean;
+  localControlRequested: boolean;
+  version: ServerCapabilitySource | null | undefined;
+  attachmentCount: number;
+}): SendPlan {
+  if (
+    prepared.turnEffort &&
+    (processState === "in-turn" || processState === "waiting-input")
+  ) {
+    return { kind: "queue-instead" };
+  }
+  const sendMetadata = prepared.turnEffort
+    ? mergeTurnEffortMetadata(metadata, prepared.turnEffort, "send")
+    : metadata;
+  const localControl =
+    localControlRequested ||
+    (goalActive && /^\/goal(?:\s|$)/i.test(prepared.outgoingText));
+  if (
+    !preserveComposer &&
+    requiresAttachmentOnlyServerUpdate({
+      version,
+      text: prepared.outgoingText,
+      attachmentCount,
+    })
+  ) {
+    return { kind: "refuse-attachment-only" };
+  }
+  return { kind: "send", metadata: sendMetadata, localControl };
+}
+
+export type QueuePlan =
+  | { kind: "refuse-attachment-only" }
+  | { kind: "queue"; metadata: MessageSubmissionMetadata | undefined };
+
+/** What `handleQueue` does with a prepared submission before any effect. */
+export function planQueue({
+  prepared,
+  metadata,
+  version,
+  attachmentCount,
+}: {
+  prepared: PreparedComposerSubmission;
+  metadata: MessageSubmissionMetadata | undefined;
+  version: ServerCapabilitySource | null | undefined;
+  attachmentCount: number;
+}): QueuePlan {
+  const queueMetadata = prepared.turnEffort
+    ? mergeTurnEffortMetadata(metadata, prepared.turnEffort, "deferred")
+    : metadata;
+  if (
+    requiresAttachmentOnlyServerUpdate({
+      version,
+      text: prepared.outgoingText,
+      attachmentCount,
+    })
+  ) {
+    return { kind: "refuse-attachment-only" };
+  }
+  return { kind: "queue", metadata: queueMetadata };
+}
+
+/** The resume request's settings, on a first attempt and on a retry. */
+export function buildResumeOptions<
+  Settings extends object,
+  ShowThinking,
+  Provider,
+  Executor,
+>(
+  resumeSettings: Settings,
+  {
+    showThinking,
+    provider,
+    executor,
+  }: {
+    showThinking: ShowThinking;
+    provider: Provider;
+    executor: Executor;
+  },
+) {
+  return { ...resumeSettings, showThinking, provider, executor };
+}
+
+/**
+ * The first step after a send fails: a send already observed as delivered
+ * confirms; a stale-session redirect hands off; anything else continues to
+ * the retry and the final notice.
+ */
+export function firstSendFailureStep(
+  error: unknown,
+  delivered: boolean,
+): "delivered" | "stale-redirect" | "continue" {
+  if (delivered) return "delivered";
+  if (isStaleSessionRedirect(error)) return "stale-redirect";
+  return "continue";
+}
+
+/**
+ * Send and queue retry with a resume when the session's process is gone
+ * (404 or 410, or a message saying so), except for a queued compaction,
+ * which needs the running process.
+ */
+export function shouldRetryWithResume(
+  error: unknown,
+  queuedCompact = false,
+): boolean {
+  if (queuedCompact || !(error instanceof Error)) return false;
+  const status = (error as { status?: number }).status;
+  return (
+    status === 404 ||
+    status === 410 ||
+    error.message.includes("404") ||
+    error.message.includes("No active process") ||
+    error.message.includes("Process terminated")
+  );
+}
+
+export const CLAUDE_HANDOFF_REQUIRED_MESSAGE =
+  "Claude session cannot be safely resumed because the Claude SDK recorded an API-error response as the latest assistant message. Start a handoff session instead.";
+
+/**
+ * The notice after a send or queue finally fails: a resume that needs a
+ * handoff offers the handoff dialog (unless the session is routed, which
+ * cannot hand off yet) and explains; anything else is the path's generic
+ * failure toast.
+ */
+export function finalFailureNotice({
+  finalError,
+  provider,
+  routedSession,
+  path,
+  t,
+}: {
+  finalError: unknown;
+  provider: ProviderName | undefined;
+  routedSession: boolean;
+  path: "send" | "queue";
+  t: Translate;
+}): { openHandoffDialog: boolean; message: string } {
+  const errorMsg =
+    finalError instanceof Error ? finalError.message : String(finalError);
+  if (requiresHandoffAfterClaudeResumeError(finalError, provider)) {
+    return {
+      openHandoffDialog: !routedSession,
+      message: routedSession
+        ? t("routedSessionHandoffRequired")
+        : errorMsg.includes("API error: 409")
+          ? CLAUDE_HANDOFF_REQUIRED_MESSAGE
+          : errorMsg,
+    };
+  }
+  return {
+    openHandoffDialog: false,
+    message: t(path === "send" ? "sessionSendFailed" : "sessionQueueFailed", {
+      message: errorMsg,
+    }),
+  };
+}
+
+export type ProjectQueueTargetType = "existing-session" | "new-session";
+
+/** The new-session target chosen in the Project Queue options. */
+export interface ProjectQueueNewSessionChoice<Provider> {
+  projectId?: string;
+  projectName?: string;
+  provider?: Provider;
+  model?: string;
+  delivery?: "now";
+}
+
+export type ProjectQueueCommandDecision =
+  /** Restore the raw text and show `message`. */
+  | { kind: "refuse"; message: string }
+  /** A YA command the scheduler runs later, sent as its command text. */
+  | {
+      kind: "queueable";
+      prepared: PreparedComposerSubmission;
+      yaCommand: QueuedYaCommand;
+    }
+  /** An ordinary prompt: prepare it as a composer submission. */
+  | { kind: "prepare" };
+
+/**
+ * Project Queue is a delayed lane, so a YA-emulated command must be carried
+ * to the scheduler rather than run now the way the composer's direct paths
+ * run it (topics/project-queue.md § Queued YA commands). Decides whether
+ * the text is such a command, a command that cannot be queued, or a prompt.
+ */
+export function resolveProjectQueueCommand({
+  text,
+  targetType,
+  rewindSupported,
+  fileViewSupported,
+  attachmentCount,
+  pendingUploadCount,
+  t,
+}: {
+  text: string;
+  targetType: ProjectQueueTargetType;
+  rewindSupported: boolean;
+  fileViewSupported: boolean;
+  attachmentCount: number;
+  pendingUploadCount: number;
+  t: Translate;
+}): ProjectQueueCommandDecision {
+  const classified = classifyQueuedYaCommand(text, {
+    rewindSupported,
+    fileViewSupported,
+  });
+  if (classified.kind === "composer-only") {
+    return {
+      kind: "refuse",
+      message: t("projectQueueComposerOnlyCommand", {
+        command: classified.name,
+      }),
+    };
+  }
+  if (classified.kind === "unsupported") {
+    return {
+      kind: "refuse",
+      message: t("projectQueueUnsupportedCommand", {
+        command: classified.name,
+      }),
+    };
+  }
+  if (classified.kind === "invalid") {
+    return {
+      kind: "refuse",
+      message:
+        classified.problem === "clear-zero"
+          ? t("projectQueueClearZero")
+          : t("projectQueueCommandSyntax", {
+              command: classified.command.name,
+            }),
+    };
+  }
+  if (classified.kind !== "queueable") return { kind: "prepare" };
+  const yaCommand = classified.command;
+  if (targetType === "new-session") {
+    return {
+      kind: "refuse",
+      message: t("projectQueueCommandNeedsSession", {
+        command: yaCommand.name,
+      }),
+    };
+  }
+  if (attachmentCount > 0 || pendingUploadCount > 0) {
+    return {
+      kind: "refuse",
+      message: t("projectQueueCommandNoAttachments", {
+        command: yaCommand.name,
+      }),
+    };
+  }
+  return {
+    kind: "queueable",
+    prepared: { outgoingText: classified.commandText },
+    yaCommand,
+  };
+}
+
+/**
+ * Where a Project Queue submission goes and how it starts: the target
+ * project, provider and model, the turn-effort metadata (plan 179 S7, the
+ * deferred variant), and whether it is a start-now creation that needs
+ * durable admission.
+ */
+export function planProjectQueue<Provider>({
+  prepared,
+  metadata,
+  targetType,
+  newSessionTarget,
+  projectId,
+  provider,
+  sessionModel,
+  defaultModel,
+  version,
+  attachmentCount,
+}: {
+  prepared: PreparedComposerSubmission;
+  metadata: MessageSubmissionMetadata | undefined;
+  targetType: ProjectQueueTargetType;
+  newSessionTarget: ProjectQueueNewSessionChoice<Provider> | undefined;
+  projectId: string;
+  provider: Provider;
+  sessionModel: string | undefined;
+  /** The saved default model, read only when it is needed. */
+  defaultModel: () => string | undefined;
+  version: ServerCapabilitySource | null | undefined;
+  attachmentCount: number;
+}) {
+  // A new session chosen from the options may go to another project or
+  // provider. This session's settings still apply where they can: its
+  // executor and implicit effort only to the same provider, since another
+  // provider's catalog may not accept them.
+  const queueProjectId =
+    targetType === "new-session"
+      ? (newSessionTarget?.projectId ?? projectId)
+      : projectId;
+  const newSessionProvider = newSessionTarget?.provider ?? provider;
+  const keepsProvider = newSessionProvider === provider;
+  const newSessionModel =
+    newSessionTarget?.model ??
+    (keepsProvider ? (sessionModel ?? defaultModel()) : undefined);
+  const startsNow =
+    targetType === "new-session" && newSessionTarget?.delivery === "now";
+  return {
+    metadata: prepared.turnEffort
+      ? mergeTurnEffortMetadata(metadata, prepared.turnEffort, "deferred")
+      : metadata,
+    queueProjectId,
+    newSessionProvider,
+    keepsProvider,
+    newSessionModel,
+    startsNow,
+    // As in send and queue: an attachment-only message to this session needs
+    // a server that accepts one. New sessions stage their files instead.
+    refuseAttachmentOnly:
+      targetType === "existing-session" &&
+      requiresAttachmentOnlyServerUpdate({
+        version,
+        text: prepared.outgoingText,
+        attachmentCount,
+      }),
+    canonicalCreation:
+      startsNow &&
+      serverHasCapability(
+        version,
+        SERVER_CAPABILITIES.sessionCreationAdmission.name,
+      ),
+  };
+}
+
+/** Launch fields a composer New session keeps from its source session. */
+export interface DerivedNewSessionSettings {
+  routerPoolId?: string;
+  routerAccountId?: string;
+  routerPolicy?: string;
+  routerClaudeAiConnectors?: true;
+  sandboxLevel?: "project-write";
+  sandboxNetworkFirewall?: boolean;
+  serviceTier?: string;
+}
+
+/**
+ * What a new session started from a session's composer keeps from that
+ * session (plan 183): its YA sandbox always, and on the same provider its
+ * router selection and service tier. A pool-routed source gives
+ * a fresh pick from its pool with its policy (a Manual pin keeps its
+ * account); an account-pinned source gives that account. Neither shares the
+ * source's pin. A selection the server cannot carry is refused, never
+ * dropped, so the session cannot fall back to the direct login.
+ */
+export function deriveComposerNewSessionSettings({
+  session,
+  keepsProvider,
+  newSessionProvider,
+  queued,
+  version,
+}: {
+  session:
+    | (Pick<
+        AppSessionSummary,
+        "routerBinding" | "sandboxLevel" | "sandboxNetworkFirewall" | "provider"
+      > & {
+        effectiveLaunchSettings?: { serviceTier: string | null };
+      })
+    | null
+    | undefined;
+  keepsProvider: boolean;
+  newSessionProvider: ProviderName | null | undefined;
+  queued: boolean;
+  version: ServerCapabilitySource | null | undefined;
+}):
+  | {
+      refuse:
+        | "routerQueueUnsupported"
+        | "routerLaunchUnsupported"
+        | "composerNewSessionSandboxUnsupported"
+        | "composerNewSessionSourceLoading";
+    }
+  | { settings: DerivedNewSessionSettings } {
+  // Until the source loads, its pin and sandbox are unknown: refuse rather
+  // than start Direct or unsandboxed.
+  if (!session) return { refuse: "composerNewSessionSourceLoading" };
+  const sandbox: DerivedNewSessionSettings =
+    session.sandboxLevel === "project-write"
+      ? {
+          sandboxLevel: "project-write",
+          sandboxNetworkFirewall: session.sandboxNetworkFirewall !== false,
+        }
+      : {};
+  // The sandbox is a host boundary, not a provider setting: it follows the
+  // session to any provider that can run inside it, and refuses the rest.
+  if (!keepsProvider) {
+    if (
+      sandbox.sandboxLevel &&
+      !providerSupportsLocalSessionSandbox(newSessionProvider)
+    )
+      return { refuse: "composerNewSessionSandboxUnsupported" };
+    return { settings: sandbox };
+  }
+  const settings: DerivedNewSessionSettings = {};
+  const binding = session.routerBinding;
+  if (binding) {
+    if (
+      queued &&
+      !serverHasCapability(
+        version,
+        SERVER_CAPABILITIES.projectQueueRouterSelection.name,
+      )
+    )
+      return { refuse: "routerQueueUnsupported" };
+    if (!serverHasCapability(version, SERVER_CAPABILITIES.agentAuthRouter.name))
+      return { refuse: "routerLaunchUnsupported" };
+    if (binding.poolId) {
+      settings.routerPoolId = binding.poolId;
+      if (binding.policy) settings.routerPolicy = binding.policy;
+      // A Manual pool pin names its account; any other policy picks afresh.
+      if (binding.policy === "manual")
+        settings.routerAccountId = binding.accountId;
+    } else settings.routerAccountId = binding.accountId;
+    if (binding.claudeAiConnectors && session.provider === "claude")
+      settings.routerClaudeAiConnectors = true;
+  } else Object.assign(settings, sandbox);
+  const serviceTier = session.effectiveLaunchSettings?.serviceTier;
+  if (serviceTier) settings.serviceTier = serviceTier;
+  return { settings };
+}
+
+/** The toast after a Project Queue item is created. */
+export function projectQueueQueuedMessage({
+  targetType,
+  queueProjectId,
+  projectId,
+  projectName,
+  t,
+}: {
+  targetType: ProjectQueueTargetType;
+  queueProjectId: string;
+  projectId: string;
+  projectName: string | undefined;
+  t: Translate;
+}): string {
+  if (targetType === "new-session" && queueProjectId !== projectId) {
+    return t("projectQueueNewSessionQueuedInProjectToast", {
+      project: projectName ?? queueProjectId,
+    });
+  }
+  return t(
+    targetType === "new-session"
+      ? "projectQueueNewSessionQueuedToast"
+      : "projectQueueSessionQueuedToast",
+  );
+}

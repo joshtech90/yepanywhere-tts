@@ -7,7 +7,8 @@ helpers).
 
 See also: [`provider-state-machine.md`](provider-state-machine.md),
 [`provider-context-economics.md`](provider-context-economics.md),
-[`provider-refresh.md`](provider-refresh.md). Global aesthetic: the
+[`provider-refresh.md`](provider-refresh.md),
+[ACP integration and sharing](acp.md). Global aesthetic: the
 "shared-facility contract" rule and agent-design's "promote to a dedicated
 surface when you need to gate/render/audit".
 
@@ -16,7 +17,7 @@ surface when you need to gate/render/audit".
 This is a forward-looking guideline, adopted incrementally. Existing
 provider/model conditionals have **not** all been migrated.
 `yaModelIdForReported`, native compact-threshold support, and launch-scoped
-compact-percent support (below) are the first surfaces to adopt this seam.
+compact-percent support and native steering urgency (below) adopt this seam.
 Don't treat the presence of remaining inline conditionals as a bug to sweep;
 migrate them when they next hit a trigger below.
 
@@ -33,17 +34,158 @@ migrate them when they next hit a trigger below.
   settings, but "default" is subscription-dependent and resolvable only at
   runtime).
 
+### Provider input queues
+
+Shared delivery metadata expresses user intent; native urgency belongs at the
+adapter ingress. Ordinary queue consumption yields one supplied input at a
+time; it never concatenates buffered text or combines priorities based on
+consumer timing. Providers may group those independent native inputs themselves.
+Explicit deferred join settings and interrupt assembly remain separate policies. Claude's
+`prepareClaudeInput` maps steer/Now to `next`/`now` and deferred/patient to
+`later`; generic `Process` does not choose Claude priorities. Preserve each
+input's identity and authoritative consumption evidence through that mapping.
+
+`ProviderInfo.steering` describes native modes and selection scope. A
+`per-message` provider may offer immediate steering beside Send; a `launch`
+provider configures new owners through capability-gated settings. Do not
+pretend a launch flag is a per-message API, or simulate immediate steering
+with interrupt-and-resend. Keep regular/patient scheduling separate from
+native urgency. A gentle-only adapter such as Grok can advertise the same
+contract without exposing an immediate control.
+
+Codex captures the YA choice at owner creation, applies it at native launch,
+and emits mode/source evidence in init. The worker retains that evidence in
+attach state after init is acknowledged; a replacement server must use it
+rather than reconstructing mode from today's settings. Native configuration
+that YA cannot resolve is reported as `native-config`. See
+[the steering contract](steer-queue-provider-differences.md#shared-steering-contract)
+and [plan 174](../docs/tactical/174-shared-steering-and-native-urgency.md).
+
+Every provider session supplies its input queue, including scripted/mock
+providers and provider-host proxies. `Process` uses that queue for submission,
+depth, cancellation, draining and consumption observations; it has no separate
+mock-only input scheduler. Provider consumption, rather than an artificial
+Process transition, owns delivery observations. Test fixtures must supply the
+same queue surface as production sessions.
+
+### Grouped user-input identity
+
+Normalized user rows may carry optional `inputMessageIds`: authoritative native
+input identities represented by that row, including its primary ID. The primary
+`uuid`/`id` remains the row's identity. Claude maps native `mergedSendUuids` at
+its adapter/history boundary; Codex already preserves independent client IDs.
+The shared UI reconciles named input echoes and resolves their original links
+to the grouped row without interpreting provider-specific fields. Identical
+text is not identity evidence. Late individual replay cannot downgrade a known
+grouped row, and text-based legacy reconciliation must not claim other inputs
+for a row with explicit native identities.
+
+The list is deduplicated and bounded to 1,024 identities including the
+primary ID; invalid, empty or oversized aliases are ignored. It is optional:
+current clients use existing reconciliation when older servers/history provide
+no such evidence, and send the same requests. No capability or compatibility
+floor changes are needed. The selected qualification scope excludes old browser
+extension/frontends against new servers per maintainer direction. Native Pi
+node-ID mapping and explicit YA join/interrupt identity remain separate gaps.
+
+### Legacy SDK delegation
+
+The compatibility Claude SDK bridge declares its canonical `providerName`.
+When no provider override is supplied, Supervisor resolves that name through
+the configured AgentProvider registry. Omitted-provider Claude requests thus
+use the same launch/creation owner as explicit Claude requests, including
+saved startup intent and caller-chosen identity. This changes no provider,
+endpoint, account or model selection; existing configured adapter settings
+remain authoritative. Provider-visible `clientName` is passed through on
+both provider creation paths.
+
+An explicit provider override wins, including `null` disabling registry
+discovery. An independent SDK with no canonical name keeps its established
+SDK path. The declaration is an internal bridge contract, not a browser
+capability or a new provider-specific lifecycle framework. See
+[session identity](session-identity.md#managed-dispatch-boundary) for rollout
+limits; routing, sandbox, hosting and remaining input shapes stay gated there.
+
+### Native command completion
+
+`ProviderCommandResult.handled` is dispatch ownership, not proof of completion.
+An adapter may additionally return `completion: "completed"` only when native
+work and persistence are confirmed finished and following input is safe. The
+shared queued-compact gate accepts that explicit synchronous evidence or its
+existing native compact-boundary plus terminal events. It never infers completion
+from a summary response, timeout, optimistic echo or an ordinary dispatch reply.
+An explicit refusal stays failed; lost/malformed completion stays uncertain.
+Pi's compact RPC uses synchronous evidence. Claude/Codex retain asynchronous
+native completion. This optional internal result crosses the existing host RPC;
+it adds no browser capability and older workers do not acquire new behavior.
+
+### Scoped native continuation
+
+`ProviderSessionSource` carries one proven native reference, physical transcript
+path when one exists and original project. `ProviderForkSource` requires the
+physical path for copy/helper operations; a fileless continuation does not
+invent one. The trusted `StartSessionOptions.nativeResumeSource` is resolved
+at the server/provider boundary; it is never accepted from client JSON.
+Adapters opt into `supportsNativeResumeSource` only after validating storage
+selection and exact native continuation. Native ids remain in provider-facing
+resume/control fields; `publicSessionId` owns bridges, child authority and
+AgentSelf. Supervisor keeps the original YA Process identity and checks the
+returned native id independently. The shared `resolveNativeSessionSource` callback supplies authoritative source
+acquisition; the fork boundary additionally requires a physical file; this adds no catalogue, registry or conversation store.
+See [session identity](session-identity.md) for current enabling limits.
+
+Claude, Gateway and Ollama share one native-environment/source validation
+boundary. Gateway validates a scoped continuation before readiness or service
+autostart, then revalidates at actual SDK launch after that await. Validation
+preserves the configured account-home spelling and native project selector;
+the common bridge and observations retain YA identity.
+
+### Retained ACP continuation and teardown
+
+Grok and frozen Gemini ACP opt into scoped native continuation. Their actual
+launch namespace and original physical project must match the proved source
+before CLI discovery, helper execution or bridge allocation. A reader-only
+directory override cannot select another launch store. Grok uses
+`GROK_HOME/sessions`; Gemini uses `GEMINI_CLI_HOME/.gemini/tmp`, with the existing
+native home defaults when those overrides are empty or absent. Scoped overrides
+must be absolute. A changed working-project overlay refuses continuation;
+historical reads remain available at that overlay.
+
+The existing ACP methods remain unchanged: Grok loads with `_meta.noReplay`,
+and Gemini uses its retained resume method. A rejected or unsupported resume
+fails explicitly; neither adapter creates a replacement conversation. The
+provider's JSON-RPC error message survives even when the SDK rejects with a
+plain object. Grok's native RPC id is separate from YA's tool-environment id,
+including shells started after native attachment.
+
+The shared client retains its actual child handle after requesting termination.
+Its owned POSIX process group (Windows process tree) is terminated together;
+launcher exit alone does not certify closure of a respawned native worker.
+Shutdown escalates after two seconds and joins inherited stdio closure. The
+native Gemini cancellation scenario exercises a real launcher/worker and held
+model connection. A typed, locally generated closed-transport rejection during
+requested abort is normal shutdown; other errors remain failures.
+Logical connection closure cancels pending requests and idle input waits; it
+does not certify OS process death. Abort/iterator cleanup waits for actual child
+closure, and liveness follows the child's exit evidence. Closing before startup
+prevents a late connect. A completed request removes its pending close handler,
+so successful calls do not accumulate per-conversation listeners. These are
+ownership/teardown guarantees for the pinned SDK, not an ACP protocol refresh.
+
 ### Provider-wide session and process discovery
 
-Accepted 2026-08-05; the successful-use eligibility boundary and gated watcher
-owner are implemented, while provider catalog/process adapters and the retained
-coordinator remain pending. The implementation handoff is
+Accepted 2026-08-05; successful-use eligibility, the gated watcher owner, the
+retained catalog coordinator and Pi/Grok/OpenCode native catalog adapters are
+implemented. Project-discovery convergence, remaining focused observation and
+exact external-process reconciliation are still incomplete. The implementation handoff is
 [`docs/tactical/093-provider-session-reconciliation.md`](../docs/tactical/093-provider-session-reconciliation.md).
 Generic collection and boot code knows too much about provider storage. Host
 process command recognition is now its own module,
 `services/providerProcessClassifier.ts`, reusable without the host process
 inventory, but it is still a fixed table of names and package paths rather than
-a provider capability, and it recognizes no native session id.
+a provider capability. Its native PID-record lookup currently correlates Claude
+sessions; other families still need exact native evidence before process roots
+can be joined to particular sessions.
 
 These are two separate provider-owned projections:
 
@@ -324,3 +466,13 @@ earlier "set opus, see it on best". You can't get both "distinct by choice" and
 an owned setting should also apply when later *viewing an external* session of
 the same model, owned would additionally write the resolved-name prefixes — but
 that reintroduces the collapse. Owned-by-requested is the chosen default.
+
+
+## Exact historical reader selection
+
+A caller that knows a session's provider selects that provider's reader through
+`getSessionSourceForProvider`; provider aliases share their native family.
+An unavailable reader never falls through to another provider. Child-session
+lookups omit children when no reader exists; vocabulary collection fails that
+session's read, leaving its checkpoint unadvanced. A stored native binding
+continues to select the exact original store and native ID before legacy lookup.

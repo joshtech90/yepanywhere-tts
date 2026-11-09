@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Button } from "../../components/ui/Button";
+import { Textarea } from "../../components/ui/Field";
 import { useI18n } from "../../i18n";
 import {
   applyBrowserSettingsBackup,
@@ -134,26 +136,22 @@ export function SettingsClipboardTransfer() {
       <span className={styles.title}>{t("settingsClipboardTitle")}</span>
       <span className={styles.status}>{t("settingsClipboardDescription")}</span>
       <div className={styles.buttons}>
-        <button
-          type="button"
-          className="settings-button"
+        <Button
           onClick={() => void handleCopy()}
           title={t("settingsClipboardCopyTooltip")}
         >
           {t("settingsClipboardCopy")}
-        </button>
-        <button
-          type="button"
-          className="settings-button"
+        </Button>
+        <Button
           onClick={() => void handlePaste()}
           title={t("settingsClipboardPasteTooltip")}
         >
           {t("settingsClipboardPaste")}
-        </button>
+        </Button>
       </div>
       {manual?.mode === "copy" && (
-        <textarea
-          className={styles.text}
+        <Textarea
+          mono
           aria-label={t("settingsClipboardCopyFieldLabel")}
           value={manual.text}
           readOnly
@@ -162,16 +160,15 @@ export function SettingsClipboardTransfer() {
       )}
       {manual?.mode === "paste" && (
         <>
-          <textarea
-            className={styles.text}
+          <Textarea
+            mono
             aria-label={t("settingsClipboardPasteFieldLabel")}
             value={pastedText}
             onChange={(event) => setPastedText(event.target.value)}
           />
           <div className={styles.buttons}>
-            <button
-              type="button"
-              className="settings-button"
+            <Button
+              variant="primary"
               onClick={() => {
                 setError(null);
                 setStatus(null);
@@ -180,10 +177,8 @@ export function SettingsClipboardTransfer() {
               disabled={pastedText.trim() === ""}
             >
               {t("settingsClipboardReview")}
-            </button>
-            <button
-              type="button"
-              className="settings-button"
+            </Button>
+            <Button
               onClick={() => {
                 setManual(null);
                 setPastedText("");
@@ -192,7 +187,7 @@ export function SettingsClipboardTransfer() {
               }}
             >
               {t("settingsClipboardCancel")}
-            </button>
+            </Button>
           </div>
         </>
       )}
@@ -230,21 +225,16 @@ export function SettingsClipboardTransfer() {
             </span>
           )}
           <div className={styles.buttons}>
-            <button
-              type="button"
-              className="settings-button"
+            <Button
+              variant="primary"
               onClick={handleApply}
               title={t("settingsClipboardApplyTooltip")}
             >
               {t("settingsClipboardApply")}
-            </button>
-            <button
-              type="button"
-              className="settings-button"
-              onClick={() => setPreview(null)}
-            >
+            </Button>
+            <Button onClick={() => setPreview(null)}>
               {t("settingsClipboardCancel")}
-            </button>
+            </Button>
           </div>
         </>
       )}

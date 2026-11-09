@@ -35,14 +35,10 @@
 .searchRow:has([data-search-previews]) :global(.session-list-item__meta) {
   padding-right: 94px;
 }
-.searchSelection input {
+.searchCheckbox {
   position: absolute;
   left: 3px;
   top: 11px;
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--accent-primary);
 }
 .searchPreviews {
   flex-basis: 100%;
@@ -60,6 +56,20 @@
   flex: 1;
   min-width: 0;
   align-self: stretch;
+}
+
+/*
+ * A provider-phase pill can be long: a card holding one lets its meta line
+ * wrap the pill below project and age instead of squeezing them, and lets
+ * the link shrink so the pill's ellipsis applies.
+ */
+.body:has([data-provider-phase-pill]) :global(.session-list-item__link) {
+  min-width: 0;
+}
+
+.body :global(.session-list-item__meta):has([data-provider-phase-pill]) {
+  flex-wrap: wrap;
+  row-gap: var(--space-1);
 }
 .searchRow > .body {
   flex-basis: 100%;
@@ -175,12 +185,8 @@
   flex: 0 0 1.5rem;
   align-items: center;
   justify-content: center;
-  padding: 0;
-  border: 0;
   border-radius: var(--radius-sm);
-  background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
 }
 
 .providerChildrenDisclosure:hover,

@@ -33,6 +33,8 @@ import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
 import { generateUUID } from "../lib/uuid";
 import { AttachmentChip } from "./AttachmentChip";
 import styles from "./ProjectQueueSection.module.css";
+import { Button } from "./ui/Button";
+import { Textarea } from "./ui/Field";
 
 interface UploadingAttachment {
   id: string;
@@ -321,7 +323,7 @@ export function ProjectQueueAttachmentEditor({
 
   return (
     <form className={styles.itemEdit} onSubmit={handleSubmit}>
-      <textarea
+      <Textarea
         value={text}
         onChange={(event) => setText(event.target.value)}
         onPaste={handlePaste}
@@ -367,16 +369,17 @@ export function ProjectQueueAttachmentEditor({
       )}
       {editError && <div className={styles.itemError}>{editError}</div>}
       <div className={styles.itemEditActions}>
-        <button
+        <Button
+          variant="primary"
+          size="small"
           type="submit"
           disabled={!canSave}
-          className="project-queue-item__save"
         >
           {t("projectQueueSave")}
-        </button>
-        <button type="button" disabled={disabled} onClick={onDiscard}>
+        </Button>
+        <Button size="small" disabled={disabled} onClick={onDiscard}>
           {t("projectQueueDiscard")}
-        </button>
+        </Button>
       </div>
     </form>
   );

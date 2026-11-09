@@ -7,10 +7,15 @@ import { useEffect, useState } from "react";
 import { projectAppApi } from "../../api/projectApp";
 import { api } from "../../api/client";
 import { ProjectAppViewer } from "../../components/ProjectAppViewer";
+import { Button } from "../../components/ui/Button";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import styles from "./ProjectAppInventorySection.module.css";
-import { expandableRowProps, SettingsCollection } from "./SettingsCollection";
+import {
+  expandableRowProps,
+  SettingsCollection,
+  SettingsCollectionToggle,
+} from "./SettingsCollection";
 import { SettingsDocLink } from "./SettingsDocLink";
 import { ElidedPath } from "../../components/ui/ElidedPath";
 import { SettingsSortHeader, useSettingsTableSort } from "./SettingsTableSort";
@@ -158,8 +163,7 @@ export function ProjectAppInventorySection() {
       <div className={styles.heading}>
         <h3>{t("projectAppInventoryTitle")}</h3>
         {supported && (
-          <button
-            type="button"
+          <Button
             disabled={loading || busy}
             onClick={() => {
               setError("");
@@ -167,7 +171,7 @@ export function ProjectAppInventorySection() {
             }}
           >
             {t("projectAppInventoryRefresh")}
-          </button>
+          </Button>
         )}
       </div>
       <p>
@@ -193,22 +197,22 @@ export function ProjectAppInventorySection() {
             actions={
               selected && canDelete ? (
                 <span className={styles.deleteActions}>
-                  <button
-                    type="button"
+                  <Button
+                    variant="danger-outline"
                     disabled={busy}
                     title={t("projectAppDeleteAppTitle")}
                     onClick={() => void deleteSelected(false)}
                   >
                     {t("projectAppDeleteApp")}
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="danger-outline"
                     disabled={busy}
                     title={t("projectAppDeleteProject")}
                     onClick={() => void deleteSelected(true)}
                   >
                     {t("projectAppDeleteProject")}
-                  </button>
+                  </Button>
                 </span>
               ) : undefined
             }
@@ -229,13 +233,12 @@ export function ProjectAppInventorySection() {
                             {address.name}.{address.namespace}
                           </strong>
                           {!version?.artifactViewer?.vhostPublicRoot && (
-                            <button
-                              type="button"
+                            <Button
                               disabled={busy}
                               onClick={() => void releaseAddress(address)}
                             >
                               {t("projectAppRelease")}
-                            </button>
+                            </Button>
                           )}
                         </p>
                       ))}
@@ -329,8 +332,7 @@ export function ProjectAppInventorySection() {
                     >
                       <td>
                         {row.project ? (
-                          <button
-                            type="button"
+                          <SettingsCollectionToggle
                             aria-expanded={expanded === row.project.projectId}
                             onClick={toggle}
                           >
@@ -340,7 +342,7 @@ export function ProjectAppInventorySection() {
                                 : "▸"}{" "}
                             </span>
                             {row.name}
-                          </button>
+                          </SettingsCollectionToggle>
                         ) : (
                           row.name
                         )}
@@ -355,15 +357,14 @@ export function ProjectAppInventorySection() {
                       </td>
                       <td>
                         {row.retained ? (
-                          <button
-                            type="button"
+                          <Button
                             disabled={busy}
                             onClick={() =>
                               row.retained && void releaseAddress(row.retained)
                             }
                           >
                             {t("projectAppRelease")}
-                          </button>
+                          </Button>
                         ) : (
                           row.status
                         )}

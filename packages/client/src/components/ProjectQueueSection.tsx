@@ -22,6 +22,9 @@ import type { Project } from "../types";
 import { ProjectQueueAttachmentEditor } from "./ProjectQueueAttachmentEditor";
 import { ProviderBadge } from "./ProviderBadge";
 import styles from "./ProjectQueueSection.module.css";
+import { Button } from "./ui/Button";
+import { Textarea } from "./ui/Field";
+import { projectQueueRouterLabel } from "../lib/projectQueueRouterLabel";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 
@@ -578,14 +581,15 @@ export function ProjectQueueSection({
             </span>
           )}
           {hasProjectQueueItems && (
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="small"
               className={styles.dispatchButton}
               onClick={pausedState ? onResumeDispatch : onPauseDispatch}
               disabled={mutatingDispatchState}
             >
               {pausedState ? t("projectQueueResume") : t("projectQueuePause")}
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -660,8 +664,8 @@ export function ProjectQueueSection({
                             </span>
                           </div>
                           <div className={styles.recoveredMessageActions}>
-                            <button
-                              type="button"
+                            <Button
+                              size="small"
                               onClick={() =>
                                 onResumeRecoveredItem(item.sessionId, item.id)
                               }
@@ -670,9 +674,10 @@ export function ProjectQueueSection({
                               title={t("sessionRecoveredQueuedResume")}
                             >
                               {t("projectQueueResume")}
-                            </button>
-                            <button
-                              type="button"
+                            </Button>
+                            <Button
+                              variant="danger-outline"
+                              size="small"
                               onClick={() =>
                                 onDeleteRecoveredItem(item.sessionId, item.id)
                               }
@@ -681,7 +686,7 @@ export function ProjectQueueSection({
                               title={t("sessionRecoveredQueuedDelete")}
                             >
                               {t("projectQueueDelete")}
-                            </button>
+                            </Button>
                           </div>
                         </li>
                       );
@@ -705,9 +710,11 @@ export function ProjectQueueSection({
                   const isPromoting = mutatingPromoteItemId === item.id;
                   const isDispatching = item.status === "dispatching";
                   const isEditing = editingItemId === item.id;
+                  const routerLabel = projectQueueRouterLabel(item.target, t);
                   const isHighlighted = highlightedItemId === item.id;
                   const canEdit =
-                    item.status === "queued" || item.status === "failed";
+                    !item.creationSessionId &&
+                    (item.status === "queued" || item.status === "failed");
                   const projectStatus =
                     projectStatusesByProject[item.projectId];
                   const readiness = readinessLabel(
@@ -771,6 +778,13 @@ export function ProjectQueueSection({
                               >
                                 {targetLabel(item, t)}
                               </Link>
+                            ) : item.creationSessionId ? (
+                              <Link
+                                className={styles.savedSessionLink}
+                                to={`${basePath}/projects/${item.projectId}/sessions/${item.creationSessionId}`}
+                              >
+                                {t("sessionCreationOpenSaved")}
+                              </Link>
                             ) : (
                               targetLabel(item, t)
                             )}
@@ -781,6 +795,14 @@ export function ProjectQueueSection({
                               model={item.target.model}
                               className={styles.itemProvider}
                             />
+                          )}
+                          {routerLabel && (
+                            <span
+                              className={styles.itemProvider}
+                              title={routerLabel.title}
+                            >
+                              {routerLabel.label}
+                            </span>
                           )}
                           <span className={styles.itemAge}>
                             {formatRelativeTime(item.createdAt, t)}
@@ -803,7 +825,7 @@ export function ProjectQueueSection({
                             className={styles.itemEdit}
                             onSubmit={handleEditSubmit}
                           >
-                            <textarea
+                            <Textarea
                               value={editText}
                               onChange={(event) =>
                                 setEditText(event.target.value)
@@ -813,15 +835,16 @@ export function ProjectQueueSection({
                               rows={3}
                             />
                             <div className={styles.itemEditActions}>
-                              <button
+                              <Button
+                                variant="primary"
+                                size="small"
                                 type="submit"
                                 disabled={!canSaveEdit}
-                                className="project-queue-item__save"
                               >
                                 {t("projectQueueSave")}
-                              </button>
-                              <button
-                                type="button"
+                              </Button>
+                              <Button
+                                size="small"
                                 disabled={isMutating}
                                 onClick={() => {
                                   setEditingItemId(null);
@@ -829,7 +852,7 @@ export function ProjectQueueSection({
                                 }}
                               >
                                 {t("projectQueueDiscard")}
-                              </button>
+                              </Button>
                             </div>
                           </form>
                         ) : (
@@ -861,17 +884,18 @@ export function ProjectQueueSection({
                         </span>
                         <div className={styles.itemActions}>
                           {pausedState && !isEditing && (
-                            <button
-                              type="button"
+                            <Button
+                              size="small"
                               onClick={onResumeDispatch}
                               disabled={mutatingDispatchState}
                             >
                               {t("projectQueueResume")}
-                            </button>
+                            </Button>
                           )}
                           {canPromote && !isEditing && (
-                            <button
-                              type="button"
+                            <Button
+                              variant={forceStart ? "outline" : "secondary"}
+                              size="small"
                               className={
                                 forceStart ? styles.forceStart : undefined
                               }
@@ -894,22 +918,22 @@ export function ProjectQueueSection({
                                 : forceStart
                                   ? t("projectQueueForceStart")
                                   : t("projectQueueStartNow")}
-                            </button>
+                            </Button>
                           )}
                           {item.status === "failed" && !isEditing && (
-                            <button
-                              type="button"
+                            <Button
+                              size="small"
                               onClick={() =>
                                 onRetryItem(item.projectId, item.id)
                               }
                               disabled={isMutating}
                             >
                               {t("projectQueueRetry")}
-                            </button>
+                            </Button>
                           )}
                           {canEdit && editingItemId === null && (
-                            <button
-                              type="button"
+                            <Button
+                              size="small"
                               onClick={() => {
                                 setEditingItemId(item.id);
                                 setEditText(item.message.text);
@@ -917,28 +941,29 @@ export function ProjectQueueSection({
                               disabled={isMutating}
                             >
                               {t("projectQueueEdit")}
-                            </button>
+                            </Button>
                           )}
                           {canMoveToTop && !isEditing && (
-                            <button
-                              type="button"
+                            <Button
+                              size="small"
                               onClick={() =>
                                 onMoveItemToTop(item.projectId, item.id)
                               }
                               disabled={isMutating}
                             >
                               {t("projectQueueMoveToTop")}
-                            </button>
+                            </Button>
                           )}
-                          <button
-                            type="button"
+                          <Button
+                            variant="danger-outline"
+                            size="small"
                             onClick={() =>
                               onDeleteItem(item.projectId, item.id)
                             }
                             disabled={isMutating || isDispatching}
                           >
                             {t("projectQueueDelete")}
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     </li>

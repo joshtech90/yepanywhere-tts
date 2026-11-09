@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { chmod, mkdtemp, rm } from "node:fs/promises";
-import http from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { chmod, rm } from "node:fs/promises";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
 import { decideLimitedRoute } from "../src/auth/limitedUserPolicy.js";
@@ -24,214 +21,17 @@ import {
   createTestSessionMetadataService,
   openTestDiscoveryDatabase,
 } from "./utils/session-metadata-database.js";
+import {
+  ROUTER_POLICIES,
+  routerFixtureFor,
+} from "./utils/agent-auth-router-fixture.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   closeTestDiscoveryDatabases();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
-const ROUTER_POLICIES = [
-  { id: "manual", label: "Manual" },
-  { id: "round-robin", label: "Round robin" },
-  { id: "weekly-pace", label: "Weekly pace" },
-];
-async function fixture(
-  pools = false,
-  ownerManaged = false,
-  mostRemaining = false,
-  /** A router that lists and labels its own policies (AAR 2026-10-11). */
-  policyList = false,
-) {
-  const root = await mkdtemp(join(tmpdir(), "yar-"));
-  cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const socketPath = join(root, "control.sock");
-  const requests: {
-    path: string;
-    body: Record<string, unknown>;
-    authorization?: string;
-  }[] = [];
-  let routerId = "fixture-router",
-    revoked = false,
-    failCommit = false,
-    failCancel = false,
-    rejectPrepare: string | false = false,
-    enabled = true,
-    accountName: string | undefined,
-    poolName: string | undefined,
-    overviewAccounts: unknown[] = [],
-    cliModels = false,
-    serviceTiers = false;
-  const server = http.createServer(async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-    requests.push({
-      path: req.url!,
-      body,
-      authorization: req.headers.authorization,
-    });
-    res.setHeader("content-type", "application/json");
-    if (req.url === "/v1/info")
-      return res.end(
-        JSON.stringify({
-          protocol: 1,
-          routerId,
-          inferenceOrigin: "http://127.0.0.1:8417",
-          capabilities: [
-            "manual-bindings",
-            ...(serviceTiers ? ["service-tiers-v1"] : []),
-            ...(pools ? ["pools-v1"] : []),
-            ...(mostRemaining
-              ? ["most-remaining-v1", "admission-refresh-v1"]
-              : []),
-            ...(ownerManaged ? ["router-owned-pools-v1"] : []),
-            ...(cliModels ? ["catalog-cli-models-v1"] : []),
-          ],
-          ...(policyList
-            ? {
-                supportedPolicies: ROUTER_POLICIES.map((p) => p.id),
-                policies: ROUTER_POLICIES,
-              }
-            : {}),
-        }),
-      );
-    if (revoked) {
-      res.statusCode = 401;
-      return res.end("{}");
-    }
-    if (req.url === "/v1/pools/prepare" && rejectPrepare !== false) {
-      res.statusCode = 409;
-      return res.end(JSON.stringify({ error: rejectPrepare }));
-    }
-    if (req.url === "/v1/pools/prepare")
-      return res.end(
-        JSON.stringify({
-          accountId: "account",
-          poolId: body.poolId,
-          policy: "round-robin",
-          reason: "Round robin among eligible accounts",
-          observedAt: "2026-10-03T08:00:00Z",
-        }),
-      );
-    if (
-      req.url === "/v1/overview" ||
-      req.url === "/v1/overview/refresh" ||
-      req.url === "/v1/selection"
-    )
-      return res.end(
-        JSON.stringify({
-          accounts: overviewAccounts,
-          pools: poolName
-            ? [{ id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", name: poolName }]
-            : [],
-          observedAt: "2026-10-03T08:00:00Z",
-          quotaFreshSeconds: 120,
-          ...(policyList
-            ? {
-                supportedPolicies: ROUTER_POLICIES.map((p) => p.id),
-                policies: ROUTER_POLICIES,
-              }
-            : {}),
-        }),
-      );
-    if (req.url === "/v1/disconnect") revoked = true;
-    if (req.url === "/v1/bindings/commit" && failCommit) {
-      failCommit = false;
-      req.socket.destroy();
-      return;
-    }
-    if (req.url === "/v1/bindings/cancel" && failCancel) {
-      res.statusCode = 503;
-      return res.end(
-        JSON.stringify({ error: "upstream-secret-must-not-escape" }),
-      );
-    }
-    return res.end(
-      JSON.stringify({
-        models: [
-          {
-            id: "fixture-model",
-            name: "Fixture",
-            ...(serviceTiers
-              ? {
-                  serviceTiers: [
-                    { id: "priority", name: "Fast", description: "" },
-                  ],
-                }
-              : {}),
-            supportsEffort: true,
-            supportedReasoningEfforts: [
-              { reasoningEffort: "high", description: "High" },
-              { reasoningEffort: "ultra", description: "Maximum" },
-            ],
-          },
-        ],
-        accounts: [
-          {
-            id: "account",
-            provider: "codex",
-            enabled,
-            renewal: "manual",
-            ...(accountName ? { displayName: accountName } : {}),
-          },
-        ],
-      }),
-    );
-  });
-  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
-  await chmod(socketPath, 0o600);
-  cleanups.push(
-    () =>
-      new Promise<void>((resolve) => {
-        server.closeAllConnections();
-        server.close(() => resolve());
-      }),
-  );
-  const metadata = createTestSessionMetadataService(root);
-  await metadata.initialize();
-  const connector = new AgentAuthRouter(root, metadata);
-  return {
-    root,
-    socketPath,
-    requests,
-    metadata,
-    connector,
-    serviceTiers: (supported = true) => {
-      serviceTiers = supported;
-    },
-    identity: () => {
-      routerId = "replacement";
-    },
-    rejectPoolPrepare: (
-      reason = "no eligible pool account; refresh usage or choose Manual",
-    ) => {
-      rejectPrepare = reason;
-    },
-    acceptPoolPrepare: () => {
-      rejectPrepare = false;
-    },
-    loseCommit: () => {
-      failCommit = true;
-    },
-    cancellationAvailable: (available: boolean) => {
-      failCancel = !available;
-    },
-    disableAccount: () => {
-      enabled = false;
-    },
-    name: (account: string, pool?: string) => {
-      accountName = account;
-      poolName = pool;
-    },
-    revoke: () => {
-      revoked = true;
-    },
-    overviewAccounts: (accounts: unknown[], advertised: boolean) => {
-      overviewAccounts = accounts;
-      cliModels = advertised;
-    },
-  };
-}
+const fixture = routerFixtureFor(cleanups);
 describe.skipIf(process.platform === "win32")(
   "router connection and allocation",
   () => {
@@ -428,26 +228,34 @@ describe.skipIf(process.platform === "win32")(
           .every((r) => r.body.thinking === "on:max"),
       ).toBe(true);
     });
-    it("persists before prepare, recovers response loss, remaps identity and resumes the exact token", async () => {
+    it("persists before prepare, recovers response loss and resumes the exact token", async () => {
       const f = await fixture();
       await f.connector.connect(f.socketPath);
       f.loseCommit();
       await expect(
-        f.connector.launch("provisional", "codex", "fixture-model", "account"),
+        f.connector.launch(
+          "public-session",
+          "codex",
+          "fixture-model",
+          "account",
+        ),
       ).rejects.toThrow();
-      const ref = f.metadata.getMetadata("provisional")?.routerBinding;
+      const ref = f.metadata.getMetadata("public-session")?.routerBinding;
       expect(ref?.accountId).toBe("account");
       const first = await f.connector.launch(
-        "provisional",
+        "public-session",
         "codex",
         "fixture-model",
         "account",
       );
-      await f.metadata.remapSessionId("provisional", "canonical");
       const freshMetadata = createTestSessionMetadataService(f.root);
       await freshMetadata.initialize();
       const fresh = new AgentAuthRouter(f.root, freshMetadata);
-      const resumed = await fresh.launch("canonical", "codex", "fixture-model");
+      const resumed = await fresh.launch(
+        "public-session",
+        "codex",
+        "fixture-model",
+      );
       expect(resumed).toEqual(first);
       const prepares = f.requests.filter((r) => r.path.endsWith("prepare"));
       expect(new Set(prepares.map((r) => r.body.id)).size).toBe(1);
@@ -463,11 +271,11 @@ describe.skipIf(process.platform === "win32")(
       expect(persistedMetadata).toContain('"accountId":"account"');
       expect(persistedMetadata).not.toContain(first!.token);
       await expect(
-        fresh.launch("canonical", "codex", "fixture-model", "different"),
+        fresh.launch("public-session", "codex", "fixture-model", "different"),
       ).rejects.toThrow("pin cannot change");
       await fresh.disconnect();
       await expect(
-        fresh.launch("canonical", "codex", "fixture-model"),
+        fresh.launch("public-session", "codex", "fixture-model"),
       ).rejects.toThrow("Connect");
     });
     it("durably retries failed launch cancellation before further allocation", async () => {
@@ -656,6 +464,26 @@ describe.skipIf(process.platform === "win32")(
       });
       expect(result.issue?.message).not.toContain(f.root);
     });
+    it("names the pinned account whose AAR login lapsed instead of a generic refusal", async () => {
+      const f = await fixture();
+      await f.connector.connect(f.socketPath);
+      f.name("kyle");
+      await f.connector.launch("session", "codex", "fixture-model", "account");
+      f.lapseLogin();
+      const app = new Hono();
+      app.onError(structuredErrorHandler);
+      app.post("/resume", async (c) =>
+        c.json(await f.connector.launch("session", "codex", undefined)),
+      );
+      const response = await app.request("/resume", { method: "POST" });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toBe(
+        "The pinned router account (kyle) needs to sign in again: its login in AAR expired or was cleared. Sign that account in again in AAR, then retry. This session's pin will not change.",
+      );
+      expect(f.metadata.getMetadata("session")?.routerBinding?.accountId).toBe(
+        "account",
+      );
+    });
   },
 );
 it("native transport overrides carry no token in Codex arguments or ambient mutations", () => {
@@ -700,6 +528,7 @@ it("router administration and metadata are denied to limited users", () => {
     ["POST", "/api/agent-auth-router/pools/remove"],
     ["GET", "/api/agent-auth-router/accounts/a/catalog"],
     ["GET", "/api/agent-auth-router/accounts/a/quotas"],
+    ["POST", "/api/agent-auth-router/sessions/s/switch"],
   ]) {
     expect(decideLimitedRoute({ method: method!, path: path! })).toEqual({
       kind: "deny",
@@ -1125,3 +954,103 @@ describe.skipIf(process.platform === "win32")("router CLI model rows", () => {
     );
   });
 });
+
+describe.skipIf(process.platform === "win32")(
+  "claude.ai connectors in routed sessions",
+  () => {
+    const pool = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    it("keeps the login only with router support and a claude.ai login, for resumes and copies", async () => {
+      const f = await fixture(true);
+      f.claudeAccount();
+      f.gatewayTokenHeader();
+      await f.connector.connect(f.socketPath);
+      let login: { email?: string } | null = { email: "me@example.test" };
+      const connector = new AgentAuthRouter(
+        f.root,
+        f.metadata,
+        async () => login,
+      );
+      expect((await connector.selection("claude"))?.claudeAiConnectors).toEqual(
+        { login: { email: "me@example.test" } },
+      );
+      expect(
+        (await connector.selection("codex"))?.claudeAiConnectors,
+      ).toBeUndefined();
+
+      const routed = await connector.launch(
+        "routed",
+        "claude",
+        "fixture-model",
+        undefined,
+        pool,
+        "round-robin",
+        { routerClaudeAiConnectors: true },
+      );
+      expect(routed?.claudeAiConnectors).toBe(true);
+      expect(
+        f.metadata.getMetadata("routed")?.routerBinding?.claudeAiConnectors,
+      ).toBe(true);
+      const env = claudeRouterEnvironment(
+        routed!,
+        `x-team: blue\nx-aar-gateway-token: stale`,
+      );
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe("");
+      expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(
+        `x-team: blue\nx-aar-gateway-token: ${routed!.token}`,
+      );
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("");
+
+      // No login: the resumed pin keeps its token-only transport.
+      login = null;
+      expect((await connector.selection("claude"))?.claudeAiConnectors).toEqual(
+        { login: null },
+      );
+      const withoutLogin = await connector.launch(
+        "routed",
+        "claude",
+        "fixture-model",
+      );
+      expect(withoutLogin?.token).toBe(routed?.token);
+      expect(withoutLogin).not.toHaveProperty("claudeAiConnectors");
+      expect(claudeRouterEnvironment(withoutLogin!)).toMatchObject({
+        ANTHROPIC_AUTH_TOKEN: routed!.token,
+      });
+      expect(claudeRouterEnvironment(withoutLogin!)).not.toHaveProperty(
+        "ANTHROPIC_CUSTOM_HEADERS",
+      );
+
+      // An older router never receives the header.
+      login = { email: "me@example.test" };
+      f.gatewayTokenHeader(false);
+      expect(
+        (await connector.selection("claude"))?.claudeAiConnectors,
+      ).toBeUndefined();
+      expect(
+        await connector.launch("routed", "claude", "fixture-model"),
+      ).not.toHaveProperty("claudeAiConnectors");
+
+      f.gatewayTokenHeader();
+      await connector.inheritBinding("routed", "copy");
+      expect(
+        f.metadata.getMetadata("copy")?.routerBinding?.claudeAiConnectors,
+      ).toBe(true);
+      expect(
+        (await connector.launch("copy", "claude", "fixture-model"))
+          ?.claudeAiConnectors,
+      ).toBe(true);
+
+      const plain = await connector.launch(
+        "plain",
+        "claude",
+        "fixture-model",
+        undefined,
+        pool,
+        "round-robin",
+      );
+      expect(plain).not.toHaveProperty("claudeAiConnectors");
+      expect(f.metadata.getMetadata("plain")?.routerBinding).not.toHaveProperty(
+        "claudeAiConnectors",
+      );
+    });
+  },
+);

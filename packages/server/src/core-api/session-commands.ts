@@ -31,7 +31,13 @@ export interface SessionCommandOwner {
     settled: (sessionId: string) => void,
     failed: () => void,
     consumed?: () => void,
-  ): Promise<{ sessionId: string } | { queueId: string } | { rejected: true }>;
+    admitted?: (sessionId: string) => void,
+    authorize?: () => Promise<void>,
+  ): Promise<
+    | { sessionId: string }
+    | { queueId: string }
+    | { rejected: true; message?: string }
+  >;
 }
 /** Native launch admission plus durable retry identity; no HTTP or workflow policy. */
 export class SessionCommands {
@@ -79,6 +85,7 @@ export class SessionCommands {
     request: CreateSessionRequest,
     launch?: ApiLaunchContext,
     authenticated?: ApiCreator,
+    authorize?: () => Promise<void>,
   ) {
     if (!this.enabled())
       throw new CoreApiError(
@@ -140,8 +147,26 @@ export class SessionCommands {
       .then(() =>
         this.disposed
           ? { rejected: true as const }
-          : this.owner.start(project, request, receipt, settled, failed, () =>
-              this.consumed(receipt.id),
+          : this.owner.start(
+              project,
+              request,
+              receipt,
+              settled,
+              failed,
+              () => this.consumed(receipt.id),
+              (sessionId) => {
+                if (!this.disposed)
+                  this.store.update(receipt.id, { sessionId });
+              },
+              async () => {
+                if (this.disposed || !this.enabled())
+                  throw new CoreApiError(
+                    "forbidden",
+                    "Native creation authority is no longer active",
+                    403,
+                  );
+                await authorize?.();
+              },
             ),
       )
       .then((result) => {
@@ -159,7 +184,9 @@ export class SessionCommands {
             state: "failed",
             failure: {
               code: "admission_rejected",
-              message: "Native admission rejected this request before dispatch",
+              message:
+                ("message" in result ? result.message : undefined) ??
+                "Native admission rejected this request before dispatch",
             },
           });
       }, failed)

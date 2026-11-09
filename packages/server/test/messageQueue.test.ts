@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MessageQueue, concatUserMessages } from "../src/sdk/messageQueue.js";
 import type { UserMessage } from "../src/sdk/types.js";
+import { prepareClaudeInput } from "../src/sdk/providers/claude-delivery.js";
 
 const msg = (text: string, tempId?: string): UserMessage => ({
   text,
@@ -71,6 +72,55 @@ describe("concatUserMessages", () => {
 });
 
 describe("MessageQueue", () => {
+  it("preserves each Claude priority and consumption identity through cancellation", async () => {
+    const queue = new MessageQueue(prepareClaudeInput);
+    const consumed: UserMessage[][] = [];
+    queue.subscribeYielded((messages) => consumed.push(messages));
+    queue.push({
+      ...msg("patient", "p"),
+      metadata: { deliveryIntent: "patient" },
+    });
+    queue.push({
+      ...msg("cancelled immediate", "cancel"),
+      metadata: { deliveryIntent: "steer", steerNow: true },
+    });
+    queue.push({
+      ...msg("gentle", "g"),
+      metadata: { deliveryIntent: "steer" },
+    });
+    expect(queue.removeByTempId("cancel")).toHaveLength(1);
+    const iterator = queue[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({
+      priority: "later",
+      message: { content: "patient" },
+    });
+    expect(queue.depth).toBe(1);
+    expect(consumed.map((messages) => messages.map((m) => m.tempId))).toEqual([
+      ["p"],
+    ]);
+    expect((await iterator.next()).value).toMatchObject({
+      priority: "next",
+      message: { content: "gentle" },
+    });
+    queue.push({
+      ...msg("patient again", "p2"),
+      metadata: { deliveryIntent: "deferred" },
+    });
+    queue.push({
+      ...msg("immediate", "i"),
+      metadata: { deliveryIntent: "steer", steerNow: true },
+    });
+    expect((await iterator.next()).value).toMatchObject({ priority: "later" });
+    expect((await iterator.next()).value).toMatchObject({ priority: "now" });
+    expect(consumed.map((messages) => messages.map((m) => m.tempId))).toEqual([
+      ["p"],
+      ["g"],
+      ["p2"],
+      ["i"],
+    ]);
+    await iterator.return();
+  });
+
   it("reports only SDK-yielded messages through subscribeYielded", async () => {
     const queue = new MessageQueue();
     const yielded: string[][] = [];

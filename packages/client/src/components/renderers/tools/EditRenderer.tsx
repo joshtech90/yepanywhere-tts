@@ -52,6 +52,7 @@ import {
   restoreDiffSelection,
 } from "./editSelectionTransfer";
 import { getOutputTailTooltip } from "./outputPreview";
+import { Button, ButtonBase, IconButton } from "../../ui/Button";
 import {
   CHANGED_DIFF_LINE_SELECTOR,
   UnifiedDiff,
@@ -339,16 +340,16 @@ function DiffCopyButton({ text }: { text: string }) {
   );
 
   return (
-    <button
-      type="button"
+    <IconButton
+      variant="outline"
+      size="small"
       className={`diff-copy-button ${copied ? "copied" : ""}`}
       onMouseDown={(event) => event.stopPropagation()}
       onClick={handleCopy}
-      aria-label="Copy post-change text"
-      title="Copy post-change text"
+      label="Copy post-change text"
     >
       {copied ? <CheckIcon /> : <CopyIcon />}
-    </button>
+    </IconButton>
   );
 }
 
@@ -933,18 +934,13 @@ function DiffModalContent({
           <span className="diff-context-path">{displayPath}</span>
         )}
         {canExpandContext && (
-          <button
-            type="button"
-            className="diff-context-toggle"
-            onClick={handleToggle}
-            disabled={loading}
-          >
+          <Button onClick={handleToggle} busy={loading}>
             {loading
               ? "Loading..."
               : showFullContext
                 ? "Show diff only"
                 : "Show full context"}
-          </button>
+          </Button>
         )}
         {error && <span className="diff-context-error">{error}</span>}
       </div>
@@ -1222,16 +1218,9 @@ function EditCollapsedPreview({
     );
   }
 
-  // Pending edit without augment data yet
+  // A plain-text result reaches this preview as `undefined`, so an absent
+  // result does not mean pending; show any raw patch before waiting on one.
   if (structuredPatch.length === 0) {
-    if (result === undefined) {
-      return (
-        <div className="edit-collapsed-preview">
-          <div className="edit-loading">Computing diff...</div>
-        </div>
-      );
-    }
-
     if (rawPatch) {
       return (
         <>
@@ -1262,6 +1251,14 @@ function EditCollapsedPreview({
             </EditDetailModal>
           )}
         </>
+      );
+    }
+
+    if (result === undefined) {
+      return (
+        <div className="edit-collapsed-preview">
+          <div className="edit-loading">Computing diff...</div>
+        </div>
       );
     }
 
@@ -1394,8 +1391,7 @@ function EditInteractiveSummary({
     return (
       <>
         <FileDiffLinkCluster className="source-review-edit-summary">
-          <button
-            type="button"
+          <ButtonBase
             className="file-link-inline"
             title={fileTitle}
             onClick={(e) => {
@@ -1407,7 +1403,7 @@ function EditInteractiveSummary({
             {showValidationWarning && validationErrors && (
               <SchemaWarning toolName="Edit" errors={validationErrors} />
             )}
-          </button>
+          </ButtonBase>
           <SourceControlEditLink filePath={filePath} />
         </FileDiffLinkCluster>
         {showModal && (
@@ -1446,8 +1442,7 @@ function EditInteractiveSummary({
   return (
     <>
       <FileDiffLinkCluster className="source-review-edit-summary">
-        <button
-          type="button"
+        <ButtonBase
           className="file-link-inline"
           title={fileTitle}
           onClick={(e) => {
@@ -1462,7 +1457,7 @@ function EditInteractiveSummary({
           {showValidationWarning && validationErrors && (
             <SchemaWarning toolName="Edit" errors={validationErrors} />
           )}
-        </button>
+        </ButtonBase>
         <SourceControlEditLink filePath={filePath} />
       </FileDiffLinkCluster>
       {showModal && (
@@ -1772,6 +1767,12 @@ function EditToolResult({
 export const editRenderer = defineTool(toolDisplayContracts.Edit, {
   tool: "Edit",
   displayName: "Edit",
+
+  // Codex's success text lists `kind: path` per file, which the header and
+  // its tooltip already name.
+  omitPartialResult(text) {
+    return text.startsWith("File changes applied:\n");
+  },
 
   renderToolUse(input) {
     return <EditToolUse input={input} />;

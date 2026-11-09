@@ -1192,6 +1192,7 @@ export function useSession(
     updateActiveWindowFollowingBottom,
     restoredFromSnapshot,
     refreshTranscriptTail,
+    fetchSessionMetadata,
     reloadSession,
   } = useSessionMessages({
     projectId,
@@ -1674,9 +1675,31 @@ export function useSession(
       if (event.sessionId !== sessionId) return;
 
       updateSession((prev) => {
-        if (!prev) return prev;
+        if (
+          !prev ||
+          ![
+            event.creation,
+            event.nativeSessionId,
+            event.title,
+            event.archived,
+            event.starred,
+            event.parentSessionId,
+            event.parentSessionKind,
+            event.forkedFromSessionId,
+            event.promptSuggestionMode,
+            event.recapAfterSeconds,
+            event.transcriptDisplayObjects,
+            event.projectId,
+            event.transcriptProjectId,
+          ].some((value) => value !== undefined)
+        )
+          return prev;
         return {
           ...prev,
+          ...(event.creation !== undefined && { creation: event.creation }),
+          ...(event.nativeSessionId !== undefined && {
+            nativeSessionId: event.nativeSessionId,
+          }),
           ...(event.title !== undefined && { customTitle: event.title }),
           ...(event.archived !== undefined && { isArchived: event.archived }),
           ...(event.starred !== undefined && { isStarred: event.starred }),
@@ -1708,6 +1731,12 @@ export function useSession(
           }),
         };
       });
+      if (
+        Object.keys(event).every((key) =>
+          ["type", "sessionId", "timestamp"].includes(key),
+        )
+      )
+        void fetchSessionMetadata();
       if (event.recapAfterSeconds !== undefined) {
         setStatus((prev) =>
           prev.owner === "self"
@@ -1721,7 +1750,7 @@ export function useSession(
         );
       }
     },
-    [sessionId, updateSession],
+    [sessionId, updateSession, fetchSessionMetadata],
   );
 
   // Listen for session status changes via stream
@@ -2720,6 +2749,7 @@ export function useSession(
     setSessionModel,
     /** Replace the loaded window with the server's projection of the tail. */
     refreshTranscriptTail,
+    refreshSessionMetadata: fetchSessionMetadata,
     /** Fork (Cockpit): retry a failed load. */
     reloadSession,
     messages,

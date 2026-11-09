@@ -14,7 +14,11 @@ import {
   type ArtifactSourceTarget,
 } from "../lib/artifactSourceTargets";
 import { generateUUID } from "../lib/uuid";
+import { Button } from "./ui/Button";
+import { Checkbox } from "./ui/Checkbox";
+import { Field, Select } from "./ui/Field";
 import { useModalBackGesture, useModalLayer } from "./ui/Modal";
+import { SegmentedControl } from "./ui/SegmentedControl";
 import styles from "./SourceEditor.module.css";
 import { ViewerModeToggle } from "./ViewerModeToggle";
 
@@ -570,13 +574,13 @@ export function SourceEditor({
             {snapshot?.path ?? source.path ?? t("sourceEditorLoading")}
           </span>
         </div>
-        <button
-          type="button"
+        <Button
+          variant="primary"
           disabled={busy || !snapshot || !dirty}
           onClick={() => void save()}
         >
           {t("sourceEditorSave")}
-        </button>
+        </Button>
         <ViewerModeToggle
           mode="edit"
           source={source}
@@ -626,8 +630,9 @@ export function SourceEditor({
           </span>
           {preview.regenerate && (
             <span className={styles.rebuildControls}>
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="small"
                 disabled={building || busy}
                 onClick={() => void rebuild(preview)}
               >
@@ -636,22 +641,16 @@ export function SourceEditor({
                     ? "sourceEditorRebuild"
                     : "sourceEditorRebuildApprove",
                 )}
-              </button>
+              </Button>
               {preview.regenerate.registered && preview.regenerate.matches && (
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={autoRebuild}
-                    onChange={(event) => {
-                      setAutoRebuild(event.currentTarget.checked);
-                      writeAutoRebuild(
-                        preview.path,
-                        event.currentTarget.checked,
-                      );
-                    }}
-                  />
-                  {t("sourceEditorRebuildAuto")}
-                </label>
+                <Checkbox
+                  label={t("sourceEditorRebuildAuto")}
+                  checked={autoRebuild}
+                  onCheckedChange={(checked) => {
+                    setAutoRebuild(checked);
+                    writeAutoRebuild(preview.path, checked);
+                  }}
+                />
               )}
             </span>
           )}
@@ -666,39 +665,39 @@ export function SourceEditor({
       {closing && (
         <div className={styles.confirm} role="alert">
           <span>{t("sourceEditorDiscardPrompt")}</span>
-          <button type="button" onClick={() => void save(true)} disabled={busy}>
+          <Button
+            variant="primary"
+            onClick={() => void save(true)}
+            disabled={busy}
+          >
             {t("sourceEditorSaveClose")}
-          </button>
-          <button type="button" onClick={onClose}>
+          </Button>
+          <Button variant="danger-outline" onClick={onClose}>
             {t("sourceEditorDiscard")}
-          </button>
-          <button type="button" onClick={() => setClosing(false)}>
+          </Button>
+          <Button onClick={() => setClosing(false)}>
             {t("sourceEditorKeepEditing")}
-          </button>
+          </Button>
         </div>
       )}
       {preview && (
-        <nav className={styles.tabs} aria-label={t("sourceEditorViews")}>
-          <button
-            type="button"
-            aria-pressed={!showPreview}
-            onClick={() => setShowPreview(false)}
-          >
-            {t("sourceEditorSource")}
-          </button>
-          <button
-            type="button"
-            aria-pressed={showPreview}
-            onClick={() => setShowPreview(true)}
-          >
-            {t("sourceEditorPreview")}
-          </button>
-        </nav>
+        <div className={styles.tabs}>
+          <SegmentedControl
+            aria-label={t("sourceEditorViews")}
+            options={[
+              { value: "source", label: t("sourceEditorSource") },
+              { value: "preview", label: t("sourceEditorPreview") },
+            ]}
+            value={showPreview ? "preview" : "source"}
+            onChange={(view) => setShowPreview(view === "preview")}
+          />
+        </div>
       )}
       <div className={styles.panes} data-preview={showPreview}>
         <div className={styles.sourcePane}>
           <textarea
             ref={editor}
+            className={styles.code}
             aria-label={t("sourceEditorSource")}
             value={draft}
             disabled={!snapshot?.editable || busy}
@@ -743,9 +742,11 @@ export function SourceEditor({
                     )}
                   </div>
                 )}
-                <label className={styles.targetPicker}>
-                  {t("sourceEditorChooseTarget")}
-                  <select
+                <Field
+                  label={t("sourceEditorChooseTarget")}
+                  className={styles.targetPicker}
+                >
+                  <Select
                     value=""
                     onChange={(event) => {
                       const target = mapping.value.targets.find(
@@ -761,8 +762,8 @@ export function SourceEditor({
                         {target.sourceRange[0][0] + 1}
                       </option>
                     ))}
-                  </select>
-                </label>
+                  </Select>
+                </Field>
                 {mapping.value.targets.length === 0 && (
                   <p>{t("sourceEditorNoTargets")}</p>
                 )}

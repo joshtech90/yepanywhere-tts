@@ -8,6 +8,8 @@ import {
 } from "react";
 import { Link } from "react-router-dom";
 import { MessageAge } from "../../components/MessageAge";
+import { ButtonBase } from "../../components/ui/Button";
+import { Field, Select, TextInput } from "../../components/ui/Field";
 import {
   type CacheMissEventOutcomeFilter,
   useCacheMissEventOutcomeFilter,
@@ -278,9 +280,11 @@ export function CacheMissEventTable({
     <div className={styles.viewer}>
       <div className={styles.toolbar}>
         <div className={styles.filterControls}>
-          <label className={styles.outcomeLabel}>
-            <span>{t("cacheMissEventResultHeader")}</span>
-            <select
+          <Field
+            label={t("cacheMissEventResultHeader")}
+            className={styles.outcomeLabel}
+          >
+            <Select
               value={outcomeFilter}
               onChange={(event) =>
                 setOutcomeFilter(
@@ -291,17 +295,19 @@ export function CacheMissEventTable({
               <option value="misses">{t("cacheMissEventResultMiss")}</option>
               <option value="hits">{t("cacheMissEventResultHit")}</option>
               <option value="all">{t("cacheMissEventResultAll")}</option>
-            </select>
-          </label>
-          <label className={styles.filterLabel}>
-            <span>{t("cacheMissEventFilterLabel")}</span>
-            <input
+            </Select>
+          </Field>
+          <Field
+            label={t("cacheMissEventFilterLabel")}
+            className={styles.filterLabel}
+          >
+            <TextInput
               type="search"
               value={tupleFilter}
               onChange={(event) => setTupleFilter(event.currentTarget.value)}
               placeholder={t("cacheMissEventFilterPlaceholder")}
             />
-          </label>
+          </Field>
         </div>
         <span className={styles.matchCount}>{visibleCountLabel}</span>
       </div>
@@ -361,8 +367,7 @@ export function CacheMissEventTable({
                 <tbody key={group.key}>
                   <tr className={styles.groupRow}>
                     <th scope="rowgroup">
-                      <button
-                        type="button"
+                      <ButtonBase
                         className={styles.groupButton}
                         aria-expanded={!collapsed}
                         aria-label={t(
@@ -375,7 +380,7 @@ export function CacheMissEventTable({
                       >
                         <span aria-hidden="true">{collapsed ? "▸" : "▾"}</span>
                         <span>{group.tuple}</span>
-                      </button>
+                      </ButtonBase>
                     </th>
                     <td colSpan={7} className={styles.groupSummary}>
                       {t("cacheMissEventGroupSummary", {
@@ -468,8 +473,7 @@ export function CacheMissEventTable({
                               aria-hidden="true"
                             />
                             {previousEventId ? (
-                              <button
-                                type="button"
+                              <ButtonBase
                                 className={styles.messageJump}
                                 title={referenceTitle || undefined}
                                 aria-label={navigationTitle}
@@ -478,7 +482,7 @@ export function CacheMissEventTable({
                                 }
                               >
                                 {eventMessageReference(event)}
-                              </button>
+                              </ButtonBase>
                             ) : (
                               <span title={referenceTitle || undefined}>
                                 {eventMessageReference(event)}

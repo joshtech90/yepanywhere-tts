@@ -1,0 +1,345 @@
+{
+  "bannedClasses": [
+    "attachment-quality-option",
+    "attachment-quality-toggle",
+    "btn-primary",
+    "btn-secondary",
+    "changeset-file-filter-input",
+    "claude-gateway-start-command",
+    "codex-update-prompt__checkbox",
+    "codex-update-prompt__checkbox-label",
+    "commit-jump-btn",
+    "copy-button",
+    "diff-toolbar-icon-button",
+    "file-viewer-download-btn",
+    "filter-clear-button",
+    "filter-search-button",
+    "font-size-option",
+    "font-size-selector",
+    "form-field",
+    "form-select",
+    "git-status-action-button",
+    "global-sessions-load-more-button",
+    "global-sessions-project-cta__button",
+    "host-identity-preset",
+    "inbox-refresh-button",
+    "load-older-button",
+    "login-button",
+    "login-checkbox-label",
+    "login-field",
+    "login-field-checkbox",
+    "login-field-hint",
+    "mode-option",
+    "mode-option-content",
+    "mode-option-desc",
+    "mode-option-label",
+    "mode-options",
+    "model-switch-chip",
+    "new-session-helper-option",
+    "new-session-helper-options",
+    "onboarding-theme-grid",
+    "onboarding-theme-label",
+    "onboarding-theme-option",
+    "output-appearance-number-wrap",
+    "output-appearance-unit",
+    "output-font-option",
+    "patient-queue-switch",
+    "patient-queue-switch-option",
+    "patient-queue-switch-thumb",
+    "patient-queue-switch-track",
+    "patient-queue-switch-wrap",
+    "provider-option",
+    "provider-option-content",
+    "provider-option-label",
+    "provider-option-status",
+    "provider-options",
+    "qr-toggle-button",
+    "revoke-all-button",
+    "revoke-button",
+    "session-list-header__select-all",
+    "session-list-item__checkbox",
+    "session-rename-input",
+    "session-share-icon-button",
+    "session-share-icon-button-danger",
+    "session-share-revoke-button",
+    "session-share-small-button",
+    "session-share-url-field",
+    "session-title-edit-button",
+    "settings-button",
+    "settings-button-danger",
+    "settings-button-danger-subtle",
+    "settings-button-secondary",
+    "settings-icon-style-option",
+    "settings-input",
+    "settings-input-small",
+    "settings-select",
+    "settings-textarea",
+    "toggle-btn",
+    "toggle-slider",
+    "toggle-switch"
+  ],
+  "rawButtons": {
+    "components/ErrorBoundary.tsx": {
+      "count": 3,
+      "reason": "Crash fallback page with inline styles and a fixed palette, so it renders even when the app's CSS or theme failed."
+    },
+    "components/ModelSwitchModal.tsx": {
+      "count": 1,
+      "reason": "Model list rows: grouped under 'Previous models' labels, each with its own inline save button and badges; a listbox inside a Modal, which neither SegmentedControl nor Menu holds."
+    },
+    "components/NewSessionForm.tsx": {
+      "count": 5,
+      "reason": "Composer submit, queue and attach controls, and the new-session project picker's options: excluded until the composer pass."
+    },
+    "components/NewSessionQueueOptions.tsx": {
+      "count": 2,
+      "reason": "The now/patient send pair and the model combobox's listbox options: composer controls, excluded until the composer pass."
+    },
+    "components/ProjectFileCompletionMenu.tsx": {
+      "count": 1,
+      "reason": "Completion listbox options driven by the composer's text field: composer pass."
+    },
+    "components/QuestionAnswerPanel.tsx": {
+      "count": 3,
+      "reason": "Question tab strip (tab family) and the answer list, single- or multi-select with previews and an Other field inside: its own pattern, not a SegmentedControl."
+    },
+    "components/SpeechControlMenu.tsx": {
+      "count": 1,
+      "reason": "Speech method choices inside the voice button's settings popover: composer pass."
+    },
+    "components/ThinkingControls.tsx": {
+      "count": 3,
+      "reason": "Thinking mode and effort choices shared with the composer's thinking popover, where they are menuitemradio items: composer pass."
+    }
+  },
+  "roleButtons": {
+    "components/blocks/ToolCallRow.tsx": {
+      "count": 1,
+      "reason": "Inline text that toggles in place (a <span> inside running text), with its own Enter/Space handling; predates the button family."
+    },
+    "components/ContextThresholdQuickEdit.tsx": {
+      "count": 1,
+      "reason": "Inline text that toggles in place (a <span> inside running text), with its own Enter/Space handling; predates the button family."
+    },
+    "components/NewSessionForm.tsx": {
+      "count": 1,
+      "reason": "A <details> summary whose disclosure behavior is native; predates the button family."
+    },
+    "components/PathBreadcrumbs.tsx": {
+      "count": 1,
+      "reason": "Inline text that toggles in place (a <span> inside running text), with its own Enter/Space handling; predates the button family."
+    },
+    "components/ProcessingIndicator.tsx": {
+      "count": 1,
+      "reason": "Inline text that toggles in place (a <span> inside running text), with its own Enter/Space handling; predates the button family."
+    },
+    "components/renderers/tools/BashRenderer.tsx": {
+      "count": 1,
+      "reason": "A block preview or overlay that holds block content a <button> cannot contain, with its own keyboard handling; predates the button family."
+    },
+    "components/renderers/tools/EditRenderer.tsx": {
+      "count": 1,
+      "reason": "A block preview or overlay that holds block content a <button> cannot contain, with its own keyboard handling; predates the button family."
+    },
+    "components/renderers/tools/WebRenderer.tsx": {
+      "count": 1,
+      "reason": "A block preview or overlay that holds block content a <button> cannot contain, with its own keyboard handling; predates the button family."
+    },
+    "components/SchemaWarning.tsx": {
+      "count": 1,
+      "reason": "Inline text that toggles in place (a <span> inside running text), with its own Enter/Space handling; predates the button family."
+    },
+    "components/SessionToolbarPreview.tsx": {
+      "count": 1,
+      "reason": "A block preview or overlay that holds block content a <button> cannot contain, with its own keyboard handling; predates the button family."
+    },
+    "components/Sidebar.tsx": {
+      "count": 1,
+      "reason": "A block preview or overlay that holds block content a <button> cannot contain, with its own keyboard handling; predates the button family."
+    },
+    "components/SidebarLauncher.tsx": {
+      "count": 1,
+      "reason": "A link that also acts on click (role=button for its tap behavior) and keeps its href; predates the button family."
+    },
+    "components/ViewerModeToggle.tsx": {
+      "count": 1,
+      "reason": "A link that also acts on click (role=button for its tap behavior) and keeps its href; predates the button family."
+    },
+    "layouts/NavigationLayout.tsx": {
+      "count": 1,
+      "reason": "A router link that also acts on click and keeps its href; predates the button family."
+    },
+    "pages/CommitFilesPane.tsx": {
+      "count": 1,
+      "reason": "A block preview or overlay that holds block content a <button> cannot contain, with its own keyboard handling; predates the button family."
+    }
+  },
+  "buttonLookRules": {
+    "components/NewSessionQueueOptions.module.css": {
+      "count": 3,
+      "reason": "Model option rows: option family."
+    },
+    "components/ViewerWindowActions.module.css": {
+      "count": 3,
+      "reason": "The composer's mic action (ComposerMicAction), a raw button in the viewer actions row: composer pass."
+    },
+    "styles/index.css": {
+      "count": 1,
+      "reason": "The base form-control font reset (`button, input, select, textarea { font-family }`), which every control inherits deliberately."
+    }
+  },
+  "selectionRoles": {
+    "components/SpeechControlMenu.tsx": {
+      "count": 2,
+      "reason": "Speech method radio group inside the voice button's settings popover: composer pass."
+    },
+    "components/ThinkingControls.tsx": {
+      "count": 1,
+      "reason": "Thinking choices shared with the composer's thinking popover: composer pass."
+    }
+  },
+  "menuRoles": {
+    "components/AsyncQuestionsButton.tsx": {
+      "count": 1,
+      "reason": "In `overflow` mode the button is an item of the composer's overflow menu (role=menuitem): composer pass."
+    },
+    "components/ThinkingControls.tsx": {
+      "count": 1,
+      "reason": "Thinking choices shared with the composer's thinking popover, where they are menuitemradio items: composer pass."
+    }
+  },
+  "outsidePressListeners": {
+    "components/ContextThresholdQuickEdit.tsx": {
+      "count": 1,
+      "reason": "The composer toolbar's context-usage popover: composer pass."
+    },
+    "components/FileViewer.tsx": {
+      "count": 1,
+      "reason": "Tracks a pointer selection in the viewed document before offering a selection comment; not a dismissal."
+    },
+    "components/MessageList.tsx": {
+      "count": 1,
+      "reason": "A window click on a search match row accepts the match and closes incremental search; it acts on the row, not as an outside dismissal."
+    },
+    "components/NewSessionForm.tsx": {
+      "count": 2,
+      "reason": "The new-session project chooser, a combobox driven by its search field (press and focus leaving it): composer pass."
+    },
+    "components/SpeechControlMenu.tsx": {
+      "count": 1,
+      "reason": "The voice button's speech settings popover (composer and new-session form): composer pass."
+    },
+    "components/ui/TooltipLayer.tsx": {
+      "count": 6,
+      "reason": "The tooltip layer's own hover, press, focus and pin tracking (document capture); tooltips are not popovers."
+    },
+    "contexts/AsyncQuestionsContext.tsx": {
+      "count": 2,
+      "reason": "Notes that the reader moved on (a press or a focus move) while a reply was submitting; not a dismissal."
+    },
+    "hooks/useBottomOverscrollReload.ts": {
+      "count": 1,
+      "reason": "Overscroll-to-reload gesture tracking; not a dismissal."
+    },
+    "hooks/useComposerBeacon.ts": {
+      "count": 1,
+      "reason": "Records which element holds focus for the composer beacon; not a dismissal."
+    },
+    "hooks/useNativePullToRefresh.ts": {
+      "count": 1,
+      "reason": "Pull-to-refresh gesture tracking; not a dismissal."
+    },
+    "hooks/useSelectionActionCapture.ts": {
+      "count": 2,
+      "reason": "Clears a stale transcript text selection on a new press; selection plumbing, not a dismissal."
+    },
+    "hooks/useTranscriptDragSelection.ts": {
+      "count": 1,
+      "reason": "Starts a transcript drag selection; gesture plumbing, not a dismissal."
+    },
+    "hooks/useViewerFind.ts": {
+      "count": 1,
+      "reason": "Find-in-viewer shortcuts read the press target's selection; not a dismissal."
+    },
+    "layouts/NavigationLayout.tsx": {
+      "count": 1,
+      "reason": "Keeps a focused field clear of the on-screen keyboard; not a dismissal."
+    },
+    "lib/artifactSourceTargets.ts": {
+      "count": 1,
+      "reason": "Click routing for source links inside an artifact frame's document; not a dismissal."
+    },
+    "lib/connection/recoverySignals.ts": {
+      "count": 1,
+      "reason": "Any interaction counts as a signal to recover the connection; not a dismissal."
+    },
+    "lib/publicSharePlay.ts": {
+      "count": 1,
+      "reason": "Script text injected into a played share's frame to route its links; not a dismissal."
+    },
+    "pages/PublicSharePage.tsx": {
+      "count": 1,
+      "reason": "Routes link activation inside a public share's rendered content; not a dismissal."
+    }
+  },
+  "rawFields": {
+    "components/BtwAsidePane.tsx": {
+      "count": 1,
+      "reason": "The /btw aside's chat composer textarea (Enter sends, grows to a max height): composer pass."
+    },
+    "components/ContextThresholdQuickEdit.tsx": {
+      "count": 1,
+      "reason": "Composer (the session input and new-session form): its own later pass."
+    },
+    "components/FileVhostSection.tsx": {
+      "count": 1,
+      "reason": "The address-name input sits chromeless inside a frame that also draws the https:// prefix and the domain suffix."
+    },
+    "components/NewSessionForm.tsx": {
+      "count": 4,
+      "reason": "Composer (the session input and new-session form): its own later pass."
+    },
+    "components/NewSessionQueueOptions.tsx": {
+      "count": 3,
+      "reason": "Composer (the session input and new-session form): its own later pass."
+    },
+    "components/session-search/SearchControls.tsx": {
+      "count": 1,
+      "reason": "The age field sizes itself from hidden mirror text inside a frame that draws the unit."
+    },
+    "components/SessionHeader.tsx": {
+      "count": 1,
+      "reason": "Edits the header title in place, in the title's own type, beside its accept and regenerate icons."
+    },
+    "components/SourceEditor.tsx": {
+      "count": 1,
+      "reason": "The source editor's code textarea: an editing surface whose pane draws the frame."
+    },
+    "components/SpeechControlMenu.tsx": {
+      "count": 4,
+      "reason": "Composer (the session input and new-session form): its own later pass."
+    },
+    "components/ViewerFindField.tsx": {
+      "count": 1,
+      "reason": "Chromeless inside the find bar's bordered pill, beside its match count and arrows."
+    },
+    "hooks/useMessageListIsearch.tsx": {
+      "count": 1,
+      "reason": "A chromeless scope picker drawn as an uppercase label in front of the transcript search query."
+    }
+  },
+  "fieldLookRules": {
+    "components/NewSessionForm.module.css": {
+      "count": 2,
+      "reason": "Composer (the session input and new-session form): its own later pass."
+    },
+    "components/NewSessionQueueOptions.module.css": {
+      "count": 4,
+      "reason": "Composer (the session input and new-session form): its own later pass."
+    },
+    "styles/index.css": {
+      "count": 11,
+      "reason": "The UI-font inheritance reset for form controls, and the composer's textareas and steer-now toggle (composer pass)."
+    }
+  }
+}

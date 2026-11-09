@@ -1,3 +1,4 @@
+import { creationProvenanceForHeaders } from "../sessions/creation-provenance.js";
 import {
   type CreateProjectQueueItemRequest,
   type ProjectQueueItemSummary,
@@ -147,7 +148,10 @@ export function createGlobalProjectQueueRoutes(
 export function createProjectQueueRoutes(deps: ProjectQueueRoutesDeps): Hono {
   const routes = new Hono();
 
-  async function resolveProject(projectId: string): Promise<
+  async function resolveProject(
+    projectId: string,
+    retained = false,
+  ): Promise<
     | { project: Project }
     | {
         error: "Invalid project ID format" | "Project not found";
@@ -158,7 +162,11 @@ export function createProjectQueueRoutes(deps: ProjectQueueRoutesDeps): Hono {
       return { error: "Invalid project ID format" as const, status: 400 };
     }
 
-    const project = await deps.scanner.getOrCreateProject(projectId);
+    const project = await deps.scanner.getOrCreateProject(
+      projectId,
+      retained ? "claude" : undefined,
+      retained ? { allowStaleSnapshot: true } : undefined,
+    );
     if (!project) {
       return { error: "Project not found" as const, status: 404 };
     }
@@ -193,7 +201,7 @@ export function createProjectQueueRoutes(deps: ProjectQueueRoutesDeps): Hono {
   routes.use("/:projectId/queue/:itemId/*", refuseForeignItem);
 
   routes.get("/:projectId/queue", async (c) => {
-    const resolved = await resolveProject(c.req.param("projectId"));
+    const resolved = await resolveProject(c.req.param("projectId"), true);
     if ("error" in resolved) {
       return c.json({ error: resolved.error }, resolved.status);
     }
@@ -220,6 +228,7 @@ export function createProjectQueueRoutes(deps: ProjectQueueRoutesDeps): Hono {
         projectId: resolved.project.id,
         projectPath: resolved.project.path,
         request: body,
+        creationProvenance: creationProvenanceForHeaders(c.req.raw.headers),
         ...(actor
           ? {
               createdByUser: actor.username,

@@ -9,6 +9,8 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { Button, ButtonBase, IconButton } from "../components/ui/Button";
+import { TextInput } from "../components/ui/Field";
 import {
   type EarlyTypingHandoff,
   startEarlyTypingHandoff,
@@ -19,6 +21,7 @@ import {
   dispatchSessionIsearchGuideState,
   type SessionIsearchScope,
 } from "../lib/sessionIsearchGuide";
+import type { RenderTurnGroup } from "../lib/sessionDetail/renderItems";
 import {
   getActiveSearchAnchors,
   getAllTurnSearchAnchors,
@@ -34,8 +37,7 @@ import {
   getUserTurnNavAnchors,
   getUserTurnSearchAnchors,
   hasSearchableUserTurn,
-  type RenderTurnGroup,
-} from "../lib/sessionDetail/renderSelectors";
+} from "../lib/sessionDetail/search";
 import {
   searchSessionHistoryPage,
   type SessionHistorySearchPageInput,
@@ -1211,8 +1213,9 @@ export function useMessageListIsearch({
                 </option>
               ))}
             </select>
-            <input
+            <TextInput
               ref={attachSearchInput}
+              size="small"
               className={styles.input}
               value={userTurnSearch.query}
               onChange={(event) => handleQueryChange(event.target.value)}
@@ -1220,14 +1223,9 @@ export function useMessageListIsearch({
               aria-label={searchPanelProjection.scopeAriaLabel}
             />
           </div>
-          <button
-            type="button"
-            className={[
-              styles.caseToggle,
-              userTurnSearch.caseSensitive ? styles.active : "",
-            ]
-              .filter(Boolean)
-              .join(" ")}
+          <Button
+            variant="ghost"
+            size="small"
             aria-label="Case-sensitive search"
             aria-pressed={userTurnSearch.caseSensitive}
             title={
@@ -1239,7 +1237,7 @@ export function useMessageListIsearch({
             onClick={toggleCaseSensitive}
           >
             Aa
-          </button>
+          </Button>
           <span
             className={styles.coverage}
             role="status"
@@ -1249,10 +1247,10 @@ export function useMessageListIsearch({
             {checkedPercent === null ? "—" : `${checkedPercent}%`}
           </span>
           <div className={styles.navigation}>
-            <button
-              type="button"
+            <IconButton
+              size="small"
               className={styles.previous}
-              aria-label={t("sessionSearchPrevious")}
+              label={t("sessionSearchPrevious")}
               disabled={
                 !searchReady ||
                 effectiveOlderSearchState.loading ||
@@ -1263,11 +1261,11 @@ export function useMessageListIsearch({
               onClick={() => moveSearchSelection("previous")}
             >
               ↑
-            </button>
-            <button
-              type="button"
+            </IconButton>
+            <IconButton
+              size="small"
               className={styles.next}
-              aria-label={t("sessionSearchNext")}
+              label={t("sessionSearchNext")}
               disabled={
                 userTurnSearchMatches.length === 0 ||
                 effectiveOlderSearchState.loading
@@ -1276,9 +1274,9 @@ export function useMessageListIsearch({
               onClick={() => moveSearchSelection("next")}
             >
               ↓
-            </button>
-            <button
-              type="button"
+            </IconButton>
+            <Button
+              size="small"
               className={styles.go}
               aria-label={t("sessionSearchGoLabel")}
               disabled={!selectedSearchAnchor || hydratingSearchId !== null}
@@ -1286,16 +1284,14 @@ export function useMessageListIsearch({
               onClick={() => activateSelected(true)}
             >
               {t("sessionSearchGo")}
-            </button>
+            </Button>
           </div>
           <span className={styles.count}>
             {searchPanelProjection.countLabel}
           </span>
-          <button
-            type="button"
-            className={styles.close}
-            aria-label={t("sessionSearchCloseHere")}
-            title={t("sessionSearchCloseHere")}
+          <IconButton
+            size="small"
+            label={t("sessionSearchCloseHere")}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() =>
               selectedSearchAnchor && selectedSearchTargetId
@@ -1304,7 +1300,7 @@ export function useMessageListIsearch({
             }
           >
             ×
-          </button>
+          </IconButton>
         </div>
         {boundary && (
           <div key={boundaryPulse} className={styles.boundary} role="status">
@@ -1318,8 +1314,7 @@ export function useMessageListIsearch({
           </div>
         )}
         {selectedOlderSearchMatch && (
-          <button
-            type="button"
+          <ButtonBase
             className={styles.olderPreview}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => activateSelected(false)}
@@ -1332,14 +1327,15 @@ export function useMessageListIsearch({
             <span className={styles.olderPreviewText}>
               {selectedOlderSearchMatch.preview}
             </span>
-          </button>
+          </ButtonBase>
         )}
         {searchReady && onReadOlderSearchPage && (
           <div className={styles.olderControls}>
             {effectiveOlderSearchState.hasOlder &&
               !effectiveOlderSearchState.limitReached && (
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="small"
                   className={styles.olderButton}
                   disabled={effectiveOlderSearchState.loading}
                   onMouseDown={(event) => event.preventDefault()}
@@ -1350,7 +1346,7 @@ export function useMessageListIsearch({
                     : effectiveOlderSearchState.pagesScanned > 0
                       ? t("sessionSearchMoreOlder")
                       : t("sessionSearchOlder")}
-                </button>
+                </Button>
               )}
             {(effectiveOlderSearchState.error ||
               effectiveOlderSearchState.pagesScanned > 0) && (
@@ -1371,8 +1367,7 @@ export function useMessageListIsearch({
             )}
           </div>
         )}
-        <button
-          type="button"
+        <ButtonBase
           className={styles.helpToggle}
           aria-label={t("sessionSearchShowKeys")}
           aria-expanded={helpShown}
@@ -1380,7 +1375,7 @@ export function useMessageListIsearch({
           onClick={() => setHelpShown((shown) => !shown)}
         >
           ?
-        </button>
+        </ButtonBase>
         <div
           className={[styles.help, helpShown ? styles.helpShown : ""]
             .filter(Boolean)

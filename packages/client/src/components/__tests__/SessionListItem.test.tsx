@@ -318,14 +318,13 @@ describe("SessionListItem links", () => {
     );
 
     fireEvent.click(screen.getByLabelText("Session options"));
-    fireEvent.click(screen.getByRole("button", { name: "Rename..." }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename..." }));
 
     // No timer flush: asking to rename means the next keystroke is the new
     // title, so focus cannot wait for a later turn of the event loop.
-    const input = document.querySelector<HTMLInputElement>(
-      "input.session-rename-input",
-    );
-    if (!input) throw new Error("expected the rename input");
+    const input = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Session title",
+    });
     expect(document.activeElement).toBe(input);
     expect([input.selectionStart, input.selectionEnd]).toEqual([
       0,
@@ -359,7 +358,7 @@ describe("SessionListItem links", () => {
     );
 
     fireEvent.click(screen.getByLabelText("Session options"));
-    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy prompt" }));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(
@@ -390,7 +389,7 @@ describe("SessionListItem links", () => {
     );
 
     fireEvent.click(screen.getByLabelText("Session options"));
-    fireEvent.click(screen.getByRole("button", { name: "Open in new tab" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open in new tab" }));
 
     expect(onNavigate).not.toHaveBeenCalled();
     expect(mockWindowOpen).toHaveBeenCalledWith(
@@ -962,7 +961,7 @@ describe("SessionListItem links", () => {
     );
 
     fireEvent.click(screen.getByLabelText("Session options"));
-    fireEvent.click(screen.getByRole("button", { name: "Star" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Star" }));
 
     await waitFor(() => {
       expect(updateSpy).toHaveBeenCalledWith("session-1", { starred: true });
@@ -1094,7 +1093,7 @@ describe("SessionListItem links", () => {
     );
 
     fireEvent.click(screen.getByLabelText("Session options"));
-    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Share" }));
 
     expect(screen.getByText("Manage Public Shares")).toBeTruthy();
     expect(
@@ -1140,7 +1139,7 @@ describe("SessionListItem links", () => {
     );
 
     fireEvent.click(screen.getByLabelText("Session options"));
-    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Share" }));
 
     expect(screen.getByText("Public Session Share")).toBeTruthy();
     expect(

@@ -47,13 +47,35 @@ state. App discovery occurs on explicit open rather than delaying navigation.
 Projects offers **Open app**, opening the main content pane with the same
 isolated rendering and viewer controls as the session's right App pane. It
 does not require opening or retaining an agent session. Keep the card's
-existing session navigation and gear action. Project Settings contains **App**
-and, only when server vhost serving is enabled, **App address**. Both principal
+existing session navigation and gear action.
+The card's App control is an independent link: ordinary clicks, middle-clicks,
+and browser Open link in new tab all target the project App viewer, never the
+card's sessions list. Project Settings contains **App** and, only when server
+vhost serving is enabled, **App address**. Both principal
 kinds use this surface; authorization determines the available actions.
 App lifecycle and address controls appear inline in the project settings
 dialog, alongside sharing and session defaults. Opening settings does not
 open an app frame or mint a viewing grant. Wide dialogs use two columns;
 phones retain one scrolling column and visible save controls.
+
+**Start command editing** (user-directed 2026-11-04). The App details show the
+start command the project's `.project-template/app.json` declares, which is
+what the next start runs; a running app launched with a different one shows
+the existing declaration-changed notice until it is stopped and started. A
+principal with execution authority (the authority Stop needs) can **Edit** a
+process app's command, one argument per line, and **Save** writes only
+`service.start.argv` back to that file, keeping every other field, including
+ones this server does not know. It is a user-requested project write, not
+YA-managed storage ([project directory storage](project-directory-storage.md)).
+The save carries the command the editor loaded and is refused with 409 when
+the file declares another one (an agent or another tab changed it) or no
+longer declares a process app; an argument vector the declaration schema
+rejects is refused with 400 and nothing is written. Saving never starts,
+stops, or restarts the app. `project-app-start-command` (permanent ID 150,
+version-implied from 0.11.1) owns PUT
+`/api/projects/:projectId/app/start-command`; older servers lack it, so
+clients show the command read-only and send nothing. Standing maintainer
+compatibility approval applies.
 
 Resolve the default target on entry in this order:
 
@@ -97,7 +119,10 @@ report, and each later change, with `{type:
 origin; `shown` is false while the trail is clipped, so an app can show its
 own crumbs only when the bar does not (repo-view hides its crumbs while framed
 unless told `shown: false`). A directory
-crumb navigates the frame under the view's own access link. Apps that never
+crumb navigates the frame under the view's own access link. Open in new tab
+and Reload keep the last reported page, under the view's own link (Reload
+remounts the frame there); the app's Home control returns to its entry, and a
+new view (another target or launch) starts at its entry. Apps that never
 post keep the static title; nothing changes for them.
 Closing it changes navigation only. Stop is a separate service control in
 Settings. Use the existing iframe sandbox, credential
@@ -206,8 +231,9 @@ or reserve anything. Explain when that link grants transferable access and
 when it expires. A copied link is for someone else, so on a local
 (`.localhost`) page without a served address, Copy link mints the public link
 at click time when sharing is allowed (`canShare`), else copies the local one;
-viewing alone mints no public grant. Open in new tab keeps the view link;
-apps opting into public viewing below start with a public address. When
+viewing alone mints no public grant. Open in new tab keeps the view link, at
+the page the crumbs show; apps opting into public viewing below start with a
+public address. When
 the copied link differs from the view link only by host, it names the page the
 crumbs show, keeping its own `ya_access`. **Share** offers existing public-audience artifact sharing
 when this target, server and principal support it, without requiring a vhost.

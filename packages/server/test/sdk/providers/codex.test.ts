@@ -1,3 +1,9 @@
+import {
+  parseNativeSessionId,
+  parseYaSessionId,
+  nativeSessionRef,
+  toUrlProjectId,
+} from "@yep-anywhere/shared";
 /**
  * Unit tests for CodexProvider.
  *
@@ -13,10 +19,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -29,19 +36,25 @@ import {
   it,
   vi,
 } from "vitest";
-import type { CodexPlanToolMode, ModelInfo } from "@yep-anywhere/shared";
+import type { ModelInfo } from "@yep-anywhere/shared";
 import { compileTranscriptProjection } from "@yep-anywhere/shared/transcript/compiler";
 import { getLogger } from "../../../src/logging/logger.js";
 import { getCodexCommonPaths } from "../../../src/sdk/cli-detection.js";
 import { logSDKMessage } from "../../../src/sdk/messageLogger.js";
 import {
-  CODEX_LIVE_TOOL_OUTPUT_HEAD_CHARS,
-  CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS,
   CodexProvider,
   type CodexProviderConfig,
   formatCodexLoginCommand,
-  isCodexCyberAccessDenial,
 } from "../../../src/sdk/providers/codex.js";
+import * as codexApprovals from "../../../src/sdk/providers/codex-approvals.js";
+import * as codexItemConversion from "../../../src/sdk/providers/codex-item-conversion.js";
+import * as codexLiveEventConversion from "../../../src/sdk/providers/codex-live-event-conversion.js";
+import * as codexThreadParams from "../../../src/sdk/providers/codex-thread-params.js";
+import * as codexTurnConsumer from "../../../src/sdk/providers/codex-turn-consumer.js";
+import {
+  CODEX_LIVE_TOOL_OUTPUT_HEAD_CHARS,
+  CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS,
+} from "../../../src/sdk/providers/codex-live-event-conversion.js";
 import {
   prepareSessionSandbox,
   probeSessionSandboxAvailability,
@@ -54,6 +67,9 @@ import {
   codexRawFunctionCallFixtures,
   createLiveEventState,
 } from "./codex-event-fixtures.js";
+import { codexConfigBuilders } from "./codex-config-source.js";
+
+const { isCodexCyberAccessDenial } = codexTurnConsumer;
 
 vi.mock("../../../src/sdk/messageLogger.js", () => ({
   logSDKMessage: vi.fn(),
@@ -497,25 +513,44 @@ describe("CodexProvider", () => {
       }
     });
 
-    it("launches sessions with steer-cancels-generation disabled unless the user's Codex config sets it", async () => {
+    it("captures steering mode at owner launch and respects native configuration", async () => {
       const tempDir = mkdtempSync(join(tmpdir(), "codex-steer-lane-"));
       const argvPath = join(tempDir, "argv.jsonl");
       const codexPath = createFakeCodexCommand(
         tempDir,
         "fake-codex-steer-lane",
-        buildFakeCodexAppServer(join(tempDir, "requests.jsonl")).replace(
-          /^(#![^\n]*\n)/,
-          `$1(await import("node:fs")).appendFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`,
-        ),
+        buildFakeCodexAppServer(join(tempDir, "requests.jsonl"))
+          .replace(/codex-cli \d+\.\d+\.\d+/g, "codex-cli 0.166.0")
+          .replace(
+            /^(#![^\n]*\n)/,
+            `$1(await import("node:fs")).appendFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`,
+          ),
       );
-      const launchArguments = async (codexHome: string): Promise<string[]> => {
+      const launchArguments = async (
+        codexHome: string,
+        mode?: "gentle" | "immediate",
+      ): Promise<string[]> => {
         writeFileSync(argvPath, "");
-        const session = await new CodexProvider({
+        const provider = new CodexProvider({
           codexPath,
           codexHome,
-        }).startSession({ cwd: tempDir });
+        });
+        provider.setSteeringModeGetter(() => mode);
+        const session = await provider.startSession({ cwd: tempDir });
+        // A changed default must not reconfigure an already-created owner.
+        provider.setSteeringModeGetter(() =>
+          mode === "immediate" ? "gentle" : "immediate",
+        );
         try {
-          await session.iterator.next();
+          const init = await session.iterator.next();
+          expect(init.value?.steering).toEqual(
+            codexHome.endsWith("configured-home")
+              ? { mode: "native-config", source: "native-config" }
+              : {
+                  mode: mode ?? "gentle",
+                  source: mode ? "ya-setting" : "ya-default",
+                },
+          );
         } finally {
           await session.abort();
         }
@@ -530,6 +565,9 @@ describe("CodexProvider", () => {
         expect((await launchArguments(defaultHome)).join(" ")).toContain(
           "-c features.instant_interrupt=false",
         );
+        expect(
+          (await launchArguments(defaultHome, "immediate")).join(" "),
+        ).toContain("-c features.instant_interrupt=true");
 
         const configuredHome = join(tempDir, "configured-home");
         mkdirSync(configuredHome);
@@ -537,9 +575,24 @@ describe("CodexProvider", () => {
           join(configuredHome, "config.toml"),
           "[features]\ninstant_interrupt = true\n",
         );
-        expect((await launchArguments(configuredHome)).join(" ")).not.toContain(
-          "instant_interrupt",
+        expect(
+          (await launchArguments(configuredHome, "immediate")).join(" "),
+        ).not.toContain("instant_interrupt");
+        writeFileSync(
+          codexPath,
+          readFileSync(codexPath, "utf8").replace(
+            /codex-cli \d+\.\d+\.\d+/g,
+            "codex-cli 0.163.0",
+          ),
         );
+        const unsupported = new CodexProvider({
+          codexPath,
+          codexHome: defaultHome,
+        });
+        unsupported.setSteeringModeGetter(() => "immediate");
+        await expect(
+          unsupported.startSession({ cwd: tempDir }),
+        ).rejects.toThrow("Immediate steering requires Codex 0.164.0");
       } finally {
         rmSync(tempDir, { recursive: true, force: true });
       }
@@ -922,6 +975,110 @@ describe("CodexProvider", () => {
       }
     });
 
+    it("holds provider commands sent before start until the resumed thread is ready", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-early-commands-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-early-commands",
+        buildFakeCodexAppServer(logPath),
+      );
+      const testProvider = new CodexProvider({ codexPath });
+      const session = await testProvider.startSession({
+        cwd: tempDir,
+        resumeSessionId: "thread-1",
+      });
+
+      try {
+        // Both wait on the client latch; the session loop has not run yet.
+        const goal = session.runProviderCommand?.("goal");
+        const status = session.runProviderCommand?.("status");
+        await session.iterator.next();
+
+        await expect(goal).resolves.toEqual({
+          handled: true,
+          output: { summary: "/goal", details: ["No goal set"] },
+        });
+        await expect(status).resolves.toMatchObject({
+          handled: true,
+          output: {
+            details: expect.arrayContaining([
+              expect.stringContaining("Account: ChatGPT (plus)"),
+            ]),
+          },
+        });
+        const methods = readFakeCodexRequests(logPath).map((r) => r.method);
+        const ready = methods.indexOf("thread/resume");
+        expect(ready).toBeGreaterThan(-1);
+        expect(methods.indexOf("thread/goal/get")).toBeGreaterThan(ready);
+        expect(methods.indexOf("account/read")).toBeGreaterThan(ready);
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("sends no session request while initialize is still pending", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-pending-initialize-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const releasePath = join(tempDir, "release-initialize");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-pending-initialize",
+        buildFakeCodexAppServer(
+          logPath,
+          "chatgpt",
+          undefined,
+          false,
+          undefined,
+          undefined,
+          releasePath,
+        ),
+      );
+      const testProvider = new CodexProvider({ codexPath });
+      const session = await testProvider.startSession({
+        cwd: tempDir,
+        resumeSessionId: "thread-1",
+      });
+
+      try {
+        const init = session.iterator.next();
+        await waitForFakeCodexRequest(logPath, "initialize");
+        expect(session.isProcessAlive?.()).toBe(true);
+        expect(
+          typeof session.pid === "function" ? session.pid() : session.pid,
+        ).toEqual(expect.any(Number));
+
+        const status = session.runProviderCommand?.("status");
+        await expect(session.setServiceTier?.("fast")).resolves.toBeUndefined();
+        await expect(session.probeLiveness?.()).resolves.toMatchObject({
+          status: "unavailable",
+          detail: "Codex thread is not ready yet",
+        });
+
+        writeFileSync(releasePath, "");
+        await init;
+        await expect(status).resolves.toMatchObject({
+          handled: true,
+          output: {
+            details: expect.arrayContaining([
+              expect.stringContaining("Account: ChatGPT (plus)"),
+            ]),
+          },
+        });
+        const methods = readFakeCodexRequests(logPath).map((r) => r.method);
+        const early = methods.slice(0, methods.indexOf("thread/resume"));
+        expect(early).not.toContain("account/read");
+        expect(early).not.toContain("thread/settings/update");
+        expect(early).not.toContain("thread/read");
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("reports that /usage requires ChatGPT subscription auth", async () => {
       const tempDir = mkdtempSync(join(tmpdir(), "codex-api-key-usage-"));
       const logPath = join(tempDir, "fake-codex-requests.jsonl");
@@ -999,6 +1156,21 @@ describe("CodexProvider", () => {
 });
 
 describe("CodexProvider app-server lifecycle", () => {
+  it("uses the native default namespace when CODEX_HOME is empty", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "codex-empty-home-"));
+    vi.stubEnv("CODEX_HOME", "");
+    try {
+      const provider = new CodexProvider();
+      expect(await provider.getNewSessionNamespace(cwd)).toEqual({
+        family: "codex",
+        storageScope: join(realpathSync(homedir()), ".codex", "sessions"),
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("wakes the idle session iterator when abort closes its input queue", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-abort-idle-"));
     const logPath = join(tempDir, "fake-codex-requests.jsonl");
@@ -1578,6 +1750,103 @@ describe("CodexProvider app-server lifecycle", () => {
         ).toMatchObject({
           input: [{ type: "text", text: "continue after stop" }],
         });
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("refuses compaction while turn/start awaits its reply", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-compact-turn-start-"));
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const releasePath = join(tempDir, "release-turn-start");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-held-turn-start",
+      buildFakeCodexAppServer(
+        logPath,
+        "chatgpt",
+        undefined,
+        false,
+        undefined,
+        releasePath,
+      ),
+    );
+    const session = await new CodexProvider({ codexPath }).startSession({
+      cwd: tempDir,
+      initialMessage: { text: "start work" },
+    });
+    try {
+      const turn = consumeCodexTurn(session.iterator);
+      await waitForFakeCodexRequest(logPath, "turn/start");
+      // No turn id exists yet; only the pending turn/start guards this window.
+      expect(await session.runProviderCommand?.("compact")).toEqual({
+        handled: true,
+        error: "Cannot compact while a turn is in progress",
+      });
+      writeFileSync(releasePath, "");
+      await expect.poll(() => session.interrupt?.()).toBe(true);
+      await turn;
+      expect(
+        readFakeCodexRequests(logPath).map((request) => request.method),
+      ).not.toContain("thread/compact/start");
+    } finally {
+      await session.abort();
+      await session.iterator.return?.(undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])(
+    "keeps the AgentSession control surface (MCP App views: %s)",
+    async (mcpAppViews) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-session-surface-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-session-surface",
+        buildFakeCodexAppServer(logPath),
+      );
+      const provider = new CodexProvider({ codexPath });
+      provider.setMcpAppViewsGetter(() => mcpAppViews);
+      const session = await provider.startSession({ cwd: tempDir });
+      try {
+        // Callers treat a missing optional member as an unsupported control.
+        expect(Object.keys(session).sort()).toEqual(
+          [
+            "abort",
+            "appendConversationContext",
+            "effortUpdatesActiveTurn",
+            "getProviderActivity",
+            "getProviderRetention",
+            "interrupt",
+            "isProcessAlive",
+            "iterator",
+            ...(mcpAppViews ? ["mcpAppRequest"] : []),
+            "pid",
+            "probeLiveness",
+            "publishAgentctlSessionId",
+            "queue",
+            "runProviderCommand",
+            "setEffort",
+            "setModel",
+            "setServiceTier",
+            "setSessionOptions",
+            "steer",
+            "supportedCommands",
+            "supportedModels",
+          ].sort(),
+        );
+        expect(session.effortUpdatesActiveTurn).toBe(true);
+        // pid is a live getter: absent before the app-server spawns.
+        expect(Object.getOwnPropertyDescriptor(session, "pid")?.get).toEqual(
+          expect.any(Function),
+        );
+        expect(session.pid).toBeUndefined();
+        await session.iterator.next();
+        expect(session.pid).toEqual(expect.any(Number));
       } finally {
         await session.abort();
         await session.iterator.return?.(undefined);
@@ -3435,7 +3704,7 @@ import { appendFileSync } from "node:fs";`,
       const { text } = await testProvider.generateSummary({
         purpose: "session-retitle",
         strategy: "fork",
-        generatorSessionId: "thread-generator",
+        generatorSessionId: parseNativeSessionId("thread-generator"),
         cwd: tempDir,
         model: "gpt-5.6-sol",
         currentTitle: "Old title",
@@ -3478,6 +3747,280 @@ import { appendFileSync } from "node:fs";`,
     }
   });
 
+  it.each([false, true])(
+    "addresses a helper's exact native source and refuses another resumed thread (mismatch=%s)",
+    async (mismatch) => {
+      const root = mkdtempSync(join(tmpdir(), "codex-native-helper-")),
+        home = join(root, "home"),
+        sessions = join(home, "sessions"),
+        working = join(root, "working"),
+        original = join(root, "original"),
+        logPath = join(root, "requests.jsonl");
+      for (const path of [sessions, working, original])
+        mkdirSync(path, { recursive: true });
+      const nativeId = parseNativeSessionId("native-helper-thread"),
+        filePath = join(sessions, "rollout-different-leaf.jsonl");
+      writeFileSync(
+        filePath,
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: nativeId, cwd: original },
+        }) + "\n",
+      );
+      const source = {
+        native: nativeSessionRef("codex", realpathSync(sessions), nativeId),
+        filePath,
+        projectId: toUrlProjectId(original),
+      };
+      const command = createFakeCodexCommand(
+        root,
+        "helper-protocol",
+        buildFakeCodexAppServerForForkSummary(
+          logPath,
+          mismatch ? "different-thread" : undefined,
+        ),
+      );
+      const request = {
+        purpose: "session-retitle" as const,
+        strategy: "fork" as const,
+        generatorSessionId: nativeId,
+        nativeSource: source,
+        cwd: working,
+        model: "gpt-5.6-sol",
+      };
+      try {
+        const otherHome = join(root, "foreign-home");
+        mkdirSync(join(otherHome, "sessions"), { recursive: true });
+        await expect(
+          new CodexProvider({
+            codexPath: command,
+            codexHome: otherHome,
+          }).generateSummary(request),
+        ).rejects.toThrow("scoped resume is not qualified");
+        expect(existsSync(logPath)).toBe(false);
+        const result = new CodexProvider({
+          codexPath: command,
+          codexHome: home,
+        }).generateSummary(request);
+        if (mismatch)
+          await expect(result).rejects.toThrow("different native thread");
+        else expect(await result).toEqual({ text: "Codex fork retitle" });
+        const requests = readFakeCodexRequests(logPath);
+        expect(
+          requests.find((row) => row.method === "thread/resume")?.params,
+        ).toMatchObject({ threadId: nativeId, path: filePath, cwd: working });
+        expect(
+          requests.find((row) => row.method === "initialize")?.nativeHome,
+        ).toBe(home);
+        expect(
+          requests.filter((row) => row.method === "turn/start"),
+        ).toHaveLength(mismatch ? 0 : 1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "cold native continuation keeps child authority public (mismatch=%s)",
+    async (mismatch) => {
+      const errorLog = vi
+        .spyOn(getLogger(), "error")
+        .mockImplementation(() => undefined);
+      const root = mkdtempSync(join(tmpdir(), "codex-native-resume-"));
+      const home = join(root, "home"),
+        sessions = join(home, "sessions"),
+        logPath = join(root, "requests.jsonl");
+      mkdirSync(sessions, { recursive: true });
+      const nativeId = parseNativeSessionId("native-resume-thread");
+      const publicId = parseYaSessionId("22345678-1234-4234-8234-123456789abc");
+      const filePath = join(sessions, "rollout-other-leaf.jsonl");
+      writeFileSync(
+        filePath,
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: nativeId, cwd: root },
+        }) + "\n",
+      );
+      const command = createFakeCodexCommand(
+        root,
+        "continuation-protocol",
+        buildFakeCodexAppServerForForkSummary(
+          logPath,
+          mismatch ? "wrong-thread" : undefined,
+        ),
+      );
+      const options = {
+        cwd: root,
+        resumeSessionId: nativeId,
+        publicSessionId: publicId,
+        nativeResumeSource: {
+          native: nativeSessionRef("codex", realpathSync(sessions), nativeId),
+          filePath,
+          projectId: toUrlProjectId(root),
+        },
+      };
+      let session:
+        | Awaited<ReturnType<CodexProvider["startSession"]>>
+        | undefined;
+      try {
+        const otherHome = join(root, "foreign-home");
+        mkdirSync(join(otherHome, "sessions"), { recursive: true });
+        await expect(
+          new CodexProvider({
+            codexPath: command,
+            codexHome: otherHome,
+          }).startSession(options),
+        ).rejects.toThrow("outside the launch transcript store");
+        expect(existsSync(logPath)).toBe(false);
+        session = await new CodexProvider({
+          codexPath: command,
+          codexHome: home,
+        }).startSession(options);
+        if (mismatch)
+          expect((await session.iterator.next()).value).toMatchObject({
+            type: "error",
+            session_id: nativeId,
+            codexWillRetry: false,
+            error: "Codex resumed a different native thread",
+          });
+        else
+          expect((await session.iterator.next()).value).toMatchObject({
+            type: "system",
+            subtype: "init",
+            session_id: nativeId,
+          });
+        const requests = readFakeCodexRequests(logPath);
+        expect(
+          requests.find((r) => r.method === "thread/resume")?.params,
+        ).toMatchObject({ threadId: nativeId, path: filePath });
+        expect(requests.find((r) => r.method === "initialize")).toMatchObject({
+          nativeHome: home,
+          publicSessionId: publicId,
+        });
+        expect(
+          requests.some(
+            (r) => r.method === "thread/start" || r.method === "turn/start",
+          ),
+        ).toBe(false);
+        expect(errorLog).toHaveBeenCalledTimes(mismatch ? 1 : 0);
+        if (mismatch)
+          expect(errorLog).toHaveBeenCalledWith(
+            expect.objectContaining({
+              component: "codex-provider",
+              error: expect.objectContaining({
+                message: "Codex resumed a different native thread",
+              }),
+            }),
+            "Error in codex app-server session",
+          );
+      } finally {
+        await session?.abort();
+        errorLog.mockRestore();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("addresses a scoped fork by native id/path and keeps its pinned native home", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-scoped-fork-"));
+    const sourceHome = join(tempDir, "source-home");
+    const sessionsDir = join(sourceHome, "sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+    const logPath = join(tempDir, "requests.jsonl");
+    const nativeId = parseNativeSessionId(
+      "019a0000-7777-7777-8777-777777777777",
+    );
+    const childId = parseNativeSessionId(
+      "019a0000-8888-7888-8888-888888888888",
+    );
+    const sourceFile = join(sessionsDir, nativeId + ".jsonl");
+    writeFileSync(
+      sourceFile,
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          id: nativeId,
+          cwd: tempDir,
+          timestamp: "2026-11-01T00:00:00.000Z",
+        },
+      }) + "\n",
+    );
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "scoped-fork",
+      buildFakeCodexAppServerForFork(
+        logPath,
+        childId,
+        join(sessionsDir, childId + ".jsonl"),
+      ),
+    );
+    try {
+      const provider = new CodexProvider({ codexPath, codexHome: sourceHome });
+      const ambientHome = join(tempDir, "other-native-home");
+      mkdirSync(join(ambientHome, "sessions"), { recursive: true });
+      await expect(
+        new CodexProvider({ codexPath, codexHome: ambientHome }).forkSession({
+          nativeSessionId: nativeId,
+          cwd: tempDir,
+          nativeSource: {
+            native: {
+              family: "codex",
+              storageScope: sessionsDir,
+              id: nativeId,
+            },
+            filePath: sourceFile,
+            projectId: toUrlProjectId(tempDir),
+          },
+        }),
+      ).rejects.toThrow("scoped resume is not qualified");
+      expect(existsSync(logPath)).toBe(false);
+      const result = await provider.forkSession({
+        nativeSessionId: nativeId,
+        nativeSource: {
+          native: nativeSessionRef(
+            "codex",
+            realpathSync(sessionsDir),
+            nativeId,
+          ),
+          filePath: sourceFile,
+          projectId: toUrlProjectId(tempDir),
+        },
+        cwd: tempDir,
+        boundary: { kind: "turn", provider: "codex", turnId: "turn-2" },
+      });
+      const requests = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(
+        requests.find((request) => request.method === "initialize").nativeHome,
+      ).toBe(sourceHome);
+      expect(
+        requests.find((request) => request.method === "thread/fork").params,
+      ).toMatchObject({
+        threadId: nativeId,
+        path: sourceFile,
+        lastTurnId: "turn-2",
+      });
+      expect(
+        requests.some(
+          (request) =>
+            request.method === "thread/start" ||
+            request.method === "turn/start",
+        ),
+      ).toBe(false);
+      expect(result).toMatchObject({
+        nativeSessionId: childId,
+        native: { id: childId, family: "codex" },
+        transcriptProjectId: toUrlProjectId(tempDir),
+      });
+      expect(result.native?.storageScope).toBe(realpathSync(sessionsDir));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("forks a Codex thread through the turn holding a message anchor", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-fork-"));
     const logPath = join(tempDir, "fake-codex-requests.jsonl");
@@ -3490,7 +4033,7 @@ import { appendFileSync } from "node:fs";`,
     try {
       const testProvider = new CodexProvider({ codexPath });
       const fork = await testProvider.forkSession({
-        sessionId: "source-thread",
+        nativeSessionId: parseNativeSessionId("source-thread"),
         cwd: tempDir,
         upToMessageId: "assistant-2-turn-2",
         title: "Forked from second turn",
@@ -3504,7 +4047,7 @@ import { appendFileSync } from "node:fs";`,
       });
 
       expect(fork).toEqual({
-        sessionId: "fork-thread",
+        nativeSessionId: "fork-thread",
         filePath: join(tempDir, "fork.jsonl"),
       });
 
@@ -3549,7 +4092,7 @@ import { appendFileSync } from "node:fs";`,
     try {
       const testProvider = new CodexProvider({ codexPath });
       await testProvider.forkSession({
-        sessionId: "source-thread",
+        nativeSessionId: parseNativeSessionId("source-thread"),
         cwd: tempDir,
         upToMessageId: "assistant-3-turn-3",
       });
@@ -3576,7 +4119,7 @@ import { appendFileSync } from "node:fs";`,
     try {
       const testProvider = new CodexProvider({ codexPath });
       const fork = await testProvider.forkSession({
-        sessionId: "source-thread",
+        nativeSessionId: parseNativeSessionId("source-thread"),
         launchSettings: {
           permissionMode: "plan",
           requestedModel: "gpt-5.4-codex",
@@ -3593,7 +4136,7 @@ import { appendFileSync } from "node:fs";`,
       });
 
       expect(fork).toEqual({
-        sessionId: "fork-thread",
+        nativeSessionId: "fork-thread",
         filePath: join(tempDir, "fork.jsonl"),
       });
       const requests = readFakeCodexRequests(logPath);
@@ -3705,18 +4248,27 @@ function buildFakeCodexAppServer(
   goalStatusOverride?: "budgetLimited",
   goalStartsTurn = false,
   modelList?: unknown,
+  turnStartReleasePath?: string,
+  initializeReleasePath?: string,
 ): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 
 const logPath = ${JSON.stringify(logPath)};
 const accountType = ${JSON.stringify(accountType)};
 const goalStatusOverride = ${JSON.stringify(goalStatusOverride)};
 const goalStartsTurn = ${JSON.stringify(goalStartsTurn)};
 const modelList = ${JSON.stringify(modelList ?? null)};
+// When set, turn/start replies only once this file exists.
+const turnStartReleasePath = ${JSON.stringify(turnStartReleasePath ?? null)};
+// When set, initialize replies only once this file exists.
+const initializeReleasePath = ${JSON.stringify(initializeReleasePath ?? null)};
 let buffer = "";
 let goal = null;
 let activeTurn = false;
+// Like Codex, refuse every request until initialize has been handled.
+let initialized = false;
 
 function write(payload) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...payload }) + "\\n");
@@ -3745,11 +4297,28 @@ function handleMessage(message) {
   if (!message || typeof message !== "object") return;
   logRequest(message);
   if (message.id === undefined) return;
+  if (message.method !== "initialize" && !initialized) {
+    write({ id: message.id, error: { code: -32600, message: "Not initialized" } });
+    return;
+  }
 
   switch (message.method) {
-    case "initialize":
-      respond(message.id, { userAgent: "fake-codex" });
+    case "initialize": {
+      const reply = () => {
+        initialized = true;
+        respond(message.id, { userAgent: "fake-codex" });
+      };
+      if (!initializeReleasePath) {
+        reply();
+        break;
+      }
+      const release = setInterval(() => {
+        if (!existsSync(initializeReleasePath)) return;
+        clearInterval(release);
+        reply();
+      }, 10);
       break;
+    }
     case "skills/list":
       respond(message.id, {
         data: [{
@@ -3766,6 +4335,7 @@ function handleMessage(message) {
       });
       break;
     case "thread/start":
+    case "thread/resume":
       respond(message.id, {
         thread: { id: "thread-1" },
         model: "gpt-5.4-mini",
@@ -3856,12 +4426,23 @@ function handleMessage(message) {
       notify("thread/goal/cleared", { threadId: "thread-1" });
       break;
     }
-    case "turn/start":
+    case "turn/start": {
       activeTurn = true;
-      respond(message.id, {
-        turn: { id: "turn-start", status: "inProgress", error: null },
-      });
+      const reply = () =>
+        respond(message.id, {
+          turn: { id: "turn-start", status: "inProgress", error: null },
+        });
+      if (!turnStartReleasePath) {
+        reply();
+        break;
+      }
+      const release = setInterval(() => {
+        if (!existsSync(turnStartReleasePath)) return;
+        clearInterval(release);
+        reply();
+      }, 10);
       break;
+    }
     case "turn/steer":
       respond(message.id, { turnId: "turn-steered" });
       break;
@@ -4876,7 +5457,11 @@ process.stdin.on("data", (chunk) => {
 `;
 }
 
-function buildFakeCodexAppServerForFork(logPath: string): string {
+function buildFakeCodexAppServerForFork(
+  logPath: string,
+  childId = "fork-thread",
+  childPath = join(dirname(logPath), "fork.jsonl"),
+): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 
@@ -4893,6 +5478,7 @@ function logRequest(message) {
     JSON.stringify({
       id: message.id,
       method: message.method,
+      ...(message.method === "initialize" ? { nativeHome: process.env.CODEX_HOME } : {}),
       params: message.params,
     }) + "\\n",
   );
@@ -4947,7 +5533,7 @@ function handleMessage(message) {
       break;
     case "thread/fork":
       respond(message.id, {
-        thread: { id: "fork-thread", path: ${JSON.stringify(join(dirname(logPath), "fork.jsonl"))}, turns: [] },
+        thread: { id: ${JSON.stringify(childId)}, path: ${JSON.stringify(childPath)}, turns: [] },
         model: "gpt-5.4-mini",
         modelProvider: "openai",
         serviceTier: null,
@@ -4980,7 +5566,10 @@ process.stdin.on("data", (chunk) => {
 `;
 }
 
-function buildFakeCodexAppServerForForkSummary(logPath: string): string {
+function buildFakeCodexAppServerForForkSummary(
+  logPath: string,
+  resumedId?: string,
+): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 
@@ -4998,6 +5587,8 @@ function logRequest(message) {
       id: message.id,
       method: message.method,
       params: message.params,
+      nativeHome: process.env.CODEX_HOME,
+      publicSessionId: process.env.AGENTCTL_SESSION_ID,
     }) + "\\n",
   );
 }
@@ -5017,7 +5608,7 @@ function handleMessage(message) {
       break;
     case "thread/resume":
       respond(message.id, {
-        thread: { id: message.params?.threadId ?? "thread-generator" },
+        thread: { id: ${JSON.stringify(resumedId)} ?? message.params?.threadId ?? "thread-generator" },
         model: "gpt-5.4-mini",
         reasoningEffort: "low",
       });
@@ -5275,6 +5866,7 @@ function readFakeCodexRequests(logPath: string): Array<{
   method?: string;
   params?: Record<string, unknown>;
   pid?: number;
+  nativeHome?: string;
   effectiveApprovalPolicy?: string;
   effectiveSandboxPolicy?: Record<string, unknown>;
   agentctlSessionId?: string;
@@ -5448,7 +6040,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("logs raw Codex app-server notifications for sdk raw logging", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexTurnConsumer as unknown as {
       logRawCodexNotification: (
         sessionId: string,
         notification: { method: string; params?: unknown },
@@ -5478,7 +6070,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("identifies live delta notifications for the backend suppression toggle", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexTurnConsumer as unknown as {
       shouldSuppressLiveDeltaNotification: (
         notification: {
           method: string;
@@ -5547,7 +6139,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("normalizes command execution tool_use and tool_result to Read shape", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       convertItemToSDKMessages: (
         item: unknown,
         sessionId: string,
@@ -5601,7 +6193,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("normalizes shell-launcher wrapped command execution to Read shape", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       convertItemToSDKMessages: (
         item: unknown,
         sessionId: string,
@@ -5646,7 +6238,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("normalizes PowerShell Get-Content command execution to Read shape", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       convertItemToSDKMessages: (
         item: unknown,
         sessionId: string,
@@ -5691,7 +6283,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("derives command display actions from command and cwd", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       convertItemToSDKMessages: (
         item: unknown,
         sessionId: string,
@@ -5757,7 +6349,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("normalizes heredoc command execution as Write with structured file result", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       convertItemToSDKMessages: (
         item: unknown,
         sessionId: string,
@@ -5816,7 +6408,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("marks a declined file change as an error result", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       convertItemToSDKMessages: (
         item: unknown,
         sessionId: string,
@@ -5852,7 +6444,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("normalizes no-match ripgrep exit code as non-error Grep result", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       convertItemToSDKMessages: (
         item: unknown,
         sessionId: string,
@@ -5901,7 +6493,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("prefers reasoning summaries over raw reasoning content", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       normalizeThreadItem: (item: unknown) => Record<string, unknown> | null;
       convertItemToSDKMessages: (
         item: unknown,
@@ -5938,7 +6530,7 @@ describe("CodexProvider Event Normalization", () => {
     "send_user_message_async",
     "send_message_to_user_async",
   ])("keeps live %s calls distinct from their async messages", (name) => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -5996,7 +6588,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("renders asynchronously delivered agent messages", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       normalizeThreadItem: (item: unknown) => Record<string, unknown> | null;
       convertItemToSDKMessages: (
         item: unknown,
@@ -6052,7 +6644,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("shows live standalone function outputs without inventing a call", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       normalizeThreadItem: (item: unknown) => Record<string, unknown> | null;
       convertItemToSDKMessages: (
         item: unknown,
@@ -6096,7 +6688,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("surfaces subagent activity items as visible system messages", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       normalizeThreadItem: (item: unknown) => Record<string, unknown> | null;
       convertItemToSDKMessages: (
         item: unknown,
@@ -6190,7 +6782,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("carries an MCP tool's declared view beside its unchanged arguments", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       normalizeThreadItem: (item: Record<string, unknown>) => unknown;
       convertItemToSDKMessages: (
         item: unknown,
@@ -6282,7 +6874,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("inherits the thread reasoning-summary mode on ordinary turns", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexConfigBuilders() as unknown as {
       createTurnStartParams: (
         threadId: string,
         userPrompt: string,
@@ -6301,7 +6893,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("pairs every turn approval override with its native sandbox policy", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexThreadParams as unknown as {
       normalizePermissionMode: (permissionMode?: string) => string;
       mapPermissionModeToThreadPolicy: (permissionMode?: string) => {
         approvalPolicy: string;
@@ -6435,11 +7027,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("builds stable thread policy params with limited history", () => {
-    const provider = createTestProvider() as unknown as {
-      mapPermissionModeToThreadPolicy: (permissionMode?: string) => {
-        approvalPolicy: string;
-        sandbox: string;
-      };
+    const provider = codexConfigBuilders() as unknown as {
       createThreadStartParams: (
         options: { model?: string; cwd: string },
         policy: {
@@ -6448,8 +7036,14 @@ describe("CodexProvider Event Normalization", () => {
         },
       ) => Record<string, unknown>;
     };
+    const threadParams = codexThreadParams as unknown as {
+      mapPermissionModeToThreadPolicy: (permissionMode?: string) => {
+        approvalPolicy: string;
+        sandbox: string;
+      };
+    };
     const bypassPolicy =
-      provider.mapPermissionModeToThreadPolicy("bypassPermissions");
+      threadParams.mapPermissionModeToThreadPolicy("bypassPermissions");
 
     const start = provider.createThreadStartParams(
       { model: "gpt-5.2-codex", cwd: "/tmp" },
@@ -6477,7 +7071,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("builds stable resume params with limited history", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexConfigBuilders() as unknown as {
       createThreadResumeParams: (
         options: { resumeSessionId?: string; model?: string; cwd: string },
         sessionId: string,
@@ -6510,7 +7104,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("uses experimental excludeTurns after Codex negotiation succeeds", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexConfigBuilders() as unknown as {
       createThreadResumeParams: (
         options: { resumeSessionId?: string; model?: string; cwd: string },
         sessionId: string,
@@ -6541,10 +7135,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("applies the configured reasoning-summary mode to every thread path", () => {
-    const provider = createTestProvider() as unknown as {
-      setReasoningSummaryGetter: (
-        getter: () => "auto" | "concise" | "detailed" | "none",
-      ) => void;
+    type ThreadBuilders = {
       createThreadStartParams: (
         options: { cwd: string },
         policy: { approvalPolicy: string; sandbox: string },
@@ -6555,7 +7146,7 @@ describe("CodexProvider Event Normalization", () => {
         policy: { approvalPolicy: string; sandbox: string },
       ) => Record<string, unknown>;
       createThreadForkParams: (
-        options: { sessionId: string; cwd: string },
+        options: { nativeSessionId: string; cwd: string },
         policy: { approvalPolicy: string; sandbox: string },
       ) => Record<string, unknown>;
     };
@@ -6565,10 +7156,14 @@ describe("CodexProvider Event Normalization", () => {
     };
 
     expect(
-      provider.createThreadStartParams({ cwd: "/tmp" }, policy),
+      (
+        codexConfigBuilders() as unknown as ThreadBuilders
+      ).createThreadStartParams({ cwd: "/tmp" }, policy),
     ).toMatchObject({ config: { model_reasoning_summary: "auto" } });
 
-    provider.setReasoningSummaryGetter(() => "detailed");
+    const provider = codexConfigBuilders({
+      reasoningSummary: "detailed",
+    }) as unknown as ThreadBuilders;
     expect(
       provider.createThreadStartParams({ cwd: "/tmp" }, policy),
     ).toMatchObject({ config: { model_reasoning_summary: "detailed" } });
@@ -6581,15 +7176,14 @@ describe("CodexProvider Event Normalization", () => {
     ).toMatchObject({ config: { model_reasoning_summary: "detailed" } });
     expect(
       provider.createThreadForkParams(
-        { sessionId: "thread-1", cwd: "/tmp" },
+        { nativeSessionId: "thread-1", cwd: "/tmp" },
         policy,
       ),
     ).toMatchObject({ config: { model_reasoning_summary: "detailed" } });
   });
 
   it("applies V1 subagent nesting depth to every thread path", () => {
-    const provider = createTestProvider() as unknown as {
-      setSubagentMaxDepthGetter: (getter: () => number | null) => void;
+    type ThreadBuilders = {
       createThreadStartParams: (
         options: { cwd: string },
         policy: { approvalPolicy: string; sandbox: string },
@@ -6600,7 +7194,7 @@ describe("CodexProvider Event Normalization", () => {
         policy: { approvalPolicy: string; sandbox: string },
       ) => Record<string, unknown>;
       createThreadForkParams: (
-        options: { sessionId: string; cwd: string },
+        options: { nativeSessionId: string; cwd: string },
         policy: { approvalPolicy: string; sandbox: string },
       ) => Record<string, unknown>;
     };
@@ -6609,7 +7203,9 @@ describe("CodexProvider Event Normalization", () => {
       sandbox: "workspace-write",
     };
 
-    provider.setSubagentMaxDepthGetter(() => 4);
+    const provider = codexConfigBuilders({
+      subagentMaxDepth: 4,
+    }) as unknown as ThreadBuilders;
     expect(
       provider.createThreadStartParams({ cwd: "/tmp" }, policy),
     ).toMatchObject({ config: { agents: { max_depth: 4 } } });
@@ -6622,19 +7218,22 @@ describe("CodexProvider Event Normalization", () => {
     ).toMatchObject({ config: { agents: { max_depth: 4 } } });
     expect(
       provider.createThreadForkParams(
-        { sessionId: "thread-1", cwd: "/tmp" },
+        { nativeSessionId: "thread-1", cwd: "/tmp" },
         policy,
       ),
     ).toMatchObject({ config: { agents: { max_depth: 4 } } });
 
-    provider.setSubagentMaxDepthGetter(() => null);
     expect(
-      provider.createThreadStartParams({ cwd: "/tmp" }, policy),
+      (
+        codexConfigBuilders({
+          subagentMaxDepth: null,
+        }) as unknown as ThreadBuilders
+      ).createThreadStartParams({ cwd: "/tmp" }, policy),
     ).not.toHaveProperty("config.agents");
   });
 
   it("suppresses the unavailable desktop browser skill for every thread path", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexConfigBuilders() as unknown as {
       createThreadStartParams: (
         options: { cwd: string },
         policy: { approvalPolicy: string; sandbox: string },
@@ -6645,7 +7244,7 @@ describe("CodexProvider Event Normalization", () => {
         policy: { approvalPolicy: string; sandbox: string },
       ) => Record<string, unknown>;
       createThreadForkParams: (
-        options: { sessionId: string; cwd: string },
+        options: { nativeSessionId: string; cwd: string },
         policy: { approvalPolicy: string; sandbox: string },
       ) => Record<string, unknown>;
     };
@@ -6671,7 +7270,7 @@ describe("CodexProvider Event Normalization", () => {
       policy,
     );
     const fork = provider.createThreadForkParams(
-      { sessionId: "thread-1", cwd: "/tmp" },
+      { nativeSessionId: "thread-1", cwd: "/tmp" },
       policy,
     );
 
@@ -6687,8 +7286,9 @@ describe("CodexProvider Event Normalization", () => {
   ] as const)(
     "applies %s plan-tool mode to every thread path",
     (mode, enabled) => {
-      const provider = createTestProvider() as unknown as {
-        setPlanToolModeGetter: (getter: () => CodexPlanToolMode) => void;
+      const provider = codexConfigBuilders({
+        planToolMode: mode,
+      }) as unknown as {
         createThreadStartParams: (
           options: { cwd: string },
           policy: { approvalPolicy: string; sandbox: string },
@@ -6699,7 +7299,7 @@ describe("CodexProvider Event Normalization", () => {
           policy: { approvalPolicy: string; sandbox: string },
         ) => Record<string, unknown>;
         createThreadForkParams: (
-          options: { sessionId: string; cwd: string },
+          options: { nativeSessionId: string; cwd: string },
           policy: { approvalPolicy: string; sandbox: string },
         ) => Record<string, unknown>;
       };
@@ -6707,7 +7307,6 @@ describe("CodexProvider Event Normalization", () => {
         approvalPolicy: "on-request",
         sandbox: "workspace-write",
       };
-      provider.setPlanToolModeGetter(() => mode);
 
       const start = provider.createThreadStartParams({ cwd: "/tmp" }, policy);
       const resume = provider.createThreadResumeParams(
@@ -6716,7 +7315,7 @@ describe("CodexProvider Event Normalization", () => {
         policy,
       );
       const fork = provider.createThreadForkParams(
-        { sessionId: "thread-1", cwd: "/tmp" },
+        { nativeSessionId: "thread-1", cwd: "/tmp" },
         policy,
       );
 
@@ -6733,7 +7332,7 @@ describe("CodexProvider Event Normalization", () => {
   );
 
   it("pins thread-scope reasoning effort via config when effort is requested", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexConfigBuilders() as unknown as {
       createThreadStartParams: (
         options: {
           model?: string;
@@ -6846,7 +7445,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("sets a total-context auto-compact limit only when requested", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexConfigBuilders() as unknown as {
       createThreadStartParams: (
         options: {
           cwd: string;
@@ -6905,7 +7504,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("passes service tier only when explicitly requested", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexConfigBuilders() as unknown as {
       createThreadStartParams: (
         options: {
           model?: string;
@@ -6984,7 +7583,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("accumulates agent message deltas into a stable streaming assistant message", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7017,7 +7616,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("shows a live content-filter block under its durable message id", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7069,7 +7668,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("bounds live command-output snapshots to a head and tail window", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7123,7 +7722,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("surfaces Codex context compaction thread items", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7155,7 +7754,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("surfaces raw Codex compaction response items as compact boundaries", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7177,7 +7776,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("surfaces interrupted live Codex turns as visible system boundaries", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7209,7 +7808,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("normalizes raw response function calls and outputs into tool messages", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7241,7 +7840,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("surfaces live Codex checklist updates as completed plan tools", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7322,7 +7921,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("marks live result-backed tools incomplete when a turn completes first", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7429,7 +8028,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("keeps Codex background process handles from reviving orphaned work", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7534,7 +8133,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("does not mark completed live result-backed tools orphaned", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7620,7 +8219,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("normalizes dynamic tool calls with namespace and output content", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexItemConversion as unknown as {
       convertItemToSDKMessages: (
         item: unknown,
         sessionId: string,
@@ -7670,7 +8269,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("does not emit rate limit errors when hasCredits is false but usage is below 100%", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7705,7 +8304,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("does not emit synthetic errors for exhausted usage snapshots", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7740,7 +8339,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("emits errors from codex error notifications", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7782,7 +8381,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("preserves automatic retry details from codex error notifications", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7824,7 +8423,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("surfaces a misalignment explanation as the codex error detail", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7870,7 +8469,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("preserves synthetic app-server process exit errors without turn ids", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexLiveEventConversion as unknown as {
       convertNotificationToSDKMessages: (
         notification: { method: string; params?: unknown },
         sessionId: string,
@@ -7905,7 +8504,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("treats a synthetic app-server exit as terminal without a turn id", () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexTurnConsumer as unknown as {
       isTurnTerminalNotification: (
         notification: { method: string; params?: unknown },
         turnId: string,
@@ -7930,7 +8529,7 @@ describe("CodexProvider Event Normalization", () => {
   });
 
   it("grants requested permissions for only the requesting bypass turn", async () => {
-    const provider = createTestProvider() as unknown as {
+    const provider = codexApprovals as unknown as {
       handleServerRequestApproval: (
         request: { method: string; id: number; params?: unknown },
         options: { permissionMode?: string },
@@ -7987,7 +8586,7 @@ describe("CodexProvider Event Normalization", () => {
     const onToolApproval = vi.fn(async () => ({
       behavior: "deny" as const,
     }));
-    const provider = createTestProvider() as unknown as {
+    const provider = codexApprovals as unknown as {
       handleServerRequestApproval: (
         request: { method: string; id: number; params?: unknown },
         options: {
@@ -8041,7 +8640,7 @@ describe("CodexProvider Event Normalization", () => {
         },
       }),
     );
-    const provider = createTestProvider() as unknown as {
+    const provider = codexApprovals as unknown as {
       handleServerRequestApproval: (
         request: { method: string; id: number; params?: unknown },
         options: {
@@ -8123,7 +8722,7 @@ describe("CodexProvider Event Normalization", () => {
       behavior: "allow" as const,
       updatedInput: { answers: { "question-1": "Answer" } },
     }));
-    const provider = createTestProvider() as unknown as {
+    const provider = codexApprovals as unknown as {
       handleServerRequestApproval: (
         request: { method: string; id: number; params?: unknown },
         options: { onToolApproval?: typeof onToolApproval },

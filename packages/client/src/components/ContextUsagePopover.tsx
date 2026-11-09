@@ -8,6 +8,7 @@ import type { ContextBreakdownState } from "../hooks/useContextBreakdown";
 import { useI18n } from "../i18n";
 import type { ContextUsage } from "../types";
 import { ContextBreakdownSection } from "./ContextBreakdownSection";
+import { Button, IconButton } from "./ui/Button";
 import styles from "./ContextUsagePopover.module.css";
 
 function formatDuration(minutes: number | undefined): string {
@@ -136,24 +137,26 @@ export function ContextUsagePopover({
             <div className="context-threshold-popover-title">
               {t("subscriptionUsageTitle")}
             </div>
+            {usage.accountLabel && <div>{usage.accountLabel}</div>}
             {binding && (
               <div className="subscription-usage-summary">
-                {t("subscriptionUsageCompact", {
-                  percent: Math.round(binding.usedPercent),
-                })}
+                {usage.ordinaryUsageAllowed === true &&
+                binding.usedPercent >= 100
+                  ? t("subscriptionUsageAllowed")
+                  : t("subscriptionUsageCompact", {
+                      percent: Math.round(binding.usedPercent),
+                    })}
               </div>
             )}
           </div>
-          <button
-            type="button"
-            className="subscription-usage-refresh"
+          <IconButton
+            size="small"
+            label={t("subscriptionUsageRefresh")}
             onClick={onRefresh}
             disabled={refreshing}
-            aria-label={t("subscriptionUsageRefresh")}
-            title={t("subscriptionUsageRefresh")}
           >
             ↻
-          </button>
+          </IconButton>
         </div>
       )}
       <div className="subscription-usage-windows">
@@ -180,6 +183,15 @@ export function ContextUsagePopover({
             <div className="subscription-usage-meter" aria-hidden="true">
               <span style={{ width: `${window.usedPercent}%` }} />
             </div>
+            {window.remainingCapacityUnits !== undefined && (
+              <div className="subscription-usage-reset">
+                {window.remainingCapacityUnits === null
+                  ? t("subscriptionUsageCapacityUnknown")
+                  : t("subscriptionUsageCapacity", {
+                      units: window.remainingCapacityUnits,
+                    })}
+              </div>
+            )}
             {window.resetsAt && (
               <div className="subscription-usage-reset">
                 {t("subscriptionUsageResets", {
@@ -195,13 +207,14 @@ export function ContextUsagePopover({
       </div>
       {showTokens && contextUsage && <ContextTokenRows usage={contextUsage} />}
       {onEditCompactThreshold && (
-        <button
-          type="button"
-          className="subscription-usage-compact-action"
+        <Button
+          variant="ghost"
+          size="small"
+          className={styles.compactAction}
           onClick={onEditCompactThreshold}
         >
           {t("subscriptionUsageEditCompact")}
-        </button>
+        </Button>
       )}
     </div>
   );

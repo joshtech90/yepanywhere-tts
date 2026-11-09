@@ -18,11 +18,8 @@
   place-items: center;
   width: 36px;
   height: 36px;
-  padding: 0;
-  border: 0;
   border-radius: 6px;
   color: var(--text-muted);
-  background: transparent;
   touch-action: none;
   cursor: grab;
 }
@@ -55,7 +52,7 @@
   overflow-wrap: anywhere;
   border: 1px solid var(--border-input);
   border-radius: 8px;
-  background: var(--bg-primary);
+  background: var(--bg-elevated);
   color: var(--text-primary);
   box-shadow: 0 4px 16px #0003;
   font-size: 14px;

@@ -14,9 +14,13 @@ import {
 import { type ReactNode, useEffect, useState } from "react";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { type RelayStatus, useRemoteAccess } from "../hooks/useRemoteAccess";
+import { isConnectionImpactDeclined } from "../api/connectionImpact";
 import { useI18n } from "../i18n";
 import { parseUserAgent } from "../lib/deviceDetection";
 import { QRCode } from "./QRCode";
+import { Button } from "./ui/Button";
+import { Field, Select, TextInput } from "./ui/Field";
+import { Switch } from "./ui/Switch";
 
 export interface RemoteAccessSetupProps {
   /** Custom title (default: "Remote Access") */
@@ -318,6 +322,8 @@ export function RemoteAccessSetup({
       return false;
     }
 
+    // One save may send several disconnecting requests; ask once.
+    const impactScope = { confirmed: false };
     try {
       // Update relay config if changed
       let relayUrl: string;
@@ -331,12 +337,7 @@ export function RemoteAccessSetup({
         );
         return false;
       }
-      const relayChanged =
-        username !== relayConfig?.username || relayUrl !== relayConfig?.url;
-      if (relayChanged) {
-        await updateRelayConfig({ url: relayUrl, username });
-      }
-
+      // Validate before writing anything.
       let yaClientBaseUrl: string;
       try {
         yaClientBaseUrl = normalizeYaClientBaseUrl(getYaClientUrlInput());
@@ -348,6 +349,20 @@ export function RemoteAccessSetup({
         );
         return false;
       }
+      const relayChanged =
+        username !== relayConfig?.username || relayUrl !== relayConfig?.url;
+      if (relayChanged) {
+        await updateRelayConfig({ url: relayUrl, username }, impactScope);
+      }
+
+      // Configure with password if provided
+      if (password) {
+        await configure(password, impactScope);
+        // Keep password in memory for QR code generation
+        setSavedPassword(password);
+      }
+
+      // Not refusable, so it follows the changes that may ask first.
       const savedYaClientBaseUrl =
         serverSettings?.yaClientBaseUrl ?? DEFAULT_YA_CLIENT_BASE_URL;
       if (yaClientBaseUrl !== savedYaClientBaseUrl) {
@@ -357,19 +372,13 @@ export function RemoteAccessSetup({
         );
       }
 
-      // Configure with password if provided
-      if (password) {
-        await configure(password);
-        // Keep password in memory for QR code generation
-        setSavedPassword(password);
-      }
-
       // Clear password fields after save
       setPassword("");
       setConfirmPassword("");
       setHasChanges(false);
       return true;
     } catch (err) {
+      if (isConnectionImpactDeclined(err)) return false;
       setError(
         err instanceof Error
           ? err.message
@@ -407,6 +416,7 @@ export function RemoteAccessSetup({
         await disable();
       }
     } catch (err) {
+      if (isConnectionImpactDeclined(err)) return;
       setError(
         err instanceof Error
           ? err.message
@@ -500,24 +510,17 @@ export function RemoteAccessSetup({
           <h3>{title}</h3>
           <p>{description}</p>
         </div>
-        <label className="toggle-switch">
-          <input
-            type="checkbox"
-            checked={isEnabled}
-            onChange={(e) => handleToggle(e.target.checked)}
-            disabled={isSaving || (!isEnabled && !canToggleOn)}
-          />
-          <span className="toggle-slider" />
-        </label>
+        <Switch
+          aria-label={title}
+          checked={isEnabled}
+          onCheckedChange={(checked) => handleToggle(checked)}
+          disabled={isSaving || (!isEnabled && !canToggleOn)}
+        />
       </div>
 
       <form onSubmit={handleSave} className="remote-access-form">
-        <div className="form-field">
-          <label htmlFor="remote-username">
-            {t("remoteSetupUsername" as never)}
-          </label>
-          <input
-            id="remote-username"
+        <Field id="remote-username" label={t("remoteSetupUsername" as never)}>
+          <TextInput
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value.toLowerCase())}
@@ -529,16 +532,17 @@ export function RemoteAccessSetup({
             autoComplete="username"
             disabled={isSaving}
           />
-        </div>
+        </Field>
 
-        <div className="form-field">
-          <label htmlFor="remote-password">
-            {hasCredentials
+        <Field
+          id="remote-password"
+          label={
+            hasCredentials
               ? t("remoteSetupNewPassword" as never)
-              : t("remoteSetupPassword" as never)}
-          </label>
-          <input
-            id="remote-password"
+              : t("remoteSetupPassword" as never)
+          }
+        >
+          <TextInput
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -547,15 +551,14 @@ export function RemoteAccessSetup({
             autoComplete="new-password"
             disabled={isSaving}
           />
-        </div>
+        </Field>
 
         {password && (
-          <div className="form-field">
-            <label htmlFor="remote-confirm">
-              {t("remoteSetupConfirmPassword" as never)}
-            </label>
-            <input
-              id="remote-confirm"
+          <Field
+            id="remote-confirm"
+            label={t("remoteSetupConfirmPassword" as never)}
+          >
+            <TextInput
               type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
@@ -563,19 +566,14 @@ export function RemoteAccessSetup({
               autoComplete="new-password"
               disabled={isSaving}
             />
-          </div>
+          </Field>
         )}
 
-        <div className="form-field">
-          <label htmlFor="relay-select">
-            {t("remoteSetupRelayServer" as never)}
-          </label>
-          <select
-            id="relay-select"
+        <Field id="relay-select" label={t("remoteSetupRelayServer" as never)}>
+          <Select
             value={relayOption}
             onChange={(e) => setRelayOption(e.target.value as RelayOption)}
             disabled={isSaving}
-            className="form-select"
           >
             <option value="default">
               {t("remoteSetupRelayDefault" as never)}
@@ -583,37 +581,31 @@ export function RemoteAccessSetup({
             <option value="custom">
               {t("remoteSetupRelayCustom" as never)}
             </option>
-          </select>
-        </div>
+          </Select>
+        </Field>
 
         {relayOption === "custom" && (
-          <div className="form-field">
-            <label htmlFor="custom-relay-url">
-              {t("remoteSetupCustomRelayUrl" as never)}
-            </label>
-            <input
-              id="custom-relay-url"
+          <Field
+            id="custom-relay-url"
+            label={t("remoteSetupCustomRelayUrl" as never)}
+          >
+            <TextInput
               type="text"
               value={customRelayUrl}
               onChange={(e) => setCustomRelayUrl(e.target.value)}
               placeholder={t("remoteSetupCustomRelayPlaceholder" as never)}
               disabled={isSaving}
             />
-          </div>
+          </Field>
         )}
 
-        <div className="form-field">
-          <label htmlFor="ya-client-select">
-            {t("remoteSetupYaClient" as never)}
-          </label>
-          <select
-            id="ya-client-select"
+        <Field id="ya-client-select" label={t("remoteSetupYaClient" as never)}>
+          <Select
             value={yaClientOption}
             onChange={(e) =>
               setYaClientOption(e.target.value as YaClientOption)
             }
             disabled={isSaving}
-            className="form-select"
           >
             <option value="default">
               {t("remoteSetupYaClientDefault" as never)}
@@ -621,23 +613,22 @@ export function RemoteAccessSetup({
             <option value="custom">
               {t("remoteSetupYaClientCustom" as never)}
             </option>
-          </select>
-        </div>
+          </Select>
+        </Field>
 
         {yaClientOption === "custom" && (
-          <div className="form-field">
-            <label htmlFor="custom-ya-client-url">
-              {t("remoteSetupCustomYaClientUrl" as never)}
-            </label>
-            <input
-              id="custom-ya-client-url"
+          <Field
+            id="custom-ya-client-url"
+            label={t("remoteSetupCustomYaClientUrl" as never)}
+          >
+            <TextInput
               type="text"
               value={customYaClientUrl}
               onChange={(e) => setCustomYaClientUrl(e.target.value)}
               placeholder={t("remoteSetupCustomYaClientPlaceholder" as never)}
               disabled={isSaving}
             />
-          </div>
+          </Field>
         )}
 
         {yaClientInfo}
@@ -665,31 +656,26 @@ export function RemoteAccessSetup({
             </span>
             <div className="connect-url-row">
               <code className="connect-url">{connectUrl}</code>
-              <button
-                type="button"
-                className="copy-button"
+              <Button
+                size="small"
                 onClick={() => handleCopyUrl(connectUrl)}
                 title={t("remoteSetupCopyUrl" as never)}
               >
                 {copied
                   ? t("remoteSetupCopied" as never)
                   : t("remoteSetupCopy" as never)}
-              </button>
+              </Button>
             </div>
           </div>
         )}
 
         {canShowQRCode && (
           <div className="remote-access-qr">
-            <button
-              type="button"
-              className="qr-toggle-button"
-              onClick={() => setShowQRCode(!showQRCode)}
-            >
+            <Button onClick={() => setShowQRCode(!showQRCode)}>
               {showQRCode
                 ? t("remoteSetupHideQr" as never)
                 : t("remoteSetupShowQr" as never)}
-            </button>
+            </Button>
             {showQRCode && qrCodeUrl && (
               <div className="qr-code-container">
                 <QRCode value={qrCodeUrl} size={200} />
@@ -707,15 +693,15 @@ export function RemoteAccessSetup({
               {t("remoteSetupSessions" as never, { count: sessions.length })}
             </span>
             {sessions.length > 0 && (
-              <button
-                type="button"
-                className="revoke-all-button"
-                onClick={() => revokeAllSessions()}
+              <Button
+                variant="danger-outline"
+                size="small"
+                onClick={() => void revokeAllSessions().catch(() => {})}
                 disabled={isSaving}
                 title={t("remoteSetupRevokeEffect" as never)}
               >
                 {t("remoteSetupRevokeAll" as never)}
-              </button>
+              </Button>
             )}
           </div>
           <p className="settings-hint">
@@ -778,15 +764,17 @@ export function RemoteAccessSetup({
                         </>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      className="revoke-button"
-                      onClick={() => revokeSession(session.sessionId)}
+                    <Button
+                      variant="danger-outline"
+                      size="small"
+                      onClick={() =>
+                        void revokeSession(session.sessionId).catch(() => {})
+                      }
                       disabled={isSaving}
                       title={t("remoteSetupRevokeEffect" as never)}
                     >
                       {t("remoteSetupRevoke" as never)}
-                    </button>
+                    </Button>
                   </li>
                 );
               })}
@@ -796,15 +784,11 @@ export function RemoteAccessSetup({
 
         {hasChanges && (
           <div className="remote-access-actions">
-            <button
-              type="submit"
-              className="settings-button"
-              disabled={isSaving}
-            >
+            <Button variant="primary" type="submit" disabled={isSaving}>
               {isSaving
                 ? t("remoteSetupSaving" as never)
                 : t("remoteSetupUpdate" as never)}
-            </button>
+            </Button>
           </div>
         )}
       </form>

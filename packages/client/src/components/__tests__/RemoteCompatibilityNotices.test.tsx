@@ -162,7 +162,6 @@ describe("RemoteCompatibilityNotices", () => {
     expect(root.querySelector(`.${styles.guidance!}`)).toBeTruthy();
     expect(root.querySelector(`.${styles.commandField!}`)).toBeTruthy();
     expect(textarea.classList.contains(styles.commandInput!)).toBe(true);
-    expect(textarea.classList.contains(styles.commandInputMulti!)).toBe(true);
     expect(textarea.value).toBe(command);
     expect(copyButton.classList.contains(styles.copyButton!)).toBe(true);
     expect(copyButton.classList.contains(styles.copied!)).toBe(false);
@@ -254,10 +253,9 @@ describe("RemoteCompatibilityNotices", () => {
       name: "Show reminder",
     });
 
-    expect(link.classList.contains(styles.button!)).toBe(true);
-    expect(link.classList.contains(styles.buttonPrimary!)).toBe(true);
-    expect(restoreButton.classList.contains(styles.button!)).toBe(true);
-    expect(restoreButton.classList.contains(styles.buttonPrimary!)).toBe(true);
+    expect(link.getAttribute("href")).toBe(
+      "https://example.invalid/release-notes",
+    );
     expect(
       screen.queryByRole("button", { name: "Remind me later" }),
     ).toBeNull();

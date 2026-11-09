@@ -1,6 +1,17 @@
-import { truncateSessionTitle } from "@yep-anywhere/shared";
+import { mergeCreationGlobalItems } from "./creation-session-collections.js";
+import {
+  truncateSessionTitle,
+  fromUrlProjectId,
+  isUrlProjectId,
+  isYaSessionId,
+  type NativeSessionRef,
+} from "@yep-anywhere/shared";
+import {
+  nativeCatalogSessionRef,
+  projectCatalogIdentities,
+} from "../sessions/catalog-identity.js";
 import { nonHumanUserTurnField } from "../metadata/SessionMetadataService.js";
-import { getProjectName } from "../projects/paths.js";
+import { getProjectName, isDetachedProjectPath } from "../projects/paths.js";
 import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
 import {
   getEffectiveProviderUpdatedAt,
@@ -21,19 +32,29 @@ export async function readRetainedSessionItems(
   service: RetainedSessionCollections,
   deps: Pick<
     GlobalSessionsDeps,
+    | "signal"
     | "sessionMetadataService"
     | "supervisor"
     | "externalTracker"
     | "notificationService"
     | "sessionAutoArchiveDays"
     | "projectDisplayName"
+    | "providerChildRelationships"
   >,
+  selectChildParents?: (
+    sessions: readonly GlobalSessionItem[],
+  ) => readonly GlobalSessionItem[],
 ) {
-  const { rows, catalog } = await service.read();
+  const { rows: nativeRows, catalog } = await service.read();
+  const rows = await projectCatalogIdentities(
+    nativeRows,
+    deps.sessionMetadataService,
+    deps.signal,
+  );
   // Named now, not from the row: a stored `projectName` is only as current as
   // the file's last read, and renaming a project rereads nothing.
   const projectDisplayName = deps.projectDisplayName ?? getProjectName;
-  const projects = new Map(
+  const projects = new Map<string, { id: string; name: string }>(
     rows.map((row) => [
       row.projectId,
       { id: row.projectId, name: projectDisplayName(row.projectPath) },
@@ -42,7 +63,8 @@ export async function readRetainedSessionItems(
   const cutoff = getActiveSessionIndexOptions(
     deps.sessionAutoArchiveDays,
   )?.activeAfterMs;
-  const sessions: GlobalSessionItem[] = [];
+  const nativeItems: GlobalSessionItem[] = [];
+  const nativeParents = new Map<string, NativeSessionRef>();
   const seen = new Set<string>();
   const stats: GlobalSessionStats = {
     totalCount: 0,
@@ -86,6 +108,17 @@ export async function readRetainedSessionItems(
     // match living deeper in the first message is unreachable without a
     // server-side search the client would have to direct.
     const fullTitle = row.title ?? undefined;
+    // Catalog identities are projected to public ids above; structural SQL
+    // keys retain the exact native id and scope, including private stores.
+    // This read cannot register a source or acquire provider persistence.
+    const nativeParent =
+      selectChildParents &&
+      deps.providerChildRelationships &&
+      nativeCatalogSessionRef({
+        ...row,
+        sessionId: row.nativeSessionId,
+      });
+    if (nativeParent) nativeParents.set(row.sessionId, nativeParent);
     const item: GlobalSessionItem = {
       id: row.sessionId,
       ...(row.title !== undefined
@@ -125,15 +158,32 @@ export async function readRetainedSessionItems(
       executor: metadata?.executor,
       ...(row.asyncQuestions ? { asyncQuestions: row.asyncQuestions } : {}),
     };
-    sessions.push(item);
+    nativeItems.push(item);
+  }
+  const sessions = mergeCreationGlobalItems(
+    nativeItems,
+    deps.sessionMetadataService,
+    deps,
+  );
+  for (const item of sessions) {
+    if (
+      !item.creation ||
+      (isUrlProjectId(item.projectId) &&
+        !isDetachedProjectPath(fromUrlProjectId(item.projectId)))
+    )
+      projects.set(item.projectId, {
+        id: item.projectId,
+        name: item.projectName,
+      });
     if (item.isStarred) stats.starredCount += 1;
-    if (isArchived) {
+    if (item.isArchived) {
       stats.archivedCount += 1;
       continue;
     }
     stats.totalCount += 1;
-    if (hasUnread) stats.unreadCount += 1;
-    stats.providerCounts[provider] = (stats.providerCounts[provider] ?? 0) + 1;
+    if (item.hasUnread) stats.unreadCount += 1;
+    stats.providerCounts[item.provider] =
+      (stats.providerCounts[item.provider] ?? 0) + 1;
     const executor = item.executor ?? "local";
     stats.executorCounts[executor] = (stats.executorCounts[executor] ?? 0) + 1;
   }
@@ -142,6 +192,22 @@ export async function readRetainedSessionItems(
       Date.parse(b.updatedAt) - Date.parse(a.updatedAt) ||
       a.id.localeCompare(b.id),
   );
+  // The route selects its authorized, filtered page before any child queries.
+  // Stats and offscreen rows do not need relationship enrichment.
+  for (const item of selectChildParents?.(sessions) ?? []) {
+    // A managed control row can precede native catalog publication. Its SQL
+    // identity is authoritative; an unscoped native catalog row is not.
+    const nativeParent =
+      deps.providerChildRelationships &&
+      (nativeParents.get(item.id) ??
+        (!seen.has(item.id) && isYaSessionId(item.id)
+          ? deps.sessionMetadataService?.identities.resolveYa(item.id)?.native
+          : undefined));
+    const children = nativeParent
+      ? deps.providerChildRelationships?.accepted(nativeParent, item.id)
+      : undefined;
+    if (children !== undefined) item.providerChildren = children;
+  }
   return {
     sessions,
     stats,

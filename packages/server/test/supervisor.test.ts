@@ -1,3 +1,5 @@
+import { controlledProvider } from "./support/scripted-provider.js";
+import { parseNativeSessionId } from "@yep-anywhere/shared";
 import {
   DEFAULT_RECAP_AFTER_SECONDS,
   POST_COMPACT_REPLAY_PREAMBLE,
@@ -18,9 +20,12 @@ import { getLogger } from "../src/logging/logger.js";
 import { ProjectMetadataService } from "../src/metadata/ProjectMetadataService.js";
 import { dispatchProviderCommand } from "../src/supervisor/provider-command.js";
 import type { NotificationService } from "../src/notifications/index.js";
-import { MockClaudeSDK, createMockScenario } from "../src/sdk/mock.js";
+import {
+  ScriptedClaudeProvider,
+  createMockScenario,
+} from "./support/scripted-provider.js";
 import type { AgentProvider } from "../src/sdk/providers/types.js";
-import type { RealClaudeSDKInterface } from "../src/sdk/types.js";
+
 import { createControllableIterator, waitFor } from "./process.test-support.js";
 import {
   RetryableSessionLaunchError,
@@ -50,9 +55,6 @@ function createLaunchSettingsMetadata(
       async () => undefined,
     ),
     setSessionSandbox: vi.fn<SessionMetadataService["setSessionSandbox"]>(
-      async () => undefined,
-    ),
-    remapSessionId: vi.fn<SessionMetadataService["remapSessionId"]>(
       async () => undefined,
     ),
     flushPendingWrites: vi.fn<SessionMetadataService["flushPendingWrites"]>(
@@ -120,12 +122,12 @@ function testProvider(
 }
 
 describe("Supervisor", () => {
-  let mockSdk: MockClaudeSDK;
+  let mockSdk: ScriptedClaudeProvider;
   let supervisor: Supervisor;
 
   beforeEach(() => {
-    mockSdk = new MockClaudeSDK();
-    supervisor = new Supervisor({ sdk: mockSdk, idleTimeoutMs: 100 });
+    mockSdk = new ScriptedClaudeProvider();
+    supervisor = new Supervisor({ provider: mockSdk, idleTimeoutMs: 100 });
   });
 
   // vi.spyOn returns the existing spy for an already-spied method, so an
@@ -144,34 +146,6 @@ describe("Supervisor", () => {
 
       expect(process.id).toBeDefined();
       expect(process.projectPath).toBe("/tmp/test");
-    });
-
-    it("keeps an isolated mock SDK out of provider discovery", async () => {
-      const isolatedSdk = new MockClaudeSDK();
-      isolatedSdk.addScenario(createMockScenario("isolated-session", "Hello!"));
-      const isolatedSupervisor = new Supervisor({
-        provider: null,
-        sdk: isolatedSdk,
-        idleTimeoutMs: 100,
-      });
-
-      const process = await isolatedSupervisor.startSession(
-        "/tmp/test",
-        { text: "hi" },
-        undefined,
-        { providerName: "claude" },
-      );
-
-      await vi.waitFor(() => {
-        expect(process.sessionId).toBe("isolated-session");
-      });
-      await expect(
-        isolatedSupervisor.requestRecap(process.id),
-      ).resolves.toMatchObject({
-        supported: false,
-        emitted: false,
-        reason: "provider not found",
-      });
     });
 
     it("launches new sessions under YA's id and resumes without one", async () => {
@@ -210,8 +184,6 @@ describe("Supervisor", () => {
         text: "hi",
       });
       if (!("sessionId" in started)) throw new Error("expected a process");
-      const created = await idSupervisor.createSession("/tmp/test");
-      if (!("sessionId" in created)) throw new Error("expected a process");
       const resumed = await idSupervisor.resumeSession(
         "existing-session",
         "/tmp/test",
@@ -220,13 +192,14 @@ describe("Supervisor", () => {
       if (!("sessionId" in resumed)) throw new Error("expected a process");
 
       expect(launches[0]?.newSessionId).toBe(started.sessionId);
-      expect(launches[1]?.newSessionId).toBe(created.sessionId);
-      expect(launches[2]).toMatchObject({
+      expect(launches[1]).toMatchObject({
         resumeSessionId: "existing-session",
       });
-      expect(launches[2]?.newSessionId).toBeUndefined();
+      expect(launches[1]?.newSessionId).toBeUndefined();
       expect(
-        events.filter((event) => event.type === "session-id-remapped"),
+        events.filter(
+          (event) => (event.type as string) === "session-id-remapped",
+        ),
       ).toEqual([]);
     });
 
@@ -294,15 +267,7 @@ describe("Supervisor", () => {
       ).rejects.toThrow(
         'Claude Gateway no longer advertises model "gateway-model"',
       );
-      await expect(
-        gatewaySupervisor.createSession("/tmp/test", undefined, {
-          model: "gateway-model",
-          providerName: "claude-gateway",
-        }),
-      ).rejects.toThrow(
-        'Claude Gateway no longer advertises model "gateway-model"',
-      );
-      expect(getAvailableModels).toHaveBeenCalledTimes(3);
+      expect(getAvailableModels).toHaveBeenCalledTimes(2);
       expect(startSession).toHaveBeenCalledTimes(1);
     });
 
@@ -389,7 +354,11 @@ describe("Supervisor", () => {
         { requireProviderSessionId: true },
       );
 
-      expect(process).toMatchObject({ sessionId: "provider-session-id" });
+      if (!("sessionId" in process)) throw new Error("expected a process");
+      expect(process.sessionId).not.toBe("provider-session-id");
+      expect(await process.waitForProviderSessionId()).toBe(
+        "provider-session-id",
+      );
       expect(consumedMessages).toHaveLength(1);
       expect(providerSupervisor.getAllProcesses()).toEqual([process]);
     });
@@ -578,7 +547,9 @@ describe("Supervisor", () => {
         { requireProviderSessionId: true },
       );
 
-      expect(process).toMatchObject({ sessionId: "goal-session" });
+      if (!("sessionId" in process)) throw new Error("expected a process");
+      expect(process.sessionId).not.toBe("goal-session");
+      expect(await process.waitForProviderSessionId()).toBe("goal-session");
       expect(prompts).toEqual(["/goal ship it"]);
       expect(runProviderCommand).not.toHaveBeenCalled();
       await providerSupervisor.abortProcess(process.id);
@@ -623,28 +594,12 @@ describe("Supervisor", () => {
         { requireProviderSessionId: true },
       );
 
-      expect(process).toMatchObject({ sessionId: "compact-session" });
+      if (!("sessionId" in process)) throw new Error("expected a process");
+      expect(process.sessionId).not.toBe("compact-session");
+      expect(await process.waitForProviderSessionId()).toBe("compact-session");
       expect(runProviderCommand).toHaveBeenCalledWith("compact", "");
       expect(prompts).toEqual([]);
       await providerSupervisor.abortProcess(process.id);
-    });
-
-    it("classifies create-only provider startup rejection as retryable", async () => {
-      const provider = testProvider(async () => {
-        throw new Error("Provider rejected this launch");
-      });
-      const providerSupervisor = new Supervisor({ provider });
-
-      await expect(
-        providerSupervisor.createSession("/tmp/test", undefined, undefined, {
-          retryProviderStartupFailure: true,
-        }),
-      ).rejects.toEqual(
-        expect.objectContaining({
-          name: RetryableSessionLaunchError.name,
-          message: expect.stringContaining("Provider rejected this launch"),
-        }),
-      );
     });
 
     it("encodes projectId correctly", async () => {
@@ -678,11 +633,10 @@ describe("Supervisor", () => {
         getMetadata: vi.fn(() => undefined),
         getGoalCommand: vi.fn(() => undefined),
         recordEffectiveLaunchSettings: vi.fn(async () => undefined),
-        remapSessionId: vi.fn(async () => {}),
         setProvider: vi.fn(async () => {}),
       };
       const supervisorWithEligibility = new Supervisor({
-        sdk: mockSdk,
+        provider: mockSdk,
         idleTimeoutMs: 100,
         sessionMetadataService:
           providerMetadata as unknown as SessionMetadataService,
@@ -708,7 +662,7 @@ describe("Supervisor", () => {
     it("aborts instead of reporting success when eligibility is not durable", async () => {
       mockSdk.addScenario(createMockScenario("sess-failed-eligibility", ""));
       const supervisorWithEligibility = new Supervisor({
-        sdk: mockSdk,
+        provider: mockSdk,
         idleTimeoutMs: 100,
         onSuccessfulProviderSession: async () => {
           throw new Error("disk full");
@@ -743,35 +697,32 @@ describe("Supervisor", () => {
             abort: controlled.finish,
           };
         };
-        for (const legacy of [false, true]) {
-          const providerStart =
-            vi.fn<AgentProvider["startSession"]>(implementation);
-          const sdkStart =
-            vi.fn<RealClaudeSDKInterface["startSession"]>(implementation);
-          const start = legacy ? sdkStart : providerStart;
-          const launchSupervisor = new Supervisor({
-            provider: legacy ? null : testProvider(providerStart),
-            ...(legacy ? { realSdk: { startSession: sdkStart } } : {}),
-          });
-          const selected = { machineControl };
-          const withMessage = await launchSupervisor.startSession(
-            "/tmp/test",
-            { text: "hello" },
-            undefined,
-            selected,
-          );
-          const withoutMessage = await launchSupervisor.createSession(
-            "/tmp/test",
-            undefined,
-            selected,
-          );
-          expect(start).toHaveBeenCalledTimes(2);
-          expect(
-            start.mock.calls.map(([options]) => options.machineControl),
-          ).toEqual([machineControl, machineControl]);
-          await withMessage.abort();
-          await withoutMessage.abort();
-        }
+
+        const providerStart =
+          vi.fn<AgentProvider["startSession"]>(implementation);
+        const start = providerStart;
+        const launchSupervisor = new Supervisor({
+          provider: testProvider(providerStart),
+        });
+        const selected = { machineControl };
+        const withMessage = await launchSupervisor.startSession(
+          "/tmp/test",
+          { text: "hello" },
+          undefined,
+          selected,
+        );
+        const withoutMessage = await launchSupervisor.reactivateSession(
+          "/tmp/test",
+          "installed-existing",
+          undefined,
+          selected,
+        );
+        expect(start).toHaveBeenCalledTimes(2);
+        expect(
+          start.mock.calls.map(([options]) => options.machineControl),
+        ).toEqual([machineControl, machineControl]);
+        await withMessage.abort();
+        await withoutMessage.abort();
       },
     );
 
@@ -791,9 +742,14 @@ describe("Supervisor", () => {
                   undefined,
                   { computerControl: true },
                 )
-              : launchSupervisor.createSession("/tmp/test", undefined, {
-                  computerControl: true,
-                });
+              : launchSupervisor.reactivateSession(
+                  "/tmp/test",
+                  "installed-existing",
+                  undefined,
+                  {
+                    computerControl: true,
+                  },
+                );
           await expect(launched).rejects.toThrow("legacy component is retired");
           expect(start).not.toHaveBeenCalled();
         } finally {
@@ -3979,7 +3935,7 @@ describe("Supervisor", () => {
     it("records a terminated process only once when abort emits completion", async () => {
       let aborted = false;
 
-      const realSdk: RealClaudeSDKInterface = {
+      const realSdk: Pick<AgentProvider, "startSession"> = {
         startSession: async () => {
           async function* iterator() {
             yield {
@@ -4003,7 +3959,7 @@ describe("Supervisor", () => {
       };
 
       const supervisorWithRealSdk = new Supervisor({
-        realSdk,
+        provider: controlledProvider(realSdk),
         idleTimeoutMs: 100,
       });
 
@@ -4020,32 +3976,32 @@ describe("Supervisor", () => {
       ).toHaveLength(1);
     });
 
-    it("passes the global Claude compaction override through the SDK wrapper", async () => {
+    it("passes the global Claude compaction override through the provider adapter", async () => {
       let aborted = false;
-      const startSession = vi.fn<RealClaudeSDKInterface["startSession"]>(
-        async () => {
-          async function* iterator() {
-            yield {
-              type: "system",
-              subtype: "init",
-              session_id: "real-sdk-compact-override",
-            };
-            while (!aborted) {
-              await new Promise((resolve) => setTimeout(resolve, 10));
-            }
-          }
-
-          return {
-            iterator: iterator(),
-            queue: new MessageQueue(),
-            abort: () => {
-              aborted = true;
-            },
+      const startSession = vi.fn<
+        Pick<AgentProvider, "startSession">["startSession"]
+      >(async () => {
+        async function* iterator() {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "real-sdk-compact-override",
           };
-        },
-      );
+          while (!aborted) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        }
+
+        return {
+          iterator: iterator(),
+          queue: new MessageQueue(),
+          abort: () => {
+            aborted = true;
+          },
+        };
+      });
       const supervisorWithRealSdk = new Supervisor({
-        realSdk: { startSession },
+        provider: controlledProvider({ startSession }),
         idleTimeoutMs: 100,
       });
 
@@ -4073,27 +4029,27 @@ describe("Supervisor", () => {
       function createRewindingSupervisor() {
         let aborted = false;
         let armed: typeof pending | undefined = pending;
-        const startSession = vi.fn<RealClaudeSDKInterface["startSession"]>(
-          async (options) => {
-            async function* iterator() {
-              yield {
-                type: "system",
-                subtype: "init",
-                session_id: options.resumeSessionId ?? "fresh",
-              };
-              while (!aborted) {
-                await new Promise((resolve) => setTimeout(resolve, 10));
-              }
-            }
-            return {
-              iterator: iterator(),
-              queue: new MessageQueue(),
-              abort: () => {
-                aborted = true;
-              },
+        const startSession = vi.fn<
+          Pick<AgentProvider, "startSession">["startSession"]
+        >(async (options) => {
+          async function* iterator() {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: options.resumeSessionId ?? "fresh",
             };
-          },
-        );
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue: new MessageQueue(),
+            abort: () => {
+              aborted = true;
+            },
+          };
+        });
         const clearPendingRewind = vi.fn(async () => {
           armed = undefined;
         });
@@ -4104,7 +4060,7 @@ describe("Supervisor", () => {
           clearPendingRewind,
         } as unknown as SessionMetadataService;
         const supervisor = new Supervisor({
-          realSdk: { startSession },
+          provider: controlledProvider({ startSession }),
           sessionMetadataService: service,
           idleTimeoutMs: 100,
         });
@@ -4181,7 +4137,7 @@ describe("Supervisor", () => {
       let aborted = false;
       const interrupt = vi.fn(async () => false);
 
-      const realSdk: RealClaudeSDKInterface = {
+      const realSdk: Pick<AgentProvider, "startSession"> = {
         startSession: async () => {
           async function* iterator() {
             yield {
@@ -4206,7 +4162,7 @@ describe("Supervisor", () => {
       };
 
       const supervisorWithRealSdk = new Supervisor({
-        realSdk,
+        provider: controlledProvider(realSdk),
         idleTimeoutMs: 100,
       });
 
@@ -4248,7 +4204,7 @@ describe("Supervisor", () => {
       let aborted = false;
       const interrupt = vi.fn(() => new Promise<boolean>(() => {}));
 
-      const realSdk: RealClaudeSDKInterface = {
+      const realSdk: Pick<AgentProvider, "startSession"> = {
         startSession: async () => {
           const queue = new MessageQueue();
           async function* iterator() {
@@ -4275,7 +4231,7 @@ describe("Supervisor", () => {
       };
 
       const supervisorWithRealSdk = new Supervisor({
-        realSdk,
+        provider: controlledProvider(realSdk),
         idleTimeoutMs: 100,
         interruptTimeoutMs: 10,
       });
@@ -4318,7 +4274,7 @@ describe("Supervisor", () => {
       const aborts: Array<() => void> = [];
       const interrupt = vi.fn(async () => false);
 
-      const realSdk: RealClaudeSDKInterface = {
+      const realSdk: Pick<AgentProvider, "startSession"> = {
         startSession: async (options) => {
           startCount++;
           const run = { aborted: false };
@@ -4352,7 +4308,7 @@ describe("Supervisor", () => {
       };
 
       const supervisorWithRealSdk = new Supervisor({
-        realSdk,
+        provider: controlledProvider(realSdk),
         idleTimeoutMs: 100,
       });
 
@@ -4405,7 +4361,7 @@ describe("Supervisor", () => {
       const aborts: Array<() => void> = [];
       const interrupt = vi.fn(async () => false);
 
-      const realSdk: RealClaudeSDKInterface = {
+      const realSdk: Pick<AgentProvider, "startSession"> = {
         startSession: async (options) => {
           startCount++;
           const run = { aborted: false };
@@ -4440,7 +4396,7 @@ describe("Supervisor", () => {
       };
 
       const supervisorWithRealSdk = new Supervisor({
-        realSdk,
+        provider: controlledProvider(realSdk),
         idleTimeoutMs: 100,
       });
 
@@ -4494,7 +4450,7 @@ describe("Supervisor", () => {
       const lifecycle: string[] = [];
       const interrupt = vi.fn(async () => false);
 
-      const realSdk: RealClaudeSDKInterface = {
+      const realSdk: Pick<AgentProvider, "startSession"> = {
         startSession: async (options) => {
           startCount++;
           const runNumber = startCount;
@@ -4531,7 +4487,7 @@ describe("Supervisor", () => {
       };
 
       const supervisorWithRealSdk = new Supervisor({
-        realSdk,
+        provider: controlledProvider(realSdk),
         idleTimeoutMs: 100,
       });
 
@@ -5363,7 +5319,7 @@ describe("Supervisor", () => {
         text: request.strategy === "fork" ? "forked summary" : "",
       }));
       const forkSession = vi.fn(async () => ({
-        sessionId: "revived-recap-fork",
+        nativeSessionId: parseNativeSessionId("revived-recap-fork"),
       }));
       // Message-less resume: yields init then idles, so nothing streams and the
       // in-memory recap buffer stays empty (as for a process revived for recap).
@@ -5476,7 +5432,7 @@ describe("Supervisor", () => {
         text: request.strategy === "fork" ? "forked summary" : "",
       }));
       const forkSession = vi.fn(async () => ({
-        sessionId: "since-last-recap-fork",
+        nativeSessionId: parseNativeSessionId("since-last-recap-fork"),
       }));
       const startSession = vi.fn(
         async (options: Parameters<AgentProvider["startSession"]>[0]) => {
@@ -5545,7 +5501,6 @@ describe("Supervisor", () => {
           effort: null,
         }),
         getRecapMessages: () => [...persistedRecaps],
-        remapSessionId: async () => {},
         updateMetadata: async () => {},
         setProvider: async () => {},
         setExecutor: async () => {},
@@ -5678,7 +5633,7 @@ describe("Supervisor", () => {
           sessionId: "since-last-recap-fork",
           title: "Recap generator",
           archived: true,
-          forkedFromSessionId: "since-last-recap",
+          forkedFromSessionId: process.sessionId,
         }),
       );
 
@@ -5828,7 +5783,7 @@ describe("Supervisor", () => {
           expect(command).toHaveBeenCalledWith("goal", "Keep working");
           expect(result.state.type).toBe("idle");
           expect(addLocalCommandMessage).toHaveBeenCalledWith(
-            "goal-session",
+            result.sessionId,
             expect.objectContaining({
               subtype: "local_command",
               details: ["Keep working", "Goal set"],
@@ -6291,7 +6246,7 @@ describe("Supervisor", () => {
       let aborted = false;
 
       try {
-        const realSdk: RealClaudeSDKInterface = {
+        const realSdk: Pick<AgentProvider, "startSession"> = {
           startSession: async () => {
             const queue = new MessageQueue();
             async function* iterator() {
@@ -6323,7 +6278,7 @@ describe("Supervisor", () => {
         };
 
         const supervisorWithPatientQueue = new Supervisor({
-          realSdk,
+          provider: controlledProvider(realSdk),
           idleTimeoutMs: 100,
         });
 
@@ -6479,7 +6434,9 @@ describe("Supervisor", () => {
 
       try {
         const supervisorWithoutHeartbeat = new Supervisor({
-          realSdk: { startSession: async () => ({}) as never },
+          provider: controlledProvider({
+            startSession: async () => ({}) as never,
+          }),
         });
 
         await vi.advanceTimersByTimeAsync(10 * 60_000);
@@ -6507,7 +6464,7 @@ describe("Supervisor", () => {
       }));
 
       try {
-        const realSdk: RealClaudeSDKInterface = {
+        const realSdk: Pick<AgentProvider, "startSession"> = {
           startSession: async () => {
             async function* iterator() {
               yield {
@@ -6534,7 +6491,7 @@ describe("Supervisor", () => {
         };
 
         const supervisorWithProbe = new Supervisor({
-          realSdk,
+          provider: controlledProvider(realSdk),
           idleTimeoutMs: 100,
         });
 
@@ -6579,7 +6536,7 @@ describe("Supervisor", () => {
           throw new Error("not started in this test");
         }),
         forkSession: async () => ({
-          sessionId: "sess-fork",
+          nativeSessionId: parseNativeSessionId("sess-fork"),
           filePath: "/tmp/test/sess-fork.jsonl",
         }),
       } as unknown as AgentProvider;
@@ -6607,7 +6564,7 @@ describe("Supervisor", () => {
       eventBus.subscribe((event) => events.push(event));
 
       const supervisorWithBus = new Supervisor({
-        sdk: mockSdk,
+        provider: mockSdk,
         idleTimeoutMs: 100,
         eventBus,
       });
@@ -6641,7 +6598,7 @@ describe("Supervisor", () => {
       const events: BusEvent[] = [];
       eventBus.subscribe((event) => events.push(event));
       const supervisorWithBus = new Supervisor({
-        sdk: mockSdk,
+        provider: mockSdk,
         idleTimeoutMs: 100,
         eventBus,
       });
@@ -6668,7 +6625,7 @@ describe("Supervisor", () => {
       eventBus.subscribe((event) => events.push(event));
 
       const supervisorWithBus = new Supervisor({
-        sdk: mockSdk,
+        provider: mockSdk,
         idleTimeoutMs: 100,
         eventBus,
       });
@@ -6747,7 +6704,7 @@ describe("Supervisor", () => {
       const events: BusEvent[] = [];
       eventBus.subscribe((event) => events.push(event));
 
-      const realSdk: RealClaudeSDKInterface = {
+      const realSdk: Pick<AgentProvider, "startSession"> = {
         startSession: async () => {
           async function* iterator() {
             yield {
@@ -6766,7 +6723,7 @@ describe("Supervisor", () => {
       };
 
       const supervisorWithBus = new Supervisor({
-        realSdk,
+        provider: controlledProvider(realSdk),
         idleTimeoutMs: 100,
         eventBus,
       });
@@ -6787,9 +6744,11 @@ describe("Supervisor", () => {
       expect(created?.session.projectName).toBe("test");
       expect(created?.session.createdAt).toEqual(expect.any(String));
       expect(created?.session.updatedAt).toEqual(expect.any(String));
-      expect(events.some((event) => event.type === "session-id-remapped")).toBe(
-        false,
-      );
+      expect(
+        events.some(
+          (event) => (event.type as string) === "session-id-remapped",
+        ),
+      ).toBe(false);
     });
 
     it("names a new session's project by its chosen name, following a rename", async () => {
@@ -6805,7 +6764,7 @@ describe("Supervisor", () => {
         const events: BusEvent[] = [];
         eventBus.subscribe((event) => events.push(event));
         const supervisorWithNames = new Supervisor({
-          sdk: new MockClaudeSDK(),
+          provider: new ScriptedClaudeProvider(),
           // Keep the normal lifetime: this checks names, not idle eviction.
           eventBus,
           projectDisplayName: (projectPath) =>
@@ -6842,14 +6801,13 @@ describe("Supervisor", () => {
       }
     });
 
-    it("emits a public remap when init follows the provisional ID timeout", async () => {
+    it("retains its public id when native init follows the startup wait", async () => {
       vi.useFakeTimers();
       try {
         const controller = createControllableIterator();
         const eventBus = new EventBus();
         const events: BusEvent[] = [];
         eventBus.subscribe((event) => events.push(event));
-        const remapSessionId = vi.fn(async () => {});
         const sessionMetadataService = {
           getMetadata: () => undefined,
           recordEffectiveLaunchSettings: async () => ({
@@ -6861,12 +6819,11 @@ describe("Supervisor", () => {
             thinking: null,
             effort: null,
           }),
-          remapSessionId,
         } as unknown as ConstructorParameters<
           typeof Supervisor
         >[0]["sessionMetadataService"];
 
-        const realSdk: RealClaudeSDKInterface = {
+        const realSdk: Pick<AgentProvider, "startSession"> = {
           startSession: async () => ({
             iterator: controller.iterator,
             queue: new MessageQueue(),
@@ -6874,8 +6831,8 @@ describe("Supervisor", () => {
           }),
         };
         const supervisorWithBus = new Supervisor({
-          realSdk,
-          idleTimeoutMs: 100,
+          provider: controlledProvider(realSdk),
+          idleTimeoutMs: 10 * 60_000,
           eventBus,
           sessionMetadataService,
         });
@@ -6903,26 +6860,21 @@ describe("Supervisor", () => {
         });
         await vi.advanceTimersByTimeAsync(0);
 
-        expect(
-          events.find((event) => event.type === "session-id-remapped"),
-        ).toMatchObject({
-          type: "session-id-remapped",
-          oldSessionId: provisionalSessionId,
-          newSessionId: "canonical-session",
-          projectId: encodeProjectId("/tmp/test"),
-          processId: process.id,
-          provider: "claude",
-        });
+        expect(process.sessionId).toBe(provisionalSessionId);
+        expect(await process.waitForProviderSessionId()).toBe(
+          "canonical-session",
+        );
         expect(
           supervisorWithBus.getProcessForSession(provisionalSessionId),
         ).toBe(process);
         expect(
           supervisorWithBus.getProcessForSession("canonical-session"),
-        ).toBe(process);
-        expect(remapSessionId).toHaveBeenCalledWith(
-          provisionalSessionId,
-          "canonical-session",
-        );
+        ).toBeUndefined();
+        expect(
+          events.filter(
+            (event) => (event.type as string) === "session-id-remapped",
+          ),
+        ).toEqual([]);
 
         controller.finish();
         await vi.advanceTimersByTimeAsync(0);
@@ -6938,7 +6890,7 @@ describe("Supervisor", () => {
         const events: BusEvent[] = [];
         eventBus.subscribe((event) => events.push(event));
 
-        const realSdk: RealClaudeSDKInterface = {
+        const realSdk: Pick<AgentProvider, "startSession"> = {
           startSession: async () => {
             async function* iterator() {
               yield {
@@ -6973,13 +6925,13 @@ describe("Supervisor", () => {
         );
 
         const supervisorWithBus = new Supervisor({
-          realSdk,
+          provider: controlledProvider(realSdk),
           idleTimeoutMs: 100,
           eventBus,
           onSessionSummary,
         });
 
-        await supervisorWithBus.startSession("/tmp/test", {
+        const process = await supervisorWithBus.startSession("/tmp/test", {
           text: "Seed title",
         });
 
@@ -6992,7 +6944,7 @@ describe("Supervisor", () => {
         const updated = events.find(
           (event): event is Extract<BusEvent, { type: "session-updated" }> =>
             event.type === "session-updated" &&
-            event.sessionId === "reconcile-session-1",
+            event.sessionId === process.sessionId,
         );
         expect(updated).toBeDefined();
         expect(updated?.title).toBe("Reconciled title");
@@ -7013,14 +6965,21 @@ describe("Supervisor", () => {
       const events: BusEvent[] = [];
       eventBus.subscribe((event) => events.push(event));
 
-      const realSdk: RealClaudeSDKInterface = {
-        startSession: async () => {
+      let publicId: string | undefined;
+      let fail!: () => void;
+      const failure = new Promise<void>((resolve) => {
+        fail = resolve;
+      });
+      const realSdk: Pick<AgentProvider, "startSession"> = {
+        startSession: async (options) => {
+          publicId = options.newSessionId;
           async function* iterator() {
             yield {
               type: "system",
               subtype: "init",
               session_id: "terminated-session-1",
             };
+            await failure;
             throw new Error("process exited");
           }
 
@@ -7033,16 +6992,16 @@ describe("Supervisor", () => {
       };
 
       const supervisorWithBus = new Supervisor({
-        realSdk,
+        provider: controlledProvider(realSdk),
         idleTimeoutMs: 100,
         eventBus,
       });
 
-      await expect(
-        supervisorWithBus.startSession("/tmp/test", {
-          text: "Trigger failure",
-        }),
-      ).rejects.toThrow(/Process terminated|Failed to queue initial message/);
+      const process = await supervisorWithBus.startSession("/tmp/test", {
+        text: "Trigger failure",
+      });
+      expect(process.sessionId).toBe(publicId);
+      fail();
 
       await vi.waitFor(() => {
         expect(
@@ -7056,24 +7015,24 @@ describe("Supervisor", () => {
       );
       expect(terminated).toMatchObject({
         type: "process-terminated",
-        sessionId: "terminated-session-1",
+        sessionId: publicId,
         reason: "underlying process terminated",
       });
       expect(errorLog).toHaveBeenCalledWith(
         expect.objectContaining({
           event: "process_error",
-          sessionId: "terminated-session-1",
+          sessionId: publicId,
           errorMessage: "process exited",
         }),
-        "Process error: terminated-session-1 - process exited",
+        `Process error: ${publicId} - process exited`,
       );
       expect(warn).toHaveBeenCalledWith(
         expect.objectContaining({
           event: "process_terminated",
-          sessionId: "terminated-session-1",
+          sessionId: publicId,
           reason: "underlying process terminated",
         }),
-        "Process terminated: terminated-session-1 - underlying process terminated",
+        `Process terminated: ${publicId} - underlying process terminated`,
       );
       errorLog.mockRestore();
       warn.mockRestore();
@@ -7119,7 +7078,7 @@ describe("Supervisor", () => {
           events.push(event);
         });
         const supervisorWithAliveProcess = new Supervisor({
-          realSdk: { startSession },
+          provider: controlledProvider({ startSession }),
           idleTimeoutMs: 100,
           eventBus,
         });
@@ -7136,22 +7095,20 @@ describe("Supervisor", () => {
 
         expect(process.hasUnverifiedProviderOwnership).toBe(true);
         expect(
-          supervisorWithAliveProcess.getProcessForSession(
-            "idle-alive-session-1",
-          ),
+          supervisorWithAliveProcess.getProcessForSession(process.sessionId),
         ).toBe(process);
         expect(
           events.some(
             (event) =>
               event.type === "session-status-changed" &&
-              event.sessionId === "idle-alive-session-1" &&
+              event.sessionId === process.sessionId &&
               event.ownership.owner === "none",
           ),
         ).toBe(false);
         await expect(
           supervisorWithAliveProcess.reactivateSession(
             "/tmp/test",
-            "idle-alive-session-1",
+            process.sessionId,
           ),
         ).rejects.toThrow(
           /prior provider teardown is in progress or unverified/,
@@ -7162,19 +7119,17 @@ describe("Supervisor", () => {
         await vi.advanceTimersByTimeAsync(0);
 
         expect(
-          supervisorWithAliveProcess.getProcessForSession(
-            "idle-alive-session-1",
-          ),
+          supervisorWithAliveProcess.getProcessForSession(process.sessionId),
         ).toBeUndefined();
         const abortedIndex = events.findIndex(
           (event) =>
             event.type === "session-aborted" &&
-            event.sessionId === "idle-alive-session-1",
+            event.sessionId === process.sessionId,
         );
         const releasedIndex = events.findIndex(
           (event) =>
             event.type === "session-status-changed" &&
-            event.sessionId === "idle-alive-session-1" &&
+            event.sessionId === process.sessionId &&
             event.ownership.owner === "none",
         );
         expect(abortedIndex).toBeGreaterThanOrEqual(0);
@@ -7226,7 +7181,7 @@ describe("Supervisor", () => {
           events.push(event);
         });
         const supervisorWithFailedAbort = new Supervisor({
-          realSdk: { startSession },
+          provider: controlledProvider({ startSession }),
           idleTimeoutMs: 100,
           eventBus,
         });
@@ -7248,22 +7203,20 @@ describe("Supervisor", () => {
           reason: "idle reap provider teardown failed",
         });
         expect(
-          supervisorWithFailedAbort.getProcessForSession(
-            "idle-failed-abort-session",
-          ),
+          supervisorWithFailedAbort.getProcessForSession(process.sessionId),
         ).toBe(process);
         expect(
           events.some(
             (event) =>
               event.type === "session-status-changed" &&
-              event.sessionId === "idle-failed-abort-session" &&
+              event.sessionId === process.sessionId &&
               event.ownership.owner === "none",
           ),
         ).toBe(false);
         await expect(
           supervisorWithFailedAbort.reactivateSession(
             "/tmp/test",
-            "idle-failed-abort-session",
+            process.sessionId,
           ),
         ).rejects.toThrow(
           /prior provider teardown is in progress or unverified/,
@@ -7280,26 +7233,24 @@ describe("Supervisor", () => {
 
         expect(abort).toHaveBeenCalledTimes(2);
         expect(
-          supervisorWithFailedAbort.getProcessForSession(
-            "idle-failed-abort-session",
-          ),
+          supervisorWithFailedAbort.getProcessForSession(process.sessionId),
         ).toBeUndefined();
         expect(
           events.filter(
             (event) =>
               event.type === "session-status-changed" &&
-              event.sessionId === "idle-failed-abort-session" &&
+              event.sessionId === process.sessionId &&
               event.ownership.owner === "none",
           ),
         ).toHaveLength(1);
         expect(errorLog).toHaveBeenCalledWith(
           expect.objectContaining({
             event: "lifecycle_teardown_failed",
-            sessionId: "idle-failed-abort-session",
+            sessionId: process.sessionId,
             reason: "idle reap provider teardown failed",
             errorMessage: "provider refused shutdown",
           }),
-          "Provider teardown remains unverified: idle-failed-abort-session",
+          `Provider teardown remains unverified: ${process.sessionId}`,
         );
       } finally {
         errorLog.mockRestore();
@@ -7374,7 +7325,10 @@ describe("Supervisor", () => {
           }),
         });
 
-        const created = await supervisorWithProvider.createSession("/tmp/test");
+        const created = await supervisorWithProvider.reactivateSession(
+          "/tmp/test",
+          "keepalive-existing",
+        );
         if ("queued" in created || "error" in created) {
           throw new Error("Expected process");
         }
@@ -7460,7 +7414,10 @@ describe("Supervisor", () => {
           }),
         });
 
-        const created = await supervisorWithProvider.createSession("/tmp/test");
+        const created = await supervisorWithProvider.reactivateSession(
+          "/tmp/test",
+          "keepalive-existing",
+        );
         if ("queued" in created || "error" in created) {
           throw new Error("Expected process");
         }
@@ -7496,14 +7453,16 @@ describe("Supervisor", () => {
       try {
         let aborted = false;
 
-        const realSdk: RealClaudeSDKInterface = {
+        const realSdk: Pick<AgentProvider, "startSession"> = {
           startSession: async () => {
+            const queue = new MessageQueue();
             async function* iterator() {
               yield {
                 type: "system",
                 subtype: "init",
                 session_id: "idle-owned-safe-restart-session",
               };
+              await queue[Symbol.asyncIterator]().next();
               yield {
                 type: "result",
                 session_id: "idle-owned-safe-restart-session",
@@ -7516,7 +7475,7 @@ describe("Supervisor", () => {
 
             return {
               iterator: iterator(),
-              queue: new MessageQueue(),
+              queue,
               abort: () => {
                 aborted = true;
               },
@@ -7526,7 +7485,7 @@ describe("Supervisor", () => {
         };
 
         const supervisorWithIdleProcess = new Supervisor({
-          realSdk,
+          provider: controlledProvider(realSdk),
           idleTimeoutMs: 10 * 60 * 1000,
         });
 
@@ -7563,7 +7522,7 @@ describe("Supervisor", () => {
         let aborted = false;
         const queue = new MessageQueue();
 
-        const realSdk: RealClaudeSDKInterface = {
+        const realSdk: Pick<AgentProvider, "startSession"> = {
           startSession: async () => {
             async function* iterator() {
               yield {
@@ -7589,7 +7548,9 @@ describe("Supervisor", () => {
           },
         };
 
-        const supervisorWithReloadSafeProcess = new Supervisor({ realSdk });
+        const supervisorWithReloadSafeProcess = new Supervisor({
+          provider: controlledProvider(realSdk),
+        });
         const process = await supervisorWithReloadSafeProcess.startSession(
           "/tmp/test",
           { text: "keep running across reload" },
@@ -7641,7 +7602,7 @@ describe("Supervisor", () => {
           resolveAbort = resolve;
         });
 
-        const realSdk: RealClaudeSDKInterface = {
+        const realSdk: Pick<AgentProvider, "startSession"> = {
           startSession: async () => {
             async function* iterator() {
               yield {
@@ -7665,7 +7626,7 @@ describe("Supervisor", () => {
         };
 
         const supervisorWithUnknownLiveness = new Supervisor({
-          realSdk,
+          provider: controlledProvider(realSdk),
           idleTimeoutMs: 100,
         });
 
@@ -7680,9 +7641,7 @@ describe("Supervisor", () => {
 
         expect(process.state.type).toBe("in-turn");
         expect(
-          supervisorWithUnknownLiveness.getProcessForSession(
-            "silent-unknown-liveness-session",
-          ),
+          supervisorWithUnknownLiveness.getProcessForSession(process.sessionId),
         ).toBe(process);
         expect(aborted).toBe(false);
 

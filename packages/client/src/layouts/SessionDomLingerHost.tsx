@@ -22,6 +22,10 @@ import type { SessionNavigationIntent } from "../components/SessionListItem";
 import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
 import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
+import {
+  sessionViewerSearch,
+  viewerYaSessionId,
+} from "../lib/sessionViewerUrl";
 
 const SESSION_DOM_LINGER_TTL_MS = 60_000;
 const SESSION_DOM_LINGER_MAX_PARKED_ELEMENTS = 5_000;
@@ -54,6 +58,7 @@ interface PendingSessionDomLingerSwap {
 
 export interface SessionDomLingerRenderSignal {
   current: boolean;
+  activationVersion?: number;
   supportsCompaction: boolean;
 }
 
@@ -119,7 +124,10 @@ function SessionDomLingerLayer({
   const [progressiveRenderPauseSignal] = useState(() => ({
     current: parked,
     supportsCompaction: false,
+    activationVersion: 0,
   }));
+  if (progressiveRenderPauseSignal.current !== parked)
+    progressiveRenderPauseSignal.activationVersion++;
   progressiveRenderPauseSignal.current = parked;
   const [committedSubtreeParked, setCommittedSubtreeParked] =
     useState(subtreeParked);
@@ -211,12 +219,13 @@ function createSessionDomLingerKey(options: {
     encodeURIComponent(options.sourceKey),
     encodeURIComponent(options.projectId),
     encodeURIComponent(options.sessionId),
-    encodeURIComponent(options.search),
+    encodeURIComponent(sessionViewerSearch(options.search)),
   ].join(":");
 }
 
 function readSessionRouteFromPathname(
   pathname: string,
+  search: string,
 ): { projectId: string; sessionId: string } | null {
   const match = pathname.match(
     /(?:^|\/)projects\/([^/]+)\/sessions\/([^/]+)\/?$/,
@@ -226,7 +235,7 @@ function readSessionRouteFromPathname(
   }
   return {
     projectId: decodeURIComponent(match[1]),
-    sessionId: decodeURIComponent(match[2]),
+    sessionId: viewerYaSessionId(decodeURIComponent(match[2]), search),
   };
 }
 
@@ -254,8 +263,8 @@ export function SessionDomLingerHost({
   const navigationContext = useContext(UNSAFE_NavigationContext);
   const sourceKey = useClientSummarySourceKey();
   const currentSessionMatch = useMemo(
-    () => readSessionRouteFromPathname(location.pathname),
-    [location.pathname],
+    () => readSessionRouteFromPathname(location.pathname, location.search),
+    [location.pathname, location.search],
   );
   const currentSessionRoute = useMemo<SessionDomLingerRoute | null>(() => {
     if (!currentSessionMatch) {
@@ -275,8 +284,11 @@ export function SessionDomLingerHost({
       location: {
         hash: location.hash,
         key: location.key,
-        pathname: location.pathname,
-        search: location.search,
+        pathname: location.pathname.replace(
+          /[^/]+\/?$/,
+          encodeURIComponent(sessionId),
+        ),
+        search: sessionViewerSearch(location.search),
         state: location.state,
       },
       status: "active",
@@ -477,6 +489,9 @@ export function SessionDomLingerHost({
       for (const [key, layer] of sessionLayerRefs.current) {
         const active = key === targetKey;
         const { element, progressiveRenderPauseSignal } = layer;
+        if (progressiveRenderPauseSignal.current !== !active)
+          progressiveRenderPauseSignal.activationVersion =
+            (progressiveRenderPauseSignal.activationVersion ?? 0) + 1;
         progressiveRenderPauseSignal.current = !active;
         element.classList.toggle("is-active", active);
         element.classList.toggle("is-parked", !active);

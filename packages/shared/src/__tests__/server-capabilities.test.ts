@@ -29,9 +29,134 @@ import {
   hasServerCapabilityAdvertisement,
   negotiateServerCapabilityEncoding,
   serverHasCapability,
+  getSessionTextCreationCapability,
 } from "../index.js";
 
 describe("server capability advertisements", () => {
+  it("does not infer full admission from older text or attachment contracts", () => {
+    const name = CAPABILITY_ID_ALLOCATIONS.sessionCreationAdmission.name;
+    for (const current of [
+      "0.8.0",
+      "0.8.1",
+      "0.9.0",
+      "0.9.1",
+      "0.9.2",
+      "0.10.0",
+      "0.10.1",
+      "0.10.2",
+      "0.11.0",
+      "0.11.1",
+    ])
+      expect(serverHasCapability({ current }, name)).toBe(false);
+    expect(
+      serverHasCapability(
+        {
+          capabilities: [
+            "session-creation-claude-text",
+            "session-creation-staged-attachments",
+          ],
+        },
+        name,
+      ),
+    ).toBe(false);
+    expect(serverHasCapability({ capabilities: [name] }, name)).toBe(true);
+  });
+  it("keeps attachment acceptance independent of text support across the creation release corpus", () => {
+    const name = CAPABILITY_ID_ALLOCATIONS.stagedSessionCreation.name;
+    for (const current of [
+      "0.8.0",
+      "0.8.1",
+      "0.9.0",
+      "0.9.1",
+      "0.9.2",
+      "0.10.0",
+      "0.10.1",
+      "0.10.2",
+      "0.11.0",
+      "99.0.0",
+    ]) {
+      const text = [
+        CAPABILITY_ID_ALLOCATIONS.claudeTextCreation.name,
+        CAPABILITY_ID_ALLOCATIONS.codexTextCreation.name,
+      ];
+      expect(
+        serverHasCapability(
+          { current, ...encodeVersionedServerCapabilities(text, current) },
+          name,
+        ),
+      ).toBe(false);
+      expect(
+        serverHasCapability(
+          {
+            current,
+            ...encodeVersionedServerCapabilities([...text, name], current),
+          },
+          name,
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("requires the Pi-specific text creation bit across supported releases", () => {
+    const name = getSessionTextCreationCapability("pi")!.name;
+    expect(name).toBe(CAPABILITY_ID_ALLOCATIONS.piTextCreation.name);
+    expect(getSessionTextCreationCapability("unqualified")).toBeUndefined();
+    for (const current of ["0.8.0", "0.9.0", "0.10.0", "0.11.0", "99.0.0"]) {
+      expect(serverHasCapability({ current }, name)).toBe(false);
+      expect(
+        serverHasCapability(
+          {
+            current,
+            ...encodeVersionedServerCapabilities(
+              [
+                CAPABILITY_ID_ALLOCATIONS.codexTextCreation.name,
+                CAPABILITY_ID_ALLOCATIONS.claudeTextCreation.name,
+              ],
+              current,
+            ),
+          },
+          name,
+        ),
+      ).toBe(false);
+      expect(
+        serverHasCapability(
+          { current, ...encodeVersionedServerCapabilities([name], current) },
+          name,
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("requires the OpenCode-specific text creation bit across supported releases", () => {
+    const name = getSessionTextCreationCapability("opencode")!.name;
+    expect(name).toBe(CAPABILITY_ID_ALLOCATIONS.opencodeTextCreation.name);
+    expect(getSessionTextCreationCapability("unqualified")).toBeUndefined();
+    for (const current of ["0.8.0", "0.9.0", "0.10.0", "0.11.0", "99.0.0"]) {
+      expect(serverHasCapability({ current }, name)).toBe(false);
+      expect(
+        serverHasCapability(
+          {
+            current,
+            ...encodeVersionedServerCapabilities(
+              [
+                CAPABILITY_ID_ALLOCATIONS.codexTextCreation.name,
+                CAPABILITY_ID_ALLOCATIONS.claudeTextCreation.name,
+              ],
+              current,
+            ),
+          },
+          name,
+        ),
+      ).toBe(false);
+      expect(
+        serverHasCapability(
+          { current, ...encodeVersionedServerCapabilities([name], current) },
+          name,
+        ),
+      ).toBe(true);
+    }
+  });
+
   it("requires separate explicit router recovery support, including on an older router-capable server", () => {
     const base = CAPABILITY_ID_ALLOCATIONS.agentAuthRouter.name;
     const recovery = CAPABILITY_ID_ALLOCATIONS.agentAuthRouterRecovery.name;

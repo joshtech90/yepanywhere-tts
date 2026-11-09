@@ -3,6 +3,7 @@
  */
 
 import {
+  parseSteeringModeSettings,
   NEW_SESSION_BOOTSTRAP,
   CODEX_REASONING_SUMMARIES,
   DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
@@ -46,6 +47,17 @@ import {
   parseSpeechVoiceBackends,
 } from "@yep-anywhere/shared";
 import { Hono, type Context } from "hono";
+import {
+  isAllowedHost,
+  isAllowedOrigin,
+  wouldAllowHost,
+  wouldAllowOrigin,
+} from "../middleware/allowed-hosts.js";
+import {
+  allowedHostsChangeImpact,
+  refuseUnconfirmedImpact,
+} from "../network/connection-impact.js";
+import { getRequestConnectionPath } from "../network/connection-path.js";
 import {
   parseRendezSettings,
   type RendezWatchStatus,
@@ -720,6 +732,20 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
         } else if (typeof body.allowedHosts === "string") {
           updates.allowedHosts = body.allowedHosts;
         }
+        const refusal = refuseUnconfirmedImpact(
+          c,
+          allowedHostsChangeImpact(
+            getRequestConnectionPath(c),
+            c.req.header("origin"),
+            { host: isAllowedHost, origin: isAllowedOrigin },
+            {
+              host: (host) => wouldAllowHost(host, updates.allowedHosts),
+              origin: (origin) =>
+                wouldAllowOrigin(origin, updates.allowedHosts),
+            },
+          ),
+        );
+        if (refusal) return refusal;
       }
 
       // Handle fileAccess object (checkbox model; undefined/null/"" = secure defaults)
@@ -1146,6 +1172,16 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
         }
       }
 
+      if ("steeringModes" in body) {
+        const parsed = parseSteeringModeSettings(body.steeringModes);
+        if (!parsed)
+          return c.json(
+            { error: "steeringModes must map codex to gentle or immediate" },
+            400,
+          );
+        updates.steeringModes = parsed;
+      }
+
       if ("codexCyberAccessProgram" in body) {
         if (
           body.codexCyberAccessProgram === undefined ||
@@ -1181,6 +1217,23 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
         } else {
           return c.json(
             { error: "codexUpdatePolicy must be one of: auto, notify, off" },
+            400,
+          );
+        }
+      }
+
+      if ("codexRequiredUpdateDismissed" in body) {
+        const dismissed = body.codexRequiredUpdateDismissed;
+        if (dismissed === undefined || dismissed === null) {
+          updates.codexRequiredUpdateDismissed = undefined;
+        } else if (
+          typeof dismissed === "string" &&
+          /^\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(dismissed)
+        ) {
+          updates.codexRequiredUpdateDismissed = dismissed;
+        } else {
+          return c.json(
+            { error: "codexRequiredUpdateDismissed must be a version or null" },
             400,
           );
         }

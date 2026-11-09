@@ -1,4 +1,15 @@
+import { SESSION_RELATIONSHIPS_SCHEMA } from "./migrations/026-session-relationships.js";
+import { RELATIONSHIP_PENDING_SCHEMA } from "./migrations/027-relationship-pending.js";
+import { ANTIGRAVITY_NATIVE_ALLOCATIONS_SCHEMA } from "./migrations/024-antigravity-native-allocations.js";
+import { SESSION_SUMMARY_INDEX_SCHEMA } from "./migrations/025-session-summary-index.js";
+import { CREATION_INPUT_EXPECTATION_SCHEMA } from "./migrations/023-creation-input-expectation.js";
+import { CREATION_ATTACHMENT_CAPACITY_SCHEMA } from "./migrations/022-creation-attachment-capacity.js";
+import { SESSION_CREATION_INPUT_SCHEMA } from "./migrations/021-session-creation-input.js";
+import { NATIVE_SESSION_ALLOCATIONS_SCHEMA } from "./migrations/020-native-session-allocations.js";
+import { SESSION_CREATION_GENERATION_SCHEMA } from "./migrations/019-session-creation-generation.js";
+import { SESSION_CREATIONS_SCHEMA } from "./migrations/018-session-creations.js";
 import { AGENT_API_RECEIPTS_SCHEMA } from "./migrations/014-agent-api-receipts.js";
+import { SESSION_IDENTITIES_SCHEMA } from "./migrations/017-session-identities.js";
 import { PEER_OUTBOUND_SCHEMA } from "./migrations/015-peer-outbound.js";
 import { PEER_RECEIPT_OBSERVATION_SCHEMA } from "./migrations/016-peer-receipt-observation.js";
 import { PUBLIC_SERVER_IDENTITY_SCHEMA } from "./migrations/013-public-server-identity.js";
@@ -52,6 +63,17 @@ export const DISCOVERY_MIGRATIONS: readonly DiscoveryMigration[] = [
   { version: 14, sql: AGENT_API_RECEIPTS_SCHEMA },
   { version: 15, sql: PEER_OUTBOUND_SCHEMA },
   { version: 16, sql: PEER_RECEIPT_OBSERVATION_SCHEMA },
+  { version: 17, sql: SESSION_IDENTITIES_SCHEMA },
+  { version: 18, sql: SESSION_CREATIONS_SCHEMA },
+  { version: 19, sql: SESSION_CREATION_GENERATION_SCHEMA },
+  { version: 20, sql: NATIVE_SESSION_ALLOCATIONS_SCHEMA },
+  { version: 21, sql: SESSION_CREATION_INPUT_SCHEMA },
+  { version: 22, sql: CREATION_ATTACHMENT_CAPACITY_SCHEMA },
+  { version: 23, sql: CREATION_INPUT_EXPECTATION_SCHEMA },
+  { version: 24, sql: ANTIGRAVITY_NATIVE_ALLOCATIONS_SCHEMA },
+  { version: 25, sql: SESSION_SUMMARY_INDEX_SCHEMA },
+  { version: 26, sql: SESSION_RELATIONSHIPS_SCHEMA },
+  { version: 27, sql: RELATIONSHIP_PENDING_SCHEMA },
 ];
 
 /** Construct fixtures with the actual historical schema, never a parallel SQL copy. */
@@ -129,7 +151,7 @@ export class DiscoveryStorageError extends Error {
 /**
  * Open YA's required SQLite database below the data directory, or throw a
  * {@link DiscoveryStorageError}. There is no degraded mode: session metadata
- * lives here (topics/optional-sqlite.md).
+ * lives here (topics/required-sqlite.md).
  */
 export function openDiscoveryDatabase(options: {
   dataDir: string;

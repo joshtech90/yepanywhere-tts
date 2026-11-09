@@ -69,6 +69,12 @@ export interface AgentAuthRouterOverview {
   admissionRefresh?: boolean;
   /** YA and AAR both validate tier-aware account selection. Absent means unavailable. */
   serviceTierSelection?: boolean;
+  /**
+   * Claude discovery when YA and AAR (`gateway-token-header-v1`) can keep
+   * claude.ai connectors in a routed session. `login` is this computer's
+   * claude.ai login, null without one. Absent means unavailable.
+   */
+  claudeAiConnectors?: { login: { email?: string } | null };
   observedAt: string;
   quotaFreshSeconds: number;
   pools: AgentAuthRouterPool[];
@@ -88,12 +94,19 @@ export interface AgentAuthRouterOverview {
     blocked?: "auth-unavailable" | "cooldown";
     cooldownUntil?: string;
     /** `source` is absent from routers without quota-inference-headers-v1. */
-    quota: { observedAt: string; source?: "probe" | "inference" } | null;
+    quota: {
+      observedAt: string;
+      source?: "probe" | "inference";
+      ordinaryUsageAllowed?: boolean;
+      planType?: string;
+      planCapacityUnits?: number;
+    } | null;
     windows: {
       bucket: string;
       windowMinutes: number | null;
       usedPercent: number | null;
       remainingPercent: number | null;
+      remainingCapacityUnits?: number | null;
       resetsAt: string | null;
       scope: "all" | "opus" | "sonnet" | "unknown";
     }[];

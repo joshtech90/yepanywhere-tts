@@ -11,12 +11,6 @@
   min-width: 0;
 }
 
-.toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .hint {
   margin: 0;
   color: var(--text-secondary);
@@ -24,42 +18,8 @@
   line-height: 1.5;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-}
-
-.field input,
-.field textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font: inherit;
-}
-
-.field textarea {
-  resize: vertical;
-}
-
 .save {
   align-self: flex-start;
-  padding: 8px 14px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  cursor: pointer;
-}
-
-.save:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .error {

@@ -1,4 +1,8 @@
-import type { DesktopControlOrigin } from "../../desktop/machine-control.js";
+import type { ClaudeCopyBoundary } from "../../sessions/claude-copy-boundary.js";
+import {
+  nativeSessionFamily,
+  parseNativeSessionId,
+} from "@yep-anywhere/shared";
 // Provider abstraction types for multi-provider support
 import type {
   ClaudeSteerBackgroundBashSettings,
@@ -7,6 +11,10 @@ import type {
   EffectiveSessionLaunchSettings,
   ModelCatalogStatus,
   ModelInfo,
+  NativeSessionId,
+  NativeSessionRef,
+  YaSessionId,
+  UrlProjectId,
   PermissionMode,
   PromptCacheKeepaliveProviderInfo,
   ProviderSubscriptionUsage,
@@ -43,6 +51,7 @@ export type ProviderName =
   | "codex-oss"
   | "gemini"
   | "gemini-acp"
+  | "antigravity"
   | "grok"
   | "opencode"
   | "pi";
@@ -63,6 +72,61 @@ export type ProviderForkBoundary =
       turnId: string;
     }
   | { kind: "entry"; provider: "pi"; entryId: string };
+
+/** Operation-scoped native source facts; application lineage keeps its YA id. */
+export interface ProviderSessionSource {
+  native: NativeSessionRef;
+  /** Physical source when present; some native stores have no per-session file. */
+  filePath?: string;
+  projectId: UrlProjectId;
+}
+
+/** Copy/helper operations require an actual readable physical source. */
+export interface ProviderForkSource extends ProviderSessionSource {
+  filePath: string;
+}
+
+export interface ProviderForkOptions {
+  nativeSessionId: NativeSessionId;
+  nativeSource?: ProviderForkSource;
+  cwd: string;
+  upToMessageId?: string;
+  boundary?: ProviderForkBoundary;
+  title?: string;
+  sessionSandbox?: SessionSandboxRuntime;
+  launchSettings?: Omit<
+    EffectiveSessionLaunchSettings,
+    "schemaVersion" | "revision"
+  >;
+}
+
+export interface ProviderForkResult {
+  /** Private copy provenance; never inferred from the source cutoff or timestamps. */
+  copyBoundary?: ClaudeCopyBoundary;
+  /** Native child allocation; Supervisor binds it to the admitted public identity. */
+  nativeSessionId: NativeSessionId;
+  filePath?: string;
+  native?: NativeSessionRef;
+  transcriptProjectId?: UrlProjectId;
+}
+
+export function assertProviderForkSource(
+  options: {
+    nativeSessionId: NativeSessionId;
+    nativeSource?: ProviderSessionSource;
+  },
+  provider: ProviderName,
+): void {
+  parseNativeSessionId(options.nativeSessionId);
+  const source = options.nativeSource;
+  if (
+    source &&
+    (source.native.id !== options.nativeSessionId ||
+      source.native.family !== nativeSessionFamily(provider))
+  ) {
+    throw new Error("Native fork source does not match the provider address");
+  }
+}
 
 /**
  * Authentication status for a provider.
@@ -196,6 +260,18 @@ export function inactiveProviderSessionOptionsResult(
  * Options for starting a new agent session.
  */
 export interface StartSessionOptions {
+  /** Trusted native RPC acknowledgement; never inferred from a user echo. */
+  onNativeInputConsumed?(nativeSessionId: string, inputId: string): void;
+  /** Current controller only; functions never cross the private worker channel. */
+  creationRuntime?: {
+    identity: import("./creation-runtime-identity.js").CreationRuntimeIdentity;
+    authorize(): Promise<void>;
+    observe(
+      evidence: import("./creation-runtime-identity.js").CreationRuntimeEvidence,
+    ): void;
+  };
+  /** Trusted YA identity for child authority/AgentSelf; never a native handle. */
+  publicSessionId?: YaSessionId;
   /** Private runtime transport only; never retained or returned to browsers. */
   routerLaunch?: import("../../services/AgentAuthRouter.js").RouterLaunch;
   instructionRestoration?: import("@yep-anywhere/shared").InstructionRestorationSettings;
@@ -221,8 +297,6 @@ export interface StartSessionOptions {
   agentApiInstructions?: string;
   /** Explicit installed MC advertisement; no resident grant or supervisor. */
   machineControl?: boolean;
-  /** Private credential proof; never accepted from JSON or restored settings. */
-  desktopControlOrigin?: DesktopControlOrigin;
   /** Trusted owner-supplied child environment; never a client request field. */
   agentEnvironment?: Record<string, string>;
   /**
@@ -235,8 +309,14 @@ export interface StartSessionOptions {
   cwd: string;
   /** Initial message to send (optional - session can wait for message) */
   initialMessage?: UserMessage;
-  /** Session ID to resume (optional) */
+  /** Provider-native session ID to resume (optional). */
   resumeSessionId?: string;
+  /** Trusted operation-scoped transcript source; never accepted from HTTP JSON. */
+  nativeResumeSource?: ProviderSessionSource;
+  /** Controller-owned recheck of an existing binding before hosted effects. */
+  assertResumeAdmission?: () => void;
+  /** Private host admission: claim an incumbent, never start/replace a worker. */
+  retainedRuntimeOnly?: boolean;
   /**
    * YA's id for a new session. Providers that accept a caller-chosen id use
    * it as the native id, so the session never changes id once its provider
@@ -409,6 +489,7 @@ export interface AgentSession {
    * iterator will never replay that init.
    */
   initializedSessionId?: string;
+  initialSteering?: import("@yep-anywhere/shared").ProviderSteeringState;
   /**
    * Publish the provider's canonical session id into any child-process
    * environment bridge the provider installed before startup.
@@ -504,11 +585,15 @@ export interface AgentSession {
  * All providers (Claude, Codex, Gemini, local) implement this interface.
  */
 export interface AgentProvider {
+  /** Registry-selected owner; independent/raw adapters default to local. */
+  readonly runtimeOwner?: "local" | "host";
   /** Provider identifier */
   readonly name: ProviderName;
   /** Human-readable display name */
   readonly displayName: string;
   /** Whether this provider supports permission modes (default: true) */
+  /** Accepts and verifies a trusted scoped native continuation source. */
+  readonly supportsNativeResumeSource?: boolean;
   readonly supportsPermissionMode: boolean;
   /** Whether this provider supports extended thinking toggle (default: true) */
   readonly supportsThinkingToggle: boolean;
@@ -521,6 +606,7 @@ export interface AgentProvider {
    * ending the turn. Optional; absent means false.
    */
   readonly supportsSteerNow?: boolean;
+  readonly steering?: import("@yep-anywhere/shared").ProviderSteeringCapabilities;
   /**
    * Whether this provider can synthesize an on-return recap of recent
    * activity. See topics/recaps.md. Optional; absent means false.
@@ -590,6 +676,17 @@ export interface AgentProvider {
    * Returns the session iterator, message queue, and abort function.
    */
   startSession(options: StartSessionOptions): Promise<AgentSession>;
+
+  /** Native allocation accepts YA's chosen spelling; otherwise it returns N. */
+  readonly acceptsChosenSessionId?: boolean;
+  /** Adapter forwards native image blocks rather than extracting text only. */
+  readonly supportsInlineImages?: boolean;
+
+  /** Actual new-session store, resolved before native allocation (no effects). */
+  getNewSessionNamespace?(
+    cwd: string,
+    sandbox?: Pick<SessionSandboxRuntime, "transcriptDir">,
+  ): Promise<Pick<NativeSessionRef, "family" | "storageScope">>;
 
   /**
    * Get available models for this provider. Implementations may cache;
@@ -676,29 +773,7 @@ export interface AgentProvider {
    * implement this; absence means the capability does not exist and must
    * not be emulated. See topics/session-context-actions.md.
    */
-  forkSession?: (options: {
-    /** Source provider session id. */
-    sessionId: string;
-    /** Project working directory the session belongs to. */
-    cwd: string;
-    /** Slice transcript up to this message UUID (inclusive); omit for full copy. */
-    upToMessageId?: string;
-    /** Typed provider boundary used by server-resolved fork intents. */
-    boundary?: ProviderForkBoundary;
-    /** Title for the forked session. */
-    title?: string;
-    /** Project-private provider state and process confinement inherited by the fork. */
-    sessionSandbox?: SessionSandboxRuntime;
-    /** Resolved YA settings; native forks must not reset these to defaults. */
-    launchSettings?: Omit<
-      EffectiveSessionLaunchSettings,
-      "schemaVersion" | "revision"
-    >;
-  }) => Promise<{
-    sessionId: string;
-    /** Provider-owned durable file; internal hint for immediate discovery. */
-    filePath?: string;
-  }>;
+  forkSession?: (options: ProviderForkOptions) => Promise<ProviderForkResult>;
 }
 
 /**
@@ -754,7 +829,10 @@ export function resolveInheritedForkModel(
   return undefined;
 }
 
-export type SummaryGenerationRequest =
+/** Provider requests carry native ids; the supervisor accepts public ingress. */
+export type SummaryGenerationRequest<
+  SessionId extends string = NativeSessionId,
+> =
   | {
       purpose: "recap";
       strategy: "side-session";
@@ -765,7 +843,9 @@ export type SummaryGenerationRequest =
       purpose: "recap";
       strategy: "fork";
       /** Archived helper fork whose full current context should be recapped. */
-      generatorSessionId: string;
+      generatorSessionId: SessionId;
+      /** Exact source selected before provider effects; never a public-id path. */
+      nativeSource?: ProviderForkSource;
       /** Project working directory the session belongs to. */
       cwd: string;
       /** Exact source model inherited by the fork; helper effort is independent. */
@@ -779,7 +859,9 @@ export type SummaryGenerationRequest =
       purpose: "fork-after-summary";
       strategy: "fork";
       /** Archived helper fork whose whole context should be summarized. */
-      generatorSessionId: string;
+      generatorSessionId: SessionId;
+      /** Exact source selected before provider effects; never a public-id path. */
+      nativeSource?: ProviderForkSource;
       /** Project working directory the session belongs to. */
       cwd: string;
       /** Exact source model inherited by the fork; helper effort is independent. */
@@ -822,7 +904,9 @@ export type SummaryGenerationRequest =
       purpose: "session-retitle";
       strategy: "fork";
       /** Archived helper fork whose whole context should be titled. */
-      generatorSessionId: string;
+      generatorSessionId: SessionId;
+      /** Exact source selected before provider effects; never a public-id path. */
+      nativeSource?: ProviderForkSource;
       /** Project working directory the session belongs to. */
       cwd: string;
       /** Exact source model inherited by the fork; helper effort is independent. */

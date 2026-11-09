@@ -1,6 +1,8 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import styles from "./QuestionAsideCard.module.css";
+import { Button, IconButton } from "./ui/Button";
+import { Popover } from "./ui/Popover";
 
 export interface QuestionAsideCardProps {
   question: string;
@@ -42,6 +44,7 @@ export function QuestionAsideCard({
   const { t } = useI18n();
   const [helpOpen, setHelpOpen] = useState(false);
   const helpId = useId();
+  const helpButton = useRef<HTMLButtonElement>(null);
   const complete = status === "complete" && answers.length > 0;
   const saving = status === "saving";
   const sending = status === "sending";
@@ -54,13 +57,6 @@ export function QuestionAsideCard({
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget))
           setHelpOpen(false);
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && helpOpen) {
-          event.preventDefault();
-          event.stopPropagation();
-          setHelpOpen(false);
-        }
       }}
     >
       <div className={styles.content}>
@@ -83,20 +79,18 @@ export function QuestionAsideCard({
       </div>
       <footer className={styles.actions}>
         {showSteer ? (
-          <button
-            className={styles.save}
-            type="button"
+          <Button
+            variant="primary"
             disabled={sending}
             onClick={onSteer}
             title={t("toolbarShortcutSteerCurrentTurn")}
           >
             {t(sending ? "asyncQuestionSending" : "toolbarSteerShortLabel")}
-          </button>
+          </Button>
         ) : (
           <>
-            <button
-              className={styles.save}
-              type="button"
+            <Button
+              variant="primary"
               aria-label={t(
                 saving ? "questionAsideSaving" : "questionAsideSave",
               )}
@@ -105,54 +99,62 @@ export function QuestionAsideCard({
               title={t("questionAsideSaveShortcut")}
             >
               {t(saving ? "questionAsideSaving" : "questionAsideSave")}
-            </button>
+            </Button>
             <kbd title={t("questionAsideSaveShortcut")}>↵</kbd>
           </>
         )}
-        <button
-          className={styles.discard}
-          type="button"
+        <Button
           disabled={!complete || moving}
           onClick={onContinueAsBtw}
           title={t("questionAsideContinueDescription")}
         >
           {t(moving ? "questionAsideContinuing" : "questionAsideContinue")}
-        </button>
-        <button
-          className={styles.discard}
-          type="button"
+        </Button>
+        <Button
+          variant="danger-outline"
           aria-label={t("questionAsideDiscard")}
           disabled={saving || sending || moving}
           onClick={onDiscard}
         >
           {t("questionAsideDiscard")}
           <kbd>Esc</kbd>
-        </button>
-        <button
+        </Button>
+        <IconButton
+          ref={helpButton}
           className={styles.help}
-          type="button"
-          aria-label={t("questionAsideTitle")}
-          aria-expanded={helpOpen}
-          aria-controls={helpId}
-          title={
+          label={t("questionAsideTitle")}
+          tooltip={
             helpOpen
-              ? undefined
+              ? t("questionAsideTitle")
               : `${t("questionAsideTitle")}. ${t("questionAsideMainComposer")}. ${t("questionAsideSaveDescription")}`
           }
+          aria-expanded={helpOpen}
+          aria-controls={helpId}
           onClick={() => setHelpOpen(!helpOpen)}
         >
           ?
-        </button>
-        {helpOpen && (
-          <div id={helpId} className={styles.helpContent} role="tooltip">
-            <strong>{t("questionAsideTitle")}</strong>
-            <p>
-              {t("questionAsideMainComposer")}.{" "}
-              {t("questionAsideSaveDescription")}
-            </p>
-            <p>{t("questionAsideSaveShortcut")}</p>
-          </div>
-        )}
+        </IconButton>
+        {/* Escape with the help open closes only the help (the popover
+            takes the topmost Escape); with it closed, Escape reaches the
+            composer and discards the aside. */}
+        <Popover
+          open={helpOpen}
+          onClose={() => setHelpOpen(false)}
+          anchorRef={helpButton}
+          placement="top-end"
+          offset={8}
+          id={helpId}
+          surface="card"
+          className={styles.helpContent}
+          role="tooltip"
+        >
+          <strong>{t("questionAsideTitle")}</strong>
+          <p>
+            {t("questionAsideMainComposer")}.{" "}
+            {t("questionAsideSaveDescription")}
+          </p>
+          <p>{t("questionAsideSaveShortcut")}</p>
+        </Popover>
       </footer>
     </section>
   );

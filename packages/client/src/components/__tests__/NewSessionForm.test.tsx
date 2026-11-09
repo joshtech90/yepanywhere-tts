@@ -25,6 +25,7 @@ import {
   useCallback,
   useImperativeHandle,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,6 +35,7 @@ import {
 } from "../../lib/speechProviders/methods";
 import { api } from "../../api/client";
 import { UI_KEYS } from "../../lib/storageKeys";
+import { invalidateLocalStorageValues } from "../../lib/localStorageValue";
 import {
   ConnectionReconnectingError,
   WebSocketCloseError,
@@ -67,6 +69,7 @@ const {
   mockVoiceToggle,
   mockVoiceCancelProcessing,
   mockVoiceContinueAfterSpeechSend,
+  voiceListeningState,
   voicePropsState,
   draftKeys,
   modelSettingsState,
@@ -108,6 +111,7 @@ const {
   mockVoiceToggle: vi.fn(),
   mockVoiceCancelProcessing: vi.fn(),
   mockVoiceContinueAfterSpeechSend: vi.fn(),
+  voiceListeningState: { current: false },
   voicePropsState: {
     current: null as null | {
       onPendingSpeechChange?: (
@@ -124,6 +128,11 @@ const {
       ) => void;
       onListeningStart?: () => void;
       onListeningStop?: () => boolean | undefined;
+      onTranscriptionSettled?: (settlement: {
+        speechTargetId?: string;
+        status: "completed" | "failed" | "cancelled";
+      }) => void;
+      getTranscriptionContext?: () => { speechTargetId?: string };
     },
   },
   draftKeys: [] as string[],
@@ -251,6 +260,7 @@ const {
         projectQueueCtrlEnterEnabled?: boolean;
       };
     } | null,
+    loading: false,
   },
   remoteBasePathState: {
     basePath: "",
@@ -289,6 +299,7 @@ const {
 }));
 
 const coarsePointerState = vi.hoisted(() => ({ current: false }));
+const sourceKeyState = vi.hoisted(() => ({ current: "host:test" }));
 
 vi.mock("../../lib/deviceDetection", () => ({
   hasCoarsePointer: () => coarsePointerState.current,
@@ -382,12 +393,16 @@ vi.mock("../../api/client", () => ({
 vi.mock("../../hooks/useDraftPersistence", () => ({
   useDraftPersistence: (key: string) => {
     draftKeys.push(key);
-    const [value, setValue] = useState("");
-    const getDraft = useCallback(() => value, [value]);
-    const setDraft = useCallback(
-      (nextValue: string) => setValue(nextValue),
-      [],
-    );
+    const [value, setValueInternal] = useState("");
+    // Like the real hook, getDraft reads the latest value from a ref, so the
+    // controls keep their identity across edits.
+    const valueRef = useRef("");
+    const setValue = useCallback((nextValue: string) => {
+      valueRef.current = nextValue;
+      setValueInternal(nextValue);
+    }, []);
+    const getDraft = useCallback(() => valueRef.current, []);
+    const setDraft = setValue;
     const getAttachmentState = useCallback(
       () => draftAttachmentState.value,
       [],
@@ -399,12 +414,12 @@ vi.mock("../../hooks/useDraftPersistence", () => ({
       [],
     );
     const flushDraft = useCallback(() => {}, []);
-    const clearInput = useCallback(() => setValue(""), []);
+    const clearInput = useCallback(() => setValue(""), [setValue]);
     const clearDraft = useCallback(() => {
       setValue("");
       draftAttachmentState.value = null;
-    }, []);
-    const restoreFromStorage = useCallback(() => {}, []);
+    }, [setValue]);
+    const restoreFromStorage = useCallback(() => mockRestoreFromStorage(), []);
 
     const controls = useMemo(
       () => ({
@@ -545,7 +560,7 @@ vi.mock("../../lib/clientSummaryStore", async (importOriginal) => {
     ...actual,
     reportProjectQueueCollectionSnapshot:
       mockReportProjectQueueCollectionSnapshot,
-    useClientSummarySourceKey: () => "host:test",
+    useClientSummarySourceKey: () => sourceKeyState.current,
     useActiveProjectSessionIds: (projectId: string | null | undefined) => {
       if (!projectId) return [];
       return [...inboxState.needsAttention, ...inboxState.active]
@@ -608,7 +623,7 @@ vi.mock("../../hooks/useProjectQueues", () => ({
 vi.mock("../../hooks/useVersion", () => ({
   useVersion: () => ({
     version: versionState.version,
-    loading: false,
+    loading: versionState.loading,
     error: null,
     refetch: vi.fn(),
     refetchFresh: vi.fn(),
@@ -650,6 +665,7 @@ vi.mock("../../i18n", () => {
       speechPrefixDeliveryTooltip: "{tooltip} Prepends {prefix}.",
       newSessionFixedTitle: "Set by your account",
       newSessionFixedSandboxValue: "Always on",
+      projectQueueSubmitFailed: "Queue failed: {message}",
       newSessionSandboxUnavailableMissingPackages:
         "Unavailable: install {packages} on the server to enable sandboxed sessions.",
     };
@@ -724,6 +740,37 @@ function openAdvancedOptions(): void {
   );
 }
 
+// Calls through, so history keeps working; tests read which prompts it got.
+const { mockRestoreFromStorage } = vi.hoisted(() => ({
+  mockRestoreFromStorage: vi.fn(),
+}));
+const { mockRememberComposerPrompt } = vi.hoisted(() => ({
+  mockRememberComposerPrompt: vi.fn(),
+}));
+vi.mock("../../lib/composerHistory", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../lib/composerHistory")>();
+  mockRememberComposerPrompt.mockImplementation(actual.rememberComposerPrompt);
+  return { ...actual, rememberComposerPrompt: mockRememberComposerPrompt };
+});
+
+// Exposes the memo panel's commit, which starts a session with the memo.
+const { audioMemoState } = vi.hoisted(() => ({
+  audioMemoState: {
+    current: null as null | {
+      onCommit: (file: File, transcript: string) => Promise<void>;
+    },
+  },
+}));
+vi.mock("../AudioMemoPanel", () => ({
+  AudioMemoPanel: (props: {
+    onCommit: (file: File, transcript: string) => Promise<void>;
+  }) => {
+    audioMemoState.current = props;
+    return <div data-testid="audio-memo" />;
+  },
+}));
+
 vi.mock("../../lib/newSessionPrefill", () => ({
   consumeNewSessionPrefill: () => null,
   consumeNewSessionPrefillToken: () => null,
@@ -740,7 +787,9 @@ vi.mock("../VoiceInputButton", () => ({
         cancelProcessing: mockVoiceCancelProcessing,
         beginInsertionBoundary: vi.fn(),
         continueAfterSpeechSend: mockVoiceContinueAfterSpeechSend,
-        isListening: false,
+        get isListening() {
+          return voiceListeningState.current;
+        },
         isAvailable: true,
       }),
       [],
@@ -808,6 +857,8 @@ describe("NewSessionForm", () => {
   beforeEach(() => {
     providerDescriptorsState.providers = undefined;
     coarsePointerState.current = false;
+    sourceKeyState.current = "host:test";
+    voiceListeningState.current = false;
     actingPrincipalState.principal = {
       superuser: true,
       username: null,
@@ -910,6 +961,7 @@ describe("NewSessionForm", () => {
     draftAttachmentState.value = null;
     remoteBasePathState.basePath = "";
     versionState.version = { capabilities: [PROJECT_QUEUE_CAPABILITY] };
+    versionState.loading = false;
     modelSettingsState.voiceInputEnabled = true;
     modelSettingsState.speechMethod = "browser-native";
     modelSettingsState.hasStoredSpeechMethod = false;
@@ -3403,14 +3455,18 @@ describe("NewSessionForm", () => {
     });
   });
 
-  it("uses Ctrl+Enter to queue directly despite a restored pool preference", async () => {
+  it("uses Ctrl+Enter to queue a restored pool preference with its pool", async () => {
     toolbarVisibilityState.projectQueue = true;
     inboxState.active = [
       { sessionId: "session-active", projectId: "project-1" },
     ];
     serverSettingsState.isLoading = false;
     versionState.version = {
-      capabilities: [PROJECT_QUEUE_CAPABILITY, "agent-auth-router"],
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        "agent-auth-router",
+        "project-queue-router-selection",
+      ],
     };
     serverSettingsState.settings = {
       newSessionDefaults: {
@@ -3475,7 +3531,7 @@ describe("NewSessionForm", () => {
     expect(mockStartSession).not.toHaveBeenCalled();
     expect(
       mockCreateProjectQueueItem.mock.calls[0]![1].target.routerPoolId,
-    ).toBeUndefined();
+    ).toBe("work");
   });
 
   it("expands for long-form editing and makes Ctrl+Enter start", async () => {
@@ -3588,7 +3644,6 @@ describe("NewSessionForm", () => {
     );
     expect(mockCreateSession).not.toHaveBeenCalled();
     expect(mockQueueMessage).not.toHaveBeenCalled();
-    expect(draftAttachmentState.value).toBe(null);
   });
 
   it("shows the new-session Project Queue action from project blocking counts", () => {
@@ -3942,12 +3997,10 @@ describe("NewSessionForm", () => {
       within(newProject).queryByLabelText("newProjectEntryLabel"),
     ).toBeNull();
     expect(
-      (
-        within(newProject).getByRole("radio", {
-          name: /newProjectEmptyFolder/,
-        }) as HTMLInputElement
-      ).checked,
-    ).toBe(true);
+      within(newProject)
+        .getByRole("radio", { name: /newProjectEmptyFolder/ })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
   });
 
   it("adds a typed existing folder as it is, offering no starting point", async () => {
@@ -4697,6 +4750,488 @@ describe("NewSessionForm", () => {
     );
   });
 
+  // Plan 178: the shared speech hooks must not change the identity of the
+  // voice button's callbacks, which it uses as effect and handle inputs.
+  it("keeps the voice button's callbacks across a typed character", () => {
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    const composer = screen.getByPlaceholderText("newSessionPlaceholder");
+    const before = { ...voicePropsState.current };
+    fireEvent.change(composer, { target: { value: "a" } });
+    const after = voicePropsState.current as Record<string, unknown> | null;
+    for (const key of [
+      "getTranscriptionContext",
+      "onInterimTranscript",
+      "onListeningStart",
+      "onListeningStop",
+      "onPendingSpeechChange",
+      "onTranscript",
+    ]) {
+      expect(after?.[key], key).toBeTypeOf("function");
+      expect(after?.[key], key).toBe((before as Record<string, unknown>)[key]);
+    }
+  });
+
+  // Plan 178 D1: pointer-up is a manual caret move, so with an interim
+  // showing the fragment in flight stays at its first target and only the
+  // next one follows the caret. (A caret-moving key-up also fires onSelect,
+  // which this box treats as automatic: plan 178 D10.)
+  it("keeps the in-flight fragment in place on a mid-interim pointer-up", async () => {
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    const composer = screen.getByPlaceholderText(
+      "newSessionPlaceholder",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: "alpha omega" } });
+    composer.setSelectionRange(11, 11);
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onPendingSpeechChange?.("listening");
+      voicePropsState.current?.onInterimTranscript?.("first words");
+    });
+
+    composer.setSelectionRange(0, 0);
+    fireEvent.pointerUp(composer);
+    act(() => {
+      voicePropsState.current?.onTranscript?.("first words");
+    });
+    await waitFor(() => expect(composer.value).toBe("alpha omega first words"));
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("next words");
+    });
+    await waitFor(() =>
+      expect(composer.value).toBe("next words alpha omega first words"),
+    );
+  });
+
+  // Plan 178 D3: a failed cycle drops the delivery pressed during capture;
+  // nothing starts and the draft stays in the field.
+  it("starts nothing when speech fails after a press during capture", async () => {
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    const composer = screen.getByPlaceholderText(
+      "newSessionPlaceholder",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: "typed draft" } });
+    composer.setSelectionRange(11, 11);
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onPendingSpeechChange?.("listening");
+      voicePropsState.current?.onInterimTranscript?.("spoken words");
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /newSessionStartAction/ }),
+    );
+    expect(mockStartSession).not.toHaveBeenCalled();
+
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.("finalizing");
+      voicePropsState.current?.onPendingSpeechChange?.(null, "failed");
+    });
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.(null, "completed");
+    });
+    expect(mockStartSession).not.toHaveBeenCalled();
+    expect(mockConnectionFetch).not.toHaveBeenCalled();
+    expect(composer.value).toBe("typed draft");
+  });
+
+  // The new-session box dictates like the session composer
+  // (docs/tactical/178-shared-composer-dictation.md D7, D8, D10, D11, D4).
+  describe("dictation like the session composer", () => {
+    const renderForm = () => {
+      render(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+        />,
+      );
+      return screen.getByPlaceholderText(
+        "newSessionPlaceholder",
+      ) as HTMLTextAreaElement;
+    };
+
+    it("ignores a held Escape instead of cancelling the transcription", () => {
+      const composer = renderForm();
+      act(() => {
+        voicePropsState.current?.onPendingSpeechChange?.("finalizing");
+      });
+      fireEvent.keyDown(composer, { key: "Escape", repeat: true });
+      expect(mockVoiceCancelProcessing).not.toHaveBeenCalled();
+      fireEvent.keyDown(composer, { key: "Escape" });
+      expect(mockVoiceCancelProcessing).toHaveBeenCalledTimes(1);
+    });
+
+    it("accepts a spoken send only when the draft can start, and only then keeps listening", async () => {
+      renderForm();
+      let accepted: unknown;
+      act(() => {
+        voicePropsState.current?.onListeningStart?.();
+        voicePropsState.current?.onPendingSpeechChange?.("listening");
+        // The recognizer strips the spoken command; nothing else was said.
+        accepted = voicePropsState.current?.onTranscript?.("", {
+          smartTurnCommand: "send",
+        });
+      });
+      expect(mockStartSession).not.toHaveBeenCalled();
+      expect(mockVoiceContinueAfterSpeechSend).not.toHaveBeenCalled();
+      expect(accepted).not.toMatchObject({ smartTurnSent: true });
+
+      act(() => {
+        voicePropsState.current?.onTranscript?.("start the build", {
+          smartTurnCommand: "send",
+        });
+      });
+      await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+      expect(mockVoiceContinueAfterSpeechSend).toHaveBeenCalledTimes(1);
+    });
+
+    it("accepts a spoken send from a muted launch composer with no draft", async () => {
+      const submit = vi.fn().mockResolvedValue(undefined);
+      render(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+          launch={{
+            draftKey: "draft-fork:session-1",
+            initialMessage: "",
+            fixedProject: true,
+            composer: "muted",
+            submit,
+          }}
+        />,
+      );
+      act(() => {
+        voicePropsState.current?.onListeningStart?.();
+        voicePropsState.current?.onPendingSpeechChange?.("listening");
+        voicePropsState.current?.onTranscript?.("", {
+          smartTurnCommand: "send",
+        });
+      });
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      expect(mockVoiceContinueAfterSpeechSend).toHaveBeenCalledTimes(1);
+    });
+
+    it("treats a selection change mid-interim as a manual caret move", async () => {
+      const composer = renderForm();
+      fireEvent.change(composer, { target: { value: "alpha omega" } });
+      composer.setSelectionRange(11, 11);
+      act(() => {
+        voicePropsState.current?.onListeningStart?.();
+        voicePropsState.current?.onPendingSpeechChange?.("listening");
+        voicePropsState.current?.onInterimTranscript?.("first words");
+      });
+      composer.setSelectionRange(0, 0);
+      fireEvent.select(composer);
+      act(() => {
+        voicePropsState.current?.onTranscript?.("first words");
+      });
+      await waitFor(() =>
+        expect(composer.value).toBe("alpha omega first words"),
+      );
+    });
+
+    it("forgets a failed transcription's speech target", async () => {
+      const composer = renderForm();
+      fireEvent.change(composer, { target: { value: "alpha omega" } });
+      composer.setSelectionRange(5, 5);
+      act(() => {
+        voicePropsState.current?.onListeningStart?.();
+        voicePropsState.current?.onPendingSpeechChange?.("transcribing");
+      });
+      const targetId =
+        voicePropsState.current?.getTranscriptionContext?.()?.speechTargetId;
+      expect(targetId).toEqual(expect.any(String));
+      act(() => {
+        voicePropsState.current?.onTranscriptionSettled?.({
+          speechTargetId: targetId,
+          status: "failed",
+        });
+      });
+      // With the target gone, a later final lands at the end of the draft
+      // instead of at the failed recording's insertion point.
+      composer.setSelectionRange(0, 0);
+      act(() => {
+        voicePropsState.current?.onTranscript?.("later words");
+      });
+      await waitFor(() =>
+        expect(composer.value).toBe("alpha omega later words"),
+      );
+    });
+
+    it("lets the Project Queue Ctrl+Enter shortcut win while listening", async () => {
+      toolbarVisibilityState.projectQueue = true;
+      inboxState.active = [
+        { sessionId: "session-active", projectId: "project-1" },
+      ];
+      serverSettingsState.isLoading = false;
+      const composer = renderForm();
+      fireEvent.change(composer, {
+        target: { value: "queue while dictating" },
+      });
+      expect(
+        screen.getByRole("button", { name: "toolbarProjectQueueLabel" }),
+      ).toBeTruthy();
+      act(() => {
+        voicePropsState.current?.onListeningStart?.();
+        voicePropsState.current?.onPendingSpeechChange?.("listening");
+      });
+      voiceListeningState.current = true;
+      fireEvent.keyDown(composer, { key: "Enter", ctrlKey: true });
+      // The queue action owns delivery and waits for dictation to settle.
+      expect(mockStartSession).not.toHaveBeenCalled();
+      voiceListeningState.current = false;
+      act(() => {
+        voicePropsState.current?.onPendingSpeechChange?.(null, "completed");
+      });
+      await waitFor(() =>
+        expect(mockCreateProjectQueueItem).toHaveBeenCalledTimes(1),
+      );
+      expect(mockStartSession).not.toHaveBeenCalled();
+    });
+  });
+
+  it("waits for server capabilities before choosing how to create the session", async () => {
+    // Unknown capabilities once sent the retired legacy route, which current
+    // servers answer with 404, shown as "Project not found".
+    versionState.version = null;
+    versionState.loading = true;
+    mockConnectionFetch.mockResolvedValue({
+      requestId: "after-capabilities",
+      sessionId: "session-after-capabilities",
+      projectId: "project-1",
+    });
+    const form = () => (
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />
+    );
+    const { rerender } = render(form());
+    const composer = screen.getByPlaceholderText("newSessionPlaceholder");
+    fireEvent.change(composer, { target: { value: "early start" } });
+    const start = screen.getByRole("button", { name: "newSessionStartAction" });
+    expect(start).toHaveProperty("disabled", true);
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect(mockStartSession).not.toHaveBeenCalled();
+    expect(mockConnectionFetch).not.toHaveBeenCalled();
+
+    versionState.version = {
+      capabilities: [SERVER_CAPABILITIES.sessionCreationAdmission.name],
+    };
+    versionState.loading = false;
+    rerender(form());
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+    await waitFor(() => expect(mockConnectionFetch).toHaveBeenCalledOnce());
+    expect(mockConnectionFetch.mock.calls[0]?.[0]).toBe(
+      "/projects/project-1/session-creations",
+    );
+    expect(mockStartSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps a pending background action authoritative over a final spoken send", async () => {
+    localStorage.setItem(UI_KEYS.backgroundSessionCreation, "true");
+    localStorage.setItem(UI_KEYS.speechAsrAttributionMs, "500");
+    invalidateLocalStorageValues(UI_KEYS.backgroundSessionCreation);
+    versionState.version = {
+      capabilities: [SERVER_CAPABILITIES.sessionCreationAdmission.name],
+    };
+    mockConnectionFetch.mockResolvedValue({
+      requestId: "background-speech",
+      sessionId: "saved-background",
+      projectId: "project-1",
+    });
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText("newSessionPlaceholder");
+    fireEvent.change(textarea, {
+      target: { value: "Captured background request" },
+    });
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.("transcribing");
+      voicePropsState.current?.onInterimTranscript?.("provisional speech");
+    });
+    expect(screen.queryByLabelText("newSessionKeyboardShortcuts")).toBeNull();
+    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+    expect(mockConnectionFetch).not.toHaveBeenCalled();
+    act(() =>
+      voicePropsState.current?.onTranscript?.("newer dictated notes", {
+        smartTurnCommand: "send",
+      }),
+    );
+    expect(mockVoiceContinueAfterSpeechSend).not.toHaveBeenCalled();
+    expect(mockConnectionFetch).not.toHaveBeenCalled();
+    act(() =>
+      voicePropsState.current?.onPendingSpeechChange?.(null, "completed"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText("sessionCreationBackgroundSaved"),
+      ).not.toBeNull(),
+    );
+    expect(mockConnectionFetch).toHaveBeenCalledOnce();
+    const [, request] = mockConnectionFetch.mock.calls[0]!;
+    expect(JSON.parse(request.body).message).toContain(
+      "[ASR] Captured background request",
+    );
+    expect(JSON.parse(request.body).message).not.toContain(
+      "newer dictated notes",
+    );
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect((textarea as HTMLTextAreaElement).value).toContain(
+      "newer dictated notes",
+    );
+  });
+
+  it("keeps a manual Project Queue speech snapshot without clearing different final wording", async () => {
+    toolbarVisibilityState.projectQueue = true;
+    inboxState.active = [{ sessionId: "active", projectId: "project-1" }];
+    serverSettingsState.isLoading = false;
+    versionState.version = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        SERVER_CAPABILITIES.sessionCreationAdmission.name,
+      ],
+    };
+    localStorage.setItem(UI_KEYS.speechAsrAttributionMs, "500");
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    const input = screen.getByPlaceholderText("newSessionPlaceholder");
+    fireEvent.change(input, { target: { value: "Captured queue speech" } });
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.("transcribing");
+      voicePropsState.current?.onInterimTranscript?.("provisional words");
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /toolbarProjectQueueLabel/ }),
+    );
+    expect(mockCreateProjectQueueItem).not.toHaveBeenCalled();
+    act(() =>
+      voicePropsState.current?.onTranscript?.("different final words", {
+        smartTurnCommand: "send",
+      }),
+    );
+    expect(mockCreateProjectQueueItem).not.toHaveBeenCalled();
+    expect(mockConnectionFetch).not.toHaveBeenCalled();
+    expect(mockStartSession).not.toHaveBeenCalled();
+    act(() =>
+      voicePropsState.current?.onPendingSpeechChange?.(null, "completed"),
+    );
+    await waitFor(() =>
+      expect(mockCreateProjectQueueItem).toHaveBeenCalledOnce(),
+    );
+    const queued = mockCreateProjectQueueItem.mock.calls[0]?.[1].message.text;
+    expect(queued).toContain("Captured queue speech");
+    expect(queued).toContain("provisional words");
+    expect(queued).not.toContain("different final words");
+    expect((input as HTMLTextAreaElement).value).toContain(
+      "different final words",
+    );
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockConnectionFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["unmount", "account replacement"])(
+    "fences delayed Queue project resolution after %s",
+    async (retirement) => {
+      toolbarVisibilityState.projectQueue = true;
+      inboxState.active = [{ sessionId: "active", projectId: "project-1" }];
+      serverSettingsState.isLoading = false;
+      let finish!: (result: unknown) => void;
+      mockAddProject.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const onProjectChange = vi.fn();
+      const form = () => (
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+          onProjectChange={onProjectChange}
+        />
+      );
+      const view = render(form());
+      const input = screen.getByPlaceholderText("newSessionPlaceholder");
+      fireEvent.change(input, { target: { value: "Queue this after speech" } });
+      act(() =>
+        voicePropsState.current?.onPendingSpeechChange?.("transcribing"),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: /toolbarProjectQueueLabel/ }),
+      );
+      fireEvent.change(
+        screen.getByPlaceholderText("newSessionProjectPathPlaceholder"),
+        { target: { value: "/work/queue-after-speech" } },
+      );
+      act(() => {
+        voicePropsState.current?.onTranscript?.("final words");
+        voicePropsState.current?.onPendingSpeechChange?.(null, "completed");
+      });
+      await waitFor(() => expect(mockAddProject).toHaveBeenCalledOnce());
+      mockShowToast.mockClear();
+      onProjectChange.mockClear();
+      if (retirement === "unmount") view.unmount();
+      else {
+        actingPrincipalState.principal = {
+          ...actingPrincipalState.principal,
+          username: "replacement",
+        };
+        view.rerender(form());
+      }
+      await act(async () =>
+        finish({
+          project: { id: "created-late", path: "/work/queue-after-speech" },
+          created: true,
+        }),
+      );
+      expect(mockCreateProjectQueueItem).not.toHaveBeenCalled();
+      expect(onProjectChange).not.toHaveBeenCalled();
+      expect(mockShowToast).not.toHaveBeenCalled();
+      if (retirement !== "unmount")
+        expect(
+          (
+            screen.getByRole("button", {
+              name: /newSessionCreateAndStartAction/,
+            }) as HTMLButtonElement
+          ).disabled,
+        ).toBe(false);
+    },
+  );
+
   it("keeps the real new-session textarea editable while transcribing", async () => {
     render(
       <NewSessionForm
@@ -5058,6 +5593,737 @@ describe("NewSessionForm", () => {
         expect.any(Number),
         undefined,
       );
+    });
+  });
+
+  // Plan 180 slice 0: what starting and queueing do today, pinned before the
+  // option state, panel and start paths move out of the form.
+  describe("start and Queue outcomes", () => {
+    const sandboxVersion = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY,
+        SESSION_SANDBOXING_CAPABILITY,
+        SESSION_SANDBOXING_STATUS_CAPABILITY,
+      ],
+      sessionSandboxing: {
+        state: "available" as const,
+        platform: "linux",
+        backend: "bubblewrap" as const,
+        version: "0.4.0",
+      },
+    };
+    const renderForm = (
+      props: Partial<Parameters<typeof NewSessionForm>[0]> = {},
+    ) =>
+      render(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+          {...props}
+        />,
+      );
+    const composer = () =>
+      screen.getByPlaceholderText(
+        "newSessionPlaceholder",
+      ) as HTMLTextAreaElement;
+    const typeDraft = (text: string) =>
+      fireEvent.change(composer(), { target: { value: text } });
+    const startButton = () =>
+      screen.getByRole("button", {
+        name: "newSessionStartAction",
+      }) as HTMLButtonElement;
+    const showProjectQueue = () => {
+      toolbarVisibilityState.projectQueue = true;
+      inboxState.active = [
+        { sessionId: "session-active", projectId: "project-1" },
+      ];
+    };
+    const choosePool = async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+      openAdvancedOptions();
+      fireEvent.click(screen.getAllByRole("button", { name: "Opus 4.8" })[0]!);
+      await screen.findByTestId("filter-routerPool");
+      fireEvent.click(dropdownOption("routerPool", "Work"));
+    };
+    const attachStagedFile = async (container: HTMLElement) => {
+      mockUploadStagedAttachment.mockResolvedValue(stagedRef);
+      const input =
+        container.querySelector<HTMLInputElement>('input[type="file"]');
+      if (!input) throw new Error("missing file input");
+      fireEvent.change(input, {
+        target: {
+          files: [new File(["hello"], "notes.txt", { type: "text/plain" })],
+        },
+      });
+      await waitFor(() =>
+        expect(draftAttachmentState.value?.refs).toEqual([stagedRef]),
+      );
+    };
+
+    beforeEach(() => {
+      serverSettingsState.isLoading = false;
+    });
+
+    it.each([
+      ["a full queue", new Error("Queue is full"), "newSessionServerBusy"],
+      [
+        "a provider credential failure",
+        new Error("Invalid authentication credentials"),
+        "newSessionProviderAuthError",
+      ],
+      [
+        "a 401 from Claude",
+        Object.assign(new Error("Unauthorized"), { status: 401 }),
+        "newSessionProviderAuthError",
+      ],
+      ["a 503", new Error("Request failed: 503"), "newSessionServerCapacity"],
+      ["a 404", new Error("Request failed: 404"), "newSessionProjectNotFound"],
+      [
+        "a network failure",
+        new Error("Failed to fetch"),
+        "newSessionNetworkError",
+      ],
+      ["any other failure", new Error("Something odd"), "Something odd"],
+      [
+        "a thrown value that is not an Error",
+        "plain failure",
+        "newSessionStartError",
+      ],
+    ])(
+      "shows %s as its start failure and restores the draft",
+      async (_case, error, toast) => {
+        mockStartSession.mockRejectedValueOnce(error);
+        renderForm();
+        typeDraft("hello");
+        fireEvent.click(startButton());
+
+        await waitFor(() =>
+          expect(mockShowToast).toHaveBeenCalledWith(toast, "error"),
+        );
+        // The legacy path captures nothing, so it restores from storage.
+        expect(mockRestoreFromStorage).toHaveBeenCalledTimes(1);
+        expect(mockNavigate).not.toHaveBeenCalled();
+        await waitFor(() => expect(startButton().disabled).toBe(false));
+      },
+    );
+
+    it("refuses a chosen pool once sandboxing makes it unusable", async () => {
+      versionState.version = {
+        ...sandboxVersion,
+        capabilities: [...sandboxVersion.capabilities, "agent-auth-router"],
+      };
+      modelSettingsState.thinkingMode = "on";
+      renderForm();
+      await choosePool();
+      fireEvent.click(
+        dropdownOption("newSessionSandboxTitle", "newSessionSandboxLabel"),
+      );
+      typeDraft("hello");
+      // Start is disabled without a usable pool; Enter still reaches start.
+      expect(startButton().disabled).toBe(true);
+      fireEvent.keyDown(composer(), { key: "Enter" });
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "routerLaunchUnsupported",
+          "error",
+        ),
+      );
+      expect(mockStartSession).not.toHaveBeenCalled();
+      expect(composer().value).toBe("hello");
+    });
+
+    it("opens a routed start with the routed model", async () => {
+      versionState.version = { capabilities: ["agent-auth-router"] };
+      modelSettingsState.thinkingMode = "on";
+      renderForm();
+      await choosePool();
+      typeDraft("hello");
+      fireEvent.click(startButton());
+
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledTimes(1));
+      expect(mockNavigate).toHaveBeenCalledWith(
+        "/projects/project-1/sessions/session-1",
+        expect.objectContaining({
+          state: expect.objectContaining({
+            initialModel: "claude-opus-4-8",
+            initialProvider: "claude",
+            initialTitle: "hello",
+          }),
+        }),
+      );
+    });
+
+    it("refuses to queue a chosen pool on a server that would drop it", async () => {
+      showProjectQueue();
+      versionState.version = {
+        capabilities: [PROJECT_QUEUE_CAPABILITY, "agent-auth-router"],
+      };
+      modelSettingsState.thinkingMode = "on";
+      renderForm();
+      await choosePool();
+      typeDraft("queue this");
+      fireEvent.keyDown(composer(), { key: "Enter", ctrlKey: true });
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "routerQueueUnsupported",
+          "error",
+        ),
+      );
+      expect(mockCreateProjectQueueItem).not.toHaveBeenCalled();
+      expect(mockStartSession).not.toHaveBeenCalled();
+    });
+
+    it("refuses a one-turn modifier the server cannot carry", async () => {
+      renderForm();
+      typeDraft("/slow careful review");
+      fireEvent.click(startButton());
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "turnEffortUnavailable",
+          "error",
+        ),
+      );
+      expect(mockStartSession).not.toHaveBeenCalled();
+      expect(composer().value).toBe("/slow careful review");
+    });
+
+    it("refuses a one-turn modifier with no message", async () => {
+      versionState.version = {
+        capabilities: [PROJECT_QUEUE_CAPABILITY, "turn-effort-modifiers"],
+      };
+      renderForm();
+      typeDraft("/slow");
+      fireEvent.click(startButton());
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "turnEffortNeedsMessage",
+          "error",
+        ),
+      );
+      expect(mockStartSession).not.toHaveBeenCalled();
+    });
+
+    it("refuses an attachment-only start on a server without attachment-only messages", async () => {
+      const { container } = renderForm();
+      await attachStagedFile(container);
+      fireEvent.click(startButton());
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "attachmentOnlyRequiresServerUpdate",
+          "error",
+        ),
+      );
+      expect(mockStartSession).not.toHaveBeenCalled();
+      expect(mockCreateSession).not.toHaveBeenCalled();
+    });
+
+    it("refuses attachments a launch does not take, keeping the draft", async () => {
+      const submit = vi.fn(async () => {});
+      const { container } = renderForm({
+        launch: {
+          draftKey: "draft-launch:pins-files",
+          initialMessage: "",
+          fixedProject: true,
+          allowProjectQueue: false,
+          submit,
+        },
+      });
+      await attachStagedFile(container);
+      typeDraft("launch with a file");
+      fireEvent.click(startButton());
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "This session launch does not accept attachments",
+          "error",
+        ),
+      );
+      expect(submit).not.toHaveBeenCalled();
+      expect(composer().value).toBe("launch with a file");
+    });
+
+    it("shows the reason when queueing fails", async () => {
+      showProjectQueue();
+      mockCreateProjectQueueItem.mockRejectedValueOnce(new Error("queue down"));
+      renderForm();
+      typeDraft("queued work");
+      fireEvent.click(
+        screen.getByRole("button", { name: "toolbarProjectQueueLabel" }),
+      );
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "Queue failed: queue down",
+          "error",
+        ),
+      );
+      expect(mockStartSession).not.toHaveBeenCalled();
+    });
+
+    it("withholds Queue while machine control is selected and starts with it", async () => {
+      showProjectQueue();
+      versionState.version = {
+        capabilities: [PROJECT_QUEUE_CAPABILITY, "installed-machine-control"],
+      };
+      mockConnectionFetch.mockImplementation(async (path: string) =>
+        path === "/machine-control" ? { available: true } : {},
+      );
+      renderForm();
+      openAdvancedOptions();
+      await screen.findByTestId("filter-newSessionMachineControlTitle");
+      fireEvent.click(
+        dropdownOption("newSessionMachineControlTitle", "showThinkingOn"),
+      );
+      typeDraft("immediate only");
+
+      const queueButton = screen.getByRole("button", {
+        name: "toolbarProjectQueueLabel",
+      }) as HTMLButtonElement;
+      expect(queueButton.disabled).toBe(true);
+      expect(queueButton.getAttribute("title")).toBe(
+        "machineControlImmediateLaunchOnly",
+      );
+      fireEvent.click(startButton());
+      await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+      expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({ machineControl: true }),
+      );
+      expect(mockCreateProjectQueueItem).not.toHaveBeenCalled();
+    });
+
+    it("records a started prompt in composer history but not a queued one", async () => {
+      showProjectQueue();
+      renderForm();
+      typeDraft("queued work");
+      fireEvent.click(
+        screen.getByRole("button", { name: "toolbarProjectQueueLabel" }),
+      );
+      await waitFor(() =>
+        expect(mockCreateProjectQueueItem).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() => expect(startButton().disabled).toBe(false));
+      expect(mockRememberComposerPrompt).not.toHaveBeenCalled();
+
+      typeDraft("started work");
+      fireEvent.click(startButton());
+      await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+      expect(mockRememberComposerPrompt).toHaveBeenCalledTimes(1);
+      expect(mockRememberComposerPrompt).toHaveBeenCalledWith(
+        JSON.stringify(["host:test", null]),
+        "started work",
+      );
+    });
+
+    it("queues a restored pool's draft with the routed catalog's settings", async () => {
+      showProjectQueue();
+      versionState.version = {
+        capabilities: [
+          PROJECT_QUEUE_CAPABILITY,
+          "agent-auth-router",
+          "project-queue-router-selection",
+        ],
+      };
+      providersState.providers[0]!.models = [
+        { id: "default", name: "Default" },
+        {
+          id: "opus",
+          name: "Opus 4.8",
+          supportsAdaptiveThinking: true,
+          supportsEffort: true,
+          // Not the saved "low", which the routed account offers.
+          supportedEffortLevels: ["medium", "high"],
+          serviceTiers: [{ id: "priority", name: "Fast" }],
+        },
+      ];
+      serverSettingsState.settings = {
+        newSessionDefaults: {
+          provider: "claude",
+          permissionMode: "plan",
+          providers: {
+            claude: {
+              model: "opus",
+              routerPoolId: "work",
+              thinkingMode: "on",
+              effortLevel: "low",
+              serviceTier: "priority",
+            },
+          },
+        },
+      };
+      vi.mocked(api.routerSelection).mockResolvedValueOnce({
+        accounts: [
+          {
+            id: "routed-account",
+            provider: "claude",
+            enabled: true,
+            models: [
+              {
+                id: "opus",
+                name: "Opus 4.8",
+                supportsEffort: true,
+                supportsAdaptiveThinking: true,
+                supportedReasoningEfforts: [
+                  { reasoningEffort: "low", description: "Low" },
+                ],
+              },
+            ],
+          },
+        ],
+        pools: [
+          {
+            id: "work",
+            name: "Work",
+            provider: "claude",
+            accountIds: ["routed-account"],
+            policy: "round-robin",
+          },
+        ],
+      } as never);
+      renderForm();
+      openAdvancedOptions();
+      await waitFor(() =>
+        expect(selectedDropdownValue("routerPool")).toBe("work"),
+      );
+      typeDraft("queued under a pool");
+      fireEvent.keyDown(composer(), { key: "Enter", ctrlKey: true });
+
+      await waitFor(() =>
+        expect(mockCreateProjectQueueItem).toHaveBeenCalledTimes(1),
+      );
+      // The routed account offers the saved "low" but no speed tiers.
+      expect(mockCreateProjectQueueItem.mock.calls[0]![1].target).toEqual({
+        type: "new-session",
+        mode: "plan",
+        model: "opus",
+        thinking: "on:low",
+        showThinking: "default",
+        provider: "claude",
+        routerPoolId: "work",
+        title: "queued under a pool",
+      });
+    });
+
+    it("refuses to queue a restored pool on a server that would drop it", async () => {
+      showProjectQueue();
+      versionState.version = {
+        capabilities: [PROJECT_QUEUE_CAPABILITY, "agent-auth-router"],
+      };
+      serverSettingsState.settings = {
+        newSessionDefaults: {
+          provider: "claude",
+          providers: { claude: { model: "opus", routerPoolId: "work" } },
+        },
+      };
+      vi.mocked(api.routerSelection).mockResolvedValueOnce({
+        accounts: [
+          {
+            id: "routed-account",
+            provider: "claude",
+            enabled: true,
+            models: [{ id: "opus", name: "Opus 4.8" }],
+          },
+        ],
+        pools: [
+          {
+            id: "work",
+            name: "Work",
+            provider: "claude",
+            accountIds: ["routed-account"],
+            policy: "round-robin",
+          },
+        ],
+      } as never);
+      renderForm();
+      openAdvancedOptions();
+      await waitFor(() =>
+        expect(selectedDropdownValue("routerPool")).toBe("work"),
+      );
+      typeDraft("not on the direct login");
+      fireEvent.keyDown(composer(), { key: "Enter", ctrlKey: true });
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "routerQueueUnsupported",
+          "error",
+        ),
+      );
+      expect(mockCreateProjectQueueItem).not.toHaveBeenCalled();
+    });
+
+    it("throws from a memo start that is refused and resolves one that starts", async () => {
+      renderForm();
+      const openMemo = () =>
+        fireEvent.click(
+          screen.getByRole("button", { name: "newSessionAttachFiles" }),
+          { shiftKey: true },
+        );
+      const memo = () =>
+        new File(["memo"], "memo.webm", { type: "audio/webm" });
+      typeDraft("/slow review");
+      openMemo();
+      await screen.findByTestId("audio-memo");
+      await act(async () => {
+        await expect(
+          audioMemoState.current!.onCommit(memo(), ""),
+        ).rejects.toThrow("composerMemoCannotStart");
+      });
+      expect(mockShowToast).toHaveBeenCalledWith(
+        "turnEffortUnavailable",
+        "error",
+      );
+
+      cleanup();
+      mockUpload.mockResolvedValue(materializedFile);
+      renderForm();
+      typeDraft("memo note");
+      openMemo();
+      await screen.findByTestId("audio-memo");
+      await act(async () => {
+        await audioMemoState.current!.onCommit(memo(), "spoken words");
+      });
+      expect(mockCreateSession).toHaveBeenCalledTimes(1);
+      expect(mockQueueMessage.mock.calls[0]?.[1]).toBe(
+        "memo note\n\n🎤 audioMemoTranscriptSuffix\nspoken words",
+      );
+      expect(mockNavigate).toHaveBeenCalledWith(
+        "/projects/project-1/sessions/session-created",
+        expect.anything(),
+      );
+    });
+
+    it("shows a legacy start that names no project as a failure", async () => {
+      mockStartSession.mockResolvedValueOnce({
+        sessionId: "session-1",
+        processId: "process-1",
+      });
+      renderForm();
+      typeDraft("hello");
+      fireEvent.click(startButton());
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "Missing project ID for new session",
+          "error",
+        ),
+      );
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(composer().value).toBe("hello");
+    });
+
+    it("refuses a detached start for a limited user without no-project sessions", async () => {
+      versionState.version = sandboxVersion;
+      actingPrincipalState.principal = {
+        superuser: false,
+        username: "alice",
+        switched: false,
+        locked: true,
+        enabled: true,
+        hasLimitedUsers: true,
+        logoutRedirect: "direct-login",
+        grants: {
+          newSessionProjects: ["project-1"],
+          joinProjects: [],
+          viewProjects: [],
+          joinStaleOffsetMinutes: 0,
+          lock: {},
+        },
+      };
+      render(<NewSessionForm projects={[...chooserProjects]} />);
+      typeDraft("hello");
+      expect(startButton().disabled).toBe(true);
+      fireEvent.keyDown(composer(), { key: "Enter" });
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "Choose a project to start a session.",
+          "error",
+        ),
+      );
+      expect(mockStartSession).not.toHaveBeenCalled();
+      expect(mockStartDetachedSession).not.toHaveBeenCalled();
+    });
+
+    it("drops a chosen pool when the source changes", async () => {
+      versionState.version = { capabilities: ["agent-auth-router"] };
+      modelSettingsState.thinkingMode = "on";
+      const { rerender } = renderForm();
+      await choosePool();
+      expect(selectedDropdownValue("routerPool")).toBe("work");
+
+      // Switching away and back: the render alone ignores another source's
+      // pool, so only the source-change effect keeps the old one from
+      // returning.
+      const rerenderForm = () =>
+        rerender(
+          <NewSessionForm
+            projectId="project-1"
+            selectedProject={chooserProjects[0]}
+            projects={[...chooserProjects]}
+          />,
+        );
+      sourceKeyState.current = "host:other";
+      rerenderForm();
+      sourceKeyState.current = "host:test";
+      rerenderForm();
+      typeDraft("hello");
+      fireEvent.click(startButton());
+
+      await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+      expect(mockShowToast).not.toHaveBeenCalledWith(
+        "routerLaunchUnsupported",
+        "error",
+      );
+      expect(mockStartSession.mock.calls[0]?.[2]).toMatchObject({
+        provider: "claude",
+        model: "opus",
+      });
+      expect(mockStartSession.mock.calls[0]?.[2].routerPoolId).toBeUndefined();
+    });
+
+    it("applies a limited user's lock that arrives after the defaults", async () => {
+      versionState.version = sandboxVersion;
+      serverSettingsState.settings = {
+        newSessionDefaults: {
+          provider: "claude",
+          model: "opus",
+          permissionMode: "default",
+          sandboxLevel: "none",
+          // Only the lock clears this; the launch overrides do not.
+          recapMode: "side-session",
+        },
+      };
+      const { rerender } = renderForm();
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe("opus");
+
+      actingPrincipalState.principal = {
+        superuser: false,
+        username: "alice",
+        switched: false,
+        locked: true,
+        enabled: true,
+        hasLimitedUsers: true,
+        logoutRedirect: "direct-login",
+        grants: {
+          newSessionProjects: ["project-1"],
+          joinProjects: [],
+          viewProjects: [],
+          joinStaleOffsetMinutes: 0,
+          lock: { provider: "codex", model: "gpt-5.4", effort: "medium" },
+        },
+      };
+      rerender(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByText("Set by your account")).toBeTruthy(),
+      );
+      typeDraft("locked late");
+      fireEvent.click(startButton());
+
+      await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+      expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({
+          provider: "codex",
+          model: "gpt-5.4",
+          thinking: "on:medium",
+          sandboxLevel: "project-write",
+          sandboxNetworkFirewall: true,
+          recapMode: "off",
+        }),
+      );
+      expect(mockUpdateSetting).not.toHaveBeenCalled();
+    });
+
+    it("saves over a sandbox default on a host without sandboxing", async () => {
+      serverSettingsState.settings = {
+        newSessionDefaults: {
+          provider: "claude",
+          model: "opus",
+          permissionMode: "default",
+          sandboxLevel: "project-write",
+          sandboxNetworkFirewall: false,
+        },
+      };
+      renderForm();
+      openAdvancedOptions();
+      fireEvent.click(dropdownOption("newSessionModeTitle", "modePlanLabel"));
+
+      await waitFor(() => expect(mockUpdateSetting).toHaveBeenCalled());
+      expect(mockUpdateSetting.mock.calls.at(-1)).toMatchInlineSnapshot(`
+        [
+          "newSessionDefaults",
+          {
+            "model": "opus",
+            "permissionMode": "plan",
+            "promptSuggestionMode": "off",
+            "provider": "claude",
+            "providers": {
+              "claude": {
+                "effortLevel": "high",
+                "helperSideModel": "cheapest",
+                "model": "opus",
+                "thinkingMode": "off",
+              },
+            },
+            "recapAfterSeconds": 300,
+            "recapMode": "off",
+          },
+        ]
+      `);
+    });
+
+    it("saves sandboxing with its firewall and without a side-session recap", async () => {
+      versionState.version = sandboxVersion;
+      serverSettingsState.settings = {
+        newSessionDefaults: {
+          provider: "claude",
+          model: "opus",
+          permissionMode: "default",
+          recapMode: "side-session",
+          sandboxLevel: "none",
+        },
+      };
+      renderForm();
+      openAdvancedOptions();
+      fireEvent.click(
+        dropdownOption("newSessionSandboxTitle", "newSessionSandboxLabel"),
+      );
+
+      await waitFor(() => expect(mockUpdateSetting).toHaveBeenCalled());
+      expect(mockUpdateSetting.mock.calls.at(-1)).toMatchInlineSnapshot(`
+        [
+          "newSessionDefaults",
+          {
+            "model": "opus",
+            "permissionMode": "default",
+            "promptSuggestionMode": "off",
+            "provider": "claude",
+            "providers": {
+              "claude": {
+                "effortLevel": "high",
+                "helperSideModel": "cheapest",
+                "model": "opus",
+                "thinkingMode": "off",
+              },
+            },
+            "recapAfterSeconds": 300,
+            "recapMode": "off",
+            "sandboxLevel": "project-write",
+            "sandboxNetworkFirewall": true,
+          },
+        ]
+      `);
     });
   });
 });

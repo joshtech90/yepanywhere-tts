@@ -41,7 +41,20 @@ idle predicate; standalone yacron is explicitly ineligible.
   whose deferred validation failure it cannot observe.
 - An existing-session item resumes its session inside the sandbox the session
   was created with, as `/resume` does; a queued turn never asks for a
-  different boundary.
+  different boundary. It likewise keeps its session's router pin, and router
+  fields on an existing-session target are refused.
+- A new-session item may carry an Agent Auth Router pool or account
+  (`routerPoolId`, `routerAccountId`, `routerPolicy`,
+  `routerClaudeAiConnectors`, advertised as `project-queue-router-selection`),
+  validated at enqueue with Supervisor's shape rules and refused with a
+  sandbox or remote executor. The pin is allocated at dispatch, not enqueue.
+  A router refusal before provider start (no usable pool account, login
+  required, revoked grant, router offline) counts as a startup failure: the
+  item retries and then pauses as `failed` with the router's message. The
+  automatic retry gets a fresh creation retry identity, because the refused
+  attempt delivered nothing; it never re-dispatches without the selection.
+  Limited users cannot queue router fields. Plan 183,
+  [agent-auth-router](agent-auth-router.md).
 - An item records the limited user who queued it, if any. That user's launch
   policy applies when the item is queued or edited and again at dispatch from
   their grants at that time, and the turn and any new session are attributed
@@ -97,6 +110,42 @@ messages before Project Queue starts. Project Queue is not a competing second
 queue on the same session; it is a project-level backlog that injects only
 after all lower-level work in the project is done.
 
+## Durable new-session admission
+
+Superuser ordinary text items supported by the common creation owner now use
+[durable session admission](session-identity.md). The queue item id supplies a
+stable operation key across promotion and restart. Admission saves the permanent
+YA id, exact initial input, launch choices and original source before native
+startup; Queue persists the item-to-session association before dispatch. Reads,
+edits and dispatch claims recover an interrupted association from the compact
+durable operation key, so the JSON write gap cannot allow a changed/retargeted
+request to replace admitted input. Once
+accepted, the common owner/worker queue owns startup, including worker deferral.
+Project Queue completes its item and returns the saved YA session id rather than
+owning another deferred-start/retry lifecycle. Provider-native ids never replace it.
+
+Repeated promotion recovers the existing admission. Confirmed delivery completes
+an interrupted Queue handoff without starting another provider. Unknown native
+effects retain the saved session and refuse initial-input replay. An explicit
+Retry can create another attempt under the same public id only after a proved
+`failed`/`not-admitted` outcome. Qualified durable creation does not use Queue's
+legacy automatic native-startup retries. Queue state and SQLite are separate
+stores; a deterministic admission key recovers an interrupted association write,
+without claiming a cross-store transaction.
+
+A failed item exposes `creationSessionId` and an Open saved session link.
+Accepted input is immutable: remove the item and enqueue changed input as new
+work, rather than silently rewriting the saved request. Original source-less
+legacy items retain unknown provenance through an explicit legacy-Queue context;
+creator authority is independent of that descriptive source. Missing saved
+admission for an already associated item refuses a replacement launch.
+
+Attachments, limited-user/sandbox launches and other unqualified input/provider
+shapes retain their existing implementation until the remaining consolidation
+slices. Existing-session items keep their existing delivery policy. The optional
+summary association is additive; older servers omit it and older clients ignore
+it. This does not advertise the broader all-caller creation receipts capability.
+
 ## Quiet Window
 
 Project Queue's quiet window is a user-interaction patience setting, not a
@@ -127,8 +176,15 @@ the Project Queue inert forever.
 Queue collection reads are retained projections, not provider discovery
 triggers. Existing-session titles come from the
 [`compact session catalog`](session-catalog-observation.md) plus immediate YA
-metadata; unresolved titles remain nullable while one exact background repair
-runs. Repeated queue reads with unchanged state perform no provider,
+metadata. Project and global queue reads share the catalog's accepted project
+shard read, including after restart; concurrent requests join its source-versioned
+read owner. A public session ID selects its exact native binding and original
+project, with the working project checked against the queue's project. Legacy
+lookups require unambiguous project/provider membership. No match means unknown
+rather than confirmed absence: titles remain nullable until normal catalog
+reconciliation supplies them. Queue reads do not initiate provider discovery,
+native replay, identity adoption or title enrichment. Immediate custom metadata
+still takes precedence. Repeated queue reads with unchanged state perform no provider,
 session-index miss, transcript, or all-project work.
 
 A limited user's global queue collection and promote-now response project
@@ -143,7 +199,12 @@ transitions update one server-owned project-status projection and publish a
 versioned delta. Client components share one source/query revalidation owner.
 They render countdowns from server timestamps and may arm one exact
 source-level deadline or capability-gated legacy poll; they never each start a
-fixed interval. An event that lacks title fields must merge as a partial patch
+fixed interval. Existing catalog publications and user-set session metadata
+changes revalidate that same shared source/query owner, so newly published or
+renamed titles reach all mounted queue consumers. These are optional existing
+events: older servers retain the normal refresh/reconnect/queue-event path;
+no new wire field, action or capability meaning is required.
+An event that lacks title fields must merge as a partial patch
 and cannot erase a known catalog-backed title.
 
 The configurable range is 0-300 seconds, default 30 seconds. A value of 0 means
@@ -314,7 +375,8 @@ feature do not encounter a new empty-state concept. An initial read failure is
 still rendered even when no stale items exist; failure must not masquerade as a
 confirmed empty queue.
 Each ordinary Project Queue row shows the provider/model badge saved on its
-target before dispatch. Older items without a saved provider omit the badge;
+target before dispatch, and a "Router pool" or "Router account" chip when
+the item names one. Older items without a saved provider omit the badge;
 the display is informative and does not replace launch-time provider catalog
 validation.
 An active session composer's additional "queue as new session" action has
@@ -333,6 +395,9 @@ additional new-session action create the same durable Project Queue target
 shape (`target.type === "new-session"`); neither uses a client-held draft
 queue. The active-session action inherits that session's selected provider,
 model, executor, permission mode, and thinking settings for the future session.
+Until the current session's provider is known, its new-session actions remain
+unavailable instead of submitting with the server's default provider. The
+composer continues accepting draft text while session details load.
 
 Right-click (long-press on touch) on the active-session new-session action
 opens a purple-tinted dock below the editable composer instead of queueing.
@@ -555,6 +620,33 @@ not support rewind, a turn still running, a turn number that is gone — fails
 the item with that message and keeps the command text for Retry, like any
 other dispatch failure.
 
+## Draft acknowledgement
+
+The dedicated New Session form captures the exact draft and staged-file
+selection before project resolution or enqueue. Typing stays available while
+the request waits. Acceptance conditionally confirms that captured draft; it
+never clears a newer local, sibling-tab or remote revision. Only submitted file
+IDs are removed when that confirmation clears the captured input; a newer
+upload still in flight survives. A rejected enqueue conditionally cancels the
+account/slot-bound capture, adopts any newer physical sibling value, and leaves
+the current text/files exact. A differing submitted copy is retained separately
+as recovery metadata, rather than prepended to the newer editor. Reload
+preserves the newer
+local draft, and the usual independent synchronization continues.
+
+Source/account retirement prevents a pending form reply or delayed project
+resolution from clearing or publishing into its replacement. A manual Project
+Queue action awaiting speech
+settlement also retains its delivery intent when final speech contains a send
+command. If final wording differs from the manually selected visible snapshot,
+that unsent wording is retained instead of acknowledged as submitted.
+
+The enqueue payload, acceptance boundary and capability checks are unchanged.
+This does not introduce a durable browser enqueue receipt or make a lost reply
+safe to repeat blindly; inspect the server-owned queue before repeating an
+unconfirmed enqueue. Older-server creation fallback and template/handoff draft
+acknowledgement retain their separately tracked boundaries.
+
 ## Attachments
 
 Existing-session Project Queue items may contain already uploaded attachment
@@ -582,8 +674,10 @@ of its files. The draft and successful uploads remain available for recovery;
 the failed file must be attached again. The collector carries those successful
 results through the direct-send, deferred-send and Project Queue error paths.
 
-Attachments protected by a synced draft are copied into queue ownership on
-create or edit. The queue stores the copies' canonical references in the
+When draft synchronization is initialized, draft attachments are copied into
+queue ownership on create or edit, including references whose first draft save
+is still in flight. Enqueue must not move an original out from under that save.
+The queue stores the copies' canonical references in the
 submitted order, including when mixed with retained or unsynced attachments.
 Reload, promotion and cancellation use those references; cancelling an item
 or rolling back a failed save leaves the synced originals usable.

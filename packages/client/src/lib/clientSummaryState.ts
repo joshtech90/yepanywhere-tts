@@ -12,6 +12,7 @@ import type {
   ProjectQueueProjectStatus,
   ProjectQueueRecoveredSessionQueueSummary,
   SessionMetadataPayload,
+  SessionProviderPhase,
   UrlProjectId,
 } from "@yep-anywhere/shared";
 import type { GlobalSessionItem, InboxItem } from "../api/client";
@@ -49,14 +50,20 @@ import {
   resolveSessionCollectionId,
 } from "./clientSummaryCollections";
 import {
+  inboxTierIdsEqual,
+  normalizedJsonEqual,
+  projectQueueDispatchStatesEqual,
+  projectQueueItemsEqual,
+  projectQueueProjectStatusesEqual,
+  providerRuntimeStatusEqual,
+  recoveredSessionQueuesEqual,
+  stringSetsEqual,
+} from "./clientSummaryEquality";
+import {
   createGlobalSessionsQueryKey,
   isActiveActivity,
 } from "./clientSummaryQueries";
-import {
-  createEmptyInboxTierRecord,
-  INBOX_TIERS,
-  type InboxTier,
-} from "./inboxTiers";
+import { createEmptyInboxTierRecord, INBOX_TIERS } from "./inboxTiers";
 
 const NO_OBSERVATION = Number.NEGATIVE_INFINITY;
 const CREATED_SESSION_QUERY_MEMBERSHIP_TTL_MS = 60_000;
@@ -497,39 +504,6 @@ function putProjectsQuery(
   };
 }
 
-function normalizedJsonEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function projectQueueItemsEqual(
-  a: readonly ProjectQueueItemSummary[],
-  b: readonly ProjectQueueItemSummary[],
-): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  return a.every((item, index) => {
-    const other = b[index];
-    if (!other) return false;
-    return (
-      item.id === other.id &&
-      item.projectId === other.projectId &&
-      normalizedJsonEqual(item.target, other.target) &&
-      item.targetTitle === other.targetTitle &&
-      item.targetFullTitle === other.targetFullTitle &&
-      item.messagePreview === other.messagePreview &&
-      normalizedJsonEqual(item.message, other.message) &&
-      item.createdAt === other.createdAt &&
-      item.updatedAt === other.updatedAt &&
-      normalizedJsonEqual(item.createdFrom, other.createdFrom) &&
-      item.status === other.status &&
-      item.attachmentCount === other.attachmentCount &&
-      item.lastError === other.lastError &&
-      item.lastAttemptAt === other.lastAttemptAt
-    );
-  });
-}
-
 function mergeProjectQueueItemDisplayMetadata(
   existingItems: readonly ProjectQueueItemSummary[] | undefined,
   snapshotItems: readonly ProjectQueueItemSummary[],
@@ -619,63 +593,6 @@ function mergeProjectQueueSnapshotIntoGlobalItems(
     }
   }
   return merged;
-}
-
-function inboxTierIdsEqual(
-  a: Record<InboxTier, readonly string[]>,
-  b: Record<InboxTier, readonly string[]>,
-): boolean {
-  return INBOX_TIERS.every((tier) => {
-    const aIds = a[tier];
-    const bIds = b[tier];
-    return (
-      aIds.length === bIds.length &&
-      aIds.every((id, index) => id === bIds[index])
-    );
-  });
-}
-
-function stringSetsEqual(
-  a: ReadonlySet<string>,
-  b: ReadonlySet<string>,
-): boolean {
-  if (a === b) return true;
-  if (a.size !== b.size) return false;
-  for (const value of a) {
-    if (!b.has(value)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function projectQueueDispatchStatesEqual(
-  a: ProjectQueueDispatchState,
-  b: ProjectQueueDispatchState,
-): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function recoveredSessionQueuesEqual(
-  a: readonly ProjectQueueRecoveredSessionQueueSummary[],
-  b: readonly ProjectQueueRecoveredSessionQueueSummary[],
-): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function providerRuntimeStatusEqual(
-  a: ProviderRuntimeStatus,
-  b: ProviderRuntimeStatus,
-): boolean {
-  if (a === b) return true;
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function projectQueueProjectStatusesEqual(
-  a: ProjectQueueProjectStatus,
-  b: ProjectQueueProjectStatus,
-): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function putProviderRuntimeStatus(
@@ -1125,6 +1042,7 @@ function putInboxSnapshot(
   );
   let next = state;
   const tiers = createEmptyInboxTierRecord<string[]>(() => []);
+  const providerPhases = new Map<string, SessionProviderPhase>();
   const seenSessionIds = new Set<string>();
   for (const tier of INBOX_TIERS) {
     for (const item of snapshot[tier]) {
@@ -1133,6 +1051,7 @@ function putInboxSnapshot(
         seenSessionIds.add(sessionId);
         tiers[tier].push(sessionId);
       }
+      if (item.providerPhase) providerPhases.set(sessionId, item.providerPhase);
       next = upsertInboxItemRecord(next, item, observation);
     }
   }
@@ -1141,12 +1060,13 @@ function putInboxSnapshot(
     ? next.inbox.tiers
     : tiers;
 
+  const partial = snapshot.catalog?.complete === false;
   return {
     ...next,
     inbox: {
       ...next.inbox,
-      tiers:
-        snapshot.catalog?.complete === false ? next.inbox.tiers : stableTiers,
+      tiers: partial ? next.inbox.tiers : stableTiers,
+      providerPhases: partial ? next.inbox.providerPhases : providerPhases,
       catalog: snapshot.catalog,
       requestStartedAt,
       fetchedAt: Date.now(),

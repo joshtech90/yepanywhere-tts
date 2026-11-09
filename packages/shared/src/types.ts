@@ -25,6 +25,7 @@ export type ProviderName =
   | "codex-oss"
   | "gemini"
   | "gemini-acp"
+  | "antigravity"
   | "grok"
   | "opencode"
   | "pi";
@@ -44,6 +45,7 @@ export const ALL_PROVIDERS: readonly ProviderName[] = [
   "codex-oss",
   "gemini",
   "gemini-acp",
+  "antigravity",
   "grok",
   "opencode",
   "pi",
@@ -529,6 +531,7 @@ export interface ProviderInfo extends ProviderDescriptor {
    * (Claude `priority: "now"`). Default: false.
    */
   supportsSteerNow?: boolean;
+  steering?: import("./steering.js").ProviderSteeringCapabilities;
   /** Whether this provider can generate YA-triggered recap messages. */
   supportsRecaps?: boolean;
   /** Whether this provider emits recaps natively without a YA side query. */
@@ -632,6 +635,17 @@ export const ALL_PERMISSION_MODES: readonly PermissionMode[] = [
  */
 export type SessionSandboxLevel = "none" | "project-write";
 
+/**
+ * A session's YA sandbox as its summary reports it, so a session derived from
+ * it can keep the same boundary (plan 183).
+ */
+export interface SessionSandboxSummary {
+  /** Absent means unsandboxed, or a server that predates this field. */
+  sandboxLevel?: SessionSandboxLevel;
+  /** With `project-write`: absent or true means the network firewall is on. */
+  sandboxNetworkFirewall?: boolean;
+}
+
 export const SESSION_SANDBOX_LEVELS: readonly SessionSandboxLevel[] = [
   "none",
   "project-write",
@@ -716,6 +730,8 @@ export interface ProviderSessionDefaults {
   routerAccountId?: string;
   /** Policy override; absent uses the pool's current default. */
   routerPolicy?: string;
+  /** Routed Claude sessions keep claude.ai connectors; absent means off. */
+  routerClaudeAiConnectors?: boolean;
   /** Provider-work thinking mode for new sessions on this provider. */
   thinkingMode?: ThinkingMode;
   /** Provider-local effort level for new sessions on this provider. */
@@ -853,6 +869,12 @@ export interface ClientDefaults {
    * absent, clients use DEFAULT_STEER_NOW_ENABLED.
    */
   steerNowDefault?: boolean;
+  /**
+   * Per-provider override of `steerNowDefault`. An absent provider inherits
+   * the global default; there is no stored "inherit" value. Resolve through
+   * the client's `resolveSteerNowDefault`.
+   */
+  steerNowDefaultByProvider?: Partial<Record<ProviderName, boolean>>;
   /**
    * Default for the "wait until the agent is fully done before delivering
    * queued messages" preference (patient queue intent). Global; set in the

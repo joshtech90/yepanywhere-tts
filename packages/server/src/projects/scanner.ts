@@ -1,3 +1,5 @@
+import type { CatalogProjectSource } from "./catalog-projects.js";
+import { claudeCwdProjectDirectory } from "./claude-project-directory.js";
 import type { Dirent } from "node:fs";
 import {
   mkdir,
@@ -34,6 +36,7 @@ import {
 } from "./paths.js";
 
 export interface ScannerOptions {
+  catalogProjects?: CatalogProjectSource;
   projectsDir?: string; // override for testing
   codexSessionsDir?: string; // override for testing
   geminiSessionsDir?: string; // override for testing
@@ -65,7 +68,7 @@ export interface GetProjectOptions {
 
 const CLAUDE_PROJECT_SCAN_BATCH_SIZE = 16;
 const CWD_SCAN_BATCH_SIZE = 8;
-const PROJECT_SCAN_CACHE_VERSION = 5;
+const PROJECT_SCAN_CACHE_VERSION = 6;
 
 interface ProjectScanSourceState {
   projectsDir: string;
@@ -186,8 +189,16 @@ export class ProjectScanner {
   private eventBus: EventBus | undefined;
   private unsubscribeEventBus: (() => void) | null = null;
   private disposed = false;
+  private catalogProjects?: CatalogProjectSource;
+  private joined?: {
+    base: ProjectSnapshot | null;
+    version: string;
+    snapshot: ProjectSnapshot;
+  };
+  private publishedCatalogVersion?: string;
 
   constructor(options: ScannerOptions = {}) {
+    this.catalogProjects = options.catalogProjects;
     this.projectsDir = options.projectsDir ?? CLAUDE_PROJECTS_DIR;
     this.codexSessionsDir = options.codexSessionsDir ?? CODEX_SESSIONS_DIR;
     this.geminiSessionsDir = options.geminiSessionsDir ?? GEMINI_TMP_DIR;
@@ -217,6 +228,23 @@ export class ProjectScanner {
       this.unsubscribeEventBus = options.eventBus.subscribe((event) => {
         if (event.type === "file-change") {
           this.handleFileChange(event);
+        } else if (event.type === "session-catalog-updated") {
+          const view = this.catalogProjects?.peek();
+          if (!view || this.publishedCatalogVersion === view.version) return;
+          this.publishedCatalogVersion = view.version;
+          const previousIds =
+            this.joined?.snapshot.projects.map((project) => project.id) ?? [];
+          this.eventBus?.emit({
+            type: "projects-changed",
+            collectionRefresh: true,
+            projectIds: [
+              ...new Set([
+                ...previousIds,
+                ...this.joinedSnapshot().projects.map((project) => project.id),
+              ]),
+            ],
+            timestamp: new Date().toISOString(),
+          });
         }
       });
     }
@@ -236,17 +264,76 @@ export class ProjectScanner {
    * first scan. For synchronous callers that can tolerate a stale list.
    */
   cachedProjects(): readonly Pick<Project, "id" | "path">[] {
-    return this.snapshot?.projects ?? [];
+    return this.joinedSnapshot().projects;
   }
 
   async listProjects(): Promise<Project[]> {
-    const snapshot = await this.getSnapshot();
+    const base = await this.getSnapshot();
+    await this.catalogProjects?.read(true);
+    const snapshot = this.joinedSnapshot(base);
     const sandboxDirs = this.sandboxSessionDirs();
     return Promise.all(
       snapshot.projects.map((project) =>
         this.readProject(project, sandboxDirs),
       ),
     );
+  }
+
+  /** Catalog production reads only the file-scanner layer, never its own projection. */
+  async listFileCatalogProjects(): Promise<Project[]> {
+    const snapshot = await this.getSnapshot();
+    return Promise.all(
+      snapshot.projects.map((project) => this.readProject(project)),
+    );
+  }
+
+  private joinedSnapshot(base = this.snapshot): ProjectSnapshot {
+    const view = this.catalogProjects?.peek();
+    if (!view?.projects.length) return base ?? this.buildSnapshot([]);
+    if (this.joined?.base === base && this.joined.version === view.version)
+      return this.joined.snapshot;
+    const projects = new Map<string, Project>(
+      (base?.projects ?? [])
+        .filter(
+          (project) =>
+            !(
+              project.path === homedir() &&
+              project.sessionCount === 0 &&
+              project.lastActivity === null
+            ),
+        )
+        .map((project) => [
+          getProjectIdentityKey(project.path),
+          {
+            ...project,
+            sessionCountsByProvider: { ...project.sessionCountsByProvider },
+          },
+        ]),
+    );
+    for (const native of view.projects) {
+      if (this.isHiddenProjectPath(native.path)) continue;
+      const key = getProjectIdentityKey(native.path);
+      const project =
+        projects.get(key) ??
+        this.registeredProject(native.path, native.lastActivity);
+      if (!project.sessionCount) project.provider = native.provider;
+      for (const [provider, count] of Object.entries(native.counts))
+        addProviderSessionCount(project, provider as ProviderName, count);
+      project.lastActivity = latestActivity(
+        project.lastActivity,
+        native.lastActivity,
+      );
+      projects.set(key, project);
+    }
+    for (const metadata of Object.values(
+      this.projectMetadataService?.getAllProjects() ?? {},
+    )) {
+      const project = projects.get(getProjectIdentityKey(metadata.path));
+      if (project) project.ownerUsername = metadata.ownerUsername;
+    }
+    const snapshot = this.buildSnapshot([...projects.values()]);
+    this.joined = { base, version: view.version, snapshot };
+    return snapshot;
   }
 
   /** Retained project reads never wait for provider discovery or sandbox counts. */
@@ -259,9 +346,11 @@ export class ProjectScanner {
     await this.initializeRetainedProjects();
     if (this.disposed) throw new Error("Project scanner is disposed");
     this.scheduleRetainedRefresh();
+    const catalog = await this.catalogProjects?.read();
+    if (this.disposed) throw new Error("Project scanner is disposed");
     const sandboxDirs = this.sandboxSessionDirs();
     const projects = new Map(
-      (this.snapshot?.projects ?? []).map((project) => [
+      this.joinedSnapshot().projects.map((project) => [
         getProjectIdentityKey(project.path),
         this.cloneProject(project, sandboxDirs),
       ]),
@@ -285,8 +374,11 @@ export class ProjectScanner {
       projects: [...projects.values()].filter(
         (project) => !this.isHiddenProjectPath(project.path),
       ),
-      complete: this.snapshot !== null,
-      refreshing: Boolean(this.retainedRefresh || this.retainedTimer),
+      complete: this.snapshot !== null && (catalog?.complete ?? true),
+      refreshing: Boolean(
+        this.retainedRefresh || this.retainedTimer || catalog?.refreshing,
+      ),
+      ...(catalog?.refreshError ? { refreshError: catalog.refreshError } : {}),
       ...(this.retainedRefreshError
         ? { refreshError: this.retainedRefreshError }
         : {}),
@@ -300,7 +392,7 @@ export class ProjectScanner {
       name: getProjectName(path),
       sessionCount: 0,
       sessionCountsByProvider: { claude: 0 },
-      sessionDir: join(this.projectsDir, path.replace(/[/\\:]/g, "-")),
+      sessionDir: join(this.projectsDir, claudeCwdProjectDirectory(path)),
       hasCodexSessions: false,
       hasGeminiSessions: false,
       activeOwnedCount: 0,
@@ -367,6 +459,7 @@ export class ProjectScanner {
       this.snapshot?.projects.map((project) => project.id) ?? [];
     this.retainedRefresh = this.initializeRetainedProjects()
       .then(() => this.getSnapshot(true))
+      .then(() => this.catalogProjects?.read(true))
       .then(() => undefined)
       .catch((error: unknown) => {
         if (this.disposed) return;
@@ -384,7 +477,7 @@ export class ProjectScanner {
           projectIds: [
             ...new Set([
               ...previousIds,
-              ...(this.snapshot?.projects.map((project) => project.id) ?? []),
+              ...this.joinedSnapshot().projects.map((project) => project.id),
             ]),
           ],
           timestamp: new Date().toISOString(),
@@ -933,6 +1026,7 @@ export class ProjectScanner {
       return;
     }
 
+    if (!["claude", "codex", "gemini"].includes(event.provider)) return;
     if (event.provider === "claude") {
       const parts = relative(this.projectsDir, event.path).split(sep);
       const first = parts[0] ?? "";
@@ -961,13 +1055,6 @@ export class ProjectScanner {
     const seenIdentityKeys = new Set<string>();
     // Map from normalized path to project index for cross-machine dedup
     const normalizedIndex = new Map<string, number>();
-
-    const findProjectByIdentity = (projectPath: string): Project | undefined =>
-      projects.find(
-        (project) =>
-          getProjectIdentityKey(project.path) ===
-          getProjectIdentityKey(projectPath),
-      );
 
     // Helper to add a Claude project, merging cross-machine duplicates
     const addOrMerge = (
@@ -1067,12 +1154,22 @@ export class ProjectScanner {
       addOrMerge(info.projectPath, dir, info.sessionCount, info.lastActivity);
     }
 
+    // Build after Claude merging settles its preferred local path. Keep the
+    // first identity match, as discovery's provider precedence requires.
+    const projectsByIdentity = new Map<string, Project>();
+    for (const project of projects) {
+      const identity = getProjectIdentityKey(project.path);
+      if (!projectsByIdentity.has(identity))
+        projectsByIdentity.set(identity, project);
+    }
+
     // Merge Codex projects if enabled
     if (this.codexScanner) {
       for (const codexProject of codexResult.value) {
         const projectPath = canonicalizeProjectPath(codexProject.path);
         if (this.isHiddenProjectPath(projectPath)) continue;
-        const existing = findProjectByIdentity(projectPath);
+        const identity = getProjectIdentityKey(projectPath);
+        const existing = projectsByIdentity.get(identity);
         if (existing) {
           addProviderSessionCount(
             existing,
@@ -1090,14 +1187,16 @@ export class ProjectScanner {
         }
         seenPaths.add(projectPath);
         seenIdentityKeys.add(getProjectIdentityKey(projectPath));
-        projects.push({
+        const project: Project = {
           ...withProviderSessionCounts(codexProject),
           id: encodeProjectId(projectPath),
           path: projectPath,
           name: getProjectName(projectPath),
           hasCodexSessions: true,
           hasGeminiSessions: false,
-        });
+        };
+        projects.push(project);
+        projectsByIdentity.set(identity, project);
       }
     }
 
@@ -1112,7 +1211,8 @@ export class ProjectScanner {
       for (const geminiProject of geminiProjects) {
         const projectPath = canonicalizeProjectPath(geminiProject.path);
         if (this.isHiddenProjectPath(projectPath)) continue;
-        const existing = findProjectByIdentity(projectPath);
+        const identity = getProjectIdentityKey(projectPath);
+        const existing = projectsByIdentity.get(identity);
         if (existing) {
           addProviderSessionCount(
             existing,
@@ -1130,14 +1230,16 @@ export class ProjectScanner {
         }
         seenPaths.add(projectPath);
         seenIdentityKeys.add(getProjectIdentityKey(projectPath));
-        projects.push({
+        const project: Project = {
           ...withProviderSessionCounts(geminiProject),
           id: encodeProjectId(projectPath),
           path: projectPath,
           name: getProjectName(projectPath),
           hasCodexSessions: false,
           hasGeminiSessions: true,
-        });
+        };
+        projects.push(project);
+        projectsByIdentity.set(identity, project);
       }
     }
 
@@ -1169,7 +1271,7 @@ export class ProjectScanner {
     // home directory so sessions can always be created even if detection is broken
     if (projects.length === 0) {
       const home = homedir();
-      const encodedPath = home.replace(/[/\\:]/g, "-");
+      const encodedPath = claudeCwdProjectDirectory(home);
       projects.push({
         id: encodeProjectId(home),
         path: home,
@@ -1216,10 +1318,12 @@ export class ProjectScanner {
     projectId: string,
     options?: GetProjectOptions,
   ): Promise<Project | null> {
-    const snapshot =
+    const base =
       options?.allowStaleSnapshot && this.snapshot
         ? this.snapshot
         : await this.getSnapshot();
+    await this.catalogProjects?.read();
+    const snapshot = this.joinedSnapshot(base);
     let project = snapshot.byId.get(projectId);
     if (!project) {
       try {
@@ -1250,11 +1354,12 @@ export class ProjectScanner {
   async getOrCreateProject(
     projectId: string,
     preferredProvider?: "claude" | "codex" | "gemini",
+    options?: GetProjectOptions,
   ): Promise<Project | null> {
     let resolvedProjectId = projectId;
 
     // First check if project already exists
-    const existing = await this.getProject(resolvedProjectId);
+    const existing = await this.getProject(resolvedProjectId, options);
     if (existing) return existing;
 
     // Decode the projectId to get the path
@@ -1268,7 +1373,7 @@ export class ProjectScanner {
     const canonicalProjectPath = canonicalizeProjectPath(projectPath);
     if (canonicalProjectPath !== projectPath) {
       const canonicalId = encodeProjectId(canonicalProjectPath);
-      const canonicalProject = await this.getProject(canonicalId);
+      const canonicalProject = await this.getProject(canonicalId, options);
       if (canonicalProject) {
         return canonicalProject;
       }
@@ -1315,7 +1420,7 @@ export class ProjectScanner {
 
     // Create a virtual project entry
     // The session directory will be created by the SDK when the first session starts
-    const encodedPath = projectPath.replace(/[/\\:]/g, "-");
+    const encodedPath = claudeCwdProjectDirectory(projectPath);
 
     // Determine the session directory based on provider
     let sessionDir: string;
@@ -1478,8 +1583,10 @@ export class ProjectScanner {
       const dirStat = await stat(projectDirPath);
       const lastActivity = new Date(dirStat.mtimeMs).toISOString();
 
-      // Read cwd from session files in small batches and return early on first match.
-      // Most project dirs have a session file with cwd near the top of the first file.
+      // A launch folder can also hold --worktree transcripts. Prefer its
+      // native key over whichever transcript enumeration happens to return first.
+      const nativeDirectory = basename(projectDirPath);
+      let firstCwd: string | null = null;
       const regularSessionFiles = jsonlFiles.filter(
         (f) => !f.startsWith("agent-"),
       );
@@ -1500,13 +1607,16 @@ export class ProjectScanner {
         );
 
         for (const cwd of batchCwds) {
-          if (cwd) {
+          if (cwd && claudeCwdProjectDirectory(cwd) === nativeDirectory) {
             return { projectPath: cwd, sessionCount, lastActivity };
           }
+          firstCwd ??= cwd || null;
         }
       }
 
-      return null;
+      return firstCwd
+        ? { projectPath: firstCwd, sessionCount, lastActivity }
+        : null;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT" || code === "ENOTDIR") return null;

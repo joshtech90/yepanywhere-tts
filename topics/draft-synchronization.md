@@ -8,10 +8,13 @@ exception to [vanilla defaults](vanilla-defaults.md), not collaborative editing.
 
 ## What follows you between devices
 
-Session composers, global/project new-session composers, the floating composer,
-handoff composers, approval feedback, question “Other” fields, async-question
-reply drafts, and unsent file comments use the same local draft service. Existing
-surface formats are adapted rather than replacing unrelated local settings.
+Session composers, global/project new-session composers, handoff composers,
+approval feedback, question “Other” fields, async-question reply drafts, and
+unsent file comments use the same local draft service. Existing surface formats
+are adapted rather than replacing unrelated local settings. The `floating` slot
+remains in the draft protocol for compatibility only: the floating composer was
+removed on 2026-11-07, no surface reads the slot, and text left in an older
+install's floating draft stays there unread.
 Question IDs and file-comment IDs/anchors remain structured; independent fields
 can reconcile independently. Async-question dismissed/seen/answered metadata,
 upload progress, cursor/selection/undo state, and recent prompt/upload galleries
@@ -219,6 +222,23 @@ copy alongside any newer text. A crash during an unresolved send requires
 explicit recovery rather than treating the submitted text as a fresh unsent
 edit automatically.
 
+Successful captured New Session acknowledgement updates same-tab draft presence
+immediately, including when the editor has retired after navigation. The sidebar
+removes its Draft badge without a reload; a newer physical draft is preserved and
+keeps its badge. Presence publication does not enumerate browser storage on each
+keystroke.
+
+The dedicated New Session Project Queue action uses this captured confirmation
+for text and staged files. Accepted queued work removes only its submitted
+selection; newer edits and uploads survive. Captured cancellation checks the
+account/slot and latest physical storage before releasing the submission. It
+preserves current text/files exactly and keeps a differing submitted copy in
+separate recovery metadata; it does not merge that copy into the live editor.
+Queue ownership copies files even
+before their first draft write completes, so publication and conditional clear
+remain valid without making enqueue wait for synchronization. See
+[Project Queue](project-queue.md#draft-acknowledgement).
+
 Approval/question clearing and async-answer completion use their existing
 accepted-action boundaries. File-comment fields disappear only when their
 existing successful submission/removal updates the persisted comment set.
@@ -257,7 +277,7 @@ that never completed are not promised to survive a browser reload.
 Migration 008 uses the existing discovery SQLite database. Draft tables hold
 user data, not rebuildable indexing caches: normal upgrades, optional feature
 changes, and backups must preserve them. No separate database or JSON fallback
-is introduced. Existing [SQLite startup policy](optional-sqlite.md) applies.
+is introduced. Existing [SQLite startup policy](required-sqlite.md) applies.
 
 | Data | Bound / retention |
 | --- | --- |

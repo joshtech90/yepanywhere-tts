@@ -7,7 +7,15 @@ import type {
 } from "@yep-anywhere/shared";
 import { useEffect, useId, useRef, useState } from "react";
 import { vhostOauthPolicy } from "@yep-anywhere/shared";
+import {
+  Button,
+  buttonClassName,
+  IconButton,
+} from "../../components/ui/Button";
+import { Checkbox } from "../../components/ui/Checkbox";
 import { CommittedRangeNumberInput } from "../../components/ui/CommittedRangeNumberInput";
+import { Field, Select, TextInput } from "../../components/ui/Field";
+import { Switch } from "../../components/ui/Switch";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
@@ -17,7 +25,11 @@ import { useVhostAccess } from "../../hooks/useVhostAccess";
 import { sessionVhostApp } from "../../lib/sessionVhostApps";
 import { writeClipboardText } from "../../lib/clipboard";
 import { ProjectAppInventorySection } from "./ProjectAppInventorySection";
-import { expandableRowProps, SettingsCollection } from "./SettingsCollection";
+import {
+  expandableRowProps,
+  SettingsCollection,
+  SettingsCollectionToggle,
+} from "./SettingsCollection";
 import { ElidedPath } from "../../components/ui/ElidedPath";
 import { SettingsSortHeader, useSettingsTableSort } from "./SettingsTableSort";
 import { ResourceContextMenu } from "../../components/FileResourceActions";
@@ -149,7 +161,11 @@ function LinkIcon({
   return (
     <>
       <a
-        className={styles.linkIcon}
+        className={buttonClassName({
+          variant: "ghost",
+          icon: true,
+          className: styles.linkIcon,
+        })}
         href={url}
         target="_blank"
         rel="noopener noreferrer"
@@ -235,6 +251,7 @@ function ArtifactSettingsForm({
   const [logHost, setLogHost] = useState<string | null>(null);
   const [oauthFocus, setOauthFocus] = useState(0);
   const expiryId = useId();
+  const rewriteHintId = useId();
   const [localEnabled, setLocalEnabled] = useState(!!status.localOrigin);
   const [localOrigin, setLocalOrigin] = useState(
     status.localOrigin ?? status.defaultLocalOrigin,
@@ -440,41 +457,34 @@ function ArtifactSettingsForm({
     >
       <p>{t("appsSettingsAutosave")}</p>
       <fieldset className={styles.fields} disabled={status.locked}>
-        <label className={styles.toggle}>
-          <input
-            type="checkbox"
-            checked={localEnabled}
-            onChange={(e) => {
-              setLocalEnabled(e.target.checked);
-              void save({ localEnabled: e.target.checked });
-            }}
-          />
-          {t("artifactLocalEnabled")}
-        </label>
+        <Switch
+          label={t("artifactLocalEnabled")}
+          checked={localEnabled}
+          onCheckedChange={(checked) => {
+            setLocalEnabled(checked);
+            void save({ localEnabled: checked });
+          }}
+        />
         {localEnabled && (
-          <label>
-            {t("artifactLocalOrigin")}
-            <input
+          <Field label={t("artifactLocalOrigin")}>
+            <TextInput
               type="url"
               value={localOrigin}
               onBlur={() => void save()}
               onChange={(e) => setLocalOrigin(e.target.value)}
             />
-          </label>
+          </Field>
         )}
-        <label>
-          {t("artifactPublicOrigin")}
-          <input
+        <Field label={t("artifactPublicOrigin")} hint={t("artifactPublicHint")}>
+          <TextInput
             type="url"
             value={publicOrigin}
             onBlur={() => void save()}
             onChange={(e) => setPublicOrigin(e.target.value)}
           />
-        </label>
-        <p>{t("artifactPublicHint")}</p>
-        <label>
-          {t("artifactPort")}
-          <input
+        </Field>
+        <Field label={t("artifactPort")} hint={t("artifactPortHint")}>
+          <TextInput
             type="number"
             min={1}
             max={65535}
@@ -482,8 +492,7 @@ function ArtifactSettingsForm({
             onBlur={() => void save()}
             onChange={(e) => setPort(e.target.value)}
           />
-        </label>
-        <p>{t("artifactPortHint")}</p>
+        </Field>
         {expiryDays !== undefined ? (
           <>
             <div className={styles.expiry}>
@@ -530,32 +539,28 @@ function ArtifactSettingsForm({
         )}
         {vhostsSupported && (
           <>
-            <label>
-              {t("artifactVhostPublicRoot")}
-              <input
-                type="text"
+            <Field
+              label={t("artifactVhostPublicRoot")}
+              hint={t("artifactVhostPublicRootHint", { port })}
+            >
+              <TextInput
                 value={vhostPublicRoot}
                 onBlur={() => void save()}
                 autoComplete="off"
                 spellCheck={false}
                 onChange={(e) => setVhostPublicRoot(e.target.value)}
               />
-            </label>
-            <p>{t("artifactVhostPublicRootHint", { port })}</p>
-            <label className={styles.toggle}>
-              <input
-                type="checkbox"
-                checked={alwaysRewriteVhostLinks}
-                onChange={(event) => {
-                  setAlwaysRewriteVhostLinks(event.target.checked);
-                  void save({
-                    alwaysRewriteVhostLinks: event.target.checked,
-                  });
-                }}
-              />
-              {t("artifactAlwaysRewriteVhostLinks")}
-            </label>
-            <p>{t("artifactAlwaysRewriteVhostLinksHint")}</p>
+            </Field>
+            <Switch
+              label={t("artifactAlwaysRewriteVhostLinks")}
+              aria-describedby={rewriteHintId}
+              checked={alwaysRewriteVhostLinks}
+              onCheckedChange={(checked) => {
+                setAlwaysRewriteVhostLinks(checked);
+                void save({ alwaysRewriteVhostLinks: checked });
+              }}
+            />
+            <p id={rewriteHintId}>{t("artifactAlwaysRewriteVhostLinksHint")}</p>
           </>
         )}
       </fieldset>
@@ -584,9 +589,9 @@ function ArtifactSettingsForm({
                 {t("artifactVhostTableTitle")}
               </h3>
               {oauth.status && (
-                <button type="button" onClick={() => setLogHost("")}>
+                <Button onClick={() => setLogHost("")}>
                   {t("vhostOauthAllLogs")}
-                </button>
+                </Button>
               )}
             </div>
             <div className={styles.vhostIntro}>
@@ -609,10 +614,8 @@ function ArtifactSettingsForm({
                       className={styles.vhostRow}
                       disabled={status.locked}
                     >
-                      <label>
-                        {t("artifactVhostName")}
-                        <input
-                          type="text"
+                      <Field label={t("artifactVhostName")}>
+                        <TextInput
                           value={row.name}
                           onBlur={() => void save()}
                           autoComplete="off"
@@ -627,11 +630,10 @@ function ArtifactSettingsForm({
                             )
                           }
                         />
-                      </label>
+                      </Field>
                       {sitesSupported && (
-                        <label>
-                          {t("artifactVhostServes")}
-                          <select
+                        <Field label={t("artifactVhostServes")}>
+                          <Select
                             value={row.kind}
                             onChange={(e) => {
                               const kind = e.target.value as VhostDraft["kind"];
@@ -660,15 +662,16 @@ function ArtifactSettingsForm({
                             <option value="files">
                               {t("artifactVhostServesFiles")}
                             </option>
-                          </select>
-                        </label>
+                          </Select>
+                        </Field>
                       )}
                       {row.kind === "files" ? (
-                        <label className={styles.pathField}>
-                          {t("artifactVhostPath")}
+                        <Field
+                          label={t("artifactVhostPath")}
+                          className={styles.pathField}
+                        >
                           <span className={styles.withLinkIcon}>
-                            <input
-                              type="text"
+                            <TextInput
                               value={row.path}
                               onBlur={() => void save()}
                               placeholder="~/site/index.html"
@@ -693,12 +696,11 @@ function ArtifactSettingsForm({
                               />
                             )}
                           </span>
-                        </label>
+                        </Field>
                       ) : (
                         <>
-                          <label>
-                            {t("artifactVhostPort")}
-                            <input
+                          <Field label={t("artifactVhostPort")}>
+                            <TextInput
                               type="number"
                               min={1}
                               max={65535}
@@ -717,11 +719,9 @@ function ArtifactSettingsForm({
                                 )
                               }
                             />
-                          </label>
-                          <label>
-                            {t("artifactVhostEnv")}
-                            <input
-                              type="text"
+                          </Field>
+                          <Field label={t("artifactVhostEnv")}>
+                            <TextInput
                               value={row.env ?? ""}
                               onBlur={() => void save()}
                               placeholder="PLANNOTATOR_PORT"
@@ -737,11 +737,11 @@ function ArtifactSettingsForm({
                                 )
                               }
                             />
-                          </label>
+                          </Field>
                         </>
                       )}
-                      <button
-                        type="button"
+                      <Button
+                        variant="danger-outline"
                         onClick={() => {
                           const next = vhosts.filter((_, i) => i !== index);
                           setVhosts(next);
@@ -750,7 +750,7 @@ function ArtifactSettingsForm({
                         }}
                       >
                         {t("artifactVhostRemove")}
-                      </button>
+                      </Button>
                       {oauth.status && savedRow(status, row) && (
                         <VhostOauthEmails
                           key={row.name}
@@ -767,36 +767,29 @@ function ArtifactSettingsForm({
                       )}
                       {access.supported && (
                         <div className={styles.access}>
-                          <label className={styles.toggle}>
-                            <input
-                              type="checkbox"
-                              checked={row.public === true}
-                              disabled={
-                                vhostOauthPolicy(
-                                  oauth.status?.policies,
-                                  row.name,
-                                ) !== undefined
-                              }
-                              onChange={(event) => {
-                                const next = vhosts.map((item, i) =>
-                                  i === index
-                                    ? {
-                                        ...item,
-                                        public: event.target.checked,
-                                      }
-                                    : item,
-                                );
-                                setVhosts(next);
-                                void save({ vhosts: next });
-                              }}
-                            />
-                            {t("appAccessPublic")}
-                          </label>
+                          <Checkbox
+                            label={t("appAccessPublic")}
+                            checked={row.public === true}
+                            disabled={
+                              vhostOauthPolicy(
+                                oauth.status?.policies,
+                                row.name,
+                              ) !== undefined
+                            }
+                            onCheckedChange={(checked) => {
+                              const next = vhosts.map((item, i) =>
+                                i === index
+                                  ? { ...item, public: checked }
+                                  : item,
+                              );
+                              setVhosts(next);
+                              void save({ vhosts: next });
+                            }}
+                          />
                           {row.kind === "files" && row.public && (
                             <div className={styles.password}>
-                              <label>
-                                {t("artifactVhostPassword")}
-                                <input
+                              <Field label={t("artifactVhostPassword")}>
+                                <TextInput
                                   type="password"
                                   value={row.password ?? ""}
                                   autoComplete="new-password"
@@ -820,10 +813,9 @@ function ArtifactSettingsForm({
                                     )
                                   }
                                 />
-                              </label>
+                              </Field>
                               {row.passwordProtected && (
-                                <button
-                                  type="button"
+                                <Button
                                   onClick={() => {
                                     const next = vhosts.map((item, i) =>
                                       i === index && item.kind === "files"
@@ -835,7 +827,7 @@ function ArtifactSettingsForm({
                                   }}
                                 >
                                   {t("artifactVhostPasswordClear")}
-                                </button>
+                                </Button>
                               )}
                               <p>
                                 {t(
@@ -848,8 +840,7 @@ function ArtifactSettingsForm({
                           )}
                           {savedRow(status, row) && (
                             <>
-                              <button
-                                type="button"
+                              <Button
                                 disabled={!access.config}
                                 onClick={async () => {
                                   const url = rowUrl(row);
@@ -859,9 +850,9 @@ function ArtifactSettingsForm({
                                 }}
                               >
                                 {t("appAccessCopy")}
-                              </button>
-                              <button
-                                type="button"
+                              </Button>
+                              <Button
+                                variant="danger-outline"
                                 disabled={saving}
                                 onClick={async () => {
                                   setSaving(true);
@@ -884,7 +875,7 @@ function ArtifactSettingsForm({
                                 }}
                               >
                                 {t("appAccessRevoke")}
-                              </button>
+                              </Button>
                             </>
                           )}
                         </div>
@@ -942,8 +933,12 @@ function ArtifactSettingsForm({
                         {...expandableRowProps(toggle)}
                       >
                         <td>
-                          <button
-                            type="button"
+                          <SettingsCollectionToggle
+                            className={
+                              oauthBlocked(row)
+                                ? styles.blockedToggle
+                                : undefined
+                            }
                             aria-expanded={selectedId === row.id}
                             onClick={toggle}
                           >
@@ -961,7 +956,7 @@ function ArtifactSettingsForm({
                                 .{vhostPublicRoot || "localhost"}
                               </small>
                             )}
-                          </button>
+                          </SettingsCollectionToggle>
                         </td>
                         <td>
                           {row.kind === "files" && row.path ? (
@@ -1000,34 +995,33 @@ function ArtifactSettingsForm({
                               />
                             )}
                             {oauth.status?.accessedHosts.includes(logHost) && (
-                              <button
-                                type="button"
+                              <IconButton
                                 className={styles.linkIcon}
-                                title={t("vhostOauthHostLogs", {
-                                  name: row.name,
-                                })}
-                                aria-label={t("vhostOauthHostLogs", {
+                                label={t("vhostOauthHostLogs", {
                                   name: row.name,
                                 })}
                                 onClick={() => setLogHost(logHost)}
                               >
                                 ◷
-                              </button>
+                              </IconButton>
                             )}
                           </div>
                         </td>
                         {access.supported && (
                           <td>
-                            <button
-                              type="button"
+                            <Button
+                              variant="outline"
+                              size="small"
                               className={styles.accessButton}
                               onClick={() => {
                                 setSelectedId(row.id);
                                 setOauthFocus((value) => value + 1);
                               }}
                             >
-                              {accessLabel(row)}
-                            </button>
+                              <span className={styles.accessLabel}>
+                                {accessLabel(row)}
+                              </span>
+                            </Button>
                             {oauthBlocked(row) && (
                               <small>{t("vhostOauthBlocked")}</small>
                             )}
@@ -1039,8 +1033,7 @@ function ArtifactSettingsForm({
                 </tbody>
               </table>
             </SettingsCollection>
-            <button
-              type="button"
+            <Button
               disabled={status.locked}
               onClick={() => {
                 const id = nextRowId.current++;
@@ -1052,7 +1045,7 @@ function ArtifactSettingsForm({
               }}
             >
               {t("artifactVhostAdd")}
-            </button>
+            </Button>
           </div>
         </div>
       )}

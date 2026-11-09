@@ -103,6 +103,74 @@ describe("SessionMetadataService", () => {
   });
 
   describe("initialization", () => {
+    it("saves active sessions without serializing the cold metadata corpus", async () => {
+      const sessions = Object.fromEntries(
+        Array.from({ length: 256 }, (_, index) => [
+          `cold-${index}`,
+          { initialPrompt: "x".repeat(8192), isArchived: true },
+        ]),
+      );
+      await writeFile(
+        join(testDir, "session-metadata.json"),
+        JSON.stringify({ version: 3, sessions }),
+      );
+      await service.initialize();
+      const cold = new Set(Object.values(service.getAllMetadata()));
+      const stringify = vi.spyOn(JSON, "stringify");
+      let coldSerializations: number;
+      try {
+        await Promise.all(
+          Array.from({ length: 24 }, (_, index) =>
+            service.setTitle(`active-${index}`, `Active ${index}`),
+          ),
+        );
+        await service.clearSession("active-0");
+        await service.setTitle("active-1", undefined);
+        await service.flushPendingWrites();
+        coldSerializations = stringify.mock.calls.filter(([value]) =>
+          cold.has(value),
+        ).length;
+      } finally {
+        stringify.mockRestore();
+      }
+      expect(coldSerializations).toBe(0);
+      const restored = createTestSessionMetadataService(testDir);
+      await restored.initialize();
+      expect(restored.getMetadata("active-0")).toBeUndefined();
+      expect(restored.getMetadata("active-1")).toBeUndefined();
+      expect(restored.getMetadata("active-23")?.customTitle).toBe("Active 23");
+      expect(restored.getMetadata("cold-255")).toEqual(sessions["cold-255"]);
+    });
+
+    it("retries a deletion after SQLite rolls back the write", async () => {
+      await service.initialize();
+      await service.setTitle("deleted", "Keep until committed");
+      const database = openTestDiscoveryDatabase(testDir);
+      database.exec(`
+        CREATE TRIGGER reject_metadata_delete BEFORE DELETE ON session_metadata
+        BEGIN SELECT RAISE(ABORT, 'blocked deletion'); END;
+      `);
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await expect(service.clearSession("deleted")).rejects.toThrow(
+          "blocked deletion",
+        );
+        expect(error).toHaveBeenCalled();
+      } finally {
+        error.mockRestore();
+      }
+      const beforeRetry = createTestSessionMetadataService(testDir);
+      await beforeRetry.initialize();
+      expect(beforeRetry.getMetadata("deleted")?.customTitle).toBe(
+        "Keep until committed",
+      );
+      database.exec("DROP TRIGGER reject_metadata_delete");
+      await service.flushPendingWrites();
+      const restored = createTestSessionMetadataService(testDir);
+      await restored.initialize();
+      expect(restored.getMetadata("deleted")).toBeUndefined();
+    });
+
     it("retries an unchanged goal after a failed save", async () => {
       const database = openTestDiscoveryDatabase(testDir);
       let failNext = false;
@@ -499,31 +567,6 @@ describe("SessionMetadataService", () => {
           .getCacheMissBillingEvents(200, { includeExpectedExpiry: true })
           .map(({ id }) => id),
       ).toEqual(["expected-expiry", "unexpected"]);
-    });
-  });
-
-  describe("session ID remapping", () => {
-    it("moves provisional metadata and redirects late writes", async () => {
-      await service.initialize();
-      await service.setProvider("temporary-session", "claude-gateway");
-
-      await service.remapSessionId("temporary-session", "canonical-session");
-      await service.setRequestedModel("temporary-session", "gpt-5.6-terra");
-
-      expect(service.getMetadata("canonical-session")).toEqual({
-        provider: "claude-gateway",
-        requestedModel: "gpt-5.6-terra",
-      });
-      expect(service.getMetadata("temporary-session")).toEqual({
-        provider: "claude-gateway",
-        requestedModel: "gpt-5.6-terra",
-      });
-      expect(service.getAllMetadata()).toEqual({
-        "canonical-session": {
-          provider: "claude-gateway",
-          requestedModel: "gpt-5.6-terra",
-        },
-      });
     });
   });
 

@@ -6,6 +6,10 @@ import {
   getQualityLabel,
   useEmulatorSettings,
 } from "../../hooks/useEmulatorSettings";
+import { Button } from "../../components/ui/Button";
+import { TextInput } from "../../components/ui/Field";
+import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import { Switch } from "../../components/ui/Switch";
 import { useEmulators } from "../../hooks/useEmulators";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useI18n } from "../../i18n";
@@ -140,17 +144,14 @@ export function EmulatorSettings() {
           description={t("emulatorEnableDescription")}
           doc="site/src/content/docs/files-and-source-control.md#remote-device-control"
         >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={deviceBridgeEnabled}
-              onChange={(e) => {
-                void updateSetting("deviceBridgeEnabled", e.target.checked);
-              }}
-              disabled={settingsLoading}
-            />
-            <span className="toggle-slider" />
-          </label>
+          <Switch
+            checked={deviceBridgeEnabled}
+            onCheckedChange={(checked) => {
+              void updateSetting("deviceBridgeEnabled", checked);
+            }}
+            disabled={settingsLoading}
+            aria-label={t("emulatorEnableTitle")}
+          />
         </SettingsItem>
       </div>
 
@@ -166,36 +167,30 @@ export function EmulatorSettings() {
               label={t("emulatorFrameRateTitle")}
               description={t("emulatorFrameRateDescription")}
             >
-              <div className="font-size-selector">
-                {EMULATOR_FPS_OPTIONS.map((fps) => (
-                  <button
-                    key={fps}
-                    type="button"
-                    className={`font-size-option ${maxFps === fps ? "active" : ""}`}
-                    onClick={() => setMaxFps(fps)}
-                  >
-                    {fps} fps
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl
+                aria-label={t("emulatorFrameRateTitle")}
+                options={EMULATOR_FPS_OPTIONS.map((fps) => ({
+                  value: fps,
+                  label: `${fps} fps`,
+                }))}
+                value={maxFps}
+                onChange={setMaxFps}
+              />
             </SettingsItem>
 
             <SettingsItem
               label={t("emulatorResolutionTitle")}
               description={t("emulatorResolutionDescription")}
             >
-              <div className="font-size-selector">
-                {EMULATOR_WIDTH_OPTIONS.map((w) => (
-                  <button
-                    key={w}
-                    type="button"
-                    className={`font-size-option ${maxWidth === w ? "active" : ""}`}
-                    onClick={() => setMaxWidth(w)}
-                  >
-                    {w}p
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl
+                aria-label={t("emulatorResolutionTitle")}
+                options={EMULATOR_WIDTH_OPTIONS.map((w) => ({
+                  value: w,
+                  label: `${w}p`,
+                }))}
+                value={maxWidth}
+                onChange={setMaxWidth}
+              />
             </SettingsItem>
 
             <SettingsItem
@@ -203,32 +198,26 @@ export function EmulatorSettings() {
               description={t("emulatorQualityDescription")}
               valueText={getQualityLabel(quality)}
             >
-              <div className="font-size-selector">
-                {QUALITY_OPTIONS.map((q) => (
-                  <button
-                    key={q}
-                    type="button"
-                    className={`font-size-option ${quality === q ? "active" : ""}`}
-                    onClick={() => setQuality(q)}
-                  >
-                    {getQualityLabel(q)}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl
+                aria-label={t("emulatorQualityTitle")}
+                options={QUALITY_OPTIONS.map((q) => ({
+                  value: q,
+                  label: getQualityLabel(q),
+                }))}
+                value={quality}
+                onChange={setQuality}
+              />
             </SettingsItem>
 
             <SettingsItem
               label={t("emulatorAdaptiveFpsTitle")}
               description={t("emulatorAdaptiveFpsDescription")}
             >
-              <label className="toggle-switch">
-                <input
-                  type="checkbox"
-                  checked={adaptiveFps}
-                  onChange={(e) => setAdaptiveFps(e.target.checked)}
-                />
-                <span className="toggle-slider" />
-              </label>
+              <Switch
+                checked={adaptiveFps}
+                onCheckedChange={setAdaptiveFps}
+                aria-label={t("emulatorAdaptiveFpsTitle")}
+              />
             </SettingsItem>
           </div>
 
@@ -251,22 +240,20 @@ export function EmulatorSettings() {
                   void addHost();
                 }}
               >
-                <input
-                  type="text"
+                <TextInput
                   name="chromeosHost"
                   placeholder={t("emulatorHostAliasPlaceholder")}
-                  className="settings-select"
                   autoComplete="off"
                   value={hostInput}
                   onChange={(event) => setHostInput(event.target.value)}
                 />
-                <button
+                <Button
+                  variant="primary"
                   type="submit"
-                  className="settings-button"
                   disabled={settingsLoading}
                 >
                   {t("projectsAddConfirm")}
-                </button>
+                </Button>
               </form>
             </SettingsItem>
 
@@ -290,16 +277,15 @@ export function EmulatorSettings() {
                       </span>
                     </div>
                     <div className="settings-item-action">
-                      <button
-                        type="button"
-                        className="settings-button"
+                      <Button
+                        variant="danger-outline"
                         onClick={() => {
                           void removeHost(host);
                         }}
                         disabled={settingsLoading}
                       >
                         {t("emulatorRemove")}
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ))
@@ -336,25 +322,17 @@ export function EmulatorSettings() {
                       device.state,
                       device.actions,
                     ) ? (
-                      <button
-                        type="button"
-                        className="settings-button"
-                        onClick={() => stopEmulator(device.id)}
-                      >
+                      <Button onClick={() => stopEmulator(device.id)}>
                         {t("emulatorStop")}
-                      </button>
+                      </Button>
                     ) : canStartDevice(
                         device.type,
                         device.state,
                         device.actions,
                       ) ? (
-                      <button
-                        type="button"
-                        className="settings-button"
-                        onClick={() => startEmulator(device.id)}
-                      >
+                      <Button onClick={() => startEmulator(device.id)}>
                         {t("emulatorStart")}
-                      </button>
+                      </Button>
                     ) : null}
                   </div>
                 </div>

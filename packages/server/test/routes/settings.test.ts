@@ -148,6 +148,43 @@ describe("Settings Routes", () => {
   });
 
   describe("PUT /", () => {
+    it("saves qualified launch steering modes and rejects unsupported writes atomically", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      for (const steeringModes of [
+        { codex: "immediate" },
+        { codex: "gentle" },
+        {},
+      ]) {
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ steeringModes }),
+        });
+        expect(response.status).toBe(200);
+        expect((await response.json()).settings.steeringModes).toEqual(
+          steeringModes,
+        );
+      }
+      vi.mocked(mockServerSettingsService.updateSettings).mockClear();
+      for (const steeringModes of [
+        { codex: "now" },
+        { pi: "immediate" },
+        { claude: "gentle" },
+        [],
+        null,
+      ]) {
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ steeringModes, wakeTurnsEnabled: true }),
+        });
+        expect(response.status).toBe(400);
+      }
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
     it("saves or disables the readiness executable and notifies after saving", async () => {
       const changed = vi.fn(() =>
         expect(settings.projectQueueReadinessCheck).toEqual(command),
@@ -1950,6 +1987,45 @@ describe("Settings Routes", () => {
       });
     });
 
+    it("replaces and clears per-provider steer-now overrides", async () => {
+      settings = {
+        ...settings,
+        clientDefaults: {
+          steerNowDefault: true,
+          steerNowDefaultByProvider: { claude: true },
+        },
+      };
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const put = (steerNowDefaultByProvider: unknown) =>
+        routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clientDefaults: { steerNowDefaultByProvider },
+          }),
+        });
+
+      expect((await put({ "claude-gateway": false })).status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenLastCalledWith(
+        {
+          clientDefaults: {
+            steerNowDefault: true,
+            steerNowDefaultByProvider: { "claude-gateway": false },
+          },
+        },
+      );
+
+      expect((await put({})).status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenLastCalledWith(
+        { clientDefaults: { steerNowDefault: true } },
+      );
+
+      expect((await put({ "claude-gateway": "off" })).status).toBe(400);
+      expect((await put({ nonesuch: false })).status).toBe(400);
+    });
+
     it("rejects non-numeric compact threshold values", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,
@@ -2171,6 +2247,8 @@ describe("Settings Routes", () => {
             providers: {
               claude: {
                 model: "opus",
+                routerPoolId: "work",
+                routerClaudeAiConnectors: true,
                 thinkingMode: "on",
                 effortLevel: "high",
                 helperSideModel: "haiku",
@@ -2201,6 +2279,8 @@ describe("Settings Routes", () => {
           providers: {
             claude: {
               model: "opus",
+              routerPoolId: "work",
+              routerClaudeAiConnectors: true,
               thinkingMode: "on",
               effortLevel: "high",
               helperSideModel: "haiku",

@@ -15,6 +15,7 @@ import type { RecentsService } from "../recents/index.js";
 import { decodeProjectId, getProjectName } from "../projects/paths.js";
 import type { SessionMetadataService } from "../metadata/SessionMetadataService.js";
 import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
+import { projectCatalogIdentities } from "../sessions/catalog-identity.js";
 import type { SessionCatalogRow } from "../sessions/catalog-types.js";
 import type { CodexSessionReader } from "../sessions/codex-reader.js";
 import type { GeminiSessionReader } from "../sessions/gemini-reader.js";
@@ -25,6 +26,7 @@ import type { ISessionReader } from "../sessions/types.js";
 import type { Project } from "../supervisor/types.js";
 
 export interface RecentsDeps {
+  signal?: AbortSignal;
   recentsService: RecentsService;
   retainedCollections?: RetainedSessionCollections;
   projectDisplayName?: (path: string) => string;
@@ -64,7 +66,11 @@ export function createRecentsRoutes(deps: RecentsDeps) {
     if (c.req.query("summaryMode") === "retained" && deps.retainedCollections) {
       const { rows, catalog } = await deps.retainedCollections.read();
       const bySession = new Map<string, SessionCatalogRow[]>();
-      for (const row of rows) {
+      for (const row of await projectCatalogIdentities(
+        rows,
+        deps.sessionMetadataService,
+        deps.signal,
+      )) {
         const candidates = bySession.get(row.sessionId) ?? [];
         candidates.push(row);
         bySession.set(row.sessionId, candidates);
@@ -145,6 +151,9 @@ export function createRecentsRoutes(deps: RecentsDeps) {
         projectId,
         {
           readerFactory: deps.readerFactory,
+          identities: deps.sessionMetadataService?.identities,
+          getRecordedProvider: (id) =>
+            deps.sessionMetadataService?.getProvider?.(id),
           sessionIndexService: deps.sessionIndexService,
           codexSessionsDir: deps.codexSessionsDir,
           codexReaderFactory: deps.codexReaderFactory,

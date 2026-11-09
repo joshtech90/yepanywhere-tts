@@ -6,6 +6,19 @@
 
 Topic: provider-host-api
 
+Managed Codex creation additionally negotiates `session-creation-codex-v1` on
+both host status and the worker's pre-launch hello. The older Claude creation
+owner feature does not prove native Codex input acknowledgement support. See
+[Codex text acceptance](session-identity.md#codex-text-acceptance--november-2).
+Managed OpenCode and Pi creation independently require
+`session-creation-opencode-v1` and `session-creation-pi-v1`, respectively, from
+both host and worker. The generic owner feature or another provider's feature
+cannot authorize their native input proof. See
+[OpenCode creation](opencode-backend.md#durable-ordinary-text-creation) and
+[Pi creation](pi-provider.md#durable-ordinary-text-creation); these private
+features do not broaden the public host platform/runtime matrix.
+
+
 Status: stable same-user discovery, foreground headless bootstrap,
 attach-or-start recovery, bounded auxiliary session turns, detached
 submission observation, recent orderly-restart recovery, explicit
@@ -115,8 +128,33 @@ The host permits one registered Hono controller generation per worker. It
 fences stale/concurrent controllers and keeps a canonical provider-session-id
 to worker mapping until verified cleanup.
 
-Each worker opens a separate private Unix socket using worker protocol version
-1. Hono attaches with the same private token and its registered generation.
+Legacy workers use private Unix-socket protocol 1. Managed creation workers
+require protocol 2 and their exact immutable creation record before attachment
+or replay. Hono uses the same private token and registered controller generation.
+New workers also emit a pre-start IPC `launchHello` (launch protocol 1,
+supported feature names) before reading launch JSON. A host launch with
+`requiredWorkerFeatures` withholds all stdin until that hello accepts every
+requirement. The list is limited to eight names of at most 128 characters;
+missing hello uses the existing startup deadline, and premature ready is
+rejected. Legacy launches still receive stdin immediately. The negotiated
+[`session-creation-owner-v1` contract](session-identity.md#hosted-creation-contract--implementation-refinement)
+adds scoped owner evidence, fenced host claims and protocol-2 attachment.
+Managed launches require it; absence preserves incumbent workers and refuses
+the new transition. Unsupported
+new launches never upgrade or restart incumbent workers. A request timeout or
+cleanup failure is not evidence that native effects were absent.
+
+Existing native continuations separately negotiate `session-native-binding-v1`
+and worker protocol 3. The exact YA id/scoped native binding must match at
+launch, claim, attach and release; it carries no new-creation authority. A
+surviving creation worker keeps protocol 2. Unconfirmed first input cannot
+cold-start a replacement; a later continuation after confirmed consumption may
+use the proved native source. Recent continuation recipes retain the binding
+and omit their previous initial message. Stores containing these recipes use
+private format 2 so older readers refuse rather than discard binding fields;
+legacy-only stores retain format 1. See the owning
+[hosted native continuation contract](session-identity.md#hosted-native-continuation).
+
 The stream carries queue pushes, queue-depth/removal state, sequenced
 `SDKMessage` events and acknowledgements, provider controls/RPC, permission
 state, approvals, completion, and failure. Acknowledgement advances only after

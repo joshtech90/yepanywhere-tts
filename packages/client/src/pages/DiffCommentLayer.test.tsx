@@ -179,7 +179,7 @@ describe("DiffCommentLayer", () => {
     expect(screen.getByText("sourceCopyLine")).toBeDefined();
     expect(screen.getByText("sourceCopyPathLine")).toBeDefined();
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     expect(document.activeElement).toBe(line);
 
@@ -262,6 +262,8 @@ describe("DiffCommentLayer", () => {
         model: "gpt-5.4",
         thinking: { type: "adaptive", display: "summarized" },
         effort: "high",
+        // The server carries the opening session's router, sandbox and tier.
+        sourceSessionId: "sess-default",
       }),
     );
     expect(navigateSpy).toHaveBeenCalledWith("/projects/proj1/sessions/sess-9");
@@ -425,6 +427,7 @@ describe("DiffCommentLayer", () => {
       <MemoryRouter>
         <ColHarness />
       </MemoryRouter>,
+      { wrapper: I18nProvider },
     );
 
     fireEvent.click(document.querySelector('[data-diff-line="0"]')!);
@@ -466,6 +469,7 @@ describe("DiffCommentLayer", () => {
           }}
         />
       </MemoryRouter>,
+      { wrapper: I18nProvider },
     );
 
     fireEvent.click(document.querySelector('[data-diff-line="1"]')!);
@@ -517,6 +521,7 @@ describe("DiffCommentLayer", () => {
           }}
         />
       </MemoryRouter>,
+      { wrapper: I18nProvider },
     );
 
     fireEvent.click(document.querySelector('[data-diff-line="1"]')!);
@@ -621,6 +626,7 @@ describe("DiffCommentLayer", () => {
           }}
         />
       </MemoryRouter>,
+      { wrapper: I18nProvider },
     );
 
     await waitFor(() =>

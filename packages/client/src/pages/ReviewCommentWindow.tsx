@@ -6,11 +6,13 @@ import {
   useRef,
   useState,
 } from "react";
-import type { GlobalSessionItem } from "../api/client";
 import { SessionHoverCardTarget } from "../components/SessionHoverCardTarget";
+import { Button } from "../components/ui/Button";
+import { Field, Select, Textarea } from "../components/ui/Field";
 import type { SourceReviewDefaultSession } from "../contexts/SourceReviewDefaultSessionContext";
+import { useProjectReviewSessions } from "../hooks/useProjectReviewSessions";
 import type { TranslationFn } from "../i18n";
-import { loadProjectSessions, reviewSessionLabel } from "../lib/reviewSessions";
+import { reviewSessionLabel } from "../lib/reviewSessions";
 import styles from "./ReviewCommentWindow.module.css";
 
 /**
@@ -45,8 +47,8 @@ export function ReviewCommentWindow({
   t: TranslationFn;
 }) {
   const [text, setText] = useState("");
-  const [sessions, setSessions] = useState<GlobalSessionItem[] | null>(null);
-  const [sessionsError, setSessionsError] = useState(false);
+  const { sessions, error: sessionsError } =
+    useProjectReviewSessions(projectId);
   const [targetSessionId, setTargetSessionId] = useState(
     defaultSession?.id ?? "new",
   );
@@ -54,34 +56,20 @@ export function ReviewCommentWindow({
   const canSubmit = text.trim().length > 0 && !busy;
 
   useEffect(() => {
-    let cancelled = false;
-    loadProjectSessions(projectId)
-      .then((result) => {
-        if (cancelled) return;
-        setSessions(result);
-        if (!defaultSession && !targetTouchedRef.current) {
-          setTargetSessionId(result[0]?.id ?? "new");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setSessionsError(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [defaultSession, projectId]);
+    if (!sessions || defaultSession || targetTouchedRef.current) return;
+    setTargetSessionId(sessions[0]?.id ?? "new");
+  }, [defaultSession, sessions]);
 
   const selectedSession =
     sessions?.find((session) => session.id === targetSessionId) ?? null;
   const submitButton = (
-    <button
-      type="button"
-      className={styles.submit}
+    <Button
+      variant="primary"
       onClick={() => onSubmit(text, targetSessionId)}
       disabled={!canSubmit}
     >
       {t("sourceReviewSubmitComment")}
-    </button>
+    </Button>
   );
 
   return (
@@ -96,26 +84,26 @@ export function ReviewCommentWindow({
         <>
           {/* review-comment-window-cancel and -add stay literal: no stylesheet
             declares them, so they are DOM hooks this module does not own. */}
-          <button
-            type="button"
+          <Button
             className="review-comment-window-cancel"
             onClick={onCancel}
             disabled={busy}
           >
             {t("cancel")}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
             className="review-comment-window-add"
             onClick={() => onAddToReview(text)}
             disabled={!canSubmit}
           >
             {t("sourceReviewAddToReview")}
-          </button>
+          </Button>
           <div className={styles.submitActions}>
-            <label className={styles.destination}>
-              <span>{t("sourceReviewTargetLegend")}</span>
-              <select
+            <Field
+              label={t("sourceReviewTargetLegend")}
+              className={styles.destination}
+            >
+              <Select
                 value={targetSessionId}
                 onChange={(event) => {
                   targetTouchedRef.current = true;
@@ -146,8 +134,8 @@ export function ReviewCommentWindow({
                     )}
                   </option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </Field>
             {sessionsError && (
               <span className={styles.destinationError}>
                 {t("sourceReviewSessionsUnavailable")}
@@ -220,9 +208,8 @@ export function ReviewCommentEditor({
     <div className={styles.window} data-markdown-copy-ignore="true">
       <div className={styles.anchor}>{anchorLabel}</div>
       <pre className={styles.snippet}>{snippet}</pre>
-      <textarea
-        className={styles.input}
-        // biome-ignore lint/a11y/noAutofocus: the window opens on an explicit click; selection-opened editors opt out to preserve selection actions
+      <Textarea
+        // autoFocus: the window opens on an explicit click; selection-opened editors opt out to preserve selection actions
         autoFocus={autoFocus}
         rows={3}
         value={text}

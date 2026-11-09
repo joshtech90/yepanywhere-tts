@@ -29,16 +29,17 @@ pnpm exec tsx --conditions source scripts/agent-api-eval/run.ts --run \
 pnpm exec tsx --conditions source scripts/agent-api-eval/run.ts --run \
   --peer-relay --cases workflow --variants help --max-trials 1
 
-# Same agent task through basic fleet enrollment, opaque invitations and relay.
+# Same agent task through basic Identity Service enrollment, opaque invitations and relay.
 pnpm exec tsx --conditions source scripts/agent-api-eval/run.ts --run \
-  --peer-fleet --cases workflow --variants help --max-trials 1
+  --peer-identity-service --cases workflow --variants help --max-trials 1
 ```
 
 Defaults: `gpt-6.1-sol`, medium effort, one sample, identity only, three variants,
 three-trial cap, 120 seconds per trial. `--samples` permits 1–3; declare a larger
 `--max-trials` for an expanded matrix. `--timeout-seconds` is a declared model-run
 budget, not a test-performance assertion. Variant order rotates per case/sample.
-`--out` selects local output, defaulting to ignored `tasks/agent-api-eval/`.
+`--out` selects local output, defaulting to `ya-agent-api-eval/` in the system
+temp directory.
 Do not point it at a shared or tracked directory. No model calls belong in CI.
 
 Local mode uses the installed Codex OSS/Ollama harness, default model
@@ -98,11 +99,11 @@ submissions and an actual successful consumed receipt read; answer prose alone
 does not pass. Normal tests exercise that complete private-HTTP fixture without
 calling a model.
 
-`--peer-fleet` uses the same peer-relay workflow and bootstrap, with an owned
+`--peer-identity-service` uses the same peer-relay workflow and bootstrap, with an owned
 standalone basic-account service, key-bound enrollment, signed/JWE invitation
 delivery and issuer-bound protected peer tokens. The account service uses its
 real HTTP adapter in-process; peer requests use the real owned encrypted relay.
-The plan records `peerFleet` separately so this is not mistaken for manual
+The plan records `peerIdentityService` separately so this is not mistaken for manual
 enrollment or a live external-provider qualification. Profile keys and credentials
 stay in owned fixture storage and are removed on cleanup.
 

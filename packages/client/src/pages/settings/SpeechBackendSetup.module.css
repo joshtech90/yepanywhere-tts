@@ -28,21 +28,16 @@
   border: 1px solid var(--border-color);
   border-radius: 8px;
 }
-.enable {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 44px;
-  cursor: pointer;
+/* The GPU switch with its help line under it. */
+.gpu {
+  display: grid;
+  gap: 4px;
 }
-.enable input {
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
+
+.gpu > p {
+  margin: 0;
 }
-.enable[data-locked] {
-  cursor: not-allowed;
-}
+
 .environmentLock {
   padding: 8px;
   border-left: 3px solid var(--border-color);
@@ -62,11 +57,8 @@
 }
 .modelLink {
   min-height: 44px;
-  border: 0;
-  background: none;
   color: var(--link-color);
-  font: inherit;
-  cursor: pointer;
+  font-size: inherit;
 }
 .access {
   display: grid;
@@ -84,24 +76,6 @@
   margin-top: 4px;
   color: var(--text-secondary);
   font-size: 12px;
-}
-
-.install,
-.restart {
-  min-height: 44px;
-  padding: 8px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font: inherit;
-  cursor: pointer;
-}
-
-.install:disabled,
-.restart:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 .consoleLabel {

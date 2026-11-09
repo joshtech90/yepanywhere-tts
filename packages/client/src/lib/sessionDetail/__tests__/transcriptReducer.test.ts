@@ -21,6 +21,58 @@ function sessionMetadata(provider = "claude"): SessionMetadata {
   } as SessionMetadata;
 }
 
+it("keeps a live delivery confirmation through stale metadata and transcript replies, but admits a newer attempt", () => {
+  const confirmed = {
+    ...sessionMetadata(),
+    creation: {
+      state: "bound" as const,
+      delivery: "consumed" as const,
+      attemptId: "first",
+      updatedAt: "2026-11-04T00:00:00.000Z",
+      revision: 10,
+    },
+  };
+  const stale = {
+    ...confirmed,
+    creation: {
+      ...confirmed.creation,
+      delivery: "not-admitted" as const,
+      revision: 9,
+    },
+  };
+  let state = reduceSessionDetailState(createInitialSessionDetailState(), {
+    type: "setSessionMetadata",
+    session: confirmed,
+  });
+  state = reduceSessionDetailState(state, {
+    type: "setSessionMetadata",
+    session: stale,
+  });
+  expect(state.session?.creation).toEqual(confirmed.creation);
+  state = reduceSessionDetailState(state, {
+    type: "replaceTailWindow",
+    session: stale,
+    messages: [],
+    pagination: pagination(),
+  });
+  expect(state.session?.creation).toEqual(confirmed.creation);
+  const retry = {
+    ...confirmed,
+    creation: {
+      ...confirmed.creation,
+      state: "saved" as const,
+      delivery: "not-admitted" as const,
+      attemptId: "second",
+      revision: 11,
+    },
+  };
+  state = reduceSessionDetailState(state, {
+    type: "setSessionMetadata",
+    session: retry,
+  });
+  expect(state.session?.creation).toEqual(retry.creation);
+});
+
 function pagination(overrides: Partial<PaginationInfo> = {}): PaginationInfo {
   return {
     hasOlderMessages: false,
@@ -1317,4 +1369,56 @@ describe("codex steer identity", () => {
       "distinct-provider-id",
     ]);
   });
+});
+
+it("uses native input IDs across catch-up, stale tail replacement and late replay without consuming identical unrelated text", () => {
+  const timestamp = "2026-11-04T10:00:00.000Z";
+  const alpha = {
+    ...userMessage("input-a", "repeat", timestamp),
+    tempId: "a",
+    messageMetadata: { deliveryIntent: "steer" },
+  };
+  const bravo = {
+    ...userMessage("input-b", "repeat", timestamp),
+    tempId: "b",
+    messageMetadata: { deliveryIntent: "steer" },
+  };
+  const unrelated = {
+    ...userMessage("input-c", "repeat\nrepeat", timestamp),
+    tempId: "c",
+    messageMetadata: { deliveryIntent: "steer" },
+  };
+  const grouped = {
+    ...userMessage("input-b", "repeat\nrepeat", timestamp),
+    inputMessageIds: ["input-b", "input-a"],
+  };
+  let state = reduceSessionDetailState(createInitialSessionDetailState(), {
+    type: "loadPersistedTranscript",
+    session: sessionMetadata(),
+    messages: [],
+  });
+  for (const message of [alpha, bravo, unrelated])
+    state = reduceSessionDetailState(state, {
+      type: "applyStreamMessage",
+      message,
+    });
+  state = reduceSessionDetailState(state, {
+    type: "applyCatchupMessages",
+    messages: [grouped],
+  });
+  expect(state.messages.map((m) => m.uuid)).toEqual(["input-b", "input-c"]);
+  expect(state.messages[0]?._source).toBe("jsonl");
+  state = reduceSessionDetailState(state, {
+    type: "replaceTailWindow",
+    session: sessionMetadata(),
+    pagination: pagination(),
+    messages: [grouped],
+  });
+  for (const message of [alpha, bravo])
+    state = reduceSessionDetailState(state, {
+      type: "applyStreamMessage",
+      message: { ...message, isReplay: true },
+    });
+  expect(state.messages.map((m) => m.uuid)).toEqual(["input-b", "input-c"]);
+  expect(state.messages[0]?.message?.content).toEqual(grouped.message?.content);
 });

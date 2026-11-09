@@ -24,7 +24,7 @@ This is not a [provider child session](provider-child-sessions.md) and not a
 subagent. Subagent detection keys on `agentId` plus `isSidechain`, and these
 transcripts contain no sidechain entries at all, because no subagent was ever
 created. The child is a real YA session with its own canonical YA session id,
-listed and openable like any other. Only the edge to its launcher is missing.
+listed and openable like any other. The live scoped producer below records that edge; reverse presentation is still pending.
 
 The Bash result's `backgroundTaskId` does not supply that edge. It names a
 harness-local output file under the harness temp directory, not a session, and
@@ -83,12 +83,156 @@ restores visibility for work the user explicitly caused, adds no action and no
 provider state mutation, and reuses YA's existing session navigation. It ships
 always-on and adds no setting.
 
+## Durable live command evidence
+
+`NestedHarnessRelationshipService` observes main-session Bash calls from managed
+Claude-family processes. It uses the same lexer with a stricter scoped selector:
+one explicit `cd` into the process project followed by a named foreground Claude invocation,
+optionally clearing `CLAUDECODE`. Branches, pipelines, shell expansion, alternate
+homes/configuration, worktrees, forks, background jobs, informational invocations
+and unnamed launches are withheld by that inherited-store selector.
+
+A separate POSIX selector accepts an explicit target profile: `cd` into the
+same project, then the literal system `/usr/bin/env`, one literal absolute
+`CLAUDE_CONFIG_DIR`, optional empty `CLAUDECODE`, and an absolute named Claude
+executable. It permits no other environment assignment or shell wrapper around
+the inner CLI. Identity-bearing paths must already be normalized absolute
+POSIX spellings, without control characters, dot/traversal segments, repeated
+or trailing separators, or glob/brace/tilde forms. Unsupported spellings stay
+unknown before native scope construction. This binds the destination after outer shell startup; parent
+native storage and server environment defaults do not select it. A canonical,
+complete target header must still prove the named session and project.
+
+Current Codex app-server frames can use that explicit selector. The adapter
+marks command frames only after their explicit native thread id matches the
+owned root thread. Missing ownership evidence, including an older still-running
+hosted worker, stays unknown. Acquisition requires a provider-tagged
+`command_execution` frame, an unchanged command presentation (no native secret
+redaction marker), and one decoded literal POSIX shell argv envelope. Decoding
+alone is no launch authority: explicit destination binding, the final successful
+tool result and target header supply command evidence together. Streaming user
+rows cannot finish a hint. Codex additionally requires the matching command
+item's terminal zero-exit, non-interrupted result. Failed or declined calls
+supply no accepted observation. The native redaction assumption is audited against 0.166.0; other installed
+versions do not gain native qualification from this parser and still rely on
+the independent namespace/result/header proof. Codex OSS, Windows shell forms, other parent
+families and implicit Codex-to-Claude profile inheritance remain unqualified.
+Existing Claude-family inherited-store selection remains separate.
+
+The existing identity binding selects the parent anchor. The inherited Claude
+selector uses that qualified store; the explicit selector supplies an independent
+destination. A successful foreground tool
+result and a bounded, complete target header matching the named id and project
+support a `launched_harness` fact with `command-observed` trust. This does not
+prove creation, command intent, or provider subagent membership. A resume
+only names an existing same-project session; no fresh creation is inferred. Full commands,
+prompts and tool outputs are never persisted in this index.
+
+Pending tool ids, target ids and exact scope live in the existing SQL extraction
+checkpoints. Private cursor v2 carries each destination separately from the
+source native identity, so concurrent calls can name different profiles. Existing
+v1 Claude cursors import their inherited destination; a v1 cursor cannot imply a
+Codex destination. Inherited-only Claude hints and empty Claude cursors keep the
+compact v1 format, preserving rollback and avoiding per-hint namespace inflation.
+Only independent destinations or Codex sources require v2. Old readers with no
+v2 decoder retain accepted graph facts and withhold acquisition for affected
+sessions rather than reinterpret those records. Cursor admission remains bounded
+to 64K serialized characters and 32 hints; oversized new hints stay unknown
+without replacing already committed hints. Accepted facts, duplicate suppression and pending removal commit
+atomically. Startup walks indexed partial checkpoints in finite pages; existing
+native file events can retry a missing target in the watched Claude root;
+alternate roots rely on process completion or startup. There are two workers, 128 retained
+sources and 32 pending calls per source, with no per-session timers or new
+watchers. Capacity and unqualified syntax remain unknown, not known empty.
+A real process end abandons unreturned calls as unknown. Unproved targets
+receive at most three probes; pending hints older than 24 hours are abandoned
+on the next acquisition/startup, without a timer. These terminal unknowns free
+capacity and leave the partial startup index. Reload detachment is nonterminal,
+including a direct wrapper SIGHUP; it preserves pending correlation.
+Observed facts survive target deletion. Acquisition never reads parent bodies or
+reruns a provider command. A frame lost before its pending SQL commit is not
+recoverable from this live-only producer.
+
+The opt-in native-app fixture runs actual parent/child Claude executables against
+a scripted model endpoint, replaces the API via both the admin route and direct
+wrapper SIGHUP while the child is running, verifies
+SQL edges after completion and target loss, and checks that copied fork history
+creates no extra launch edge. No inference is used by that fixture.
+
+## Historical acquisition from an authorized read
+
+Ordinary authenticated detail reads also offer the already acquired Claude rows
+to the same bounded coordinator. The request stores only a weak reference and
+compact source context, and waits for no historical discovery. It starts no
+parent-file read, summary-cache invalidation or corpus walk. Public-share
+capture does not request this acquisition.
+
+Only a server-admitted source with its exact native binding and an
+explicit persisted sandbox level of `none` plus known never-confined admission
+provenance qualifies. A private monotonic `sandboxEverConfined` marker starts at
+admission and becomes true on any `project-write` selection; switching back to
+`none` cannot clear it. Missing legacy provenance remains unknown and is
+withheld, so a downgrade cannot re-qualify confined-era rows.
+The admission owner supplies its birth time without loading the saved prompt or
+context. Rows must belong to that native source and follow its admitted birth;
+sidechains, replay and synthetic rows are withheld.
+
+New YA Claude forks and full clones save a private native copy fence in the
+existing creation attempt's SQLite detail, in the same transaction as the
+child's native identity binding. The adapter captures the actual copied parsed
+row count and a stable UUID within its final 256 rows while writing the copy;
+there is no additional file read. This fence is separate from the requested
+source fork cutoff, which can have remapped UUIDs. It is not a public creation
+field, a new graph edge or an access grant. Subsequent creation state changes
+preserve it, and a conflicting replacement is refused.
+
+Historical extraction of a copy requires that exact UUID at its saved index
+and the complete committed copied prefix. Every view revalidates the fence in
+constant work. Extraction and pending-pair matching start after the entire
+copied prefix, even when inherited timestamps are later than the copy's birth.
+Losing a derived scan cursor cannot bypass this floor. Tail windows, compacted
+or replaced prefixes lacking the fence, old copies without a saved fence, and
+legacy/adopted histories remain unknown. Accepted facts survive native loss.
+Live observations still cover new commands in those sessions. A successful paired foreground Bash result and the
+existing destination proof support command evidence, never creation authority.
+
+Each CPU turn examines at most 256 records/blocks and 256K command characters.
+At most 32 pending IDs/pairs with 48 KiB of compact data survive in a private SQL
+extraction cursor. No command, prompt or tool output enters that cursor. The
+reader supplies its newline-committed count, excluding provisional tails.
+Native file identity, size/mtime and a bounded stable UUID anchor qualify append
+continuation; replacement or a changed prefix resets extraction, preserving
+accepted history. Pending pairs survive observer replacement and expire as
+unknown after 24 hours since extraction, rather than since an old command ran.
+An unchanged high-water mark causes no extraction write. An older same-file
+view cannot rewind newer progress, and an invalid derived cursor resets without
+erasing accepted facts.
+
+Facts and pending proof use the existing atomic relationship owner. The SQL
+scan cursor advances only after durable handoff under the current generation;
+ready but unhanded pairs remain in that cursor. Capacity and transient handoff
+failures stop the view without dropping those pairs. Transient handoff failures
+use a one-second persisted retry deadline, checked only by later reads; no
+timer or closed-view loop is created. A replay before the handoff
+is idempotent. A terminal live unknown can gain
+historical support later. Already accepted live evidence is not duplicated, and a historical read cannot
+change an active live hint's timestamp, completion key or retry budget. Transient
+proof errors use the bounded retry ladder. Notifications coalesce once per
+coordinator turn.
+Native command time is stored separately from the new observation time.
+
+The native fixture models a pre-index session by deleting only its derived
+launch index inside the owned temporary profile, then opening the ordinary
+detail route. Actual native command/result rows restore the edge; neither the
+rejected reused id nor copied fork commands add one. Model dispatch counts stay
+unchanged. Automatic install-wide backfill and copied-history birth proof remain
+separate work.
+
 ## Not covered
 
 The reverse edge — a child session showing which session launched it — is not
 implemented. It cannot be derived from the child's own transcript, so it needs
-launch edges indexed across a project's sessions plus a server contract to
-carry them, which is a client/server compatibility decision
+a server contract to carry the indexed facts, which is a client/server compatibility decision
 ([server-capabilities](server-capabilities.md)) rather than a rendering
 concern. Until then a launched session still looks unattached when opened
 directly, which

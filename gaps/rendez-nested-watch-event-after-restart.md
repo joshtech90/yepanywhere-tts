@@ -86,3 +86,285 @@ Node 22.23.3 missed the first nested-file delivery at line 353 (0 observed,
 run took 129.77 s. Evidence: ignored `tasks/peer-list-ui/full-tests.log`.
 Watcher source, fixture and budgets are unchanged; this red result is retained
 without an isolated retry.
+
+
+2026-11-01: the standalone identity-fixture workspace run on macOS /
+Node 26.7.0 missed the second top-level prepared-image delivery at line 231
+(1 observed, 2 expected). 6,728 other server tests and all 7,064 client tests
+passed; the new standalone process checks passed. This slice changes only
+E2E process/environment composition and its own tests, not the Rendez watcher,
+fixture or eight-second wait. Evidence: ignored
+`tasks/session-identity/standalone-test.log` (129.77 s server run). This failed
+run remains recorded; no watcher retry or budget change replaces it.
+
+2026-11-01: the reviewed legacy session-alias guard workspace run on macOS /
+Node 26.7.0 missed the second nested-file delivery at line 364 (1 observed,
+2 expected). 6,751 other server tests and all 7,064 client tests passed;
+server duration was 135.85 s. The six focused identity files passed 36 cases
+in 5.38 s, including merged-root, orphaned-child and shutdown interleavings.
+This slice touches no Rendez watcher source, fixture, assertion or budget.
+Evidence: ignored `tasks/session-identity/phase-3-alias-reviewed-test.log`.
+The preceding version's whole workspace run passed before the review fixes;
+that does not qualify the corrected tree or explain this recurrence. The
+failed run remains red. An isolated diagnostic and unchanged-tree full repeat
+are recorded separately; neither closes this gap or erases this failure.
+
+The isolated diagnostic passed 4 runnable cases / 1 retained skip in 6.14 s
+(`phase-3-alias-rendez-diagnostic.log`). An unchanged-source full repeat passed
+6,752 server / 7,064 client tests (139.08 s server run), recorded separately in
+`phase-3-alias-repeat-test.log`. This disagreement is additional intermittent
+evidence; no Rendez code, fixture, assertion, retry setting or budget changed.
+
+2026-11-02: the durable-creation storage foundation workspace run on macOS /
+Node 26.7.0 missed the second nested delivery at line 364 (1 observed, 2
+expected). 6,802 server tests and all 7,064 client tests passed; server duration
+129.99 s. The storage slice changes no Rendez watcher, fixture, assertion or
+budget. Evidence: ignored
+`tasks/session-identity/phase-4-admission-test.log`. This failed run is retained;
+no isolated watcher retry replaces it. The exact restart/event-registration
+failure matches the previous observations above and remains unresolved.
+
+The post-type-cleanup run repeated that same line-364 failure: 6,802 other
+server tests and all 7,064 client tests passed in 130.43 s. The three helper
+fixture annotation changes do not affect Rendez. Evidence: ignored
+`tasks/session-identity/phase-4-admission-revised-test.log`. Both failed runs
+remain recorded; source, assertions, retries and budgets are unchanged.
+
+2026-11-02: final Saved/Failed session-read workspace verification on macOS /
+Node 22.23.3 again missed the second nested-file delivery at line 364 (1
+observed, 2 expected). 6,809 other server tests and all 7,064 client tests
+passed; server duration 134.48 s. The 231 focused identity/admission/auth and
+retained Supervisor regressions pass. No Rendez source, fixture, assertion,
+retry or budget changed. Evidence: ignored
+`tasks/session-identity/phase-4-saved-reads-test.log`. This full run remains red.
+
+
+2026-11-02: launch-intent storage verification on macOS / Node 26.7.0 missed
+its second top-level prepared-image delivery at line 231 (1 observed, 2
+expected), matching the separately recorded restart symptom above. 6,818
+other server checks and all 7,064 client checks passed; server duration
+128.91 s. The new SQLite/snapshot checks and direct Node 22/Bun probes pass.
+No Rendez source, fixture, assertion, retry or budget changed. Evidence:
+ignored `tasks/session-identity/phase-4-launch-intent-test.log`. This run remains
+red; an additional supported-runtime full run is recorded separately and does
+not close this watcher gap or replace the failure.
+
+
+The additional launch-intent Node 22.23.3 full run also missed that same
+second prepared-image delivery at line 231: 6,818 other server and all 7,064
+client checks passed, server duration 134.60 s. Evidence: ignored
+`tasks/session-identity/phase-4-launch-intent-node22-test.log`. Both full runs
+remain red. No watcher implementation, fixture, assertion, timeout or retry
+setting changed; storage/snapshot qualification does not resolve this gap.
+
+The first managed-dispatch Node 26.7.0 full run again missed the second nested
+delivery at line 364: 6,829 other server and all 7,064 client checks passed;
+server duration 131.03 s. Evidence: ignored
+`tasks/session-identity/phase-4-managed-test.log`. This pre-review-correction run
+remains red; it changed no Rendez implementation, fixture, assertion, timeout
+or retry. Managed ownership and namespace corrections require a fresh full run.
+
+The subsequent final-source Node 26.7.0 workspace run after the reviewed managed
+ownership/API-error/stop corrections passed (6,836 server / 7,064 client;
+128.51 s server duration), recorded in ignored
+`tasks/session-identity/phase-4-managed-final-test.log`. The intervening source
+changes justify that fresh qualification; the watcher itself remains unchanged.
+This pass qualifies that source snapshot and does not close the intermittent
+restart defect or replace the preceding red evidence.
+
+
+2026-11-02: final reviewed local cold-resume qualification on macOS / Node
+26.7.0 again missed the second prepared-image delivery at line 231 (1 observed,
+2 expected). All 6,871 other server and 7,064 client checks passed; server
+133.51 s. The 232 focused native/host/source/Supervisor cases pass. This cut
+changes no Rendez source, fixture, assertion or budget. Evidence: ignored
+`tasks/session-identity/phase-3-cold-resume-review-corrected-full-test.log`.
+The earlier pre-review-correction source passed 6,870 server / 7,064 client
+checks in 131.01 s (`phase-3-cold-resume-final-full-test.log`); it does not
+qualify the corrected source or erase this failure. Inspection confirms the
+same restart/event-observation boundary remains unqualified; no isolated
+retry replaces this result and this gap remains open.
+
+
+2026-11-02: the first OpenCode cold-source workspace run missed the second
+nested delivery at line 364 (1 observed, 2 expected): 6,872 other server and
+7,064 client checks passed; server 132.45 s. Evidence: ignored
+`tasks/session-identity/phase-3-opencode-cold-full-test.log`. An isolated
+instrumented eight-trial restart diagnostic passed without reproducing the
+failure (`rendez-watch-diagnostic.log`); it changes scheduling and supplies no
+proof for a watcher fix. The OpenCode source then received an independently
+reviewed explicit-loopback hostname correction. Its new complete workspace
+run passed 6,873 server / 7,064 client cases in 130.10 s
+(`phase-3-opencode-cold-final-full-test.log`). That pass qualifies the corrected
+source, not a Rendez repair; no watcher source, timeout or assertion changed,
+and the initial red run remains preserved.
+
+2026-11-02: provider-variant cold-continuation workspace verification on macOS /
+Node 26.7.0 again missed the second prepared-image delivery at line 231
+(1 observed, 2 expected). All 6,882 other server and 7,064 client cases pass;
+server duration 135.35 s. The 68 focused provider/source/ownership cases and
+nine standalone variant/runtime probes pass. This cut changes no Rendez
+watcher, fixture, assertion or timeout. Evidence: ignored
+`tasks/session-identity/phase-3-variants-cold-full-test.log`. The preceding ACP
+cut passed 6,880 server / 7,064 client cases (133.43 s); it does not qualify
+this source or repair the watcher. This run remains red without a blind retry.
+
+The final provider-variant source then received the independently reviewed
+Gateway autostart-capable refusal-fixture correction. Its new full qualification
+missed the second nested-file delivery at line 364 (1 observed, 2 expected):
+6,882 other server / 7,064 client cases pass; server 133.09 s. Evidence:
+`tasks/session-identity/phase-3-variants-cold-autostart-full-test.log`. This is a
+separate red result of the corrected fixture, not an unchanged-source retry or
+passing replacement. Watcher source, assertion and timeout remain unchanged.
+
+The 2026-11-02 Project Queue provenance slice reproduced this unrelated macOS /
+Node 22.23.3 watcher failure: full workspace `queue-provenance-full-test.log`
+missed the second prepared-upload delivery after restart (6,893 other server
+tests and all 7,067 client tests passed). The isolated
+`queue-provenance-watch-isolated.log` instead missed the second nested delivery
+at line 364 (1 observed, 2 expected; three cases passed, one Linux-only case
+skipped). Both logs remain under ignored `tasks/session-identity/`. No watcher
+code, budgets, assertion or retries were changed; neither result is represented
+as a green full run or attributed to the provenance repair.
+
+
+2026-11-02: common Project Queue creation migration's first full Node 22/macOS
+run passed 6,901 server/7,067 client cases. After the review-driven Queue association
+repair, the full run passed 6,901 server/7,067 client cases but failed this unchanged
+watcher case at line 364 (second delivery after restart; observed 1, expected 2).
+A focused watcher+Queue run reproduced the same watcher failure; all six new
+Queue cases passed, with 9 combined passing/1 skipped. The 84-case Queue integration
+suite passes. No Rendez watcher/test source or timeout changed in this slice;
+the native watcher readiness/event-registration diagnosis above remains open.
+Logs are retained under ignored tasks/session-identity/queue-creation-reviewed-full-test.log
+and queue-creation-final-focused.log. No green aggregate is claimed for those
+runs, and no unrelated watcher repair is bundled into creation admission.
+
+
+2026-11-03: the Project Queue captured-draft slice's first full Node 22.23.3/
+macOS run again missed the second nested delivery at line 364 (observed 1,
+expected 2). The run also exposed four Queue tests still expecting original
+file moves; those expectations are updated separately for sync-enabled copies,
+without weakening their ownership/dispatch/restart assertions. Client tests
+passed 7,075 cases. Evidence: ignored
+`tasks/session-identity/queue-draft-tests.log` (146.39 seconds server).
+Watcher source, assertions and budgets are unchanged; this red run remains
+recorded and is not replaced by an isolated rerun.
+
+After Queue expectation updates and the review-driven draft cancellation/
+project-owner corrections, the final full run passed all 6,910 server cases
+(153.86 seconds) and 7,080 client cases. Evidence:
+`tasks/session-identity/queue-draft-tests-reviewed.log`. This later green run
+does not close the intermittent watcher defect or erase the first red result.
+
+
+2026-11-03: native provider integration's first workspace run on macOS /
+Node 24.22.1 missed the second nested delivery at line 364 (1 observed, 2
+expected). An isolated rerun reproduced it: three passed, one failed, one
+skipped in 12.98 seconds. Evidence is retained in ignored
+`tasks/batching-investigation/native-workspace-tests.log` and
+`rendez-focused.log`. That workspace run also loaded an intermediate version
+of the new native steering fixture that incorrectly awaited Codex text as a
+Claude-style event; that separate fixture predicate was corrected. The new
+full run passed 6,941 server / 7,092 client cases (143.46 seconds server),
+recorded in `native-workspace-final.log`. The passing result does not resolve
+the watcher defect or replace the red evidence. No Rendez code, assertion,
+timeout or retry setting changed.
+
+
+2026-11-04: the durable relationship integration workspace run on macOS /
+Node 24.22.1 missed the first nested delivery at line 353 (0 observed, 1
+expected). Evidence: ignored `tasks/session-relationships/slice-3-final-unit.log`
+(153.36 seconds server). Its separate Codex leased-reader retirement regression
+was fixed in scope; an isolated three-file rerun then passed 24 cases with one
+skip in 5.87 seconds (`slice-3-final-lease-rendez.log`). The isolated pass does
+not close this watcher defect or replace the red full-run evidence. No Rendez
+source, assertion, timeout or retry setting changed.
+
+The accepted frozen-tree workspace run subsequently passed all 6,999 server
+cases (151.95 seconds) and 7,110 client cases, recorded in
+`tasks/session-relationships/slice-3-accepted-unit.log`. The known watcher
+condition remains open; its source, assertions and budget are unchanged.
+
+After the canonical watcher-alias qualification and optional hardening, the
+final frozen workspace run also passed all 7,001 server cases (150.13 seconds)
+and 7,110 client cases (`slice-3-hardened-unit.log`). This is validation of the
+relationship slice, not a repair of the open watcher condition.
+
+
+2026-11-04: Claude SQL child integration's final macOS / Node 24.22.1
+workspace run again missed the second nested delivery at line 364 (1 observed,
+2 expected): 7,018 server cases and all 7,110 client cases passed. The immediate
+isolated file rerun passed four cases with one Linux-only skip in 5.92 seconds.
+Evidence remains in ignored `tasks/session-relationships/slice-5-final-unit.log`
+and `slice-5-rendez-isolated.log`. The slice changes the provider FileWatcher's
+internal initial-baseline handover but does not change the shared native watcher,
+Rendez observer/source, fixture, assertion or timeout. The isolated pass does not
+close this restart/event-registration defect or erase the full-run failure.
+
+The accepted frozen-tree workspace rerun subsequently passed all 7,019 server
+cases (143.18 seconds) and 7,110 client cases. Evidence:
+`tasks/session-relationships/slice-5-qualified-final-unit.log`. This validates
+the relationship slice while retaining the earlier failure and open watcher gap.
+
+2026-11-05: OpenCode relationship qualification's second full macOS / Node
+24.22.1 run missed the second nested delivery at line 364 (1 observed, 2
+expected). The immediate isolated file run reproduced it: three passed, one
+failed, one skipped in 12.88 seconds. Evidence remains in ignored
+`tasks/session-relationships/slice-7-final2-unit.log` (147.07 seconds server)
+and `slice-7-rendez-isolated.log`. All 7,110 client cases passed. The OpenCode
+slice adds fixed provider DB/WAL observation but changes neither the shared
+directory watcher nor Rendez source, assertions, timeouts or retry settings.
+These failures remain evidence of this open defect; no green aggregate is
+claimed for those runs.
+
+The final frozen OpenCode slice subsequently passed all 7,037 server cases
+(146.51 seconds) and 7,110 client cases, recorded in
+`tasks/session-relationships/slice-7-final4-unit.log`. This later green run
+validates the slice; it does not erase the earlier full/isolated failures or
+close this unrelated watcher defect.
+
+
+2026-11-05: Codex direct-reader consolidation's first full macOS / Node
+24.22.1 run missed the second nested delivery at line 364 (one observed, two
+expected): 7,049 other server tests and 7,110 client tests passed; server time
+150.43 seconds. Raw evidence remains in ignored
+`tasks/session-relationships/slice-12-test.log`. The changed Codex metadata
+adapter/parser/benchmark does not change Rendez, its directory watcher, fixture,
+assertions, budgets or retries. This run remains red; later qualification
+cannot erase the repeated restart/event-registration finding.
+
+2026-11-05: the final worker-control/diagnostic workspace check on macOS /
+Node 24.22.1 again misses the second delivery at line 364 (one observed, two
+expected): 7,086 other server tests pass in 146.10 seconds. The focused file
+then passes four cases with one skip in 5.79 seconds. No watcher source, test,
+assertion, retry or budget changed. The red run remains retained in ignored
+`tasks/session-relationships/slice-22-final-unit.log`, with the focused result
+in `slice-22-rendez-focused.log`; that pass does not close this known defect.
+
+2026-11-05: the native bootstrap-diagnostic slice's first workspace run misses
+the first nested delivery at line 353 (zero observed, one expected): 7,088
+other server tests pass in 152.48 seconds. The unchanged final workspace run
+passes all 7,089 server tests in 147.32 seconds, alongside 7,112 client and
+954 shared tests. Neither watcher source nor assertions, budgets or retries
+changed. Ignored `tasks/session-relationships/slice-23-unit.log` retains the
+red result and `slice-23-publication-unit.log` retains the later green sample;
+this repeated readiness/event-delivery finding remains unresolved.
+
+2026-11-05: cold-resume phase attribution's final workspace check again misses
+the second nested delivery at line 364 (one observed, two expected). The
+focused file then fails the same assertion, with three passing cases and one
+skip in 12.79 seconds. Full evidence is retained in ignored
+`tasks/session-relationships/slice-25-final-unit.log` (7,088 other server
+passes / 150.50 seconds) and `slice-25-rendez-focused.log`. Client 7,112 and
+shared 954 pass. The earlier `slice-25-unit.log` is green but predates a
+restored native history assertion and cannot replace the final red run.
+Neither watcher source nor its assertions, budgets or retries changed.
+
+2026-11-05: the relationship qualification workflow/readiness-only slice
+again misses the second nested delivery at line 364 (1 observed, 2 expected)
+on macOS / Node 24.22.1. The server run passes 7,093 other cases and skips 87
+in 149.20 seconds; all relationship source remains identical to published
+`ddda13a4a`. No watcher code, assertion, budget or retries changed. Evidence:
+ignored `tasks/session-relationships/slice-32-root.log`. This workspace run
+remains red and is not replaced by a passing isolated retry.

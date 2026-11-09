@@ -51,6 +51,8 @@ function session(
 
 function triggerRef() {
   const element = document.createElement("button");
+  // A popover closes when its trigger leaves the page, so it is on one.
+  document.body.append(element);
   element.getBoundingClientRect = () =>
     ({
       bottom: 48,
@@ -126,6 +128,10 @@ describe("RecentSessionsDropdown", () => {
       </MemoryRouter>,
     );
 
+    // A navigation panel, not an action menu.
+    expect(
+      screen.getByRole("dialog", { name: "sessionRecentSessions" }),
+    ).not.toBeNull();
     expect(
       screen.getByText(
         "Longer complete title text that should be visible in the recent sessions dropdown",
