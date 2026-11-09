@@ -8,7 +8,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { isSessionCreationPending } from "@yep-anywhere/shared";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { SessionCreationNotice } from "../components/SessionCreationNotice";
 import { CockpitMarkdown } from "./CockpitMarkdown";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n, type TranslationFn } from "../i18n";
@@ -995,12 +997,27 @@ export function CockpitSessionDetail({
                 </section>
               )}
 
-              {!detail.loading && !detail.error && !hasEntries && (
-                <section className={styles.emptyState} role="status">
-                  <h3>{t("cockpitSessionEmptyTitle")}</h3>
-                  <p>{t("cockpitSessionEmptyBody")}</p>
-                </section>
+              {/* A new session accepted through `session-creations` may still
+                  wait for a worker or fail to start; say so instead of an
+                  empty conversation (same notice as the classic page). */}
+              {!hasEntries && detail.session?.creation && (
+                <SessionCreationNotice
+                  creation={detail.session.creation}
+                  onRefresh={async () => detail.reloadSession()}
+                  prompt={detail.session.initialPrompt}
+                  transportStatus={runtime.transport.status}
+                />
               )}
+
+              {!detail.loading &&
+                !detail.error &&
+                !hasEntries &&
+                !isSessionCreationPending(detail.session?.creation) && (
+                  <section className={styles.emptyState} role="status">
+                    <h3>{t("cockpitSessionEmptyTitle")}</h3>
+                    <p>{t("cockpitSessionEmptyBody")}</p>
+                  </section>
+                )}
             </>
           }
           entries={visibleEntries}

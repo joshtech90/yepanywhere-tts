@@ -292,6 +292,14 @@ export function CockpitNewSession({
   // A start that finishes after this view was left must not navigate back;
   // the session still runs and shows up in the list.
   const mountedRef = useRef(true);
+  /** The last creation whose outcome the host never confirmed. */
+  const unconfirmedCreation = useRef<{
+    sourceKey: string;
+    intent: string;
+    requestId: string;
+    clientTimestamp: number;
+    stagedAttachments: StagedAttachmentRef[];
+  } | null>(null);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -398,20 +406,28 @@ export function CockpitNewSession({
    */
   const createSession = async (
     transport: SourceTransport,
+    sourceKey: string,
     targetProjectId: string,
     text: string,
     options: SessionOptions,
   ): Promise<SessionCreationReceipt> => {
-    const imageProfile = getAttachmentUploadProfile(
-      attachmentQuality,
-      providerInfo,
-      options.model,
-    );
-    const staged: ComposerStagedAttachment[] = [];
-    try {
+    const intent = JSON.stringify({
+      targetProjectId,
+      text,
+      options,
+      files: files.map((item) => item.id),
+    });
+    let attempt = unconfirmedCreation.current;
+    if (attempt?.sourceKey !== sourceKey || attempt.intent !== intent) {
+      const imageProfile = getAttachmentUploadProfile(
+        attachmentQuality,
+        providerInfo,
+        options.model,
+      );
+      const staged: ComposerStagedAttachment[] = [];
       const batchId = generateUUID();
-      for (const item of files) {
-        try {
+      try {
+        for (const item of files) {
           staged.push(
             await uploadWithStallGuard(item.file, transport, {
               batchId,
@@ -426,55 +442,72 @@ export function CockpitNewSession({
               },
             }),
           );
-        } catch (uploadError) {
-          throw new Error(
-            t("newSessionUploadError", {
-              message:
-                uploadError instanceof Error
-                  ? uploadError.message
-                  : String(uploadError),
-            }),
-          );
         }
-      }
-      const stagedAttachments: StagedAttachmentRef[] = staged.map(
-        toPersistedStagedAttachmentRef,
-      );
-      const requestId = generateUUID();
-      try {
-        return await transport.fetch<SessionCreationReceipt>(
-          `/projects/${encodeURIComponent(targetProjectId)}/session-creations`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              ...options,
-              requestId,
-              message: text,
-              clientTimestamp: Date.now(),
-              ...(stagedAttachments.length ? { stagedAttachments } : {}),
-            }),
-          },
+      } catch (uploadError) {
+        throw new Error(
+          t("newSessionUploadError", {
+            message:
+              uploadError instanceof Error
+                ? uploadError.message
+                : String(uploadError),
+          }),
         );
-      } catch (error) {
-        // A failed reply does not prove the host saved nothing.
-        const refusal = error as { status?: number } | null;
-        if (refusal?.status !== undefined && refusal.status < 500) throw error;
-        const saved = await transport
-          .fetch<SessionCreationReceipt>(
-            `/session-creations/${encodeURIComponent(requestId)}`,
-          )
-          .catch(() => null);
-        if (saved?.requestId === requestId && saved.sessionId) return saved;
+      } finally {
+        revokeAttachmentPreviewUrls(staged);
+      }
+      attempt = {
+        sourceKey,
+        intent,
+        requestId: generateUUID(),
+        clientTimestamp: Date.now(),
+        stagedAttachments: staged.map(toPersistedStagedAttachmentRef),
+      };
+      // Kept until the host answers for certain: a retry after a lost reply
+      // sends the same request ID, so the host replays its saved receipt
+      // instead of starting a second session.
+      unconfirmedCreation.current = attempt;
+    }
+    const { requestId, clientTimestamp, stagedAttachments } = attempt;
+    try {
+      const receipt = await transport.fetch<SessionCreationReceipt>(
+        `/projects/${encodeURIComponent(targetProjectId)}/session-creations`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ...options,
+            requestId,
+            message: text,
+            clientTimestamp,
+            ...(stagedAttachments.length ? { stagedAttachments } : {}),
+          }),
+        },
+      );
+      unconfirmedCreation.current = null;
+      return receipt;
+    } catch (error) {
+      // A refusal is final; a failed reply does not prove the host saved nothing.
+      const refusal = error as { status?: number } | null;
+      if (refusal?.status !== undefined && refusal.status < 500) {
+        unconfirmedCreation.current = null;
         throw error;
       }
-    } finally {
-      revokeAttachmentPreviewUrls(staged);
+      const saved = await transport
+        .fetch<SessionCreationReceipt>(
+          `/session-creations/${encodeURIComponent(requestId)}`,
+        )
+        .catch(() => null);
+      if (saved?.requestId === requestId && saved.sessionId) {
+        unconfirmedCreation.current = null;
+        return saved;
+      }
+      throw error;
     }
   };
 
   const start = async () => {
     if (!canStart || !choices) return;
     const transport = runtime.transport;
+    const sourceKey = runtime.sourceKey;
     setStarting(true);
     setError(null);
     try {
@@ -494,6 +527,7 @@ export function CockpitNewSession({
       const options = launchOptions(choices);
       const result = await createSession(
         transport,
+        sourceKey,
         targetProjectId,
         text,
         options,

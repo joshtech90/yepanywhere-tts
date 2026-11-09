@@ -510,6 +510,36 @@ describe("Cockpit new session attachments", () => {
     expect(body.stagedAttachments).toBeUndefined();
   });
 
+  it("retries a lost reply with the same request and without uploading again", async () => {
+    state.fetch.mockImplementationOnce(
+      async (path: string, init?: RequestInit) => {
+        state.calls.push(`${init?.method ?? "GET"} ${path}`);
+        throw new TypeError("Failed to fetch");
+      },
+    );
+    state.fetch.mockImplementationOnce(async (path: string) => {
+      state.calls.push(`GET ${path}`);
+      throw Object.assign(new Error("API error: 404"), { status: 404 });
+    });
+    dropFileAndStart();
+    await vi.waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+    await vi.waitFor(() => expect(state.calls).toHaveLength(4));
+    expect(state.calls[0]).toBe("upload:notes.txt");
+    expect(state.calls[1]).toBe("POST /projects/os/session-creations");
+    expect(state.calls[2]).toMatch(/^GET \/session-creations\//);
+    expect(state.calls[3]).toBe("POST /projects/os/session-creations");
+    const bodies = state.fetch.mock.calls
+      .filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === "POST",
+      )
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1].requestId).toBe(bodies[0].requestId);
+    expect(bodies[1].stagedAttachments).toEqual(bodies[0].stagedAttachments);
+  });
+
   it("gives a stalled upload up and frees the form", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

@@ -23,7 +23,15 @@ const detailMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../contexts/SourceRuntimeContext", () => ({
-  useCurrentSourceRuntime: () => ({ sourceKey: detailMocks.sourceKey }),
+  useCurrentSourceRuntime: () => ({
+    sourceKey: detailMocks.sourceKey,
+    transport: {
+      status: {
+        getSnapshot: () => ({ state: "ready", channels: [] }),
+        subscribe: () => () => {},
+      },
+    },
+  }),
 }));
 
 vi.mock("./useCockpitSessionDetail", () => ({
@@ -308,6 +316,30 @@ describe("Cockpit session detail", () => {
     expect(screen.getByText("The second draft")).toBeTruthy();
     expect(view.container.querySelector("details")).toBe(thinking);
     expect(thinking.open).toBe(true);
+  });
+
+  it("says when a new session failed to start instead of an empty conversation", () => {
+    const base = detailData();
+    detailMocks.data = detailData({
+      entries: [],
+      session: base.session && {
+        ...base.session,
+        initialPrompt: "Look at this",
+        creation: {
+          state: "failed",
+          attemptId: "a1",
+          updatedAt: "2026-11-09T12:00:00.000Z",
+          delivery: "not-admitted",
+          failure: "startup-unavailable",
+        },
+      },
+    });
+    renderDetail();
+
+    expect(
+      screen.getByText("The session could not start. Your prompt is saved."),
+    ).toBeTruthy();
+    expect(screen.queryByText("No conversation yet")).toBeNull();
   });
 
   it("shows work in another program in the header and at the transcript end", () => {
