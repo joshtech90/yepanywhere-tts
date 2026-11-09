@@ -84,9 +84,19 @@ size, modification time, and change time. An append or replacement during a
 read cannot certify the mixed result as a fresh projection.
 
 Known file changes update only those rows: they do not enumerate projects or
-list unrelated session files. New or unknown files and session identity changes
-request discovery. Notifications coalesce for 300 ms; events arriving during
-work survive into one trailing pass. The dirty-path set caps at 1,024 paths,
+list unrelated session files. A new Claude transcript in a store whose rows all
+belong to one project joins that project the same way. Other unknown files
+request discovery (Codex and Gemini still do, see
+[the gap](../gaps/session-catalog-rewrites-whole-generation-per-change.md)).
+A changed set that mixes native-store paths and files rescans those stores and
+rereads those files. Session activity events do not invalidate the catalog:
+most families hear of it from their watchers, and activity on a session in a
+store observed only internally (Grok, OpenCode) rescans that one store. Event
+session ids are native unless they name a registered YA identity. Each
+`session-created` event waits three seconds for its session to arrive by its
+own file, then requests discovery only if it is still missing. Notifications
+coalesce for 300 ms; events arriving during work survive into one trailing
+pass. The dirty-path set caps at 1,024 paths,
 then becomes a single discovery request. Unarchiving reconsiders deferred
 questions without rediscovery. No timer repeatedly scans an unchanged corpus.
 Failures keep the prior generation and impose a five-second admission backoff;
@@ -94,15 +104,26 @@ a later request or event can retry. Shutdown cancels queued work and prevents
 further publication.
 
 `session-catalog-updated` carries catalog status and revalidates active client
-queries. A capable client joins the source's version request before its first
-collection request, uses retained response statistics rather than the complete
-`/api/sessions/stats` path, and obtains full-prompt search through the existing
-complete path. Catalog generations do not authorize `knownGeneration` shortcuts:
+queries. A refresh announces itself twice, once when its rows are published
+(`refreshing: true`) and again when it ends. A query's revalidation owner
+skips the end-of-refresh announcement when it repeats the epoch, generation,
+`complete` and `refreshError` of the `refreshing: true` one it refetched for,
+and every subscriber wanted that refetch. A catalog refetch starts a new
+request rather than joining an older one, and a failed one is retried in
+place of the skipped twin. A later pass's generation and every failure still
+refetch. Recents shows `refreshing`, so like relationships it ignores
+`refreshing: true` and refetches when the refresh ends. A capable client joins
+the source's version request before its first collection request, uses
+retained response statistics rather than the complete `/api/sessions/stats`
+path, and obtains full-prompt search through the existing complete path.
+Catalog generations do not authorize `knownGeneration` shortcuts:
 metadata and read-state overlays have their own clocks. Old clients and servers
 retain the existing complete-request behavior and capability meanings.
 
 The native-file integration check demonstrates two initial head reads, then
 one head read and zero project/file-list discovery calls for one changed file.
+A new Claude transcript with its `session-created` event, and activity on a
+watched session, likewise cause no discovery.
 The real route check serves twenty mixed Global Sessions/Inbox requests from
 a saved generation while the single provider refresh is blocked. Failure and
 shutdown checks preserve accepted rows and reject post-disposal publication.
@@ -438,8 +459,12 @@ Use a disk/RAM hierarchy:
 
 - YA app-data storage holds the durable compact catalog, shard metadata,
   generation lineage, and cold rows needed after restart;
-- RAM holds bounded hot rows, query memberships/counts, current indexes,
-  in-flight work, and live/interest state under byte and age budgets;
+- RAM holds the current generation's parsed rows (exactly one generation,
+  replaced at publication by the rows it wrote; about the size of the row
+  JSON, and two generations while one is being built), bounded hot project
+  rows,
+  query memberships/counts, current indexes, in-flight work, and live/interest
+  state under byte and age budgets;
 - bounded head/tail projections may be retained with the exact provider source
   version that established them; and
 - complete transcript summaries and parsed messages stay in their dedicated
@@ -569,7 +594,12 @@ epoch and generation 0, and reconciliation refills it. This includes a shard
 the current manifest names but that is missing or holds an unparseable row,
 whenever a read finds it: the read answers from generation 0 instead of
 failing, and a reconciliation still based on the abandoned generation fails
-rather than publishing over the reset. Each accepted row,
+rather than publishing over the reset. A process that holds a generation's
+parsed rows (because it published them or has read them whole once) serves
+reads from memory, so damage to that generation's files is not reported
+there. The next publication rewrites every shard and so heals it; if a damaged
+shard changed, that publication's delta becomes a replacement
+(`deltaBaseUnreadable`) rather than failing. Each accepted row,
 membership, count, and delta identifies the catalog generation and provider
 source version from which it was derived.
 

@@ -54,6 +54,10 @@ shared, and how risky it is to touch today.
    [Plan 187](187-session-page-draft-hooks.md) moves the page's composer
    attachment state, correction draft and draft hydration into hooks and
    makes starting a correction one step (slices 2.44 to 2.47, 2026-11-08).
+   [Plan 188](188-shared-composer-draft-attachments.md) replaces the three
+   copies of the composer's draft attachments (the session page, New
+   Session and the Project Queue editor) with one hook (slices 2.48 to
+   2.50, 2026-11-09).
    Moving small features out one at a time leaves these files
    structurally as they were; the burn-down order and the consolidations
    it needs (one shared message-box core, then sending as plain
@@ -332,6 +336,9 @@ and props stable.
 | 2.45 | Done 2026-11-08 | `SessionPage.tsx` correction draft | Move the page's correction draft into a feature hook ([plan 187](187-session-page-draft-hooks.md) slice 2). | Move-only apart from two effect splits: the correction state and its set-aside draft ref, Cancel, the two correction effects, Edit latest message and the recall move verbatim into `hooks/useSessionCorrectionDraft.ts`, called where Cancel stood, right after the session reset. The set-aside draft's unmount cleanup and the reset's `setCorrectionDraft(null)` become the hook's own effects; the page is keyed by session, so the reset runs only on mount (see the landing note). The state moves later and the recall earlier in the hook order. Three input refs joined four dependency lists. Budget `SessionPage.tsx` 3,803 -> 3,714; the hook is 182 lines. Tier 3, plus plan 187's slice 0 pins. |
 | 2.46 | Done 2026-11-08 | `SessionPage.tsx` draft hydration | Move the page's draft attachment hydration into a feature hook ([plan 187](187-session-page-draft-hooks.md) slice 3). | Move-only: `hydrateDraftAttachments` and the two effects that hydrate on a draft key change and on the draft storage event move verbatim into `useDraftAttachmentHydration` in `hooks/useSessionComposerAttachments.ts`, called where the effects stood, so they stay after the session reset. `handleDraftControlsReady` moves unchanged to just after the call. Four input refs joined two dependency lists. Budget `SessionPage.tsx` 3,714 -> 3,621; the hook file is 323 lines. Tier 3, plus plan 187's slice 0 pins. |
 | 2.47 | Done 2026-11-08 | `SessionPage.tsx` starting a correction | Make Edit latest message and the recall start a correction the same way ([plan 187](187-session-page-draft-hooks.md) slice 4). | Not move-only: under plan 187. Both call one `beginCorrection` step in `useSessionCorrectionDraft`, which revokes the composer's discarded previews only when it keeps an earlier set-aside draft. Edit latest message during an open correction no longer leaks the previews it discards; recall, refused while attachments show, is unchanged. The hook is 192 lines. Tier 3, plus plan 187's pins and its new leak pin. |
+| 2.48 | Done 2026-11-09 | Shared composer draft attachments, session page | Replace the session page's attachment state, hydration, uploads and remove with one shared hook ([plan 188](188-shared-composer-draft-attachments.md) slice 1). | Not move-only: under plan 188. New `hooks/useComposerDraftAttachments.ts` owns the list, in-flight uploads, the staging batch, the saved-draft write and hydration, cancel and remove, the preview revoke and the navigation guard; `useSessionComposerAttachments.ts` is deleted and `useSessionAttachmentUploads.ts` keeps only the page's upload settings and the incoming share. Behavior changes are plan 188 items 6, 7, 10, 12 to 16, 18, 26, 28 and 29; the visible one is that hydration waits for the server's capabilities, so a missing file under draft sync keeps its chip with one notice instead of being dropped. Budget `SessionPage.tsx` 3,621 -> 3,620; the hook is 568 lines. Tier 2, plus plan 187's and 188's pins. |
+| 2.49 | Done 2026-11-09 | Shared composer draft attachments, New Session | Put New Session's attachments on the shared hook ([plan 188](188-shared-composer-draft-attachments.md) slice 2). | Not move-only: under plan 188. `NewSessionForm.tsx` drops its inline copy (the saved-draft write, batch, hydration, sibling-tab listener, uploads, remove, materializing and the guard) and draws the hook's finished attachments and in-flight uploads. The `PendingFile` union and `lib/newSessionAttachments.ts` are deleted; `newSessionStart.ts` reads the hook's list and upload promises, counting uploads as files. The audio memo uploads on commit. Behavior changes are plan 188 items 2, 3, 5, 6, 8 to 10, 16 to 18, 23 and 25 to 27. Budget `NewSessionForm.tsx` 3,120 -> 2,689. Tier 2, plus plan 188's pins and the New Session browser specs. |
+| 2.50 | Done 2026-11-09 | Shared composer draft attachments, Project Queue editor | Put the Project Queue inline editor's attachments on the shared hook ([plan 188](188-shared-composer-draft-attachments.md) slice 3). | Not move-only: under plan 188. `ProjectQueueAttachmentEditor.tsx` (386 -> 262 lines) passes no saved draft, its item's files read once, an owned-files rule (only files added here are deleted), and its inline error. It keeps its save and its close-time delete. `uploadComposerAttachmentFile`, whose direct-upload branch no caller used, is deleted. The editor's only behavior change is plan 188 item 10 (a finished image is cached for its preview). Tier 2, then Tier 3 once at the plan's tip. |
 
 ## Phase 3: Existing Architecture-Aligned Migrations
 
@@ -414,6 +421,9 @@ extracting pure protocol/model/normalization modules with strong fixtures.
 | 4.8 | Done 2026-11-08 | Codex approvals | Move `handleServerRequestApproval`, the approval decision/permission-response helpers and the approval request param guards (`as*RequestApprovalParams`, `asToolRequestUserInputParams`) into `codex-approvals.ts`. | 519 lines. `normalizePermissionMode` stays in `codex.ts`; the `permissionMode` default that called it became a required parameter (the permitted dependency-parameter conversion), since every caller already passed it. The `codex.ts` `log` wrapper moved verbatim to `codex-log.ts` so both modules log as `codex-provider`. The guards were left out of slice 4.3 on purpose and belong here. The Codex approval tests pin the decisions. |
 | 4.9 | Done 2026-11-09 ([plan 186](186-codex-session-lifecycle.md)) | Codex session lifecycle | Replace the closure bag that `startSessionInternal` returns (abort, model/effort, steer, interrupt, goal/status/usage/compact commands) with an explicit Codex session object, and split `runSession` into setup, turn consumer and message loop. | Not a move-only slice: it changes how state is shared. Most of the file's churn since 2026-08 is in these two regions (goals, reload survival, liveness probes, stale-turn rejection, overload retry). Write a plan doc first. It should build on the existing `AgentSession`/provider-owner seam, not add a new normalized event vocabulary (see `docs/competitive/t3code-provider-architecture.md`). The config-dependent thread and turn param builders (`buildThreadConfigOverrides`, `createThreadStartParams`/`ResumeParams`/`ForkParams`, `createTurnStartParams`) and the recap/fork-summary helpers stayed in `codex.ts` after slice 4.10 because they read provider configuration getters, the model cache and the provider's own app-server setup; the session object should own that configuration. Tier 3. Landed as slices 4.9.0 to 4.9.5 plus one behaviour fix (requests wait for the ready thread); `codex.ts` is 1,032 lines and no longer budgeted. |
 | 4.10 | Done 2026-11-08 | Codex thread policy and skill input | Move the pure thread/turn policy helpers and fork-anchor resolution to `codex-thread-params.ts`, and slash-command and skill-input assembly to `codex-skill-inputs.ts`. | 223 and 102 lines. They read no provider state. `refreshCodexSkills` stays because `codex-dynamic-results.test.ts` stubs it on the provider; `startOrResumeThread` and `createInitializeParams` stay with the app-server setup. Move-only, Tier 1 plus the Codex provider tests. |
+| 4.11 | Done 2026-11-09 | Claude executable and login resolution | Move the Claude Code executable lookup (SDK native package, configured or PATH command, Windows Claude Desktop copies) and the claude.ai login command and status read from `claude.ts` into `claude-executable.ts`. | 323 lines. Module functions with no provider state; `claude.ts` 3,114 -> 2,805. Importers outside `claude.ts` import the new module directly (no re-export). Move-only, Tier 1 plus the Claude provider tests, `pnpm test:providers` and `pnpm test:e2e:sdk`, which run the real lookup. |
+| 4.12 | Done 2026-11-09 | Claude model and slash-command catalog | Move the launch-model aliases, SDK model and slash-command mapping, family merge and the remote slash-command filter from `claude.ts` into `claude-model-catalog.ts`, mirroring `codex-model-catalog.ts`. | 367 lines. Pure functions; the provider's model cache, its TTL, the probe and catalog status stay. `claude.ts` 2,805 -> 2,469. Move-only, Tier 1 plus the Claude provider tests, `pnpm test:providers` and `pnpm test:e2e:sdk`. |
+| 4.13 | Not started | Claude helper sessions and session object | Move the recap, fork-summary and prompt-cache keepalive helper queries behind a provider host, then give the live Claude session its own object, as plan 186 did for Codex. | Write a plan doc first. `ClaudeGatewayProvider` and `ClaudeOllamaProvider` override protected hooks (`getEnv`, `getSettings`, `getDisallowedTools`, `getSystemPrompt`, `sessionEnvironment`, `normalizeSupportedModels`), so moved code must reach them through the provider at call time, with a Gateway test per slice. Tier 3. |
 
 ## Phase 5: Load-Bearing Supervisor And Process Files
 
@@ -474,6 +484,258 @@ Follow-ups recorded:
 ```
 
 ## Landing Notes
+
+### Slice 4.12 — Claude model and slash-command catalog (Landed 2026-11-09, this commit)
+
+Moved to new `claude-model-catalog.ts`:
+- The SDK row types `ClaudeSdkModelInfo` and `ClaudeSdkSlashCommand`,
+  now exported because `claude.ts` still names them.
+- `CLAUDE_EFFORT_LEVELS`.
+- `CLAUDE_LAUNCH_MODEL_ALIASES` with its history comment,
+  `ALWAYS_EXTENDED_DESCRIPTIONS` and `normalizeClaudeLaunchModel`.
+- `CLAUDE_MODELS_FALLBACK` and `CLAUDE_GOAL_LOOP_ALIAS_COMMAND`.
+- `isClaudeEffortLevel`, `mapClaudeSupportedEffortLevels`, the
+  slash-command name normalizers, `filterClaudeRemoteSlashCommands`,
+  `withClaudeGoalAlias` and `mapClaudeSlashCommand`.
+- `enrichClaudeModel`, `mapClaudeSdkModel`, `mapClaudeCliModels`,
+  `claudeModelFamily` and `mergeClaudeModels`.
+
+Left in `claude.ts`: `CLAUDE_MODEL_CACHE_TTL_MS`, which sat between the
+aliases and the fallback list but belongs to the provider's model cache.
+The orphaned "Static fallback list" doc comment above it moved with the
+list it describes.
+
+Signature conversions:
+- None. `CLAUDE_MODELS_FALLBACK`, `normalizedSlashCommandNameValue`,
+  `mapClaudeSlashCommand`, `mapClaudeSdkModel` and `claudeModelFamily`
+  are now exported because `claude.ts` still uses them.
+
+Importers:
+- `AgentAuthRouter.ts` (`mapClaudeCliModels`) and `claude.test.ts`
+  import from `claude-model-catalog.js`. No re-export from `claude.ts`.
+
+Behavior changes:
+- None.
+
+Verification:
+- Server `tsc` (main and tool-display configs; `tsconfig.test.json` has
+  no errors in the touched files), the Claude-focused vitest set plus the
+  two Agent Auth Router test files under a temporary home (73 files,
+  1,130 passed), `pnpm lint`, `pnpm format:check`, `pnpm typecheck`,
+  `pnpm test:providers` (22 passed, 1 skipped), `pnpm test:e2e:sdk`
+  (80 passed, 4 skipped),
+  `git diff --check`, and a normalized check that every moved range of
+  HEAD appears in the new file and is gone from `claude.ts`, with the
+  rest unchanged (12 checks).
+- Budget: `claude.ts` 2,805 -> 2,469. Row 4.13 (helper sessions and a
+  session object, plan first) is what remains to get it under 1,500.
+
+### Slice 4.11 — Claude executable and login resolution (Landed 2026-11-09, this commit)
+
+Moved to new `claude-executable.ts`:
+- `CLAUDE_LOGIN_ARGS` and `DEFAULT_CLAUDE_LOGIN_COMMAND`.
+- The SDK resolvers (`requireFromHere`, `requireFromClaudeSdk`) and the
+  `cachedLocalClaudeCodeExecutable` cache.
+- `isExecutableFile`, `resolvePathExecutable`, `hasGlibcRuntime`,
+  `getClaudeSdkNativePackageNames`, `resolveClaudeSdkNativeExecutable`
+  and `resolveLocalClaudeCodeExecutable`.
+- `readClaudeAiLogin`.
+- `safeMtimeMs`, `formatClaudeLoginCommand`, the Windows Claude Desktop
+  lookup (`getClaudeDesktopCodeRoots`, `findClaudeDesktopExecutables`),
+  `hasShellClaudeCommand`, `isUsableClaudeExecutable`,
+  `findPreferredClaudeLoginExecutable`, `resolveClaudeLoginExecutable`
+  and `getClaudeLoginCommand`.
+
+Left in `claude.ts`, although they sat in the same stretch:
+`extractClaudeAssistantText` (recap helper), `numericField` and
+`extractPromptCacheRefreshUsage` (prompt-cache keepalive) and
+`withCleanup` (session iterator). Row 4.13 owns them.
+
+Signature conversions:
+- None. `resolveLocalClaudeCodeExecutable` and
+  `resolveClaudeLoginExecutable` are now exported because `claude.ts`
+  still calls them. The new module has its own `execFileAsync`;
+  `claude.ts` keeps one for `claude auth status` in the provider.
+
+Importers:
+- `app.ts` (`readClaudeAiLogin`), `test/native-provider/runtimes.ts`,
+  `claude.test.ts`, `claude-summary-source.test.ts` and the client e2e
+  `durable-session-creation.spec.ts` import from `claude-executable.js`.
+  No re-export from `claude.ts`.
+
+Behavior changes:
+- None. The executable cache is still one module-level value per
+  process.
+
+Verification:
+- Server `tsc` (main and tool-display configs; `tsconfig.test.json` has
+  no errors in the touched files), a Claude-focused vitest set under a
+  temporary home (71 files, 1,093 passed), `pnpm lint`,
+  `pnpm format:check`, `pnpm typecheck`, `pnpm test:providers`
+  (22 passed, 1 skipped), `pnpm test:e2e:sdk` (80 passed, 4 skipped),
+  `git diff --check`, and a normalized check that every moved range of
+  HEAD appears in the new file and is gone from `claude.ts`, with the rest
+  unchanged (14 checks).
+- Running vitest directly against the real home fails three tests in
+  `session-identity.test.ts` and `session-launch-records.test.ts` at HEAD
+  as well; the package `test` script runs with a temporary home, under
+  which they pass.
+- Budget: `claude.ts` 3,114 -> 2,805.
+
+### Slice 2.50 — Shared Composer Draft Attachments in the Project Queue Editor (Landed 2026-11-09, this commit)
+
+Not move-only. [Plan 188](188-shared-composer-draft-attachments.md) slice 3.
+
+Changed:
+- `components/ProjectQueueAttachmentEditor.tsx` (386 -> 262 lines) calls
+  `useComposerDraftAttachments` with no saved draft (`draftKey: null`, a
+  ref holding null, hydration off), the item's files as
+  `initialAttachments` (read once; they seed the batch), an
+  `ownsStagedAttachment` rule built once from them, and its inline error
+  for failed uploads and deletes. Its own list, uploading list, batch,
+  added-file tracking, unique names, cancel and guard are gone. It keeps
+  its save and the close-time delete of the files added here, which now
+  reads the hook's list ref.
+- `uploadComposerAttachmentFile` in `lib/sessionComposerSubmission.ts` is
+  deleted: every caller staged, so its direct-upload branch was dead.
+  `uploadStagedComposerAttachment` replaces it, and its unit test moved
+  to the new helper.
+- `ProjectQueueSection.test.tsx` mocks the transport's
+  `uploadStagedAttachment` instead of the helper's module.
+
+Behavior changes:
+- A finished image upload is now stored in the preview cache, as on the
+  other two screens (plan 188 item 10). Nothing else: the batch, the
+  owned files, the cancel, the close-time delete and the guard behave as
+  before, as slice 0's component pins show. After every existing staged
+  file is removed, a new upload may start a new batch (item 12); the
+  server prepares added files from whichever batch the message names.
+
+Verification:
+- Tier 2 (`pnpm lint`, `pnpm format:check`, `pnpm typecheck`, `pnpm test`)
+  passed at this slice, including slice 0's
+  `ProjectQueueAttachmentEditor.test.tsx` and `ProjectQueueSection.test.tsx`.
+- Tier 3 ran once (`pnpm --filter client test:e2e --grep-invert "physical
+  Android"`) at the plan's tip before one fix: 586 passed, 13 skipped, 4
+  failed. `artifact-viewer.spec.ts:136` is the known failure;
+  `session-page-header-paths.spec.ts:497` fails at origin/main (see slice
+  2.44); `long-context-effort-warning.spec.ts:18` fails alone at
+  origin/main `b723e2fd5` too. `image-upload-quality.spec.ts:7` was this
+  plan's: a resized image's chip lost its `-resized` name (plan 188 item
+  7). Attachments are now named after the prepared file; that spec and
+  the attachment specs (`new-session-attachment-paths`,
+  `session-page-correction-attachment-paths`,
+  `session-page-title-attachment-paths`, `attachment-drop`, `audio-memo`)
+  pass at this commit, 24 passed.
+
+### Slice 2.49 — Shared Composer Draft Attachments on New Session (Landed 2026-11-09, this commit)
+
+Not move-only. [Plan 188](188-shared-composer-draft-attachments.md) slice 2.
+
+Removed from `components/NewSessionForm.tsx` (3,120 -> 2,689 lines): the
+`PendingFile` state and refs, the saved-draft write, the batch, hydration,
+the sibling-tab listener, the uploads with their progress record and
+removal tracking, the local-file upload at start, materializing, and the
+navigation guard. The form calls `useComposerDraftAttachments` and draws
+its finished attachments, then its in-flight uploads, as chips; removing
+an uploading chip cancels it. `lib/newSessionAttachments.ts` and its test
+are deleted.
+
+Changed:
+- `lib/newSessionStart.ts` reads `attachmentsRef`, `pendingUploadsRef`
+  and `setComposerAttachments`. Every file count is finished attachments
+  plus in-flight uploads (item 24), so each start picks the path it did.
+  The counts, including the launch refusal's, are read when the start
+  runs, not from the render that built it, because the audio memo
+  uploads and then starts; a memo on a fork or handoff launch is refused
+  rather than dropped from the launch.
+  The durable path awaits the uploads it captured; one cancelled by a
+  source change stops the start quietly when the form is no longer the
+  one that started (item 27). The unchanged-files checks compare ids as
+  sets, through `sameAttachmentIds` in `lib/sessionComposerAttachments.ts`.
+- The legacy start awaits in-flight uploads and materializes through
+  `materializeComposerAttachmentsForSubmission`.
+- The audio memo uploads on commit, as on the session page. A refused
+  start keeps it as a staged chip; a new recording replaces it; Cancel
+  deletes it or cancels its upload (item 23).
+- The template button's disabled reason moved into
+  `templateStartDisabledReason` in `lib/newSessionStartDecisions.ts`.
+
+Behavior changes (plan 188 items): finished uploads are appended in the
+order they finish (2); an image's preview appears when its upload
+finishes (3); a cancelled upload no longer fails a later start (5); a
+failed upload says `sessionUploadFailed` with the file name (8); history
+records the picked file and the preview cache the prepared one (9, 10);
+the sibling-tab event re-checks only when the saved refs changed, also
+without draft sync (16, 17); hydration checks once, after the version
+(18, 26); a draft key change cancels uploads in flight (27).
+
+Verification:
+- Tier 2 (`pnpm lint`, `pnpm format:check`, `pnpm typecheck`, `pnpm test`)
+  passed at this slice.
+- New unit pins in `NewSessionForm.test.tsx`: Start after removing a file
+  while it uploaded starts without it and deletes the late result (fails
+  when a cancel leaves the upload's promise for the start to wait on); an
+  incoming share that finishes before the version loads keeps the saved
+  file. The memo case now expects the staged upload, the replace and
+  Cancel. A memo on a launch is refused and `launch.submit` is not
+  called (fails with a render-time count). `templateStartDisabledReason`
+  is tested in
+  `newSessionStartDecisions.test.ts`.
+- Browser: slice 0's New Session pins, with the short-answer step added
+  (the chip stays and the form says so once), `audio-memo`,
+  `attachment-drop`, `session-creation-attachments`,
+  `new-session-project-queue`, `new-session-draft-windows` and plan 187's
+  pins: 20 passed.
+
+### Slice 2.48 — Shared Composer Draft Attachments on the Session Page (Landed 2026-11-09, this commit)
+
+Not move-only. [Plan 188](188-shared-composer-draft-attachments.md) slice 1.
+
+Moved and merged:
+- `useSessionComposerAttachments` and `useDraftAttachmentHydration`
+  (`hooks/useSessionComposerAttachments.ts`, deleted) and the upload and
+  remove halves of `useSessionAttachmentUploads` ->
+  `useComposerDraftAttachments` in `hooks/useComposerDraftAttachments.ts`.
+  Uploads take their image profile and history context per call, because
+  the page knows its provider's profile only below where the hook is
+  called. `useSessionAttachmentUploads` keeps `uploadAttachedFiles`,
+  `handleAttach` and the incoming share.
+- New `uploadStagedComposerAttachment` in `lib/sessionComposerSubmission.ts`
+  stages one file and returns the prepared file too; the old helper stays
+  until slice 3.
+- The edit blocker and `materializeComposerAttachments` stay in the page.
+  The page's session reset no longer touches attachments (item 28).
+
+Behavior changes on the session page (plan 188 item numbers):
+- 26: hydration checks only once the server's version is known, showing
+  the saved files unchecked until then. The e2e server offers draft sync,
+  and plan 187's reload pin had pinned a quiet drop that was the page
+  checking before the version arrived. The pin now expects the draft-sync
+  rule: a missing file keeps its chip, and the page says so once.
+- 18: hydration reruns on the draft key, the rule, the aside flag and
+  the sibling-tab event, not on callback identity, so a load checks once;
+  the reload pin counts one failure notice.
+- 7: duplicate file names get numeric suffixes; a resized image keeps
+  the prepared file's `-resized` name, as before.
+- 12: the batch survives removing the last staged file while an upload
+  runs, here and in hydration.
+- 14, 15, 29: hydration replaces only staged chips, and a shown chip
+  keeps its preview.
+- 6, 10, 13, 16: a late upload's preview is revoked; the preview cache
+  stores the prepared file; an update that changes nothing is skipped.
+
+Verification:
+- Tier 2 (`pnpm lint`, `pnpm format:check`, `pnpm typecheck`, `pnpm test`)
+  passed at this slice.
+- New `hooks/__tests__/useComposerDraftAttachments.test.tsx`: the saved
+  file survives a write while the version is unknown, the batch survives
+  for an upload in flight, and a key change drops the old key's uploads.
+  Each fails when its rule is removed.
+- Browser: plan 187's correction and attachment pins (reload pin updated
+  as above), `session-page-title-attachment-paths`,
+  `session-attachment-send-draft`, `session-page-queue-paths` and
+  `attachment-drop`: 24 passed.
 
 ### Slice 4.9.5 — Codex setup and message loop on the session (Landed 2026-11-09, this commit)
 

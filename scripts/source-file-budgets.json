@@ -28,7 +28,7 @@
       }
     },
     "packages/client/src/components/NewSessionForm.tsx": {
-      "maxLines": 3120
+      "maxLines": 2689
     },
     "packages/client/src/components/renderers/tools/EditRenderer.tsx": {
       "maxLines": 1813
@@ -67,7 +67,7 @@
       "maxLines": 1683
     },
     "packages/client/src/pages/SessionPage.tsx": {
-      "maxLines": 3621
+      "maxLines": 3620
     },
     "packages/client/src/pages/settings/AppearanceSettings.tsx": {
       "maxLines": 1823
@@ -76,7 +76,7 @@
       "maxLines": 1548
     },
     "packages/server/src/app.ts": {
-      "maxLines": 4624
+      "maxLines": 4615
     },
     "packages/server/src/augments/safe-markdown.ts": {
       "maxLines": 1951
@@ -106,7 +106,7 @@
       "maxLines": 3066
     },
     "packages/server/src/sdk/providers/claude.ts": {
-      "maxLines": 3114
+      "maxLines": 2469
     },
     "packages/server/src/sdk/providers/codex-oss.ts": {
       "maxLines": 1615
@@ -134,9 +134,6 @@
     },
     "packages/server/src/services/SecurityClientService.ts": {
       "maxLines": 1753
-    },
-    "packages/server/src/services/SessionCatalogService.ts": {
-      "maxLines": 1569
     },
     "packages/server/src/session-sandbox.ts": {
       "maxLines": 1588

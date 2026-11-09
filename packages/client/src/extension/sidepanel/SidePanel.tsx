@@ -5,6 +5,7 @@ import {
 } from "@yep-anywhere/shared";
 import { type MouseEvent, useCallback, useEffect, useState } from "react";
 import { ProviderBadge } from "../../components/ProviderBadge";
+import { SessionProviderPhasePill } from "../../components/SessionProviderPhase";
 import { NotificationBadge } from "../../components/StatusBadge";
 import { ThinkingIndicator } from "../../components/ThinkingIndicator";
 import { Button, ButtonBase, IconButton } from "../../components/ui/Button";
@@ -24,7 +25,9 @@ import { getChrome } from "../chrome";
 import { withHost } from "../hostLinks";
 import {
   type AttentionView,
+  fetchInboxes,
   type HostAnswer,
+  type HostInboxes,
   hostPath,
   type IssueLookup,
   loadAttention,
@@ -32,6 +35,7 @@ import {
   lookupSessionIssues,
   type PanelSession,
   type SessionIssues,
+  type SessionRoute,
   sessionPageRoute,
   sessionPath,
 } from "../lookup";
@@ -51,13 +55,21 @@ import { useCurrentTab } from "./useCurrentTab";
 const REFRESH_MS = 30_000;
 const COLLAPSED_GROUPS_KEY = "ya.extension.panelCollapsedGroups";
 
-type GroupKey = "needsYou" | "running" | "recent";
+// Stored keys predate the Inbox section names; renaming them would reopen
+// groups users collapsed.
+type GroupKey = "needsYou" | "running" | "background" | "recent";
+const GROUP_KEYS: readonly GroupKey[] = [
+  "needsYou",
+  "running",
+  "background",
+  "recent",
+];
 
-type Content =
+/** What the panel found for the tab's own page, shown above the groups. */
+type PageContext =
   | { kind: "idle" }
   | { kind: "lookup"; lookup: IssueLookup }
-  | { kind: "session"; issues: SessionIssues }
-  | { kind: "attention"; view: AttentionView };
+  | { kind: "session"; issues: SessionIssues };
 
 function useExtensionSettings(): ExtensionSettings {
   const [settings, setSettings] = useState(DEFAULT_EXTENSION_SETTINGS);
@@ -85,9 +97,7 @@ function loadCollapsedGroups(): GroupKey[] {
       localStorage.getItem(COLLAPSED_GROUPS_KEY) ?? "[]",
     );
     return Array.isArray(stored)
-      ? stored.filter((key): key is GroupKey =>
-          ["needsYou", "running", "recent"].includes(key),
-        )
+      ? stored.filter((key): key is GroupKey => GROUP_KEYS.includes(key))
       : [];
   } catch {
     return [];
@@ -132,8 +142,12 @@ function StateBadge({ session }: { session: PanelSession }) {
         label={t("extensionPanelQuestion")}
       />
     );
-  if (session.state === "running") return <ThinkingIndicator variant="pill" />;
-  return null;
+  if (session.state !== "running") return null;
+  // Waiting and background turns name the work holding them, as Inbox rows do.
+  const phase = session.providerPhase;
+  if (phase && phase.phase !== "generating")
+    return <SessionProviderPhasePill providerPhase={phase} />;
+  return <ThinkingIndicator variant="pill" />;
 }
 
 function SessionRow({
@@ -298,7 +312,14 @@ function IssueRow({ item, onOpen }: { item: IssueItem; onOpen: () => void }) {
 
 function HostProblems({ answers }: { answers: HostAnswer[] }) {
   const { t } = useI18n();
-  const problems = answers.filter((answer) => answer.status !== "ok");
+  // The page lookup and the groups can both report a host; name it once.
+  const problems = answers.filter(
+    (answer, index) =>
+      answer.status !== "ok" &&
+      answers.findIndex(
+        (other) => other.host.id === answer.host.id && other.status !== "ok",
+      ) === index,
+  );
   if (problems.length === 0) return null;
   return (
     <ul className={styles.problems}>
@@ -317,6 +338,51 @@ function HostProblems({ answers }: { answers: HostAnswer[] }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+/** What the panel knows about the YA session page in the tab. */
+function SessionContext({
+  route,
+  session,
+  loading,
+}: {
+  route: SessionRoute;
+  session: SessionIssues | null;
+  loading: boolean;
+}) {
+  const { t } = useI18n();
+  let text: string;
+  if (!session) {
+    if (!loading) return null;
+    text = t("extensionPanelLookingUp");
+  } else if (!session.host) {
+    text = t("extensionPanelSessionHostInactive", {
+      host: route.relayUsername,
+    });
+  } else if (session.hosts[0]?.status !== "ok") {
+    // HostProblems names what went wrong.
+    return null;
+  } else if (session.items.length === 0) {
+    // Nothing to list takes one line, keeping the groups below in view.
+    return (
+      <section aria-label={t("extensionPanelThisSession")}>
+        <p className={styles.hint}>{t("extensionPanelSessionNoIssues")}</p>
+      </section>
+    );
+  } else {
+    text =
+      session.items.length === 1
+        ? t("extensionPanelSessionIssueCountOne")
+        : t("extensionPanelSessionIssueCount", { count: session.items.length });
+  }
+  return (
+    <section
+      className={styles.context}
+      aria-label={t("extensionPanelThisSession")}
+    >
+      <p>{text}</p>
+    </section>
   );
 }
 
@@ -363,7 +429,8 @@ export function SidePanel() {
     .join(",");
   const tab = useCurrentTab();
   const [manualUrl, setManualUrl] = useState<string>();
-  const [content, setContent] = useState<Content>({ kind: "idle" });
+  const [page, setPage] = useState<PageContext>({ kind: "idle" });
+  const [groups, setGroups] = useState<AttentionView | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshCount, setRefreshCount] = useState(0);
 
@@ -376,9 +443,13 @@ export function SidePanel() {
       manualUrl === tab.url ||
       (settings.automaticLookup &&
         allowlistPermits(settings.lookupAllowlist, reference.key)));
+  // The groups follow the page context on every page; "recent" only narrows
+  // which of them show, so it needs no reload.
+  const showGroups = settings.panelFallback !== "none";
 
-  // Reload on any input change, on demand, and while visible. hostKey stands
-  // for `hosts`, which is rebuilt on every render.
+  // Reload on any input change, on demand, when the panel comes back into
+  // view, and while visible. hostKey stands for `hosts`, which is rebuilt on
+  // every render.
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshCount is the on-demand trigger and hostKey identifies hosts.
   useEffect(() => {
     if (hosts.length === 0) return;
@@ -387,31 +458,45 @@ export function SidePanel() {
     let inFlight = false;
     let rechecks = 0;
     let followUp: ReturnType<typeof setTimeout> | undefined;
-    const load = async (isRecheck = false) => {
+    // While the host is still fetching tracker status, look the session up
+    // again shortly. A recheck touches only the page context, so it runs
+    // apart from `load` instead of waiting on the groups.
+    const lookUpSession = async (sessionRoute: SessionRoute) => {
+      const issues = await lookupSessionIssues(sessionRoute, hosts);
+      if (cancelled) return;
+      setPage({ kind: "session", issues });
+      clearTimeout(followUp);
+      if (issues.statusRefreshing && rechecks++ < 3)
+        followUp = setTimeout(() => void lookUpSession(sessionRoute), 1500);
+    };
+    const loadPage = async (inboxes?: HostInboxes) => {
+      // A session page is the user's own data on a page already readable,
+      // so it is always looked up.
+      if (route) await lookUpSession(route);
+      else if (lookupWanted && url) {
+        const lookup = await lookupIssue(url, hosts, {
+          includeDismissed: settings.includeDismissed,
+          inboxes,
+        });
+        if (!cancelled && lookup) setPage({ kind: "lookup", lookup });
+      } else if (!cancelled) setPage({ kind: "idle" });
+    };
+    const load = async () => {
       if (cancelled || inFlight) return;
-      if (followUp) clearTimeout(followUp);
-      if (!isRecheck) rechecks = 0;
+      clearTimeout(followUp);
+      rechecks = 0;
       inFlight = true;
       setLoading(true);
       try {
-        // A session page is the user's own data on a page already readable,
-        // so it is always looked up.
-        if (route) {
-          const issues = await lookupSessionIssues(route, hosts);
-          if (!cancelled) {
-            setContent({ kind: "session", issues });
-            if (issues.statusRefreshing && rechecks++ < 3)
-              followUp = setTimeout(() => void load(true), 1500);
-          }
-        } else if (lookupWanted && url) {
-          const lookup = await lookupIssue(url, hosts, {
-            includeDismissed: settings.includeDismissed,
-          });
-          if (!cancelled && lookup) setContent({ kind: "lookup", lookup });
-        } else if (settings.panelFallback !== "none") {
-          const view = await loadAttention(hosts);
-          if (!cancelled) setContent({ kind: "attention", view });
-        } else if (!cancelled) setContent({ kind: "idle" });
+        // The page and the groups load together from one inbox per host.
+        const inboxes = showGroups ? fetchInboxes(hosts) : undefined;
+        await Promise.all([
+          loadPage(inboxes),
+          inboxes &&
+            loadAttention(hosts, inboxes).then((view) => {
+              if (!cancelled) setGroups(view);
+            }),
+        ]);
       } finally {
         inFlight = false;
         if (!cancelled) setLoading(false);
@@ -421,24 +506,38 @@ export function SidePanel() {
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") void load();
     }, REFRESH_MS);
+    // Hidden panels skip the timer, so catch up as soon as one is seen.
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
       clearInterval(timer);
-      if (followUp) clearTimeout(followUp);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      clearTimeout(followUp);
     };
   }, [
     hostKey,
     tab.url,
     lookupWanted,
     settings.includeDismissed,
-    settings.panelFallback,
+    showGroups,
     refreshCount,
   ]);
 
-  // A different page drops the previous page's answer.
+  // Groups loaded for other hosts, or before the list was turned off, would
+  // be stale; drop them rather than show them until the reload lands.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hostKey and showGroups are the triggers, not inputs.
+  useEffect(() => {
+    setGroups(null);
+  }, [hostKey, showGroups]);
+
+  // A different page drops only the previous page's context; the groups stay
+  // on screen while they reload.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the URL is the trigger, not an input.
   useEffect(() => {
-    setContent({ kind: "idle" });
+    setPage({ kind: "idle" });
   }, [tab.url]);
 
   const open = useCallback(
@@ -497,10 +596,14 @@ export function SidePanel() {
   };
 
   const showHost = hosts.length > 1;
-  const lookup = content.kind === "lookup" ? content.lookup : null;
-  const attention = content.kind === "attention" ? content.view : null;
-  const session = content.kind === "session" ? content.issues : null;
-  const answers = lookup?.hosts ?? attention?.hosts ?? session?.hosts ?? [];
+  const lookup = page.kind === "lookup" ? page.lookup : null;
+  const session = page.kind === "session" ? page.issues : null;
+  const attention = showGroups ? groups : null;
+  const answers = [
+    ...(lookup?.hosts ?? session?.hosts ?? []),
+    ...(attention?.hosts ?? []),
+  ];
+  const sessionAnswered = !!session?.host && session.hosts[0]?.status === "ok";
 
   return (
     <div className={styles.panel}>
@@ -509,13 +612,13 @@ export function SidePanel() {
       <header className={styles.header}>
         <span className={styles.hosts}>
           {hosts.map((host) => {
-            const answer = answers.find((item) => item.host.id === host.id);
+            const online = answers.some(
+              (item) => item.host.id === host.id && item.status === "ok",
+            );
             return (
               <span key={host.id} className={styles.hostChip}>
                 <span
-                  className={
-                    answer?.status === "ok" ? styles.online : styles.offline
-                  }
+                  className={online ? styles.online : styles.offline}
                   aria-hidden="true"
                 />
                 {host.displayName}
@@ -653,13 +756,21 @@ export function SidePanel() {
                     ? t("extensionPanelLookupOff")
                     : loading && !lookup
                       ? t("extensionPanelLookingUp")
-                      : lookup
-                        ? lookup.sessions.length === 1
-                          ? t("extensionPanelSessionCountOne")
-                          : t("extensionPanelSessionCount", {
-                              count: lookup.sessions.length,
-                            })
-                        : ""}
+                      : !lookup
+                        ? ""
+                        : lookup.sessions.length === 0
+                          ? // Hosts that failed say so in HostProblems; only
+                            // a host that answered can report no mentions.
+                            lookup.hosts.some(
+                              (answer) => answer.status === "ok",
+                            )
+                            ? t("extensionPanelNoSessions")
+                            : ""
+                          : lookup.sessions.length === 1
+                            ? t("extensionPanelSessionCountOne")
+                            : t("extensionPanelSessionCount", {
+                                count: lookup.sessions.length,
+                              })}
                 </p>
               </section>
             )}
@@ -671,65 +782,46 @@ export function SidePanel() {
             )}
 
             {route && (
-              <section
-                className={styles.context}
-                aria-label={t("extensionPanelThisSession")}
-              >
-                <p>
-                  {loading && !session
-                    ? t("extensionPanelLookingUp")
-                    : !session ||
-                        (session.host && session.hosts[0]?.status !== "ok")
-                      ? ""
-                      : !session.host
-                        ? t("extensionPanelSessionHostInactive", {
-                            host: route.relayUsername,
-                          })
-                        : session.items.length === 1
-                          ? t("extensionPanelSessionIssueCountOne")
-                          : t("extensionPanelSessionIssueCount", {
-                              count: session.items.length,
-                            })}
-                </p>
-              </section>
+              <SessionContext
+                route={route}
+                session={session}
+                loading={loading}
+              />
             )}
 
             <HostProblems answers={answers} />
 
-            {lookup && (
+            {lookup && lookup.sessions.length > 0 && (
               <>
-                {lookup.sessions.length === 0 ? (
-                  <p className={styles.hint}>{t("extensionPanelNoSessions")}</p>
-                ) : (
-                  <ul className={styles.list}>
-                    {lookup.sessions.map((session) => (
-                      <SessionRow
-                        key={`${session.host.id}:${session.sessionId}`}
-                        session={session}
-                        showHost={showHost}
-                        onOpen={open}
-                      />
-                    ))}
-                  </ul>
-                )}
+                {/* Named apart from the groups, which can list the same
+                    sessions. */}
+                <ul
+                  className={styles.list}
+                  aria-label={t("extensionPanelPageSessions", {
+                    key: lookup.reference.key,
+                  })}
+                >
+                  {lookup.sessions.map((session) => (
+                    <SessionRow
+                      key={`${session.host.id}:${session.sessionId}`}
+                      session={session}
+                      showHost={showHost}
+                      onOpen={open}
+                    />
+                  ))}
+                </ul>
                 <p className={styles.hint}>{t("extensionPanelCoverage")}</p>
               </>
             )}
 
-            {session?.host &&
-              session.hosts[0]?.status === "ok" &&
-              (session.items.length === 0 ? (
-                <p className={styles.hint}>
-                  {t("extensionPanelSessionNoIssues")}
-                </p>
-              ) : (
-                <SessionIssueList
-                  key={`${session.host.id}:${session.route.sessionId}`}
-                  items={session.items}
-                  collapseMerged={settings.collapseMergedPrs}
-                  onOpen={openIssue}
-                />
-              ))}
+            {session?.host && sessionAnswered && session.items.length > 0 && (
+              <SessionIssueList
+                key={`${session.host.id}:${session.route.sessionId}`}
+                items={session.items}
+                collapseMerged={settings.collapseMergedPrs}
+                onOpen={openIssue}
+              />
+            )}
 
             {tab.url && !reference && !route && (
               <p className={styles.hint}>{t("extensionPanelNoIssue")}</p>
@@ -782,12 +874,17 @@ function AttentionGroups({
           {
             key: "needsYou",
             heading: t("extensionPanelNeedsYou"),
-            sessions: view.needsYou,
+            sessions: view.needsAttention,
           },
           {
             key: "running",
             heading: t("extensionPanelRunning"),
-            sessions: view.running,
+            sessions: view.active,
+          },
+          {
+            key: "background",
+            heading: t("extensionPanelBackground"),
+            sessions: view.background,
           },
           {
             key: "recent",

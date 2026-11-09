@@ -98,6 +98,16 @@ its own commit with a test, and one a user could see is asked about. Proposals
    correction become one step. Done 2026-11-08 in
    [plan 187](../docs/tactical/187-session-page-draft-hooks.md):
    `SessionPage.tsx` went from 3,903 to 3,621 lines.
+10. **One composer draft attachment model** (not move-only). The session
+    page, New Session and the Project Queue editor each keep a copy of the
+    attachment list, uploads, the staging batch, the saved-draft write and
+    hydration, the preview revoke and the navigation guard. One hook
+    replaces the three, with each difference between the copies settled
+    once. Done 2026-11-09 in
+    [plan 188](../docs/tactical/188-shared-composer-draft-attachments.md):
+    `NewSessionForm.tsx` went from 3,120 to 2,689 lines and the Project
+    Queue editor from 386 to 262; production code is about 570 lines
+    smaller overall.
 
 Ownership and slice rows: [doc 058](../docs/tactical/058-typescript-module-boundary-refactor.md),
 priority-queue item 2. The broader hub-growth record is

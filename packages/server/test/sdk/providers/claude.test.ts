@@ -3,17 +3,21 @@ import {
   ClaudeProvider,
   claudeProvider,
   evaluateClaudeSessionOptionsUpdate,
-  filterClaudeRemoteSlashCommands,
-  formatClaudeLoginCommand,
   getClaudeAutoCompactOverrideEnv,
   getClaudeSessionLaunchOptions,
+  probeClaudeControlLiveness,
+} from "../../../src/sdk/providers/claude.js";
+import {
+  formatClaudeLoginCommand,
+  resolveClaudeSdkNativeExecutable,
+  resolvePathExecutable,
+} from "../../../src/sdk/providers/claude-executable.js";
+import {
+  filterClaudeRemoteSlashCommands,
   mergeClaudeModels,
   normalizeClaudeLaunchModel,
-  probeClaudeControlLiveness,
-  resolvePathExecutable,
-  resolveClaudeSdkNativeExecutable,
   withClaudeGoalAlias,
-} from "../../../src/sdk/providers/claude.js";
+} from "../../../src/sdk/providers/claude-model-catalog.js";
 import { resolveProviderSessionOptions } from "../../../src/sdk/providers/types.js";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 
