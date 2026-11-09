@@ -48,8 +48,8 @@ vi.mock("../lib/sourceRuntime", () => ({
     getCurrentSourceRuntime: () => ({
       transport: {
         fetch: state.otherHost ? state.otherFetch : state.fetch,
-        upload: state.upload,
-        uploadStagedAttachment: vi.fn(),
+        upload: vi.fn(),
+        uploadStagedAttachment: state.upload,
       },
     }),
   }),
@@ -60,8 +60,8 @@ vi.mock("../contexts/SourceRuntimeContext", () => ({
     sourceKey: "local",
     transport: {
       fetch: state.fetch,
-      upload: state.upload,
-      uploadStagedAttachment: vi.fn(),
+      upload: vi.fn(),
+      uploadStagedAttachment: state.upload,
     },
   }),
 }));
@@ -120,30 +120,37 @@ beforeEach(() => {
   state.providers = [];
   state.calls = [];
   state.createResponse = {
+    requestId: "r1",
     sessionId: "s1",
-    processId: "p1",
     projectId: "os",
-    permissionMode: "default",
-    modeVersion: 1,
+    provider: "claude",
+    creation: {
+      state: "saved",
+      attemptId: "a1",
+      updatedAt: "",
+      delivery: "not-admitted",
+    },
     serverTimestamp: 1,
   };
   state.fetch
     .mockReset()
     .mockImplementation(async (path: string, init?: RequestInit) => {
       state.calls.push(`${init?.method ?? "GET"} ${path}`);
-      return path.endsWith("/sessions/create") || path.endsWith("/sessions")
+      return path.endsWith("/session-creations")
         ? state.createResponse
         : { queued: true };
     });
   state.upload.mockReset().mockImplementation(async (...args: unknown[]) => {
-    state.calls.push(`upload:${(args[2] as File).name}`);
+    state.calls.push(`upload:${(args[0] as File).name}`);
     return {
       id: "f1",
-      originalName: (args[2] as File).name,
+      batchId: (args[1] as { batchId: string }).batchId,
+      originalName: (args[0] as File).name,
       name: "f1-notes.txt",
-      path: "/uploads/s1/f1-notes.txt",
       size: 5,
       mimeType: "text/plain",
+      createdAt: "2026-11-09T00:00:00.000Z",
+      updatedAt: "2026-11-09T00:00:00.000Z",
     };
   });
   state.otherHost = false;
@@ -457,25 +464,47 @@ function dropFileAndStart() {
 }
 
 describe("Cockpit new session attachments", () => {
-  it("creates the session, uploads a dropped file and sends it with the first message", async () => {
+  it("stages a dropped file and sends it with the creation request", async () => {
     const file = dropFileAndStart();
 
     await vi.waitFor(() =>
       expect(state.calls).toEqual([
-        "POST /projects/os/sessions/create",
         "upload:notes.txt",
-        "POST /sessions/s1/messages",
+        "POST /projects/os/session-creations",
       ]),
     );
     expect(state.startSession).not.toHaveBeenCalled();
-    expect(state.upload.mock.calls[0]?.slice(0, 3)).toEqual(["os", "s1", file]);
+    expect(state.upload.mock.calls[0]?.[0]).toBe(file);
+    const batchId = (state.upload.mock.calls[0]?.[1] as { batchId: string })
+      .batchId;
     const body = JSON.parse(
-      (state.fetch.mock.calls[1] as [string, RequestInit])[1].body as string,
+      (state.fetch.mock.calls[0] as [string, RequestInit])[1].body as string,
     );
     expect(body.message).toBe("Look at this");
+    expect(body.requestId).toMatch(/^[A-Za-z0-9_-]{8,128}$/);
     expect(
-      body.attachments.map((attachment: { path: string }) => attachment.path),
-    ).toEqual(["/uploads/s1/f1-notes.txt"]);
+      body.stagedAttachments.map(
+        (ref: { id: string; batchId: string }) => `${ref.batchId}/${ref.id}`,
+      ),
+    ).toEqual([`${batchId}/f1`]);
+  });
+
+  it("starts without files through the creation request", async () => {
+    state.projects = [{ id: "os", name: "Smartzone OS", path: "/work/os" }];
+    state.providers = [claudeProvider];
+    renderPage();
+    fireEvent.change(screen.getByRole("textbox", { name: "First message" }), {
+      target: { value: "Hello" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+    await vi.waitFor(() =>
+      expect(state.calls).toEqual(["POST /projects/os/session-creations"]),
+    );
+    const body = JSON.parse(
+      (state.fetch.mock.calls[0] as [string, RequestInit])[1].body as string,
+    );
+    expect(body.message).toBe("Hello");
+    expect(body.stagedAttachments).toBeUndefined();
   });
 
   it("gives a stalled upload up and frees the form", async () => {
@@ -489,7 +518,7 @@ describe("Cockpit new session attachments", () => {
       await vi.waitFor(() =>
         expect(screen.getByRole("alert").textContent).toMatch(/upload/i),
       );
-      expect(state.calls).not.toContain("POST /sessions/s1/messages");
+      expect(state.calls).not.toContain("POST /projects/os/session-creations");
       expect(
         (screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement)
           .disabled,
@@ -497,22 +526,6 @@ describe("Cockpit new session attachments", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("withdraws a creation the host only queued instead of uploading", async () => {
-    state.createResponse = { queued: true, queueId: "q1", position: 1 };
-    dropFileAndStart();
-
-    await vi.waitFor(() =>
-      expect(state.calls).toEqual([
-        "POST /projects/os/sessions/create",
-        "DELETE /queue/q1",
-      ]),
-    );
-    expect(state.upload).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert").textContent).toBe(
-      "Server is busy. Please try again in a moment.",
-    );
   });
 });
 
@@ -600,9 +613,9 @@ describe("Cockpit new session source ownership", () => {
       });
       expect(state.otherFetch).not.toHaveBeenCalled();
       expect(state.fetch.mock.calls[1]?.[0]).toBe(
-        withFile ? "/projects/os/sessions/create" : "/projects/os/sessions",
+        "/projects/os/session-creations",
       );
-      if (withFile) expect(state.calls).toContain("POST /sessions/s1/messages");
+      if (withFile) expect(state.calls).toContain("upload:notes.txt");
     },
   );
 });

@@ -1,6 +1,8 @@
 import type {
   ImagePreparationProfile,
   ProviderName,
+  SessionCreationReceipt,
+  StagedAttachmentRef,
 } from "@yep-anywhere/shared";
 import {
   useEffect,
@@ -27,13 +29,14 @@ import { useServerSettings } from "../hooks/useServerSettings";
 import { useI18n } from "../i18n";
 import {
   revokeAttachmentPreviewUrls,
-  type ComposerUploadedAttachment,
+  toPersistedStagedAttachmentRef,
+  type ComposerStagedAttachment,
 } from "../lib/sessionComposerAttachments";
 import { hasCoarsePointer } from "../lib/deviceDetection";
 import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
 import { createSessionNavigationState } from "../lib/sessionNavigationState";
 import type { SourceTransport } from "../lib/transport";
-import type { PermissionMode } from "../types";
+import { generateUUID } from "../lib/uuid";
 import {
   CockpitAttachmentDropCue,
   useCockpitAttachmentDropTarget,
@@ -99,26 +102,14 @@ function PaperClipIcon() {
 
 const OTHER_FOLDER = "\0other";
 
-/** A file picked for the first message; it uploads once the session exists. */
+/** A file picked for the first message; it uploads as a staged file at the start. */
 interface CockpitNewSessionFile {
   id: string;
   file: File;
 }
 
-interface CockpitCreatedSession {
-  sessionId: string;
-  processId: string;
-  projectId: string;
-  permissionMode: PermissionMode;
-  appliedPermissionMode?: PermissionMode;
-  modeVersion: number;
-  recapAfterSeconds?: number;
-  model?: string;
-  provider?: ProviderName;
-}
-
 /**
- * One upload into a session folder that gives up once no bytes have moved for
+ * One staged upload for the first message that gives up once no bytes have moved for
  * a while: the shared transport can wait forever on a sleeping host, and the
  * form would then stay at "Starting" with every button disabled.
  */
@@ -126,13 +117,12 @@ function uploadWithStallGuard(
   file: File,
   transport: SourceTransport,
   options: {
-    projectId: string;
-    sessionId: string;
+    batchId: string;
     imageProfile: ImagePreparationProfile;
     stalledMessage: string;
     onProgress: (percent: number) => void;
   },
-): Promise<ComposerUploadedAttachment> {
+): Promise<ComposerStagedAttachment> {
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
     let stallTimer: ReturnType<typeof setTimeout> | undefined;
@@ -157,8 +147,12 @@ function uploadWithStallGuard(
           return transport.uploadStagedAttachment(...args);
         },
       },
-      projectId: options.projectId,
-      sessionId: options.sessionId,
+      // Staged uploads ignore project and session: the files bind to the
+      // session the creation request makes (upstream 085beaf0a retired the
+      // empty "create first, upload after" route).
+      projectId: "",
+      sessionId: "",
+      stagedBatchId: options.batchId,
       imageProfile: options.imageProfile,
       signal: controller.signal,
       onProgress: (bytesUploaded, uploadFile) => {
@@ -169,7 +163,7 @@ function uploadWithStallGuard(
       },
     })
       .then((uploaded) => {
-        const attachment = uploaded as ComposerUploadedAttachment;
+        const attachment = uploaded as ComposerStagedAttachment;
         // A stalled attempt that still finishes only frees its preview.
         if (controller.signal.aborted) {
           revokeAttachmentPreviewUrls([attachment]);
@@ -395,52 +389,32 @@ export function CockpitNewSession({
   };
 
   /**
-   * Files go into the session's own folder, so the session is created first,
-   * the files follow and the first message carries them, as on the classic
-   * form. A failed upload leaves the form filled for another try. All three
-   * steps use the host chosen at the start, even if the view switches hosts
-   * meanwhile.
+   * Upstream accepts a new session only through the durable creation request
+   * (`session-creations`, upstream 085beaf0a): files are uploaded first as
+   * staged attachments and travel with the first message. A fresh request ID
+   * per attempt; when the reply is lost, the saved receipt is fetched once.
+   * A failed upload leaves the form filled for another try. Every step uses
+   * the host chosen at the start, even if the view switches hosts meanwhile.
    */
-  const startWithFiles = async (
+  const createSession = async (
     transport: SourceTransport,
     targetProjectId: string,
     text: string,
     options: SessionOptions,
-  ): Promise<CockpitCreatedSession> => {
-    const created = await transport.fetch<
-      CockpitCreatedSession | { queued: true; queueId: string }
-    >(`/projects/${targetProjectId}/sessions/create`, {
-      method: "POST",
-      body: JSON.stringify({
-        mode: options.mode,
-        model: options.model,
-        thinking: options.thinking,
-        provider: options.provider,
-      }),
-    });
-    // A host at its worker limit queues the creation instead; withdraw it
-    // rather than leave a session that would start later without the files.
-    if ("queued" in created) {
-      void transport
-        .fetch(`/queue/${encodeURIComponent(created.queueId)}`, {
-          method: "DELETE",
-        })
-        .catch(() => {});
-      throw new Error(t("newSessionServerBusy"));
-    }
+  ): Promise<SessionCreationReceipt> => {
     const imageProfile = getAttachmentUploadProfile(
       attachmentQuality,
       providerInfo,
       options.model,
     );
-    const uploaded: ComposerUploadedAttachment[] = [];
+    const staged: ComposerStagedAttachment[] = [];
     try {
+      const batchId = generateUUID();
       for (const item of files) {
         try {
-          uploaded.push(
+          staged.push(
             await uploadWithStallGuard(item.file, transport, {
-              projectId: created.projectId,
-              sessionId: created.sessionId,
+              batchId,
               imageProfile,
               stalledMessage: t("cockpitUploadStalled"),
               onProgress: (percent) => {
@@ -463,20 +437,39 @@ export function CockpitNewSession({
           );
         }
       }
-      await transport.fetch(`/sessions/${created.sessionId}/messages`, {
-        method: "POST",
-        body: JSON.stringify({
-          message: text,
-          mode: options.mode,
-          attachments: uploaded,
-          thinking: options.thinking,
-          clientTimestamp: Date.now(),
-        }),
-      });
+      const stagedAttachments: StagedAttachmentRef[] = staged.map(
+        toPersistedStagedAttachmentRef,
+      );
+      const requestId = generateUUID();
+      try {
+        return await transport.fetch<SessionCreationReceipt>(
+          `/projects/${encodeURIComponent(targetProjectId)}/session-creations`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              ...options,
+              requestId,
+              message: text,
+              clientTimestamp: Date.now(),
+              ...(stagedAttachments.length ? { stagedAttachments } : {}),
+            }),
+          },
+        );
+      } catch (error) {
+        // A failed reply does not prove the host saved nothing.
+        const refusal = error as { status?: number } | null;
+        if (refusal?.status !== undefined && refusal.status < 500) throw error;
+        const saved = await transport
+          .fetch<SessionCreationReceipt>(
+            `/session-creations/${encodeURIComponent(requestId)}`,
+          )
+          .catch(() => null);
+        if (saved?.requestId === requestId && saved.sessionId) return saved;
+        throw error;
+      }
     } finally {
-      revokeAttachmentPreviewUrls(uploaded);
+      revokeAttachmentPreviewUrls(staged);
     }
-    return created;
   };
 
   const start = async () => {
@@ -499,20 +492,12 @@ export function CockpitNewSession({
       if (!targetProjectId) throw new Error(t("newSessionProjectNotFound"));
       const text = message.trim();
       const options = launchOptions(choices);
-      const result =
-        files.length > 0
-          ? await startWithFiles(transport, targetProjectId, text, options)
-          : await transport.fetch<CockpitCreatedSession>(
-              `/projects/${targetProjectId}/sessions`,
-              {
-                method: "POST",
-                body: JSON.stringify({
-                  ...options,
-                  message: text,
-                  clientTimestamp: Date.now(),
-                }),
-              },
-            );
+      const result = await createSession(
+        transport,
+        targetProjectId,
+        text,
+        options,
+      );
       const remembered = rememberLaunch(defaults, choices.effective, legacy);
       if (remembered) {
         void updateSetting("newSessionDefaults", remembered).catch(() => {});
@@ -520,18 +505,12 @@ export function CockpitNewSession({
       if (!mountedRef.current) return;
       navigate(navigation.session(result.projectId, result.sessionId), {
         state: createSessionNavigationState({
-          initialStatus: {
-            owner: "self",
-            processId: result.processId,
-            permissionMode: result.permissionMode,
-            appliedPermissionMode: result.appliedPermissionMode,
-            modeVersion: result.modeVersion,
-            recapAfterSeconds: result.recapAfterSeconds,
-          },
           initialTitle: text,
-          initialModel: result.model ?? choices.effective.model ?? undefined,
+          initialModel: choices.effective.model ?? undefined,
           initialProvider:
-            result.provider ?? choices.effective.provider ?? undefined,
+            (result.provider as ProviderName | undefined) ??
+            choices.effective.provider ??
+            undefined,
         }),
       });
     } catch (err) {
