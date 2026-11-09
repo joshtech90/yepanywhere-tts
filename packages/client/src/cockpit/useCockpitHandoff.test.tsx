@@ -6,18 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   send: vi.fn(async () => {}),
   startSession: vi.fn(async () => ({
+    requestId: "request-1",
     projectId: "project-1",
     sessionId: "new-session",
-    processId: "process-2",
-    permissionMode: "default",
-    modeVersion: 1,
+    provider: "claude",
+    serverTimestamp: 1,
   })),
   navigate: vi.fn(),
 }));
 
 vi.mock("./cockpitSend", () => ({ sendCockpitDirectMessage: mocks.send }));
-vi.mock("../api/client", () => ({
-  api: { startSession: mocks.startSession },
+vi.mock("./core/sessionCreation", () => ({
+  requestCockpitSessionCreation: mocks.startSession,
 }));
 vi.mock("../contexts/SourceRuntimeContext", () => ({
   useCurrentSourceRuntime: () => ({ sourceKey: "local", transport: {} }),
@@ -136,8 +136,13 @@ describe("useCockpitHandoff", () => {
     });
 
     expect(mocks.startSession).toHaveBeenCalledTimes(1);
-    const [projectId, message, options] = mocks.startSession.mock
-      .calls[0] as unknown as [string, string, { model?: string; mode?: string }];
+    const [, projectId, request] = mocks.startSession.mock
+      .calls[0] as unknown as [
+      unknown,
+      string,
+      { message: string; options: { model?: string; mode?: string } },
+    ];
+    const { message, options } = request;
     expect(projectId).toBe("project-1");
     expect(message).toContain("„Gboard APK patchen“");
     expect(message).toContain("1. Ziel: Tastatur");

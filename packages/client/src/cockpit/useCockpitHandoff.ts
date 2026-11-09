@@ -1,9 +1,10 @@
+import type { ProviderName } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../api/client";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n } from "../i18n";
 import { createSessionNavigationState } from "../lib/sessionNavigationState";
+import { generateUUID } from "../lib/uuid";
 import { sendCockpitDirectMessage } from "./cockpitSend";
 import {
   buildCockpitHandoffMessage,
@@ -11,6 +12,7 @@ import {
   extractCockpitHandoffSummary,
 } from "./core/handoff";
 import { createCockpitNavigation } from "./core/navigation";
+import { requestCockpitSessionCreation } from "./core/sessionCreation";
 import { type CockpitLaunchChoices, launchOptions } from "./core/newSession";
 import type { CockpitTranscriptEntry } from "./core/sessionDetail";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
@@ -139,36 +141,28 @@ export function useCockpitHandoff({
     }
     setPhase("starting");
     const message = buildCockpitHandoffMessage({ summary, sourceTitle });
-    void api
-      .startSession(
-        projectId,
-        message,
-        {
-          ...launchOptions(choices),
-          ...(choices.supportsPermissionMode
-            ? { mode: port.permissionMode }
-            : {}),
-        },
-        undefined,
-        Date.now(),
-      )
+    void requestCockpitSessionCreation(runtime.transport, projectId, {
+      requestId: generateUUID(),
+      message,
+      options: {
+        ...launchOptions(choices),
+        ...(choices.supportsPermissionMode
+          ? { mode: port.permissionMode }
+          : {}),
+      },
+      clientTimestamp: Date.now(),
+    })
       .then((result) => {
         if (!mountedRef.current) return;
         const navigation = createCockpitNavigation(basePath);
         navigate(navigation.session(result.projectId, result.sessionId), {
           state: createSessionNavigationState({
-            initialStatus: {
-              owner: "self",
-              processId: result.processId,
-              permissionMode: result.permissionMode,
-              appliedPermissionMode: result.appliedPermissionMode,
-              modeVersion: result.modeVersion,
-              recapAfterSeconds: result.recapAfterSeconds,
-            },
             initialTitle: t("cockpitHandoffNewTitle", { title: sourceTitle }),
-            initialModel: result.model ?? choices.effective.model ?? undefined,
+            initialModel: choices.effective.model ?? undefined,
             initialProvider:
-              result.provider ?? choices.effective.provider ?? undefined,
+              (result.provider as ProviderName | undefined) ??
+              choices.effective.provider ??
+              undefined,
           }),
         });
       })
@@ -188,6 +182,7 @@ export function useCockpitHandoff({
     port.permissionMode,
     port.processState,
     projectId,
+    runtime.transport,
     sourceTitle,
     t,
     waitExpired,

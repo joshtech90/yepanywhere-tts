@@ -56,6 +56,10 @@ import {
 } from "./CockpitRunSettings";
 import { createCockpitNavigation } from "./core/navigation";
 import {
+  isFinalCreationRefusal,
+  requestCockpitSessionCreation,
+} from "./core/sessionCreation";
+import {
   initialLaunchSelection,
   launchableProviders,
   launchChoices,
@@ -467,39 +471,22 @@ export function CockpitNewSession({
       // instead of starting a second session.
       unconfirmedCreation.current = attempt;
     }
-    const { requestId, clientTimestamp, stagedAttachments } = attempt;
     try {
-      const receipt = await transport.fetch<SessionCreationReceipt>(
-        `/projects/${encodeURIComponent(targetProjectId)}/session-creations`,
+      const receipt = await requestCockpitSessionCreation(
+        transport,
+        targetProjectId,
         {
-          method: "POST",
-          body: JSON.stringify({
-            ...options,
-            requestId,
-            message: text,
-            clientTimestamp,
-            ...(stagedAttachments.length ? { stagedAttachments } : {}),
-          }),
+          requestId: attempt.requestId,
+          message: text,
+          options,
+          clientTimestamp: attempt.clientTimestamp,
+          stagedAttachments: attempt.stagedAttachments,
         },
       );
       unconfirmedCreation.current = null;
       return receipt;
     } catch (error) {
-      // A refusal is final; a failed reply does not prove the host saved nothing.
-      const refusal = error as { status?: number } | null;
-      if (refusal?.status !== undefined && refusal.status < 500) {
-        unconfirmedCreation.current = null;
-        throw error;
-      }
-      const saved = await transport
-        .fetch<SessionCreationReceipt>(
-          `/session-creations/${encodeURIComponent(requestId)}`,
-        )
-        .catch(() => null);
-      if (saved?.requestId === requestId && saved.sessionId) {
-        unconfirmedCreation.current = null;
-        return saved;
-      }
+      if (isFinalCreationRefusal(error)) unconfirmedCreation.current = null;
       throw error;
     }
   };
