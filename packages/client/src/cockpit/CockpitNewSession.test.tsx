@@ -475,8 +475,11 @@ describe("Cockpit new session attachments", () => {
     );
     expect(state.startSession).not.toHaveBeenCalled();
     expect(state.upload.mock.calls[0]?.[0]).toBe(file);
-    const batchId = (state.upload.mock.calls[0]?.[1] as { batchId: string })
-      .batchId;
+    const [, uploadOptions] = state.upload.mock.calls[0] as [
+      File,
+      { batchId: string },
+    ];
+    const batchId = uploadOptions.batchId;
     const body = JSON.parse(
       (state.fetch.mock.calls[0] as [string, RequestInit])[1].body as string,
     );
