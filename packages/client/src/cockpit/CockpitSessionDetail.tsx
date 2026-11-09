@@ -1003,7 +1003,7 @@ export function CockpitSessionDetail({
               {!hasEntries && detail.session?.creation && (
                 <SessionCreationNotice
                   creation={detail.session.creation}
-                  onRefresh={async () => detail.reloadSession()}
+                  onRefresh={detail.refreshSessionMetadata}
                   prompt={detail.session.initialPrompt}
                   transportStatus={runtime.transport.status}
                 />

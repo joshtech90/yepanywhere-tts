@@ -109,6 +109,7 @@ function detailData(
     outgoing: [],
     processState: "idle",
     reloadSession: vi.fn(),
+    refreshSessionMetadata: vi.fn(async () => {}),
     restoredFromSnapshot: true,
     session: {
       id: "session-1",
