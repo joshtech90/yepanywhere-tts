@@ -116,7 +116,7 @@
     height: auto;
   }
 
-  .frame:global(.session-page) {
+  .frame.session-page {
     padding-top: 0;
   }
 }
