@@ -13,24 +13,13 @@
   transform: translateX(-50%);
   z-index: 1;
   width: 32px;
-  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-code);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  color: var(--text-muted);
   transition:
     background 0.15s,
     color 0.15s,
     border-color 0.15s;
-}
-
-.toggle:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  border-color: var(--text-muted);
 }
 
 .toggle svg {
@@ -40,7 +29,7 @@
 /* `chevron-up`/`chevron-down` is shared collapse-affordance vocabulary that
    MessageInput and ToolApprovalPanel also set on their own toggles, so it
    stays global and this module only reacts to it. */
-.toggle svg:global(.chevron-up) {
+.toggle svg[data-chevron-up] {
   transform: rotate(180deg);
 }
 
@@ -63,53 +52,8 @@
   font-style: italic;
 }
 
-/* Tab bar */
-.tabs {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.tab {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-code);
-  border: 1px solid var(--border-input);
-  border-radius: var(--radius-md);
-  font-size: var(--font-size-sm);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.tab:hover {
-  background: var(--bg-tertiary);
-  border-color: var(--border-input);
-}
-
-.tab.active {
-  background: var(--primary-color);
-  border-color: var(--primary-color);
-  color: #000;
-  font-weight: 500;
-}
-
-.tab.answered {
-  border-color: var(--success-color);
-}
-
-.tab.answered:not(.active) {
+.answeredCheck {
   color: var(--success-color);
-}
-
-.tabCheck {
-  color: var(--success-color);
-}
-
-.tab.active .tabCheck {
-  color: #000;
 }
 
 /* Question content */
@@ -176,7 +120,7 @@
 .optionRadio {
   color: var(--text-dimmed);
   font-family: var(--font-mono);
-  font-size: 1rem;
+  font-size: var(--font-size-xl);
   flex-shrink: 0;
   margin-top: 1px;
 }
@@ -271,7 +215,7 @@
   min-width: 90px;
 }
 
-.btn kbd {
+.shortcut {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   font-weight: 400;
@@ -287,15 +231,6 @@
 @media (width <= 600px) {
   .panel {
     padding: var(--space-2);
-  }
-
-  .tabs {
-    gap: var(--space-1);
-  }
-
-  .tab {
-    padding: var(--space-1) var(--space-2);
-    font-size: var(--font-size-xs);
   }
 
   .option {

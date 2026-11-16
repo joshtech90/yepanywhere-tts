@@ -9,6 +9,7 @@ import {
   publishSpeechWaveformSamples,
 } from "../lib/speechWaveform";
 import { SpeechWaveform } from "./SpeechWaveform";
+import { Banner } from "./ui/Banner";
 import { Button, ButtonBase } from "./ui/Button";
 import { Checkbox } from "./ui/Checkbox";
 import styles from "./AudioMemoPanel.module.css";
@@ -255,7 +256,7 @@ export function AudioMemoPanel({
       </ButtonBase>
       <div className={styles.options}>
         <Checkbox
-          className={styles.transcript}
+          touchTarget="large"
           label={t("audioMemoTranscript")}
           checked={includeTranscript}
           disabled={status === "sending"}
@@ -273,9 +274,9 @@ export function AudioMemoPanel({
         )}
       </div>
       {error && (
-        <p className={styles.error} role="alert">
+        <Banner tone="error" compact className={styles.failure}>
           {error}
-        </p>
+        </Banner>
       )}
       <div className={styles.actions}>
         <Button

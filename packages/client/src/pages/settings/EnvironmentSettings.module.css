@@ -16,10 +16,9 @@
   width: auto;
 }
 
-/* Tightens the shared `.settings-group` rhythm for this dense catalog. The
-   global class is compounded so the override does not depend on whether the
-   module or index.css is emitted last. */
-.group:global(.settings-group) {
+/* Tightens SettingsRows.group for this dense catalog. The stable data
+   boundary keeps the override more specific than the shared group rule. */
+.group[data-settings-group] {
   gap: var(--space-2);
 }
 
@@ -54,16 +53,6 @@
   font-size: var(--font-size-sm);
   color: var(--text-primary);
   font-weight: 600;
-}
-
-.secretBadge {
-  font-size: var(--font-size-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  padding: 0 var(--space-1);
 }
 
 .value {

@@ -65,7 +65,9 @@ function setReadonlyNumber(
 }
 
 function installSearchGeometry(rowOffsets: Record<string, number>) {
-  const messageList = document.querySelector<HTMLElement>(".message-list");
+  const messageList = document.querySelector<HTMLElement>(
+    "[data-message-list]",
+  );
   if (!messageList?.parentElement) {
     throw new Error("MessageList did not render a scroll container");
   }
@@ -241,8 +243,8 @@ describe("MessageList reverse search", () => {
       flushFrames();
       // At the rendered tail, the native event can re-acquire Follow. The next
       // scroll write has not dispatched its event when Escape closes search.
-      const lastChild =
-        container.querySelector(".message-list")!.lastElementChild!;
+      const lastChild = container.querySelector("[data-message-list]")!
+        .lastElementChild!;
       vi.spyOn(lastChild, "getBoundingClientRect").mockReturnValueOnce(
         rect({ top: 276, height: 24 }),
       );
@@ -561,7 +563,7 @@ describe("MessageList reverse search", () => {
       value: vi.fn(),
     });
     const composerTarget = document.createElement("div");
-    composerTarget.className = "session-input-inner";
+    composerTarget.setAttribute("data-session-input-inner", "");
     document.body.append(composerTarget);
 
     render(
@@ -1335,7 +1337,7 @@ describe("MessageList reverse search", () => {
 
   it("centers a clicked all-turn preview without a blur-time re-jump", async () => {
     const composerTarget = document.createElement("div");
-    composerTarget.className = "session-input-inner";
+    composerTarget.setAttribute("data-session-input-inner", "");
     document.body.append(composerTarget);
 
     render(
@@ -1397,7 +1399,7 @@ describe("MessageList reverse search", () => {
 
   it("Enter after arrowing to a match jumps like clicking that match", async () => {
     const composerTarget = document.createElement("div");
-    composerTarget.className = "session-input-inner";
+    composerTarget.setAttribute("data-session-input-inner", "");
     document.body.append(composerTarget);
 
     const rafQueue: FrameRequestCallback[] = [];
@@ -1468,7 +1470,7 @@ describe("MessageList reverse search", () => {
 
   it("Ctrl+R Enter after arrowing jumps to the highlighted user turn", async () => {
     const composerTarget = document.createElement("div");
-    composerTarget.className = "session-input-inner";
+    composerTarget.setAttribute("data-session-input-inner", "");
     document.body.append(composerTarget);
 
     render(
@@ -1512,7 +1514,7 @@ describe("MessageList reverse search", () => {
 
   it("Enter after arrowing in conversation view pins the same match", async () => {
     const composerTarget = document.createElement("div");
-    composerTarget.className = "session-input-inner";
+    composerTarget.setAttribute("data-session-input-inner", "");
     document.body.append(composerTarget);
 
     const rafQueue: FrameRequestCallback[] = [];

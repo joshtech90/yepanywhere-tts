@@ -43,6 +43,31 @@ points and repetition counts live in `scripts/perf-suite/config.json`; targets
 live in `scripts/perf-suite/ratchets.json`. Scenario-specific thresholds do not
 belong in driver code.
 
+## Isolated frontend transcript calibration
+
+The [frontend calibration](../docs/research/190-frontend-renderer-calibration.md)
+uses `scripts/perf-repro/transcript-browser.mjs` and the client E2E fixture under
+`transcript-performance/`. It feeds normalized completed turns through the real
+store and renderer, comparing the transcript alone with the full session page.
+Its static host owns no backend. This separates renderer scaling from the
+50,000-session/provider-file scenario; it does not replace end-to-end qualification.
+
+Measure frame callback gaps, calibrated missed opportunities, long tasks,
+visible reply delivery and exact native typing prefixes. The hard input deadline
+is 100 ms per key. Aggregate TaskDuration/write remains a CPU efficiency measure,
+not a frame deadline. Append-only and typing runs stay separate. The negative
+control must detect a 150 ms key-task stall. Runtime/harness hashes, host capacity
+and eligibility, offered timestamps and raw results accompany each comparison.
+The [automatic-unloading follow-up](../docs/research/190-rolling-transcript-window.md)
+adds full-page `--retention rolling|growing` controls through actual focused-watch
+catch-up and coordinator ingestion. Normal initial history stays bounded, real
+compactions and timestamps cross the age guard, and per-reply store observations
+must prove accepted unloads. The growing control disables only unloading; it
+must not trim. These are separate from the fixed-history direct-store boundary.
+
+Timing calibration is opt-in; only its inexpensive measurement-integrity case
+joins the ordinary root test command. No CI timing ratchet changes.
+
 ## Driver contracts
 
 ### Server
@@ -75,6 +100,11 @@ not a performance timestamp. Per-page Chrome DevTools Protocol snapshots count
 live and detached nodes, documents, listeners, and layout objects. Browser-wide
 snapshots inventory processes; Linux additionally reports per-process RSS,
 PSS, and private bytes only when every process is readable.
+
+Background-effect lifecycle state survives navigation and append timing-buffer
+resets. A session that stays mounted need not emit another lifecycle change;
+the sidebar's single-active-consumer check uses the latest state of each mounted
+session, removing it on unmount, rather than only the current phase's marks.
 
 `focused-append` is the one-project, one-session, one-page selected-session
 critical path. It has a distinct history key from fleet scenarios because it
@@ -334,3 +364,25 @@ launch value followed by the browser's explicit off value is a real
 launch-setting change and restarts the worker, which invalidates this replay's
 stable-process and prior-turn assumptions. The deterministic worker still emits
 its synthetic thinking block to exercise that transport/rendering shape.
+
+## Plan 190 combined qualification
+
+The separate `scripts/perf-repro/active-session.mjs` driver owns the expensive
+50,000-idle-session/200-compaction fixture. Its
+[2026-11-11 qualification](../docs/research/190-combined-scale-qualification.md)
+records immutable build/harness hashes, host eligibility, population/history
+controls and separate profile attribution. Optional `--typing` and
+`--additional-tab` phases keep input probes out of the original active CPU
+clock. Network data events account for bytes while NDJSON streams remain open;
+finished-request sizes alone do not measure authoritative collection updates.
+
+`--check-targets` is an explicit numeric-subset guard, not full acceptance or
+a historical ratchet. It rejects missing metrics/phase resource evidence,
+ineligible hosts, optional profiler runs and missing/changed runtime artifact
+identity (including shared resolved from the actual server). Qualitative idle/no-rescan/retention
+and repeated flatness/extra-tab gates remain open. Fast helper tests are part
+of the normal root test command; the full expensive fixture remains opt-in.
+Recorded runs predate the final driver's additional lists/restart host windows
+detail-fetch count guard and automatic runtime fingerprints. Shared runtime
+identity was verified only retrospectively for those runs; preserve their
+measured hashes/limitations rather than certifying a frozen-runtime ratchet.

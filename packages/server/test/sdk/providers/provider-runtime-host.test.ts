@@ -1412,6 +1412,51 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
     }
   });
 
+  it("recovers a dead host's descriptor written by different sources", async () => {
+    const runtimeRoot = await mkdtemp(
+      join(runtimeTmpDir, "provider-host-dead-incompatible-"),
+    );
+    temporaryPaths.push(runtimeRoot);
+    const paths = resolveProviderHostPaths({
+      YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeRoot,
+    });
+    if (!paths) throw new Error("expected provider host paths");
+    const owner = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    if (!owner.pid) throw new Error("fixture process did not start");
+    const ownerPid = owner.pid;
+    await new Promise((resolve) => owner.once("exit", resolve));
+    await waitUntil(() => readProcessStartTime(ownerPid) === null);
+
+    createProviderHostToken(paths.tokenPath);
+    writeProviderHostDescriptor(paths, {
+      descriptorId: "dead-incompatible-host",
+      hostProtocolVersion: 3,
+      features: ["runtime-control"],
+      controlSocketPath: paths.controlSocketPath,
+      tokenFilePath: paths.tokenPath,
+      owner: { pid: ownerPid, startTime: "exited-before-source-change" },
+      startedAt: new Date().toISOString(),
+      sourceIdentity: { projectRoot: `${runtimeRoot}-older-sources` },
+      buildIdentity: "test",
+      processGroups: [],
+    });
+    const expectedIdentity = {
+      sourceIdentity: { projectRoot: runtimeRoot },
+      buildIdentity: "test",
+    };
+    const discovery = await discoverProviderHost(paths, {
+      expectedIdentity,
+      timeoutMs: 50,
+    });
+    expect(discovery.state).toBe("unresponsive");
+    if (discovery.state !== "unresponsive") return;
+
+    await recoverProviderHost(paths, discovery.descriptor);
+    await expect(
+      discoverProviderHost(paths, { expectedIdentity, timeoutMs: 50 }),
+    ).resolves.toEqual({ state: "absent" });
+  });
+
   it("fails closed when a stale descriptor PID identity is ambiguous", async () => {
     const runtimeRoot = await mkdtemp(
       join(runtimeTmpDir, "provider-host-ambiguous-"),
@@ -2221,7 +2266,7 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
         ["?anchorMessageId=missing", "anchor_unavailable", 404],
         ["?anchorMessageID=misspelled", "invalid_request", 400],
         ["?maxMessages=0", "invalid_request", 400],
-        ["?maxMessages=101", "invalid_request", 400],
+        ["?maxMessages=1000000000", "invalid_request", 400],
       ] as const) {
         first.queue.push({
           text:
@@ -2254,7 +2299,7 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
         requestId: "bridge-create-1",
         projectId: "worker-project",
         provider: "claude",
-        message: "Review",
+        prompt: "Review",
       };
       first.queue.push({
         text: JSON.stringify({
@@ -2284,9 +2329,13 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
       };
       expect(JSON.parse(repeated.body).id).toBe(receipt.id);
       expect(launches).toBe(1);
-      const sendBody = { requestId: "bridge-message-1", message: "Follow up" };
+      const sendBody = {
+        requestId: "bridge-message-1",
+        type: "prompt",
+        text: "Follow up",
+      };
       const sendPath =
-        "/v0/servers/profile-api-host/sessions/api-fixture/messages";
+        "/v0/servers/profile-api-host/sessions/api-fixture/inputs";
       first.queue.push({
         text: JSON.stringify({ path: sendPath, body: sendBody }),
         uuid: "proxy-batch",

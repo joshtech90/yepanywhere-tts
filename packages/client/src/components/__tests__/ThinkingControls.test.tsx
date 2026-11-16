@@ -55,8 +55,8 @@ describe("ThinkingControls", () => {
     expect(
       screen
         .getByRole("group", { name: "Thinking amount" })
-        .classList.contains("thinking-effort-selector--settings"),
-    ).toBe(true);
+        .getAttribute("data-thinking-effort-variant"),
+    ).toBe("settings");
     expect(
       screen
         .getByRole("button", { name: "Thinking amount: High" })
@@ -93,19 +93,19 @@ describe("ThinkingControls", () => {
     );
 
     const sections = Array.from(
-      container.querySelectorAll(".thinking-controls-section"),
+      container.querySelectorAll("[data-thinking-controls-section]"),
     );
 
+    expect(sections[0]?.getAttribute("data-thinking-section") === "mode").toBe(
+      true,
+    );
     expect(
-      sections[0]?.classList.contains("thinking-controls-section--mode"),
-    ).toBe(true);
-    expect(
-      sections[1]?.classList.contains(
-        "thinking-controls-section--show-thinking",
+      sections[1]?.hasAttribute(
+        "data-thinking-controls-section--show-thinking",
       ),
     ).toBe(true);
     expect(
-      sections[2]?.classList.contains("thinking-controls-section--effort"),
+      sections[2]?.hasAttribute("data-thinking-controls-section--effort"),
     ).toBe(true);
   });
 
@@ -124,7 +124,9 @@ describe("ThinkingControls", () => {
 
     expect(screen.queryByText("Show thinking")).toBeNull();
     expect(
-      container.querySelector(".thinking-controls-section--show-thinking"),
+      container.querySelector(
+        "[data-thinking-controls-section--show-thinking]",
+      ),
     ).toBeNull();
   });
 
@@ -145,13 +147,17 @@ describe("ThinkingControls", () => {
       />,
     );
 
-    expect(container.querySelector(".mode-option-dot.thinking-on")).toBeNull();
     expect(
-      container.querySelector(".thinking-controls-section--effort"),
+      container.querySelector(
+        '[data-thinking-section="mode"] button[aria-label="On"]',
+      ),
+    ).toBeNull();
+    expect(
+      container.querySelector("[data-thinking-controls-section--effort]"),
     ).toBeNull();
 
     const offModeButton = container
-      .querySelector(".mode-option-dot.thinking-off")
+      .querySelector('[data-thinking-section="mode"] button')
       ?.closest("button");
     expect(offModeButton).not.toBeNull();
 

@@ -1,3 +1,6 @@
+import { CliInstallationSettings } from "./CliInstallationSettings";
+import commandStyles from "./SettingsCommand.module.css";
+import rowsStyles from "./SettingsRows.module.css";
 import { AgentAuthRouterSettings } from "../../components/AgentAuthRouterControls";
 import { Link } from "react-router-dom";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
@@ -44,15 +47,14 @@ import {
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import type { ServerSettings } from "../../api/client";
-import {
-  Button,
-  buttonClassName,
-  IconButton,
-} from "../../components/ui/Button";
+import { Badge } from "../../components/ui/Badge";
+import { Banner } from "../../components/ui/Banner";
+import { Button, buttonClassName } from "../../components/ui/Button";
 import { Checkbox } from "../../components/ui/Checkbox";
 import { CommittedRangeNumberInput } from "../../components/ui/CommittedRangeNumberInput";
 import { Field, Select, TextInput } from "../../components/ui/Field";
-import { Modal, type ModalAnchorRect } from "../../components/ui/Modal";
+import { Dialog } from "../../components/ui/Dialog";
+import type { ModalAnchorRect } from "../../components/ui/Modal";
 import { Switch } from "../../components/ui/Switch";
 import { useToastContext } from "../../contexts/ToastContext";
 import { useProviders } from "../../hooks/useProviders";
@@ -321,21 +323,21 @@ function ClaudeGatewaySettings({
   return (
     <div
       id="provider-claude-gateway-configuration"
-      className="settings-subsection"
+      className={rowsStyles.subsection}
     >
       <h3>{t("providersClaudeGatewayTitle")}</h3>
-      <p className="settings-hint">
+      <p className={rowsStyles.hint}>
         {t("providersClaudeGatewayDescription")}{" "}
         <SettingsDocLink doc="topics/gateway-services.md" />
       </p>
       <form
-        className="claude-gateway-settings-control"
+        className={styles.claudeGatewaySettingsControl}
         onSubmit={(event) => {
           event.preventDefault();
           if (canSave) void handleSave();
         }}
       >
-        <div className="claude-gateway-settings-row">
+        <div className={styles.claudeGatewaySettingsRow}>
           <TextInput
             type="url"
             className={styles.gatewayUrl}
@@ -367,7 +369,7 @@ function ClaudeGatewaySettings({
           />
         </Field>
 
-        <p className="settings-hint">
+        <p className={rowsStyles.hint}>
           {t("providersClaudeGatewayIsolationHint")}
         </p>
       </form>
@@ -393,7 +395,7 @@ function ClaudeGatewayToggleSetting({
   const hintId = useId();
 
   return (
-    <div id={id} className="settings-subsection">
+    <div id={id} className={rowsStyles.subsection}>
       <Switch
         label={title}
         aria-describedby={hintId}
@@ -419,9 +421,9 @@ function ProviderLoginCommandPanel({
   const { t } = useI18n();
 
   return (
-    <div className="settings-command-panel">
+    <div className={commandStyles.panel}>
       <div
-        className="settings-command-preview"
+        className={commandStyles.preview}
         role="group"
         aria-label={t("providersLoginCommandPreviewAria", { provider })}
       >
@@ -625,12 +627,12 @@ function ClaudeAdditionalModelsSettings({
         label={t("providersAdditionalModelsTitle")}
         description={t("providersAdditionalModelsDescription")}
         valueText={summary}
-        className="providers-additional-models-setting"
+        className={styles.additionalModelsSetting}
       >
         <Button
           ref={triggerRef}
           variant="outline"
-          className="providers-additional-models-trigger"
+          className={styles.additionalModelsTrigger}
           onClick={openEditor}
           aria-haspopup="dialog"
         >
@@ -639,66 +641,64 @@ function ClaudeAdditionalModelsSettings({
         </Button>
       </SettingsItem>
       {open && (
-        <Modal
+        <Dialog
           title={t("providersAdditionalModelsTitle")}
+          description={t("providersAdditionalModelsEditorDescription")}
+          size="medium"
           onClose={() => setOpen(false)}
           anchorRect={anchorRect}
         >
-          <div className="providers-additional-models-editor">
-            <p className="settings-hint">
-              {t("providersAdditionalModelsEditorDescription")}
-            </p>
-            <div className="providers-additional-models-list">
-              {choices.map((model) => (
-                <Checkbox
-                  key={model.id}
-                  className="providers-additional-model-option"
-                  label={
-                    <>
-                      <strong>{model.name}</strong> <code>{model.id}</code>
-                    </>
-                  }
-                  description={model.description || undefined}
-                  checked={selectedIds.has(model.id)}
-                  disabled={isSaving}
-                  onCheckedChange={() => toggleModel(model)}
-                />
-              ))}
-            </div>
-            <details className="providers-additional-models-custom">
-              <summary>{t("providersAdditionalModelsCustomTitle")}</summary>
-              <p className="settings-hint">
-                {t("providersAdditionalModelsCustomHint")}
-              </p>
-              <div className="providers-additional-models-custom-row">
-                <TextInput
-                  className={styles.customModelId}
-                  value={customId}
-                  maxLength={MAX_CLAUDE_ADDITIONAL_MODEL_ID_LENGTH}
-                  placeholder={t("providersAdditionalModelsCustomPlaceholder")}
-                  aria-label={t("providersAdditionalModelsCustomInputAria")}
-                  onChange={(event) => setCustomId(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      addCustomModel();
-                    }
-                  }}
-                />
-                <Button
-                  disabled={isSaving || !customId.trim()}
-                  onClick={addCustomModel}
-                >
-                  {t("providersAdditionalModelsAdd")}
-                </Button>
-              </div>
-            </details>
-            {isSaving && (
-              <p className="settings-hint">{t("providersSaving")}</p>
-            )}
-            {error && <p className="settings-warning">{error}</p>}
+          {error && <Banner tone="error">{error}</Banner>}
+          <div className={styles.additionalModelsList}>
+            {choices.map((model) => (
+              <Checkbox
+                key={model.id}
+                className={styles.additionalModelOption}
+                variant="option"
+                label={
+                  <>
+                    <strong>{model.name}</strong> <code>{model.id}</code>
+                  </>
+                }
+                description={model.description || undefined}
+                checked={selectedIds.has(model.id)}
+                disabled={isSaving}
+                onCheckedChange={() => toggleModel(model)}
+              />
+            ))}
           </div>
-        </Modal>
+          <details className={styles.additionalModelsCustom}>
+            <summary>{t("providersAdditionalModelsCustomTitle")}</summary>
+            <p className={rowsStyles.hint}>
+              {t("providersAdditionalModelsCustomHint")}
+            </p>
+            <div className={styles.additionalModelsCustomRow}>
+              <TextInput
+                className={styles.customModelId}
+                value={customId}
+                maxLength={MAX_CLAUDE_ADDITIONAL_MODEL_ID_LENGTH}
+                placeholder={t("providersAdditionalModelsCustomPlaceholder")}
+                aria-label={t("providersAdditionalModelsCustomInputAria")}
+                onChange={(event) => setCustomId(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addCustomModel();
+                  }
+                }}
+              />
+              <Button
+                disabled={isSaving || !customId.trim()}
+                onClick={addCustomModel}
+              >
+                {t("providersAdditionalModelsAdd")}
+              </Button>
+            </div>
+          </details>
+          {isSaving && (
+            <p className={rowsStyles.hint}>{t("providersSaving")}</p>
+          )}
+        </Dialog>
       )}
     </>
   );
@@ -756,7 +756,7 @@ function LongContextEffortWarningControl({
         "fork",
         "warning",
       ]}
-      className="settings-item--wide-control"
+      className={rowsStyles.itemWideControl}
       valueText={
         enabledCount === 0
           ? t("providersLongContextEffortWarningOff")
@@ -781,7 +781,7 @@ function LongContextEffortWarningControl({
             void save({ ...value, thresholdTokens: Math.round(tokens) });
           }}
         />
-        <p className="settings-hint">
+        <p className={rowsStyles.hint}>
           {t("providersLongContextEffortWarningThresholdHint")}
         </p>
         <div className={styles.providerToggles}>
@@ -929,12 +929,12 @@ export function ProvidersSettings() {
         SERVER_CAPABILITIES.agentAuthRouter.name,
       ) && <AgentAuthRouterSettings />}
 
-      <div className="settings-group">
+      <div className={rowsStyles.group} data-settings-group>
         <SettingsItem
           id="providers-subagent-max-depth"
           label={t("providersSubagentMaxDepthLabel")}
           description={t("providersSubagentMaxDepthDescription")}
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
           valueText={
             subagentMaxDepth === null
               ? t("providersSubagentMaxDepthProviderDefault")
@@ -973,7 +973,7 @@ export function ProvidersSettings() {
               <option value="3" />
               <option value={MAX_SUBAGENT_MAX_DEPTH} />
             </datalist>
-            <p className="settings-hint">
+            <p className={rowsStyles.hint}>
               {t("providersSubagentMaxDepthCoverage")}
             </p>
           </div>
@@ -982,7 +982,7 @@ export function ProvidersSettings() {
           id="providers-idle-reap-hours"
           label={t("providersIdleReapHoursLabel")}
           description={t("providersIdleReapHoursDescription")}
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
           valueText={
             idleReapHours < 0
               ? t("providersIdleReapNever")
@@ -1021,7 +1021,7 @@ export function ProvidersSettings() {
               <option value="48" />
               <option value={MAX_IDLE_REAP_HOURS} />
             </datalist>
-            <p className="settings-hint">{t("providersIdleReapNeverHint")}</p>
+            <p className={rowsStyles.hint}>{t("providersIdleReapNeverHint")}</p>
           </div>
         </SettingsItem>
         {settings?.instructionRestoration !== undefined && (
@@ -1053,7 +1053,14 @@ export function ProvidersSettings() {
                       "disable agent",
                       "disable plan mode",
                     ]
-                  : undefined
+                  : provider.id === "codex" || provider.id === "antigravity"
+                    ? [
+                        "CLI installation",
+                        "executable path",
+                        "fnm",
+                        "execution probe",
+                      ]
+                    : undefined
               }
               after={
                 <>
@@ -1065,38 +1072,44 @@ export function ProvidersSettings() {
                     )}
                   {provider.id === "claude-ollama" &&
                   showClaudeOllamaDeprecation ? (
-                    <div className="provider-deprecation-notice" role="status">
-                      <span>{t("providersClaudeOllamaDeprecationNotice")}</span>
-                      <IconButton
-                        size="small"
-                        className={styles.deprecationDismiss}
-                        label={t("providersClaudeOllamaDeprecationDismissAria")}
-                        onClick={dismissClaudeOllamaDeprecation}
-                      >
-                        ×
-                      </IconButton>
-                    </div>
+                    <Banner
+                      tone="warning"
+                      role="none"
+                      className={styles.deprecationSpacing}
+                      onDismiss={dismissClaudeOllamaDeprecation}
+                      dismissLabel={t(
+                        "providersClaudeOllamaDeprecationDismissAria",
+                      )}
+                    >
+                      {t("providersClaudeOllamaDeprecationNotice")}
+                    </Banner>
                   ) : undefined}
+                  {(provider.id === "codex" || provider.id === "antigravity") &&
+                    serverHasCapability(
+                      version,
+                      SERVER_CAPABILITIES.cliInstallations.name,
+                    ) && (
+                      <CliInstallationSettings
+                        family={provider.id}
+                        onChanged={() => void reloadProviders()}
+                      />
+                    )}
                 </>
               }
               info={
                 <>
-                  <div className="settings-item-header">
+                  <div className={rowsStyles.itemHeader}>
                     <strong>{provider.displayName}</strong>
                     {provider.installed ? (
-                      <span className="settings-status-badge settings-status-detected">
-                        {t("providersRuntimeReady")}
-                      </span>
+                      <Badge tone="success">{t("providersRuntimeReady")}</Badge>
                     ) : (
-                      <span className="settings-status-badge settings-status-not-detected">
-                        {t("providersRuntimeUnavailable")}
-                      </span>
+                      <Badge>{t("providersRuntimeUnavailable")}</Badge>
                     )}
                   </div>
                   <p>{provider.metadata.description}</p>
                   {(provider.id === "claude" || provider.id === "codex") &&
                     provider.applicationDetected !== undefined && (
-                      <p className="settings-hint">
+                      <p className={rowsStyles.hint}>
                         {t("providersDesktopApplicationStatus", {
                           status: provider.applicationDetected
                             ? t("providersDetected")
@@ -1105,7 +1118,7 @@ export function ProvidersSettings() {
                       </p>
                     )}
                   {provider.installed && (
-                    <p className="settings-hint">
+                    <p className={rowsStyles.hint}>
                       {t("providersAuthenticationStatus", {
                         status:
                           provider.authenticated || provider.enabled
@@ -1115,7 +1128,7 @@ export function ProvidersSettings() {
                     </p>
                   )}
                   {provider.metadata.limitations.length > 0 && (
-                    <ul className="settings-limitations">
+                    <ul className={rowsStyles.limitations}>
                       {provider.metadata.limitations.map((limitation) => (
                         <li key={limitation}>{limitation}</li>
                       ))}
@@ -1125,7 +1138,7 @@ export function ProvidersSettings() {
                     provider.installed &&
                     !provider.authenticated && (
                       <div style={{ marginTop: "var(--space-2)" }}>
-                        <p className="settings-hint">
+                        <p className={rowsStyles.hint}>
                           {t("providersLoginHint", {
                             provider: provider.displayName,
                           })}
@@ -1160,7 +1173,7 @@ export function ProvidersSettings() {
                   {(provider.id === "claude" || provider.id === "codex") &&
                     provider.applicationDetected === true &&
                     !provider.installed && (
-                      <p className="settings-hint">
+                      <p className={rowsStyles.hint}>
                         {t("providersApplicationWithoutRuntimeHint", {
                           provider: provider.displayName,
                         })}
@@ -1205,9 +1218,9 @@ export function ProvidersSettings() {
                             : t("providersModelsRefresh")}
                         </Button>
                         {providersError && (
-                          <p className="settings-hint" role="alert">
+                          <Banner tone="error" compact>
                             {t("providersModelsRefreshFailed")}
-                          </p>
+                          </Banner>
                         )}
                       </div>
                       <CodexUpdatePanel />
@@ -1221,7 +1234,7 @@ export function ProvidersSettings() {
                   href={provider.metadata.website}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="settings-link"
+                  className={rowsStyles.link}
                 >
                   {t("providersWebsite")}
                 </a>

@@ -1,3 +1,5 @@
+import globalStyles from "./GlobalSessionsPage.module.css";
+import pageStyles from "../layouts/PageLayout.module.css";
 import {
   ALL_PROVIDERS,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
@@ -63,6 +65,7 @@ import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useSessionRightPaneSetting } from "../hooks/useSessionRightPaneSetting";
 import { useVersion } from "../hooks/useVersion";
+import { Banner } from "../components/ui/Banner";
 import { Button } from "../components/ui/Button";
 import { Checkbox } from "../components/ui/Checkbox";
 import { useModalBackGesture } from "../components/ui/Modal";
@@ -305,8 +308,9 @@ function SessionSearchPage() {
     [feed.projects, sessions],
   );
   useEffect(() => {
-    if (feed.hasMore && !feed.loading && !feed.error) void feed.loadMore();
-  }, [feed.hasMore, feed.loading, feed.error, feed.loadMore]);
+    if (feed.hasMore && !feed.loading && !feed.requestError)
+      void feed.loadMore();
+  }, [feed.hasMore, feed.loading, feed.requestError, feed.loadMore]);
   const min = durationMs(young, 0),
     max = durationMs(old, Infinity);
   const invalidRange = !Number.isFinite(min) || Number.isNaN(max) || min > max;
@@ -562,7 +566,7 @@ function SessionSearchPage() {
   useLayoutEffect(() => {
     const anchor = limitAnchor.current;
     limitAnchor.current = undefined;
-    const scroller = anchor?.element.closest(".page-scroll-container");
+    const scroller = anchor?.element.closest("[data-page-scroll-container]");
     if (anchor && scroller)
       scroller.scrollTop +=
         anchor.element.getBoundingClientRect().top - anchor.top;
@@ -708,7 +712,10 @@ function SessionSearchPage() {
           />
         }
       />
-      <main className="page-scroll-container">
+      <main
+        className={pageStyles.pageScrollContainer}
+        data-page-scroll-container
+      >
         <div
           className={`${styles.content} ${selected.size ? styles.withBulkBar : ""}`}
         >
@@ -728,7 +735,7 @@ function SessionSearchPage() {
               className={styles.dropdownContainer}
               placeholder={t("sessionSearchProjects")}
               align="right"
-              triggerClassName={styles.dropdown}
+              triggerSize="small"
               options={[
                 // An explicit first row, so returning to every project is a
                 // visible choice rather than a re-click on the current one.
@@ -759,7 +766,7 @@ function SessionSearchPage() {
               className={styles.dropdownContainer}
               placeholder={t("sessionSearchProviders")}
               align="right"
-              triggerClassName={styles.dropdown}
+              triggerSize="small"
               options={ALL_PROVIDERS.filter((p) =>
                 sessions.some((s) => s.provider === p),
               ).map((p) => ({
@@ -780,7 +787,7 @@ function SessionSearchPage() {
               <FilterDropdown
                 label={t("globalSessionsFilterExecutor")}
                 placeholder={t("globalSessionsFilterMachinePlaceholder")}
-                triggerClassName={styles.dropdown}
+                triggerSize="small"
                 options={Object.keys(feed.stats.executorCounts).map(
                   (value) => ({ value, label: value }),
                 )}
@@ -793,7 +800,7 @@ function SessionSearchPage() {
                 label={t("sessionSearchCreatedFrom")}
                 placeholder={t("sessionSearchCreatedFromPlaceholder")}
                 align="right"
-                triggerClassName={styles.dropdown}
+                triggerSize="small"
                 options={[
                   { value: "web", label: t("sessionSearchCreatedWeb") },
                   {
@@ -833,11 +840,17 @@ function SessionSearchPage() {
             pending={pending}
           />
           {activeProject && (
-            <div className={`global-sessions-project-cta ${styles.projectCta}`}>
+            <div
+              className={`${globalStyles.globalSessionsProjectCta} ${styles.projectCta}`}
+              data-global-sessions-project-cta
+            >
               <div>
                 <strong>
                   {t("sidebarNewSession")}{" "}
-                  <code className="global-sessions-project-cta__token">
+                  <code
+                    className={globalStyles.globalSessionsProjectCtaToken}
+                    data-global-sessions-project-cta__token
+                  >
                     {activeProject.name}
                   </code>
                 </strong>
@@ -845,7 +858,10 @@ function SessionSearchPage() {
                   {query.trim()
                     ? t("globalSessionsProjectCtaPromptLabel")
                     : t("globalSessionsProjectCtaHint")}{" "}
-                  <code className="global-sessions-project-cta__token">
+                  <code
+                    className={globalStyles.globalSessionsProjectCtaToken}
+                    data-global-sessions-project-cta__token
+                  >
                     {query.trim() || activeProject.name}
                   </code>
                 </span>
@@ -856,9 +872,9 @@ function SessionSearchPage() {
             </div>
           )}
           {invalidRange && (
-            <p role="alert" className={styles.error}>
+            <Banner tone="error" role="none" compact>
               {t("sessionSearchInvalidRange")}
-            </p>
+            </Banner>
           )}
           {!effectiveFields.length && query.trim() && (
             <p role="status" className={styles.progress}>
@@ -866,14 +882,20 @@ function SessionSearchPage() {
             </p>
           )}
           {invalidLimit && (
-            <p role="alert" className={styles.error}>
+            <Banner tone="error" role="none" compact>
               {t("sessionSearchInvalidLimit")}
-            </p>
+            </Banner>
           )}
           {(feed.error || scan.error || actionError) && (
-            <p role="alert" className={styles.error}>
+            <Banner
+              tone={
+                feed.requestError || scan.error || actionError
+                  ? "error"
+                  : "warning"
+              }
+            >
               {feed.error?.message ?? scan.error ?? actionError}
-            </p>
+            </Banner>
           )}
           {!progress && !feed.error && !scan.error && !results.length && (
             <p className={styles.progress}>

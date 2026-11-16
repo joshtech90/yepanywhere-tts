@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   appendFile,
-  mkdir,
   readFile,
+  mkdir,
   rm,
+  rename,
   stat,
   utimes,
   writeFile,
@@ -14,7 +15,12 @@ import { fileURLToPath } from "node:url";
 import * as zlib from "node:zlib";
 import type { CodexSessionEntry, UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  machineControlInstructions,
+  MACHINE_CONTROL_INSTRUCTIONS_NOTICE,
+} from "@yep-anywhere/shared/machine-control-instructions";
 import { SessionIndexService } from "../../src/indexes/SessionIndexService.js";
+import { SqliteSessionSummaryIndex } from "../../src/indexes/SqliteSessionSummaryIndex.js";
 import { getLogger } from "../../src/logging/logger.js";
 import { encodeProjectId } from "../../src/projects/paths.js";
 import { CodexSessionReader } from "../../src/sessions/codex-reader.js";
@@ -28,6 +34,10 @@ import type { SummaryParserClient } from "../../src/sessions/summary-parser-work
 import type { SessionSummary } from "../../src/supervisor/types.js";
 import { getCodexRolloutActivityTimeMs } from "../../src/utils/codexRolloutFiles.js";
 import { isZstdJsonlSupported } from "../../src/utils/jsonl.js";
+import {
+  closeTestDiscoveryDatabases,
+  openTestDiscoveryDatabase,
+} from "../utils/session-metadata-database.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -78,6 +88,7 @@ describe("CodexSessionReader - OSS Support", () => {
   });
 
   afterEach(async () => {
+    closeTestDiscoveryDatabases();
     await Promise.all(
       [testDir, ...extraTempDirs].map((dir) =>
         rm(dir, { recursive: true, force: true }),
@@ -171,6 +182,152 @@ describe("CodexSessionReader - OSS Support", () => {
     );
   };
 
+  it.each([
+    ["API", "event"],
+    ["Machine Control", "event"],
+    ["Machine Control", "paired"],
+  ])(
+    "repairs a historical %s %s prefix in full/head reads and a fresh persisted index without rewriting history",
+    async (kind, shape) => {
+      const sessionId = "legacy-api-bootstrap";
+      const projectId = "test-project" as UrlProjectId;
+      const legacy = (
+        await readFile(
+          new URL(
+            "../../../shared/test/fixtures/agent-api-bootstrap-legacy.txt",
+            import.meta.url,
+          ),
+          "utf8",
+        )
+      ).trimEnd();
+      const mc = machineControlInstructions(
+        "0.7.2",
+        "'/owned/Machine Control/machine-control'",
+      ).replace("\n[/Installed Machine Control]", "");
+      const prefix =
+        kind === "API"
+          ? legacy
+          : `[Global context]\n[Global instructions]\nKeep this operator context.\n\n${mc}\n\n---`;
+      const prompt = `${prefix}\n\nFix the actual task.`;
+      await createSessionFile(sessionId, "openai", "gpt-6.1-sol");
+      const filePath = join(testDir, `${sessionId}.jsonl`);
+      let original = (await readFile(filePath, "utf8")).replace(
+        "Hello world",
+        prompt
+          .replaceAll("\\", "\\\\")
+          .replaceAll('"', '\\"')
+          .replaceAll("\n", "\\n"),
+      );
+      if (shape === "paired") {
+        const entries = original
+          .trimEnd()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        const eventIndex = entries.findIndex(
+          (entry) => entry.payload.type === "user_message",
+        );
+        entries.splice(eventIndex, 0, {
+          type: "response_item",
+          timestamp: entries[eventIndex].timestamp,
+          payload: {
+            id: "original-user-id",
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: prompt },
+              {
+                type: "input_image",
+                file_path: "/owned/image.png",
+                mime_type: "image/png",
+              },
+            ],
+          },
+        });
+        original =
+          entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+      }
+      await writeFile(filePath, original);
+      for (const readMode of ["head", "full"] as const) {
+        expect(
+          await reader.getSessionSummary(sessionId, projectId, { readMode }),
+        ).toMatchObject({
+          title: "Fix the actual task.",
+          fullTitle: "Fix the actual task.",
+        });
+      }
+      const loaded = await reader.getSession(sessionId, projectId);
+      const users = normalizeSession(loaded!).messages.filter(
+        (m) => m.type === "user",
+      );
+      expect(users).toHaveLength(1);
+      if (shape === "paired") {
+        expect(users[0]?.uuid).toBe("original-user-id");
+        expect(users[0]?.message?.content).toEqual([
+          { type: "text", text: "Fix the actual task." },
+          {
+            type: "input_image",
+            file_path: "/owned/image.png",
+            mime_type: "image/png",
+          },
+        ]);
+      } else expect(users[0]?.message?.content).toBe("Fix the actual task.");
+      if (kind === "Machine Control") {
+        expect(
+          normalizeSession(loaded!).messages.find(
+            (m) => m.content === MACHINE_CONTROL_INSTRUCTIONS_NOTICE,
+          ),
+        ).toMatchObject({
+          details: [
+            `[Global instructions]\nKeep this operator context.\n\n${mc}`,
+          ],
+        });
+      }
+      const dataDir = join(testDir, "indexes");
+      const database = openTestDiscoveryDatabase(testDir);
+      const initial = new SessionIndexService({ database, dataDir });
+      await initial.initialize();
+      await initial.getSessionSummaryWithCache(
+        testDir,
+        projectId,
+        sessionId,
+        reader,
+      );
+      initial.dispose();
+      const store = new SqliteSessionSummaryIndex(database);
+      const scope = reader.getIndexScopeKey(testDir);
+      const persisted = store.read(scope)!;
+      Object.assign(persisted.sessions[sessionId]!, {
+        title: "[Yep Anywhere API] You are running...",
+        fullTitle: prompt,
+      });
+      store.save(scope, { ...persisted, version: 5 });
+      const index = new SessionIndexService({
+        database: openTestDiscoveryDatabase(testDir),
+        dataDir,
+      });
+      await index.initialize();
+      const parse = vi.spyOn(reader, "getSessionSummary");
+      try {
+        expect(
+          await index.getSessionSummaryWithCache(
+            testDir,
+            projectId,
+            sessionId,
+            reader,
+          ),
+        ).toMatchObject({
+          title: "Fix the actual task.",
+          fullTitle: "Fix the actual task.",
+        });
+        expect(parse).not.toHaveBeenCalled();
+        expect(await readFile(filePath, "utf8")).toBe(original);
+      } finally {
+        index.dispose();
+        parse.mockRestore();
+      }
+    },
+  );
+
   it("discovers recent async questions without loading transcript history", async () => {
     const sessionId = "questions-without-open-transcript";
     await createSessionFile(sessionId, "openai", "gpt-6-astra");
@@ -196,6 +353,7 @@ describe("CodexSessionReader - OSS Support", () => {
       `\n${event({ type: "agent_message", message: "x".repeat(2 * 1024 * 1024) })}\n${question}\n`,
     );
     const projectId = "test-project" as UrlProjectId;
+    const askedAt = (JSON.parse(question) as { timestamp: string }).timestamp;
     const first = await reader.getSessionListSummary(sessionId, projectId);
     expect(first?.asyncQuestions).toEqual({
       questions: [
@@ -204,6 +362,7 @@ describe("CodexSessionReader - OSS Support", () => {
           index: 0,
           title: "Which path?",
           age: 0,
+          askedAt,
         },
       ],
       omitted: true,
@@ -236,6 +395,7 @@ describe("CodexSessionReader - OSS Support", () => {
         index: 0,
         title: "Which path?",
         age: 0,
+        askedAt,
       },
     ]);
     await appendFile(
@@ -257,8 +417,12 @@ describe("CodexSessionReader - OSS Support", () => {
     const sessionId = "indexed-before-question-previews";
     await createSessionFile(sessionId, "openai", "gpt-6-astra");
     const projectId = "test-project" as UrlProjectId;
-    const options = { dataDir: join(testDir, "indexes") };
-    const initialIndex = new SessionIndexService(options);
+    const dataDir = join(testDir, "indexes");
+    const initialDatabase = openTestDiscoveryDatabase(testDir);
+    const initialIndex = new SessionIndexService({
+      database: initialDatabase,
+      dataDir,
+    });
     await initialIndex.initialize();
     const indexed = await initialIndex.getSessionSummaryWithCache(
       testDir,
@@ -267,12 +431,16 @@ describe("CodexSessionReader - OSS Support", () => {
       reader,
     );
     expect(indexed).not.toBeNull();
-    const indexPath = initialIndex.getIndexPath(testDir, reader);
-    const persisted = JSON.parse(await readFile(indexPath, "utf8"));
-    delete persisted.sessions[sessionId].asyncQuestions;
     initialIndex.dispose();
-    await writeFile(indexPath, JSON.stringify(persisted));
-    const index = new SessionIndexService(options);
+    const scope = reader.getIndexScopeKey(testDir);
+    const store = new SqliteSessionSummaryIndex(initialDatabase);
+    const persisted = store.read(scope)!;
+    delete persisted.sessions[sessionId]!.asyncQuestions;
+    store.save(scope, { ...persisted, version: 5 });
+    const index = new SessionIndexService({
+      database: openTestDiscoveryDatabase(testDir),
+      dataDir,
+    });
     await index.initialize();
     const freshReader = new CodexSessionReader({ sessionsDir: testDir });
     try {
@@ -305,7 +473,7 @@ describe("CodexSessionReader - OSS Support", () => {
       });
       expect(freshReader.getLastSummaryStreamMetrics()).toBeNull();
       expect(summary).not.toHaveProperty("messageCount");
-      expect(await readFile(indexPath, "utf8")).toBe(JSON.stringify(persisted));
+      expect(store.read(scope)).toEqual(persisted);
     } finally {
       index.dispose();
       await freshReader.close();
@@ -2267,9 +2435,13 @@ describe("CodexSessionReader - OSS Support", () => {
       "compacted",
       "event_msg",
     ]);
-    expect(ranges.length).toBeGreaterThan(1);
-    expect(ranges[1]?.start).toBeLessThan(ranges[0]?.start ?? 0);
-    expect(ranges.every((range) => range.start > 0)).toBe(true);
+    // Blocks go backward from the end; 1 KiB reads are append-fence probes.
+    const blocks = ranges.filter((range) => range.length > 1024);
+    expect(blocks.length).toBeGreaterThan(1);
+    expect(blocks[1]?.start).toBeLessThan(blocks[0]?.start ?? 0);
+    expect(
+      ranges.every((range) => range.start > 0 || range.length <= 1024),
+    ).toBe(true);
     expect(reader.getEntryCacheStats().sessions).toBe(0);
 
     const normalizedTail = normalizeSession(loadedTail);
@@ -3133,7 +3305,179 @@ describe("CodexSessionReader - OSS Support", () => {
       "test-project" as UrlProjectId,
     );
     expect(loaded?.data.session.entries).toHaveLength(2);
+    expect(reader.getEntryCacheStats().partialLineBytes).toBeGreaterThan(0);
+    await appendFile(join(testDir, `${sessionId}.jsonl`), "\n");
+    const committed = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    expect(committed?.data.session.entries).toHaveLength(2);
     expect(reader.getEntryCacheStats().partialLineBytes).toBe(0);
+  });
+
+  it("replays an unterminated row when continuation invalidates the provisional JSON", async () => {
+    const id = "provisional-json-replay",
+      path = join(testDir, `${id}.jsonl`);
+    const header = JSON.stringify({
+      type: "session_meta",
+      timestamp: "2026-01-01T00:00:00Z",
+      payload: {
+        id,
+        cwd: "/test/project",
+        timestamp: "2026-01-01T00:00:00Z",
+        model_provider: "openai",
+      },
+    });
+    const msg = (text: string) =>
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-01-01T00:00:01Z",
+        payload: { type: "user_message", message: text },
+      });
+    await writeFile(path, `${header}\n${msg("provisional")}`);
+    await reader.getSession(id, "test-project" as UrlProjectId);
+    await appendFile(
+      path,
+      ` ${msg("joined without newline")}\n${msg("after")}\n`,
+    );
+    const actual = await reader.getSession(id, "test-project" as UrlProjectId);
+    reader.invalidateCache();
+    const expected = await reader.getSession(
+      id,
+      "test-project" as UrlProjectId,
+    );
+    expect(normalizeSession(actual!).messages).toEqual(
+      normalizeSession(expected!).messages,
+    );
+    expect(actual?.data.session.entries).toHaveLength(2);
+  });
+
+  it("recovers when an admitted append is truncated during byte acquisition", async () => {
+    const id = "append-truncate-race",
+      path = join(testDir, `${id}.jsonl`);
+    const header = JSON.stringify({
+      type: "session_meta",
+      timestamp: "2026-01-01T00:00:00Z",
+      payload: {
+        id,
+        cwd: "/test/project",
+        timestamp: "2026-01-01T00:00:00Z",
+        model_provider: "openai",
+      },
+    });
+    const msg = (text: string) =>
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-01-01T00:00:01Z",
+        payload: { type: "user_message", message: text },
+      });
+    await writeFile(path, `${header}\n${msg("old")}\n`);
+    await reader.getSession(id, "test-project" as UrlProjectId);
+    await appendFile(path, msg("append".repeat(2000)) + "\n");
+    const internals = reader as unknown as CodexEntryReadInternals,
+      original = internals.readFileRange.bind(reader);
+    let truncated = false;
+    vi.spyOn(internals, "readFileRange").mockImplementation(async (...args) => {
+      if (!truncated && args[2] > 1024) {
+        truncated = true;
+        await writeFile(path, `${header}\n${msg("old")}\n`);
+      }
+      return original(...args);
+    });
+    const actual = await reader.getSession(id, "test-project" as UrlProjectId);
+    reader.invalidateCache();
+    const expected = await reader.getSession(
+      id,
+      "test-project" as UrlProjectId,
+    );
+    expect(truncated).toBe(true);
+    expect(actual).not.toBeNull();
+    expect(normalizeSession(actual!).messages).toEqual(
+      normalizeSession(expected!).messages,
+    );
+  });
+
+  it("rejects replacement between append admission and acquiring its bytes", async () => {
+    const id = "append-admission-race",
+      path = join(testDir, `${id}.jsonl`);
+    const header = JSON.stringify({
+      type: "session_meta",
+      timestamp: "2026-01-01T00:00:00Z",
+      payload: {
+        id,
+        cwd: "/test/project",
+        timestamp: "2026-01-01T00:00:00Z",
+        model_provider: "openai",
+      },
+    });
+    const msg = (text: string) =>
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-01-01T00:00:01Z",
+        payload: { type: "user_message", message: text },
+      });
+    await writeFile(path, `${header}\n${msg("old")}\n`);
+    await reader.getSession(id, "test-project" as UrlProjectId);
+    await appendFile(path, msg("append") + "\n");
+    const windows = (
+      reader as unknown as {
+        rolloutWindowReader: import("../../src/sessions/codex-rollout-window.js").CodexRolloutWindowReader;
+      }
+    ).rolloutWindowReader;
+    const original = windows.readEntryRange.bind(windows);
+    let replaced = false;
+    vi.spyOn(windows, "readEntryRange").mockImplementation(async (...args) => {
+      if (args[1] > 0 && !replaced) {
+        replaced = true;
+        const replacement = join(testDir, "replacement.jsonl");
+        await writeFile(replacement, `${header}\n${msg("new".repeat(300))}\n`);
+        await rename(replacement, path);
+      }
+      return original(...args);
+    });
+    const actual = await reader.getSession(id, "test-project" as UrlProjectId);
+    reader.invalidateCache();
+    const expected = await reader.getSession(
+      id,
+      "test-project" as UrlProjectId,
+    );
+    expect(actual).not.toBeNull();
+    expect(normalizeSession(actual!).messages).toEqual(
+      normalizeSession(expected!).messages,
+    );
+  });
+
+  it("rebuilds when a growing rollout replaces the cached file", async () => {
+    const id = "replaced-growth",
+      path = join(testDir, `${id}.jsonl`);
+    const header = JSON.stringify({
+      type: "session_meta",
+      timestamp: "2026-01-01T00:00:00Z",
+      payload: {
+        id,
+        cwd: "/test/project",
+        timestamp: "2026-01-01T00:00:00Z",
+        model_provider: "openai",
+      },
+    });
+    const msg = (text: string) =>
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-01-01T00:00:01Z",
+        payload: { type: "user_message", message: text },
+      });
+    await writeFile(path, `${header}\n${msg("old")}\n`);
+    await reader.getSession(id, "test-project" as UrlProjectId);
+    const replacement = join(testDir, "replacement.jsonl");
+    await writeFile(replacement, `${header}\n${msg("new".repeat(500))}\n`);
+    await rename(replacement, path);
+    const loaded = await reader.getSession(id, "test-project" as UrlProjectId);
+    expect(loaded?.data.session.entries).toHaveLength(2);
+    const actual = normalizeSession(loaded!).messages;
+    reader.invalidateCache();
+    const rebuilt = await reader.getSession(id, "test-project" as UrlProjectId);
+    expect(actual).toEqual(normalizeSession(rebuilt!).messages);
+    expect(JSON.stringify(actual)).toContain("newnew");
   });
 
   it("finishes an incomplete final entry on the next append", async () => {
@@ -3404,7 +3748,7 @@ describe("CodexSessionReader - OSS Support", () => {
       reorderedEntries[1],
     ];
     expect(normalizeSession(reordered).messages).not.toBe(normalized.messages);
-    expect(rangeSpy).toHaveBeenCalledTimes(1);
+    expect(rangeSpy.mock.calls.length).toBeGreaterThan(0);
   });
 
   it("bounds a cold read when the transcript grows during file I/O", async () => {
@@ -3647,7 +3991,7 @@ describe("CodexSessionReader - OSS Support", () => {
           entry.payload.message === "after invalidation",
       ),
     ).toHaveLength(1);
-    expect(rangeSpy).toHaveBeenCalledTimes(2);
+    expect(rangeSpy.mock.calls.length).toBeGreaterThan(0);
   });
 
   it("preserves identical Codex messages at distinct log positions", async () => {

@@ -1,3 +1,6 @@
+import styles from "./UserPromptBlock.module.css";
+import textStyles from "./TextBlock.module.css";
+import listStyles from "../MessageList.module.css";
 import {
   Children,
   memo,
@@ -17,7 +20,7 @@ import {
 } from "../../lib/parseUserPrompt";
 import type { ContentBlock } from "../../types";
 import { AttachmentChip } from "../AttachmentChip";
-import { Button, ButtonBase } from "../ui/Button";
+import { Button, ButtonBase, IconButton } from "../ui/Button";
 import { CopyTextButton } from "../ui/CopyTextButton";
 import { Popover } from "../ui/Popover";
 import { ForkTurnMenu } from "./ForkTurnMenu";
@@ -111,11 +114,12 @@ function OpenedFilesMetadata({ files }: { files: string[] }) {
   if (files.length === 0) return null;
 
   return (
-    <div className="user-prompt-metadata">
+    <div className={styles.userPromptMetadata} data-user-prompt-metadata>
       {files.map((filePath) => (
         <span
           key={filePath}
-          className="opened-file"
+          className={styles.openedFile}
+          data-opened-file
           title={`file was opened in editor: ${filePath}`}
         >
           {getFilename(filePath)}
@@ -274,7 +278,7 @@ function UploadedFilesMetadata({ files }: { files: UploadedFileInfo[] }) {
   if (files.length === 0) return null;
 
   return (
-    <div className="user-prompt-metadata">
+    <div className={styles.userPromptMetadata} data-user-prompt-metadata>
       {files.map((file) => (
         <AttachmentChip
           key={file.path}
@@ -327,7 +331,7 @@ function CollapsibleText({
 
   if (!needsTruncation || isExpanded) {
     return (
-      <div className="text-block">
+      <div className={textStyles.textBlock} data-text-block>
         <div ref={fullTextRef}>
           <UserPromptLinkedText
             text={text}
@@ -338,7 +342,8 @@ function CollapsibleText({
           <Button
             variant="ghost"
             size="small"
-            className="show-more-btn"
+            className={textStyles.showMoreBtn}
+            data-show-more-btn
             onClick={() => setIsExpanded(false)}
           >
             Show less
@@ -349,20 +354,29 @@ function CollapsibleText({
   }
 
   return (
-    <div className="text-block collapsible-text">
-      <div ref={truncatedRef} className="truncated-content">
+    <div
+      className={`${textStyles.textBlock} ${styles.collapsibleText}`}
+      data-text-block
+      data-collapsible-text
+    >
+      <div
+        ref={truncatedRef}
+        className={styles.truncatedContent}
+        data-truncated-content
+      >
         {/* A char-level cut can land mid-URL; don't link a truncated target. */}
         <UserPromptLinkedText
           text={truncatedText}
           projectPathLinks={projectPathLinks}
           suppressTrailingUrl={true}
         />
-        <div className="fade-overlay" />
+        <div className={styles.fadeOverlay} data-fade-overlay />
       </div>
       <Button
         variant="ghost"
         size="small"
-        className="show-more-btn"
+        className={textStyles.showMoreBtn}
+        data-show-more-btn
         onClick={() => setIsExpanded(true)}
       >
         Show more
@@ -412,19 +426,27 @@ function UserPromptActionButtons({
     return null;
 
   return (
-    <div ref={actionsRef} className="user-prompt-actions">
+    <div
+      ref={actionsRef}
+      className={styles.userPromptActions}
+      data-user-prompt-actions
+    >
       {copyText && (
         <CopyTextButton
           text={copyText}
           label={t("userPromptCopyAction")}
-          className="user-prompt-action user-prompt-action-copy"
+          className={styles.userPromptAction}
+          data-user-prompt-action
         />
       )}
       {onCorrect && (
-        <ButtonBase
-          className="user-prompt-action user-prompt-action-edit"
+        <IconButton
+          variant="secondary"
+          size="small"
+          className={styles.userPromptAction}
+          data-user-prompt-action
           onClick={onCorrect}
-          aria-label={t("userPromptEditAction")}
+          label={t("userPromptEditAction")}
           title={t("userPromptEditAction")}
         >
           <svg
@@ -441,14 +463,16 @@ function UserPromptActionButtons({
             <path d="M12 20h9" />
             <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
           </svg>
-          <span className="user-prompt-correct-label">Edit</span>
-        </ButtonBase>
+        </IconButton>
       )}
       {onCancelUnconfirmed && (
-        <ButtonBase
-          className="user-prompt-action user-prompt-action-cancel-sent"
+        <IconButton
+          variant="danger-outline"
+          size="small"
+          className={styles.userPromptAction}
+          data-user-prompt-action
           onClick={onCancelUnconfirmed}
-          aria-label={t("userPromptCancelUnconfirmedAction")}
+          label={t("userPromptCancelUnconfirmedAction")}
           title={t("userPromptCancelUnconfirmedAction")}
         >
           <svg
@@ -465,7 +489,7 @@ function UserPromptActionButtons({
             <path d="M18 6 6 18" />
             <path d="m6 6 12 12" />
           </svg>
-        </ButtonBase>
+        </IconButton>
       )}
       {(onForkAfter || forkUnavailableMessage) && (
         <ForkTurnMenu
@@ -478,10 +502,13 @@ function UserPromptActionButtons({
         />
       )}
       {onTrimBefore && (
-        <ButtonBase
-          className="user-prompt-action user-prompt-action-show-starting"
+        <IconButton
+          variant="secondary"
+          size="small"
+          className={styles.userPromptAction}
+          data-user-prompt-action
           onClick={onTrimBefore}
-          aria-label={t("userPromptShowStartingHere")}
+          label={t("userPromptShowStartingHere")}
           title={t("userPromptShowStartingHere")}
         >
           <svg
@@ -501,7 +528,7 @@ function UserPromptActionButtons({
             <path d="m15 16 3 3 3-3" />
             <path d="M18 5v14" />
           </svg>
-        </ButtonBase>
+        </IconButton>
       )}
       {extraActions}
     </div>
@@ -529,7 +556,8 @@ function DeliveryStateMarker({
     <>
       <ButtonBase
         ref={markerRef}
-        className="user-prompt-delivery-marker"
+        className={styles.userPromptDeliveryMarker}
+        data-user-prompt-delivery-marker
         title={t("userPromptDeliverySent")}
         aria-label={t("userPromptDeliverySent")}
         aria-expanded={showDetail}
@@ -566,14 +594,22 @@ function UserPromptText({
   }
 
   return (
-    <div className="user-prompt-correction">
-      <div className="user-prompt-correction-label">Correction</div>
+    <div>
+      <div
+        className={styles.userPromptCorrectionLabel}
+        data-user-prompt-correction-label
+      >
+        Correction
+      </div>
       <CollapsibleText
         text={correction.correctedText}
         projectPathLinks={projectPathLinks}
       />
       {correction.change && (
-        <div className="user-prompt-correction-change">
+        <div
+          className={styles.userPromptCorrectionChange}
+          data-user-prompt-correction-change
+        >
           Change:{" "}
           <UserPromptLinkedText
             text={correction.change}
@@ -601,7 +637,7 @@ export const UserPromptBlock = memo(function UserPromptBlock({
   deliveryState,
 }: Props) {
   const unconfirmedClass =
-    deliveryState === "sent" ? " user-prompt-unconfirmed" : "";
+    deliveryState === "sent" ? styles.userPromptUnconfirmed : "";
   const actionCount =
     Number(Boolean(content)) +
     Number(Boolean(onCorrect)) +
@@ -637,14 +673,19 @@ export const UserPromptBlock = memo(function UserPromptBlock({
     return (
       <div
         ref={actionPacking.containerRef}
-        className="user-prompt-container"
+        className={styles.userPromptContainer}
+        data-user-prompt-container
         style={actionPacking.style}
       >
         <div
           ref={actionPacking.bubbleRef}
-          className={`message message-user-prompt ${onCorrect ? "user-prompt-correctable" : ""}${unconfirmedClass}`}
+          className={`${listStyles.message} ${styles.messageUserPrompt} ${onCorrect ? styles.userPromptCorrectable : ""} ${unconfirmedClass}`}
+          data-message
+          data-message-user-prompt
+          data-user-prompt-correctable={onCorrect || undefined}
+          data-user-prompt-unconfirmed={deliveryState === "sent" || undefined}
         >
-          <div className="message-content">
+          <div className={styles.messageContent} data-message-content>
             <UserPromptText text={text} projectPathLinks={projectPathLinks} />
             <DeliveryStateMarker deliveryState={deliveryState} />
             <UploadedFilesMetadata files={uploadedFiles} />
@@ -692,9 +733,15 @@ export const UserPromptBlock = memo(function UserPromptBlock({
         <OpenedFilesMetadata files={openedFiles} />
       </>
     ) : (
-      <div className="message message-user-prompt">
-        <div className="message-content">
-          <div className="text-block">[Complex content]</div>
+      <div
+        className={`${listStyles.message} ${styles.messageUserPrompt}`}
+        data-message
+        data-message-user-prompt
+      >
+        <div className={styles.messageContent} data-message-content>
+          <div className={textStyles.textBlock} data-text-block>
+            [Complex content]
+          </div>
         </div>
       </div>
     );
@@ -703,14 +750,19 @@ export const UserPromptBlock = memo(function UserPromptBlock({
   return (
     <div
       ref={actionPacking.containerRef}
-      className="user-prompt-container"
+      className={styles.userPromptContainer}
+      data-user-prompt-container
       style={actionPacking.style}
     >
       <div
         ref={actionPacking.bubbleRef}
-        className={`message message-user-prompt ${onCorrect ? "user-prompt-correctable" : ""}${unconfirmedClass}`}
+        className={`${listStyles.message} ${styles.messageUserPrompt} ${onCorrect ? styles.userPromptCorrectable : ""} ${unconfirmedClass}`}
+        data-message
+        data-message-user-prompt
+        data-user-prompt-correctable={onCorrect || undefined}
+        data-user-prompt-unconfirmed={deliveryState === "sent" || undefined}
       >
-        <div className="message-content">
+        <div className={styles.messageContent} data-message-content>
           <UserPromptText text={text} projectPathLinks={projectPathLinks} />
           <DeliveryStateMarker deliveryState={deliveryState} />
           <UploadedFilesMetadata files={allUploadedFiles} />

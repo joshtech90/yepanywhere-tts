@@ -18,29 +18,15 @@ import {
   type LoadedState,
 } from "./specimen";
 import { findTarget, specimens } from "./specimens";
+import { AuditPage } from "./audit/AuditPage";
+import { useFontsReady } from "./useFontsReady";
 
 const LAYER_LABELS = {
   token: "Tokens",
   control: "Controls",
   pattern: "Patterns",
   scene: "Scenes",
-  census: "Census",
 } as const;
-
-/** Marks the page ready for capture once fonts have loaded. */
-function useFontsReady(): boolean {
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    let live = true;
-    void document.fonts.ready.then(() => {
-      if (live) setReady(true);
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
-  return ready;
-}
 
 class StateBoundary extends Component<
   { children: ReactNode },
@@ -253,7 +239,7 @@ function GridPage({
         className={styles.grid}
         style={
           {
-            // Full-width pages (census, tokens) stack their themes: a third
+            // Full-width pages (such as tokens) stack their themes: a third
             // of the page is too narrow for their tables.
             "--design-columns":
               specimen.parameters.width === "fill" ? 1 : themes.length,
@@ -298,8 +284,10 @@ function IndexPage({ route }: { route: DesignRoute }) {
       <header className={styles.pageHeader}>
         <h1>YA design playground</h1>
         <p className={styles.description}>
-          Shared controls, their states and the census of legacy variants, in
-          every theme. Contract: <code>topics/ui-design.md</code>. Capture with{" "}
+          Controls and Patterns show the shared designs to use. The Audit
+          separates unfinished migrations, reviewed exceptions and generated
+          content. Visual examples are available in each theme. Contract:{" "}
+          <code>topics/ui-design.md</code>. Capture with{" "}
           <code>pnpm -s design:shot &lt;id&gt;</code>; list with{" "}
           <code>pnpm -s design:index</code>.
         </p>
@@ -312,6 +300,11 @@ function IndexPage({ route }: { route: DesignRoute }) {
         return (
           <section key={layer} className={styles.indexGroup}>
             <h2>{LAYER_LABELS[layer]}</h2>
+            {layer === "control" || layer === "pattern" ? (
+              <p className={styles.description}>
+                The standard to use for new and migrated UI.
+              </p>
+            ) : null}
             <ul className={styles.indexList}>
               {group.map((specimen) => (
                 <li key={specimen.id}>
@@ -334,6 +327,14 @@ function IndexPage({ route }: { route: DesignRoute }) {
           </section>
         );
       })}
+      <section className={styles.indexGroup}>
+        <h2>Audit</h2>
+        <p className={styles.description}>
+          Migration status, reviewed exceptions and generated-content boundaries
+          in one report.
+        </p>
+        <a href={viewHref("audit", route)}>Open design audit</a>
+      </section>
     </div>
   );
 }
@@ -355,7 +356,7 @@ function Sidebar({
       >
         YA design playground
       </a>
-      <ViewControls route={route} />
+      {route.target !== "audit" && <ViewControls route={route} />}
       {DESIGN_LAYERS.map((layer) => {
         const group = specimens.filter(
           (specimen) => specimen.parameters.layer === layer,
@@ -399,6 +400,15 @@ function Sidebar({
           </section>
         );
       })}
+      <section className={styles.navGroup}>
+        <a
+          className={styles.navLink}
+          href={viewHref("audit", route)}
+          aria-current={route.target === "audit" ? "page" : undefined}
+        >
+          Audit
+        </a>
+      </section>
     </>
   );
 }
@@ -495,13 +505,17 @@ export function DesignApp() {
     );
   const heading = !route.target
     ? "Index"
-    : found
-      ? (found.state?.name ?? found.specimen.title)
-      : "Not found";
+    : route.target === "audit"
+      ? "Design audit"
+      : found
+        ? (found.state?.name ?? found.specimen.title)
+        : "Not found";
   return (
     <Shell route={route} activeSpecimen={found?.specimen} heading={heading}>
       {!route.target ? (
         <IndexPage route={route} />
+      ) : route.target === "audit" ? (
+        <AuditPage route={route} />
       ) : found ? (
         <GridPage specimen={found.specimen} only={found.state} route={route} />
       ) : (

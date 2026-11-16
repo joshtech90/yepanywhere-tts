@@ -1,5 +1,6 @@
 import {
   isYaSessionId,
+  nativeViewerFields,
   type UrlProjectId,
   type SessionCreationStatus,
 } from "@yep-anywhere/shared";
@@ -36,7 +37,7 @@ export function savedCreationView(
       title: request.message.trim().slice(0, 120) || null,
       fullTitle: request.message,
       initialPrompt: request.message,
-      nativeSessionId: identity.native?.id,
+      ...nativeViewerFields(identity.native),
       createdAt: creation.createdAt,
       updatedAt: attempt.updatedAt,
       messageCount: 0,
@@ -48,6 +49,7 @@ export function savedCreationView(
       isArchived: stored?.isArchived,
       isStarred: stored?.isStarred,
       creationProvenance: stored?.creationProvenance,
+      routerBinding: stored?.routerBinding,
       effectiveLaunchSettings: stored?.effectiveLaunchSettings,
       workingProjectId: stored?.workingProjectId,
       transcriptProjectId: stored?.transcriptProjectId,
@@ -90,7 +92,7 @@ export function creationStatusForSession(
 
 export function creationSessionSummary(
   row: SessionCreationProjection,
-  metadata: SessionMetadataService,
+  metadata: Pick<SessionMetadataService, "getMetadata">,
 ): SessionSummary | undefined {
   if (row.deleted) return;
   const stored = metadata.getMetadata(row.sessionId);

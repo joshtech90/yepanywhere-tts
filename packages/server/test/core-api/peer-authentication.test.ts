@@ -152,7 +152,7 @@ it.each(["direct", "relay"] as const)(
       "projects",
       "session",
       "createSession",
-      "sendMessage",
+      "createInput",
       "receipt",
       "followReceipt",
     ] as const;
@@ -189,7 +189,7 @@ it.each(["direct", "relay"] as const)(
         requestId: "refresh-create-001",
         projectId: "p",
         provider: "codex",
-        message: "Review",
+        prompt: "Review",
         permissionMode: "default",
       },
     })) as { sessionId: string };
@@ -199,10 +199,14 @@ it.each(["direct", "relay"] as const)(
       query: { waitMs: "0" },
     })) as { receipt: { sessionId: string } };
     expect(followed.receipt.sessionId).toBe("created-1");
-    await a.read("sendMessage", {
+    await a.read("createInput", {
       serverId: b.id,
       sessionId: "created-1",
-      body: { requestId: "refresh-message-001", message: "Continue" },
+      body: {
+        requestId: "refresh-message-001",
+        type: "prompt",
+        text: "Continue",
+      },
     });
     expect(b.starts()).toBe(1);
     expect(b.sends()).toBe(1);
@@ -217,8 +221,11 @@ it.each(["direct", "relay"] as const)(
       ),
     ).rejects.toMatchObject({ status: 401 });
     await b.manager.store.revokeIncoming(invitation.credentialId);
+    // Revocation closes an already authenticated channel; fresh authentication is denied.
     await expect(a.read("projects", { serverId: b.id })).rejects.toMatchObject({
-      status: 401,
+      status: expect.toSatisfy(
+        (status: number) => status === 401 || status === 503,
+      ),
     });
   },
   20_000,

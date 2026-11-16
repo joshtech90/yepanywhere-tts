@@ -38,7 +38,7 @@ const operations: Operation[] = [
   "conversation",
   "followConversation",
   "createSession",
-  "sendMessage",
+  "createInput",
   "receipt",
   "followReceipt",
   "relationships",
@@ -143,7 +143,7 @@ it("uses real basic enrollment and protected SRP for native create/message/follo
     requestId: "fleet-native-create",
     projectId: "p",
     provider: "codex",
-    message: "Review this change",
+    prompt: "Review this change",
   });
   expect(created.status).toBe(202);
   expect(created.body.creator).toMatchObject({
@@ -170,8 +170,8 @@ it("uses real basic enrollment and protected SRP for native create/message/follo
   const sent = await nativeRequest(
     runtime,
     token,
-    `${base}/sessions/${sid}/messages`,
-    { requestId: "fleet-native-message", message: "Continue" },
+    `${base}/sessions/${sid}/inputs`,
+    { requestId: "fleet-native-message", type: "prompt", text: "Continue" },
   );
   expect(sent.status).toBe(202);
   expect(target.starts()).toBe(1);
@@ -308,7 +308,7 @@ it("migrates complete v1 manual state atomically without changing IDs or its sel
   const migrated = new PeerAccessStore(saved.serverId, directory);
   await migrated.initialize();
   expect(migrated.read()).toMatchObject({
-    version: 3,
+    version: 4,
     agentAccess: saved.agentAccess,
     selected: { [targetId]: id },
     outgoing: [{ ...outgoing, origin: "manual" }],
@@ -555,7 +555,7 @@ it("refuses observation after identity service token expiry while retaining nati
             requestId: "fleet-expiry-create",
             projectId: "p",
             provider: "codex",
-            message: "accepted work",
+            prompt: "accepted work",
           },
         },
         { sessionId: "parent", launchId: null },
@@ -668,7 +668,8 @@ it("does not confirm an expired source reply even before its expiry timer runs",
       if (
         this.url === target.route.url &&
         args[0] === "message" &&
-        args[2] === true
+        args[2] === true &&
+        target.starts() === 1
       )
         vi.setSystemTime(authority.expiresAt + 1);
       return original.apply(this, args);
@@ -681,7 +682,7 @@ it("does not confirm an expired source reply even before its expiry timer runs",
         requestId: "fleet-source-late-reply",
         projectId: "p",
         provider: "codex",
-        message: "accepted before response",
+        prompt: "accepted before response",
       },
     );
     expect(result.status).toBe(401);

@@ -7,7 +7,7 @@ const projectPath = join(e2ePaths.tempDir, "file-browser-project");
 const projectId = Buffer.from(projectPath).toString("base64url");
 
 async function dismissOnboardingIfVisible(page: Page) {
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (
     await skip
       .waitFor({ state: "visible", timeout: 750 })
@@ -41,7 +41,7 @@ for (const viewport of [
     );
     await dismissOnboardingIfVisible(page);
 
-    const preview = page.locator(".markdown-preview");
+    const preview = page.locator("[data-markdown-preview]");
     const table = preview.getByRole("table");
     await expect(table).toBeVisible();
     await expect(

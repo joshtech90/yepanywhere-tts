@@ -31,6 +31,14 @@ connection symbols. Each HTTP listener owns a separate WebSocket server, so
 closing a replaced network binding does not disable another listener.
 The static-path advisory exception is removed because 2.x contains its fix.
 
+The 2.1.6 pnpm patch preserves `x-hono-already-sent` in the adapter's optimized
+response path, matching its ordinary response path. Hono middleware or a second
+in-process server can wrap the sentinel in the optimized Response; without the
+patch, the adapter sends an empty reply before the asynchronous Vite proxy does,
+then the proxy throws on its second header write. The real HTTP regression in
+`test/frontend/proxy.test.ts` covers that ordering. Remove the patch when an
+upstream version passes that regression through both module builds.
+
 The same job audits both standalone npm lockfiles (`site/` and
 `sharing-worker/`), including development dependencies, and the pinned STT
 recovery snapshot with `pip-audit`. The Python audit queries the complete
@@ -52,6 +60,12 @@ direct dependents instead: `jsdom@25` (client tests only) stayed on
 `ws@8.19.0`, inside two `ws` advisories, although its `^8.18.0` range admits
 the patched 8.21. The scoped `"jsdom>ws": "^8.21.3"` override moves only that
 edge. Drop it when a newer jsdom resolves a patched `ws` without it.
+The same reasoning gives `"@google-cloud/storage>fast-xml-parser": "^5.12.0"`
+(2026-11-11, GHSA-474x-hrwr-fgx4, reached only through the push broker's
+`firebase-admin`): storage's `^5.3.4` admits 5.12, but the depth refresh also
+re-resolved unrelated CSS and Babel packages, while the scoped override moves
+only the parser and its own dependencies. Drop it once storage resolves 5.12+
+on its own.
 
 The 2026-09-29 audit refresh moves `fast-uri` to 3.1.7 and the MCP SDK's
 `express-rate-limit -> ip-address` edge to 10.7.2 (within its `^10.2.0`
@@ -76,6 +90,14 @@ The 2026-10-01 CI audit repair resolves `@grpc/grpc-js` to 1.14.5 and
 A fresh audit also reported [Hono JSX boundary escaping](https://github.com/advisories/GHSA-hxh3-vqpv-xpqv);
 all Hono workspace consumers now resolve 4.13.12, above its 4.13.7 patch floor.
 No new advisory exclusions or install-script permissions are added.
+
+The 2026-11-13 repair raises all three Hono consumers to `^4.13.16`, resolving
+4.13.18, for five advisories patched in 4.13.16 that had failed the audit job
+on `main`: [`csrf()` request checks](https://github.com/advisories/GHSA-4h7h-rv7c-7m2v),
+[`css` helper escaping](https://github.com/advisories/GHSA-3gg2-335m-rxc6),
+`mount()` path forwarding, `validator('form')` and RegExpRouter wildcard
+middleware. The lockfile change is Hono alone; `pnpm -r update hono` also moved
+unrelated transitive packages and was not used.
 
 The 2026-10-03 CI repair resolves Firebase Admin's `@fastify/busboy` edge
 to 3.2.2 within its declared range, above the 3.2.1 patch floor for
@@ -176,6 +198,14 @@ The override names the exact Miniflare beta version: npm 10 does not apply the
 unversioned parent override to this prerelease and rejects the frozen install.
 CI verifies the worker's frozen install before auditing it so the deployment's
 npm 10 boundary stays covered.
+
+The 2026-11-14 repair raises the website's Astro floor to `^7.4.7`, resolving
+7.4.12, for [attribute injection in dynamic tag names](https://github.com/advisories/GHSA-mh32-jxcr-mh9f)
+and [a case-variant read through the image endpoint](https://github.com/advisories/GHSA-r3h5-4585-7x3w),
+both patched after 7.4.6. The lockfile moves Astro's own dependency graph with
+it. The website audit had been failing unseen: the audit job stopped at the
+workspace audit's Hono findings, so its later steps never ran. Each audit step
+now runs whether or not an earlier one failed.
 
 The STT recovery snapshot raises `filelock` to 4.2.1 for its SQLite reader/writer
 lock and Windows soft-lock advisories. Linux/Python 3.12 resolution for the
@@ -292,6 +322,12 @@ G3 is absent and that `requests` and `httpx` can validate HTTPS with the new
 bundle. This pin secures subsequent recovery/NeMo installs; existing speech
 environments must update their installed certifi separately. Live environments
 were not updated or qualified by this repository change.
+
+The 2026-11-11 CI audit repair resolves `@google-cloud/storage ->
+fast-xml-parser` to 5.12.0 within its declared `^5.3.4` range for
+[quadratic unterminated stop-node scanning](https://github.com/advisories/GHSA-474x-hrwr-fgx4).
+Its required parser helpers move with it; no override, advisory exclusion or
+install-script permission is added.
 
 ## Automated Dependency Updates
 

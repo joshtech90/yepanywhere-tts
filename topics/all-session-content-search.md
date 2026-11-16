@@ -399,8 +399,9 @@ line breaks, and whitespace runs are normalized using the preview rules;
 Markdown-delimiter normalization from the index sketch
 is not implemented. Ordinals count normalized visible records.
 
-The native reader's separate `MAX_RECORD = 1048576` limit applies to one raw
-JSONL line in bytes before JSON parsing or text extraction. It is neither a
+The native reader's separate 1,048,576-byte record limit (the append source's
+`RECORD_BYTES`) applies to one raw JSONL line in bytes before JSON parsing or
+text extraction. It is neither a
 total-file size limit nor a limit on the cursor's byte offset. A transcript
 larger than 1 MiB is traversed normally. A larger single record is skipped
 through its newline and scanning continues with partial coverage. One record
@@ -512,6 +513,12 @@ not an enabled query restriction. The open
 and remaining provider/coverage limitations. Candidate indexing, maintenance
 and measurement choices remain in the
 [sketches](all-session-content-search.sketches.md).
+
+The proposed [provider history architecture](provider-history-facts.md#consumers-own-their-projections)
+treats a durable text index as a separate downstream consumer that may reuse
+source identity, generations, locators and reset evidence. Matching and
+indexed-through progress remain search-owned. Current bounded scanning
+remains the implementation.
 
 Search and future index state stay in YA app data, never selected projects or
 their Git metadata. Provider transcripts remain canonical.

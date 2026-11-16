@@ -15,7 +15,7 @@ import { SessionCommands } from "../../src/core-api/session-commands.js";
 import { nativeSessionCommandOwner } from "../../src/core-api/native-session-commands.js";
 import {
   createSessionRequest,
-  sendMessageRequest,
+  inputRequest,
 } from "../../src/core-api/command-contracts.js";
 import { Supervisor } from "../../src/supervisor/Supervisor.js";
 import { MessageQueue } from "../../src/sdk/messageQueue.js";
@@ -194,7 +194,7 @@ it.each(["superuser", "peer"] as const)(
         model: "fixture-model",
         thinking: "on:high",
         permissionMode: "bypassPermissions",
-        message: "/clear",
+        prompt: "/clear",
       });
       const creator =
         principal === "peer"
@@ -257,18 +257,38 @@ it.each(["superuser", "peer"] as const)(
         updatedAt: "",
         state: "in-turn",
       };
-      const input = sendMessageRequest.parse({
+      const input = inputRequest.parse({
         requestId: "native-input-1",
-        message: "Follow up",
+        type: "prompt",
+        text: "Follow up",
       });
-      const sent = commands.send(session, input, launch);
+      const sent = await commands.input(session, input, launch);
       expect(sent).toMatchObject({
         state: "accepted",
         delivery: "unknown",
         completion: "unknown",
+        input: { type: "prompt", delivery: "deferred", status: "queued" },
       });
-      expect(commands.send(session, input, launch).id).toBe(sent.id);
-      expect(nativeProcess.getInfo().queueDepth).toBe(1);
+      expect((await commands.input(session, input, launch)).id).toBe(sent.id);
+      // Held in YA's queue during the active turn, not the native input queue.
+      expect(nativeProcess.getInfo().queueDepth).toBe(0);
+      expect(
+        nativeProcess
+          .getDeferredQueueSummary()
+          .map((item) => [item.tempId, item.metadata?.origin]),
+      ).toEqual([[sent.id, "coordination"]]);
+      expect(commands.inputs(publicId, true)).toMatchObject([
+        {
+          id: sent.id,
+          receiptId: sent.id,
+          type: "prompt",
+          delivery: "deferred",
+          status: "queued",
+          cancellable: true,
+          text: "Follow up",
+          creator: { origin: "coordination" },
+        },
+      ]);
       expect(steers).toBe(0);
       const before = await commands.follow(sent.id, {});
       const waiting = commands.follow(sent.id, {
@@ -276,11 +296,13 @@ it.each(["superuser", "peer"] as const)(
         waitMs: "4000",
       });
       releaseFirst();
-      expect(await waiting).toMatchObject({
-        changed: true,
-        receipt: { delivery: "consumed", completion: "unknown" },
-      });
       await secondInput;
+      expect(store.get(sent.id)).toMatchObject({
+        delivery: "consumed",
+        completion: "unknown",
+        input: { status: "released" },
+      });
+      expect((await waiting).changed).toBe(true);
       expect(consumed).toEqual([receipt.id, sent.id]);
       expect(starts).toBe(1);
       expect(steers).toBe(0);
@@ -307,17 +329,17 @@ it.each(["superuser", "peer"] as const)(
         state: "uncertain",
         failure: { code: "launch_uncertain" },
       });
-      expect(commands.send(session, input, launch)).toMatchObject({
+      expect(await commands.input(session, input, launch)).toMatchObject({
         id: sent.id,
         delivery: "consumed",
       });
-      expect(() =>
-        commands.send(
+      await expect(
+        commands.input(
           session,
           { ...input, requestId: "native-input-2" },
           launch,
         ),
-      ).toThrow("incumbent active native owner");
+      ).rejects.toThrow("incumbent active native owner");
       expect(starts).toBe(2);
       // Assert outside the expected failure path: no swallowed provider assertion.
       expect(provenanceCountsAtStart).toEqual([1, 2]);
@@ -386,11 +408,13 @@ it("preserves batched input identities, rejects false push evidence, and tears d
     const push = vi.spyOn(queue, "push").mockImplementationOnce(() => {
       throw new Error("push rejected");
     });
-    const failed = commands.send(
+    const failed = await commands.input(
       session,
-      sendMessageRequest.parse({
+      inputRequest.parse({
         requestId: "rejected-push",
-        message: "Rejected",
+        type: "prompt",
+        delivery: "steer",
+        text: "Rejected",
       }),
     );
     expect(queue.depth).toBe(0);
@@ -400,18 +424,22 @@ it("preserves batched input identities, rejects false push evidence, and tears d
       delivery: "uncertain",
     });
     push.mockRestore();
-    const first = commands.send(
+    const first = await commands.input(
       session,
-      sendMessageRequest.parse({
+      inputRequest.parse({
         requestId: "batched-first",
-        message: "First",
+        type: "prompt",
+        delivery: "steer",
+        text: "First",
       }),
     );
-    const second = commands.send(
+    const second = await commands.input(
       session,
-      sendMessageRequest.parse({
+      inputRequest.parse({
         requestId: "batched-second",
-        message: "Second",
+        type: "prompt",
+        delivery: "steer",
+        text: "Second",
       }),
     );
     const combined = queue.concatDrain({ interrupted: true })!;
@@ -424,17 +452,21 @@ it("preserves batched input identities, rejects false push evidence, and tears d
     expect(store.get(first.id)?.delivery).toBe("consumed");
     expect(store.get(second.id)?.delivery).toBe("consumed");
     expect(process.hasConsumedApiInput(second.id)).toBe(true);
-    const pending = commands.send(
+    const pending = await commands.input(
       session,
-      sendMessageRequest.parse({
+      inputRequest.parse({
         requestId: "aborted-input",
-        message: "Not consumed",
+        type: "prompt",
+        delivery: "steer",
+        text: "Not consumed",
       }),
     );
     commands.close();
     commands = new SessionCommands("A", store, owner, () => true);
+    // A replacement controller over the same process's receipts reattaches
+    // the incumbent owner's evidence; delivery is still awaited.
     const recovered = await commands.follow(pending.id, { waitMs: "0" });
-    expect(recovered.receipt?.delivery).toBe("uncertain");
+    expect(recovered.receipt?.delivery).toBe("unknown");
     const reattached = commands.follow(pending.id, { after: recovered.cursor });
     const resumedInput = queue.generator();
     await resumedInput.next();
@@ -443,11 +475,13 @@ it("preserves batched input identities, rejects false push evidence, and tears d
       changed: true,
       receipt: { delivery: "consumed" },
     });
-    const cancelled = commands.send(
+    const cancelled = await commands.input(
       session,
-      sendMessageRequest.parse({
+      inputRequest.parse({
         requestId: "cancelled-input",
-        message: "Cancel this",
+        type: "prompt",
+        delivery: "steer",
+        text: "Cancel this",
       }),
     );
     const cancelBefore = await commands.follow(cancelled.id, { waitMs: "0" });
@@ -465,11 +499,13 @@ it("preserves batched input identities, rejects false push evidence, and tears d
       "uncertain",
     );
     expect(subscriptions.size).toBe(1); // Only Process's incumbent queue observer remains.
-    const aborted = commands.send(
+    const aborted = await commands.input(
       session,
-      sendMessageRequest.parse({
+      inputRequest.parse({
         requestId: "final-aborted",
-        message: "Never consumed",
+        type: "prompt",
+        delivery: "steer",
+        text: "Never consumed",
       }),
     );
     expect(subscriptions.size).toBeGreaterThan(0);
@@ -502,6 +538,7 @@ it("starts a routed caller's child on the caller's pool or account, never Direct
       getProcessForSession: () => undefined,
     } as never,
     globalInstructions: () => undefined,
+    projectDirectoryExists: async (path) => path !== "/removed",
     callerLaunch: (id) =>
       id === "parent"
         ? {
@@ -525,14 +562,19 @@ it("starts a routed caller's child on the caller's pool or account, never Direct
     management: true as const,
   };
   try {
-    const create = async (requestId: string, provider: "claude" | "codex") => {
+    const create = async (
+      requestId: string,
+      provider: "claude" | "codex",
+      extra: Record<string, unknown> = {},
+    ) => {
       const receipt = commands.create(
         project,
         createSessionRequest.parse({
           requestId,
           projectId: project.id,
           provider,
-          message: "child work",
+          prompt: "child work",
+          ...extra,
         }),
         launch,
       );
@@ -561,6 +603,62 @@ it("starts a routed caller's child on the caller's pool or account, never Direct
       },
     });
     expect(startSession).toHaveBeenCalledTimes(1);
+    expect(
+      await create("explicit-pool", "codex", {
+        routerPoolId: "other-pool",
+        routerPolicy: "weekly-pace",
+        model: "release-model",
+        thinking: "on:high",
+        serviceTier: "priority",
+        permissionMode: "plan",
+      }),
+    ).toMatchObject({ state: "accepted" });
+    expect(startSession.mock.calls[1]![2]).toBe("plan");
+    expect(startSession.mock.calls[1]![3]).toMatchObject({
+      providerName: "codex",
+      routerPoolId: "other-pool",
+      routerPolicy: "weekly-pace",
+      model: "release-model",
+      effort: "high",
+      serviceTier: "priority",
+    });
+    expect(startSession.mock.calls[1]![3]).not.toHaveProperty(
+      "routerAccountId",
+      "acct",
+    );
+    // The router has no default model, so an explicit selection must name one.
+    expect(
+      await create("explicit-pool-no-model", "codex", {
+        routerPoolId: "other-pool",
+      }),
+    ).toMatchObject({
+      state: "failed",
+      failure: {
+        code: "admission_rejected",
+        message: expect.stringContaining("Name a model"),
+      },
+    });
+    expect(startSession).toHaveBeenCalledTimes(2);
+    // The catalog keeps a project whose directory is gone; nothing can start.
+    const removed = commands.create(
+      { id: "gone", name: "Removed", path: "/removed" },
+      createSessionRequest.parse({
+        requestId: "removed-directory",
+        projectId: "gone",
+        provider: "claude",
+        prompt: "child work",
+      }),
+      launch,
+    );
+    await commands.idle();
+    expect(store.get(removed.id)).toMatchObject({
+      state: "failed",
+      failure: {
+        code: "admission_rejected",
+        message: expect.stringContaining("no longer exists"),
+      },
+    });
+    expect(startSession).toHaveBeenCalledTimes(2);
   } finally {
     store.close();
     database.close();

@@ -9,7 +9,7 @@
 .dot {
   width: 12px;
   height: 12px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   flex-shrink: 0;
 }
 
@@ -52,22 +52,14 @@
 }
 
 .status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
   margin-top: var(--space-2);
   color: var(--text-muted);
   font-size: var(--font-size-sm);
   line-height: 1.35;
 }
 
-.warning {
-  color: var(--warning-color);
-}
-
-.retry {
-  flex: none;
+.message {
+  margin-top: var(--space-2);
 }
 
 .caption {

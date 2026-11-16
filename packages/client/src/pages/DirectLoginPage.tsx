@@ -1,3 +1,4 @@
+import styles from "./LoginLayout.module.css";
 import { mutateResumeCredentials } from "../lib/rejectedResumeStorage";
 /**
  * DirectLoginPage - Direct connection form for remote access via SecureConnection.
@@ -9,9 +10,11 @@ import { mutateResumeCredentials } from "../lib/rejectedResumeStorage";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
+import { Banner } from "../components/ui/Banner";
 import { Button } from "../components/ui/Button";
 import { Checkbox } from "../components/ui/Checkbox";
 import { Field, TextInput } from "../components/ui/Field";
+import { Spinner } from "../components/ui/Spinner";
 import { useRemoteConnection } from "../contexts/RemoteConnectionContext";
 import { useSignInRequiredNotice } from "../hooks/useSignInRequiredNotice";
 import { useI18n } from "../i18n";
@@ -46,14 +49,14 @@ export function DirectLoginPage() {
   // If auto-resume is in progress, show a loading screen
   if (isAutoResuming) {
     return (
-      <div className="login-page">
-        <div className="login-container">
-          <div className="login-logo">
-            <YepAnywhereLogo />
+      <div className={styles.page}>
+        <div className={styles.container}>
+          <div className={styles.logo}>
+            <YepAnywhereLogo variant="login" />
           </div>
-          <p className="login-subtitle">{t("reconnecting")}</p>
-          <div className="login-loading" data-testid="auto-resume-loading">
-            <div className="login-spinner" />
+          <p className={styles.subtitle}>{t("reconnecting")}</p>
+          <div className={styles.loading} data-testid="auto-resume-loading">
+            <Spinner size="large" />
           </div>
         </div>
       </div>
@@ -141,20 +144,20 @@ export function DirectLoginPage() {
   const displayError = localError ?? error;
 
   return (
-    <div className="login-page">
-      <div className="login-container">
-        <Link to="/login" className="login-back-link">
+    <div className={styles.page}>
+      <div className={styles.container}>
+        <Link to="/login" className={styles.backLink}>
           &larr; {t("actionBack")}
         </Link>
 
-        <div className="login-logo">
-          <YepAnywhereLogo />
+        <div className={styles.logo}>
+          <YepAnywhereLogo variant="login" />
         </div>
-        <p className="login-subtitle">{t("directLoginTitle")}</p>
+        <p className={styles.subtitle}>{t("directLoginTitle")}</p>
 
         <form
           onSubmit={handleSubmit}
-          className="login-form"
+          className={styles.form}
           data-testid="login-form"
         >
           <Field
@@ -211,9 +214,9 @@ export function DirectLoginPage() {
           />
 
           {displayError && (
-            <div className="login-error" data-testid="login-error">
+            <Banner tone="error" data-testid="login-error">
               {displayError}
-            </div>
+            </Banner>
           )}
 
           <Button
@@ -228,7 +231,7 @@ export function DirectLoginPage() {
           </Button>
         </form>
 
-        <p className="login-hint">{t("directLoginHint")}</p>
+        <p className={styles.hint}>{t("directLoginHint")}</p>
       </div>
     </div>
   );

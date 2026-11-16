@@ -117,6 +117,7 @@ it("keeps scoped OpenCode identities through native catalogue, public history, W
         await metadata.setWorkingProject(publicId, workingId, originalId);
       }
       index = new SessionIndexService({
+        database: storage.getDatabase(),
         dataDir: join(root, "indexes"),
         projectsDir: join(root, "empty-ambient"),
       });
@@ -241,7 +242,7 @@ it("keeps scoped OpenCode identities through native catalogue, public history, W
           [{ ...boundRow, nativeDirectoryProjectId: workingId }],
           metadata,
         ),
-      ).rejects.toThrow("Session identity conflicts");
+      ).resolves.toEqual([]);
       const project = await app.scanner.getOrCreateProject(
         toUrlProjectId(worktree),
       );

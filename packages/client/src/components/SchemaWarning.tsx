@@ -1,7 +1,8 @@
+import styles from "./SchemaWarning.module.css";
 import { useCallback, useState } from "react";
 import type { ZodError } from "zod";
 import { useI18n } from "../i18n";
-import { Modal } from "./ui/Modal";
+import { Dialog } from "./ui/Dialog";
 
 interface SchemaWarningProps {
   toolName: string;
@@ -110,68 +111,93 @@ export function SchemaWarning({ toolName, errors }: SchemaWarningProps) {
       <span
         role="button"
         tabIndex={0}
-        className="schema-warning"
+        className={styles.schemaWarning}
+        data-schema-warning
         onClick={handleClick}
         onKeyDown={handleKeyDown}
         title={t("schemaWarningTooltip" as never, { tool: toolName })}
       >
-        <span className="schema-warning-icon" aria-hidden="true">
+        <span
+          className={styles.schemaWarningIcon}
+          data-schema-warning-icon
+          aria-hidden="true"
+        >
           !
         </span>
       </span>
       {isModalOpen && (
-        <Modal
-          title={
-            <span className="schema-warning-modal-title">
-              Schema validation failed: {toolName}
-              {t("schemaWarningTitle" as never, { tool: toolName })}
-            </span>
-          }
+        <Dialog
+          title={t("schemaWarningTitle" as never, { tool: toolName })}
+          size="medium"
           onClose={handleClose}
+          footerStart={
+            <a
+              href={issueUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={styles.schemaWarningReportLink}
+              data-schema-warning-report-link
+              onClick={(e) => e.stopPropagation()}
+            >
+              {t("schemaWarningReport" as never)}
+            </a>
+          }
         >
-          <div className="schema-warning-modal-content">
-            {missing.length > 0 && (
-              <div className="schema-warning-section">
-                <div className="schema-warning-section-title">
-                  {t("schemaWarningMissing" as never)}
-                </div>
-                <ul className="schema-warning-list">
-                  {missing.map((field) => (
-                    <li key={field} className="schema-warning-item">
-                      <code>{field}</code>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {invalid.length > 0 && (
-              <div className="schema-warning-section">
-                <div className="schema-warning-section-title">
-                  {t("schemaWarningInvalid" as never)}
-                </div>
-                <ul className="schema-warning-list">
-                  {invalid.map(({ path, message }) => (
-                    <li key={path} className="schema-warning-item">
-                      <code>{path}</code>
-                      <span className="schema-warning-message">{message}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <div className="schema-warning-footer">
-              <a
-                href={issueUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="schema-warning-report-link"
-                onClick={(e) => e.stopPropagation()}
+          {missing.length > 0 && (
+            <div
+              className={styles.schemaWarningSection}
+              data-schema-warning-section
+            >
+              <div
+                className={styles.schemaWarningSectionTitle}
+                data-schema-warning-section-title
               >
-                {t("schemaWarningReport" as never)}
-              </a>
+                {t("schemaWarningMissing" as never)}
+              </div>
+              <ul className={styles.schemaWarningList} data-schema-warning-list>
+                {missing.map((field) => (
+                  <li
+                    key={field}
+                    className={styles.schemaWarningItem}
+                    data-schema-warning-item
+                  >
+                    <code>{field}</code>
+                  </li>
+                ))}
+              </ul>
             </div>
-          </div>
-        </Modal>
+          )}
+          {invalid.length > 0 && (
+            <div
+              className={styles.schemaWarningSection}
+              data-schema-warning-section
+            >
+              <div
+                className={styles.schemaWarningSectionTitle}
+                data-schema-warning-section-title
+              >
+                {t("schemaWarningInvalid" as never)}
+              </div>
+              <ul className={styles.schemaWarningList} data-schema-warning-list>
+                {invalid.map(({ path, message }) => (
+                  <li
+                    key={path}
+                    className={styles.schemaWarningItem}
+                    data-schema-warning-item
+                  >
+                    <code>{path}</code>
+                    <span
+                      className={styles.schemaWarningMessage}
+                      data-schema-warning-message
+                    >
+                      {message}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </Dialog>
       )}
     </>
   );

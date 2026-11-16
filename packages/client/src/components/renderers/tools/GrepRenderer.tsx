@@ -1,3 +1,6 @@
+import codeStyles from "../CodeOutput.module.css";
+import expandStyles from "../ExpandOutput.module.css";
+import globStyles from "./GlobRenderer.module.css";
 import { toolDisplayContracts } from "./toolDisplayContracts";
 import { defineTool } from "./defineTool";
 import {
@@ -17,6 +20,7 @@ import { validateToolResult } from "../../../lib/validateToolResult";
 import { ActivityDetailModal } from "../../ActivityDetailModal";
 import { SchemaWarning } from "../../SchemaWarning";
 import { SessionFilePathLink } from "../../SessionFilePathLink";
+import { Badge } from "../../ui/Badge";
 import { Button, ButtonBase } from "../../ui/Button";
 import styles from "./GrepRenderer.module.css";
 import type { GrepInput, GrepMatch, GrepResult } from "./types";
@@ -146,7 +150,8 @@ function GrepMatchDrilldown({
 
   return (
     <>
-      <ButtonBase
+      <Button
+        variant="link"
         className={styles.matchCountButton}
         onClick={(event) => {
           event.preventDefault();
@@ -155,7 +160,7 @@ function GrepMatchDrilldown({
         }}
       >
         {label}
-      </ButtonBase>
+      </Button>
       {showModal && (
         <ActivityDetailModal
           title={label}
@@ -257,19 +262,23 @@ function FileListView({
 
   return (
     <>
-      <div className="file-list">
+      <div className={globStyles.fileList} data-file-list>
         {displayFiles.map((file) => (
-          <div key={file} className="file-list-item">
-            <span className="file-path">
+          <div
+            key={file}
+            className={globStyles.fileListItem}
+            data-file-list-item
+          >
+            <span className={codeStyles.filePath} data-file-path>
               {getFileName(makeDisplayPath(file, projectPath))}
             </span>
-            <span className="file-dir">
+            <span className={globStyles.fileDir} data-file-dir>
               {makeDisplayPath(file, projectPath)}
             </span>
           </div>
         ))}
         {needsCollapse && !isExpanded && (
-          <div className="file-list-more">
+          <div className={globStyles.fileListMore} data-file-list-more>
             ... and {filenames.length - MAX_FILES_COLLAPSED} more
           </div>
         )}
@@ -278,7 +287,8 @@ function FileListView({
         <Button
           variant="ghost"
           size="small"
-          className="expand-button"
+          className={expandStyles.expandButton}
+          data-expand-button
           onClick={() => setIsExpanded(!isExpanded)}
         >
           {isExpanded ? "Show less" : `Show all ${filenames.length} files`}
@@ -309,14 +319,19 @@ function ContentView({
 
   return (
     <>
-      <pre ref={contentRef} className={`${styles.content} code-block`}>
+      <pre
+        ref={contentRef}
+        className={`${styles.content} ${codeStyles.codeBlock}`}
+        data-code-block
+      >
         <code>{displayContent}</code>
       </pre>
       {needsCollapse && (
         <Button
           variant="ghost"
           size="small"
-          className="expand-button"
+          className={expandStyles.expandButton}
+          data-expand-button
           onClick={() => setIsExpanded(!isExpanded)}
         >
           {isExpanded ? "Show less" : `Show all ${lines.length} lines`}
@@ -471,7 +486,9 @@ function GrepToolResult({
             projectPath={projectPath}
           />
           {appliedLimit && (
-            <span className="badge badge-info">limit: {appliedLimit}</span>
+            <Badge tone="info" size="small">
+              limit: {appliedLimit}
+            </Badge>
           )}
           {showValidationWarning && validationErrors && (
             <SchemaWarning toolName="Grep" errors={validationErrors} />
@@ -680,7 +697,8 @@ function GrepSummaryPattern({
 
   return (
     <span
-      className={`${styles.summaryPattern}${expanded ? " is-expanded" : ""}`}
+      className={styles.summaryPattern}
+      data-is-expanded={expanded || undefined}
     >
       <span className={styles.summaryPatternRow} ref={rowRef}>
         {clipContent}

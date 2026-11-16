@@ -1,3 +1,5 @@
+import pageStyles from "../layouts/PageLayout.module.css";
+import statusStyles from "./SourceStatus.module.css";
 import type {
   GitFileChange,
   GitIntegrationOptionReason,
@@ -25,8 +27,11 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { GitActionFeedback } from "../components/GitActionFeedback";
 import { ProjectSelector } from "../components/ProjectSelector";
+import { Badge } from "../components/ui/Badge";
+import { Banner } from "../components/ui/Banner";
 import { Button, IconButton } from "../components/ui/Button";
 import { Popover } from "../components/ui/Popover";
+import { Spinner } from "../components/ui/Spinner";
 import { GlossaryProjectBoundary } from "../contexts/GlossaryContext";
 import { SourceReviewDefaultSessionContext } from "../contexts/SourceReviewDefaultSessionContext";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
@@ -265,8 +270,12 @@ function SourceHeaderActions({
     }
     const controls = controlsRef.current;
     const tabs = tabsRef.current;
-    const header = controls?.closest<HTMLElement>(".session-header-inner");
-    const identity = header?.querySelector<HTMLElement>(".session-header-left");
+    const header = controls?.closest<HTMLElement>(
+      "[data-session-header-inner]",
+    );
+    const identity = header?.querySelector<HTMLElement>(
+      "[data-session-header-left]",
+    );
     const actionGroup = controls?.querySelector<HTMLElement>(
       "[data-source-action-group]",
     );
@@ -430,7 +439,7 @@ function SourceHeaderControls({
           }
           onClick={onToggleWorktreePaused}
         >
-          <span className="git-status-action-indicator" aria-hidden="true">
+          <span className={styles.actionIndicator} aria-hidden="true">
             <SourceActionGlyph action={worktreePaused ? "play" : "pause"} />
           </span>
           <span className={styles.actionLabel}>
@@ -487,8 +496,12 @@ function SourceActionButton({
     <Button
       size="small"
       className={`${className} ${
-        showOutcome ? `git-status-action-${tone}` : ""
-      } ${running ? "git-status-action-running" : ""}`}
+        showOutcome
+          ? tone === "success"
+            ? styles.actionSuccess
+            : styles.actionWarning
+          : ""
+      }`}
       title={feedbackTitle}
       aria-label={
         running
@@ -500,8 +513,10 @@ function SourceActionButton({
       onClick={onClick}
       disabled={disabled}
     >
-      <span className="git-status-action-indicator" aria-hidden="true">
-        {running ? null : showOutcome ? (
+      <span className={styles.actionIndicator} aria-hidden="true">
+        {running ? (
+          <Spinner size="small" />
+        ) : showOutcome ? (
           tone === "success" ? (
             "✓"
           ) : (
@@ -524,7 +539,8 @@ function SourceActionGlyph({
   if (action === "pause") {
     return (
       <svg
-        className="git-status-action-glyph"
+        className={styles.actionGlyph}
+        data-source-action-glyph
         aria-hidden="true"
         viewBox="0 0 16 16"
         fill="currentColor"
@@ -537,7 +553,8 @@ function SourceActionGlyph({
   if (action === "play") {
     return (
       <svg
-        className="git-status-action-glyph"
+        className={styles.actionGlyph}
+        data-source-action-glyph
         aria-hidden="true"
         viewBox="0 0 16 16"
         fill="currentColor"
@@ -549,7 +566,8 @@ function SourceActionGlyph({
   if (action === "check") {
     return (
       <svg
-        className="git-status-action-glyph"
+        className={styles.actionGlyph}
+        data-source-action-glyph
         aria-hidden="true"
         viewBox="0 0 16 16"
         fill="none"
@@ -566,7 +584,8 @@ function SourceActionGlyph({
   const isPull = action === "pull";
   return (
     <svg
-      className="git-status-action-glyph"
+      className={styles.actionGlyph}
+      data-source-action-glyph
       aria-hidden="true"
       viewBox="0 0 16 16"
       fill="none"
@@ -772,19 +791,23 @@ export function GitStatusPage() {
   };
 
   if (!effectiveProjectId && !projectsLoading && projects.length === 0) {
-    return <div className="error">{t("gitStatusNoProjects")}</div>;
+    return (
+      <div className={pageStyles.error} data-error>
+        {t("gitStatusNoProjects")}
+      </div>
+    );
   }
 
   return (
     <MainContent
       isWideScreen={isWideScreen}
-      innerClassName={`source-control-main-content ${styles.sourceHeader}`}
+      innerClassName={`${styles.sourceControlMainContent} ${styles.sourceHeader}`}
     >
       <PageHeader
         title={project?.name ?? t("gitStatusTitle")}
         titleElement={
           effectiveProjectId ? (
-            <div className="source-header-identity">
+            <div className={styles.sourceHeaderIdentity}>
               <ProjectSelector
                 currentProjectId={effectiveProjectId}
                 currentProjectName={project?.name}
@@ -794,7 +817,7 @@ export function GitStatusPage() {
                 <RepoStatusBar
                   status={gitStatus}
                   projectId={effectiveProjectId}
-                  className="source-header-repo-status"
+                  className={styles.sourceHeaderRepoStatus}
                   onSelectChanges={() => setHeaderTab("changes")}
                   {...headCommitLink}
                   t={t}
@@ -823,21 +846,27 @@ export function GitStatusPage() {
         }
       />
 
-      <main className="page-scroll-container" ref={pageScrollRef}>
-        <div className="page-content-inner">
+      <main
+        className={pageStyles.pageScrollContainer}
+        data-page-scroll-container
+        ref={pageScrollRef}
+      >
+        <div className={pageStyles.pageContentInner} data-page-content-inner>
           {projectsLoading || loading ? (
-            <div className="loading">{t("gitStatusLoading")}</div>
-          ) : error ? (
-            <div className="error">
-              {t("gitStatusErrorPrefix")} {error.message}
+            <div className={pageStyles.loading} data-loading>
+              {t("gitStatusLoading")}
             </div>
+          ) : error ? (
+            <Banner tone="error">
+              {t("gitStatusErrorPrefix")} {error.message}
+            </Banner>
           ) : gitStatus &&
             !gitStatus.isGitRepo &&
             effectiveProjectId &&
             supportsWorkingTreeSections ? (
             <GlossaryProjectBoundary projectId={effectiveProjectId}>
               <ProjectWorktreePauseContext.Provider value={worktreeLeasePaused}>
-                <div className="git-status">
+                <div className={styles.gitStatus} data-source-status>
                   <BlameBrowser
                     projectId={effectiveProjectId}
                     isWideScreen={isWideScreen}
@@ -852,7 +881,9 @@ export function GitStatusPage() {
               </ProjectWorktreePauseContext.Provider>
             </GlossaryProjectBoundary>
           ) : gitStatus && !gitStatus.isGitRepo ? (
-            <div className="git-status-empty">{t("gitStatusNotRepo")}</div>
+            <div className={statusStyles.statusEmpty} data-source-empty>
+              {t("gitStatusNotRepo")}
+            </div>
           ) : gitStatus && effectiveProjectId ? (
             <GlossaryProjectBoundary projectId={effectiveProjectId}>
               <ProjectWorktreePauseContext.Provider value={worktreeLeasePaused}>
@@ -978,16 +1009,15 @@ function GitStatusContent({
     setIgnoreWhitespace(!ignoreWhitespace);
   }, [ignoreWhitespace]);
   const projectionNotice = projectionRequestError ? (
-    <div className="source-projection-notice" role="alert">
-      <span>{projectionRequestError}</span>
-      <IconButton
-        label={t("sourceDismissProjectionError")}
-        size="small"
-        onClick={() => setProjectionRequestError(null)}
-      >
-        ×
-      </IconButton>
-    </div>
+    <Banner
+      elevated
+      tone="error"
+      className={styles.sourceProjectionNotice}
+      onDismiss={() => setProjectionRequestError(null)}
+      dismissLabel={t("sourceDismissProjectionError")}
+    >
+      {projectionRequestError}
+    </Banner>
   ) : null;
   // Bridge a commit file to its blame-at-HEAD view: switch to the files tab
   // with that file seeded open (a real history step, so back returns).
@@ -1057,7 +1087,7 @@ function GitStatusContent({
     );
   }, [location.state, setSearchParams]);
   return (
-    <div className="git-status">
+    <div className={styles.gitStatus} data-source-status>
       <GitActionNotices gitActions={gitActions} t={t} />
       {projectionNotice &&
         (projectionNoticeNeedsPortal
@@ -1175,7 +1205,7 @@ function GitActionNotices({
   }
 
   return (
-    <div className="git-status-action-notices">
+    <div className={styles.actionNotices}>
       {gitActions.actionFeedback && gitActions.actionFeedbackTone && (
         <GitActionFeedback
           message={gitActions.actionFeedback}
@@ -1207,18 +1237,14 @@ function GitIntegrationOptionsPanel({
   t: TranslationFn;
 }) {
   if (loading) {
-    return (
-      <div className="git-integration-options">
-        <span>{t("gitStatusAutoOptionsChecking")}</span>
-      </div>
-    );
+    return <Banner role="none">{t("gitStatusAutoOptionsChecking")}</Banner>;
   }
 
   if (error) {
     return (
-      <div className="git-integration-options git-integration-options-warning">
-        <span>{error}</span>
-      </div>
+      <Banner tone="warning" role="none">
+        {error}
+      </Banner>
     );
   }
 
@@ -1228,38 +1254,30 @@ function GitIntegrationOptionsPanel({
 
   if (options.status === "available") {
     return (
-      <div className="git-integration-options">
-        <span className="git-integration-options-label">
+      <Banner role="none" actions={<GitIntegrationOptionsHelp t={t} />}>
+        <span className={styles.gitIntegrationOptionsLabel}>
           {t("gitStatusAutoOptionsLabel")}
-        </span>
-        <span
-          className="git-integration-option-pill"
-          aria-disabled="true"
-          title={t("gitStatusAutoActionNotEnabled")}
-        >
+        </span>{" "}
+        <Badge tooltip={t("gitStatusAutoActionNotEnabled")}>
           {t("gitStatusAutoRebase")}
-        </span>
-        <span
-          className="git-integration-option-pill"
-          aria-disabled="true"
-          title={t("gitStatusAutoActionNotEnabled")}
-        >
+        </Badge>{" "}
+        <Badge tooltip={t("gitStatusAutoActionNotEnabled")}>
           {t("gitStatusAutoMerge")}
-        </span>
-        <GitIntegrationOptionsHelp t={t} />
-      </div>
+        </Badge>
+      </Banner>
     );
   }
 
   return (
-    <div className="git-integration-options git-integration-options-warning">
-      <span>
-        {t("gitStatusAutoOptionsUnavailable", {
-          reason: getIntegrationUnavailableReason(options.reasons, t),
-        })}
-      </span>
-      <GitIntegrationOptionsHelp t={t} />
-    </div>
+    <Banner
+      tone="warning"
+      role="none"
+      actions={<GitIntegrationOptionsHelp t={t} />}
+    >
+      {t("gitStatusAutoOptionsUnavailable", {
+        reason: getIntegrationUnavailableReason(options.reasons, t),
+      })}
+    </Banner>
   );
 }
 

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import { ReloadBanner, ReloadBannerStack } from "../ReloadBanner";
 import styles from "../ReloadBanner.module.css";
+import bannerStyles from "../ui/Banner.module.css";
 
 function rect(
   left: number,
@@ -181,6 +182,10 @@ describe("ReloadBanner", () => {
     renderBanner({ onDismiss });
 
     expect(screen.getByText("Server changed")).toBeTruthy();
+    // A safe reload is the plain warning.
+    expect(
+      screen.getByRole("status").className.includes(bannerStyles.warning!),
+    ).toBe(true);
     const dismiss = screen.getByRole("button", { name: "Dismiss" });
     expect(dismiss.textContent).toBe("×");
 
@@ -209,11 +214,13 @@ describe("ReloadBanner", () => {
     // the transcript artifact smoke script; `reload-banner-stack` is the
     // geometry hook the placement effect measures.
     const banner = screen.getByRole("status");
-    expect(banner.classList.contains("reload-banner")).toBe(true);
+    expect(banner.hasAttribute("data-reload-banner")).toBe(true);
     expect(banner.className).toContain(styles.banner);
-    expect(banner.className).toContain(styles.warning);
+    // An unsafe backend restart reads as an error, not the plain warning.
+    expect(banner.className.includes(bannerStyles.error!)).toBe(true);
+    expect(banner.className.includes(bannerStyles.warning!)).toBe(false);
 
-    const stack = document.querySelector(".reload-banner-stack");
+    const stack = document.querySelector("[data-reload-banner-stack]");
     expect(stack?.className).toContain(styles.stack);
 
     // The rest of the vocabulary now lives only in the module.
@@ -236,16 +243,16 @@ describe("ReloadBanner", () => {
     const geometry = vi
       .spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockImplementation(function (this: HTMLElement) {
-        if (this.classList.contains("reload-banner-stack"))
+        if (this.hasAttribute("data-reload-banner-stack"))
           return rect(814, 1014, 454, 54);
-        if (this.classList.contains("session-input"))
+        if (this.hasAttribute("data-session-input"))
           return rect(278, 918, 1002, 162);
         if (this.tagName === "BUTTON") return rect(1080, 1032, 100, 36);
         return rect(0, 0, 0, 0);
       });
     const view = (notice: boolean) => (
       <>
-        <footer className="session-input">
+        <footer data-session-input>
           <button type="button">Composer action</button>
         </footer>
         <ReloadBannerStack avoidSessionComposer>
@@ -254,7 +261,7 @@ describe("ReloadBanner", () => {
       </>
     );
     const { rerender, unmount } = render(view(false));
-    document.querySelector<HTMLElement>(".session-input")!.style.height =
+    document.querySelector<HTMLElement>("[data-session-input]")!.style.height =
       "162px";
     await Promise.resolve();
     fireEvent(window, new Event("resize"));
@@ -264,7 +271,7 @@ describe("ReloadBanner", () => {
     fireEvent(window, new Event("resize"));
     expect(
       document
-        .querySelector<HTMLElement>(".reload-banner-stack")
+        .querySelector<HTMLElement>("[data-reload-banner-stack]")
         ?.style.getPropertyValue("--reload-banner-stack-lift"),
     ).toBe("158px");
     unmount();
@@ -276,10 +283,10 @@ describe("ReloadBanner", () => {
     const geometry = vi
       .spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockImplementation(function (this: HTMLElement) {
-        if (this.classList.contains("reload-banner-stack")) {
+        if (this.hasAttribute("data-reload-banner-stack")) {
           return rect(814, 1014, 454, 54);
         }
-        if (this.classList.contains("session-input")) {
+        if (this.hasAttribute("data-session-input")) {
           return rect(278, 918, 1002, 162);
         }
         if (this.tagName === "BUTTON") {
@@ -290,7 +297,7 @@ describe("ReloadBanner", () => {
 
     const { unmount } = render(
       <>
-        <footer className="session-input">
+        <footer data-session-input>
           <button type="button">Composer action</button>
         </footer>
         <ReloadBannerStack avoidSessionComposer>
@@ -299,7 +306,9 @@ describe("ReloadBanner", () => {
       </>,
     );
 
-    const stack = document.querySelector<HTMLElement>(".reload-banner-stack");
+    const stack = document.querySelector<HTMLElement>(
+      "[data-reload-banner-stack]",
+    );
     expect(stack?.style.getPropertyValue("--reload-banner-stack-lift")).toBe(
       "158px",
     );

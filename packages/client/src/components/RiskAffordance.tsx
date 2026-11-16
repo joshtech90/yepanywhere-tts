@@ -1,8 +1,8 @@
 import { type ReactNode, useState } from "react";
 import { useTooltipTrigger } from "../hooks/useTooltipTrigger";
 import styles from "./RiskAffordance.module.css";
-import { ButtonBase } from "./ui/Button";
-import { Modal } from "./ui/Modal";
+import { Button } from "./ui/Button";
+import { Dialog } from "./ui/Dialog";
 
 /**
  * The "what's the risk?" affordance shared by the external-session (amber) and
@@ -13,12 +13,10 @@ import { Modal } from "./ui/Modal";
  */
 export function RiskAffordance({
   label,
-  labelClassName,
   modalTitle,
   explanation,
 }: {
   label: ReactNode;
-  labelClassName?: string;
   modalTitle: ReactNode;
   explanation: ReactNode;
 }) {
@@ -37,10 +35,8 @@ export function RiskAffordance({
       onPointerMove={tooltipTrigger.onPointerMove}
       onPointerLeave={tooltipTrigger.onPointerLeave}
     >
-      <ButtonBase
-        className={`${styles.link}${
-          labelClassName ? ` ${labelClassName}` : ""
-        }`}
+      <Button
+        variant="link"
         aria-haspopup="dialog"
         onFocus={tooltipTrigger.onFocus}
         onBlur={tooltipTrigger.onBlur}
@@ -50,16 +46,20 @@ export function RiskAffordance({
         }}
       >
         {label}
-      </ButtonBase>
+      </Button>
       {showTooltip && (
         <div className={styles.tooltip} role="tooltip">
           {explanation}
         </div>
       )}
       {showModal && (
-        <Modal title={modalTitle} onClose={() => setShowModal(false)}>
+        <Dialog
+          title={modalTitle}
+          size="medium"
+          onClose={() => setShowModal(false)}
+        >
           {explanation}
-        </Modal>
+        </Dialog>
       )}
     </span>
   );

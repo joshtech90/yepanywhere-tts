@@ -1,6 +1,7 @@
 import {
   routeWithDrain,
   drainManagedRoutes,
+  readCollectionsOverRest,
 } from "./support/managed-routes.js";
 import { mkdirSync, writeFileSync, appendFileSync, unlinkSync } from "node:fs";
 import { hostname } from "node:os";
@@ -40,7 +41,7 @@ for (const viewport of [
       page.getByRole("radio", { name: "Last activity", exact: true }),
     ).toBeChecked();
     await page.getByRole("checkbox", { name: /^User/ }).check();
-    const rows = page.locator(".session-list-item--card");
+    const rows = page.locator("[data-session-list-item--card]");
     await expect(rows).toHaveCount(2, { timeout: 30000 });
     await expect(page.locator('[data-search-scanning="true"]')).toHaveCount(0);
     const ownOrder = [
@@ -72,7 +73,7 @@ for (const viewport of [
     const expand = rows.getByRole("button", {
       name: "Show all retained matches in this session",
     });
-    const sessionMenu = rows.locator(".session-list-item__menu");
+    const sessionMenu = rows.locator("[data-session-menu]");
     const a = (await expand.boundingBox())!;
     const b = (await sessionMenu.boundingBox())!;
     expect(
@@ -84,7 +85,7 @@ for (const viewport of [
     await expandedDetail.locator('a[href*="searchMatch="]').first().click();
     const detail = page.getByRole("dialog");
     await expect(detail).toContainText("quasarneedle");
-    await expect(page.locator(".modal-overlay")).toHaveCount(0);
+    await expect(page.locator("[data-modal-overlay]")).toHaveCount(0);
     const link = detail.getByRole("link", { name: "Open turn in session" });
     await expect(link).toBeVisible();
     await recordUiCapture(page, `csv-detail-${viewport.name}`, viewport);
@@ -155,12 +156,44 @@ function saveSession(
   createdFiles.push(file);
 }
 
+/**
+ * Wait until the server catalog lists freshly saved sessions. Tests that
+ * derive fixture rows from a saved seed pass the real response through while
+ * the seed is missing, and a worker shared with many earlier specs can take
+ * well past the default expect timeout to discover a new transcript.
+ */
+async function awaitCatalogSessions(
+  baseURL: string | undefined,
+  ids: string[],
+) {
+  await expect
+    .poll(
+      async () => {
+        const response = await fetch(
+          `${baseURL}/api/sessions?summaryMode=retained&limit=500&includeArchived=true`,
+          { headers: { "X-Yep-Anywhere": "true" } },
+        );
+        if (!response.ok) return [];
+        const data = (await response.json()) as {
+          sessions: Array<{ id: string }>;
+        };
+        return ids.filter((id) =>
+          data.sessions.some((session) => session.id === id),
+        );
+      },
+      { timeout: 30_000 },
+    )
+    .toEqual(ids);
+}
+
 test("All Sessions keeps every typed character with a large title catalog", async ({
   page,
   baseURL,
 }) => {
   test.setTimeout(60000);
   saveSession("typing-fixture", "typing");
+  await awaitCatalogSessions(baseURL, ["typing-fixture"]);
+  await readCollectionsOverRest(page);
   await routeWithDrain(page, /\/api\/sessions\?/, async (route) => {
     // Inflate the page catalog, retaining the sidebar's actual bounded feed.
     if (new URL(route.request().url()).searchParams.get("limit") !== "500")
@@ -246,7 +279,7 @@ test("All Sessions keeps every typed character with a large title catalog", asyn
   expect(
     Math.max(...samples.map((sample) => sample.latency)),
   ).toBeLessThanOrEqual(100);
-  await expect(page.locator(".session-list-item--card")).toHaveCount(1);
+  await expect(page.locator("[data-session-list-item--card]")).toHaveCount(1);
 });
 
 test("All Sessions preserves copying and returns to the query end only when typing", async ({
@@ -369,8 +402,11 @@ for (const viewport of [
     page,
     baseURL,
   }) => {
+    test.setTimeout(60_000);
     saveSession(`provenance-${viewport.name}`, `provenance ${viewport.name}`);
+    await awaitCatalogSessions(baseURL, [`provenance-${viewport.name}`]);
     await page.setViewportSize(viewport);
+    await readCollectionsOverRest(page);
     await routeWithDrain(page, /\/api\/sessions\?/, async (route) => {
       const response = await route.fetch();
       const data = await response.json();
@@ -483,7 +519,7 @@ for (const viewport of [
         exact: true,
       });
       await limit.fill("1");
-      const rows = page.locator(".session-list-item--card");
+      const rows = page.locator("[data-session-list-item--card]");
       await expect(rows).toHaveCount(6, { timeout: 30000 });
       await expect(page.locator('[data-search-scanning="true"]')).toHaveCount(
         0,
@@ -574,29 +610,12 @@ for (const viewport of [
       `coverage-error-${viewport.name}`,
       "A transcript with a malformed record",
     );
-    const fixtureIds = [
+    await awaitCatalogSessions(baseURL, [
       `coverage-valid-${viewport.name}`,
       `coverage-error-${viewport.name}`,
-    ];
-    await expect
-      .poll(
-        async () => {
-          const response = await fetch(
-            `${baseURL}/api/sessions?summaryMode=retained&limit=500&includeArchived=true`,
-            { headers: { "X-Yep-Anywhere": "true" } },
-          );
-          if (!response.ok) return [];
-          const data = (await response.json()) as {
-            sessions: Array<{ id: string }>;
-          };
-          return fixtureIds.filter((id) =>
-            data.sessions.some((session) => session.id === id),
-          );
-        },
-        { timeout: 30_000 },
-      )
-      .toEqual(fixtureIds);
+    ]);
     const requested = new Set<string>();
+    await readCollectionsOverRest(page);
     await routeWithDrain(page, /\/api\/sessions\?/, async (route) => {
       // The sidebar's starred feed uses this endpoint too. It has no seed
       // session and does not need the injected unsupported-provider row.
@@ -665,7 +684,7 @@ for (const viewport of [
       .getByRole("searchbox", { name: "Search sessions..." })
       .fill("quasarneedle");
     await page.getByRole("checkbox", { name: /^User/ }).check();
-    const rows = page.locator(".session-list-item--card");
+    const rows = page.locator("[data-session-list-item--card]");
     await expect(rows).toHaveCount(2);
     const diagnostic = page.locator("q", {
       hasText: "A transcript with a malformed record",
@@ -828,7 +847,7 @@ for (const viewport of [
         .getByRole("textbox", { name: "Turns/session", exact: true })
         .fill("1");
       const row = page
-        .locator(".session-list-item--card")
+        .locator("[data-session-list-item--card]")
         .filter({ hasText: "Search fixture expanded" });
       await expect(row.getByRole("button", { name: "Match menu" })).toHaveCount(
         2,
@@ -896,7 +915,7 @@ for (const viewport of [
       await expect(mark).toHaveText("quasarneedle");
       await expect(mark).toBeInViewport();
       const position = await mark.evaluate((element) => {
-        const scroller = element.closest(".modal-content")!;
+        const scroller = element.closest("[data-modal-content]")!;
         return (
           element.getBoundingClientRect().top -
           scroller.getBoundingClientRect().top -
@@ -982,7 +1001,7 @@ for (const viewport of [
       await search.fill("quasarneedle");
       // An earlier viewport case can leave another matching transcript on
       // this worker. Measure the fixture this case owns after turn search too.
-      const row = page.locator(".session-list-item--card").filter({
+      const row = page.locator("[data-session-list-item--card]").filter({
         has: page.locator(`a[href*="${id}"]`),
       });
       await expect(row).toHaveCount(1, { timeout: 30000 });
@@ -1091,7 +1110,7 @@ for (const viewport of [
       page.getByText("No sessions found", { exact: true }),
     ).toBeVisible();
     expect(requests).toHaveLength(0);
-    const rows = page.locator(".session-list-item--card");
+    const rows = page.locator("[data-session-list-item--card]");
     await search.press("Control+r");
     await expect(page.getByRole("checkbox", { name: /^User/ })).toBeChecked();
     await expect(assistant).not.toBeChecked();

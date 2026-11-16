@@ -85,7 +85,10 @@ exact project lookup, matching sessions beyond page one, summary inspection
 among similar titles, incomplete-catalog absence, unsupported writes/remote
 routing and an ordinary arithmetic task that should need no API calls. Graders
 compare domain identifiers and requested results with fixture truth and real
-successful API evidence, not exact prose or a prescribed call sequence. The
+successful API evidence, not exact prose or a prescribed call sequence. Request
+evidence is matched by what was asked for, not how the URL was typed: a
+trailing slash, the `self` alias, percent-encoding and query order do not
+change a grade. The
 control case fails if it makes unnecessary API calls. `conversation` extracts an exact
 artifact from prose amid native tool noise; `evidence` checks that unknown activity
 and incomplete coverage are not reported as successful completion. `follow` waits
@@ -107,7 +110,7 @@ The plan records `peerIdentityService` separately so this is not mistaken for ma
 enrollment or a live external-provider qualification. Profile keys and credentials
 stay in owned fixture storage and are removed on cleanup.
 
-`--peer-relay` currently supports `workflow` only. It wraps the scripted native
+`--peer-relay` supports `workflow`, `target_contract`, `approval` and `controls`. It wraps the scripted native
 work in real independent peer managers, private profile storage, protected SRP
 and an owned ephemeral relay. The model receives its source launch connection,
 discovers the other authorized host and uses server-addressed HTTP there. The
@@ -148,3 +151,131 @@ This is local, explicitly requested account use, not a CI auth distribution
 workflow. Reviewers continue to be launched through YA; the eval process runs
 directly so fixture env and personal context can be controlled without adding
 an arbitrary-environment injection API to YA.
+
+The `operation` case discovers `createSession` and reads its focused schema;
+fetching the full schema fails that case. `selection` discovers a named AAR
+pool, creates a worker with model/high effort/Fast tier/plan mode, and verifies
+its selected account and last-applied settings through session detail. The
+fixture derives readback from submitted controls; the grader rejects missing
+or wrong HTTP readback even when final prose claims success. Its scripted
+worker is API-contract evidence, not a live AAR/provider qualification.
+
+For a comparable baseline and candidate, run the same model, CLI, variants,
+cases and samples, then compare the complete reports:
+
+```sh
+pnpm exec tsx --conditions source scripts/agent-api-eval/compare.ts \
+  /tmp/ya-v0-before/results.json /tmp/ya-v0-after/results.json
+```
+
+The comparison refuses incomplete or duplicate matrices and reports each case
+as well as totals. It exits nonzero for task failures or increased aggregate
+requests, errors or fetched documentation bytes, both overall and per case. Path/response bytes,
+full-schema reads, command counts and duration remain visible. These small
+paired trials are descriptive; call/byte costs need no timing benchmark, and
+no host-latency or statistical model-quality claim follows from elapsed time.
+New tasks require their own successful trials rather than being treated as
+zero-cost unsupported baseline tasks. Normal CI verifies the new graders,
+private-HTTP workflow, focused-schema size advantage and help size against the
+observed 15,884-byte pre-change baseline, without calling models.
+
+The [2026-11-12 evidence](../../topics/http-api-v0.md#measured-discovery-evidence--2026-11-12)
+records a complete 10-trial comparison: 10/10 successes before and after,
+61→54 requests and 111,188→72,138 fetched documentation bytes, with all per-case
+checks passing. It also records rejected intermediate candidates, full-schema
+and bootstrap growth, new-task qualification, and the limit on timing claims.
+
+## Target-owned API and control tasks
+
+[Plan 192](../../docs/tactical/192-v0-session-control-and-peer-contracts.md)
+adds three tasks to the same protected peer fixture. `target_contract` discovers
+an operation absent from the access table, reads the target's focused schema,
+submits its required query and returns the unfamiliar result. `approval` inspects
+and answers a blocked worker, then reads its post-approval artifact. `controls`
+interrupts one worker, stops another and verifies both receipts and session
+states. Graders require actual domain effects and reject unsupported prose.
+These workers remain scripted; native CLI and cross-host qualification are
+separate from documentation usability.
+
+```sh
+pnpm exec tsx --conditions source scripts/agent-api-eval/run.ts --run \
+  --peer-relay --variants help --cases target_contract,approval,controls \
+  --max-trials 3
+```
+
+Mutation bodies now use a plain `prompt` string and `Idempotency-Key` headers.
+The grader and fixture follow the target's operation names and schemas, while
+receipt admission/delivery remains separate from task completion. Normal CI
+covers the new task effects, grader rejection and both incoming/outgoing grant
+ceilings without calling models.
+
+The November 13 candidate passes all eight tasks: four existing local tasks,
+one existing peer workflow and these three new peer tasks, with zero HTTP
+errors. The paired comparison intentionally does not pass its byte/call
+non-increase gates: local requests are 35→34 while documentation bytes are
+71,176→76,212; peer requests are 15→18 and bytes 12,023→49,985. The peer trace
+adds target help and two focused target schemas as intended. The expanded
+guide alone is about 1.2 KiB larger. Target-addressed documentation was initially
+missing from the aggregate byte counter; comparison now derives this metric
+from the retained HTTP traces, including those historical reports. This qualifies behavior, not an efficiency improvement
+or a statistical model comparison; inspect comparison results separately from
+per-task success.
+
+## A real agent on a real mesh
+
+The fixture trials above supply a scripted server and judge an isolated model.
+`pnpm mesh:testbed agent`
+([local development](../../docs/development/local-development.md#local-mesh-testbed))
+is the complementary check: real paired servers, a real routed provider on
+both ends, the shipped bootstrap as the agent's only instruction, and a grade
+read from the target server's records. It answers whether an agent that knows
+nothing but its goal can find another server, start work there, verify it and
+stop it. It spends account quota and is run by hand, like the trials here.
+
+On 2026-11-13, on three standalone macOS profiles, Claude Haiku 5.5 driving
+and working passed all seven checks in three of three runs, in about 35
+seconds each, and Codex `gpt-6-luna` passed all seven in one run of 90 seconds.
+Three runs establish that the path works, not a success rate.
+
+## Native cross-host control qualification
+
+`test/native-provider/native-v0-peer-target.test.ts` is an explicit opt-in
+fixture, skipped in normal CI. It launches the pinned real Codex executable
+against the scripted local model, then serves the protected peer API. On the
+owned target, set `YEP_NATIVE_PEER_SOURCE_ID` to a fresh UUID and
+`YEP_NATIVE_PEER_TARGET_READY` to an owner-private temporary JSON path, then run:
+
+```sh
+pnpm --filter @yep-anywhere/server test \
+  test/native-provider/native-v0-peer-target.test.ts --maxWorkers=1
+```
+
+The ready file contains this short-lived fixture's invitation, server id and
+listener port. Orchestrate target startup, private file transfer and a temporary
+listener-port firewall rule through the machine testbed's common CLI. On the
+controller, use the copied ready file and the target's reachable address:
+
+```sh
+pnpm exec tsx --conditions source \
+  scripts/agent-api-eval/native-peer-control.ts READY_JSON \
+  ws://TARGET:PORT/peer/ws
+```
+
+The controller uses an isolated private agent API and a new peer manager; it
+checks real approval, native output, prompt retry, interrupt, verified stop,
+retained metadata, unknown response fields and delayed provenance. It prints
+only outcome booleans and call count. It uses no provider sign-in or configured
+user peer. Signal target teardown by creating `READY_JSON.done` on the target
+within its declared 120-second external-controller window; remove the fixture
+JSON, temporary firewall rule and profile afterward and restore testbed power
+state. This is manual native qualification, separate from real-model evals.
+
+The November 13 macOS→native Windows ARM64 Node 24.22.1 run passed all these
+checks (31 HTTP calls); the retained controller then passes the same scenario
+with 25 calls. Native Windows Codex also passed the local approval/
+interrupt/stop case in 17.67 seconds after an earlier 20-second run reached its
+first model request but exhausted that guard; its retained 60-second Windows
+budget is three times that observed lower bound. Native macOS Claude/Codex
+controls and the four existing app creation/replacement combinations passed.
+These focused results do not establish a passing whole-repository Windows
+suite; [the baseline limitation remains](../../gaps/windows-validation-baseline.md).

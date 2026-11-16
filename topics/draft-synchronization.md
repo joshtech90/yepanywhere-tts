@@ -92,6 +92,11 @@ Independent question answers/comments merge separately. A surviving comment
 keeps its anchor even when another device removed that comment. Attachment sets
 union new IDs and respect removal of a base attachment.
 
+Changing a composer's source or draft key hands off its storage identity and
+hydrates the destination before the committed editor can accept input. The
+first edit belongs to the destination; delayed key hydration must neither
+write it under the prior key nor erase it.
+
 A remote change never replaces a focused input, its selection, or IME input.
 Attachment-only reconciliation may apply while focused when the resulting
 text fields are identical to the local fields. It preserves the input and
@@ -329,7 +334,15 @@ presence and do not trigger reads of untouched editors. A full refresh requested
 during partial catch-up waits for a coalesced full scan instead of treating the
 partial result as a complete index.
 
-Startup, foreground/focus and reconnect read the full index. A watch cursor
+Startup, foreground/focus and reconnect read the full index, and so does each
+new wildcard (`…:*`) subscription. A wildcard subscriber must therefore keep
+one subscription for as long as its key is unchanged: React's
+`useSyncExternalStore` resubscribes whenever its `subscribe` function changes,
+so an inline function made every render of an open session (one per
+transcript append) read all index pages. Measured 2026-11-10 on the
+maintainer's profile (327 drafts, four pages): about 800 index requests per
+three minutes from one tab before `useQuestionRecords` kept its subscription,
+none after. A watch cursor
 whose last successful refresh was at least a day ago, or whose counter is ahead
 of a reset account, also rebuilds from the full index. This keeps recovery
 independent of expired clear records. Earlier draft-sync implementations that

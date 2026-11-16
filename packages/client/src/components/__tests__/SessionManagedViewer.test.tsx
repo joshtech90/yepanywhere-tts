@@ -147,7 +147,7 @@ describe("SessionViewerTranscriptGate", () => {
     const renderWeight = () =>
       Number(
         container
-          .querySelector(".message-list")
+          .querySelector("[data-message-list]")
           ?.getAttribute("data-transcript-render-weight") ?? 0,
       );
     const coveredWeight = renderWeight();
@@ -197,7 +197,7 @@ describe("SessionViewerTranscriptGate", () => {
     const renderWeight = () =>
       Number(
         container
-          .querySelector(".message-list")
+          .querySelector("[data-message-list]")
           ?.getAttribute("data-transcript-render-weight") ?? 0,
       );
     const initialWeight = renderWeight();
@@ -278,7 +278,7 @@ describe("managed panel placement", () => {
     presentPanel();
 
     expect(
-      screen.getByTestId("panel-content").closest(".modal"),
+      screen.getByTestId("panel-content").closest("[data-modal-frame]"),
     ).not.toBeNull();
     expect(target.querySelector("[data-testid='panel-content']")).toBeNull();
     target.remove();
@@ -294,7 +294,9 @@ describe("managed panel placement", () => {
     expect(
       target.querySelector("[data-testid='panel-content']"),
     ).not.toBeNull();
-    expect(screen.getByTestId("panel-content").closest(".modal")).toBeNull();
+    expect(
+      screen.getByTestId("panel-content").closest("[data-modal-frame]"),
+    ).toBeNull();
     expect(
       screen.getByRole("dialog", { name: "Edit" }).hasAttribute("hidden"),
     ).toBe(false);

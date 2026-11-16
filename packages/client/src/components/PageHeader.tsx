@@ -1,3 +1,4 @@
+import launcherStyles from "./SidebarLauncher.module.css";
 import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
 import { useNavigationLayout } from "../layouts";
@@ -55,15 +56,24 @@ export function PageHeader({
   const hasLeadingControl = Boolean((showBack && onBack) || handleToggle);
 
   return (
-    <header className="session-header">
+    <header
+      className={`${sessionHeaderStyles["session-header"]}`}
+      data-session-header
+    >
       <div
-        className={`session-header-inner ${sessionHeaderStyles.row}${hasLeadingControl ? "" : ` ${sessionHeaderStyles.noLeadingControl}`}`}
+        className={`${sessionHeaderStyles["session-header-inner"]} ${sessionHeaderStyles.row}${hasLeadingControl ? "" : ` ${sessionHeaderStyles.noLeadingControl}`}`}
+        data-session-header-inner
       >
-        <div className="session-header-left">
+        <div
+          className={`${sessionHeaderStyles["session-header-left"]}`}
+          data-session-header-left
+        >
           {showBack && onBack ? (
             <IconButton
               label={t("actionBack")}
-              className="sidebar-toggle"
+              className={launcherStyles.sidebarToggle}
+              data-sidebar-toggle
+              size="large"
               onClick={onBack}
             >
               <BackIcon />
@@ -81,7 +91,8 @@ export function PageHeader({
           {titleElement ??
             (onTitleClick ? (
               <ButtonBase
-                className="session-title"
+                className={`${sessionHeaderStyles["session-title"]}`}
+                data-session-title
                 onClick={onTitleClick}
                 title={title.length > 60 ? title : undefined}
               >
@@ -89,14 +100,22 @@ export function PageHeader({
               </ButtonBase>
             ) : (
               <span
-                className="session-title"
+                className={`${sessionHeaderStyles["session-title"]}`}
+                data-session-title
                 title={title.length > 60 ? title : undefined}
               >
                 {truncateText(title)}
               </span>
             ))}
         </div>
-        {actions && <div className="session-header-actions">{actions}</div>}
+        {actions && (
+          <div
+            className={`${sessionHeaderStyles["session-header-actions"]}`}
+            data-session-header-actions
+          >
+            {actions}
+          </div>
+        )}
       </div>
     </header>
   );

@@ -1,5 +1,3 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import type { Page, WebSocket as PlaywrightWebSocket } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
 import { recordUiCapture } from "./support/ui-capture.js";
@@ -132,10 +130,10 @@ async function enrollRelayHostThroughUi(
   await expect(page.getByTestId("relay-login-form")).toBeVisible();
   await page.getByTestId("relay-username-input").fill(host.username);
   await page.getByTestId("srp-password-input").fill(host.password);
-  await page.locator(".login-advanced-toggle").click();
+  await page.getByRole("button", { name: /advanced/i }).click();
   await page.getByTestId("custom-relay-url-input").fill(relayUrl);
   await page.getByTestId("login-button").click();
-  await expect(page.locator(".sidebar")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("[data-sidebar]")).toBeVisible({ timeout: 15_000 });
 }
 
 async function makeLastHostOffline(page: Page): Promise<void> {
@@ -352,7 +350,7 @@ test("separate host tabs retain scoped credentials through reconnect and restora
   const other = await context.newPage();
   try {
     await page.goto(routes[0]!);
-    await expect(page.locator(".sidebar")).toBeVisible();
+    await expect(page.locator("[data-sidebar]")).toBeVisible();
     const lifecycle =
       context.browser()?.browserType().name() === "chromium"
         ? await context.newCDPSession(page)
@@ -360,7 +358,7 @@ test("separate host tabs retain scoped credentials through reconnect and restora
     await lifecycle?.send("Page.setWebLifecycleState", { state: "frozen" });
     try {
       await other.goto(routes[1]!);
-      await expect(other.locator(".sidebar")).toBeVisible();
+      await expect(other.locator("[data-sidebar]")).toBeVisible();
     } finally {
       await lifecycle?.send("Page.setWebLifecycleState", { state: "active" });
       await lifecycle?.detach();
@@ -466,16 +464,16 @@ test("separate host tabs retain scoped credentials through reconnect and restora
       );
     }, alpha.username);
     await page.reload();
-    await expect(page.locator(".sidebar")).toBeVisible();
+    await expect(page.locator("[data-sidebar]")).toBeVisible();
     await expect(page).toHaveURL(routes[0]!);
     await other.reload();
-    await expect(other.locator(".sidebar")).toBeVisible();
+    await expect(other.locator("[data-sidebar]")).toBeVisible();
     await expect(other).toHaveURL(routes[1]!);
     for (const [tab, host] of [
       [page, alpha],
       [other, beta],
     ] as const) {
-      await expect(tab.locator(".session-page")).toContainText(
+      await expect(tab.locator("[data-session-page]")).toContainText(
         host.expectedFixtureText,
       );
       await expect(tab.getByTestId("relay-login-form")).toHaveCount(0);
@@ -488,7 +486,7 @@ test("separate host tabs retain scoped credentials through reconnect and restora
         ["phone", { width: 375, height: 812 }],
       ] as const) {
         await page.setViewportSize(viewport);
-        await expect(page.locator(".session-page")).toContainText(
+        await expect(page.locator("[data-session-page]")).toContainText(
           alpha.expectedFixtureText,
         );
         await recordUiCapture(page, `credential-restoration-${name}`, viewport);
@@ -586,12 +584,12 @@ for (const transportMode of ["legacy", "mux"] as const) {
 
       for (const host of harness.hosts) {
         await enrollRelayHostThroughUi(page, host, harness.relayUrl);
-        await page.locator(".sidebar-switch-host").click();
+        await page.locator("[data-sidebar-switch-host]").click();
         await expect(page.getByTestId("saved-hosts-list")).toBeVisible();
         await harness.waitForWaitingHosts();
       }
 
-      await expect(page.locator(".host-picker-item")).toHaveCount(3);
+      await expect(page.locator("[data-saved-host]")).toHaveCount(3);
       await configureMonitorTransport(page, harness.relayUrl, transportMode);
       await page.goto(`${remoteClientURL}/-/monitor`);
       await expect(page.getByTestId("multi-host-connected-count")).toHaveText(
@@ -633,26 +631,28 @@ for (const transportMode of ["legacy", "mux"] as const) {
         .poll(() => relaySockets.length, { timeout: 10_000 })
         .toBe(transportMode === "mux" ? 1 : 3);
       for (const host of harness.hosts) {
-        const card = page.locator(
-          `.multi-host-card[data-host-name="${host.displayName}"]`,
-        );
+        const card = page.locator(`[data-host-name="${host.displayName}"]`);
         await expect(card).toHaveAttribute("data-host-state", "connected");
         await expect(card).toContainText(host.expectedFixtureText);
       }
 
-      const captureDir = process.env.YEP_E2E_UI_CAPTURE_DIR;
-      if (captureDir && transportMode === "mux") {
-        mkdirSync(captureDir, { recursive: true });
-        await page.setViewportSize({ width: 1920, height: 1080 });
-        await page.screenshot({
-          animations: "disabled",
-          path: join(captureDir, "multi-host-monitor-desktop.png"),
-        });
-        await page.setViewportSize({ width: 375, height: 812 });
-        await page.screenshot({
-          animations: "disabled",
-          path: join(captureDir, "multi-host-monitor-phone.png"),
-        });
+      if (process.env.YEP_E2E_UI_CAPTURE_DIR && transportMode === "mux") {
+        for (const theme of ["dark", "light"]) {
+          await page.evaluate((value) => {
+            document.documentElement.dataset.theme = value;
+          }, theme);
+          for (const viewport of [
+            { width: 1000, height: 600 },
+            { width: 375, height: 812 },
+          ]) {
+            await page.setViewportSize(viewport);
+            await recordUiCapture(
+              page,
+              `multi-host-monitor-${theme}-${viewport.width}`,
+              viewport,
+            );
+          }
+        }
       }
 
       const closedSockets = relaySockets.map(
@@ -682,18 +682,14 @@ for (const transportMode of ["legacy", "mux"] as const) {
       );
 
       const offlineCard = page.locator(
-        `.multi-host-card[data-host-name="${
-          harness.hosts.at(-1)?.displayName ?? ""
-        }"]`,
+        `[data-host-name="${harness.hosts.at(-1)?.displayName ?? ""}"]`,
       );
       await expect(offlineCard).toHaveAttribute("data-host-state", "offline");
       await expect(
         offlineCard.getByRole("button", { name: "Retry" }),
       ).toBeVisible();
       for (const host of harness.hosts.slice(0, 2)) {
-        const card = page.locator(
-          `.multi-host-card[data-host-name="${host.displayName}"]`,
-        );
+        const card = page.locator(`[data-host-name="${host.displayName}"]`);
         await expect(card).toHaveAttribute("data-host-state", "connected");
         await expect(card).toContainText(host.expectedFixtureText);
       }
@@ -732,9 +728,7 @@ for (const transportMode of ["legacy", "mux"] as const) {
       );
 
       const staleCard = page.locator(
-        `.multi-host-card[data-host-name="${
-          harness.hosts.at(-1)?.displayName ?? ""
-        }"]`,
+        `[data-host-name="${harness.hosts.at(-1)?.displayName ?? ""}"]`,
       );
       await expect(staleCard).toHaveAttribute(
         "data-host-state",
@@ -745,9 +739,7 @@ for (const transportMode of ["legacy", "mux"] as const) {
       ).toBeVisible();
       for (const host of harness.hosts.slice(0, 2)) {
         await expect(
-          page.locator(
-            `.multi-host-card[data-host-name="${host.displayName}"]`,
-          ),
+          page.locator(`[data-host-name="${host.displayName}"]`),
         ).toHaveAttribute("data-host-state", "connected");
       }
     });
@@ -774,14 +766,10 @@ for (const transportMode of ["legacy", "mux"] as const) {
         { timeout: 30_000 },
       );
       await expect(
-        page.locator(
-          `.multi-host-card[data-host-name="${disconnectedHost.displayName}"]`,
-        ),
+        page.locator(`[data-host-name="${disconnectedHost.displayName}"]`),
       ).toHaveAttribute("data-host-state", /^(connecting|offline)$/);
       for (const host of harness.hosts.slice(0, 2)) {
-        const card = page.locator(
-          `.multi-host-card[data-host-name="${host.displayName}"]`,
-        );
+        const card = page.locator(`[data-host-name="${host.displayName}"]`);
         await expect(card).toHaveAttribute("data-host-state", "connected");
         await expect(card).toContainText(host.expectedFixtureText);
       }

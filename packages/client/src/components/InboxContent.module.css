@@ -1,23 +1,13 @@
 /*
  * Inbox content: the page root, the tier sections and their headers, and
- * the pending Project Queue rows. Rules move here from `styles/index.css`
+ * the pending Project Queue rows. The collection owner shares these rules
  * in their original cascade order, since the tier and empty-section
  * headers override the shared header rule by descendant specificity and
  * the mobile header override depends on source order.
  *
- * Several inbox-prefixed literals stay global and unchanged because other
- * components produce them:
- *   - `inbox-toolbar` is also rendered by `pages/ProjectsPage.tsx` and
- *     `pages/GlobalSessionsPage.tsx`.
- *   - `inbox-empty` is also rendered by both of those pages.
- *   - `inbox-item-badge` is produced by `SessionListItem.tsx`, which
- *     composes it with the `customBadge.className` supplied from here.
- * The refresh button is a shared Button; its spinning icon is
- * `.refreshSpinner`, the one refresh button in the app that spins.
- *
- * `spin` is duplicated here rather than shared: CSS Modules scopes
- * keyframe names, and the global copies in `styles/index.css` still
- * animate `.system-message-icon.spinning`.
+ * Shared collection toolbar and empty-state geometry belongs to
+ * CollectionLayout.module.css; its data boundaries also serve the other lists.
+ * The refresh button is a shared Button showing its `busy` spinner.
  */
 
 .root {
@@ -26,19 +16,6 @@
 
 .toolbar {
   flex-wrap: wrap;
-}
-
-.refreshSpinner {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .tiers {
@@ -113,7 +90,7 @@
   color: var(--text-primary);
   background: var(--bg-secondary);
   border-left: 3px solid var(--accent-color);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 
 .reviewOutcomeHead,
@@ -147,15 +124,6 @@
   font-size: var(--font-size-sm);
 }
 
-.sectionCount {
-  font-size: var(--font-size-xs);
-  font-weight: 500;
-  padding: 0.125rem 0.5rem;
-  border-radius: 999px;
-  background: var(--bg-secondary);
-  color: inherit;
-}
-
 /* Inherits the tier color, like the count. */
 .sectionHelp {
   color: inherit;
@@ -168,8 +136,8 @@
   height: 16px;
   place-items: center;
   border: 1px solid currentColor;
-  border-radius: 50%;
-  font-size: 11px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-caption);
   font-weight: 700;
   line-height: 1;
 }
@@ -194,17 +162,6 @@
   font-style: italic;
 }
 
-/* Inbox badges (used by SessionListItem customBadge) */
-.badgeApproval {
-  background: rgba(77, 170, 252, 0.15);
-  color: var(--attention-color);
-}
-
-.badgeQuestion {
-  background: rgba(77, 170, 252, 0.15);
-  color: var(--attention-color);
-}
-
 .queueItem {
   list-style: none;
 }
@@ -213,7 +170,7 @@
   display: block;
   padding: 0.85rem 1rem;
   border-left: 3px solid var(--project-queue-action-bg);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-secondary);
   color: inherit;
   text-decoration: none;
@@ -247,15 +204,8 @@
   -webkit-line-clamp: 2;
 }
 
-.queueItemTargetBadge {
+.queueItemBadge {
   flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  white-space: nowrap;
 }
 
 .queueItemPreview {
@@ -297,7 +247,7 @@
   padding: 0.125rem 0.375rem;
   border: 1px solid
     color-mix(in srgb, var(--project-queue-action-bg) 32%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--project-queue-action-bg);
   font-size: var(--font-size-xs);
   font-weight: 600;

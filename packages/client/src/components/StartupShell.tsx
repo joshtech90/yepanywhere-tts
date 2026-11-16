@@ -7,6 +7,7 @@ import {
 } from "../cockpit/core/appearance";
 import { isCockpitPathname } from "../cockpit/core/navigation";
 import styles from "./StartupShell.module.css";
+import { Spinner } from "./ui/Spinner";
 
 export type StartupPhase = "module" | "connection";
 
@@ -71,7 +72,7 @@ export function StartupShell({
 
   const status = (
     <div className={styles.status} role="status" aria-live="polite">
-      <span className={styles.spinner} aria-hidden="true" />
+      <Spinner size="large" />
       <span>{children}</span>
     </div>
   );

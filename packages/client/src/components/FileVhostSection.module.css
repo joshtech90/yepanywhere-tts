@@ -9,19 +9,13 @@
 }
 
 .heading {
-  font-size: 0.83rem;
+  font-size: var(--font-size-base);
 }
 
 .description {
   color: var(--text-secondary);
-  font-size: 0.8rem;
+  font-size: var(--font-size-base);
   line-height: 1.4;
-  margin: 0;
-}
-
-.error {
-  color: var(--error-color);
-  font-size: 0.8rem;
   margin: 0;
 }
 
@@ -36,11 +30,11 @@
   align-items: center;
   background: var(--bg-input);
   border: 1px solid var(--border-color);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   display: flex;
   flex: 1 1 100%;
   font-family: var(--font-mono);
-  font-size: 0.82rem;
+  font-size: var(--font-size-base);
   min-width: 0;
   padding: 0 8px;
 }
@@ -76,7 +70,7 @@
 .access {
   align-items: center;
   display: inline-flex;
-  font-size: 0.8rem;
+  font-size: var(--font-size-base);
   gap: 6px;
 }
 
@@ -86,17 +80,6 @@
 
 .replace {
   flex: 1 1 100%;
-}
-
-/* Finger-sized controls on touch. Compounded past the small field's (0,2,0)
-   and the checkbox's (0,1,1) coarse-pointer heights so these win in any
-   stylesheet order. */
-@media (pointer: coarse) {
-  .form .access .accessControl,
-  .form .access .passwordInput,
-  .form .replace {
-    min-height: 44px;
-  }
 }
 
 .submit {
@@ -115,7 +98,7 @@
   align-items: center;
   background: var(--bg-code);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   display: flex;
   flex-wrap: wrap;
   gap: 6px 8px;
@@ -126,26 +109,13 @@
   color: var(--accent-color);
   flex: 1 1 12rem;
   font-family: var(--font-mono);
-  font-size: 0.82rem;
+  font-size: var(--font-size-base);
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.badge {
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  color: var(--text-secondary);
+.siteAccess {
   flex: 0 0 auto;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  padding: 2px 7px;
-  text-transform: uppercase;
-}
-
-.public {
-  border-color: color-mix(in srgb, var(--app-yep-green) 55%, transparent);
-  color: var(--app-yep-green);
 }
 
 .actions {

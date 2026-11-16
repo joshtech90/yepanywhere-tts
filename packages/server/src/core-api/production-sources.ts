@@ -1,24 +1,118 @@
+import { inspectApiSession } from "./session-inspection.js";
+import { describeBackingStore } from "./backing-store.js";
+import { selectionSchema } from "./selection-contracts.js";
+import type { Supervisor } from "../supervisor/Supervisor.js";
+import type { AgentAuthRouter } from "../services/AgentAuthRouter.js";
+import { CoreApiError } from "./errors.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import { isDetachedProjectPath } from "../projects/paths.js";
 import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
 import type { SessionMetadataService } from "../metadata/SessionMetadataService.js";
+import { projectCatalogIdentityResult } from "../sessions/catalog-identity.js";
+import type { SessionCatalogRow } from "../sessions/catalog-types.js";
 import type { AgentProvider } from "../sdk/providers/types.js";
 import type { ApiSession } from "./contracts.js";
 import type { CoreApiSources } from "./service.js";
+import { apiSessionState } from "./owned-sessions.js";
+import { isClaudeProviderName } from "@yep-anywhere/shared";
 
 export function productionApiSources(deps: {
   scanner: Pick<ProjectScanner, "readRetainedProjects">;
   sessions: Pick<RetainedSessionCollections, "read">;
-  metadata?: Pick<SessionMetadataService, "getMetadata">;
-  providers: () => readonly Pick<
+  /**
+   * With its identity store, native catalog rows are projected to public ids.
+   * Without one a row keeps its native id, which is the public id only for a
+   * session YA did not create.
+   */
+  metadata?: Pick<SessionMetadataService, "getMetadata"> &
+    Partial<Pick<SessionMetadataService, "identities" | "getMetadataBatch">>;
+  providers: () => readonly (Pick<
     AgentProvider,
     "name" | "displayName" | "supportsSteering" | "supportsPermissionMode"
-  >[];
-  sessionState: (sessionId: string) => string;
+  > &
+    Partial<
+      Pick<AgentProvider, "getAvailableModels" | "getModelCatalogStatus">
+    >)[];
+  supervisor?: Pick<Supervisor, "getProcessForSession">;
+  agentAuthRouter?: Pick<AgentAuthRouter, "selection">;
+  sessionState?: (sessionId: string) => string;
   ownedSessions?: () => readonly import("./contracts.js").ApiSession[];
   hiddenProjects: NonNullable<CoreApiSources["hiddenProjects"]>;
 }): CoreApiSources {
   return {
+    async backingStore(session, signal) {
+      signal?.throwIfAborted();
+      const result = await deps.sessions.read();
+      const projection = await projectCatalogIdentityResult(
+        result.rows,
+        deps.metadata?.identities
+          ? (deps.metadata as SessionMetadataService)
+          : undefined,
+        signal,
+      );
+      signal?.throwIfAborted();
+      const candidates = projection.rows.filter(
+        (row) => row.sessionId === session.id,
+      );
+      const candidate = candidates.length === 1 ? candidates[0] : undefined;
+      const row =
+        candidate &&
+        (deps.metadata?.getMetadata(session.id)?.workingProjectId ??
+          candidate.projectId) === session.projectId
+          ? candidate
+          : undefined;
+      return describeBackingStore(session.provider, row);
+    },
+    sessionInspection: (id) =>
+      inspectApiSession(id, deps.metadata, deps.supervisor),
+    async selection(query, signal) {
+      signal?.throwIfAborted();
+      const provider = deps
+        .providers()
+        .find((item) => item.name === query.provider);
+      if (!provider)
+        throw new CoreApiError(
+          "invalid_request",
+          "Provider is not configured on this server",
+          400,
+        );
+      const observedAt = new Date().toISOString();
+      if (query.routing === "direct") {
+        const models = await provider.getAvailableModels?.();
+        signal?.throwIfAborted();
+        return selectionSchema.parse({
+          provider: query.provider,
+          routing: "direct",
+          available: !!models,
+          observedAt,
+          models,
+          catalog: provider.getModelCatalogStatus?.(),
+        });
+      }
+      const overview = await deps.agentAuthRouter?.selection(query.provider);
+      signal?.throwIfAborted();
+      return selectionSchema.parse({
+        provider: query.provider,
+        routing: "aar",
+        available: !!overview,
+        observedAt,
+        ...(overview
+          ? {
+              observedAt: overview.observedAt,
+              serviceTierSelection: overview.serviceTierSelection,
+              policies:
+                overview.policies ??
+                overview.supportedPolicies?.map((id) => ({ id, label: id })),
+              pools: overview.pools.filter(
+                (pool) => pool.provider === query.provider,
+              ),
+              accounts: overview.accounts.filter(
+                (account) => account.provider === query.provider,
+              ),
+            }
+          : {}),
+      });
+    },
     async projects(signal) {
       signal?.throwIfAborted();
       const result = await deps.scanner.readRetainedProjects();
@@ -34,16 +128,27 @@ export function productionApiSources(deps: {
       signal?.throwIfAborted();
       const result = await deps.sessions.read();
       signal?.throwIfAborted();
+      // Catalog rows are keyed by native id. A session keeps the YA id its
+      // creator was given once its process ends only through this projection.
+      const projection = deps.metadata?.identities
+        ? await projectCatalogIdentityResult(
+            result.rows,
+            deps.metadata as SessionMetadataService,
+            signal,
+          )
+        : { rows: result.rows, conflicts: [] };
+      const rows: readonly Readonly<SessionCatalogRow>[] = projection.rows;
+      signal?.throwIfAborted();
       // Session-wide metadata cannot disambiguate conflicting native sources.
       const sourceProjects = new Map<string, string>();
       const ambiguous = new Set<string>();
-      for (const row of result.rows) {
+      for (const row of rows) {
         const previous = sourceProjects.get(row.sessionId);
         if (previous !== undefined && previous !== row.projectId)
           ambiguous.add(row.sessionId);
         sourceProjects.set(row.sessionId, row.projectId);
       }
-      const items = result.rows
+      const items = rows
         .filter((row) => !ambiguous.has(row.sessionId))
         .filter((r) => !isDetachedProjectPath(r.projectPath))
         .map((row) => {
@@ -55,7 +160,15 @@ export function productionApiSources(deps: {
             title: metadata?.customTitle ?? row.title ?? null,
             updatedAt: row.updatedAt,
             createdByUser: metadata?.createdByUser,
-            state: deps.sessionState(row.sessionId),
+            state: (() => {
+              const process = deps.supervisor?.getProcessForSession(
+                row.sessionId,
+              );
+              return (
+                deps.sessionState?.(row.sessionId) ??
+                (process ? apiSessionState(process) : "not-running")
+              );
+            })(),
           };
         });
       const byId = new Map<string, ApiSession>(
@@ -74,7 +187,8 @@ export function productionApiSources(deps: {
       return {
         items: [...byId.values()].filter((item) => !ambiguous.has(item.id)),
         catalog: {
-          complete: result.catalog.complete,
+          complete:
+            result.catalog.complete && projection.conflicts.length === 0,
           refreshing: result.catalog.refreshing,
         },
       };
@@ -86,6 +200,10 @@ export function productionApiSources(deps: {
         name: p.displayName,
         supportsSteering: p.supportsSteering,
         supportsPermissionMode: p.supportsPermissionMode,
+        compaction: {
+          supported: p.name === "codex" || isClaudeProviderName(p.name),
+          honorsInstructions: isClaudeProviderName(p.name),
+        },
       }));
     },
     hiddenProjects: deps.hiddenProjects,

@@ -5,6 +5,7 @@ import {
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
 import { e2ePaths, expect } from "../fixtures.js";
+import { routeWithDrain } from "./managed-routes.js";
 
 /**
  * Opens the seeded `mock-session-001` session with its transcript, owner and
@@ -116,7 +117,10 @@ export async function openSessionPage(
       ? route.fulfill({ json: { complete: true } })
       : route.fallback(),
   );
-  await page.route(
+  // Fetch-then-fulfill: drained, so a read still in flight at teardown is not
+  // force-continued and then failed as already handled.
+  await routeWithDrain(
+    page,
     new RegExp(
       `/api/projects/[^/]+/sessions/${sessionId}(?:/metadata)?(?:\\?|$)`,
     ),
@@ -222,7 +226,7 @@ export async function openSessionPage(
     options.ready ??
     (options.messages ? "First request about the parser" : "Previous message");
   await expect(
-    page.locator(".message-list").getByText(ready).first(),
+    page.locator("[data-message-list]").getByText(ready).first(),
   ).toBeVisible();
   await expect.poll(() => sessionLoads).toBeGreaterThan(0);
   if (options.owner === "self")
@@ -251,7 +255,7 @@ export async function openSessionPage(
       ownership = { owner: "self", processId };
       processState = state;
     },
-    header: page.locator(".session-header"),
+    header: page.locator("[data-session-header]"),
     /**
      * Waits until the page offers forks. Fork support arrives with the
      * server's version after the page loads; until then the fork shortcut,
@@ -302,6 +306,16 @@ export async function typeEachKeyWithin100ms(
   );
   expect(Math.max(...acknowledgementMs)).toBeLessThan(100);
 }
+
+/**
+ * Turns Response Streaming on for the page, before it loads. The setting
+ * defaults off, which drops streaming rows; a case that types against live
+ * updates needs them rendered to carry its concurrent-update load.
+ */
+export const streamResponses = (page: Page) =>
+  page.addInitScript(() =>
+    localStorage.setItem("yep-anywhere-streaming-enabled", "true"),
+  );
 
 /** A streaming assistant row, for live updates while a case types. */
 export const liveUpdate = (count: number) => ({

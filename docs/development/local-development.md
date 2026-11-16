@@ -99,6 +99,7 @@ Server state is stored in a data directory (default: `~/.yep-anywhere/`). This i
 - `push-subscriptions.json` - Web push subscriptions
 - `vapid.json` - VAPID keys for push
 - `auth.json` - Authentication state (password hash, sessions)
+- `server-instance.json` - The running server's identity, for `pnpm ya:instance`
 
 Follow [Project Directory Storage](../../topics/project-directory-storage.md)
 for the app-data default and explicit global opt-in for project-local storage.
@@ -125,6 +126,88 @@ Environment variables:
 - `CLAUDE_CONFIG_DIR` - Claude Code config directory (default: `~/.claude`). Use this to point at a Claude Code profile (e.g., `~/.claude-work`). Sessions are scanned from `{CLAUDE_CONFIG_DIR}/projects/`.
 
 Note: By default, all instances share `~/.claude/projects/` (SDK-managed sessions). Set `CLAUDE_CONFIG_DIR` to use a different Claude Code profile per instance.
+
+#### Starting and stopping side instances
+
+Never stop a YA server with `pkill -f`, `killall`, or a PID found by port or
+command line. Every source server runs the same `tsx --conditions source
+src/index.ts` command, so a pattern meant for a test server also matches the
+YA you are working in. Use `pnpm ya:instance`, which acts on the
+[instance record](../../topics/server-runtime.md#local-instance-record) each
+server writes to its data directory:
+
+```bash
+# Background source server on ~/.yep-anywhere-agytest and any free port;
+# prints its URL, PID, launch log and stop command once it listens.
+AUTH_DISABLED=true pnpm ya:instance start --profile agytest
+
+pnpm ya:instance list                      # recorded instances and status
+pnpm ya:instance stop --profile agytest    # or --data-dir DIR, or --port N
+```
+
+`start` takes `--port N` for a fixed port and passes other environment
+variables through. `stop` signals the dev wrapper when the instance runs under
+`pnpm dev`, so the whole stack stops; it refuses the default profile unless
+given `--allow-default`, and refuses any instance it is running under. Under
+`pnpm dev`, a backend killed by anything other than the wrapper is restarted
+([wrapper lifetime](../../topics/reload-safe-provider-runtimes.md)).
+
+#### Local mesh testbed
+
+`pnpm mesh:testbed` runs several standalone servers on this machine and pairs
+every one with every other, for exercising [peer access](../../topics/peer-access.md)
+and [HTTP v0](../../topics/http-api-v0.md) across real processes without
+touching the default profile:
+
+```bash
+pnpm mesh:testbed up        # start nodes a, b, c; log in, configure and pair them
+pnpm mesh:testbed status    # URLs, server ids, owner passwords, edge state
+pnpm mesh:testbed smoke     # discovery and reads over all six edges; no model
+pnpm mesh:testbed down      # stop them; --purge also removes their data
+```
+
+Each node is a `ya:instance` profile `mesh-<node>` on a fixed port (3480,
+3490, 3500 by default), so pairings survive `down` and `up`. Its data
+directory holds a `testbed/` subdirectory with a generated owner password,
+a scratch project and its own Claude, Codex, Gemini, Pi and Grok directories.
+A node therefore lists none of your sessions and has no provider login or API
+key; only Claude and Codex are enabled. `up` enables Agent API discovery and
+session commands on each node and pairs through the owner invitation ceremony
+with every server-addressed operation granted in both directions. `--nodes`,
+`--name` and `--base-port` select another mesh; `up --ui` also serves the built
+web client on each node.
+
+Model work goes through the Agent Auth Router, never a native login:
+
+```bash
+AAR_CLI="node /path/to/agent-auth-router/dist/cli.js" \
+  pnpm mesh:testbed router --pools Work-claude,personal-codex-pool
+pnpm mesh:testbed smoke --inference --model claude-haiku-5-5
+pnpm mesh:testbed smoke --inference --provider codex --model gpt-6-luna
+```
+
+`router` connects each node to the local router and grants its new integration
+the named pools through the router's owner CLI (`AAR_CLI`, default `aar`).
+`smoke --inference` then runs one real session around the ring (a→b, b→c,
+c→a): create, identical retry, launch, reply, routing readback, follow-up
+prompt, provenance, answering the provider's permission request for a command,
+cancelling a running turn and verified stop. Passing lines note whether a
+request was approved and what the cancel did. It spends account
+quota and needs `--model`, since the router has no default model. `down
+--purge` disconnects a running node from the router; a node purged while
+stopped leaves its integration for you to revoke in the router. `smoke` exits
+1 when any check fails and prints each failure; `--json` gives every result.
+
+`pnpm mesh:testbed agent --model ID` measures the API and its documentation
+through a real agent. It starts a session on node `a` with a goal and no
+instructions about the API: start one session on node `b` that replies with a
+set token, wait for the reply, stop it, and report. The agent has only the
+bootstrap any eligible YA session receives. The grade is read from node `b`'s
+own records (one session attributed to that agent, the reply, its routing and
+that it stopped) and then compared with the agent's report. `--driver-model`
+gives the agent a different model from the worker; `--provider codex` runs
+both on Codex. The agent runs in bypass-permissions mode in node `a`'s scratch
+project, since it needs a shell to call the API.
 
 ## Provider & Feature Configuration
 
@@ -168,7 +251,7 @@ ENABLED_PROVIDERS=claude VOICE_INPUT=false PORT=4000 YEP_PROFILE=dev pnpm dev
 ```
 
 Environment variables:
-- `ENABLED_PROVIDERS` - Comma-separated list of provider names to expose (default: all). Valid names: `claude`, `claude-gateway`, `claude-ollama`, `codex`, `codex-oss`, `gemini`, `gemini-acp`, `opencode`, `grok`
+- `ENABLED_PROVIDERS` - Comma-separated list of provider names to expose (default: all). Valid names: `claude`, `claude-gateway`, `claude-ollama`, `codex`, `codex-oss`, `gemini`, `gemini-acp`, `antigravity`, `opencode`, `grok`, `pi`
 - `VOICE_INPUT` - Set to `false` to disable the voice input button server-side (default: `true`)
 - `YEP_PROVIDER_HOST_ENABLED` - Set to `true` or `false` to control shared
   provider hosting. It defaults to `false` on macOS and `true` on Linux.

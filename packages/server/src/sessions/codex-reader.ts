@@ -1,3 +1,15 @@
+import {
+  type CodexEntryState,
+  isCodexEntrySnapshot,
+  codexEntrySourceState,
+  canAppendCodexSource,
+  validateCodexSourceOrdinals,
+  projectCodexLeafEntries,
+  appendCodexEntrySource,
+  nextCodexLeafOrdinal,
+  recoverCodexAppendMismatch,
+} from "./codex-entry-ingestion.js";
+import { readCodexIncrementalSnapshot } from "./codex-incremental-snapshot.js";
 import type {
   ProviderChildSource,
   ProviderChildObservation,
@@ -22,18 +34,14 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { open, readdir, realpath, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import {
   type CodexSessionEntry,
   type NativeSessionRef,
   type CodexSessionMetaEntry,
   type CodexTurnContextEntry,
-  type EffortLevel,
-  type PermissionMode,
   type ProviderChildSessionSummary,
-  type ThinkingConfig,
   type UrlProjectId,
-  getModelContextWindow,
   parseCodexSessionEntry,
   nativeSessionRef,
   parseNativeSessionId,
@@ -41,6 +49,11 @@ import {
 } from "@yep-anywhere/shared";
 import type { SessionDiscoveryIndex } from "../indexes/SessionDiscoveryIndex.js";
 import { getForkedSessionFile } from "./fork-discovery.js";
+import {
+  codexRootFileIndex,
+  type CodexRootFileIndex,
+  type CodexRootRead,
+} from "./codex-root-file-index.js";
 import {
   openCodexSpawnIndex,
   type CodexSpawnIndexLease,
@@ -51,26 +64,17 @@ import {
   canonicalizeProjectPath,
   getProjectIdentityKey,
 } from "../projects/paths.js";
-import type {
-  ContextUsage,
-  Message,
-  SessionSummary,
-} from "../supervisor/types.js";
+import type { Message, SessionSummary } from "../supervisor/types.js";
 import {
   codexRolloutRepresentation,
   findCodexRolloutRepresentation,
   getCodexRolloutActivityTimeMs,
-  getCodexRolloutId,
   isCompressedCodexRolloutPath,
   isCodexRolloutFileName,
   plainCodexRolloutPath,
   preferPlainCodexRollouts,
 } from "../utils/codexRolloutFiles.js";
-import {
-  iterateJsonlLines,
-  iterateJsonlLineRecords,
-  readJsonlLines,
-} from "../utils/jsonl.js";
+import { iterateJsonlLines, iterateJsonlLineRecords } from "../utils/jsonl.js";
 import {
   getCodexRolloutTreeEpoch,
   isCodexRolloutTreeEnumerationTrusted,
@@ -128,6 +132,16 @@ import {
   type CodexParsedEntrySnapshot,
   CodexRolloutWindowReader,
 } from "./codex-rollout-window.js";
+import { readCodexLatestAgentExcerpt } from "./latest-agent-excerpt.js";
+import {
+  readCodexLatestLaunchSettings,
+  recoverCodexLaunchSettings,
+} from "./codex-launch-settings.js";
+import {
+  type CodexSummaryContextCandidate,
+  codexContextUsageFromCandidate,
+  extractCodexContextUsage,
+} from "./codex-context-usage.js";
 import { SummaryParserClient } from "./summary-parser-worker-client.js";
 import {
   type CodexEntryCacheBudget,
@@ -244,32 +258,9 @@ export interface CodexSessionReaderScanMetrics {
   discovery: CodexRolloutDiscoveryStats;
 }
 
-interface CodexEntryCache {
-  filePath: string;
-  startByte: number;
-  mtimeMs: number;
-  ctimeMs: number;
-  size: number;
-  entries: CodexSessionEntry[];
-  /**
-   * Decoded JSONL bytes behind `entries`, charged to the retention budget.
-   * Not `size`: a zstd rollout's file size understates its parsed heap
-   * several-fold, and lineage entries come from other rollout files.
-   */
-  sourceBytes: number;
-  partialLine: Buffer;
-  nextLeafOrdinal?: number;
-  normalizationSource: object;
-  /**
-   * True once the retention budget declined or evicted this entry. Its
-   * contents remain a valid snapshot for the read that produced it.
-   */
-  uncached?: boolean;
-}
+type CodexEntryCache = CodexEntryState;
 
-interface CodexReadEntrySnapshot extends CodexParsedEntrySnapshot {
-  nextLeafOrdinal?: number;
-}
+type CodexReadEntrySnapshot = CodexParsedEntrySnapshot;
 
 interface CodexEntrySnapshot {
   entries: CodexSessionEntry[];
@@ -423,11 +414,6 @@ interface CodexSummaryTitleCandidate {
   fullTitle: string | null;
 }
 
-interface CodexSummaryContextCandidate {
-  inputTokens: number;
-  contextWindow?: number;
-}
-
 interface CodexSummaryState {
   metaEntry?: CodexSessionMetaEntry;
   firstTurnContext?: CodexTurnContextEntry;
@@ -440,56 +426,6 @@ interface CodexSummaryState {
   assistantMessageCount: number;
   model?: string;
   contextCandidate?: CodexSummaryContextCandidate;
-}
-
-const RECOVERABLE_CODEX_EFFORTS = new Set<EffortLevel>([
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-]);
-
-function isRecoverableCodexEffort(value: string): value is EffortLevel {
-  return RECOVERABLE_CODEX_EFFORTS.has(value as EffortLevel);
-}
-
-function recoverCodexPermissionMode(
-  turnContext: CodexTurnContextEntry,
-): PermissionMode {
-  const approvalPolicy = turnContext.payload.approval_policy;
-  const sandboxType = turnContext.payload.sandbox_policy?.type;
-  if (approvalPolicy === "never" && sandboxType === "danger-full-access") {
-    return "bypassPermissions";
-  }
-  if (approvalPolicy === "on-request" && sandboxType === "read-only") {
-    return "plan";
-  }
-  return "default";
-}
-
-function recoverCodexLaunchSettings(
-  turnContext: CodexTurnContextEntry | undefined,
-): RecoveredSessionLaunchSettings | null {
-  if (!turnContext) return null;
-
-  const model = turnContext.payload.model?.trim();
-  const effort = turnContext.payload.effort;
-  let thinking: ThinkingConfig | undefined;
-  let recoveredEffort: EffortLevel | undefined;
-  if (effort === "none") {
-    thinking = { type: "disabled" };
-  } else if (effort && isRecoverableCodexEffort(effort)) {
-    thinking = { type: "adaptive", display: "summarized" };
-    recoveredEffort = effort;
-  }
-
-  return {
-    permissionMode: recoverCodexPermissionMode(turnContext),
-    ...(model ? { requestedModel: model } : {}),
-    ...(thinking ? { thinking } : {}),
-    ...(recoveredEffort ? { effort: recoveredEffort } : {}),
-  };
 }
 
 interface CodexSummaryStreamRead {
@@ -603,8 +539,6 @@ export class CodexSessionReader implements ISessionReader {
   private lastScanMetrics: CodexSessionReaderScanMetrics | null = null;
   private lastSummaryStreamMetrics: CodexSummaryStreamMetrics | null = null;
 
-  private sessionFileCache: Map<string, CodexSessionFile> = new Map();
-  private hydrated?: { sessions: CodexSessionMap; version: number };
   private entryCache: Map<string, CodexEntryCache> = new Map();
   private entryReadOwners: Map<string, CodexEntryReadOwner> = new Map();
   private entryCacheRevision = 0;
@@ -614,7 +548,6 @@ export class CodexSessionReader implements ISessionReader {
   private readonly entryCacheBudget: CodexEntryCacheBudget;
   private agentMappingCache: Map<string, CodexAgentMappingCache> = new Map();
   private readonly mappingListeners = new Set<(parentId: string) => void>();
-  private rolloutPathById: Map<string, string> = new Map();
   private readonly rolloutWindowReader: CodexRolloutWindowReader;
 
   constructor(options: CodexSessionReaderOptions) {
@@ -656,7 +589,6 @@ export class CodexSessionReader implements ISessionReader {
     // Existing leases may finish reads from retained native metadata after
     // retirement. Background relationship sources release this reader above.
     this.agentMappingCache.clear();
-    this.rolloutPathById.clear();
     const client = this.summaryParserClient;
     this.summaryParserClient = undefined;
     await client?.close();
@@ -664,14 +596,11 @@ export class CodexSessionReader implements ISessionReader {
 
   invalidateCache(): void {
     this.entryCacheRevision += 1;
-    this.sessionFileCache.clear();
-    this.hydrated = undefined;
     for (const cached of this.entryCache.values()) {
       this.entryCacheBudget.release(cached);
     }
     this.entryCache.clear();
     this.agentMappingCache.clear();
-    this.rolloutPathById.clear();
     codexSharedScanCache.delete(this.sessionsDir);
   }
 
@@ -842,6 +771,12 @@ export class CodexSessionReader implements ISessionReader {
     return summary ? toSessionListSummary(summary) : null;
   }
 
+  /** Bounded hover-card excerpt; undefined is unknown. */
+  async getLastAgentExcerpt(sessionId: string): Promise<string | undefined> {
+    const file = await this.findSessionFile(sessionId);
+    return file ? readCodexLatestAgentExcerpt(file.filePath) : undefined;
+  }
+
   async getRecoveredLaunchSettings(
     sessionId: string,
   ): Promise<RecoveredSessionLaunchSettings | null> {
@@ -849,6 +784,17 @@ export class CodexSessionReader implements ISessionReader {
     if (!sessionFile) return null;
 
     try {
+      const latest = await readCodexLatestLaunchSettings(
+        sessionFile.filePath,
+        sessionId,
+      );
+      if (latest !== undefined) return latest;
+      // Unknown from the tail: a missing answer would launch with default
+      // permissions, so name the complete read rather than guess.
+      getLogger().debug(
+        { event: "codex_launch_settings_complete_read", sessionId },
+        "Recovering Codex launch settings from the complete rollout",
+      );
       const stats = await stat(sessionFile.filePath);
       const read = await this.readSummaryStream(
         sessionId,
@@ -1661,6 +1607,8 @@ export class CodexSessionReader implements ISessionReader {
         releaseIndex();
         if (signal.aborted || this.retired)
           throw new Error("Codex child observation retired");
+        const pointIndex = codexRootFileIndex(this.sessionsDir);
+        const pointRead = pointIndex.readVersion();
         if ((await realpath(this.sessionsDir)) !== parent.storageScope)
           throw new Error("Codex child observation scope mismatch");
         const lease = await openCodexSpawnIndex(this.sessionsDir);
@@ -1711,6 +1659,7 @@ export class CodexSessionReader implements ISessionReader {
             if (
               this.retired ||
               signal.aborted ||
+              !pointIndex.accepts(pointRead) ||
               !(await lease.isCurrent()) ||
               (await realpath(this.sessionsDir).catch(() => undefined)) !==
                 parent.storageScope ||
@@ -1721,8 +1670,7 @@ export class CodexSessionReader implements ISessionReader {
               if ((await readPoint(point.path, id)).proof !== point.proof)
                 return false;
             if (this.retired || signal.aborted) return false;
-            this.hydrateSessionFileCache([...sessions.values()]);
-            return true;
+            return pointIndex.observePoints([...sessions.values()], pointRead);
           };
           const observation = await finishObservation(entry, previousMetadata);
           const observedAnchors = new Map<string, string | undefined>(
@@ -1913,6 +1861,8 @@ export class CodexSessionReader implements ISessionReader {
       rootCache = new Map();
       codexSharedScanCache.set(this.sessionsDir, rootCache);
     }
+    const fileIndex = codexRootFileIndex(this.sessionsDir);
+    const lookupRead = fileIndex.readVersion();
     const cached = rootCache.get(cacheKey);
     const now = Date.now();
 
@@ -1935,23 +1885,34 @@ export class CodexSessionReader implements ISessionReader {
       });
       const startedAt = Date.now();
       if (cached.inFlight) {
-        const sessions = await cached.inFlight;
-        this.hydrateSessionFileCache(sessions);
+        await cached.inFlight;
+        if (!fileIndex.isCurrent() || rootCache.get(cacheKey) !== cached)
+          return this.scanSessions(options);
+        fileIndex.observe(cached.sessions, lookupRead);
         const visibleSessions = this.filterVisibleSessionsForScanMetrics(
-          sessions,
+          cached.sessions,
           metrics,
         );
         metrics.durationMs = Date.now() - startedAt;
         this.recordScanMetrics(metrics);
         return visibleSessions;
       }
-      if (!(await this.applyObservedRolloutChanges(cached, metrics))) {
+      if (
+        !(await this.applyObservedRolloutChanges(
+          cached,
+          metrics,
+          fileIndex,
+          lookupRead,
+        ))
+      ) {
         // A reported deletion may have hidden another file for the same
         // session; only a fresh enumeration can say which one remains.
         if (rootCache.get(cacheKey) === cached) rootCache.delete(cacheKey);
         return this.scanSessions(options);
       }
-      this.hydrateSessionFileCache(cached.sessions);
+      if (!fileIndex.isCurrent() || rootCache.get(cacheKey) !== cached)
+        return this.scanSessions(options);
+      fileIndex.observe(cached.sessions, lookupRead);
       const visibleSessions = this.filterVisibleSessionsForScanMetrics(
         cached.sessions,
         metrics,
@@ -1980,6 +1941,8 @@ export class CodexSessionReader implements ISessionReader {
       failedPaths: new Set(),
     };
     const inFlight = this.scanSessionsUncached(
+      fileIndex,
+      lookupRead,
       options,
       metrics,
       entry.failedPaths,
@@ -1998,16 +1961,20 @@ export class CodexSessionReader implements ISessionReader {
     rootCache.set(cacheKey, entry);
 
     try {
-      const sessions = await inFlight;
+      await inFlight;
+      if (!fileIndex.isCurrent() || rootCache.get(cacheKey) !== entry)
+        return this.scanSessions(options);
       // Keep the same map: an exact observation arriving during the scan must
       // survive its older result. Observations never extend scan freshness.
       entry.timestamp = Date.now();
       entry.inFlight = undefined;
       if (options?.activeAfterMs !== undefined)
         this.retainLatestCutoff(cacheKey);
-      this.hydrateSessionFileCache(sessions);
+      if (options?.activeAfterMs === undefined && !entry.incomplete)
+        fileIndex.completeEnumeration(entry.sessions, lookupRead);
+      else fileIndex.observe(entry.sessions, lookupRead, true);
       const visibleSessions = this.filterVisibleSessionsForScanMetrics(
-        sessions,
+        entry.sessions,
         metrics,
       );
       metrics.durationMs = Date.now() - startedAt;
@@ -2047,6 +2014,8 @@ export class CodexSessionReader implements ISessionReader {
   private async applyObservedRolloutChanges(
     entry: CodexSharedScanCacheEntry,
     metrics: CodexSessionReaderScanMetrics,
+    fileIndex: CodexRootFileIndex,
+    lookupRead: CodexRootRead,
   ): Promise<boolean> {
     while (entry.changedPaths.size > 0 || entry.applyingChanges) {
       if (entry.applyingChanges) {
@@ -2072,7 +2041,7 @@ export class CodexSessionReader implements ISessionReader {
             continue;
           }
           metrics.rolloutFilesFound += 1;
-          this.cacheRolloutPath(filePath);
+          fileIndex.rememberPaths([filePath], lookupRead);
           const session = await this.readSessionMeta(
             filePath,
             entry.activeAfterMs === undefined
@@ -2088,6 +2057,7 @@ export class CodexSessionReader implements ISessionReader {
             continue;
           }
           entry.failedPaths?.delete(plainPath);
+          fileIndex.observePoints([session], lookupRead);
           entry.incomplete =
             !!entry.failedPaths?.size || !!entry.directoryReadErrors;
           const current = entry.sessions.get(session.id);
@@ -2113,24 +2083,6 @@ export class CodexSessionReader implements ISessionReader {
     return `${this.sessionsDir}::activeAfter=${options?.activeAfterMs ?? "all"}`;
   }
 
-  private hydrateSessionFileCache(
-    sessions: readonly CodexSessionFile[] | CodexSessionMap,
-  ): void {
-    const shared = sessions instanceof CodexSessionMap ? sessions : undefined;
-    const since =
-      shared && this.hydrated?.sessions === shared
-        ? shared.changesSince(this.hydrated.version)
-        : undefined;
-    if (this.retired) return;
-    if (shared) this.hydrated = { sessions: shared, version: shared.version };
-    for (const session of since ?? sessions.values()) {
-      const current = this.sessionFileCache.get(session.id);
-      if (!current || isNewerCodexSessionFile(session, current))
-        this.sessionFileCache.set(session.id, session);
-      this.cacheRolloutPath(session.filePath);
-    }
-  }
-
   async observeNativeSessionFile(
     native: NativeSessionRef,
     filePath: string,
@@ -2143,8 +2095,11 @@ export class CodexSessionReader implements ISessionReader {
       native.storageScope !== this.sessionsDir
     )
       return false;
+    const fileIndex = codexRootFileIndex(this.sessionsDir);
+    const lookupRead = fileIndex.readVersion();
     const actual = await realpath(filePath).catch(() => null);
-    if (!actual || this.retired || signal?.aborted) return false;
+    if (!actual || this.retired || signal?.aborted || !fileIndex.isCurrent())
+      return false;
     const suffix = relative(this.sessionsDir, actual);
     if (
       !suffix ||
@@ -2157,6 +2112,7 @@ export class CodexSessionReader implements ISessionReader {
     if (
       this.retired ||
       signal?.aborted ||
+      !fileIndex.accepts(lookupRead) ||
       !session ||
       session.id !== native.id ||
       session.isSubagent ||
@@ -2177,74 +2133,19 @@ export class CodexSessionReader implements ISessionReader {
         changedPaths: new Set(),
       });
     }
-    // A cold reader must honor newer native evidence another reader accepted.
-    // Reconcile the existing root caches before admitting the observed path.
-    let incumbent = this.sessionFileCache.get(session.id);
-    for (const entry of codexSharedScanCache.get(this.sessionsDir)?.values() ??
-      []) {
-      const known = entry.sessions.get(session.id);
-      if (known && (!incumbent || isNewerCodexSessionFile(known, incumbent)))
-        incumbent = known;
-    }
-    if (incumbent) this.hydrateSessionFileCache([incumbent]);
-    this.hydrateSessionFileCache([session]);
-    for (const entry of codexSharedScanCache.get(this.sessionsDir)?.values() ??
-      []) {
-      if (
-        entry.activeAfterMs !== undefined &&
-        session.mtime < entry.activeAfterMs
-      )
-        continue;
-      const current = entry.sessions.get(session.id);
-      if (!current || isNewerCodexSessionFile(session, current))
-        entry.sessions.set(session.id, session);
-    }
-    return this.sessionFileCache.get(native.id)?.filePath === actual;
-  }
-
-  private cacheRolloutPath(filePath: string, overwrite = true): void {
-    const rolloutId = getCodexRolloutId(filePath);
-    if (rolloutId && (overwrite || !this.rolloutPathById.has(rolloutId))) {
-      this.rolloutPathById.set(rolloutId, filePath);
-    }
+    fileIndex.observePoints([session], lookupRead);
+    return fileIndex.getSession(native.id)?.filePath === actual;
   }
 
   private async findRolloutPathById(rolloutId: string): Promise<string | null> {
-    const cached = this.rolloutPathById.get(rolloutId);
-    if (cached) {
-      try {
-        await stat(cached);
-        return cached;
-      } catch {
-        // Codex may archive or unarchive an immutable referenced ancestor.
-        // Drop only the stale path and search both provider-owned roots again.
-        this.rolloutPathById.delete(rolloutId);
-      }
-    }
-
-    // Ordinary detail reads have already scanned active sessions. Direct
-    // summary-worker reads have not, so populate the immutable rollout-id map
-    // on demand before checking the archived sibling root.
-    const activeFiles = await this.findJsonlFiles(this.sessionsDir);
-    for (const filePath of activeFiles) {
-      this.cacheRolloutPath(filePath);
-    }
-    const active = this.rolloutPathById.get(rolloutId);
-    if (active) return active;
-
-    await this.hydrateArchivedRolloutPaths();
-    return this.rolloutPathById.get(rolloutId) ?? null;
-  }
-
-  private async hydrateArchivedRolloutPaths(): Promise<void> {
-    if (basename(this.sessionsDir) !== "sessions") return;
-    const archivedDir = join(dirname(this.sessionsDir), "archived_sessions");
-    const archivedFiles = await this.findJsonlFiles(archivedDir);
-    for (const filePath of archivedFiles) {
-      // An active representation wins if both roots briefly contain the same
-      // rollout during an archive transition.
-      this.cacheRolloutPath(filePath, false);
-    }
+    const index = codexRootFileIndex(this.sessionsDir);
+    const lookupRead = index.readVersion();
+    const path = await index.findRolloutPath(rolloutId, (directory) =>
+      this.findJsonlFiles(directory),
+    );
+    return index.accepts(lookupRead)
+      ? path
+      : this.findRolloutPathById(rolloutId);
   }
 
   private resolveRolloutLineage(
@@ -2282,6 +2183,8 @@ export class CodexSessionReader implements ISessionReader {
   }
 
   private async scanSessionsUncached(
+    fileIndex: CodexRootFileIndex,
+    lookupRead: CodexRootRead,
     options?: CodexScanOptions,
     metrics?: CodexSessionReaderScanMetrics,
     failedPaths?: Set<string>,
@@ -2290,14 +2193,16 @@ export class CodexSessionReader implements ISessionReader {
     try {
       await stat(this.sessionsDir);
       if (metrics) metrics.sessionsDirExists = true;
-    } catch {
-      return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      if (metrics) metrics.directoryReadErrors += 1;
+      throw error;
     }
 
     const files = await this.findJsonlFiles(this.sessionsDir, metrics);
+    fileIndex.rememberPaths(files, lookupRead);
 
     for (const filePath of files) {
-      this.cacheRolloutPath(filePath);
       const activeWindowSkipsBefore = metrics?.discovery.activeWindowSkips ?? 0;
       const session = await this.readSessionMeta(filePath, options, metrics);
       if (session) {
@@ -2391,7 +2296,9 @@ export class CodexSessionReader implements ISessionReader {
     sessionId: string,
   ): Promise<CodexSessionFile | null> {
     // Check cache first
-    const cached = this.sessionFileCache.get(sessionId);
+    const fileIndex = codexRootFileIndex(this.sessionsDir);
+    const lookupRead = fileIndex.readVersion();
+    const cached = fileIndex.getSession(sessionId);
     if (cached) return cached;
 
     // Fork completion supplies an exact path before the scan cache catches up.
@@ -2409,15 +2316,17 @@ export class CodexSessionReader implements ISessionReader {
         (!this.projectIdentityKey ||
           getProjectIdentityKey(session.cwd) === this.projectIdentityKey)
       ) {
-        this.hydrateSessionFileCache([session]);
-        return session;
+        if (!fileIndex.accepts(lookupRead))
+          return this.findSessionFile(sessionId);
+        fileIndex.observePoints([session], lookupRead);
+        return fileIndex.getSession(sessionId) ?? null;
       }
       if (session) return null;
     }
 
     // Scan if cache miss
     await this.scanSessions();
-    return this.sessionFileCache.get(sessionId) ?? null;
+    return codexRootFileIndex(this.sessionsDir).getSession(sessionId) ?? null;
   }
 
   private async readEntries(
@@ -2435,14 +2344,7 @@ export class CodexSessionReader implements ISessionReader {
       const stats = await stat(filePath);
       const cached = this.entryCache.get(sessionId);
 
-      if (
-        cached &&
-        cached.filePath === filePath &&
-        cached.startByte === startByte &&
-        cached.size === stats.size &&
-        cached.mtimeMs === stats.mtimeMs &&
-        cached.ctimeMs === stats.ctimeMs
-      ) {
+      if (cached && isCodexEntrySnapshot(cached, filePath, startByte, stats)) {
         this.entryCacheBudget.touch(cached);
         this.cacheAgentMappingsFromEntries({
           sessionId,
@@ -2501,11 +2403,21 @@ export class CodexSessionReader implements ISessionReader {
         purpose,
         revision,
         startByte,
-      }).finally(() => {
-        if (this.entryReadOwners.get(sessionId) === owner) {
-          this.entryReadOwners.delete(sessionId);
-        }
-      });
+      })
+        .catch((error) =>
+          recoverCodexAppendMismatch(
+            error,
+            this.entryCache,
+            this.entryCacheBudget,
+            sessionId,
+            cached,
+          ),
+        )
+        .finally(() => {
+          if (this.entryReadOwners.get(sessionId) === owner) {
+            this.entryReadOwners.delete(sessionId);
+          }
+        });
       owner = { promise, joinedCallers: 0 };
       this.entryReadOwners.set(sessionId, owner);
 
@@ -2573,40 +2485,26 @@ export class CodexSessionReader implements ISessionReader {
     const stats = await stat(filePath);
     const cached = this.entryCache.get(sessionId);
 
-    if (
-      cached &&
-      cached.filePath === filePath &&
-      cached.startByte === startByte &&
-      cached.size === stats.size &&
-      cached.mtimeMs === stats.mtimeMs &&
-      cached.ctimeMs === stats.ctimeMs
-    ) {
+    if (cached && isCodexEntrySnapshot(cached, filePath, startByte, stats)) {
       this.entryCacheBudget.touch(cached);
       return cached;
     }
 
-    if (
-      cached &&
-      cached.filePath === filePath &&
-      cached.startByte === startByte &&
-      !isCompressedCodexRolloutPath(filePath) &&
-      cached.size < stats.size
-    ) {
+    if (cached && canAppendCodexSource(filePath, cached, stats, startByte)) {
       const parsed = await this.rolloutWindowReader.readEntryRange(
         filePath,
         cached.size,
         stats.size - cached.size,
         Date.now(),
         cached.partialLine,
+        cached.appendFence,
       );
-      const nextLeafOrdinal =
-        cached.nextLeafOrdinal === undefined
-          ? undefined
-          : validateContiguousCodexOrdinals(
-              parsed.entries,
-              filePath,
-              cached.nextLeafOrdinal,
-            );
+      const nextLeafOrdinal = nextCodexLeafOrdinal(
+        cached,
+        parsed,
+        filePath,
+        validateContiguousCodexOrdinals,
+      );
 
       if (
         revision !== this.entryCacheRevision ||
@@ -2615,10 +2513,7 @@ export class CodexSessionReader implements ISessionReader {
         return null;
       }
 
-      cached.entries.push(...parsed.entries);
-      cached.sourceBytes += parsed.sourceBytes;
-      cached.partialLine = parsed.partialLine;
-      cached.nextLeafOrdinal = nextLeafOrdinal;
+      appendCodexEntrySource(cached, parsed, nextLeafOrdinal);
       cached.size = stats.size;
       cached.mtimeMs = stats.mtimeMs;
       cached.ctimeMs = stats.ctimeMs;
@@ -2673,10 +2568,7 @@ export class CodexSessionReader implements ISessionReader {
       mtimeMs: stats.mtimeMs,
       ctimeMs: stats.ctimeMs,
       size: stats.size,
-      entries: parsed.entries,
-      sourceBytes: parsed.sourceBytes,
-      partialLine: parsed.partialLine,
-      nextLeafOrdinal: parsed.nextLeafOrdinal,
+      ...codexEntrySourceState(parsed),
       normalizationSource: {},
     };
     if (cached) {
@@ -2790,25 +2682,18 @@ export class CodexSessionReader implements ISessionReader {
             `Codex rollout has no matching leaf metadata: ${filePath}`,
           );
         }
-        const nextLeafOrdinal = validateContiguousCodexOrdinals(
-          leaf.entries,
+        const nextLeafOrdinal = validateCodexSourceOrdinals(
+          leaf,
           filePath,
+          validateContiguousCodexOrdinals,
         );
-        const localEntries: CodexSessionEntry[] = [];
-        for (const entry of leaf.entries) {
-          const numericOrdinal = Number(
-            (entry as { ordinal?: unknown }).ordinal,
-          );
-          if (
-            entry.type !== "session_meta" &&
-            numericOrdinal >= leafSegment.startOrdinal
-          ) {
-            localEntries.push(entry);
-          }
-        }
+        const local = projectCodexLeafEntries(leaf, leafSegment.startOrdinal);
         const parseMs = inherited.parseMs + leaf.parseMs;
         return {
-          entries: [...inherited.entries, ...localEntries],
+          entries: [...inherited.entries, ...local.entries],
+          committedEntries: inherited.entries.length + local.committedEntries,
+          leafStartOrdinal: leafSegment.startOrdinal,
+          appendFence: leaf.appendFence,
           partialLine: leaf.partialLine,
           nextLeafOrdinal,
           readLinesMs: Math.max(0, Date.now() - readStartedAt - parseMs),
@@ -2830,26 +2715,29 @@ export class CodexSessionReader implements ISessionReader {
       };
     }
     if (isCompressedCodexRolloutPath(filePath)) {
-      const lines = await readJsonlLines(filePath);
-      const readLinesMs = Date.now() - readStartedAt;
+      // Line by line: one decompressed string can exceed V8's string limit.
+      // Each line is trimmed as the plain reader trims it, so both agree.
       const entries: CodexSessionEntry[] = [];
+      let lineCount = 0;
       let maxLineLength = 0;
       let sourceBytes = 0;
-      const parseStartedAt = Date.now();
-      for (const line of lines) {
+      let parseMs = 0;
+      for await (const line of iterateJsonlLines(filePath)) {
+        lineCount += 1;
         maxLineLength = Math.max(maxLineLength, line.length);
         sourceBytes += Buffer.byteLength(line) + 1;
-        const entry = parseCodexSessionEntry(line);
-        if (entry) {
-          entries.push(entry);
-        }
+        const parseStartedAt = Date.now();
+        const entry = parseCodexSessionEntry(line.trim());
+        parseMs += Date.now() - parseStartedAt;
+        if (entry) entries.push(entry);
       }
+      const readLinesMs = Math.max(0, Date.now() - readStartedAt - parseMs);
       return {
         entries,
         partialLine: Buffer.alloc(0),
         readLinesMs,
-        parseMs: Date.now() - parseStartedAt,
-        lineCount: lines.length,
+        parseMs,
+        lineCount,
         maxLineLength,
         sourceBytes,
       };
@@ -2883,7 +2771,7 @@ export class CodexSessionReader implements ISessionReader {
     const provider = summary.provider === "codex-oss" ? "codex-oss" : "codex";
     const model = this.extractModel(window.entries) ?? summary.model;
     const contextUsage =
-      this.extractContextUsage(window.entries, model, provider) ??
+      extractCodexContextUsage(window.entries, model, provider) ??
       summary.contextUsage;
     return {
       ...summary,
@@ -2901,79 +2789,19 @@ export class CodexSessionReader implements ISessionReader {
     afterMessageId: string,
     summary: SessionSummary,
   ): Promise<CodexCompactTailSnapshot | null> {
-    const cached = this.entryCache.get(sessionId);
-    let startByte = cached?.startByte ?? 0;
-    let snapshot: CodexEntrySnapshot | undefined;
-    if (
-      cached?.filePath === filePath &&
-      startByte > 0 &&
-      (cached.size < stats.size ||
-        (cached.size === stats.size &&
-          cached.mtimeMs === stats.mtimeMs &&
-          cached.ctimeMs === stats.ctimeMs))
-    ) {
-      snapshot = await this.readEntries(sessionId, filePath, {
-        purpose: "detail",
-        startByte,
-      });
-      if (
-        snapshot.entries.filter((entry) => entry.type === "compacted")
-          .length !== compactBoundaries
-      ) {
-        snapshot = undefined;
-        stats = await stat(filePath);
-      }
-    }
-    if (!snapshot) {
-      const locatedStart = await this.rolloutWindowReader.findCompactTailStart(
-        filePath,
-        stats,
-        compactBoundaries,
-      );
-      if (locatedStart === null) return null;
-      startByte = locatedStart;
-      snapshot = await this.readEntries(sessionId, filePath, {
-        purpose: "detail",
-        startByte,
-      });
-    }
-    if (snapshot.entries[0]?.type !== "compacted") return null;
-    const provider = summary.provider === "codex-oss" ? "codex-oss" : "codex";
-    const normalized = normalizeSession({
-      summary,
-      transcriptSnapshotUpdatedAt: snapshot.transcriptSnapshotUpdatedAt,
-      data: { provider, session: { entries: snapshot.entries } },
-    });
-    // An older or unknown durable id must take the complete catch-up path.
-    if (
-      !normalized.messages.some(
-        (message) => (message.uuid ?? message.id) === afterMessageId,
-      )
-    ) {
-      return null;
-    }
-    // Results whose calls precede the window need the prefix's tool context.
-    const toolCalls = new Set<string>();
-    for (const message of normalized.messages) {
-      const content = message.message?.content;
-      if (!Array.isArray(content)) continue;
-      for (const block of content) {
-        if (block.type === "tool_use" && block.id) toolCalls.add(block.id);
-        if (
-          block.type === "tool_result" &&
-          block.tool_use_id &&
-          !toolCalls.has(block.tool_use_id)
-        )
-          return null;
-      }
-    }
-    return {
-      ...snapshot,
-      kind: "compact-tail",
-      omittedPrefix: true,
-      startByte,
+    return readCodexIncrementalSnapshot(
+      {
+        cached: this.entryCache.get(sessionId),
+        readEntries: (...args) => this.readEntries(...args),
+        windowReader: this.rolloutWindowReader,
+      },
+      sessionId,
+      filePath,
+      stats,
       compactBoundaries,
-    };
+      afterMessageId,
+      summary,
+    );
   }
 
   private async readCompactTailSnapshot(
@@ -3346,7 +3174,7 @@ export class CodexSessionReader implements ISessionReader {
 
     const model = state.model;
     const provider = this.determineProvider(metaEntry, model);
-    const contextUsage = this.contextUsageFromSummaryCandidate(
+    const contextUsage = codexContextUsageFromCandidate(
       state.contextCandidate,
       model,
       provider,
@@ -3396,28 +3224,6 @@ export class CodexSessionReader implements ISessionReader {
     };
   }
 
-  private contextUsageFromSummaryCandidate(
-    candidate: CodexSummaryContextCandidate | undefined,
-    model: string | undefined,
-    provider: "codex" | "codex-oss",
-  ): ContextUsage | undefined {
-    if (!candidate) {
-      return undefined;
-    }
-
-    const contextWindow =
-      candidate.contextWindow ?? getModelContextWindow(model, provider);
-    const percentage = Math.min(
-      100,
-      Math.round((candidate.inputTokens / contextWindow) * 100),
-    );
-    return {
-      inputTokens: candidate.inputTokens,
-      percentage,
-      contextWindow,
-    };
-  }
-
   private async buildSessionSummaryFromEntries(
     sessionId: string,
     projectId: UrlProjectId,
@@ -3436,7 +3242,7 @@ export class CodexSessionReader implements ISessionReader {
     const model = this.extractModel(entries);
     const provider = this.determineProvider(metaEntry, model);
     const turnContext = this.extractTurnContext(entries);
-    const contextUsage = this.extractContextUsage(entries, model, provider);
+    const contextUsage = extractCodexContextUsage(entries, model, provider);
     const forkedFromSessionId =
       typeof metaEntry.payload.forked_from_id === "string"
         ? metaEntry.payload.forked_from_id
@@ -3757,54 +3563,6 @@ export class CodexSessionReader implements ISessionReader {
       0,
     );
     return assistantCount + countCodexUserTurns(entries, provenance);
-  }
-
-  /**
-   * Extract context usage from token_count events.
-   *
-   * @param entries - Codex session entries
-   * @param model - Model ID for determining context window size (fallback)
-   * @param provider - Provider for model-less context-window fallback
-   */
-  private extractContextUsage(
-    entries: CodexSessionEntry[],
-    model: string | undefined,
-    provider: "codex" | "codex-oss",
-  ): ContextUsage | undefined {
-    // Find last token_count event
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const entry = entries[i];
-      if (
-        entry &&
-        entry.type === "event_msg" &&
-        entry.payload.type === "token_count"
-      ) {
-        const info = entry.payload.info;
-        if (info?.last_token_usage || info?.total_token_usage) {
-          // Codex context meter is based on the latest turn's input_tokens,
-          // not cumulative totals and not cached-input totals.
-          const usage = info.last_token_usage ?? info.total_token_usage;
-          if (!usage) continue;
-          const inputTokens = usage.input_tokens;
-
-          if (inputTokens === 0) continue;
-
-          // Prefer model_context_window from Codex if available, fall back to model-based lookup
-          const contextWindow =
-            info.model_context_window && info.model_context_window > 0
-              ? info.model_context_window
-              : getModelContextWindow(model, provider);
-          const percentage = Math.min(
-            100,
-            Math.round((inputTokens / contextWindow) * 100),
-          );
-
-          return { inputTokens, percentage, contextWindow };
-        }
-      }
-    }
-
-    return undefined;
   }
 
   /**

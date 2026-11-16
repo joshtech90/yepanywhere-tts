@@ -1,7 +1,13 @@
+import onboardingStyles from "./OnboardingStep.module.css";
 import { useState } from "react";
 import { Button } from "../ui/Button";
-import { Modal } from "../ui/Modal";
-import { RemoteAccessStep, ThemeStep } from "./steps";
+import { Dialog } from "../ui/Dialog";
+import {
+  RemoteAccessStep,
+  RemoteAccessStepActions,
+  ThemeStep,
+  ThemeStepActions,
+} from "./steps";
 import type { OnboardingStepConfig } from "./types";
 
 /**
@@ -13,11 +19,13 @@ const ONBOARDING_STEPS: OnboardingStepConfig[] = [
     id: "theme",
     title: "Choose Your Theme",
     component: ThemeStep,
+    actions: ThemeStepActions,
   },
   {
     id: "remote-access",
     title: "Remote Access",
     component: RemoteAccessStep,
+    actions: RemoteAccessStepActions,
   },
 ];
 
@@ -43,6 +51,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
 
   const isLastStep = currentStepIndex === ONBOARDING_STEPS.length - 1;
   const StepComponent = currentStep.component;
+  const StepActions = currentStep.actions;
 
   const handleNext = () => {
     if (isLastStep) {
@@ -72,55 +81,33 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
 
   const isFirstStep = currentStepIndex === 0;
 
-  const modalTitle = (
-    <div className="onboarding-modal-title">
-      <span>Welcome to yepanywhere</span>
-      <span className="onboarding-step-indicator">
-        Step {currentStepIndex + 1} of {ONBOARDING_STEPS.length}
-      </span>
-    </div>
-  );
-
   return (
-    <Modal title={modalTitle} onClose={handleSkipAll}>
-      <div className="onboarding-wizard">
-        <h2 className="onboarding-step-title">{currentStep.title}</h2>
-
-        <StepComponent
+    <Dialog
+      title="Welcome to yepanywhere"
+      description={`Step ${currentStepIndex + 1} of ${ONBOARDING_STEPS.length}`}
+      size="medium"
+      onClose={handleSkipAll}
+      footerStart={
+        <>
+          {/* The last step's own Skip finishes, so Skip all would repeat it. */}
+          {!isLastStep && (
+            <Button variant="ghost" onClick={handleSkipAll}>
+              Skip all
+            </Button>
+          )}
+          {!isFirstStep && <Button onClick={handleBack}>Back</Button>}
+        </>
+      }
+      footer={
+        <StepActions
           onNext={handleNext}
           onSkip={handleSkip}
           isLastStep={isLastStep}
         />
-
-        <div className="onboarding-footer">
-          {/* `onboarding-skip-all` is a hook: e2e specs dismiss the wizard by it. */}
-          <Button
-            variant="ghost"
-            size="small"
-            className="onboarding-skip-all"
-            onClick={handleSkipAll}
-          >
-            Skip all
-          </Button>
-          <div className="onboarding-footer-right">
-            {!isFirstStep && (
-              <Button variant="ghost" size="small" onClick={handleBack}>
-                Back
-              </Button>
-            )}
-            <div className="onboarding-progress">
-              {ONBOARDING_STEPS.map((step, index) => (
-                <span
-                  key={step.id}
-                  className={`onboarding-progress-dot ${
-                    index === currentStepIndex ? "active" : ""
-                  } ${index < currentStepIndex ? "completed" : ""}`}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </Modal>
+      }
+    >
+      <h2 className={onboardingStyles.stepTitle}>{currentStep.title}</h2>
+      <StepComponent />
+    </Dialog>
   );
 }

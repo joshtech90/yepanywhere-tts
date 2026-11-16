@@ -5,7 +5,9 @@ import {
 } from "@yep-anywhere/shared";
 import {
   type ReactNode,
+  type Ref,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
@@ -13,7 +15,7 @@ import {
 import { useI18n } from "../i18n";
 import { writeClipboardText } from "../lib/clipboard";
 import styles from "./SessionMenu.module.css";
-import { IconButton } from "./ui/Button";
+import { type ButtonSize, IconButton } from "./ui/Button";
 import { TextInput } from "./ui/Field";
 import { Menu, MenuGroup, MenuItem, useMenuTrigger } from "./ui/Menu";
 
@@ -88,12 +90,19 @@ export interface SessionMenuProps {
   shareLabel?: ReactNode;
   additionalItems?: (close: () => void) => ReactNode;
   triggerClassName?: string;
+  triggerSize?: ButtonSize;
   /** Additional class for the wrapper */
   className?: string;
   /** Remove the trigger from layout so its caller can overlay it on a row. */
   overlayTrigger?: boolean;
   /** Notified when the menu opens/closes so callers can react to open state. */
   onOpenChange?: (open: boolean) => void;
+  /** Lets the caller open the menu, e.g. from a long press on its row. */
+  controlRef?: Ref<SessionMenuHandle>;
+}
+
+export interface SessionMenuHandle {
+  open: () => void;
 }
 
 export function SessionMenu({
@@ -133,10 +142,12 @@ export function SessionMenu({
   shareLabel,
   additionalItems,
   triggerClassName,
+  triggerSize = "small",
   useEllipsisIcon = false,
   className = "",
   overlayTrigger = false,
   onOpenChange,
+  controlRef,
 }: SessionMenuProps) {
   const { t } = useI18n();
   // Notifies the caller of every open/close (toggle, outside press, Escape,
@@ -144,6 +155,10 @@ export function SessionMenu({
   const menu = useMenuTrigger({ onOpenChange });
   const isOpen = menu.open;
   const closeMenu = menu.close;
+  const setMenuOpen = menu.setOpen;
+  useImperativeHandle(controlRef, () => ({ open: () => setMenuOpen(true) }), [
+    setMenuOpen,
+  ]);
   const [isTerminating, setIsTerminating] = useState(false);
   const [isRestartingProvider, setIsRestartingProvider] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
@@ -239,22 +254,23 @@ export function SessionMenu({
   const wrapperClasses = [
     styles.wrapper,
     overlayTrigger && styles.overlayTrigger,
-    "session-menu-wrapper",
     className,
-    isOpen && "is-open",
   ]
     .filter(Boolean)
     .join(" ");
 
   return (
-    <div className={wrapperClasses}>
+    <div
+      className={wrapperClasses}
+      data-session-menu
+      data-session-menu-open={isOpen || undefined}
+    >
       <IconButton
         {...menu.triggerProps}
-        size="small"
+        size={triggerSize}
         label={t("sessionMenuOptions")}
-        className={["session-menu-trigger", triggerClassName]
-          .filter(Boolean)
-          .join(" ")}
+        className={["", triggerClassName].filter(Boolean).join(" ")}
+        data-session-menu-trigger=""
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();

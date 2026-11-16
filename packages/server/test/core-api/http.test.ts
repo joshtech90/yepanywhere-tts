@@ -20,6 +20,7 @@ import {
 } from "../../src/core-api/conversation.js";
 import { ConversationSubscriptions } from "../../src/experimental/conversation-subscriptions.js";
 import { createV0Routes } from "../../src/routes/v0/index.js";
+import { describeBackingStore } from "../../src/core-api/backing-store.js";
 
 const alice: Principal = {
   kind: "limited",
@@ -159,9 +160,11 @@ describe("isolated v0 application and HTTP reads", () => {
     for (const operation of operations) {
       if (
         operationMethod(operation) === "POST" ||
+        operation.id === "selection" ||
         operation.id === "followReceipt" ||
         operation.id === "receipt" ||
-        operation.id === "relationships"
+        operation.id === "relationships" ||
+        operation.id === "inputs"
       )
         continue;
       const path = `/v0${operation.path.replace(":serverId", "A").replace(":sessionId", "b")}`;
@@ -169,7 +172,7 @@ describe("isolated v0 application and HTTP reads", () => {
       expect(response.status, path).toBe(200);
       expect(
         operation.response.safeParse(
-          operation.id === "help"
+          ["help", "targetHelp"].includes(operation.id)
             ? await response.text()
             : await response.json(),
         ).success,
@@ -242,10 +245,18 @@ describe("isolated v0 application and HTTP reads", () => {
     const { app, sources } = fixture("A");
     const read = vi.fn(sources.conversation!);
     sources.conversation = read;
+    const backing = vi.fn(async () => describeBackingStore("claude"));
+    sources.backingStore = backing;
     expect(
       (await app.request("/v0/servers/A/sessions/a/conversation")).status,
     ).toBe(404);
     expect(read).not.toHaveBeenCalled();
+    expect((await app.request("/v0/servers/A/sessions/a")).status).toBe(404);
+    expect(backing).not.toHaveBeenCalled();
+    expect(
+      (await (await app.request("/v0/servers/A/sessions/b")).json())
+        .backingStore,
+    ).toMatchObject({ serverId: "A", kind: "unavailable", path: null });
     const path = "/v0/servers/A/sessions/b/conversation";
     const response = await app.request(path + "?maxMessages=1");
     expect(response.status).toBe(200);
@@ -257,7 +268,25 @@ describe("isolated v0 application and HTTP reads", () => {
     expect(body.coverage.earlierInScope).toBe(true);
     expect(body.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(body)).not.toContain("private-reasoning");
-    expect((await app.request(path + "?maxMessages=101")).status).toBe(400);
+    const clamped = await app.request(
+      path + "?maxMessages=1000&tailCompactions=100",
+    );
+    expect(clamped.status).toBe(200);
+    expect((await clamped.json()).coverage).toMatchObject({
+      requestedMessages: 1000,
+      maxMessages: 100,
+      requestedCompactions: 100,
+      compactions: 20,
+      limitedBy: ["serverLimit"],
+    });
+    for (const query of [
+      "maxMessages=0",
+      "maxMessages=-1",
+      "maxMessages=1.5",
+      "maxMessages=1000000000",
+      "tailCompactions=0",
+    ])
+      expect((await app.request(path + "?" + query)).status).toBe(400);
     expect((await app.request(path + "?limit=2")).status).toBe(400);
     expect((await app.request(path + "?anchorMessageId=unknown")).status).toBe(
       404,

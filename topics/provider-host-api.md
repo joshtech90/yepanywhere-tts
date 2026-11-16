@@ -83,7 +83,9 @@ The supported non-watch `scripts/dev.js` path probes that descriptor before
 starting Hono. It attaches to a compatible host, starts one when absent, or
 performs verified bounded recovery when an identified host is nonresponsive.
 Hono receives the discovered endpoint and token through private environment
-state. A host started by the wrapper retains wrapper IPC as its terminal-owner
+state. A wrapper reload repeats the probe after the old Hono stops: a host
+still absent or nonresponsive after the bounded wait is stopped and replaced
+before the replacement Hono starts, and any other state is kept. A host started by the wrapper retains wrapper IPC as its terminal-owner
 channel; a separately started foreground host retains its terminal instead.
 Standalone `USE_MOCK_SDK=true` servers do not discover or start an ambient
 provider host. An explicitly supplied wrapper host remains available for
@@ -96,6 +98,9 @@ and the manifests/lockfile that resolve those imports. Both launchers compute
 the same expected identity before discovery. A different checkout, changed
 import, changed dependency resolution, or build identity is incompatible and
 cannot be authenticated, registered, or attached as the current host.
+That refusal protects a running host. A descriptor whose owner process is
+proven gone is recovered like an unresponsive host whatever sources wrote it,
+so a host that died without cleanup cannot block later launches.
 
 Host protocol version 3 is newline-delimited JSON over the control socket.
 Every request carries a request id, token, Hono generation, and protocol

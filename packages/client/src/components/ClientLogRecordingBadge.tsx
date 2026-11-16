@@ -1,9 +1,10 @@
+import styles from "./ClientLogRecordingBadge.module.css";
 import { useEffect } from "react";
 import {
   disableClientLogCollection,
   useClientLogCollectionStatus,
 } from "../lib/diagnostics";
-import { ButtonBase } from "./ui/Button";
+import { Button } from "./ui/Button";
 
 const RECORDING_FAVICON_ID = "ya-client-log-recording-favicon";
 const RECORDING_FAVICON =
@@ -55,14 +56,22 @@ export function ClientLogRecordingBadge({
   const tooltip = getTooltip();
 
   return (
-    <ButtonBase
-      className={`client-log-recording-badge${inline ? " client-log-recording-badge--inline" : ""}`}
+    <Button
+      variant="danger"
+      size="dense"
+      className={`${styles.clientLogRecordingBadge} ${inline ? styles.clientLogRecordingBadgeInline : ""}`}
+      data-client-log-recording-badge
+      data-client-log-recording-badge--inline={inline || undefined}
       title={tooltip}
       aria-label={tooltip}
       onClick={disableClientLogCollection}
     >
-      <span className="client-log-recording-badge-dot" aria-hidden="true" />
+      <span
+        className={styles.clientLogRecordingBadgeDot}
+        data-client-log-recording-badge-dot
+        aria-hidden="true"
+      />
       <span>REC</span>
-    </ButtonBase>
+    </Button>
   );
 }

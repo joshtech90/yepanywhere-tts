@@ -499,7 +499,9 @@ describe("ProjectCard", () => {
       </I18nProvider>,
     );
 
-    expect(screen.getByTitle("Project Queue items: 2").textContent).toBe("2");
+    expect(
+      screen.getByRole("img", { name: "Project Queue items: 2" }).textContent,
+    ).toBe("2");
   });
 
   it("shows a separate warning for a paused queue item", () => {
@@ -517,7 +519,9 @@ describe("ProjectCard", () => {
       </I18nProvider>,
     );
 
-    expect(screen.getByTitle("Project Queue items: 1").textContent).toBe("1");
+    expect(
+      screen.getByRole("img", { name: "Project Queue items: 1" }).textContent,
+    ).toBe("1");
     expect(
       screen.getByLabelText(
         "Project Queue item needs attention. Review or retry it in Project Queue.",

@@ -46,6 +46,7 @@ import {
   type CodexProviderConfig,
   formatCodexLoginCommand,
 } from "../../../src/sdk/providers/codex.js";
+import { machineControlInstructions } from "@yep-anywhere/shared/machine-control-instructions";
 import * as codexApprovals from "../../../src/sdk/providers/codex-approvals.js";
 import * as codexItemConversion from "../../../src/sdk/providers/codex-item-conversion.js";
 import * as codexLiveEventConversion from "../../../src/sdk/providers/codex-live-event-conversion.js";
@@ -459,6 +460,38 @@ describe("CodexProvider", () => {
       );
     });
 
+    it("pins the launch executable when selection changes before the iterator connects", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-selected-launch-"));
+      const firstLog = join(tempDir, "first.jsonl");
+      const nextLog = join(tempDir, "next.jsonl");
+      const first = createFakeCodexCommand(
+        tempDir,
+        "first",
+        buildFakeCodexAppServer(firstLog),
+      );
+      const next = createFakeCodexCommand(
+        tempDir,
+        "next",
+        buildFakeCodexAppServer(nextLog),
+      );
+      const selected = new CodexProvider({ codexPath: first });
+      const session = await selected.startSession({ cwd: tempDir });
+      try {
+        selected.setCodexPath(next);
+        await session.iterator.next();
+        expect(
+          readFakeCodexRequests(firstLog).some(
+            (request) => request.method === "initialize",
+          ),
+        ).toBe(true);
+        expect(existsSync(nextLog)).toBe(false);
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("appends user and assistant history through app-server without starting a turn", async () => {
       const tempDir = mkdtempSync(join(tmpdir(), "codex-context-"));
       const logPath = join(tempDir, "requests.jsonl");
@@ -806,7 +839,12 @@ describe("CodexProvider", () => {
           for await (const message of session.iterator) messages.push(message);
         })();
         try {
-          await vi.waitFor(() => expect(messages.length).toBeGreaterThan(0));
+          // Full workspace runs exhausted the default 1 s first-event wait
+          // (1035 ms wall time). Allow 3x that measured startup lower bound;
+          // this case tests goal-stream ownership, not process startup speed.
+          await vi.waitFor(() => expect(messages.length).toBeGreaterThan(0), {
+            timeout: 3000,
+          });
           if (alreadyWorking) {
             await vi.waitFor(() =>
               expect(
@@ -2056,9 +2094,20 @@ describe("CodexProvider app-server lifecycle", () => {
         const turns = requests.filter(
           (request) => request.method === "turn/start",
         );
-        expect(JSON.stringify(turns[0]?.params)).toContain(
+        expect(JSON.stringify(thread?.params)).toContain(
           "AGENT_YA_V0_AUTHORIZATION",
         );
+        expect(JSON.stringify(turns[0]?.params)).not.toContain(
+          "[Yep Anywhere API]",
+        );
+        if (resumeSessionId) {
+          expect(
+            requests.find((request) => request.method === "thread/inject_items")
+              ?.params,
+          ).toMatchObject({
+            items: [{ type: "message", role: "developer" }],
+          });
+        }
         expect(JSON.stringify(turns[0]?.params)).toContain("first task");
         expect(JSON.stringify(turns[1]?.params)).not.toContain(
           "[Yep Anywhere API]",
@@ -2067,6 +2116,78 @@ describe("CodexProvider app-server lifecycle", () => {
       } finally {
         await session.abort();
         await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    ["API", "config/read"],
+    ["API", "thread/inject_items"],
+    ["Machine Control", "config/read"],
+    ["Machine Control", "thread/inject_items"],
+  ])(
+    "stops before user input when %s instructions %s are rejected",
+    async (kind, method) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-api-rejected-"));
+      const logPath = join(tempDir, "requests.jsonl");
+      const source = buildFakeCodexPermissionAppServer(logPath).replace(
+        "  switch (message.method) {",
+        `  if (message.method === ${JSON.stringify(method)}) {
+    write({ id: message.id, error: { code: -32000, message: "OWNED_API_BOOTSTRAP_FAILURE" } });
+    return;
+  }
+  switch (message.method) {`,
+      );
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-api-rejected",
+        source,
+      );
+      // The deliberately rejected native request must produce this diagnostic.
+      const diagnostic = vi
+        .spyOn(getLogger(), "error")
+        .mockImplementation(() => {});
+      const session = await new CodexProvider({ codexPath }).startSession({
+        cwd: tempDir,
+        permissionMode: "bypassPermissions",
+        resumeSessionId:
+          method === "thread/inject_items" ? "thread-policy" : undefined,
+        agentSelf: false,
+        ...(kind === "API"
+          ? { agentApi: { serverId: "codex-api-rejected" } }
+          : {
+              machineControlInstructions: machineControlInstructions(
+                "0.7.2",
+                "'/owned/machine-control'",
+              ),
+            }),
+        initialMessage: { text: "NEVER_SUBMITTED" },
+      });
+      try {
+        const messages: Record<string, unknown>[] = [];
+        for await (const message of session.iterator) {
+          messages.push(message);
+          if (message.type === "result") break;
+        }
+        expect(
+          messages.some(
+            (message) =>
+              message.type === "error" &&
+              String(message.error).includes("OWNED_API_BOOTSTRAP_FAILURE"),
+          ),
+        ).toBe(true);
+        expect(messages.some((message) => message.type === "user")).toBe(false);
+        expect(
+          readFakeCodexRequests(logPath).some(
+            (request) => request.method === "turn/start",
+          ),
+        ).toBe(false);
+        expect(diagnostic).toHaveBeenCalled();
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        diagnostic.mockRestore();
         rmSync(tempDir, { recursive: true, force: true });
       }
     },

@@ -140,7 +140,7 @@ describe("GitDiffBody", () => {
 
     const rendered = render(
       <MemoryRouter>
-        <div className="modal-content">
+        <div data-modal-content>
           <GitDiffBody
             file={FILE}
             fileKey="src/live.ts:false"
@@ -151,7 +151,9 @@ describe("GitDiffBody", () => {
       </MemoryRouter>,
     );
     await screen.findByText("diff-a");
-    const scrollRoot = document.querySelector<HTMLElement>(".modal-content");
+    const scrollRoot = document.querySelector<HTMLElement>(
+      "[data-modal-content]",
+    );
     if (!scrollRoot) throw new Error("Expected diff scroll root");
     scrollRoot.scrollTop = 40;
     const rectSpy = vi
@@ -177,7 +179,7 @@ describe("GitDiffBody", () => {
 
     rendered.rerender(
       <MemoryRouter>
-        <div className="modal-content">
+        <div data-modal-content>
           <GitDiffBody
             file={{ ...FILE }}
             fileKey="src/live.ts:false"
@@ -257,18 +259,22 @@ describe("GitDiffBody", () => {
     expect(
       getGitDiff.mock.calls.some(([, options]) => options.fullContext),
     ).toBe(true);
-    const rendered = document.querySelector(".highlighted-diff");
+    const rendered = document.querySelector("[data-highlighted-diff]");
     expect(rendered?.textContent).toContain("before");
     expect(rendered?.textContent).toContain("new");
     expect(rendered?.textContent).toContain("after");
     expect(rendered?.textContent).not.toContain("-old");
     expect(rendered?.textContent).not.toContain("+new");
-    expect(rendered?.querySelector(".line-hunk")).toBeNull();
+    expect(
+      rendered?.querySelector("[data-diff-hunk-header], .line-hunk"),
+    ).toBeNull();
 
     fireEvent.click(showRemovedLinesButton);
     const restoredDiff = document.querySelector("[data-diff-hunk]");
     expect(restoredDiff?.textContent).toContain("-old");
-    expect(restoredDiff?.querySelector(".line-hunk")).not.toBeNull();
+    expect(
+      restoredDiff?.querySelector("[data-diff-hunk-header], .line-hunk"),
+    ).not.toBeNull();
   });
 
   it("keeps the requested rendered diff through a source-only refresh", async () => {
@@ -501,12 +507,12 @@ describe("GitDiffBody", () => {
     );
 
     await screen.findByText("compact");
-    expect(document.querySelector(".git-diff-toolbar-path")?.textContent).toBe(
+    expect(document.querySelector("[data-source-diff-path]")?.textContent).toBe(
       "packages/client/src",
     );
-    expect(document.querySelector(".git-diff-preview-title")?.textContent).toBe(
-      "very-long-file-name.ts",
-    );
+    expect(
+      document.querySelector("[data-source-preview-title]")?.textContent,
+    ).toBe("very-long-file-name.ts");
     expect(
       screen.getByRole("button", { name: "gitStatusIgnoreWhitespace" })
         .textContent,
@@ -520,9 +526,9 @@ describe("GitDiffBody", () => {
       }).textContent,
     ).toBe("");
     await waitFor(() =>
-      expect(document.querySelector(".diff-hunk-indicator")?.textContent).toBe(
-        "1/1",
-      ),
+      expect(
+        document.querySelector("[data-source-hunk-position]")?.textContent,
+      ).toBe("1/1"),
     );
   });
 
@@ -577,11 +583,13 @@ describe("GitDiffBody", () => {
       ).toContain("+large line"),
     );
     expect(screen.getByText("gitStatusDiffPlainMode")).toBeTruthy();
-    expect(document.querySelectorAll(".line-hunk")).toHaveLength(1);
+    expect(
+      document.querySelectorAll("[data-diff-hunk-header], .line-hunk"),
+    ).toHaveLength(1);
     await waitFor(() =>
-      expect(document.querySelector(".diff-hunk-indicator")?.textContent).toBe(
-        "1/1",
-      ),
+      expect(
+        document.querySelector("[data-source-hunk-position]")?.textContent,
+      ).toBe("1/1"),
     );
     expect(
       screen.getByRole("button", { name: "sourcePreviousHunkShortcut" }),
@@ -666,6 +674,6 @@ describe("GitDiffBody", () => {
     expect(
       await screen.findByText("gitStatusDiffPreviewSkippedBinary"),
     ).toBeTruthy();
-    expect(document.querySelector(".code-highlighter-plain")).toBeNull();
+    expect(document.querySelector("[data-code-highlighter-plain]")).toBeNull();
   });
 });

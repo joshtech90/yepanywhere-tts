@@ -115,6 +115,7 @@ export type ToolResultMediaPreservation =
 
 /** Server-wide settings */
 export interface ServerSettings {
+  cliInstallations?: import("@yep-anywhere/shared/provider-cli-installations").CliInstallationSelections;
   steeringModes?: import("@yep-anywhere/shared").SteeringModeSettings;
   computerControl?: import("../machine-control/legacy-retirement.js").LegacyComputerSettings;
   /** Experimental issue discovery; absent means disabled, viewed scope. */
@@ -242,6 +243,8 @@ export interface ServerSettings {
   claudeSteerBackgroundBash: ClaudeSteerBackgroundBashSettings;
   /** Whether the device bridge (emulator/device streaming) feature is enabled */
   deviceBridgeEnabled?: boolean;
+  /** Whether eligible launches advertise installed Machine Control by default. */
+  machineControlEnabled?: boolean;
   /** Defaults applied when opening the new session form */
   newSessionDefaults?: NewSessionDefaults;
   /** Defaults applied by browser clients when their local value is unset. */
@@ -735,6 +738,9 @@ export class ServerSettingsService {
   private dataDir: string;
   private filePath: string;
   private initialized = false;
+  get dataDirectory(): string {
+    return this.dataDir;
+  }
   private updateTail: Promise<void> = Promise.resolve();
   private readonly changeListeners = new Set<ServerSettingsChangeListener>();
   private readonly logger: Pick<Console, "error">;

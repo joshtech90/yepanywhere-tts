@@ -324,11 +324,11 @@ describe("SessionMetadataService", () => {
       await service.setTitle("session-1", "My Custom Title");
 
       const row = openTestDiscoveryDatabase(testDir)
-        .prepare("SELECT metadata FROM session_metadata WHERE session_id = ?")
-        .get<{ metadata: string }>("session-1");
-      expect(JSON.parse(row?.metadata ?? "{}").customTitle).toBe(
-        "My Custom Title",
-      );
+        .prepare(
+          "SELECT custom_title, extra FROM session_metadata WHERE session_id = ?",
+        )
+        .get("session-1");
+      expect(row).toEqual({ custom_title: "My Custom Title", extra: "{}" });
       await expect(
         readFile(join(testDir, "session-metadata.json"), "utf-8"),
       ).rejects.toMatchObject({ code: "ENOENT" });
@@ -360,7 +360,7 @@ describe("SessionMetadataService", () => {
       });
     });
 
-    it("imports the JSON file once and never reads or writes it again", async () => {
+    it("imports the JSON file once, never reads it again and deletes it on the next start", async () => {
       const legacyFile = join(testDir, "session-metadata.json");
       const legacy = JSON.stringify({
         version: 3,
@@ -383,6 +383,18 @@ describe("SessionMetadataService", () => {
       expect(restarted.getAllMetadata()).toEqual({
         "session-1": { customTitle: "Renamed" },
       });
+      await expect(readFile(legacyFile, "utf-8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    });
+
+    it("keeps a JSON file that appears after an import that found none", async () => {
+      await service.initialize();
+      const legacyFile = join(testDir, "session-metadata.json");
+      const late = JSON.stringify({ version: 3, sessions: {} });
+      await writeFile(legacyFile, late);
+      await createTestSessionMetadataService(testDir).initialize();
+      expect(await readFile(legacyFile, "utf-8")).toBe(late);
     });
 
     it("imports once when two connections initialize together", async () => {
@@ -591,9 +603,9 @@ describe("SessionMetadataService", () => {
       await service.setProvider("session-2", "codex");
       await service.setProvider("session-3", "claude-gateway");
 
-      expect(service.getRecordedProviders()).toEqual([
-        "codex",
+      expect(service.getRecordedProviders().sort()).toEqual([
         "claude-gateway",
+        "codex",
       ]);
     });
   });

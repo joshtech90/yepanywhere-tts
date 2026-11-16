@@ -214,7 +214,14 @@ export function createSessionProjectRouting(
     const projects = options?.allowStaleSnapshot
       ? snapshotReusingScanner(deps.scanner, refreshProjectSnapshotSoon)
       : deps.scanner;
-    const workingProject = await projects.getOrCreateProject(requestProjectId);
+    // These routes read a session; one that is saved keeps its project, and
+    // so its history, when the folder or the link to it is gone.
+    const saved = identity ? { savedSession: true } : undefined;
+    const workingProject = await projects.getOrCreateProject(
+      requestProjectId,
+      undefined,
+      saved,
+    );
     if (!workingProject) {
       return { error: "Project not found", status: 404 };
     }
@@ -223,7 +230,11 @@ export function createSessionProjectRouting(
       const transcriptProject =
         identity.projectId === requestProjectId
           ? workingProject
-          : await projects.getOrCreateProject(identity.projectId);
+          : await projects.getOrCreateProject(
+              identity.projectId,
+              undefined,
+              saved,
+            );
       return transcriptProject
         ? {
             transcriptProject,

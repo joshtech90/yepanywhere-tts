@@ -1,3 +1,4 @@
+import { extractCodexOssUserText } from "./codex-oss-user-text.js";
 import { nativeStorageScope } from "./native-storage-scope.js";
 /**
  * CodexOSS Provider - Local models via Codex CLI with --oss flag.
@@ -50,7 +51,7 @@ import {
   providerInstallationCoordinator,
 } from "../../services/ProviderInstallationCoordinator.js";
 import { probeServiceEffort } from "../../services/GatewayEffortProbe.js";
-import { findCodexCliPath } from "../cli-detection.js";
+import { codexCli } from "../cli-installation-runtime.js";
 import { MessageQueue, type QueuedSDKUserMessage } from "../messageQueue.js";
 import { readFirstLine } from "../../utils/jsonl.js";
 import type { SDKMessage } from "../types.js";
@@ -250,9 +251,7 @@ export class CodexOSSProvider implements AgentProvider {
   }
 
   getModelCatalogCacheKey(): string {
-    return this.installationCoordinator.getSourceVersion(
-      CODEX_INSTALLATION_FAMILY,
-    );
+    return codexCli.catalogKey(this.installationCoordinator);
   }
 
   /**
@@ -865,7 +864,7 @@ export class CodexOSSProvider implements AgentProvider {
     runtime: { process?: ChildProcess; exit: Promise<number | null> },
   ): AsyncIterableIterator<SDKMessage> {
     if (signal.aborted) return;
-    const codexPath = await this.findCodexPath();
+    const codexPath = await this.findCodexPath(true);
     if (signal.aborted) return;
     if (!codexPath) {
       yield {
@@ -906,7 +905,7 @@ export class CodexOSSProvider implements AgentProvider {
     for await (const message of messageGen) {
       if (signal.aborted) break;
 
-      let userPrompt = this.extractTextFromMessage(message);
+      let userPrompt = extractCodexOssUserText(message);
       if (!userPrompt) continue;
 
       // Prepend global instructions to the first message of new sessions
@@ -1571,46 +1570,11 @@ export class CodexOSSProvider implements AgentProvider {
   }
 
   /**
-   * Extract text from user message.
-   */
-  private extractTextFromMessage(message: unknown): string {
-    if (!message || typeof message !== "object") return "";
-
-    const userMsg = message as { text?: string };
-    if (typeof userMsg.text === "string") return userMsg.text;
-
-    const sdkMsg = message as { message?: { content?: string | unknown[] } };
-    const content = sdkMsg.message?.content;
-
-    if (typeof content === "string") return content;
-
-    if (Array.isArray(content)) {
-      return content
-        .map((block: unknown) => {
-          if (typeof block === "string") return block;
-          if (
-            typeof block === "object" &&
-            block !== null &&
-            "type" in block &&
-            (block as { type: string }).type === "text" &&
-            "text" in block
-          ) {
-            return (block as { text: string }).text;
-          }
-          return "";
-        })
-        .filter(Boolean)
-        .join("\n");
-    }
-
-    return "";
-  }
-
-  /**
    * Find codex binary path.
    */
-  private async findCodexPath(): Promise<string | null> {
-    return findCodexCliPath(this.codexPath, this.installationCoordinator);
+  private async findCodexPath(verify = false): Promise<string | null> {
+    const resolve = verify ? codexCli.launch : codexCli.find;
+    return resolve(this.codexPath, this.installationCoordinator);
   }
 }
 

@@ -19,6 +19,7 @@ import { RepoStatusBar } from "../RepoStatusBar";
 import repoStyles from "../RepoStatusBar.module.css";
 import { SourceModeTabs, type SourceTab } from "../SourceModeTabs";
 import tabStyles from "../SourceModeTabs.module.css";
+import uiTabStyles from "../../components/ui/Tabs.module.css";
 
 const apiMocks = vi.hoisted(() => ({
   getGitIncomingCommits: vi.fn(),
@@ -55,17 +56,15 @@ describe("RepoStatusBar", () => {
     render(
       <RepoStatusBar
         status={gitStatus()}
-        className="source-header-repo-status"
+        className="test-repo-placement"
         t={t}
       />,
     );
 
     const bar = screen.getByTestId("repo-status-bar");
-    expect(bar.classList.contains("source-header-repo-status")).toBe(true);
+    expect(bar.classList.contains("test-repo-placement")).toBe(true);
     expect(bar.classList.contains(repoStyles.bar as string)).toBe(true);
     expect(bar.classList.contains(repoStyles.inline as string)).toBe(true);
-    // The legacy global vocabulary is gone; callers cannot target it any more.
-    expect(document.querySelector(".repo-status-bar")).toBeNull();
   });
 
   it("marks a dirty or out-of-sync repository with the warn variant", () => {
@@ -219,6 +218,9 @@ describe("SourceModeTabs", () => {
       <SourceModeTabs tab="files" tabs={TABS} onSelect={onSelect} t={t} />,
     );
 
+    expect(
+      screen.getByRole("tablist", { name: "gitStatusTitle" }),
+    ).toBeTruthy();
     const tabs = screen.getAllByRole("tab");
     expect(tabs).toHaveLength(3);
     expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual([
@@ -229,6 +231,21 @@ describe("SourceModeTabs", () => {
 
     fireEvent.click(tabs[0] as HTMLElement);
     expect(onSelect).toHaveBeenCalledWith("changes");
+  });
+
+  it("moves focus with arrows but switches modes only on activation", () => {
+    const onSelect = vi.fn();
+    render(
+      <SourceModeTabs tab="files" tabs={TABS} onSelect={onSelect} t={t} />,
+    );
+    const [, files, comments] = screen.getAllByRole("tab") as HTMLElement[];
+
+    fireEvent.keyDown(files as HTMLElement, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(comments);
+    expect(onSelect).not.toHaveBeenCalled();
+
+    fireEvent.click(comments as HTMLElement);
+    expect(onSelect).toHaveBeenCalledWith("comments");
   });
 
   it("renders a count chip only for a positive count", () => {
@@ -242,9 +259,11 @@ describe("SourceModeTabs", () => {
       />,
     );
 
-    const counts = document.querySelectorAll(`.${tabStyles.count as string}`);
-    expect(counts).toHaveLength(1);
-    expect(counts[0]?.textContent).toBe("3");
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "sourceTabChanges3",
+      "sourceTabFiles",
+      "sourceTabComments",
+    ]);
   });
 
   it("supports a fourth Reviews mode without changing the tab contract", () => {
@@ -271,6 +290,9 @@ describe("SourceModeTabs", () => {
 
     const header = screen.getByRole("tablist");
     expect(header.classList.contains(tabStyles.stacked as string)).toBe(false);
+    expect(header.classList.contains(uiTabStyles.fillPhone as string)).toBe(
+      false,
+    );
 
     rerender(
       <SourceModeTabs
@@ -281,11 +303,11 @@ describe("SourceModeTabs", () => {
         t={t}
       />,
     );
-    expect(
-      screen
-        .getByRole("tablist")
-        .classList.contains(tabStyles.stacked as string),
-    ).toBe(true);
+    const stacked = screen.getByRole("tablist").classList;
+    expect(stacked.contains(tabStyles.stacked as string)).toBe(true);
+    // Equal columns on phones only; desktop keeps content-sized tabs.
+    expect(stacked.contains(uiTabStyles.fillPhone as string)).toBe(true);
+    expect(stacked.contains(uiTabStyles.fill as string)).toBe(false);
   });
 });
 
@@ -310,7 +332,6 @@ describe("SourceRowMenuTrigger", () => {
 
     const trigger = screen.getByRole("button", { name: "sourceRowActions" });
     expect(trigger.classList.contains(menuStyles.trigger as string)).toBe(true);
-    expect(trigger.classList.contains("source-row-menu-trigger")).toBe(false);
 
     fireEvent.click(trigger);
     expect(onOpen).toHaveBeenCalledTimes(1);

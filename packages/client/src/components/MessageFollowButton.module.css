@@ -1,0 +1,21 @@
+.messageFollowToggle {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  right: 10px;
+  z-index: 2;
+}
+
+/* Floating ages occupy the first row above the editor on narrow layouts. */
+[data-session-input-inner]:has([data-status-floats] [data-composer-status-ages])
+> .messageFollowToggle {
+  bottom: calc(100% + 2rem);
+}
+
+.messageFollowToggle svg {
+  flex-shrink: 0;
+}
+
+.messageFollowToggle.is-new-output {
+  max-width: min(220px, calc(100dvw - 32px));
+  white-space: nowrap;
+}

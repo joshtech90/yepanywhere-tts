@@ -2,6 +2,21 @@ import { CAPABILITY_ID_ALLOCATIONS } from "./capability-ids.js";
 import { SECURITY_CLIENT_AUDIT_CAPABILITY } from "./security-clients.js";
 
 export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
+  cliInstallations: {
+    name: "cli-installations",
+    index: CAPABILITY_ID_ALLOCATIONS.cliInstallations.id,
+    introducedIn: "0.12.0",
+  },
+  collectionMetadataFields: {
+    name: "collection-metadata-fields",
+    index: CAPABILITY_ID_ALLOCATIONS.collectionMetadataFields.id,
+    introducedIn: "0.12.0",
+  },
+  sidebarSessionSnapshot: {
+    name: "sidebar-session-snapshot",
+    index: CAPABILITY_ID_ALLOCATIONS.sidebarSessionSnapshot.id,
+    introducedIn: "0.12.0",
+  },
   sessionCreationAdmission: {
     name: "session-creation-admission-v1",
     index: CAPABILITY_ID_ALLOCATIONS.sessionCreationAdmission.id,
@@ -82,6 +97,11 @@ export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
     index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterPools.id,
     introducedIn: "0.9.4",
   },
+  agentAuthRouterHosted: {
+    name: "agent-auth-router-hosted",
+    index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterHosted.id,
+    introducedIn: "0.12.1",
+  },
   agentAuthRouterRecovery: {
     name: "agent-auth-router-recovery",
     index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterRecovery.id,
@@ -101,6 +121,11 @@ export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
     name: "installed-machine-control",
     index: CAPABILITY_ID_ALLOCATIONS.installedMachineControl.id,
     introducedIn: "0.9.4",
+  },
+  machineControlSetting: {
+    name: "machine-control-setting",
+    index: CAPABILITY_ID_ALLOCATIONS.machineControlSetting.id,
+    introducedIn: "0.12.0",
   },
   nativePushSubscriptions: {
     name: "native-push-subscriptions-v1",

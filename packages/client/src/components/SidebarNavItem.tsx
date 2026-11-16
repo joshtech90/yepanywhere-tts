@@ -4,6 +4,7 @@ import { useLongPress } from "../hooks/useLongPress";
 import { Link, useLocation } from "react-router-dom";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import styles from "./SidebarNavItem.module.css";
+import { Badge } from "./ui/Badge";
 import { ButtonBase } from "./ui/Button";
 
 /**
@@ -110,7 +111,7 @@ export const SidebarIcons = {
   ),
   newSession: (
     <svg
-      className="sidebar-new-session-icon"
+      data-sidebar-new-session-icon=""
       width="16"
       height="16"
       viewBox="0 0 24 24"
@@ -244,21 +245,36 @@ export function SidebarNavItem({
   const link = (
     <Link
       to={fullPath}
-      className={`sidebar-nav-item ${isActive ? "active" : ""}`}
+      data-sidebar-active={isActive || undefined}
+      className={`${styles.sidebarNavItem} ${isActive ? styles.active : ""}`}
+      data-sidebar-nav-item
       onClick={onClick}
       title={title ?? label}
     >
       {icon}
-      <span className="sidebar-nav-text">{label}</span>
-      {hasDraft && <span className="session-draft-badge">Draft</span>}
+      <span className={styles.sidebarNavText} data-sidebar-nav-text>
+        {label}
+      </span>
+      {hasDraft && (
+        <Badge tone="warning" size="small">
+          Draft
+        </Badge>
+      )}
       {hasActivityIndicator && <ThinkingIndicator />}
       {badge !== undefined && badge > 0 && (
-        <span
-          className={`sidebar-nav-badge sidebar-nav-badge--${badgeVariant}`}
-          title={badgeTitle}
+        <Badge
+          shape="count"
+          size="small"
+          tone={badgeVariant === "projectQueue" ? "neutral" : "accent"}
+          emphasis={badgeVariant === "projectQueue" ? "soft" : "solid"}
+          role={badgeTitle ? "img" : undefined}
+          aria-label={badgeTitle}
+          tooltip={badgeTitle}
+          className={styles.badge}
+          data-testid={`sidebar-nav-badge-${badgeVariant}`}
         >
           {badge}
-        </span>
+        </Badge>
       )}
     </Link>
   );
@@ -289,10 +305,9 @@ export interface SidebarNavButtonProps {
 
 /**
  * Action variant of {@link SidebarNavItem}: emits the identical markup
- * (`sidebar-nav-item` > icon + `sidebar-nav-text` label) as a <button>
- * instead of a <Link>, so action items inherit the same styling and the
- * collapsed-rail icon-only CSS contract (`.sidebar-collapsed .sidebar-nav-text
- * { display: none }`) rather than re-implementing them with a bespoke guard.
+ * (the `data-sidebar-nav-item` boundary, icon and `data-sidebar-nav-text`
+ * label) as a <button> instead of a <Link>. Both share the module-owned
+ * collapsed-rail icon-only presentation through `data-sidebar-collapsed`.
  */
 export function SidebarNavButton({
   icon,
@@ -301,6 +316,7 @@ export function SidebarNavButton({
   title,
   className = "",
   onLongPress,
+  ...buttonProps
 }: SidebarNavButtonProps) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const press = useLongPress(() => {
@@ -309,15 +325,19 @@ export function SidebarNavButton({
   });
   return (
     <ButtonBase
+      {...buttonProps}
       ref={buttonRef}
-      className={`sidebar-nav-item ${className}`.trim()}
+      className={`${styles.sidebarNavItem} ${className}`.trim()}
+      data-sidebar-nav-item
       {...(onLongPress ? press.handlers : {})}
       onClick={onLongPress ? press.click(onClick) : onClick}
       aria-label={label}
       title={title ?? label}
     >
       {icon}
-      <span className="sidebar-nav-text">{label}</span>
+      <span className={styles.sidebarNavText} data-sidebar-nav-text>
+        {label}
+      </span>
     </ButtonBase>
   );
 }
@@ -331,5 +351,9 @@ export interface SidebarNavSectionProps {
  * Provides consistent spacing between items.
  */
 export function SidebarNavSection({ children }: SidebarNavSectionProps) {
-  return <nav className="sidebar-nav-section">{children}</nav>;
+  return (
+    <nav className={styles.sidebarNavSection} data-sidebar-nav-section>
+      {children}
+    </nav>
+  );
 }

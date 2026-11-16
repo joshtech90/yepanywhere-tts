@@ -91,8 +91,8 @@ describe("the launch settings a new session keeps for later resumes", () => {
     provider = new ClaudeProvider();
     vi.spyOn(provider, "isInstalled").mockResolvedValue(true);
     vi.spyOn(provider, "isAuthenticated").mockResolvedValue(true);
-    // Staged creation asks for the full auth status; without this the real
-    // CLI answers from the hermetic test home and reports logged out.
+    // Creation admission reads getAuthStatus, which otherwise depends on the
+    // host's Claude credentials and fails under the suite's temporary HOME.
     vi.spyOn(provider, "getAuthStatus").mockResolvedValue({
       installed: true,
       authenticated: true,

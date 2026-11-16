@@ -74,7 +74,7 @@ async function probeComposer(page: Page) {
     const probe: { loaded?: number; matched?: number; expect?: string } = {};
     (window as unknown as { pinProbe: typeof probe }).pinProbe = probe;
     const tick = () => {
-      const transcript = document.querySelector(".message-list");
+      const transcript = document.querySelector("[data-message-list]");
       if (transcript?.textContent?.includes("Previous message"))
         probe.loaded ??= performance.now();
       const input = document.querySelector<HTMLTextAreaElement>(selector);
@@ -107,7 +107,7 @@ async function arriveFromBangHistory(
 ) {
   await page.goto(`${baseURL}/bang-commands`);
   await page.getByRole("button", { name: action }).click();
-  await expect(page.locator(".session-title-skeleton")).toBeVisible();
+  await expect(page.locator("[data-session-title-skeleton]")).toBeVisible();
   await page.evaluate((text) => {
     (window as unknown as { pinProbe: { expect?: string } }).pinProbe.expect =
       text;
@@ -230,7 +230,7 @@ test("Go to this turn in the recall drawer scrolls to that turn", async ({
   await expect(target).not.toBeInViewport();
   await session.composer.press("Control+ArrowUp");
   await page
-    .locator(".composer-recall-row")
+    .locator("[data-composer-recall-row]")
     .filter({ hasText: "Request number 24" })
     .getByRole("button", { name: "Go to this turn" })
     .click();
@@ -307,13 +307,39 @@ test("opening records the visit, and a session in another project replaces the U
     ]);
 });
 
-test("a session with a native id is relabelled with it in the URL, keeping the YA id", async ({
+test("a native id with its family becomes the URL path, keeping the page", async ({
   page,
   baseURL,
 }) => {
   const { historyLength } = await openMeasuringHistory(page, baseURL, {
     owner: "none",
-    session: { nativeSessionId: "pin-native-thread" },
+    session: {
+      nativeSessionId: "pin-native-thread",
+      nativeSessionFamily: "codex",
+    },
+  });
+
+  await expect(page).toHaveURL(
+    (url) =>
+      url.pathname ===
+        `/projects/${projectId}/sessions/codex/pin-native-thread` &&
+      url.search === "",
+  );
+  expect(await page.evaluate(() => history.length)).toBe(historyLength);
+  expect(await keptState(page)).toBe("kept");
+});
+
+test("an older server's native id without a family keeps the YA id query", async ({
+  page,
+  baseURL,
+}) => {
+  const { historyLength } = await openMeasuringHistory(page, baseURL, {
+    owner: "none",
+    // The detail is the real server's, so drop the family it now sends.
+    session: {
+      nativeSessionId: "pin-native-thread",
+      nativeSessionFamily: undefined,
+    },
   });
 
   await expect(page).toHaveURL(

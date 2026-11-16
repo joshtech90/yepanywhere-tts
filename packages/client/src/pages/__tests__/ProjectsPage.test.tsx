@@ -467,7 +467,9 @@ describe("ProjectsPage", () => {
     expect(screen.getByRole("heading", { name: "Project Queue" })).toBeTruthy();
     expect(screen.getByText("Queued project work")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
-    expect(screen.getByTitle("Project Queue items: 1").textContent).toBe("1");
+    expect(
+      screen.getByRole("img", { name: "Project Queue items: 1" }).textContent,
+    ).toBe("1");
   });
 
   it("marks projects whose first queue item is paused", () => {
@@ -481,7 +483,9 @@ describe("ProjectsPage", () => {
       </I18nProvider>,
     );
 
-    expect(screen.getByTitle("Project Queue items: 1").textContent).toBe("1");
+    expect(
+      screen.getByRole("img", { name: "Project Queue items: 1" }).textContent,
+    ).toBe("1");
     expect(
       screen.getByLabelText(
         "Project Queue item needs attention. Review or retry it in Project Queue.",

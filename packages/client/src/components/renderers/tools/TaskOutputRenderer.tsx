@@ -1,3 +1,7 @@
+import statusStyles from "../OutputStatus.module.css";
+import codeStyles from "../CodeOutput.module.css";
+import expandStyles from "../ExpandOutput.module.css";
+import styles from "./TaskOutputRenderer.module.css";
 import { toolDisplayContracts } from "./toolDisplayContracts";
 import { defineTool } from "./defineTool";
 import { useEffect, useState } from "react";
@@ -5,6 +9,7 @@ import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
+import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import type { TaskOutputInput, TaskOutputResult } from "./types";
 
@@ -15,10 +20,10 @@ const MAX_LINES_COLLAPSED = 20;
  */
 function StatusIndicator({ status }: { status: string }) {
   const statusConfig = {
-    running: { icon: "⟳", className: "status-running" },
-    completed: { icon: "✓", className: "status-completed" },
-    failed: { icon: "✗", className: "status-failed" },
-    timeout: { icon: "⏱", className: "status-timeout" },
+    running: { icon: "⟳", className: statusStyles.statusRunning },
+    completed: { icon: "✓", className: statusStyles.statusCompleted },
+    failed: { icon: "✗", className: statusStyles.statusFailed },
+    timeout: { icon: "⏱", className: statusStyles.statusTimeout },
   };
 
   const config = statusConfig[status as keyof typeof statusConfig] || {
@@ -27,7 +32,11 @@ function StatusIndicator({ status }: { status: string }) {
   };
 
   return (
-    <span className={`taskoutput-status ${config.className}`}>
+    <span
+      className={`${styles.taskoutputStatus} ${config.className}`}
+      data-taskoutput-status
+      data-tool-status={status}
+    >
       {config.icon} {status}
     </span>
   );
@@ -38,16 +47,18 @@ function StatusIndicator({ status }: { status: string }) {
  */
 function TaskOutputToolUse({ input }: { input: TaskOutputInput }) {
   return (
-    <div className="taskoutput-tool-use">
-      <span className="taskoutput-label">Polling task</span>
-      <code className="taskoutput-id">{input.task_id}</code>
+    <div className={styles.taskoutputToolUse} data-taskoutput-tool-use>
+      <span className={styles.taskoutputLabel} data-taskoutput-label>
+        Polling task
+      </span>
+      <code className={styles.taskoutputId} data-taskoutput-id>
+        {input.task_id}
+      </code>
       {input.block !== undefined && (
-        <span className="badge">
-          {input.block ? "blocking" : "non-blocking"}
-        </span>
+        <Badge size="small">{input.block ? "blocking" : "non-blocking"}</Badge>
       )}
       {input.timeout !== undefined && (
-        <span className="badge">timeout: {input.timeout}ms</span>
+        <Badge size="small">timeout: {input.timeout}ms</Badge>
       )}
     </div>
   );
@@ -80,7 +91,11 @@ function TaskOutputToolResult({ result }: { result: TaskOutputResult }) {
     enabled && validationErrors && !isToolIgnored("TaskOutput");
 
   if (!result) {
-    return <div className="taskoutput-empty">No output</div>;
+    return (
+      <div className={styles.taskoutputEmpty} data-taskoutput-empty>
+        No output
+      </div>
+    );
   }
 
   const task = result.task;
@@ -92,41 +107,54 @@ function TaskOutputToolResult({ result }: { result: TaskOutputResult }) {
       : outputLines;
 
   return (
-    <div className="taskoutput-result">
-      <div className="taskoutput-header">
+    <div className={styles.taskoutputResult} data-taskoutput-result>
+      <div className={styles.taskoutputHeader} data-taskoutput-header>
         <StatusIndicator status={result.retrieval_status} />
         {task?.task_type && (
-          <span className="badge badge-info">{task.task_type}</span>
+          <Badge tone="info" size="small">
+            {task.task_type}
+          </Badge>
         )}
         {task?.description && (
-          <span className="taskoutput-desc">{task.description}</span>
+          <span className={styles.taskoutputDesc} data-taskoutput-desc>
+            {task.description}
+          </span>
         )}
         {showValidationWarning && validationErrors && (
           <SchemaWarning toolName="TaskOutput" errors={validationErrors} />
         )}
       </div>
       {task && (
-        <div className="taskoutput-task">
-          <div className="taskoutput-task-status">
+        <div className={styles.taskoutputTask} data-taskoutput-task>
+          <div
+            className={styles.taskoutputTaskStatus}
+            data-taskoutput-task-status
+          >
             {task.status && <StatusIndicator status={task.status} />}
             {task.exitCode != null && (
-              <span
-                className={`badge ${task.exitCode === 0 ? "badge-success" : "badge-error"}`}
+              <Badge
+                tone={task.exitCode === 0 ? "success" : "danger"}
+                size="small"
               >
                 exit {task.exitCode}
-              </span>
+              </Badge>
             )}
           </div>
           {task.output && (
             <>
-              <pre className="taskoutput-content code-block">
+              <pre
+                className={`${styles.taskoutputContent} ${codeStyles.codeBlock}`}
+                data-taskoutput-content
+                data-code-block
+              >
                 <code>{displayLines.join("\n")}</code>
               </pre>
               {needsCollapse && (
                 <Button
                   variant="ghost"
                   size="small"
-                  className="expand-button"
+                  className={expandStyles.expandButton}
+                  data-expand-button
                   onClick={() => setIsExpanded(!isExpanded)}
                 >
                   {isExpanded
@@ -155,7 +183,7 @@ export const taskOutputRenderer = defineTool(toolDisplayContracts.TaskOutput, {
 
   renderFailure(failure) {
     return (
-      <div className="taskoutput-error">
+      <div className={styles.taskoutputError} data-taskoutput-error>
         {failure.content || "Failed to get task output"}
       </div>
     );

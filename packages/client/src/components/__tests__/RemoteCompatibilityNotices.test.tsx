@@ -21,6 +21,7 @@ import {
   getRemoteCompatibilityNotices,
 } from "../../lib/remoteCompatibilityNotices";
 import styles from "../RemoteCompatibilityNotices.module.css";
+import bannerStyles from "../ui/Banner.module.css";
 import {
   RemoteCompatibilityNoticeCard,
   RemoteCompatibilityNotices,
@@ -97,17 +98,17 @@ describe("RemoteCompatibilityNotices", () => {
   });
 
   it.each([
-    ["floating", "security", "alert", styles.floating!, styles.critical!],
-    ["floating", "blocking", "alert", styles.floating!, styles.critical!],
-    ["floating", "recommended", "status", styles.floating!, undefined],
-    ["floating", "info", "status", styles.floating!, undefined],
-    ["inline", "security", "alert", styles.inline!, styles.critical!],
-    ["inline", "blocking", "alert", styles.inline!, styles.critical!],
-    ["inline", "recommended", "status", styles.inline!, undefined],
-    ["inline", "info", "status", styles.inline!, undefined],
+    ["floating", "security", "alert", styles.floating!, "error"],
+    ["floating", "blocking", "alert", styles.floating!, "error"],
+    ["floating", "recommended", "status", styles.floating!, "warning"],
+    ["floating", "info", "status", styles.floating!, "info"],
+    ["inline", "security", "alert", styles.inline!, "error"],
+    ["inline", "blocking", "alert", styles.inline!, "error"],
+    ["inline", "recommended", "status", styles.inline!, "warning"],
+    ["inline", "info", "status", styles.inline!, "info"],
   ] as const)(
-    "maps %s %s notices to the expected module classes and %s role",
-    (placement, severity, role, placementClass, severityClass) => {
+    "places %s %s notices with the %s role",
+    (placement, severity, role, placementClass, tone) => {
       const { container } = render(
         <RemoteCompatibilityNoticeCard
           notice={notice({ severity })}
@@ -117,13 +118,16 @@ describe("RemoteCompatibilityNotices", () => {
 
       const root = screen.getByTestId("remote-compatibility-notice");
       expect(root.getAttribute("role")).toBe(role);
-      expect(root.classList.contains(styles.root!)).toBe(true);
       expect(root.classList.contains(placementClass)).toBe(true);
-      expect(
-        severityClass ? root.classList.contains(severityClass) : true,
-      ).toBe(true);
-      expect(root.querySelector(`.${styles.content!}`)).toBeTruthy();
-      expect(root.querySelector(`.${styles.actions!}`)).toBeTruthy();
+      // Severity maps to the Banner tone, and only that one.
+      const toneClasses = {
+        info: bannerStyles.info!,
+        warning: bannerStyles.warning!,
+        error: bannerStyles.error!,
+      };
+      for (const [each, className] of Object.entries(toneClasses)) {
+        expect(root.classList.contains(className)).toBe(each === tone);
+      }
       expectNoLegacyNoticeClasses(container);
     },
   );
@@ -153,18 +157,12 @@ describe("RemoteCompatibilityNotices", () => {
     });
 
     expect(root.querySelector(`.${styles.headline!}`)).toBeTruthy();
-    expect(root.querySelector(`.${styles.title!}`)).toBeTruthy();
     expect(root.querySelector(`.${styles.meta!}`)).toBeTruthy();
-    expect(root.querySelector(`.${styles.count!}`)?.textContent).toBe(
-      "2 notices",
-    );
-    expect(root.querySelector(`.${styles.body!}`)).toBeTruthy();
-    expect(root.querySelector(`.${styles.guidance!}`)).toBeTruthy();
+    expect(screen.getByText("2 notices")).toBeTruthy();
     expect(root.querySelector(`.${styles.commandField!}`)).toBeTruthy();
     expect(textarea.classList.contains(styles.commandInput!)).toBe(true);
     expect(textarea.value).toBe(command);
     expect(copyButton.classList.contains(styles.copyButton!)).toBe(true);
-    expect(copyButton.classList.contains(styles.copied!)).toBe(false);
 
     fireEvent.click(copyButton);
 
@@ -172,7 +170,6 @@ describe("RemoteCompatibilityNotices", () => {
       copyButton,
     );
     expect(writeText).toHaveBeenCalledWith(command);
-    expect(copyButton.classList.contains(styles.copied!)).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     fireEvent.click(screen.getByRole("button", { name: "Remind me later" }));

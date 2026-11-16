@@ -1,3 +1,6 @@
+import styles from "./HostPickerPage.module.css";
+import loginStyles from "./LoginLayout.module.css";
+import { SelectableCard } from "../components/ui/SelectableCard";
 /**
  * HostPickerPage - Saved hosts list and login mode selection.
  *
@@ -13,7 +16,10 @@ import {
 import { getResumeError } from "../lib/connection/resumeErrors";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ButtonBase, IconButton } from "../components/ui/Button";
+import { Banner } from "../components/ui/Banner";
+import { IconButton } from "../components/ui/Button";
+import { confirmDialog } from "../components/ui/ConfirmDialog";
+import { Spinner } from "../components/ui/Spinner";
 import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
 import { useRemoteConnection } from "../contexts/RemoteConnectionContext";
 import { signInRequiredState } from "../hooks/useSignInRequiredNotice";
@@ -38,6 +44,13 @@ function relayLoginPath(host: SavedHost): string {
   const query = params.toString();
   return `/login/relay${query ? `?${query}` : ""}`;
 }
+
+const STATUS_CLASSES = {
+  online: styles.statusOnline,
+  offline: styles.statusOffline,
+  checking: styles.statusChecking,
+  unknown: styles.statusUnknown,
+};
 
 export function HostPickerPage() {
   const { t } = useI18n();
@@ -178,7 +191,14 @@ export function HostPickerPage() {
   const handleDeleteHost = useCallback(
     async (hostId: string, e: React.MouseEvent) => {
       e.stopPropagation();
-      if (confirm(t("hostPickerRemoveConfirm"))) {
+      if (
+        await confirmDialog({
+          title: t("hostPickerRemoveConfirmTitle"),
+          message: t("hostPickerRemoveConfirm"),
+          confirmLabel: t("hostPickerRemoveHost"),
+          tone: "danger",
+        })
+      ) {
         await removeHost(hostId);
         setHosts((prev) => prev.filter((h) => h.id !== hostId));
       }
@@ -213,14 +233,17 @@ export function HostPickerPage() {
   // If auto-resume is in progress, show a loading screen
   if (isAutoResuming) {
     return (
-      <div className="login-page">
-        <div className="login-container">
-          <div className="login-logo">
-            <YepAnywhereLogo />
+      <div className={loginStyles.page}>
+        <div className={loginStyles.container}>
+          <div className={loginStyles.logo}>
+            <YepAnywhereLogo variant="login" />
           </div>
-          <p className="login-subtitle">{t("reconnecting")}</p>
-          <div className="login-loading" data-testid="auto-resume-loading">
-            <div className="login-spinner" />
+          <p className={loginStyles.subtitle}>{t("reconnecting")}</p>
+          <div
+            className={loginStyles.loading}
+            data-testid="auto-resume-loading"
+          >
+            <Spinner size="large" />
           </div>
         </div>
       </div>
@@ -228,50 +251,50 @@ export function HostPickerPage() {
   }
 
   return (
-    <div className="login-page">
-      <div className="login-container">
-        <div className="login-logo">
-          <YepAnywhereLogo />
+    <div className={loginStyles.page}>
+      <div className={loginStyles.container}>
+        <div className={loginStyles.logo}>
+          <YepAnywhereLogo variant="login" />
         </div>
 
         {hosts.length > 0 && (
           <>
-            <p className="login-subtitle">{t("hostPickerSavedHosts")}</p>
+            <p className={loginStyles.subtitle}>{t("hostPickerSavedHosts")}</p>
 
-            <div className="host-picker-list" data-testid="saved-hosts-list">
+            <div className={styles.list} data-testid="saved-hosts-list">
               {hosts.map((host) => {
                 const status = hostStatuses[host.id] ?? "unknown";
                 const isConnecting = connectingHostId === host.id;
 
                 return (
-                  <ButtonBase
+                  <SelectableCard
                     key={host.id}
-                    className="host-picker-item"
+                    className={styles.item}
+                    data-saved-host
                     onClick={() => handleConnectHost(host)}
                     disabled={isConnecting}
+                    aria-busy={isConnecting}
                     data-testid={`host-item-${host.id}`}
                   >
-                    <div className="host-picker-item-main">
+                    <div className={styles.itemMain}>
                       <span
-                        className={`host-picker-status host-picker-status-${status}`}
+                        className={`${styles.status} ${STATUS_CLASSES[status]}`}
                         title={t(
                           `hostPickerStatus${status.charAt(0).toUpperCase()}${status.slice(1)}` as never,
                         )}
                       />
-                      <span className="host-picker-name">
-                        {host.displayName}
-                      </span>
-                      <span className="host-picker-mode">{host.mode}</span>
+                      <span className={styles.name}>{host.displayName}</span>
+                      <span className={styles.mode}>{host.mode}</span>
                     </div>
-                    <div className="host-picker-item-meta">
+                    <div className={styles.itemMeta}>
                       {host.lastConnected && (
-                        <span className="host-picker-last-connected">
+                        <span className={styles.lastConnected}>
                           {formatLastConnected(host.lastConnected)}
                         </span>
                       )}
                       <IconButton
                         size="small"
-                        className="host-picker-delete"
+                        className={styles.delete}
                         onClick={(e) => handleDeleteHost(host.id, e)}
                         label={t("hostPickerRemoveHost")}
                         data-testid={`delete-host-${host.id}`}
@@ -280,60 +303,61 @@ export function HostPickerPage() {
                       </IconButton>
                     </div>
                     {isConnecting && (
-                      <div className="host-picker-connecting">
-                        <div className="login-spinner" />
+                      <div className={styles.connecting}>
+                        <Spinner />
                       </div>
                     )}
-                  </ButtonBase>
+                  </SelectableCard>
                 );
               })}
             </div>
 
             {error && (
-              <div className="login-error" data-testid="host-picker-error">
+              <Banner tone="error" data-testid="host-picker-error">
                 {error}
-              </div>
+              </Banner>
             )}
 
-            <p className="login-subtitle host-picker-add-title">
+            <p className={`${loginStyles.subtitle} ${styles.addTitle}`}>
               {t("hostPickerAddNewHost")}
             </p>
           </>
         )}
 
         {hosts.length === 0 && (
-          <p className="login-subtitle">{t("hostPickerHowToConnect")}</p>
+          <p className={loginStyles.subtitle}>{t("hostPickerHowToConnect")}</p>
         )}
 
-        <div className="login-mode-options">
-          <ButtonBase
-            className="login-mode-option"
+        <div className={loginStyles.modeOptions}>
+          <SelectableCard
+            className={loginStyles.modeOption}
             onClick={() => navigate("/login/relay")}
             data-testid="relay-mode-button"
           >
-            <span className="login-mode-option-title">
+            <span className={loginStyles.modeOptionTitle}>
               {t("hostPickerRelayTitle")}
             </span>
-            <span className="login-mode-option-desc">
+            <span className={loginStyles.modeOptionDesc}>
               {t("hostPickerRelayDescription")}
             </span>
-          </ButtonBase>
+          </SelectableCard>
 
-          <ButtonBase
-            className="login-mode-option login-mode-option-secondary"
+          <SelectableCard
+            className={loginStyles.modeOption}
+            variant="quiet"
             onClick={() => navigate("/login/direct")}
             data-testid="direct-mode-button"
           >
-            <span className="login-mode-option-title">
+            <span className={loginStyles.modeOptionTitle}>
               {t("hostPickerDirectTitle")}
             </span>
-            <span className="login-mode-option-desc">
+            <span className={loginStyles.modeOptionDesc}>
               {t("hostPickerDirectDescription")}
             </span>
-          </ButtonBase>
+          </SelectableCard>
         </div>
 
-        <p className="login-hint">
+        <p className={loginStyles.hint}>
           {hosts.length > 0
             ? t("hostPickerSavedHint")
             : t("hostPickerEmptyHint")}

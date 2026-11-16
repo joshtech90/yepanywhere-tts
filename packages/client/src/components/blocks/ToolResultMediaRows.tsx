@@ -1,3 +1,7 @@
+import { toolRowStatusClasses } from "./toolRowStatusClasses";
+import timelineStyles from "../TranscriptTimeline.module.css";
+import rowsStyles from "./ToolCallRow.module.css";
+import toolLabelStyles from "../ToolLabel.module.css";
 import type {
   StoredToolResultMedia,
   ToolResultMedia,
@@ -20,7 +24,8 @@ import type { ToolCallItem } from "@yep-anywhere/shared/transcript/items";
 import { useImageResourceActions } from "../ImageResourceActions";
 import { LocalMediaModal, type LocalMediaSource } from "../LocalMediaModal";
 import { TimelineDisclosure } from "../TimelineDisclosure";
-import { ButtonBase } from "../ui/Button";
+import { Banner } from "../ui/Banner";
+import { ButtonBase, Button } from "../ui/Button";
 import styles from "./ToolResultMediaRows.module.css";
 
 interface ToolResultMediaRowsProps {
@@ -92,14 +97,22 @@ function ToolResultMediaRow({
   if (media.state === "rejected") {
     return (
       <div
-        className={`tool-row timeline-item status-${status} ${styles.row} ${styles.rejected}`}
+        className={`${rowsStyles.toolRow} ${timelineStyles.timelineItem} ${toolRowStatusClasses[status] ?? ""} ${styles.row} ${styles.rejected}`}
+        data-tool-row
+        data-timeline-item
+        data-tool-status={status}
       >
         <div
           className={styles.rowHeader}
           title={t(REJECTION_KEYS[media.reason])}
         >
-          <span className="tool-name">{displayName}</span>
-          <span className={`tool-summary ${styles.summary}`}>
+          <span className={toolLabelStyles.toolName} data-tool-name>
+            {displayName}
+          </span>
+          <span
+            className={`${rowsStyles.toolSummary} ${styles.summary}`}
+            data-tool-summary
+          >
             <span className={styles.filename}>{filename}</span>
             <span className={styles.suffix}>
               ({t("toolResultMediaUnavailable")})
@@ -209,7 +222,12 @@ function StoredToolResultMediaRow({
     : t("toolResultMediaExpand");
 
   return (
-    <div className={`tool-row timeline-item status-${status} ${styles.row}`}>
+    <div
+      className={`${rowsStyles.toolRow} ${timelineStyles.timelineItem} ${toolRowStatusClasses[status] ?? ""} ${styles.row}`}
+      data-tool-row
+      data-timeline-item
+      data-tool-status={status}
+    >
       <TimelineDisclosure
         expanded={expanded}
         label={toggleLabel}
@@ -217,15 +235,20 @@ function StoredToolResultMediaRow({
         onClick={() => setExpanded((current) => !current)}
       />
       <div className={styles.rowHeader}>
-        <span className="tool-name">{displayName}</span>
-        <span className={`tool-summary ${styles.summary}`}>
-          <ButtonBase
-            className={styles.filename}
+        <span className={toolLabelStyles.toolName} data-tool-name>
+          {displayName}
+        </span>
+        <span
+          className={`${rowsStyles.toolSummary} ${styles.summary}`}
+          data-tool-summary
+        >
+          <Button
+            variant="link"
             onClick={openViewer}
             onContextMenu={imageActions.handleContextMenu}
           >
-            {filename}
-          </ButtonBase>
+            <span className={styles.filename}>{filename}</span>
+          </Button>
           <span className={styles.suffix}>
             ({t(isVideo ? "toolResultMediaVideo" : "toolResultMediaImage")})
           </span>
@@ -243,9 +266,9 @@ function StoredToolResultMediaRow({
             </span>
           )}
           {preview.state === "error" && (
-            <span className={styles.error}>
+            <Banner tone="error" compact className={styles.error}>
               {t("toolResultMediaLoadFailed")}
-            </span>
+            </Banner>
           )}
           {preview.state === "loaded" &&
             (isVideo ? (

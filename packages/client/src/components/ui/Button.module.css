@@ -5,7 +5,7 @@
  * family, settings-button.
  */
 
-/* ButtonBase: a reset for clickable rows, cards, disclosures and chips. The
+/* ButtonBase: a reset for clickable rows, previews, disclosures and image wrappers. The
    :where() keeps it at zero specificity, so the owner's styles always win.
    Font size is the base token rather than inherited: raw buttons render at
    the browser's ~13 px default, and every legacy row was designed at that
@@ -73,6 +73,10 @@
   font-size: var(--font-size-xs);
 }
 
+.large {
+  min-height: 36px;
+}
+
 .dense {
   min-height: 22px;
   padding: 0 var(--space-1);
@@ -89,13 +93,17 @@
 .icon {
   width: 32px;
   padding: 0;
-  font-size: calc(var(--font-size-lg) + 4px);
+  font-size: var(--font-size-2xl);
   line-height: 1;
 }
 
 .icon.small {
   width: 26px;
-  font-size: calc(var(--font-size-base) + 4px);
+  font-size: var(--font-size-2xl);
+}
+
+.icon.large {
+  width: 36px;
 }
 
 .icon.dense {
@@ -125,6 +133,10 @@
      hit area extends invisibly around them instead. */
   .dense {
     min-height: 22px;
+  }
+
+  .icon.large {
+    width: 44px;
   }
 
   .icon.dense {
@@ -157,6 +169,22 @@
   color: var(--text-primary);
 }
 
+.secondary[aria-pressed="true"],
+.secondary[data-selected="true"] {
+  border-color: var(--app-yep-green);
+}
+
+.secondary[aria-pressed="true"],
+.outline[aria-pressed="true"] {
+  font-weight: 600;
+}
+
+.outline[aria-pressed="true"],
+.outline[data-selected="true"] {
+  background: var(--bg-hover);
+  border-color: var(--app-yep-green);
+}
+
 .secondary:hover:not(:disabled, [aria-disabled="true"]) {
   background: var(--border-color);
 }
@@ -183,7 +211,8 @@
 
 /* On is a filled, bordered chip: a background alone is too faint to read as
    a state in a row of toggles. */
-.ghost[aria-pressed="true"] {
+.ghost[aria-pressed="true"],
+.ghost[data-selected="true"] {
   background: var(--bg-hover);
   border-color: var(--border-color);
   color: var(--text-primary);
@@ -209,24 +238,134 @@
   background: color-mix(in srgb, var(--error-color) 14%, transparent);
 }
 
-.spinner {
-  flex-shrink: 0;
-  width: 0.9em;
-  height: 0.9em;
-  border: 2px solid currentColor;
-  border-right-color: transparent;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+/* Text actions share the link color without drawing a background on hover. */
+.link {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--link-color);
+  font-size: inherit;
+  line-height: inherit;
+  vertical-align: baseline;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
+:where(.link) {
+  position: relative;
+}
+
+@media (pointer: coarse) {
+  .link::before {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc((100% - 44px) / 2));
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .spinner {
-    animation-duration: 2.4s;
+/* Floating actions share an opaque surface. Filled variants already supply one. */
+.button.elevated {
+  box-shadow: var(--shadow-md);
+}
+
+.elevated:is(.secondary, .outline, .ghost) {
+  background: var(--bg-surface);
+}
+
+.elevated:is(.secondary, .outline, .ghost):hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.attentionOutline {
+  background: transparent;
+  color: var(--warning-color);
+  border-color: var(--warning-color);
+}
+
+.attentionOutline:hover:not(:disabled, [aria-disabled="true"]) {
+  background: color-mix(in srgb, var(--warning-color) 14%, transparent);
+}
+
+.link:hover:not(:disabled, [aria-disabled="true"]) {
+  text-decoration: underline;
+}
+
+/* Copy feedback shares one successful outline across transcript and viewers. */
+.successOutline {
+  background: transparent;
+  border-color: var(--success-color);
+  color: var(--success-color);
+}
+
+.successOutline:hover:not(:disabled, [aria-disabled="true"]) {
+  background: color-mix(in srgb, var(--success-color) 14%, transparent);
+}
+
+.button.wrap {
+  display: inline;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: start;
+}
+.button.truncate {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.button.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fixed-font-size-base);
+}
+/* Inline controls preserve the surrounding prose's line box. */
+.button.inline,
+.button.inlineIcon {
+  position: relative;
+  min-height: 0;
+  display: inline;
+  height: auto;
+  padding: 0 0.25em;
+  font-size: 0.78em;
+  line-height: 1;
+  vertical-align: baseline;
+}
+.button.inline {
+  vertical-align: 0.1em;
+}
+.button.inlineIcon {
+  display: inline-flex;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  vertical-align: middle;
+}
+.inlineIcon svg {
+  width: 11px;
+  height: 11px;
+}
+.button.subdued {
+  opacity: 0.4;
+}
+.button.subdued:is(:hover, :focus-visible, .successOutline) {
+  opacity: 1;
+}
+.elevated.attentionOutline {
+  background: var(--bg-surface);
+}
+.elevated.attentionOutline:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+@media (pointer: coarse) {
+  .button.touchLarge {
+    min-height: 44px;
+  }
+  .button.inline::before,
+  .button.inlineIcon::before {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc((100% - 44px) / 2));
   }
 }

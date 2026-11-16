@@ -90,6 +90,7 @@ import {
   useSessionArtifactLink,
   useSessionViewerSessionId,
 } from "./SessionManagedViewer";
+import { Banner } from "./ui/Banner";
 import { Modal } from "./ui/Modal";
 import { useSessionAppPublicHref } from "./SessionAppLinks";
 
@@ -840,9 +841,9 @@ function LocalMediaModalView({
               vector={displayedImage.vector}
             />
             {error ? (
-              <div className={styles.imageLoadError} role="alert">
+              <Banner tone="error" className={styles.imageLoadError}>
                 {error}
-              </div>
+              </Banner>
             ) : null}
           </div>
         ) : (
@@ -852,7 +853,7 @@ function LocalMediaModalView({
             }`}
           >
             {loading && <div className={styles.loading}>Loading...</div>}
-            {error && <div className={styles.error}>{error}</div>}
+            {error && <Banner tone="error">{error}</Banner>}
             {displayedMedia?.mediaType === "video" ? (
               // biome-ignore lint/a11y/useMediaCaption: user-generated local files, no captions available
               <video
@@ -957,9 +958,7 @@ export function LocalFileModal({
         }
 
         objectUrl = URL.createObjectURL(blob);
-        if (!cancelled) {
-          setState({ status: "blob", contentType, objectUrl });
-        }
+        if (!cancelled) setState({ status: "blob", contentType, objectUrl });
       })
       .catch((err) => {
         if (cancelled) return;
@@ -1022,7 +1021,7 @@ export function LocalFileModal({
           <div className={styles.fileLoading}>Loading...</div>
         )}
         {state.status === "error" && (
-          <div className={styles.fileError}>{state.error}</div>
+          <Banner tone="error">{state.error}</Banner>
         )}
         {state.status === "text" && (
           <div
@@ -1030,8 +1029,7 @@ export function LocalFileModal({
             className={styles.fileTextFrame}
             tabIndex={-1}
           >
-            {/* The global class is the shared fixed-font hook in renderers.css. */}
-            <pre className={`${styles.fileText} local-file-text`}>
+            <pre className={styles.fileText} data-local-file-text>
               <code>{state.text}</code>
             </pre>
           </div>
@@ -1058,9 +1056,9 @@ export function LocalFileModal({
           />
         )}
         {state.status === "blob" && !isPdfContentType(state.contentType) && (
-          <div className={styles.fileError}>
+          <Banner tone="info" role="none">
             Preview is not available for {state.contentType || "this file"}.
-          </div>
+          </Banner>
         )}
       </div>
     </Modal>

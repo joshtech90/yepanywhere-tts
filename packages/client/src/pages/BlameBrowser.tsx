@@ -1,3 +1,7 @@
+import columnsStyles from "../components/SourceColumnLayout.module.css";
+import searchStyles from "./SourceSearch.module.css";
+import rowsStyles from "./SourceRows.module.css";
+import statusStyles from "./SourceStatus.module.css";
 import type {
   GitStatusInfo,
   GitWorkingTreeFile,
@@ -34,7 +38,8 @@ import {
   SourceFileRowButton,
   SourceFileStatusBadge,
 } from "../components/SourceFileRow";
-import { Button, ButtonBase } from "../components/ui/Button";
+import { Banner } from "../components/ui/Banner";
+import { Button } from "../components/ui/Button";
 import { TextInput } from "../components/ui/Field";
 import { Modal } from "../components/ui/Modal";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
@@ -47,6 +52,7 @@ import {
 import type { TranslationFn } from "../i18n";
 import { writeClipboardText } from "../lib/clipboard";
 import { FileSearchIndex } from "../lib/fileSearchIndex";
+import { SourceCommentCountBadge } from "./SourceCommentCountBadge";
 import styles from "./BlameBrowser.module.css";
 import { BlameView } from "./BlameView";
 
@@ -390,14 +396,20 @@ export function BlameBrowser({
         ? "?"
         : undefined);
     return (
-      <li key={file} className={`commit-file-row ${sourceRowMenuSurface}`}>
+      <li
+        key={file}
+        className={`${rowsStyles.commitFileRow} ${sourceRowMenuSurface}`}
+        data-source-file-row
+      >
         <SourceFileRowButton
           path={file}
           type="button"
-          className={`blame-file-item ${
-            selectedPath === file ? "selected" : ""
+          className={`${rowsStyles.blameFileItem} ${
+            selectedPath === file ? rowsStyles.selected : ""
           }`}
+          data-source-blame-item
           data-source-list-item
+          data-source-selected={selectedPath === file || undefined}
           onFocus={() => {
             if (isWideScreen) setSelectedPath(file);
           }}
@@ -409,14 +421,7 @@ export function BlameBrowser({
             {visiblePath}
           </SourceFilePath>
           {fileStatus && <SourceFileStatusBadge status={fileStatus} t={t} />}
-          {count > 0 && (
-            <span
-              className="source-comment-badge"
-              title={t("sourceCommentCount", { count })}
-            >
-              {count}
-            </span>
-          )}
+          <SourceCommentCountBadge count={count} t={t} />
         </SourceFileRowButton>
         <SourceRowMenuTrigger
           actions={menuActions}
@@ -428,15 +433,16 @@ export function BlameBrowser({
   };
 
   return (
-    <div className="blame-browser">
+    <div className={columnsStyles.blameBrowser}>
       <ResizableSourceColumns
         layout="files"
         initialFilesWidth={340}
-        className="blame-browser-columns"
+        className={columnsStyles.blameBrowserColumns!}
         t={t}
       >
         <div
-          className="blame-file-column"
+          className={columnsStyles.blameFileColumn}
+          data-source-column="blame-files"
           onPointerMove={
             supportsWorktreeSections ? handlePointerMove : undefined
           }
@@ -450,9 +456,11 @@ export function BlameBrowser({
           )}
           <WorkingTreeFilter onQueryChange={setQuery} t={t} />
           {effectiveLoading ? (
-            <div className="git-diff-loading">{t("gitStatusLoading")}</div>
+            <div className={statusStyles.diffLoading}>
+              {t("gitStatusLoading")}
+            </div>
           ) : effectiveError ? (
-            <div className="git-diff-error">{effectiveError}</div>
+            <Banner tone="error">{effectiveError}</Banner>
           ) : (
             <WorkingTreeFileList
               trackedFiles={plainInventory ? filtered : trackedFiles}
@@ -554,12 +562,13 @@ function WorkingTreeFilter({
     startTransition(() => onQueryChange(next));
   };
   return (
-    <div className="source-search-field">
+    <div className={searchStyles.field}>
       <TextInput
         ref={inputRef}
         type="search"
         size="small"
-        className="source-search-input"
+        className={searchStyles.input}
+        trailing={<kbd className={searchStyles.shortcut}>/</kbd>}
         value={value}
         placeholder={t("sourceFilterFiles")}
         aria-label={t("sourceFilterFiles")}
@@ -572,7 +581,6 @@ function WorkingTreeFilter({
         }}
         onChange={(event) => update(event.target.value)}
       />
-      <kbd className="source-search-shortcut">/</kbd>
     </div>
   );
 }
@@ -600,17 +608,17 @@ function WorktreeSectionControls({
       aria-label={t("sourceWorkingTreeSections")}
     >
       {sections.map(({ kind, label }) => (
-        <ButtonBase
+        <Button
+          variant="outline"
+          size="small"
           key={kind}
-          className={`${styles.sectionToggle} ${
-            coverage[kind] ? styles.activeSectionToggle : ""
-          }`}
+          className={styles.sectionToggle}
           aria-pressed={coverage[kind]}
           onClick={() => onToggle(kind)}
         >
           <span aria-hidden="true">{coverage[kind] ? "●" : "○"}</span>
           {label}
-        </ButtonBase>
+        </Button>
       ))}
     </fieldset>
   );
@@ -662,7 +670,7 @@ function WorkingTreeFileList({
     sectionDirectories: readonly GitWorktreeDirectory[] = [],
   ) => (
     <SourceFileOutline
-      className="blame-file-list"
+      className={styles.fileList}
       items={files.map((path) => ({
         id: path,
         path,

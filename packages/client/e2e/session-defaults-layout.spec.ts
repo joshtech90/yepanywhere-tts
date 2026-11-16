@@ -52,7 +52,7 @@ for (const viewport of [
     await expect(recap).toBeVisible({ timeout: 10_000 });
     await recap.getByRole("radio", { name: "Forked" }).click();
 
-    const duration = page.locator(".recap-after-seconds-control--inline");
+    const duration = page.locator("[data-recap-after-seconds-control--inline]");
     const seconds = duration.getByRole("spinbutton", {
       name: "Recap after seconds away",
     });
@@ -118,13 +118,15 @@ for (const viewport of [
     const advancedToggle = page.getByRole("button", {
       name: "Show advanced options",
     });
-    const project = page.locator(".new-session-project-slot");
-    const projectSummary = page.locator(".new-session-project-summary");
-    const primaryOptions = page.locator(".new-session-provider-slot");
+    const project = page.locator("[data-new-session-project-slot]");
+    const projectSummary = page.locator("[data-new-session-project-summary]");
+    const primaryOptions = page.locator("[data-new-session-provider-slot]");
     const secondaryOptions = page.locator(
       '[data-new-session-secondary-options="true"]',
     );
-    const showThinking = page.locator(".new-session-show-thinking-section");
+    const showThinking = page.locator(
+      "[data-new-session-show-thinking-section]",
+    );
     const explanation = "Show the model's thinking";
     await expect(toggle).toBeVisible({ timeout: 10_000 });
     await expect(advancedToggle).toBeVisible();
@@ -190,7 +192,7 @@ for (const viewport of [
       page.getByText("Server changed", { exact: false }),
     ).toHaveCount(0);
     await page.evaluate(() => window.scrollTo(0, 0));
-    await page.locator(".page-scroll-container").evaluate((container) => {
+    await page.locator("[data-page-scroll-container]").evaluate((container) => {
       container.scrollTop = 0;
     });
     await capture(

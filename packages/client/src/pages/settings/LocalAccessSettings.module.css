@@ -1,3 +1,59 @@
+.panel {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.header strong {
+  color: var(--text-primary);
+}
+
+.header p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.fileAccessSettingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3);
+  border-top: 1px solid var(--border-color);
+}
+
+.fileAccessSettingRow:first-child {
+  border-top: 0;
+}
+
+.fileAccessSettingRowField,
+.fileAccessSettingRowReadonly {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.fileAccessSettingRowField [data-settings-info],
+.fileAccessSettingRowReadonly [data-settings-info] {
+  flex: 1 1 18rem;
+}
+
 .agentApiPreview {
   min-width: 0;
   max-width: 100%;
@@ -23,7 +79,7 @@
   flex: 1 1 auto;
 }
 
-/* A text field beside its row's description (.settings-item-inline-field). */
+/* A text field beside its row's description (SettingsRows.inlineField). */
 .inlineField {
   flex: 1 1 20rem;
   width: auto;
@@ -40,24 +96,14 @@
   flex: 0 0 7rem;
 }
 
-/* The password choice nested under Require Password (a .settings-subsection). */
-.passwordBlock {
+/* The password choice nested under Require Password (SettingsRows.subsection). */
+.passwordBlock.passwordBlock {
   margin-top: 0;
   margin-bottom: var(--space-3);
 }
 
 .passwordState {
   margin: var(--space-2) 0;
-  font-size: var(--font-size-sm);
-}
-
-.passwordStateActive {
-  color: var(--success-color);
-}
-
-.passwordStatePending,
-.passwordStateWarning {
-  color: var(--warning-color);
 }
 
 .passwordHint {
@@ -108,5 +154,60 @@
   .customFoldersButton {
     flex-basis: auto;
     width: 100%;
+  }
+}
+
+.connectionFields {
+  min-width: 0;
+  margin-inline: 0;
+  padding: 0;
+  border: 0;
+}
+
+.connectionActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.connectionActions p {
+  flex: 1 1 15rem;
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.actionButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+@media (width < 700px) {
+  .connectionSection {
+    position: relative;
+  }
+
+  .connectionActions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .connectionActions p {
+    flex-basis: auto;
+  }
+
+  .actionButtons {
+    justify-content: flex-end;
   }
 }

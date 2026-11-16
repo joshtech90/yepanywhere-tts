@@ -28,6 +28,7 @@ const Wrapper = STRICT_MODE ? StrictMode : Fragment;
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { PrebootComposerRetirement } from "./components/PrebootComposerRetirement";
 import { RouteModule, routeModule } from "./components/RouteModule";
+import { ConfirmDialogHost } from "./components/ui/ConfirmDialog";
 import { TooltipLayer } from "./components/ui/TooltipLayer";
 import { isExtensionPage } from "./extension/chrome";
 import { initializeContentMaxWidth } from "./hooks/useContentMaxWidth";
@@ -47,7 +48,7 @@ import { installModifierChordTracking } from "./lib/modifierChords";
 import { installFontDiagnostics } from "./lib/diagnostics/fontDiagnostics";
 import { loadSessionCoreModules } from "./lib/sessionRouteModules";
 import { preloadableComponent } from "./lib/preloadableComponent";
-import "./styles/index.css";
+import "./styles/purposeGlobals";
 
 function cachedModule<T>(load: () => Promise<T>): () => Promise<T> {
   let promise: Promise<T> | undefined;
@@ -145,6 +146,11 @@ const NavigationLayout = preloadableComponent(async () => ({
 const SessionDomLingerRouteMarker = lazy(() =>
   loadLayoutsModule().then(({ SessionDomLingerRouteMarker }) => ({
     default: SessionDomLingerRouteMarker,
+  })),
+);
+const NativeSessionPathRoute = lazy(() =>
+  loadLayoutsModule().then(({ NativeSessionPathRoute }) => ({
+    default: NativeSessionPathRoute,
   })),
 );
 
@@ -441,6 +447,10 @@ const APP_ROUTES = (
         element={routeModule(<SessionDomLingerRouteMarker />)}
       />
       <Route
+        path="projects/:projectId/sessions/:nativeFamily/:nativeId"
+        element={routeModule(<NativeSessionPathRoute />)}
+      />
+      <Route
         path="projects/:projectId/sessions/:sessionId/agents/:agentId"
         element={routeModule(<ProviderChildSessionPage />)}
       />
@@ -470,6 +480,7 @@ const app = (
         </Suspense>
       )}
       <I18nProvider>
+        <ConfirmDialogHost />
         <Routes>
           <Route
             path="/share/:secret/file"

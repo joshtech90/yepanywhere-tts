@@ -1,0 +1,246 @@
+{
+  "components/AudioMemoPanel.module.css": {
+    "count": 1,
+    "reason": "14px audio-memo sheet corner geometry; no radius token within 1px."
+  },
+  "components/BrandWordmark.module.css": {
+    "count": 1,
+    "reason": "Configured brand-wordmark size is independent of the UI type scale; close if the wordmark adopts a fixed shared brand typography token."
+  },
+  "components/CollectionLayout.module.css": {
+    "count": 1,
+    "reason": "The 1.25rem empty-state heading follows browser root-font preferences; close with an approved matching rem-based heading token."
+  },
+  "components/ComposerActions.module.css": {
+    "count": 5,
+    "reason": "Composer action glyphs retain fixed 11/16px sizing, 1.2rem optical sizing and a 2px send-keycap corner; UI font tokens scale and change this geometry. Adopt shared action geometry in plan 182's composer control swaps."
+  },
+  "components/ComposerRecents.module.css": {
+    "count": 3,
+    "reason": "Fixed 12/13px recents text must not scale with UI font tokens; the 28px empty-state glyph has no exact type token. Replace recents controls in plan 182's composer control swaps."
+  },
+  "components/ErrorBoundary.tsx": {
+    "count": 20,
+    "reason": "Crash fallback page with inline styles and a fixed palette, so it renders even when the app's CSS or theme failed."
+  },
+  "components/FileDropZone.module.css": {
+    "count": 4,
+    "reason": "14/16px nested drop-target outlines and 21/22px drop glyphs; preserve inset geometry and optical centering."
+  },
+  "components/FileViewerEmbeddedMedia.module.css": {
+    "count": 1,
+    "reason": "24px audio-file glyph; preserve optical size in the media viewer."
+  },
+  "components/GoalPanel.module.css": {
+    "count": 1,
+    "reason": "16px phone bottom-sheet top corners; no matching radius token."
+  },
+  "components/HostIdentityMarker.module.css": {
+    "count": 1,
+    "reason": "The 1.15rem emoji marker preserves its optical size beside the page header title."
+  },
+  "components/MarkdownPreview.module.css": {
+    "count": 1,
+    "reason": "Markdown prose uses the configured viewer offset, independent fixed-width code sizes and a 10px math floor; close with recognized output/math typography tokens."
+  },
+  "components/MessageInput.module.css": {
+    "count": 1,
+    "reason": "The 1.2rem composer glyph follows browser root-font preferences; keep its optical size until plan 182's composer control swaps define shared glyph geometry."
+  },
+  "components/MessageInputToolbar.module.css": {
+    "count": 4,
+    "reason": "Fixed 11/16px toolbar glyphs and labels must not scale with UI font tokens; the 5px cue corner and xs-plus-1px cue text have no exact token. Preserve geometry until plan 182's composer control swaps."
+  },
+  "components/ModelOptionsSection.module.css": {
+    "count": 1,
+    "reason": "The 0.78rem model-choice section note follows browser root-font preferences; close with an approved source/control explanatory typography scale."
+  },
+  "components/ModelSwitchModal.module.css": {
+    "count": 3,
+    "reason": "The 0.72rem provider heading and two 0.5rem card radii follow browser root-font preferences; close with approved matching rem-based model-picker tokens."
+  },
+  "components/NewSessionForm.module.css": {
+    "count": 4,
+    "reason": "The 1.15/0.95/1.05rem headings preserve browser-root typography; 0.5rem corners compute to 9.2px at the default 115% UI font, so no radius token is equivalent. Close with matching shared geometry in plan 182's composer control swaps."
+  },
+  "components/RenderItemComponent.module.css": {
+    "count": 2,
+    "reason": "System/recap prose follows output preferences, its 1.05rem recap mark follows the browser root font, and the copy glyph retains its 1px optical correction; close with matching output and glyph tokens."
+  },
+  "components/RendezAttachment.module.css": {
+    "count": 1,
+    "reason": "10px image attachment frame corners preserve the inset media border geometry."
+  },
+  "components/ResizableSourceColumns.module.css": {
+    "count": 2,
+    "reason": "Preserve the 0.72rem resize glyph and 5px handle corner geometry in the move-only source layout pass."
+  },
+  "components/SchemaWarning.module.css": {
+    "count": 1,
+    "reason": "Fixed 10px warning glyph inside a 16px icon; close with an approved fixed-size glyph token, independent of UI font scaling."
+  },
+  "components/Sidebar.module.css": {
+    "count": 1,
+    "reason": "The 1.1rem sidebar brand line preserves its root-font geometry; close with an approved matching brand typography token."
+  },
+  "components/SpeechPrefixActionCue.module.css": {
+    "count": 1,
+    "reason": "Tiny 0.42rem speech-prefix action glyph must fit its measured cue slot."
+  },
+  "components/ThinkingText.module.css": {
+    "count": 1,
+    "reason": "Thinking code uses the independent fixed-width inline size and its heading keeps a 10px optical floor; close with recognized code/heading typography tokens."
+  },
+  "components/VoiceInputButton.module.css": {
+    "count": 2,
+    "reason": "Speech method text uses 0.75rem and 0.625rem sizes that follow browser-root preferences independently of UI scaling; close with approved shared menu typography in plan 182's composer control swaps."
+  },
+  "components/WorkflowOutput.module.css": {
+    "count": 1,
+    "reason": "Relative workflow prose plus 1pt optical offset; preserve surrounding transcript density."
+  },
+  "components/blocks/ExploredToolGroup.module.css": {
+    "count": 3,
+    "reason": "Three 2px corners keep compact exploration rows and path/range cues square; close with an approved exact 2px radius token."
+  },
+  "components/blocks/ToolCallRow.module.css": {
+    "count": 1,
+    "reason": "The 2px row corner and output-controlled command/result sizes preserve compact tool geometry; close with an exact 2px radius token and recognized output typography tokens."
+  },
+  "components/blocks/UserPromptBlock.module.css": {
+    "count": 1,
+    "reason": "User-turn size combines the base token with the explicit user-turn font offset; close when the checker recognizes the configured user-turn typography expression."
+  },
+  "components/onboarding/OnboardingStep.module.css": {
+    "count": 1,
+    "reason": "Move-only 1.25rem wizard title preserves its existing hierarchy at every UI scale."
+  },
+  "components/renderers/blocks/ToolUseRenderer.module.css": {
+    "count": 1,
+    "reason": "The 0.6875rem fallback-type label follows browser root-font preferences; close with an approved matching rem-based label token."
+  },
+  "components/renderers/tools/ExitPlanModeRenderer.module.css": {
+    "count": 1,
+    "reason": "0.9375rem plan heading computes to 17.25px at 115%, over 1px from adjacent scaled type tokens; preserve transcript wrapping."
+  },
+  "components/renderers/tools/TaskPresentation.module.css": {
+    "count": 1,
+    "reason": "The 0.625rem task model label follows browser root-font preferences; close with an approved matching rem-based metadata token."
+  },
+  "components/renderers/tools/TodoWriteRenderer.module.css": {
+    "count": 1,
+    "reason": "The 1rem todo status glyph preserves browser root-font scaling; close with an approved rem-based status-glyph token."
+  },
+  "components/ui/Modal.module.css": {
+    "count": 2,
+    "reason": "The 0.9375/0.875rem viewer titles retain the browser root-font hierarchy; close with an approved matching rem-based title scale."
+  },
+  "components/ui/SelectionActionCluster.module.css": {
+    "count": 2,
+    "reason": "8px source and 20px new-session glyphs are optically fitted to the shared selection-action icons."
+  },
+  "components/ui/TooltipLayer.module.css": {
+    "count": 4,
+    "reason": "Tooltip and glossary sizes include the user-selected tooltip offset and existing half-pixel optical steps."
+  },
+  "extension/sidepanel/SidePanel.module.css": {
+    "count": 2,
+    "reason": "20px phone and 10px desktop sidepanel menu corners preserve its responsive popover silhouette."
+  },
+  "main.tsx": {
+    "count": 7,
+    "reason": "Boot/fatal fallback UI with inline styles and a fixed palette, so it renders even when the app's CSS or theme failed."
+  },
+  "pages/CommitBrowser.module.css": {
+    "count": 3,
+    "reason": "Preserve the 0.78/0.82rem commit metadata and full-message hierarchy in the move-only source browser pass."
+  },
+  "pages/CommitRevisionPane.module.css": {
+    "count": 1,
+    "reason": "Revision metadata retains 0.75rem so browser root-font preferences preserve history density; close with an approved rem-based source typography scale."
+  },
+  "pages/ConversationPreviewPage.module.css": {
+    "count": 3,
+    "reason": "22/20px empty-preview glyphs and 12px preview frame corners; preserve the sparse empty-state geometry."
+  },
+  "pages/FilePageLayout.module.css": {
+    "count": 1,
+    "reason": "Preserve the 1.25rem standalone file error heading in the move-only file-page pass."
+  },
+  "pages/GitStatusDiffPreview.module.css": {
+    "count": 8,
+    "reason": "Filename/path, hunk and whitespace labels (0.68–0.9rem) and the 1rem skipped-preview heading preserve source-toolbar hierarchy and browser root-font preferences; close with an approved rem-based source typography scale."
+  },
+  "pages/GitStatusPage.module.css": {
+    "count": 1,
+    "reason": "Preserve the 0.72rem repository action indicator beside its fixed-width glyph in the move-only source header pass."
+  },
+  "pages/MultiHostMonitorPage.module.css": {
+    "count": 1,
+    "reason": "Move-only monitor heading keeps its fixed 20px size; no matching type token, and scaled tokens would change its rendering."
+  },
+  "pages/ProviderSignInPage.module.css": {
+    "count": 1,
+    "reason": "12px sign-in card corners; no matching radius token."
+  },
+  "pages/SourceDetail.module.css": {
+    "count": 3,
+    "reason": "Preserve the 0.78/0.8rem detail hierarchy and 0.75rem count; Chromium rounds its nominally equal pixel token differently at 115%, changing text rasterization."
+  },
+  "pages/SourcePreviewLayout.module.css": {
+    "count": 1,
+    "reason": "Preserve the 0.86rem shared file-preview title; diff toolbar retains its more specific compact override."
+  },
+  "pages/SourceRows.module.css": {
+    "count": 1,
+    "reason": "Preserve 0.75rem change counts; Chromium rounds the nominally equal pixel token differently at 115%, changing text rasterization in this move-only pass."
+  },
+  "pages/SourceSearch.module.css": {
+    "count": 2,
+    "reason": "Dense source index counts and progress labels use 0.72rem to fit narrow columns while following browser root-font preferences; close with an approved source typography scale."
+  },
+  "pages/WorkingTreeBrowser.module.css": {
+    "count": 2,
+    "reason": "Clean-state glyph (1rem) and explanatory copy (0.82rem) follow browser root-font preferences; close with an approved rem-based source typography scale."
+  },
+  "pages/WorktreeStateMarker.module.css": {
+    "count": 1,
+    "reason": "Preserve the 0.66rem staged/partial marker beside the compact file status and path."
+  },
+  "pages/settings/AppearanceSettings.module.css": {
+    "count": 2,
+    "reason": "Specimens demonstrate output/source/fixed-width preferences and the 10px math floor; the 1.35rem icon sample preserves browser root-font scaling. Close with recognized output/math and matching rem-based icon tokens."
+  },
+  "pages/settings/NotificationsSettings.module.css": {
+    "count": 1,
+    "reason": "1.25rem notification setup heading; preserve heading hierarchy without adding a rarely used scale step."
+  },
+  "pages/settings/RemoteAccessSettings.module.css": {
+    "count": 1,
+    "reason": "1.25rem remote-access section heading; preserve hierarchy without a rarely used scale step."
+  },
+  "pages/settings/ServerConnectionsSettings.module.css": {
+    "count": 4,
+    "reason": "20/24/25/28px service, profile and empty-state glyphs are optically fitted to their containers."
+  },
+  "pages/settings/SettingsCategoryIcons.module.css": {
+    "count": 1,
+    "reason": "The 1.5rem emoji/icon container preserves its existing optical size beside navigation labels."
+  },
+  "pages/settings/SettingsCategoryItem.module.css": {
+    "count": 2,
+    "reason": "Navigation description is exactly 1px smaller than the small token; the 1.25rem chevron keeps its optical scale."
+  },
+  "pages/settings/SettingsLayout.module.css": {
+    "count": 1,
+    "reason": "The breadcrumb current-pane label keeps its relative 0.95em minus 1pt optical offset."
+  },
+  "pages/settings/SettingsRows.module.css": {
+    "count": 1,
+    "reason": "Search highlights retain their 2px corners; changing to the 3px token would alter their rendered geometry."
+  },
+  "pages/settings/SpeechVocabularyControls.module.css": {
+    "count": 1,
+    "reason": "12px vocabulary editor frame corners; no matching radius token."
+  }
+}

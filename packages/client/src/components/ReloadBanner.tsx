@@ -7,7 +7,8 @@ import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { useI18n } from "../i18n";
 import { querySessionRouteLayerElement } from "../lib/sessionRouteLayer";
 import styles from "./ReloadBanner.module.css";
-import { Button, IconButton } from "./ui/Button";
+import { Banner } from "./ui/Banner";
+import { Button } from "./ui/Button";
 
 const RELOAD_BANNER_CONTROL_GAP = 4;
 const RELOAD_BANNER_COMPOSER_GAP = 8;
@@ -61,7 +62,7 @@ export function ReloadBannerStack({
       let lift = 0;
       const composer =
         avoidSessionComposer && window.innerWidth > 600
-          ? querySessionRouteLayerElement<HTMLElement>(".session-input")
+          ? querySessionRouteLayerElement<HTMLElement>("[data-session-input]")
           : null;
       if (composer) {
         const controls = composer.querySelectorAll<HTMLElement>(
@@ -107,7 +108,7 @@ export function ReloadBannerStack({
     window.addEventListener("resize", schedulePlacement);
 
     const composer = avoidSessionComposer
-      ? querySessionRouteLayerElement<HTMLElement>(".session-input")
+      ? querySessionRouteLayerElement<HTMLElement>("[data-session-input]")
       : null;
     const resizeObserver =
       typeof ResizeObserver === "undefined"
@@ -140,7 +141,7 @@ export function ReloadBannerStack({
   return (
     // `reload-banner-stack` stays literal: the placement effect above and
     // the focused test both find this element by class to stub geometry.
-    <div ref={stackRef} className={`reload-banner-stack ${styles.stack}`}>
+    <div ref={stackRef} className={styles.stack} data-reload-banner-stack="">
       {children}
     </div>
   );
@@ -299,13 +300,56 @@ export function ReloadBanner({
   };
 
   return (
-    // `reload-banner` stays literal: the global transcript-selection rule in
-    // styles/index.css and the transcript artifact smoke script name it.
-    <div
-      className={`reload-banner ${styles.banner} ${
-        showWarning ? styles.warning : ""
-      }`}
+    // The data boundary supports document selection shielding and captures.
+    <Banner
+      elevated
+      tone={showWarning ? "error" : "warning"}
       role="status"
+      className={styles.banner}
+      data-reload-banner=""
+      onDismiss={handleDismissClick}
+      dismissLabel={t("reloadBannerDismiss")}
+      actions={
+        <>
+          <Button
+            variant={showWarning ? "secondary" : "primary"}
+            className={`${styles.button} ${styles.buttonPrimary}`}
+            onClick={handleImmediateReloadClick}
+            aria-label={primaryReloadLabel}
+            title={primaryReloadLabel}
+          >
+            <span className={styles.buttonLabel}>
+              {t("reloadBannerReloadTargetCompact")}
+            </span>
+          </Button>
+          {canScheduleSafeRestart && (
+            <Button
+              className={`${styles.button} ${styles.buttonSafe}`}
+              onClick={handleRestartWhenSafeClick}
+              disabled={safeRestartMutating}
+              aria-label={t("reloadBannerRestartWhenSafe")}
+              title={t("reloadBannerRestartWhenSafe")}
+            >
+              <span className={styles.buttonLabel}>
+                {t("reloadBannerRestartWhenSafeCompact")}
+              </span>
+            </Button>
+          )}
+          {hasScheduledRestart && onCancelSafeRestart && (
+            <Button
+              className={styles.button}
+              onClick={handleCancelSafeRestartClick}
+              disabled={safeRestartMutating}
+              aria-label={t("reloadBannerCancelSafeRestart")}
+              title={t("reloadBannerCancelSafeRestart")}
+            >
+              <span className={styles.buttonLabel}>
+                {t("reloadBannerCancelSafeRestartCompact")}
+              </span>
+            </Button>
+          )}
+        </>
+      }
     >
       <span className={styles.content}>
         <span className={styles.message}>
@@ -325,52 +369,6 @@ export function ReloadBanner({
           <span className={styles.warningDetail}>{warningDetail}</span>
         )}
       </span>
-      <span className={styles.actions}>
-        <Button
-          variant={showWarning ? "secondary" : "primary"}
-          className={`${styles.button} ${styles.buttonPrimary}`}
-          onClick={handleImmediateReloadClick}
-          aria-label={primaryReloadLabel}
-          title={primaryReloadLabel}
-        >
-          <span className={styles.buttonLabel}>
-            {t("reloadBannerReloadTargetCompact")}
-          </span>
-        </Button>
-        {canScheduleSafeRestart && (
-          <Button
-            className={`${styles.button} ${styles.buttonSafe}`}
-            onClick={handleRestartWhenSafeClick}
-            disabled={safeRestartMutating}
-            aria-label={t("reloadBannerRestartWhenSafe")}
-            title={t("reloadBannerRestartWhenSafe")}
-          >
-            <span className={styles.buttonLabel}>
-              {t("reloadBannerRestartWhenSafeCompact")}
-            </span>
-          </Button>
-        )}
-        {hasScheduledRestart && onCancelSafeRestart && (
-          <Button
-            className={styles.button}
-            onClick={handleCancelSafeRestartClick}
-            disabled={safeRestartMutating}
-            aria-label={t("reloadBannerCancelSafeRestart")}
-            title={t("reloadBannerCancelSafeRestart")}
-          >
-            <span className={styles.buttonLabel}>
-              {t("reloadBannerCancelSafeRestartCompact")}
-            </span>
-          </Button>
-        )}
-        <IconButton
-          label={t("reloadBannerDismiss")}
-          className={styles.dismiss}
-          onClick={handleDismissClick}
-        >
-          ×
-        </IconButton>
-      </span>
-    </div>
+    </Banner>
   );
 }

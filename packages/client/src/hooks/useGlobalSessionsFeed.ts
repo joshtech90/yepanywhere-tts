@@ -1,3 +1,4 @@
+import { sidebarSessionCursor } from "@yep-anywhere/shared/sidebar-snapshot";
 import {
   useCallback,
   useEffect,
@@ -8,6 +9,7 @@ import {
 } from "react";
 import {
   PROGRESSIVE_SESSION_CATALOG_CAPABILITY,
+  SERVER_CAPABILITIES,
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import {
@@ -53,6 +55,14 @@ import {
   useFileActivity,
 } from "./useFileActivity";
 import { useRetainedVersionInfo } from "./useVersion";
+import { useCollectionUpdates } from "./useCollectionUpdates";
+import {
+  collectionQueryIsLive,
+  collectionQueryCoverage,
+  expandCollectionUpdates,
+  pauseCollectionUpdates,
+} from "../lib/collectionUpdates";
+import { selectSessionCollectionQueryState } from "../lib/clientSummaryQueries";
 
 const REFETCH_DEBOUNCE_MS = 500;
 /**
@@ -93,6 +103,7 @@ export interface UseGlobalSessionsFeedResult {
   ready: boolean;
   loading: boolean;
   error: Error | null;
+  requestError: Error | null;
   hasMore: boolean;
   loadMore: () => Promise<void>;
   refetch: () => Promise<void>;
@@ -334,8 +345,8 @@ export function useGlobalSessionsFeed(
   const sourceKeyRef = useRef(sourceKey);
   sourceKeyRef.current = sourceKey;
   const auxiliary = useGlobalSessionsAuxiliary(sourceKey);
-  const queryState = useSessionCollectionQueryState(query);
-  const queryRecords = useSessionCollectionQueryRecords(query);
+  const queryState = useSessionCollectionQueryState(query, ready);
+  const queryRecords = useSessionCollectionQueryRecords(query, ready);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -353,8 +364,15 @@ export function useGlobalSessionsFeed(
   // change `fetch`'s identity would re-run the mount effect and buy a second
   // acquisition of the thing this gate exists to avoid acquiring twice.
   const conditionalReadsRef = useRef(false);
+  const retainedVersion = useRetainedVersionInfo(sourceKey);
+  // SIDEBAR_SESSION_CURSOR_FALLBACK: old servers accept timestamps only.
+  const tieCursorsRef = useRef(false);
+  tieCursorsRef.current = serverHasCapability(
+    retainedVersion,
+    SERVER_CAPABILITIES.sidebarSessionSnapshot,
+  );
   conditionalReadsRef.current = serverHasCapability(
-    useRetainedVersionInfo(sourceKey),
+    retainedVersion,
     PROGRESSIVE_SESSION_CATALOG_CAPABILITY,
   );
 
@@ -419,6 +437,7 @@ export function useGlobalSessionsFeed(
       const queryForRequest = query;
       const requestSourceKey = sourceKey;
 
+      const resumeUpdates = pauseCollectionUpdates(runtime, queryKey);
       try {
         if (fetchOptions.force) {
           invalidateClientQuery(requestSourceKey, queryKey);
@@ -433,6 +452,7 @@ export function useGlobalSessionsFeed(
         const refreshRows = Math.max(
           requestedRows,
           queryRecordsRef.current.length,
+          collectionQueryCoverage(runtime, queryKey),
         );
         const sessionsPromise = ensureClientQuery<
           GlobalSessionsResponse | GlobalSessionsUnchangedResponse
@@ -471,7 +491,10 @@ export function useGlobalSessionsFeed(
             if (isUnchangedGlobalSessionsResponse(response)) return response;
             let result = response;
             while (result.hasMore && result.sessions.length < refreshRows) {
-              const after = result.sessions.at(-1)?.updatedAt;
+              const after = sidebarSessionCursor(
+                result.sessions.at(-1),
+                retained && tieCursorsRef.current,
+              );
               if (!after) throw new Error("Session pagination did not advance");
               const page = await api.getGlobalSessions({
                 ...request,
@@ -481,7 +504,10 @@ export function useGlobalSessionsFeed(
               if (
                 page.hasMore &&
                 (!page.sessions.length ||
-                  page.sessions.at(-1)?.updatedAt === after)
+                  sidebarSessionCursor(
+                    page.sessions.at(-1),
+                    retained && tieCursorsRef.current,
+                  ) === after)
               ) {
                 throw new Error("Session pagination did not advance");
               }
@@ -562,6 +588,10 @@ export function useGlobalSessionsFeed(
           setError(err instanceof Error ? err : new Error(String(err)));
         }
       } finally {
+        resumeUpdates(
+          selectSessionCollectionQueryState(sourceSummary.getSnapshot(), query)
+            ?.ids.length,
+        );
         if (requestId === requestSequenceRef.current) {
           setLoading(false);
         }
@@ -580,6 +610,7 @@ export function useGlobalSessionsFeed(
       requestedRows,
       sourceKey,
       sourceSummary,
+      runtime,
       knownGenerationForRequest,
     ],
   );
@@ -601,7 +632,18 @@ export function useGlobalSessionsFeed(
       return;
     }
 
+    if (
+      records.length < 500 &&
+      expandCollectionUpdates(
+        runtime,
+        queryKey,
+        Math.min(500, records.length + requestedRows),
+      )
+    )
+      return;
+
     const requestSourceKey = sourceKey;
+    const resumeUpdates = pauseCollectionUpdates(runtime, queryKey);
     try {
       setError(null);
       const requestStartedAt = Date.now();
@@ -614,7 +656,10 @@ export function useGlobalSessionsFeed(
         project: projectId ?? undefined,
         q: searchQuery || undefined,
         limit,
-        after: lastRecord.updatedAt,
+        after: sidebarSessionCursor(
+          lastRecord as { id: string; updatedAt?: string },
+          mode === "retained" && tieCursorsRef.current,
+        ),
         includeArchived,
         starred,
         categorized,
@@ -638,9 +683,15 @@ export function useGlobalSessionsFeed(
       if (sourceKeyRef.current === requestSourceKey) {
         setError(err instanceof Error ? err : new Error(String(err)));
       }
+    } finally {
+      resumeUpdates(
+        selectSessionCollectionQueryState(sourceSummary.getSnapshot(), query)
+          ?.ids.length,
+      );
     }
   }, [
     fetch,
+    requestedRows,
     query,
     projectId,
     searchQuery,
@@ -650,6 +701,8 @@ export function useGlobalSessionsFeed(
     categorized,
     sourceKey,
     sourceSummary,
+    runtime,
+    queryKey,
   ]);
 
   // The debounce timer and the reconnect listener belong to the shared
@@ -660,16 +713,59 @@ export function useGlobalSessionsFeed(
   const fetchRef = useRef(fetch);
   fetchRef.current = fetch;
 
+  const updateParams = new URLSearchParams({
+    summaryMode: "retained",
+    limit: String(requestedRows),
+    includeStats: "false",
+  });
+  if (projectId) updateParams.set("project", projectId);
+  if (includeArchived) updateParams.set("includeArchived", "true");
+  if (starred) updateParams.set("starred", "true");
+  if (categorized) updateParams.set("categorized", "true");
+  useCollectionUpdates<GlobalSessionsResponse>({
+    runtime,
+    key: queryKey,
+    path: "/sessions?" + updateParams,
+    catalogPresentation: "loading",
+    rows: Math.max(requestedRows, queryRecords.length),
+    enabled:
+      ready &&
+      !searchQuery &&
+      requestedRows <= 500 &&
+      queryRecords.length <= 500,
+    applySnapshot: (data, context) => {
+      sourceSummary.reportGlobalSessionsCollectionSnapshot(
+        {
+          query,
+          sessions: data.sessions,
+          hasMore: data.hasMore,
+          mode: "replace",
+          catalog: data.catalog,
+        },
+        context.requestStartedAt,
+      );
+      updateGlobalSessionsAuxiliary(sourceKey, {
+        projects: data.projects,
+        stats: data.stats,
+      });
+      setLoading(false);
+      setError(null);
+    },
+    fallback: () => revalidationRef.current?.schedule(),
+  });
+
   const revalidationSubscriber = useCallback(
     () => ({
       coverage: { minRows: requestedRows },
       events: GLOBAL_SESSIONS_REVALIDATE_EVENTS,
       debounceMs: REFETCH_DEBOUNCE_MS,
+      shouldRevalidateEvent: () => !collectionQueryIsLive(runtime, queryKey),
       run: () => {
+        if (collectionQueryIsLive(runtime, queryKey)) return;
         void fetchRef.current({ force: true });
       },
     }),
-    [requestedRows],
+    [requestedRows, runtime, queryKey],
   );
 
   useEffect(() => {
@@ -693,11 +789,9 @@ export function useGlobalSessionsFeed(
   });
 
   const debouncedRefetch = useCallback(() => {
-    if (!readyRef.current) {
-      return;
-    }
+    if (!readyRef.current || collectionQueryIsLive(runtime, queryKey)) return;
     revalidationRef.current?.schedule();
-  }, []);
+  }, [runtime, queryKey]);
 
   const handleProcessStateChange = useCallback(
     (event: ProcessStateEvent) => {
@@ -715,6 +809,7 @@ export function useGlobalSessionsFeed(
 
   const handleSessionCreated = useCallback(
     (event: SessionCreatedEvent) => {
+      if (collectionQueryIsLive(runtime, queryKey)) return;
       const observedAt = Date.now();
       sourceSummary.reportSessionCollectionCreated(event, observedAt);
 
@@ -750,6 +845,8 @@ export function useGlobalSessionsFeed(
       debouncedRefetch,
       query,
       sourceSummary,
+      runtime,
+      queryKey,
     ],
   );
 
@@ -821,6 +918,8 @@ export function useGlobalSessionsFeed(
       enabled &&
       (loading || (!ready && !queryState) || catalogState.awaitingFirstRows),
     error: error ?? catalogState.refreshError,
+    /** Catalogue uncertainty does not prevent paging through healthy rows. */
+    requestError: error,
     hasMore: queryState?.hasMore ?? false,
     loadMore,
     // An explicit refresh is a fidelity request, not a freshness one: a user

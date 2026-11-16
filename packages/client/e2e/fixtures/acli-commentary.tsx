@@ -1,3 +1,4 @@
+import listStyles from "../../src/components/MessageList.module.css";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -10,7 +11,7 @@ import { useVersion } from "../../src/hooks/useVersion";
 import { I18nProvider } from "../../src/i18n";
 import { compileTranscriptProjection } from "@yep-anywhere/shared/transcript/compiler";
 import { projectConversationView } from "../../src/lib/sessionDetail/conversationView";
-import "../../src/styles/index.css";
+import "../../src/styles/purposeGlobals";
 
 function Fixture() {
   useVersion();
@@ -96,7 +97,7 @@ function Fixture() {
     >
       <SessionViewerProvider sessionId="commentary-fixture">
         <main style={{ maxWidth: 740, margin: "24px auto", padding: "0 24px" }}>
-          <div className="assistant-turn">
+          <div className={listStyles.assistantTurn} data-assistant-turn>
             {(new URLSearchParams(window.location.search).get(
               "conversation",
             ) !== "1" ||

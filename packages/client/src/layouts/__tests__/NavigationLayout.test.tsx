@@ -373,7 +373,9 @@ describe("NavigationLayout", () => {
     renderNavigationLayout();
 
     try {
-      const frame = document.querySelector(".session-page") as HTMLElement;
+      const frame = document.querySelector(
+        "[data-session-page]",
+      ) as HTMLElement;
       const composer = screen.getByRole("textbox", { name: "Composer" });
 
       act(() => composer.focus());
@@ -400,7 +402,9 @@ describe("NavigationLayout", () => {
     renderNavigationLayout();
 
     try {
-      const frame = document.querySelector(".session-page") as HTMLElement;
+      const frame = document.querySelector(
+        "[data-session-page]",
+      ) as HTMLElement;
       const composer = screen.getByRole("textbox", { name: "Composer" });
 
       act(() => composer.focus());
@@ -425,7 +429,9 @@ describe("NavigationLayout", () => {
     const app = document.createElement("iframe");
     document.body.append(app);
     try {
-      const frame = document.querySelector(".session-page") as HTMLElement;
+      const frame = document.querySelector(
+        "[data-session-page]",
+      ) as HTMLElement;
       act(() => screen.getByRole("textbox", { name: "Composer" }).focus());
       act(() => viewport.setGeometry(480));
       expect(frame.style.paddingBottom).toContain("320px");
@@ -449,7 +455,9 @@ describe("NavigationLayout", () => {
     renderNavigationLayout();
 
     try {
-      const frame = document.querySelector(".session-page") as HTMLElement;
+      const frame = document.querySelector(
+        "[data-session-page]",
+      ) as HTMLElement;
       const toggle = screen.getByRole("checkbox", { name: "Toggle" });
 
       act(() => toggle.focus());
@@ -480,7 +488,7 @@ describe("NavigationLayout", () => {
     const restoreButton = screen.getByRole("button", {
       name: "Restore sidebar",
     });
-    expect(restoreButton.classList.contains("sidebar-floating-restore")).toBe(
+    expect(restoreButton.hasAttribute("data-sidebar-floating-restore")).toBe(
       true,
     );
     expect(window.localStorage.getItem(UI_KEYS.sidebarMinimized)).toBe("true");

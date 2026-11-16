@@ -13,7 +13,8 @@ import katex from "katex";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const stylesheetUrl = new URL("../renderers.css", import.meta.url);
+import { readClientStyles } from "./read-client-styles";
+
 const semanticClipboardUrl = new URL(
   "../../lib/semanticHtmlClipboard.ts",
   import.meta.url,
@@ -27,7 +28,11 @@ let server: Server;
 
 describe("Markdown preview rich-text copy", () => {
   beforeAll(async () => {
-    const css = await readFile(stylesheetUrl, "utf8");
+    const css = await readClientStyles(
+      "generated",
+      "../components/MarkdownPreview.module",
+      "../components/renderers/CodeOutput.module",
+    ).then((css) => css.replace(/:global\(([^()]*)\)/g, "$1"));
     const semanticClipboardJs = transpileModule(
       await readFile(semanticClipboardUrl, "utf8"),
       {
@@ -66,16 +71,16 @@ describe("Markdown preview rich-text copy", () => {
           }
           ${css}
         </style>
-        <div class="markdown-preview">
-          <div class="markdown-rendered">
+        <div class="markdownPreview" data-markdown-preview>
+          <div class="markdownRendered" data-markdown-rendered>
             <table><thead><tr><th>model</th><th>n</th></tr></thead></table>
             <p>Inline <code>code</code></p>
             <p class="math-preview">Value ${mathHtml}</p>
             <pre><code>block code</code></pre>
           </div>
         </div>
-        <div class="fixed-font-render-toggle">
-          <div class="fixed-font-rendered__content">
+        <div class="fixedFontRenderToggle" data-fixed-font-render-toggle>
+          <div class="fixedFontRenderedContent" data-fixed-font-rendered__content>
             <table class="fixed-font-markdown-table">
               <thead><tr class="fixed-font-diff-added"><th class="fixed-font-diff-gutter-cell">+</th><th>name</th><th>value</th></tr></thead>
               <tbody><tr class="fixed-font-diff-added"><td class="fixed-font-diff-gutter-cell">+</td><td>new</td><td>2</td></tr></tbody>
@@ -85,8 +90,8 @@ describe("Markdown preview rich-text copy", () => {
         <div id="paste-target" contenteditable="true"></div>
         <script type="module">
           import { copySemanticHtmlSelectionToClipboard } from "/semantic-html-clipboard.js";
-          const preview = document.querySelector(".markdown-preview");
-          const renderedDiff = document.querySelector(".fixed-font-render-toggle");
+          const preview = document.querySelector("[data-markdown-preview]");
+          const renderedDiff = document.querySelector("[data-fixed-font-render-toggle]");
           preview.addEventListener("copy", (event) => {
             copySemanticHtmlSelectionToClipboard(event, preview);
           });
@@ -137,7 +142,7 @@ describe("Markdown preview rich-text copy", () => {
       color: "rgb(238, 238, 238)",
     });
 
-    await page.locator(".markdown-rendered").selectText();
+    await page.locator("[data-markdown-rendered]").selectText();
     await page.keyboard.press(`${clipboardModifier}+c`);
     const copied = await page.evaluate(async () => {
       const item = (await navigator.clipboard.read())[0];

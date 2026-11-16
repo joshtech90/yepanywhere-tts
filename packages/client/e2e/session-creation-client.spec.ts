@@ -1,6 +1,24 @@
-import { expect, test, type Browser } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "@playwright/test";
 import { createCodexCreationFixture } from "./support/codex-creation-fixture.js";
 import { presentUiCaptures, recordUiCapture } from "./support/ui-capture.js";
+
+/**
+ * The YA session the page shows. A `/sessions/codex/<native id>` address
+ * names it only through the server, so ask the viewer's own lookup.
+ */
+async function viewedSessionId(page: Page): Promise<string | undefined> {
+  const url = new URL(page.url());
+  const match = url.pathname.match(
+    /\/projects\/([^/]+)\/sessions\/(?:(codex)\/)?([^/]+)$/,
+  );
+  if (!match) return;
+  const [, projectId, family, id] = match;
+  if (!family) return url.searchParams.get("yaSessionId") ?? id;
+  const response = await page.request.get(
+    `${url.origin}/api/projects/${projectId}/native-sessions/${family}/${id}`,
+  );
+  return response.ok() ? (await response.json()).sessionId : undefined;
+}
 
 test.setTimeout(90000);
 test.skip(
@@ -72,7 +90,7 @@ test("limited New Session accepts prompt and staged files together before unavai
       if (r.method() === "POST") paths.push(new URL(r.url()).pathname);
     });
     await page.goto(`${f.origin}/new-session?projectId=${f.projectId}`);
-    const input = page.locator("textarea.new-session-form-textarea");
+    const input = page.locator("textarea[data-new-session-form-textarea]");
     await input.pressSequentially("OWNED_LIMITED_CREATION");
     await page.locator('input[type="file"]').setInputFiles({
       name: "limited.txt",
@@ -161,7 +179,7 @@ test("Session-page Start now uses one acceptance and keeps newer typing while it
     await page.addInitScript(() => {
       const replace = history.replaceState.bind(history);
       history.replaceState = (data, unused, url) => {
-        if (String(url).includes("yaSessionId=")) {
+        if (String(url).includes("/sessions/codex/")) {
           (
             window as unknown as { publishNativeLabel: () => void }
           ).publishNativeLabel = () => replace(data, unused, url);
@@ -202,10 +220,10 @@ test("Session-page Start now uses one acceptance and keeps newer typing while it
       await route.fulfill({ response });
     });
     await expect(
-      page.locator("button.project-queue-new-session-button"),
+      page.locator("button[data-project-queue-new-session-button]"),
     ).toBeVisible();
     await page
-      .locator("button.project-queue-new-session-button")
+      .locator("button[data-project-queue-new-session-button]")
       .click({ button: "right" });
     await page
       .getByRole("button", { name: "Start new session now", exact: true })
@@ -218,9 +236,10 @@ test("Session-page Start now uses one acceptance and keeps newer typing while it
         window as unknown as { publishNativeLabel: () => void }
       ).publishNativeLabel(),
     );
-    await expect(page).toHaveURL(
-      (url) => url.searchParams.get("yaSessionId") === parent.sessionId,
+    await expect(page).toHaveURL((url) =>
+      url.pathname.includes("/sessions/codex/"),
     );
+    await expect.poll(() => viewedSessionId(page)).toBe(parent.sessionId);
     let text = "";
     for (const c of "NEWER_PAGE_DRAFT") {
       await input.pressSequentially(c);
@@ -232,7 +251,7 @@ test("Session-page Start now uses one acceptance and keeps newer typing while it
       page.getByRole("button", { name: "Open saved session", exact: true }),
     ).toBeVisible();
     await expect(input).toHaveValue("NEWER_PAGE_DRAFT");
-    expect(page.url()).toContain(parent.sessionId);
+    expect(await viewedSessionId(page)).toBe(parent.sessionId);
     await recordUiCapture(page, "current-client-creation-recovery-desktop");
     await page.setViewportSize({ width: 375, height: 812 });
     await recordUiCapture(page, "current-client-creation-recovery-phone");
@@ -245,11 +264,7 @@ test("Session-page Start now uses one acceptance and keeps newer typing while it
     await page
       .getByRole("button", { name: "Open saved session", exact: true })
       .click();
-    await expect(page).toHaveURL(
-      (url) =>
-        url.pathname.endsWith(`/sessions/${receipt!.sessionId}`) ||
-        url.searchParams.get("yaSessionId") === receipt!.sessionId,
-    );
+    await expect.poll(() => viewedSessionId(page)).toBe(receipt!.sessionId);
     await expect
       .poll(
         async () =>
@@ -317,7 +332,7 @@ async function originComposer(browser: Browser, linger = false) {
             buffer: Buffer.from("owned first input bytes"),
           });
       await page
-        .locator("button.project-queue-new-session-button")
+        .locator("button[data-project-queue-new-session-button]")
         .click({ button: "right" });
       await page
         .getByRole("button", { name: "Start new session now", exact: true })
@@ -339,11 +354,7 @@ test("unchanged Session-page files are acknowledged once and stay cleared after 
     await f.start();
     const receipt = await (await accepted).json();
     expect(receipt.provider).toBe("codex");
-    await expect(f.page).toHaveURL(
-      (url) =>
-        url.pathname.endsWith(`/sessions/${receipt.sessionId}`) ||
-        url.searchParams.get("yaSessionId") === receipt.sessionId,
-    );
+    await expect.poll(() => viewedSessionId(f.page)).toBe(receipt.sessionId);
     await f.page.goto(f.path);
     await expect(f.input).toBeEditable();
     await expect(f.input).toHaveValue("");
@@ -400,11 +411,7 @@ test("lost creation reply and recovery read reload into conditional read-only dr
     await f.page
       .getByRole("button", { name: "Open saved session", exact: true })
       .click();
-    await expect(f.page).toHaveURL(
-      (url) =>
-        url.pathname.endsWith(`/sessions/${sessionId}`) ||
-        url.searchParams.get("yaSessionId") === sessionId,
-    );
+    await expect.poll(() => viewedSessionId(f.page)).toBe(sessionId!);
     await f.page.goto(f.path);
     await expect(f.input).toBeEditable();
     await expect(f.input).toHaveValue("");
@@ -535,7 +542,7 @@ test("background creation keeps options, clears captured files, and supports the
       })
       .check();
     await page.goto(formUrl);
-    const input = page.locator("textarea.new-session-form-textarea");
+    const input = page.locator("textarea[data-new-session-form-textarea]");
     const help = page.getByLabel("New session keyboard shortcuts", {
       exact: true,
     });
@@ -591,7 +598,7 @@ test("background creation keeps options, clears captured files, and supports the
     });
     await input.pressSequentially("Check the draft recovery behavior next");
     await expect(
-      page.locator("button.new-session-project-queue-button"),
+      page.locator("button[data-new-session-project-queue-button]"),
     ).toBeVisible();
     // A composing Enter and a shortcut in a different control must not submit.
     await input.dispatchEvent("keydown", {
@@ -689,7 +696,7 @@ test("background lost acknowledgement reloads into explicit recovery without dup
     );
     const formUrl = `${f.origin}/new-session?projectId=${f.projectId}&provider=codex&model=gpt-6.1-sol`;
     await page.goto(formUrl);
-    const input = page.locator("textarea.new-session-form-textarea");
+    const input = page.locator("textarea[data-new-session-form-textarea]");
     await input.pressSequentially("Keep my unconfirmed request recoverable");
     await page.route("**/api/session-creations/*", (route) =>
       loseRead ? route.abort("failed") : route.continue(),
@@ -756,8 +763,8 @@ async function queueDraftFixture(browser: Browser) {
     const page = await f.context.newPage();
     const formUrl = `${f.origin}/new-session?projectId=${f.projectId}&provider=codex&model=gpt-6.1-sol`;
     await page.goto(formUrl);
-    const input = page.locator("textarea.new-session-form-textarea");
-    const queue = page.locator("button.new-session-project-queue-button");
+    const input = page.locator("textarea[data-new-session-form-textarea]");
+    const queue = page.locator("button[data-new-session-project-queue-button]");
     await expect(input).toBeEditable();
     await expect(queue).toBeVisible();
     return { ...f, page, input, queue, formUrl, blocker };
@@ -950,7 +957,7 @@ test("Project Queue acceptance preserves a sibling attachment-only edit across r
     await expect(f.queue).toBeEnabled();
     const sibling = await f.context.newPage();
     await sibling.goto(f.formUrl);
-    const other = sibling.locator("textarea.new-session-form-textarea");
+    const other = sibling.locator("textarea[data-new-session-form-textarea]");
     await expect(other).toHaveValue("Sibling queue request");
     let saved!: () => void;
     const accepted = new Promise<void>((resolve) => {
@@ -1047,7 +1054,7 @@ test("Project Queue refusal preserves captured input and newer sibling work for 
     await sent;
     const sibling = await f.context.newPage();
     await sibling.goto(f.formUrl);
-    const other = sibling.locator("textarea.new-session-form-textarea");
+    const other = sibling.locator("textarea[data-new-session-form-textarea]");
     await expect(other).toHaveValue("Refused queue request");
     await other.pressSequentially(" with sibling recovery notes");
     release();

@@ -1,3 +1,8 @@
+import deviceListStyles from "./DeviceList.module.css";
+import rowsStyles from "./SettingsRows.module.css";
+import devicesStyles from "./DevicesSettings.module.css";
+import { Badge } from "../../components/ui/Badge";
+import { Banner } from "../../components/ui/Banner";
 import { Button } from "../../components/ui/Button";
 import { useBrowserProfiles } from "../../hooks/useBrowserProfiles";
 import { useConnectedDevices } from "../../hooks/useConnectedDevices";
@@ -68,15 +73,15 @@ export function DevicesSettings() {
   return (
     <SettingsSection description={t("devicesProfilesDescription")}>
       <HideInSettingsSearch>
-        {error && <p className="form-error">{error}</p>}
+        {error && <Banner tone="error">{error}</Banner>}
 
-        <div className="settings-group">
+        <div className={rowsStyles.group} data-settings-group>
           {isLoading ? (
-            <p className="settings-hint">{t("devicesLoadingProfiles")}</p>
+            <p className={rowsStyles.hint}>{t("devicesLoadingProfiles")}</p>
           ) : profiles.length === 0 ? (
-            <p className="settings-hint">{t("devicesEmpty")}</p>
+            <p className={rowsStyles.hint}>{t("devicesEmpty")}</p>
           ) : (
-            <div className="device-list">
+            <div className={deviceListStyles.list}>
               {profiles.map((profile) => {
                 const isCurrentDevice =
                   profile.browserProfileId === currentBrowserProfileId;
@@ -88,12 +93,12 @@ export function DevicesSettings() {
                 return (
                   <div
                     key={profile.browserProfileId}
-                    className="device-list-item device-profile-item"
+                    className={deviceListStyles.listItem}
                   >
-                    <div className="device-list-info">
+                    <div className={deviceListStyles.listInfo}>
                       <strong>
                         <span
-                          className={`device-status ${isConnected ? "device-status-online" : "device-status-offline"}`}
+                          className={`${deviceListStyles.status} ${isConnected ? deviceListStyles.statusOnline : deviceListStyles.statusOffline}`}
                           title={
                             isConnected
                               ? t("devicesConnected")
@@ -102,27 +107,28 @@ export function DevicesSettings() {
                         />
                         {displayName}
                         {isCurrentDevice && (
-                          <span className="device-current-badge">
-                            {t("devicesThisDevice")}
-                          </span>
+                          <Badge tone="accent">{t("devicesThisDevice")}</Badge>
                         )}
                       </strong>
 
                       {/* Origin list */}
-                      <div className="device-origins">
+                      <div className={devicesStyles.origins}>
                         {profile.origins.map((origin) => {
                           const { browser, os } = parseUserAgent(
                             origin.userAgent,
                           );
                           return (
-                            <div key={origin.origin} className="device-origin">
-                              <code className="device-origin-url">
+                            <div
+                              key={origin.origin}
+                              className={devicesStyles.origin}
+                            >
+                              <code className={devicesStyles.originUrl}>
                                 {formatOrigin(origin.origin)}
                               </code>
-                              <span className="device-origin-details">
+                              <span className={devicesStyles.originDetails}>
                                 {browser} · {os}
                               </span>
-                              <span className="device-origin-time">
+                              <span className={devicesStyles.originTime}>
                                 {t("devicesLastSeen", {
                                   date: formatDate(origin.lastSeen, t),
                                 })}
@@ -132,7 +138,7 @@ export function DevicesSettings() {
                         })}
                       </div>
 
-                      <p className="device-profile-meta">
+                      <p className={devicesStyles.profileMeta}>
                         {t("devicesFirstSeen", {
                           date: formatDate(profile.createdAt, t),
                         })}

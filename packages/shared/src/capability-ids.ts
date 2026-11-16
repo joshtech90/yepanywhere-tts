@@ -18,6 +18,42 @@ export interface CapabilityIdAllocation {
  * before the general 0.7.1 ID contract.
  */
 export const CAPABILITY_ID_ALLOCATIONS = {
+  cliInstallations: {
+    id: 161,
+    direction: "server",
+    name: "cli-installations",
+    introducedIn: "0.12.0",
+  },
+  machineControlSetting: {
+    id: 160,
+    direction: "server",
+    name: "machine-control-setting",
+    introducedIn: "0.12.0",
+  },
+  collectionMetadataFields: {
+    id: 159,
+    direction: "server",
+    name: "collection-metadata-fields",
+    introducedIn: "0.12.0",
+  },
+  sidebarSessionSnapshot: {
+    id: 158,
+    direction: "server",
+    name: "sidebar-session-snapshot",
+    introducedIn: "0.12.0",
+  },
+  projectCollectionUpdates: {
+    id: 157,
+    direction: "server",
+    name: "project-collection-updates",
+    introducedIn: "0.12.0",
+  },
+  collectionQueryUpdates: {
+    id: 156,
+    direction: "server",
+    name: "collection-query-updates",
+    introducedIn: "0.12.0",
+  },
   agentAuthRouterSessionSwitch: {
     id: 155,
     direction: "server",
@@ -953,6 +989,12 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     direction: "server",
     name: "session-creation-claude-text",
     introducedIn: "0.11.1",
+  },
+  agentAuthRouterHosted: {
+    id: 162,
+    direction: "server",
+    name: "agent-auth-router-hosted",
+    introducedIn: "0.12.1",
   },
   // Fork-only allocation; kept far above upstream's range so upstream's next
   // allocations cannot collide with it.

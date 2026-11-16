@@ -82,11 +82,11 @@
 }
 
 /*
- * The /btw aside rule that stays in index.css owns title colour on those rows
+ * The shared /btw aside module owns title colour on those rows
  * at the same specificity this rule had, so exclude them here rather than
  * letting stylesheet order decide which colour wins.
  */
-.item.unread:not(:global(.btw-aside-session)) .title {
+.item.unread:not([data-btw-aside-session]) .title {
   color: var(--text-primary);
 }
 
@@ -125,20 +125,11 @@
   white-space: nowrap;
 }
 
-.badge {
-  font-size: 10px;
+/* The /btw chip is clickable (it opens the parent), so it is not a Badge. */
+.btwBadge {
+  font-size: var(--font-size-xs);
   font-weight: 600;
   padding: 0.125rem 0.375rem;
   border-radius: var(--radius-sm);
   white-space: nowrap;
-}
-
-.badge.needsInput {
-  background-color: var(--status-badge-input-bg);
-  color: var(--status-badge-input-text);
-}
-
-.badge.external {
-  background-color: var(--status-badge-external-bg);
-  color: var(--status-badge-external-text);
 }

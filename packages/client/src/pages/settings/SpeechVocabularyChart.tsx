@@ -5,7 +5,8 @@ import {
   VOCABULARY_BASELINE_URL,
 } from "@yep-anywhere/shared";
 import { Fragment, useEffect, useState } from "react";
-import { ButtonBase } from "../../components/ui/Button";
+import { Banner } from "../../components/ui/Banner";
+import { ButtonBase, Button } from "../../components/ui/Button";
 import { Field, Select, TextInput } from "../../components/ui/Field";
 import { useI18n } from "../../i18n";
 import styles from "./SpeechVocabularyChart.module.css";
@@ -88,9 +89,9 @@ export default function SpeechVocabularyChart({
   return (
     <div className={styles.chart}>
       {error && (
-        <p role="alert">
+        <Banner tone="error">
           {t("speechVocabularyBaselineError")} {error}
-        </p>
+        </Banner>
       )}
       <table className={styles.table} aria-label={t("speechVocabularyView")}>
         <thead>
@@ -174,9 +175,11 @@ export default function SpeechVocabularyChart({
         <div className={styles.unknown}>
           <p>{t("speechVocabularyOutsideBaseline")}</p>
           {unknown.map((word) => (
-            <ButtonBase
+            <Button
+              variant="outline"
+              touchTarget="large"
+              size="small"
               key={word.word}
-              className={styles.unknownWord}
               aria-label={description(word)}
               aria-pressed={selected === word.word}
               onFocus={() => setSelected(word.word)}
@@ -184,7 +187,7 @@ export default function SpeechVocabularyChart({
               title={description(word)}
             >
               {word.word} · {word.count.toLocaleString()}
-            </ButtonBase>
+            </Button>
           ))}
           {selectedUnknown && (
             <p aria-live="polite">{description(selectedUnknown)}</p>

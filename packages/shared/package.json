@@ -20,6 +20,16 @@
       "import": "./dist/server-runtime.js",
       "types": "./dist/server-runtime.d.ts"
     },
+    "./agent-api-bootstrap": {
+      "source": "./src/agent-api-bootstrap.ts",
+      "import": "./dist/agent-api-bootstrap.js",
+      "types": "./dist/agent-api-bootstrap.d.ts"
+    },
+    "./machine-control-instructions": {
+      "source": "./src/machine-control-instructions.ts",
+      "import": "./dist/machine-control-instructions.js",
+      "types": "./dist/machine-control-instructions.d.ts"
+    },
     "./sqlite": {
       "source": "./src/sqlite.ts",
       "import": "./dist/sqlite.js",
@@ -39,6 +49,21 @@
       "source": "./src/experimental/*.ts",
       "import": "./dist/experimental/*.js",
       "types": "./dist/experimental/*.d.ts"
+    },
+    "./collection-updates": {
+      "source": "./src/collection-updates.ts",
+      "import": "./dist/collection-updates.js",
+      "types": "./dist/collection-updates.d.ts"
+    },
+    "./sidebar-snapshot": {
+      "source": "./src/sidebar-snapshot.ts",
+      "types": "./dist/sidebar-snapshot.d.ts",
+      "default": "./dist/sidebar-snapshot.js"
+    },
+    "./provider-cli-installations": {
+      "source": "./src/provider-cli-installations.ts",
+      "import": "./dist/provider-cli-installations.js",
+      "types": "./dist/provider-cli-installations.d.ts"
     }
   },
   "scripts": {

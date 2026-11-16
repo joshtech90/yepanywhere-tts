@@ -85,7 +85,7 @@ test("new-session attachment panel records a memo, preserves cancellation and se
   );
   await page.setViewportSize({ width: 1000, height: 600 });
   await page.goto(`${baseURL}/new-session?projectId=${projectId}`);
-  const input = page.locator("textarea.new-session-form-textarea");
+  const input = page.locator("textarea[data-new-session-form-textarea]");
   await input.pressSequentially("Listen to this memo.", { delay: 20 });
   const attach = page.getByRole("button", {
     name: "Attach files",
@@ -237,7 +237,7 @@ test("desktop attachment panel shows recent upload origins and a readable hover 
     buffer: Buffer.from("must not silently omit"),
   });
   await expect.poll(() => !!failUpload).toBe(true);
-  await page.locator(".send-button-with-help").click();
+  await page.locator("[data-send-button-with-help]").click();
   failUpload!();
   await expect(
     page.getByText(

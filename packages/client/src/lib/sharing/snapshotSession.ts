@@ -23,7 +23,9 @@ export function snapshotSession(title?: string): string {
   }
 
   // 2. Clone the session messages container
-  const messagesEl = querySessionRouteLayerElement("main.session-messages");
+  const messagesEl = querySessionRouteLayerElement(
+    "main[data-session-messages]",
+  );
   if (!messagesEl) {
     throw new Error("Session messages not found");
   }
@@ -36,11 +38,11 @@ export function snapshotSession(title?: string): string {
     "textarea",
     "[contenteditable]",
     "script",
-    ".session-menu-wrapper",
-    ".load-older-messages",
-    ".pending-message",
-    ".deferred-message",
-    ".processing-indicator",
+    "[data-session-menu]",
+    "[data-load-older-messages]",
+    "[data-pending-message]",
+    "[data-deferred-message]",
+    "[data-processing-indicator]",
   ];
   for (const el of clone.querySelectorAll(removeSelectors.join(", "))) {
     el.remove();
@@ -83,7 +85,7 @@ body {
   padding: 1rem;
   overflow-y: auto;
 }
-main.session-messages {
+main[data-session-messages] {
   overflow: visible;
   height: auto;
 }

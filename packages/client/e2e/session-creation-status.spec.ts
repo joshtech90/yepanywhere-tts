@@ -53,8 +53,21 @@ test("committed input confirmation unlocks typing before a stale startup snapsho
       posts++;
   });
   await page.route("**/api/projects/*/sessions/*/metadata", async (route) => {
-    if (route.request().method() !== "GET" || metadataCaptured)
-      return route.continue();
+    if (route.request().method() !== "GET") return route.continue();
+    if (metadataCaptured) {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.session.routerBinding = {
+        id: "fixture-binding",
+        routerId: "fixture-router",
+        accountId: "codex-extra",
+        accountDisplayName: "codex-extra",
+        provider: "codex",
+        poolId: "fixture-pool",
+        poolName: "personal-codex",
+      };
+      return route.fulfill({ response, json: body });
+    }
     metadataCaptured = true;
     const sessionId = new URL(route.request().url()).pathname
       .split("/")
@@ -114,15 +127,17 @@ test("committed input confirmation unlocks typing before a stale startup snapsho
       `${owned.server.baseUrl}/new-session?projectId=${owned.projectId}&provider=codex&model=gpt-6.1-sol`,
     );
     await page
-      .locator("textarea.new-session-form-textarea")
+      .locator("textarea[data-new-session-form-textarea]")
       .pressSequentially("Confirm this initial request exactly once");
     await page
       .getByRole("button", { name: "Open sidebar", exact: true })
       .click();
     await expect(
-      page.locator(".sidebar-actions .session-draft-badge"),
+      page
+        .locator("[data-sidebar-actions]")
+        .getByText("Draft", { exact: true }),
     ).toHaveCount(1);
-    await page.locator("button.sidebar-close").click();
+    await page.locator("button[data-sidebar-close]").click();
     const acceptance = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
@@ -156,9 +171,7 @@ test("committed input confirmation unlocks typing before a stale startup snapsho
     });
     await owned.releaseBinding();
     await expect(page).toHaveURL(
-      new RegExp(
-        `/sessions/019a0000-cccc-7ccc-8ccc-cccccccccccc\\?yaSessionId=${receipt.sessionId}$`,
-      ),
+      /\/sessions\/codex\/019a0000-cccc-7ccc-8ccc-cccccccccccc$/,
     );
     const source = await (
       await owned.request(`/sessions/${receipt.sessionId}/native-source`)
@@ -246,7 +259,9 @@ test("committed input confirmation unlocks typing before a stale startup snapsho
       100,
     );
     const currentTitle = `Live update ${text.length - 1}`;
-    await expect(page.locator(".session-title-text")).toHaveText(currentTitle);
+    await expect(page.locator("[data-session-title-text]")).toHaveText(
+      currentTitle,
+    );
     const staleReply = page.waitForResponse(
       (response) =>
         response.request().method() === "GET" &&
@@ -262,15 +277,30 @@ test("committed input confirmation unlocks typing before a stale startup snapsho
     );
     await expect(input).toBeEditable();
     await expect(input).toHaveValue(text);
-    await expect(page.locator(".session-title-text")).toHaveText(currentTitle);
+    await expect(page.locator("[data-session-title-text]")).toHaveText(
+      currentTitle,
+    );
+    const accountChip = page.getByRole("button", {
+      name: /Open the Account tab/,
+    });
+    await expect(accountChip).toContainText("personal-codex");
+    await accountChip.click();
+    await expect(
+      page.getByText("Current account: personal-codex · codex-extra", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
     await capture("creation-confirmed-with-newer-draft");
     await page
       .getByRole("button", { name: "Open sidebar", exact: true })
       .click();
     await expect(
-      page.locator(".sidebar-actions .session-draft-badge"),
+      page
+        .locator("[data-sidebar-actions]")
+        .getByText("Draft", { exact: true }),
     ).toHaveCount(0);
-    await page.locator("button.sidebar-close").click();
+    await page.locator("button[data-sidebar-close]").click();
     releaseTail();
     await owned.releaseReply();
     await expect(
@@ -287,7 +317,9 @@ test("committed input confirmation unlocks typing before a stale startup snapsho
     ).toHaveLength(1);
     expect(errors).toEqual([]);
     await page.reload();
-    await expect(page.locator(".session-title-text")).toHaveText(currentTitle);
+    await expect(page.locator("[data-session-title-text]")).toHaveText(
+      currentTitle,
+    );
     await expect(
       page.getByText("OWNED_CODEX_CREATION_REPLY", { exact: true }).first(),
     ).toBeVisible();

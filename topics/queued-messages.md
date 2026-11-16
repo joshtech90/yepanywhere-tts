@@ -52,10 +52,12 @@ minutes.
    entries are durable server state while queued on every provider. Delivery
    timing remains provider-specific: providers without verified background-work
    retention promote patient intent at the ordinary turn-end boundary, but must
-   not weaken its restart durability. Restart-loaded patient entries surface as
-   `paused-after-restart` queue chips and require an explicit action: resume
-   (rejoin the provider's patient/deferred delivery path), steer (deliver now),
-   or delete.
+   not weaken its restart durability. An orderly reload/restart automatically
+   restores previously running patient entries through their usual delivery
+   path, preserving order, patience and compaction gates. Crash/interrupted
+   recovery and entries already paused before reload surface as
+   `paused-after-restart` chips and require Resume, Steer now or Delete. See
+   [orderly queue recovery](reload-safe-provider-runtimes.md#orderly-queue-recovery).
 5. **YA commands are explicitly tagged controls.** A queued YA-routed command
    uses the Process-local `pendingYaCommands` lane and a `kind: "ya-command"`
    summary. It is never inferred from slash-shaped queued text and never enters
@@ -86,9 +88,10 @@ minutes.
   last submission is still queued they do nothing; the message stays queued
   and only the chip's explicit Edit or cancel controls remove it.
 - **Process restart / session stop.** Short-term direct/deferred queue state is
-  gone. Persisted patient entries load as `paused-after-restart`; clients
-  reflect those server-reported entries on the next sync and never resurrect
-  queue state locally.
+  gone. Patient entries initially load paused. A verified orderly handoff can
+  restore only those still waiting and previously running; uncertain or already
+  dispatched operations are never replayed. Clients render the resulting
+  server projection and never resurrect queue state locally.
 - **YA-local command boundary.** An accepted command may use the same queued
   chip while an agent turn remains active. The control lane resolves locally at
   the first safe boundary, and ordinary queued provider work stays held until
@@ -104,7 +107,10 @@ work keeps its order; waiting patient work retains its existing readiness
 policy. Native Codex compaction uses its RPC, while Claude receives its exact
 command and optional instructions. The command never joins prose batches,
 steers into an active turn, or becomes text on an interrupt-drain batch.
-Queue the follow-up as a separate message.
+Queue the follow-up as a separate message. Agents queue the same operation
+through the v0 [`createInput`](http-api-v0.md#attributed-queued-input-and-consumption)
+`type:"compact"`, which shares the composer's admission code and reports the
+outcome on its receipt.
 
 Compaction waits for provider-retained background work to end. Claude's
 fallback also ignores results until its exact command input has been consumed.
@@ -134,7 +140,8 @@ Hard-abort recovery reactivates the existing conversation without using a
 compact as its launch prompt, then restores and dispatches the ordered queue.
 Before provider dispatch, YA removes their replayable durable entry; a command
 already handed to the provider is never silently replayed on restart. This does
-not add durable regular queues, receipts for compaction, or automatic recovery
+not add durable regular queues, composer receipts for compaction (v0 input
+receipts observe it while their owner runs), or automatic recovery
 of uncertain operations. A retained worker may finish after its controller
 leaves; an old callback cannot dispatch into a departed controller.
 
@@ -254,6 +261,12 @@ same session-scoped routes as the session page. Those actions remain
 server-confirmed and id-addressed: Resume preserves resume-through ordering,
 and Delete removes only the selected durable id. Full context and Steer now
 remain on the session page; there is no project-level Resume all control.
+
+A session page can show a recovered chip whose entry the server no longer
+holds. When Delete, Resume, or Steer now reports the entry missing, the page
+rereads the session's queue so the chip goes. Delete then reports nothing,
+since the entry is gone as asked; Resume and Steer now still report that they
+did not run.
 
 ## What we are removing and why
 

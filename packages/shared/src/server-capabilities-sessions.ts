@@ -1,7 +1,34 @@
+import { HOSTED_ROUTER_SERVER_CAPABILITIES } from "./server-capabilities-router-hosted.js";
 import { CAPABILITY_ID_ALLOCATIONS } from "./capability-ids.js";
 import type { ServerCapabilityDefinition } from "./server-capability-definition.js";
 
 export const SESSIONS_SERVER_CAPABILITIES = {
+  sidebarSessionSnapshot: {
+    id: CAPABILITY_ID_ALLOCATIONS.sidebarSessionSnapshot.id,
+    name: "sidebar-session-snapshot",
+    kind: "transitional",
+    area: "sessions",
+    introducedIn: "0.12.0",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.sidebarSessionSnapshot.id,
+    },
+    description:
+      "Fresh bounded sidebar windows with archive deadlines; retained session pages accept timestamp/identity cursors.",
+    clientFallback:
+      "Keep the existing three paged session feeds; send no sidebar snapshot request without this exact support bit.",
+    serverContract: {
+      routes: ["GET /api/sessions/sidebar", "GET /api/sessions"],
+      requestFields: [
+        "recentLimit",
+        "starredLimit",
+        "categorizedLimit",
+        "after",
+      ],
+      responseFields: ["rows", "windows", "catalog", "nextTransitionAt"],
+    },
+    lifecycle: { kind: "transitional" },
+  },
   queuedSessionCompaction: {
     id: CAPABILITY_ID_ALLOCATIONS.queuedSessionCompaction.id,
     name: "queued-session-compaction",
@@ -404,6 +431,7 @@ export const SESSIONS_SERVER_CAPABILITIES = {
       responseFields: ["pools", "accounts", "selection"],
     },
   },
+  ...HOSTED_ROUTER_SERVER_CAPABILITIES,
   agentAuthRouterRecovery: {
     id: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterRecovery.id,
     name: "agent-auth-router-recovery",
@@ -729,6 +757,31 @@ export const SESSIONS_SERVER_CAPABILITIES = {
       routeModules: ["packages/server/src/routes/machine-control.ts"],
       requestFields: ["machineControl"],
       responseFields: ["available", "version", "reason"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Optional independently installed desktop product.",
+    },
+  },
+  machineControlSetting: {
+    id: CAPABILITY_ID_ALLOCATIONS.machineControlSetting.id,
+    name: "machine-control-setting",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.12.0",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.machineControlSetting.id,
+    },
+    description:
+      "Server-wide default advertisement of installed Machine Control to eligible launches, with its Settings switch.",
+    clientFallback:
+      "Hide the Machine Control settings category, send no setting write, and start the New Session picker off.",
+    serverContract: {
+      routes: ["PUT /api/machine-control"],
+      routeModules: ["packages/server/src/routes/machine-control-setting.ts"],
+      requestFields: ["enabled"],
+      responseFields: ["enabled", "found"],
     },
     lifecycle: {
       kind: "permanent",

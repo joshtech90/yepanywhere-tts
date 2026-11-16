@@ -99,10 +99,12 @@ export async function createMachineControlMediaBrowser(
             await page
               .getByRole("button", { name: "Skip all", exact: true })
               .click();
-            await expect(page.locator(".onboarding-skip-all")).toBeHidden();
+            await expect(
+              page.getByRole("button", { name: "Skip all", exact: true }),
+            ).toBeHidden();
           }
         }
-        await expect(page.locator(".message-input")).toBeVisible({
+        await expect(page.locator("[data-message-input]")).toBeVisible({
           timeout: 15_000,
         });
       },
@@ -117,16 +119,16 @@ export async function createMachineControlMediaBrowser(
         await page.goto(sessionUrl);
       },
       async prove(stage: "live" | "reloaded") {
-        const summary = page.locator(".conversation-activity-summary");
+        const summary = page.locator("[data-conversation-activity-summary]");
         if (await summary.count()) await summary.first().click();
         const filename = page
-          .locator(".tool-row")
+          .locator("[data-tool-row]")
           .getByRole("button", { name: "browser.png", exact: true })
           .last();
         await expect(filename).toBeVisible({ timeout: 15_000 });
         await filename.scrollIntoViewIfNeeded();
         await filename.click();
-        const modal = page.locator(".modal--image-viewer");
+        const modal = page.locator("[data-modal-image-viewer]");
         await expect(modal).toBeVisible({ timeout: 10_000 });
         const image = modal.locator("img").first();
         await expect

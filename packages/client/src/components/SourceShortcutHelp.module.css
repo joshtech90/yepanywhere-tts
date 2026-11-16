@@ -1,30 +1,11 @@
 .root {
-  position: absolute;
-  z-index: 5;
-  top: 4px;
-  right: 6px;
+  display: inline-flex;
 }
 
 .trigger {
   display: grid;
-  width: 22px;
-  height: 22px;
   place-items: center;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  font-weight: 700;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle, #21262d);
-  border-radius: 50%;
   cursor: help;
-}
-
-.trigger:hover,
-.trigger:focus-visible,
-.trigger[aria-expanded="true"] {
-  color: var(--text-primary, #e6edf3);
-  border-color: var(--accent-color);
-  outline: none;
 }
 
 /* The shared Popover owns the surface; this lays out the shortcut table. */
@@ -37,7 +18,7 @@
 .popoverTitle {
   margin: 0 4px 5px;
   color: var(--text-primary, #e6edf3);
-  font-size: 0.75rem;
+  font-size: var(--font-size-sm);
   font-weight: 600;
 }
 
@@ -48,7 +29,7 @@
   gap: 8px;
   padding: 3px 4px;
   color: var(--text-secondary, #8b949e);
-  font-size: 0.75rem;
+  font-size: var(--font-size-sm);
 }
 
 .row kbd {
@@ -59,7 +40,7 @@
 }
 
 /* The narrow commit layout hides this disclosure entirely; the sibling
-   `.source-search-shortcut` kbd hint keeps its own rule in renderers.css. */
+   keyboard hint is owned by SourceSearch.module.css. */
 @media (width <= 600px) {
   .root {
     display: none;

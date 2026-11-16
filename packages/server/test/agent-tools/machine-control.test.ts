@@ -114,9 +114,9 @@ describe("installed Machine Control launch", () => {
       { environment, platform: "darwin", verify },
     );
     const launch = launchProvider.mock.calls[0]?.[0];
-    expect(launch?.globalInstructions).toContain("Existing");
-    expect(launch?.globalInstructions).toContain("App'\\''s CLI");
-    expect(launch?.globalInstructions).toContain("agent instructions");
+    expect(launch?.globalInstructions).toBe("Existing");
+    expect(launch?.machineControlInstructions).toContain("App'\\''s CLI");
+    expect(launch?.machineControlInstructions).toContain("agent instructions");
     expect(launch?.agentEnvironment).toEqual({
       AGENT_YA_API_TOKEN: "synthetic",
       PATH: `${installed.directory}${delimiter}${environment.PATH}`,
@@ -140,6 +140,54 @@ describe("installed Machine Control launch", () => {
       }),
     ).rejects.toThrow("integrity");
     expect(launchProvider).not.toHaveBeenCalled();
+  });
+
+  it("applies the operator default unless the launch declines, and never blocks on it", async () => {
+    const enabledByDefault = () => true;
+    const dependencies = {
+      environment: { PATH: "/usr/bin" },
+      platform: "linux",
+      enabledByDefault,
+    };
+    const advertised = start();
+    await startMachineControlSession("codex", options, advertised, {
+      ...dependencies,
+      verify: async () => installed,
+    });
+    expect(advertised.mock.calls[0]?.[0].machineControlInstructions).toContain(
+      "agent instructions",
+    );
+
+    const verify = vi.fn(async () => installed);
+    const declined = start();
+    const launch = { ...options, machineControl: false };
+    await startMachineControlSession("codex", launch, declined, {
+      ...dependencies,
+      verify,
+    });
+    expect(declined).toHaveBeenCalledWith(launch);
+    expect(verify).not.toHaveBeenCalled();
+
+    // A standing default must not fail every launch once the app is removed;
+    // a choice made for this launch still refuses.
+    const missing = async () => {
+      throw new Error("absent");
+    };
+    const unadvertised = start();
+    await startMachineControlSession("codex", options, unadvertised, {
+      ...dependencies,
+      verify: missing,
+      exists: async () => false,
+    });
+    expect(unadvertised).toHaveBeenCalledWith(options);
+    await expect(
+      startMachineControlSession(
+        "codex",
+        { ...options, machineControl: true },
+        start(),
+        { ...dependencies, verify: missing, exists: async () => false },
+      ),
+    ).rejects.toThrow("integrity");
   });
 
   it("refuses a retired component selection before discovery", async () => {
@@ -167,7 +215,9 @@ describe("installed Machine Control launch", () => {
         command: "C:\\Example App's CLI\\machine-control.cmd",
       }),
     });
-    expect(launchProvider.mock.calls[0]?.[0].globalInstructions).toContain(
+    expect(
+      launchProvider.mock.calls[0]?.[0].machineControlInstructions,
+    ).toContain(
       "& 'C:\\Example App''s CLI\\machine-control.cmd' agent instructions",
     );
     expect(

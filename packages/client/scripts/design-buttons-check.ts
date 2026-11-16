@@ -3,12 +3,11 @@
  * production sources:
  *
  * 1. a banned legacy button class in TS/TSX or a CSS Module: every class
- *    from design/census/mapping.ts that no global stylesheet styles, plus
- *    the classes recorded in the allowlist's `bannedClasses`, so restoring
+ *    recorded in the allowlist's `bannedClasses`, so restoring
  *    a deleted rule does not lift the ban;
  * 2. a raw `<button>` outside src/components/ui/Button.tsx and the shared
- *    selection and menu controls, unless it belongs to a later family (a
- *    tab role, the composer's files) or its file is in the allowlist with
+ *    selection, menu and tab controls, unless it sits in a composer file
+ *    or its file is in the allowlist with
  *    at least that many. Option pickers, switches, menu items and listbox
  *    options are swept (families 2 and 3): their raw buttons count;
  * 3. an element with `role="button"` beyond the allowlist: a real button
@@ -40,17 +39,31 @@
  *    `select` or `textarea` element and sets look or size properties
  *    (`.form input { border: … }`): fields use Field, TextInput, Textarea,
  *    Select, Checkbox and Radio (family 4). Their legacy classes
- *    (`settings-input`, `settings-select`, …, LEGACY_FIELDS) are banned
- *    under 1 once their global rules are gone.
+ *    (`settings-input`, `settings-select`, …) are banned
+ *    under 1 once their global rules are gone;
+ * 8. a tab role (`tab`, `tablist`, `tabpanel`) outside
+ *    src/components/ui/Tabs.tsx, and a rotating keyframe set (`@keyframes`
+ *    whose frames `rotate`) outside src/components/ui/Spinner.module.css:
+ *    tab strips use Tabs and busy indicators Spinner (family 5). Tab
+ *    buttons are swept, so their raw buttons count under 2. The legacy
+ *    banner, badge, spinner and tab classes are banned
+ *    under 1 once their global rules are gone;
+ * 9. a native `window.confirm`, `alert` or `prompt` call outside
+ *    src/components/ui/ConfirmDialog.tsx, an `aria-modal` or
+ *    `role="alertdialog"` outside the shared Modal, Dialog and
+ *    ConfirmDialog, and a stylesheet rule that reaches into Modal's frame
+ *    (`:global(.modal…)` in a CSS Module outside components/ui, or a
+ *    `.modal…:has(…)` rule in a global stylesheet): confirmations use
+ *    confirmDialog, forms and notices Dialog with a `size`, and modal
+ *    surfaces Modal (family 7). The old dialog frame and footer classes
+ *    are banned under 1 once their global rules are gone.
  *
  * The allowlist (design/census/button-allowlist.json) gives each entry a
  * count and a reason; a later family inherits the entries that name it.
  * A count may only fall: `--record` lowers counts to what the scan finds,
- * drops entries that reach zero and adds newly rule-less legacy classes to
- * `bannedClasses`; it never raises a count or adds a file. Counts are per
+ * drops entries that reach zero and preserves permanent `bannedClasses`;
+ * it never raises a count or adds a file. Counts are per
  * file, so a file may trade one allowed button for another.
- *
- * Family 3's classes come from LEGACY_SWITCHES in the same mapping file.
  *
  *   pnpm -s buttons:check            check
  *   pnpm -s buttons:check --record   lower the allowlist after a swap
@@ -58,19 +71,17 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { parseArgs } from "node:util";
+import {
+  checkButtonBaseAllowlist,
+  buttonBaseStyleReason,
+} from "../design/buttonBaseStyles";
+import { scanControlOverrides } from "../design/controlOverrides";
+import type { OverrideAllowance } from "../design/controlOverrideAllowlist";
 import { scanButtonElements } from "../design/buttonElements";
 import { scanFieldElements } from "../design/fieldElements";
-import {
-  COMPOSER_FILE,
-  type RawButtonFamily,
-  rawButtonFamily,
-} from "../design/buttonFamilies";
-import {
-  LEGACY_BUTTONS,
-  LEGACY_FIELDS,
-  LEGACY_SWITCHES,
-} from "../design/census/mapping";
-import { collectDesignData } from "../design/vite-plugin-design-data";
+import { reachesModalFrame } from "../design/modalFrameSelectors";
+import { COMPOSER_FILE } from "../design/composerFiles";
+import { bannedClassUses } from "../design/bannedClasses";
 import { clientRoot } from "./design-index";
 
 const help = `Usage: pnpm -s buttons:check [--record]
@@ -82,7 +93,14 @@ radio roles outside the shared Switch and SegmentedControl. Exceptions
 live in packages/client/design/census/button-allowlist.json with a count
 and a reason; --record lowers those counts to the current scan. Also
 reject menu roles outside the shared Menu and document or window pointer
-listeners (hand-rolled outside-press dismissal) outside the shared Popover.`;
+listeners (hand-rolled outside-press dismissal) outside the shared Popover,
+raw fields outside the shared field controls, tab roles outside the shared
+Tabs, rotating keyframes outside the shared Spinner, native confirm, alert
+and prompt calls, aria-modal outside the shared Modal and rules reaching
+into Modal's frame. ButtonBase targets whose resolved classes draw both a
+background and border, or link/accent text without chrome, also fail unless
+counted with a reason in design/census/button-base-allowlist.json. --record
+only lowers these counts and refuses unreviewed increases.`;
 
 const { values } = parseArgs({
   options: {
@@ -110,15 +128,20 @@ type AllowSection =
   | "menuRoles"
   | "outsidePressListeners"
   | "rawFields"
-  | "fieldLookRules";
+  | "fieldLookRules"
+  | "tabRoles"
+  | "spinKeyframes"
+  | "nativeDialogs"
+  | "modalRoles"
+  | "modalFrameRules";
 interface Allowlist extends Record<AllowSection, Record<string, AllowEntry>> {
   bannedClasses: string[];
 }
 
 const GLOBAL_STYLESHEETS = [
-  "styles/index.css",
-  "styles/renderers.css",
-  "styles/tool-rows.css",
+  "styles/tokens.css",
+  "styles/base.css",
+  "styles/generated.css",
 ];
 
 const LOOK_PROPERTY =
@@ -155,45 +178,19 @@ const allowlist = JSON.parse(
   await readFile(allowlistPath, "utf8"),
 ) as Allowlist;
 
-// 1. Banned legacy classes: rule-less now, or recorded as banned before.
-const declared = await collectDesignData(srcDir);
-const banned = [
-  ...new Set([
-    ...allowlist.bannedClasses,
-    ...[
-      ...LEGACY_BUTTONS.flatMap((row) => row.classes.split(/\s+/)),
-      ...LEGACY_SWITCHES.flatMap((row) => row.classes?.split(/\s+/) ?? []),
-      ...LEGACY_FIELDS.flatMap((row) => row.classes?.split(/\s+/) ?? []),
-    ].filter((name) => !declared[name]),
-  ]),
-].sort();
-const bannedPattern = new RegExp(
-  `(?<![\\w-])(?:${banned.map((name) => name.replace(/[-]/g, "\\-")).join("|")})(?![\\w-])`,
-  "g",
-);
+// 1. Retired classes remain banned even when their census rows disappear.
 const sources = await walk(
   srcDir,
   (name) =>
     /\.(?:tsx?|module\.css)$/.test(name) &&
     !/\.(?:test|specimen)\.tsx?$/.test(name),
 );
-if (banned.length) {
-  for (const path of sources) {
-    const text = await readFile(path, "utf8");
-    for (const match of text.matchAll(bannedPattern)) {
-      const index = match.index ?? 0;
-      const lineStart = text.lastIndexOf("\n", index) + 1;
-      const before = text.slice(lineStart, index);
-      // Comments and test ids may name a class; only class lists count.
-      if (
-        /^\s*(?:\/\/|\/?\*|\{\/\*)/.test(before) ||
-        /data-testid=["'`]$/.test(before)
-      )
-        continue;
-      problems.push(
-        `${srcPath(path)}:${lineAt(text, index)}: legacy class "${match[0]}" is banned; use the shared control (components/ui: Button, Switch, SegmentedControl, TextInput, Select, Textarea, Checkbox)`,
-      );
-    }
+for (const path of sources) {
+  const text = await readFile(path, "utf8");
+  for (const match of bannedClassUses(text)) {
+    problems.push(
+      `${srcPath(path)}:${lineAt(text, match.index)}: legacy class "${match[0]}" is banned; use the shared control (components/ui)`,
+    );
   }
 }
 
@@ -203,8 +200,8 @@ const SELECTION_CONTROLS = new Set([
   "components/ui/Switch.tsx",
   "components/ui/SegmentedControl.tsx",
   "components/ui/Menu.tsx",
+  "components/ui/Tabs.tsx",
 ]);
-const UNSWEPT_FAMILIES = new Set<RawButtonFamily>(["tab", "composer"]);
 const rawCounts = new Map<string, number>();
 const roleCounts = new Map<string, number>();
 for (const row of await scanButtonElements(srcDir)) {
@@ -218,8 +215,6 @@ for (const row of await scanButtonElements(srcDir)) {
     SELECTION_CONTROLS.has(row.file)
   )
     continue;
-  const family = rawButtonFamily(row);
-  if (family && UNSWEPT_FAMILIES.has(family)) continue;
   if (COMPOSER_FILE.test(row.file)) continue;
   rawCounts.set(row.file, (rawCounts.get(row.file) ?? 0) + 1);
 }
@@ -378,6 +373,14 @@ function countMatches(
       if (COMPOSER_FILE.test(file)) continue;
       const text = await readFile(path, "utf8");
       for (const match of text.matchAll(pattern)) {
+        const lineStart = text.lastIndexOf("\n", match.index ?? 0) + 1;
+        // A comment may name a role; only code counts.
+        if (
+          /^\s*(?:\/\/|\/?\*|\{\/\*)/.test(
+            text.slice(lineStart, match.index ?? 0),
+          )
+        )
+          continue;
         counts.set(file, (counts.get(file) ?? 0) + 1);
         sites.set(file, [
           ...(sites.get(file) ?? []),
@@ -410,6 +413,115 @@ for (const row of await scanFieldElements(srcDir)) {
   if (!row.field || FIELD_CONTROLS.has(row.file)) continue;
   if (COMPOSER_FILE.test(row.file)) continue;
   fieldCounts.set(row.file, (fieldCounts.get(row.file) ?? 0) + 1);
+}
+
+// 8. Tab roles outside the shared Tabs, and rotating keyframes outside the
+// shared Spinner.
+const TAB_ROLE =
+  /(?<![\w[-])role(?:=(?:\{[^}\n]*?)?|:\s*)["'`](?:tab|tablist|tabpanel)["'`]/g;
+const [tabCounts, tabSites] = await countMatches(
+  TAB_ROLE,
+  new Set(["components/ui/Tabs.tsx"]),
+);
+const spinCounts = new Map<string, number>();
+const spinSites = new Map<string, string[]>();
+for (const path of stylesheets) {
+  const file = srcPath(path);
+  if (file === "components/ui/Spinner.module.css") continue;
+  if (COMPOSER_FILE.test(file.replace(/\.module\.css$/, ".tsx"))) continue;
+  const text = (await readFile(path, "utf8")).replace(
+    /\/\*[\s\S]*?\*\//g,
+    (c) => c.replace(/[^\n]/g, " "),
+  );
+  for (const frames of text.matchAll(
+    /@keyframes\s+([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*[^{}]*)\}/g,
+  )) {
+    if (!/\brotate(?:Z)?\(|\brotate\s*:/.test(frames[2] ?? "")) continue;
+    tally(
+      spinCounts,
+      spinSites,
+      file,
+      `${file}:${lineAt(text, frames.index ?? 0)}: @keyframes ${frames[1]}`,
+    );
+  }
+}
+
+// 9. Native dialogs, modal roles outside the shared dialog controls, and
+// rules that reach into Modal's frame.
+// A call to the global (`window.confirm(`, `window.confirm?.(`,
+// `window["confirm"](`, `(window as X).confirm(`, a bare `confirm(`), not
+// a method (`draft.confirm()`) or a definition (`confirm() {`).
+const NATIVE_DIALOG =
+  /(?:\b(?:window|globalThis|self)\s*(?:\?\.|\.|\[\s*["'`])\s*|\(\s*(?:window|globalThis|self)\s+as\s+[^()]*\)\s*\.\s*|(?<![\w.$\])]))(?:confirm|alert|prompt)(?:["'`]\s*\])?\s*(?:\?\.)?\(/g;
+const nativeCounts = new Map<string, number>();
+const nativeSites = new Map<string, string[]>();
+for (const path of sources) {
+  const file = srcPath(path);
+  if (!/\.tsx?$/.test(file) || file === "components/ui/ConfirmDialog.tsx")
+    continue;
+  const text = await readFile(path, "utf8");
+  for (const match of text.matchAll(NATIVE_DIALOG)) {
+    const index = match.index ?? 0;
+    const lineStart = text.lastIndexOf("\n", index) + 1;
+    const lineEnd = text.indexOf("\n", index);
+    const before = text.slice(lineStart, index);
+    const line = text.slice(lineStart, lineEnd < 0 ? undefined : lineEnd);
+    if (/^\s*(?:\/\/|\/?\*)/.test(before)) continue;
+    // A definition or signature: `confirm() {`, `prompt(): T;`,
+    // `function alert(x) { … }`.
+    if (
+      /(?:^|[{,;]\s*)(?:(?:async|public|private|protected|function|export)\s+)*$/.test(
+        before.trimStart(),
+      ) &&
+      /^\w+\s*\([^)]*\)\s*(?::|\{)/.test(
+        text.slice(index, lineEnd < 0 ? undefined : lineEnd),
+      )
+    )
+      continue;
+    tally(
+      nativeCounts,
+      nativeSites,
+      file,
+      `${file}:${lineAt(text, index)}: ${line.trim()}`,
+    );
+  }
+}
+// The attribute, not a `[aria-modal="true"]` selector string.
+const MODAL_ROLE =
+  /(?<!\[)aria-modal|(?<![\w[-])role(?:=(?:\{[^}\n]*?)?|:\s*)["'`]alertdialog["'`]/g;
+const [modalRoleCounts, modalRoleSites] = await countMatches(
+  MODAL_ROLE,
+  new Set([
+    "components/ui/Modal.tsx",
+    "components/ui/Dialog.tsx",
+    "components/ui/ConfirmDialog.tsx",
+  ]),
+);
+const frameCounts = new Map<string, number>();
+const frameSites = new Map<string, string[]>();
+for (const path of stylesheets) {
+  const file = srcPath(path);
+  if (file.startsWith("components/ui/")) continue;
+  if (COMPOSER_FILE.test(file.replace(/\.module\.css$/, ".tsx"))) continue;
+  const isModule = file.endsWith(".module.css");
+  const text = (await readFile(path, "utf8")).replace(
+    /\/\*[\s\S]*?\*\//g,
+    (c) => c.replace(/[^\n]/g, " "),
+  );
+  for (const rule of text.matchAll(/([^{}]+)\{[^{}]*\}/g)) {
+    const selector = (rule[1] ?? "").trim();
+    if (selector.startsWith("@")) continue;
+    const reaches = splitSelectorList(selector).some((part) =>
+      reachesModalFrame(part, isModule),
+    );
+    if (!reaches) continue;
+    tally(
+      frameCounts,
+      frameSites,
+      file,
+      `${file}:${lineAt(text, (rule.index ?? 0) + (rule[0].length - rule[0].trimStart().length))}: "${selector.replace(/\s+/g, " ")}"`,
+    );
+  }
 }
 
 function ratchet(
@@ -445,7 +557,7 @@ function ratchet(
 }
 
 ratchet("rawButtons", rawCounts, (file, count, allowed) => [
-  `${file}: ${count} raw <button>${count === 1 ? "" : "s"}, ${allowed} allowed; use Button, IconButton or ButtonBase from components/ui/Button (list them: the Census/Buttons "Button elements" page)`,
+  `${file}: ${count} raw <button>${count === 1 ? "" : "s"}, ${allowed} allowed; use Button, IconButton or ButtonBase from components/ui/Button (list them: Audit / Reviewed exceptions)`,
 ]);
 ratchet("roleButtons", roleCounts, (file, count, allowed) => [
   `${file}: ${count} role="button" element${count === 1 ? "" : "s"}, ${allowed} allowed; use ButtonBase, which brings keyboard activation and focus`,
@@ -477,8 +589,49 @@ ratchet("fieldLookRules", fieldLookCounts, (file, count, allowed) => [
   `${file}: ${count} rule${count === 1 ? "" : "s"} styling an input, select or textarea element, ${allowed} allowed; the shared field controls own their look, so style layout through a class passed as className`,
 ]);
 
-if (values.record) {
-  allowlist.bannedClasses = banned;
+ratchet("tabRoles", tabCounts, (file, count, allowed) => [
+  ...(tabSites.get(file) ?? []),
+  `${file}: ${count} tab role${count === 1 ? "" : "s"}, ${allowed} allowed; use Tabs and TabPanel from components/ui/Tabs`,
+]);
+ratchet("spinKeyframes", spinCounts, (file, count, allowed) => [
+  ...(spinSites.get(file) ?? []),
+  `${file}: ${count} rotating keyframe set${count === 1 ? "" : "s"}, ${allowed} allowed; a busy indicator is Spinner from components/ui/Spinner (or Button's busy)`,
+]);
+
+ratchet("nativeDialogs", nativeCounts, (file, count, allowed) => [
+  ...(nativeSites.get(file) ?? []),
+  `${file}: ${count} native confirm, alert or prompt call${count === 1 ? "" : "s"}, ${allowed} allowed; use confirmDialog from components/ui/ConfirmDialog`,
+]);
+ratchet("modalRoles", modalRoleCounts, (file, count, allowed) => [
+  ...(modalRoleSites.get(file) ?? []),
+  `${file}: ${count} aria-modal or alertdialog role${count === 1 ? "" : "s"}, ${allowed} allowed; a modal surface is Modal, a form or notice Dialog, a confirmation confirmDialog (components/ui)`,
+]);
+ratchet("modalFrameRules", frameCounts, (file, count, allowed) => [
+  ...(frameSites.get(file) ?? []),
+  `${file}: ${count} rule${count === 1 ? "" : "s"} reaching into Modal's frame, ${allowed} allowed; give Dialog a size, or pass layout through its bodyClassName`,
+]);
+
+const basePath = join(clientRoot, "design/census/button-base-allowlist.json");
+const bases = await scanControlOverrides(srcDir, "bases");
+const baseAllowlist = JSON.parse(await readFile(basePath, "utf8")) as Record<
+  string,
+  OverrideAllowance
+>;
+const baseCheck = checkButtonBaseAllowlist(
+  bases.overrides,
+  baseAllowlist,
+  values.record,
+);
+problems.push(...baseCheck.problems);
+const drawn = bases.overrides.filter((row) => buttonBaseStyleReason(row));
+console.log(
+  `ButtonBase ownership: ${drawn.length}/${bases.uses} sites need counted reasons.`,
+);
+if (values.record && !problems.length)
+  await writeFile(basePath, `${JSON.stringify(baseCheck.next, null, 2)}\n`);
+
+if (values.record && !problems.length) {
+  // Retired class bans are permanent; recording only lowers exception counts.
   await writeFile(allowlistPath, `${JSON.stringify(allowlist, null, 2)}\n`);
 }
 if (problems.length) {

@@ -8,11 +8,11 @@ describe("FilePathDisplay", () => {
 
     const path = screen.getByTitle("src/main.rs");
     expect(path.textContent).toBe("src/main.rs");
-    expect(path.querySelector(".file-path-display-dir")?.textContent).toBe(
-      "src/",
-    );
-    expect(path.querySelector(".file-path-display-name")?.textContent).toBe(
-      "main.rs",
-    );
+    expect(
+      path.querySelector("[data-file-path-display-dir]")?.textContent,
+    ).toBe("src/");
+    expect(
+      path.querySelector("[data-file-path-display-name]")?.textContent,
+    ).toBe("main.rs");
   });
 });

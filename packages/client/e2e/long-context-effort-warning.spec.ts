@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { readCollectionsOverRest } from "./support/managed-routes";
 import { createTestViteServer } from "./support/vite-server";
 import { recordUiCapture } from "./support/ui-capture.js";
 import {
@@ -76,6 +77,7 @@ test("a long-context effort change asks first and can fork at the new effort", a
   const configBodies: unknown[] = [];
   const forkBodies: unknown[] = [];
 
+  await readCollectionsOverRest(page);
   await page.route(/\/api\/sessions(?:\?|$)/, (route) =>
     route.fulfill({
       json: {
@@ -212,7 +214,9 @@ test("a long-context effort change asks first and can fork at the new effort", a
     await expect(page.getByText("Done. Here is the summary.")).toBeVisible({
       timeout: 30_000,
     });
-    const thinkingToggle = page.locator(".thinking-toggle-button:visible");
+    const thinkingToggle = page.locator(
+      "[data-thinking-toggle-button]:visible",
+    );
     await expect(thinkingToggle).toBeVisible({ timeout: 15_000 });
     await thinkingToggle.click();
     await page.getByRole("menuitemradio", { name: "Max" }).click();
@@ -232,7 +236,7 @@ test("a long-context effort change asks first and can fork at the new effort", a
     await expect(page.locator("[data-composer-input]")).toBeVisible({
       timeout: 30_000,
     });
-    await page.locator(".provider-badge-button").click();
+    await page.locator("[data-provider-badge-button]").click();
     const panel = page.getByRole("dialog").filter({ hasText: "Switch Model" });
     await expect(panel).toBeVisible({ timeout: 15_000 });
     await panel

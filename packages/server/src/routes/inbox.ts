@@ -25,7 +25,9 @@ import type {
   SessionProviderPhase,
 } from "@yep-anywhere/shared";
 import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
-import { readRetainedSessionItems } from "./retained-session-collections.js";
+import type { GlobalSessionsDeps } from "./global-sessions.js";
+import { retainedSessionQuery } from "../services/retained-session-query.js";
+import { accessibleProjectIdsForRequest } from "./global-sessions.js";
 import type { SessionIndexService } from "../indexes/index.js";
 import { SourceVersionedSingleFlight } from "../lib/sourceVersionedSingleFlight.js";
 import { getLogger } from "../logging/logger.js";
@@ -43,6 +45,10 @@ import type { PiSessionReader } from "../sessions/pi-reader.js";
 import type { ISessionReader, SessionListSummary } from "../sessions/types.js";
 import { getEffectiveProviderUpdatedAt } from "../sessions/recap-overlays.js";
 import { sessionProviderPhaseFromProcess } from "../sessions/session-provider-phase.js";
+import {
+  inboxModelConfig,
+  type InboxModelConfig,
+} from "../sessions/inbox-model-config.js";
 import { sessionRowRuntimeOverlay } from "../sessions/session-runtime-overlay.js";
 import type { ProjectQueueService } from "../services/ProjectQueueService.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
@@ -83,9 +89,16 @@ export interface InboxDeps {
   sessionAutoArchiveDays?: number;
   /** Names a retained row's project; defaults to the path's name. */
   projectDisplayName?: ProjectDisplayNameResolver;
+  /**
+   * Inbox rows carry no ownership, but the retained walk it shares with the
+   * sidebar feeds reads it; the same tracker lets them share one walk.
+   */
+  externalTracker?: GlobalSessionsDeps["externalTracker"];
 }
 
 export interface InboxItem {
+  /** Optional known settings; absence requires no capability check or request. */
+  modelConfig?: InboxModelConfig;
   creation?: import("@yep-anywhere/shared").SessionCreationStatus;
   creationProvenance?: import("@yep-anywhere/shared").SessionCreationProvenance;
   nonHumanUserTurn?: import("@yep-anywhere/shared").NonHumanUserTurn | null;
@@ -105,6 +118,7 @@ export interface InboxItem {
 }
 
 export interface InboxResponse {
+  nextTransitionAt?: number;
   catalog?: RetainedSessionCollectionState;
   needsAttention: InboxItem[];
   active: InboxItem[];
@@ -125,6 +139,8 @@ const INBOX_RETENTION_BYTES = 8 * 1024 * 1024;
 
 /** One session, walked and enriched, before any tier decision is made. */
 interface EnrichedInboxSession {
+  modelConfig?: InboxModelConfig;
+  nonHumanUserTurn?: InboxItem["nonHumanUserTurn"];
   creation?: InboxItem["creation"];
   creationProvenance?: InboxItem["creationProvenance"];
   session: SessionListSummary;
@@ -194,7 +210,6 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
   ): Promise<EnrichedInboxSession[]> {
     const allProjects = await deps.scanner.listProjects();
 
-    // Filter to single project if projectId query param provided
     const projects = filterProjectId
       ? allProjects.filter((p) => p.id === filterProjectId)
       : allProjects;
@@ -210,7 +225,6 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
       deps.sessionAutoArchiveDays,
     );
 
-    // Fetch sessions from all projects in parallel
     const projectSessionResults = await Promise.all(
       projects.map(async (project) => {
         try {
@@ -272,6 +286,7 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
           });
 
         allSessions.push({
+          modelConfig: inboxModelConfig(session.provider, process, metadata),
           session: effectiveSession,
           projectName: project.name,
           pendingInputType,
@@ -311,6 +326,11 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
         )
           continue;
         visible.push({
+          modelConfig: inboxModelConfig(
+            summary.provider,
+            undefined,
+            deps.sessionMetadataService.getMetadata(summary.id),
+          ),
           session: summary,
           projectName: (deps.projectDisplayName ?? getProjectName)(
             fromUrlProjectId(summary.projectId),
@@ -352,9 +372,17 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
     // 30 minutes, 8 hours, 24 hours — so retaining a tiered response would
     // freeze those windows at the instant of the walk, and a session would
     // stay in "Recent Activity" for as long as nothing on the bus moved.
+    const activeProjectQueueSessionIds = getActiveProjectQueueSessionIds(
+      deps.projectQueueService,
+    );
     const retained =
       c.req.query("summaryMode") === "retained" && deps.retainedCollections
-        ? await readRetainedSessionItems(deps.retainedCollections, deps)
+        ? await retainedSessionQuery(deps.retainedCollections, deps).inbox({
+            projectId: filterProjectId,
+            accessibleProjectIds: accessibleProjectIdsForRequest(c),
+            queueIds: [...activeProjectQueueSessionIds],
+            now,
+          })
         : undefined;
     const allSessions: EnrichedInboxSession[] = retained
       ? retained.sessions
@@ -364,6 +392,7 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
               (!filterProjectId || item.projectId === filterProjectId),
           )
           .map((item) => ({
+            modelConfig: item.modelConfig,
             session: {
               id: item.id,
               projectId: item.projectId as Project["id"],
@@ -382,31 +411,31 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
             customTitle: item.customTitle,
             creationProvenance: item.creationProvenance,
             creation: item.creation,
+            nonHumanUserTurn: item.nonHumanUserTurn,
             isStarred: item.isStarred,
           }))
       : await readInbox(filterProjectId);
-    const activeProjectQueueSessionIds = getActiveProjectQueueSessionIds(
-      deps.projectQueueService,
-    );
 
-    // Build the inbox response by categorizing into tiers
     const needsAttention: InboxItem[] = [];
     const active: InboxItem[] = [];
     const recentActivity: InboxItem[] = [];
     const unread8h: InboxItem[] = [];
     const unread24h: InboxItem[] = [];
 
-    // Track which sessions have been assigned to a tier
     const assignedSessionIds = new Set<string>();
 
-    // Helper to convert to InboxItem
     const toInboxItem = (
       item: EnrichedInboxSession,
-      nonHumanUserTurn = nonHumanUserTurnField(
-        deps.sessionMetadataService,
-        item.session.id,
-      ),
+      nonHumanUserTurn = item.nonHumanUserTurn !== undefined
+        ? item.nonHumanUserTurn
+        : nonHumanUserTurnField(deps.sessionMetadataService, item.session.id),
     ): InboxItem => ({
+      modelConfig:
+        inboxModelConfig(
+          item.session.provider,
+          deps.supervisor?.getProcessForSession(item.session.id),
+          undefined,
+        ) ?? item.modelConfig,
       nonHumanUserTurn,
       sessionId: item.session.id,
       projectId: item.session.projectId,
@@ -437,12 +466,8 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
 
     // Tier 1: needsAttention - sessions with pending input
     for (const item of allSessions) {
-      const nonHumanUserTurn = nonHumanUserTurnField(
-        deps.sessionMetadataService,
-        item.session.id,
-      );
-      if (item.pendingInputType || nonHumanUserTurn) {
-        needsAttention.push(toInboxItem(item, nonHumanUserTurn));
+      if (item.pendingInputType) {
+        needsAttention.push(toInboxItem(item));
         assignedSessionIds.add(item.session.id);
       }
     }
@@ -493,7 +518,6 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
       }
     }
 
-    // Sort each tier by updatedAt descending (most recent first)
     const sortByUpdatedAt = (a: InboxItem, b: InboxItem) =>
       new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
 
@@ -503,8 +527,10 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
     unread8h.sort(sortByUpdatedAt);
     unread24h.sort(sortByUpdatedAt);
 
-    // Apply limits per tier
     const response: InboxResponse = {
+      ...(retained?.nextTransitionAt !== undefined
+        ? { nextTransitionAt: retained.nextTransitionAt }
+        : {}),
       ...(retained ? { catalog: retained.catalog } : {}),
       needsAttention: needsAttention.slice(0, MAX_ITEMS_PER_TIER),
       active: active.slice(0, MAX_ITEMS_PER_TIER),

@@ -11,6 +11,10 @@ import { createTestViteServer as createViteServer } from "./support/vite-server"
 import { createToolCommentaryRoutes } from "../../server/src/routes/tool-commentary";
 import type { ProjectScanner } from "../../server/src/projects/scanner";
 
+// Each test file boots its own cold server; on CI the first page can take
+// over 10 s to load, leaving little of the 15 s default for the test itself.
+test.setTimeout(60_000);
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serverRequire = createRequire(join(root, "../server/package.json"));
 const { getRequestListener } = serverRequire("@hono/node-server");
@@ -61,6 +65,10 @@ const basicAcliOutput = {
 const note = (text: string) => ({ _acli: { commentary: [{ text }] } });
 
 test.beforeAll(async () => {
+  // The file-level limit does not reach hooks. This one runs a browser capture
+  // and boots a cold Vite server, and exceeded the 15 s default in CI runs
+  // 42990576039 and 43275032371.
+  test.setTimeout(60_000);
   const scratch = resolve(
     root,
     "../../.artifacts/ui-testing/2026-09-07-acli-commentary",

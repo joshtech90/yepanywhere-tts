@@ -7,6 +7,8 @@
  * - "badge": Dot wrapped in a badge container
  */
 
+import { Badge } from "./ui/Badge";
+
 interface ActivityIndicatorProps {
   /** Visual variant - "dot" for compact, "badge" for wrapped in badge container */
   variant?: "dot" | "badge";
@@ -18,11 +20,11 @@ export function ActivityIndicator({
   variant = "dot",
   className,
 }: ActivityIndicatorProps) {
-  const dot = <span className="activity-dot" />;
+  const dot = <span />;
 
   if (variant === "badge") {
-    return <span className={`activity-badge ${className ?? ""}`}>{dot}</span>;
+    return <Badge tone="info" size="small" icon={dot} className={className} />;
   }
 
-  return <span className={`activity-indicator ${className ?? ""}`}>{dot}</span>;
+  return <span className={className ?? ""}>{dot}</span>;
 }

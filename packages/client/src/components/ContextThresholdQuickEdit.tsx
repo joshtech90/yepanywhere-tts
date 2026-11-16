@@ -1,3 +1,6 @@
+import { useInertPreview } from "./InertPreviewContext";
+import popoverStyles from "./ContextUsagePopover.module.css";
+import thresholdStyles from "./ContextThresholdQuickEdit.module.css";
 import {
   getModelContextWindow,
   getMostUsedSubscriptionUsageWindow,
@@ -58,6 +61,21 @@ function effectiveContextWindow(
   return usageWindow && usageWindow > 0 ? usageWindow : undefined;
 }
 
+export function ContextThresholdQuickEdit(
+  props: ContextThresholdQuickEditProps,
+) {
+  const preview = useInertPreview();
+  return preview ? (
+    <div className={thresholdStyles.contextThresholdQuickedit}>
+      <span className={thresholdStyles.contextThresholdQuickeditTrigger}>
+        <ContextUsageIndicator usage={props.usage} size={props.size} />
+      </span>
+    </div>
+  ) : (
+    <InteractiveContextThresholdQuickEdit {...props} />
+  );
+}
+
 /**
  * Wraps the context-usage indicator with a long-press (touch) / right-click
  * (desktop) affordance that opens a one-control popover for *this model's*
@@ -67,7 +85,7 @@ function effectiveContextWindow(
  * (a second access point, not a second mechanism). See task 029 /
  * topics/resume-compaction.md.
  */
-export function ContextThresholdQuickEdit({
+function InteractiveContextThresholdQuickEdit({
   usage,
   model,
   provider,
@@ -216,9 +234,9 @@ export function ContextThresholdQuickEdit({
         : t("compactThresholdQuickTitle");
 
   return (
-    <div ref={wrapRef} className="context-threshold-quickedit">
+    <div ref={wrapRef} className={thresholdStyles.contextThresholdQuickedit}>
       <span
-        className="context-threshold-quickedit-trigger"
+        className={thresholdStyles.contextThresholdQuickeditTrigger}
         role="button"
         tabIndex={0}
         aria-haspopup="dialog"
@@ -278,8 +296,8 @@ export function ContextThresholdQuickEdit({
         />
       )}
       {open === "threshold" && (
-        <div className="context-threshold-popover" role="dialog">
-          <div className="context-threshold-popover-title">
+        <div className={popoverStyles.contextThresholdPopover} role="dialog">
+          <div className={popoverStyles.contextThresholdPopoverTitle}>
             {t("compactThresholdQuickTitle")}
           </div>
           <CommittedRangeInput
@@ -291,7 +309,7 @@ export function ContextThresholdQuickEdit({
             onDraftChange={setDraft}
             onCommit={commit}
           />
-          <div className="context-threshold-popover-hint">
+          <div className={popoverStyles.contextThresholdPopoverHint}>
             {draft > 0
               ? t("compactThresholdQuickOn", {
                   percent: String(draft),
@@ -300,7 +318,7 @@ export function ContextThresholdQuickEdit({
               : t("compactThresholdQuickOff")}
           </div>
           {supportsNativeCompactThreshold && (
-            <label className="context-threshold-popover-force">
+            <label className={popoverStyles.contextThresholdPopoverForce}>
               <input
                 type="checkbox"
                 checked={forceYaOrchestratedCompaction}

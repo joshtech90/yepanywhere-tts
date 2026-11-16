@@ -23,6 +23,7 @@ overrides:
   "postcss": "^8.5.23"
   "jsdom>ws": "^8.21.3"
   "mermaid>katex": "^0.18.6"
+  "@google-cloud/storage>fast-xml-parser": "^5.12.0"
 
 onlyBuiltDependencies:
   - bcrypt
@@ -41,4 +42,5 @@ auditConfig:
     - GHSA-3g3m-2fjr-6pw4
 
 patchedDependencies:
+  "@hono/node-server@2.1.6": patches/@hono__node-server@2.1.6.patch
   zod@4.6.7: patches/zod@4.6.7.patch

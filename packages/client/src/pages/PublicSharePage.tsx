@@ -1,3 +1,4 @@
+import styles from "./PublicSharePage.module.css";
 import {
   DEFAULT_RELAY_URL,
   sanitizeSessionTitle,
@@ -11,7 +12,10 @@ import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { BrandWordmark } from "../components/BrandWordmark";
 import { ConversationViewIcon } from "../components/ConversationViewIcon";
 import { MessageList } from "../components/MessageList";
+import { Badge } from "../components/ui/Badge";
+import { Banner } from "../components/ui/Banner";
 import { IconButton } from "../components/ui/Button";
+import { Spinner } from "../components/ui/Spinner";
 import { ViewerCountIndicator } from "../components/ViewerCountIndicator";
 import {
   PublicShareProvider,
@@ -541,29 +545,25 @@ function PublicSharePageGeneration({ locationHash }: { locationHash: string }) {
     ) : null;
 
   return (
-    <main className="public-share-page">
-      <header className="public-share-header">
-        <div className="public-share-header-inner">
-          <div className="public-share-header-left">
-            <BrandWordmark
-              variant="full"
-              className="public-share-brand-wordmark"
-            />
+    <main className={styles.page}>
+      <header className={styles.header}>
+        <div className={styles.headerInner}>
+          <div className={styles.headerLeft}>
+            <BrandWordmark variant="full" className={styles.brandWordmark} />
             {projectName && (
-              <span className="public-share-project" title={projectName}>
+              <span className={styles.project} title={projectName}>
                 {projectName}
               </span>
             )}
-            <div className="public-share-title-row">
-              <h1 className="public-share-title">
+            <div className={styles.titleRow}>
+              <h1 className={styles.title}>
                 {title ?? t("publicShareUntitled")}
               </h1>
             </div>
           </div>
-          <div className="public-share-header-actions">
+          <div className={styles.headerActions}>
             {mode === "live" && activeViewerCount !== null && (
               <ViewerCountIndicator
-                className="public-share-viewer-count"
                 count={activeViewerCount}
                 label={t("publicShareActiveViewers", {
                   count: activeViewerCount,
@@ -571,54 +571,49 @@ function PublicSharePageGeneration({ locationHash }: { locationHash: string }) {
               />
             )}
             {badgeLabel && (
-              <span className="public-share-badge">{badgeLabel}</span>
+              <Badge tone={mode === "live" ? "accent" : "neutral"}>
+                {badgeLabel}
+              </Badge>
             )}
           </div>
         </div>
       </header>
-      <section className="public-share-scroll">
+      <section className={styles.scroll} data-public-share-scroll>
         {cautionLabel && (
-          <div
-            className={`public-share-caution public-share-caution--${mode}`}
-            role="note"
-          >
+          <Banner tone="warning" role="note" className={styles.caution}>
             {cautionLabel}
-          </div>
+          </Banner>
         )}
         {mode === "frozen" && linkedFileMode === "live" && (
-          <div className="public-share-caution" role="note">
+          <Banner tone="warning" role="note" className={styles.caution}>
             {t("publicShareFrozenLinkedFilesLiveWarning")}
-          </div>
+          </Banner>
         )}
         <ToastProvider>
           <SchemaValidationProvider>
             <StreamingMarkdownProvider>
               {linkNotice && (
-                <div className="public-share-notice" role="status">
-                  {linkNotice}
-                </div>
+                <Banner className={styles.notice}>{linkNotice}</Banner>
               )}
               {error && !retrying && !share ? (
-                <div className="public-share-error public-share-error--inline">
+                <Banner tone="error" className={styles.errorInline}>
                   {error}
-                </div>
+                </Banner>
               ) : messageContent ? (
                 messageContent
               ) : initialPromptPreview ? (
-                <div className="public-share-preview">
-                  <div className="public-share-preview-text">
+                <div className={styles.preview}>
+                  <div className={styles.previewText}>
                     {initialPromptPreview}
                   </div>
-                  <div className="public-share-fetch-status" role="status">
-                    <span className="public-share-spinner" aria-hidden="true" />
+                  <div className={styles.fetchStatus} role="status">
+                    <Spinner size="small" />
                     {loadStatusLabel}
                   </div>
                 </div>
               ) : (
-                <div className="public-share-empty">
-                  {isFetching && (
-                    <span className="public-share-spinner" aria-hidden="true" />
-                  )}
+                <div className={styles.empty}>
+                  {isFetching && <Spinner size="small" />}
                   {loadStatusLabel}
                 </div>
               )}
@@ -628,11 +623,12 @@ function PublicSharePageGeneration({ locationHash }: { locationHash: string }) {
       </section>
       {messageContent && (
         <div
-          className="public-share-floating-controls"
+          className={styles.floatingControls}
           ref={setFloatingControlsElement}
         >
           <IconButton
-            className="public-share-conversation-toggle"
+            elevated
+            className={styles.conversationToggle}
             onClick={() => setConversationViewEnabled((enabled) => !enabled)}
             label={
               conversationViewEnabled

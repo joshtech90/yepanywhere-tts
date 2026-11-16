@@ -1,12 +1,24 @@
+import {
+  controlRequest,
+  respondRequest,
+  pendingRequestsSchema,
+} from "./session-control-contracts.js";
+import {
+  selectionQuery,
+  selectionSchema,
+  sessionInspectionSchema,
+} from "./selection-contracts.js";
 import { receiptFollowQuery, receiptFollowSchema } from "./receipt-follow.js";
 import { relatedQuery } from "./relationship-graph-contracts.js";
 import {
   createSessionRequest,
-  sendMessageRequest,
+  inputBody,
   receiptSchema,
   relationshipsSchema,
 } from "./command-contracts.js";
+import { pendingInputsSchema } from "./input-contracts.js";
 import { z } from "zod";
+import { backingStoreSchema } from "./backing-store.js";
 import {
   conversationQuery,
   conversationSchema,
@@ -14,7 +26,7 @@ import {
   followSchema,
 } from "./conversation.js";
 
-export const API_REVISION = "2026-11-01.1";
+export const API_REVISION = "2026-11-14.2";
 export const paginationQuery = z.object({
   cursor: z
     .string()
@@ -127,7 +139,16 @@ export const providerSchema = z.object({
   supportsSteering: z
     .boolean()
     .describe(
-      "Harness capability; no v0 steering endpoint is implemented yet.",
+      "Harness capability. createInput delivery=steer joins an active turn only when true; otherwise it queues after the turn.",
+    ),
+  compaction: z
+    .object({
+      supported: z.boolean(),
+      honorsInstructions: z.boolean(),
+    })
+    .optional()
+    .describe(
+      "Queued compaction through createInput type=compact. A running session must also advertise compaction. Absent from older targets.",
     ),
   supportsPermissionMode: z
     .boolean()
@@ -153,11 +174,21 @@ export const sessionSchema = z.object({
   state: z
     .string()
     .describe(
-      "Observed runtime/catalog state, not a guarantee that a turn has completed. This resource is a summary, not a transcript.",
+      "Observed runtime/catalog state, for example idle, in-turn, waiting-input, compacting (a YA-queued compaction is running) or not-running; not a guarantee that a turn has completed. This resource is a summary, not a transcript.",
     ),
 });
 export type ApiProject = z.infer<typeof projectSchema>;
 export type ApiProvider = z.infer<typeof providerSchema>;
+export const sessionDetailSchema = sessionSchema.extend({
+  // Optional so existing configured peers can still return their older summary.
+  settings: sessionInspectionSchema.shape.settings.optional(),
+  routing: sessionInspectionSchema.shape.routing.optional(),
+  backingStore: backingStoreSchema
+    .optional()
+    .describe(
+      "Native backing resource on this session's owning server. Paths are not download URLs or proof of local filesystem access; history may require ancestors or sidecars.",
+    ),
+});
 export type ApiSession = z.infer<typeof sessionSchema>;
 export const catalogSchema = z.object({
   complete: z
@@ -297,6 +328,11 @@ export const operations = [
     paginated: true,
   },
   {
+    id: "selection",
+    path: "/servers/:serverId/selection",
+    response: selectionSchema,
+  },
+  {
     id: "sessions",
     path: "/servers/:serverId/sessions",
     response: page(sessionSchema),
@@ -305,7 +341,7 @@ export const operations = [
   {
     id: "session",
     path: "/servers/:serverId/sessions/:sessionId",
-    response: sessionSchema,
+    response: sessionDetailSchema,
   },
   {
     id: "conversation",
@@ -321,7 +357,7 @@ export const operations = [
     id: "createSession",
     path: "/servers/:serverId/sessions",
     method: "POST",
-    request: createSessionRequest,
+    request: z.object(createSessionRequest.shape).omit({ requestId: true }),
     response: receiptSchema,
   },
   {
@@ -336,16 +372,60 @@ export const operations = [
     paginated: true,
   },
   {
-    id: "sendMessage",
-    path: "/servers/:serverId/sessions/:sessionId/messages",
+    id: "createInput",
+    path: "/servers/:serverId/sessions/:sessionId/inputs",
     method: "POST",
-    request: sendMessageRequest,
+    request: inputBody,
+    response: receiptSchema,
+  },
+  {
+    id: "inputs",
+    path: "/servers/:serverId/sessions/:sessionId/inputs",
+    response: pendingInputsSchema,
+  },
+  {
+    id: "cancelInput",
+    path: "/servers/:serverId/sessions/:sessionId/inputs/:inputId/cancel",
+    method: "POST",
+    request: controlRequest.omit({ requestId: true }),
     response: receiptSchema,
   },
   {
     id: "followReceipt",
     path: "/servers/:serverId/receipts/:receiptId/follow",
     response: receiptFollowSchema,
+  },
+  { id: "targetHelp", path: "/servers/:serverId/help", response: z.string() },
+  {
+    id: "targetSchema",
+    path: "/servers/:serverId/schema",
+    response: z.record(z.string(), z.unknown()),
+  },
+  {
+    id: "requests",
+    path: "/servers/:serverId/sessions/:sessionId/requests",
+    response: pendingRequestsSchema,
+  },
+  {
+    id: "respond",
+    path: "/servers/:serverId/sessions/:sessionId/requests/:requestId/response",
+    method: "POST",
+    request: respondRequest.omit({ requestId: true }),
+    response: receiptSchema,
+  },
+  {
+    id: "cancel",
+    path: "/servers/:serverId/sessions/:sessionId/cancel",
+    method: "POST",
+    request: controlRequest.omit({ requestId: true }),
+    response: receiptSchema,
+  },
+  {
+    id: "stop",
+    path: "/servers/:serverId/sessions/:sessionId/stop",
+    method: "POST",
+    request: controlRequest.omit({ requestId: true }),
+    response: receiptSchema,
   },
 ] as const;
 export type Operation = (typeof operations)[number]["id"];
@@ -364,6 +444,43 @@ export const operationDocumentation: Record<
   Operation,
   { summary: string; description: string; example: string }
 > = {
+  targetHelp: {
+    summary: "Read this target's API guide",
+    description:
+      "Read the selected target's Markdown help. Use operation to select one target operation. Access and target builds may implement different APIs.",
+    example: "/v0/servers/{serverId}/help",
+  },
+  targetSchema: {
+    summary: "Read this target's API schema",
+    description:
+      "Read the selected target's schema, optionally selecting one operation. The access server forwards without validating operation shapes.",
+    example: "/v0/servers/{serverId}/schema",
+  },
+  requests: {
+    summary: "Inspect pending approval or question",
+    description:
+      "Read pending input with stable id, kind, description and canRespond. Questions are visible but cannot be answered through v0.",
+    example: "/v0/servers/{serverId}/sessions/{sessionId}/requests",
+  },
+  respond: {
+    summary: "Answer a pending permission request",
+    description:
+      'Requires management authority. POST {response:"approve"|"deny"} with Idempotency-Key. Uses the same native approval and audit path as the UI. A new answer to a resolved request returns request_not_pending. Questions cannot be answered. Retry the identical command/key to recover its receipt.',
+    example:
+      "/v0/servers/{serverId}/sessions/{sessionId}/requests/{requestId}/response",
+  },
+  cancel: {
+    summary: "Interrupt the incumbent session",
+    description:
+      "Requires management authority. POST {} with Idempotency-Key. Uses YA interruption, including existing queue handling and possible hard-abort fallback. Receipt result reports interrupted/supported/aborted. No automatic resume. Identical retries never act on later work.",
+    example: "/v0/servers/{serverId}/sessions/{sessionId}/cancel",
+  },
+  stop: {
+    summary: "Stop the incumbent provider process",
+    description:
+      "Requires management authority. POST {} with Idempotency-Key. Uses verified YA shutdown; session metadata stays readable. Identical retries never stop a later resumed process. Inspect receipt state/result/failure rather than assuming success from admission.",
+    example: "/v0/servers/{serverId}/sessions/{sessionId}/stop",
+  },
   describe: {
     summary: "Discover this API",
     description:
@@ -409,7 +526,7 @@ export const operationDocumentation: Record<
   capabilities: {
     summary: "Discover implemented operations",
     description:
-      "Read target implementation support, independently of caller/resource authorization. peerRouting indicates whether this caller can use the access server's configured peer adapter; it never implies onward access through a target. Provider steering flags do not imply a v0 steering endpoint.",
+      "Read target implementation support, independently of caller/resource authorization. peerRouting indicates whether this caller can use the access server's configured peer adapter; it never implies onward access through a target. Provider steering flags describe createInput delivery=steer, not a separate endpoint.",
     example: "/v0/servers/{serverId}/capabilities",
   },
   projects: {
@@ -430,11 +547,24 @@ export const operationDocumentation: Record<
       "List retained summaries, optionally filtered by exact projectId. Newest updatedAt first, then id. Resource grants, creator access and hidden projects apply before pagination. Ambiguous cross-project ids are omitted. This does not return messages or completion results.",
     example: "/v0/servers/{serverId}/sessions?projectId={projectId}&limit=1",
   },
-  sendMessage: {
-    summary: "Queue attributed input on an active session",
+  createInput: {
+    summary: "Queue a prompt or compaction on an active session",
     description:
-      "Requires explicit management authority like createSession. POST strict JSON {requestId,message,delivery?:'queue'}. Reuse the identical key/body after response loss. Only the incumbent active native owner receives input; stopped sessions return409 session_not_running, with no automatic resume, steering, model/mode change or restart. Input can be consumed together with other queued messages. The202 receipt distinguishes accepted from native-input consumed; neither proves provider acknowledgement or successful completion. Follow the receipt for delivery evidence and its session conversation for the reply.",
-    example: "/v0/servers/{serverId}/sessions/{sessionId}/messages",
+      'Requires explicit management authority like createSession. Supply Idempotency-Key and POST strict JSON {type:"prompt",text,delivery?} or {type:"compact",instructions?,delivery?}. Input enters YA\'s provider-agnostic queue, the same one the composer uses. delivery: deferred (default, next turn boundary), patient (verified idle plus a short quiet interval; survives restart paused) or steer (prompts only: joins the active turn where supported). An idle session receives deferred and steer input at once. Compaction is a distinct queue entry: later input waits until it succeeds, and a failure holds later input until the compaction is cancelled. To compact yourself and continue, queue compact, then queue the continuation prompt, then end your turn. Unsupported compaction returns 409 compaction_unsupported. Only the incumbent active native owner receives input; stopped sessions return 409 session_not_running, with no automatic resume, model/mode change or restart. The 202 receipt id is also the input id. Follow it: input.status reports queued/released/cancelled/paused, delivery=consumed means the provider consumed the input, and compact receipts report completion compacted/failed/unconfirmed. Prompt completion stays unknown; read the conversation for the reply.',
+    example: "/v0/servers/{serverId}/sessions/{sessionId}/inputs",
+  },
+  inputs: {
+    summary: "List pending queued input",
+    description:
+      "Operator or explicitly granted peer read of the session's pending queue in delivery order, including composer-queued items (receiptId=null), restart-paused patient items and a running compaction. Each item has id, type, delivery, status, cancellable, createdAt and recorded creator provenance. text is null for peers without conversation access. Delivered input leaves this list; follow its receipt or the conversation. A stopped session can still list restart-paused items, which resume only from the UI.",
+    example: "/v0/servers/{serverId}/sessions/{sessionId}/inputs",
+  },
+  cancelInput: {
+    summary: "Remove pending queued input",
+    description:
+      "Requires management authority. POST {} with Idempotency-Key, using an id from inputs (for v0 input, its receipt id). Removes a queued or restart-paused item, or a steer the provider has not consumed. A dispatched compaction or YA-owned command returns 409 input_not_cancellable; input that was already delivered or removed returns 409 input_not_pending. Receipt result reports cancelled=true. There is no edit, reorder or steer-now.",
+    example:
+      "/v0/servers/{serverId}/sessions/{sessionId}/inputs/{inputId}/cancel",
   },
   followReceipt: {
     summary: "Follow one submission receipt",
@@ -442,22 +572,28 @@ export const operationDocumentation: Record<
       "Operator or authorized originating-peer bounded status observation. Without after returns the current receipt and r1 cursor. Reissue with after and waitMs0–4000 to wait for admission/delivery/provenance changes; unchanged returns changed=false,receipt=null. Changed responses replace the full receipt, including after reconnect. This does not infer which reply completed a batched input, and does not poll transcripts or restart work. Use receipt.sessionId to follow conversation prose separately.",
     example: "/v0/servers/{serverId}/receipts/{receiptId}/follow?waitMs=4000",
   },
+  selection: {
+    summary: "Discover model and AAR launch choices",
+    description:
+      "Operator or explicitly granted peer read. Query provider=claude|codex and routing=aar|direct (default aar). Returns granted pools, accounts, policies and model thinking/effort/service-tier choices, or the direct provider catalog. Discovery is on demand, never allocates an account or launches a turn. available=false means no configured catalog; router failures return 503 selection_unavailable, never direct fallback. Missing model controls mean unknown, not supported. Pool eligibility is rechecked at launch. No administration or credentials are exposed.",
+    example: "/v0/servers/self/selection?provider=codex",
+  },
   createSession: {
     summary: "Create a native session with retry identity",
     description:
-      'Requires explicit default-off session-command enablement and operator authority; launch credentials also require management=true and a bound owning session. POST JSON {requestId,projectId,provider,message,model?,thinking?,permissionMode?,serviceTier?}. requestId is a unique 8–128 character retry key. Example: {"requestId":"review-2026-01","projectId":"<projectId>","provider":"codex","message":"Review the change and report findings","thinking":"on:high","permissionMode":"default"}. Returns 202 with a durable receipt before native launch completes. Reuse the identical request/key after response loss; conflicting payloads return409. Never resend an uncertain request with a new key unless intentionally accepting duplicate work. Only existing projects and configured local Claude/Codex harnesses are qualified. Native admission owns capacity; no checkout/delegation policy is added.',
+      'Requires explicit default-off session-command enablement and operator authority; launch credentials also require management=true and a bound owning session. POST JSON {projectId,provider,prompt,model?,thinking?,permissionMode?,serviceTier?,routerPoolId?,routerAccountId?,routerPolicy?}. Supply a unique 8–128 character Idempotency-Key header. Example: {"projectId":"<projectId>","provider":"codex","prompt":"Review the change and report findings","thinking":"on:high","permissionMode":"default"}. Returns 202 with a receipt before native launch completes. Reuse the identical request/key after response loss; conflicting payloads return409. Receipts and retry keys last for the server process: after a YA restart the receipt id returns 404 and the same key is a new request, so check existing sessions before retrying. Never resend an uncertain request with a new key unless intentionally accepting duplicate work. Only existing projects and configured local Claude/Codex harnesses are qualified. Use selection to discover model and router ids. Explicit router fields select that pool/account and require a model from its catalog; otherwise a local routed caller inherits its pool/account and omitted model. Native admission owns capacity; no checkout/delegation policy is added.',
     example: "/v0/servers/{serverId}/sessions",
   },
   receipt: {
-    summary: "Inspect a durable command receipt",
+    summary: "Inspect a command receipt",
     description:
-      "Operator-only read of request identity, trusted creator/destination and native admission evidence. dispatching/queued/accepted are not delivery or successful response completion. Restarted unfinished reservations become uncertain and are never automatically replayed. Prompts/tokens are not stored. If the initial response was lost, POST the identical request/key again to recover this receipt id.",
+      "Operator-only read of request identity, trusted creator/destination and native admission evidence. dispatching/queued/accepted are not delivery or successful response completion. Receipts are kept in server memory, not stored: after a YA restart this id returns 404, nothing is replayed, and the same request/key is admitted as a new request. Prompts/tokens are not kept. If the initial response was lost, POST the identical request/key again to recover this receipt id before any restart.",
     example: "/v0/servers/{serverId}/receipts/{receiptId}",
   },
   relationships: {
     summary: "Inspect recorded session creation and initiated commands",
     description:
-      "Operator-only view of the target session's v0 creation and bounded outgoing receipts. includeRelated=true adds separately paged local structural relationships, using relatedLimit/relatedCursor and optional relatedDirection (default both)/relatedType filters. Changing direction or type requires a fresh related cursor. Receipt limit/cursor retain their numeric offset semantics. Missing related means unsupported. Native children remain parent-scoped read-only handles. Peers retain only their visible creation receipt. Legacy sessions can have creation=null; no new grants or remote traversal are implied.",
+      "Operator-only view of the target session's v0 creation and bounded outgoing receipts from the current server process; after a YA restart creation is null and initiated is empty until new commands. The durable creator remains a created_session relationship under includeRelated=true. includeRelated=true adds separately paged local structural relationships, using relatedLimit/relatedCursor and optional relatedDirection (default both)/relatedType filters. Changing direction or type requires a fresh related cursor. Receipt limit/cursor retain their numeric offset semantics. Missing related means unsupported. Native children remain parent-scoped read-only handles. Peers retain only their visible creation receipt. Legacy sessions can have creation=null; no new grants or remote traversal are implied.",
     example:
       "/v0/servers/{serverId}/sessions/{sessionId}/relationships?limit=50&includeRelated=true&relatedLimit=25",
   },
@@ -471,14 +607,14 @@ export const operationDocumentation: Record<
   conversation: {
     summary: "Read compact conversation and activity",
     description:
-      "Read exact user prose and agent Markdown, stable message ids, observed activity, bounded failure/media references and pending attention. Routine tool payloads, thinking and HTML are excluded. Defaults to 20 messages within the recent two compactions; coverage and truncated flags state limits. idle is not proof of successful completion. Unsupported providers/history return 503 conversation_unavailable; missing anchors return 404 anchor_unavailable.",
+      "Read exact user prose and agent Markdown, stable message ids, observed activity, bounded failure/media references and pending attention as one JSON object. Routine tool payloads, thinking and HTML are excluded. Defaults to maxMessages=20 within tailCompactions=2; applied ceilings are 100 messages and 20 compactions. Larger valid counts return 200 with requested/applied counts and serverLimit coverage. Byte-limited reads return partial history with coverage and truncated flags. idle is not proof of successful completion. Unsupported or unreadable history returns 503 conversation_unavailable; missing anchors return 404 anchor_unavailable. Session detail exposes backingStore locations on the owning server.",
     example:
       "/v0/servers/{serverId}/sessions/{sessionId}/conversation?maxMessages=20",
   },
   session: {
     summary: "Inspect one session summary",
     description:
-      "Read a canonical YA session summary. Missing/inaccessible/ambiguous sessions return 404 in a complete catalog, or 503 catalog_not_ready if absence is uncertain. Hidden list preferences do not revoke direct access. No transcript or messages are returned.",
+      "Read canonical YA session detail with settings and routing. settings.source distinguishes live last-applied controls, saved launch settings and unavailable evidence; model is a best-known live model and may still be an alias. Nulls with source=unavailable are unknown, not defaults. routing labels are saved observations. Older peers may omit these fields. Missing/inaccessible/ambiguous sessions return 404 in a complete catalog, or 503 catalog_not_ready if absence is uncertain. Hidden list preferences do not revoke direct access. No transcript or messages are returned.",
     example: "/v0/servers/{serverId}/sessions/{sessionId}",
   },
 };
@@ -488,12 +624,15 @@ export const errorDescriptions = {
   401: "Authentication missing, invalid or expired. Host authentication may return its existing error format.",
   403: "Request denied by host, origin, custom-header or principal policy. The hosting security layer may use its existing error format.",
   404: "Unknown resource/server, or session absent/inaccessible/ambiguous in a complete catalog; anchor_unavailable means choose another history window explicitly. No target fallback.",
-  409: "request_id_conflict: retry key names a different payload; identity_pending: owning session is not bound yet; session_not_running: input requires the incumbent active owner.",
+  409: "request_id_conflict: retry key names a different payload; identity_pending: owning session is not bound yet; session_not_running: input requires the incumbent active owner; compaction_unsupported: this session cannot queue compaction; input_not_pending/input_not_cancellable: the queued input can no longer be removed.",
   500: "internal_error: unexpected read failure; private exception details are not returned.",
-  503: "catalog_not_ready: session absence is uncertain in an incomplete catalog; controller_unavailable: the catalog owner is detached/reloading. Retry reads later; neither means the session was deleted. conversation_unavailable means unsupported, unreadable or over-budget history; do not infer successful completion.",
+  503: "catalog_not_ready: session absence is uncertain in an incomplete catalog; controller_unavailable: the catalog owner is detached/reloading. Retry reads later; neither means the session was deleted. conversation_unavailable means history could not be acquired or projected, including unsupported/unreadable sources or the acquisition deadline. Usable size-limited windows return partial coverage instead; do not infer successful completion.",
 };
 
-export function apiHelp(selected?: Operation) {
+export function apiHelp(selected?: Operation, targetServerId?: string) {
+  const docsRoot = targetServerId
+    ? `/v0/servers/${encodeURIComponent(targetServerId)}`
+    : "/v0";
   if (selected) {
     const operation = operations.find(
       (operation) => operation.id === selected,
@@ -504,7 +643,7 @@ export function apiHelp(selected?: Operation) {
       `${operationMethod(operation)} /v0${operation.path.replace(/:([A-Za-z]+)/g, "{$1}")}`,
       doc.description,
       `Example: ${operationMethod(operation)} ${doc.example}`,
-      `Exact schema: GET /v0/schema?operation=${selected}`,
+      `Exact schema: GET ${docsRoot}/schema?operation=${selected}`,
     ].join("\n\n");
   }
   return [
@@ -512,7 +651,7 @@ export function apiHelp(selected?: Operation) {
     "",
     `Revision: ${API_REVISION}. Unstable: routes, fields and behavior may change.`,
     "",
-    "Use this API to inspect authorized projects, configured provider harnesses and coding-agent session summaries and compact conversations. Reading includes compact conversations and following. Session creation requires a separate explicit management grant and default-off setting; read-only launch credentials never gain writes. Input messaging requires the same explicit management authority. Configured peer adapters expose target-authorized server addressing; inspect servers, access and capabilities.peerRouting rather than assuming a route. Configuration, interruption, command execution and terminals remain unimplemented. Do not infer support from older /api routes or provider capability flags.",
+    "Use this API to inspect authorized projects, configured provider harnesses and coding-agent session summaries and compact conversations. Reading includes compact conversations and following. Session creation requires a separate explicit management grant and default-off setting; read-only launch credentials never gain writes. Queued input (prompts and compaction through YA's queue) requires the same explicit management authority; pending input can be listed and removed. Configured peer adapters expose target-authorized server addressing; inspect servers, access and capabilities.peerRouting rather than assuming a route. Pending permission requests can be inspected and answered; cancel interrupts and may hard-abort, and stop verifies provider shutdown. Configuration changes, arbitrary command execution and terminals remain unimplemented. Do not infer support from older /api routes or provider capability flags.",
     "",
     "## Connect and discover",
     "",
@@ -520,7 +659,19 @@ export function apiHelp(selected?: Operation) {
     "",
     "Read GET /v0 for serverId, GET /v0/me for caller identity, and GET /v0/schema for exact parameter and response schemas. Copy ids from responses, not names or local paths. URL-encode path ids and query values. A session belongs to a server; projects and paths are not global across hosts.",
     "",
+    "Before peer work, read GET /v0/servers/{serverId}/help and /schema on that target. The access server may implement different operations and shapes; top-level help/schema describe only the receiving server.",
     "For one operation, use GET /v0/help?operation={operationId} or GET /v0/schema?operation={operationId}. Prefer the relevant operation schema over fetching the entire reference when you only need one request body.",
+    "",
+    "Use serverId=self for this receiving server, including creates and receipt reads; responses always contain canonical ids. Use an explicit discovered server id for a peer. operation is the exact operationId in the index below, not a URL alias.",
+    "",
+    "## Operation index",
+    "",
+    "| Operation | Method | Path | Docs |",
+    "| --- | --- | --- | --- |",
+    ...operations.map(
+      (operation) =>
+        `| \`${operation.id}\` | ${operationMethod(operation)} | \`/v0${operation.path.replace(/:([A-Za-z]+)/g, "{$1}")}\` | [help](${docsRoot}/help?operation=${operation.id}) · [schema](${docsRoot}/schema?operation=${operation.id}) |`,
+    ),
     "",
     "## Find a project and its sessions",
     "",
@@ -534,9 +685,17 @@ export function apiHelp(selected?: Operation) {
       const doc = operationDocumentation[id as Operation];
       return [`GET ${doc.example}`, doc.description, ""];
     }),
-    "Replace {serverId} with GET /v0's serverId, {projectId} with an authorized project's id and {sessionId} with a session list item's id. Examples are request paths, not commands that guess your credentials.",
+    "Replace {serverId} with self for local operations or an id from GET /v0/servers for a peer, {projectId} with an authorized project's id and {sessionId} with a session list item's id. Examples are request paths, not commands that guess your credentials.",
     "",
     "Collections return {items, nextCursor, catalog?}. Follow non-null nextCursor using cursor; keep your projectId/limit filter. Limit defaults to 50, maximum 100. Cursors are offsets, not snapshots: concurrent changes can shift pages. Grants filter before paging. catalog.complete=false means missing entries are uncertain; refreshing reports shared background observation, not work your request must poll forever.",
+    "",
+    "## Create, send and verify",
+    "",
+    "After inspecting the chosen server's access/capabilities, GET /v0/servers/{serverId}/projects for projectId and /providers for configured harness ids. POST /v0/servers/{serverId}/sessions with JSON {projectId,provider,prompt,permissionMode?,model?,thinking?,serviceTier?,routerPoolId?,routerAccountId?,routerPolicy?}. Only claude/codex are qualified. permissionMode defaults to default. Supply Idempotency-Key as an 8–128 character header; reuse identical key/body after response loss. thinking accepts off, auto or on:low/on:medium/on:high/on:xhigh/on:max. Query selection?provider=codex for AAR pools and their catalogs, or add routing=direct for the host provider catalog. Use ids from those responses.",
+    "",
+    "Creation returns 202 with a receipt {id,sessionId,state,delivery,completion,...} that lasts until the server restarts; sessionId can be null until admission settles. GET /v0/servers/{serverId}/receipts/{id}/follow?waitMs=4000 to observe it. Reissue with after={cursor}; changed replies replace the receipt. Admission and delivery=consumed are not completion. When the task requires verifying launch controls, read /sessions/{sessionId} for effective settings and routing. Read /sessions/{sessionId}/conversation or /conversation/follow for the actual answer.",
+    "",
+    'POST /v0/servers/{serverId}/sessions/{sessionId}/inputs with Idempotency-Key and JSON {type:"prompt",text,delivery?:"deferred"|"patient"|"steer"} or {type:"compact",instructions?,delivery?:"deferred"|"patient"}. Input uses YA\'s queue on an active owner and changes no settings. Repeat the identical key/body to recover the same receipt. GET the same path for pending input, and POST .../inputs/{inputId}/cancel to remove one. Follow the receipt for input.status, delivery=consumed and compaction completion, and the conversation for the reply. To compact yourself and continue, queue compact, then your continuation prompt, then end your turn. GET /sessions/{sessionId}/relationships under the same server prefix for trusted creator session/server and initiated receipts. Prompt completion remains unknown; inspect the requested result in the conversation.',
     "",
     "## Errors and observation",
     "",
@@ -544,20 +703,9 @@ export function apiHelp(selected?: Operation) {
       ([status, description]) => `- ${status}: ${description}`,
     ),
     "",
-    "V0 handler errors use {error: {code, message}}. Earlier host authentication/policy errors can use existing JSON/text formats. Responses are no-store. Session state is an observation, not proof of turn completion. Read operations start no provider, independent scanner or retry loop. Explicitly authorized commands use native ownership and durable retry receipts.",
+    "V0 handler errors use {error: {code, message}}. Earlier host authentication/policy errors can use existing JSON/text formats. Responses are no-store. Session state is an observation, not proof of turn completion. Read operations start no provider, independent scanner or retry loop. Explicitly authorized commands use native ownership and retry receipts that last for the server process; a restart forgets them.",
     "",
-    "## Operation reference",
-    "",
-    ...operations.flatMap((operation) => {
-      const doc = operationDocumentation[operation.id];
-      return [
-        `### ${doc.summary}`,
-        `${operationMethod(operation)} /v0${operation.path.replace(/:([A-Za-z]+)/g, "{$1}")}`,
-        doc.description,
-        `Example: ${operationMethod(operation)} ${doc.example}`,
-        "",
-      ];
-    }),
+    "Use the operation index links for focused semantics, examples and exact schemas. For AAR creation, query selection, submit routerPoolId/model/thinking/serviceTier, follow the receipt, and read session detail to verify settings and routing. Selection is an observation; launch rechecks eligibility.",
   ].join("\n");
 }
 
@@ -612,6 +760,33 @@ export function apiSchema(launchBound = false, selected?: Operation) {
                   }
                 : {}),
               parameters: [
+                ...(operationMethod(operation) === "POST"
+                  ? [
+                      {
+                        name: "Idempotency-Key",
+                        in: "header",
+                        required: true,
+                        description:
+                          "Unique retry key; reuse identical key and body after response loss. Never generate a new key to retry uncertain work.",
+                        schema: {
+                          type: "string",
+                          minLength: 8,
+                          maxLength: 128,
+                        },
+                      },
+                    ]
+                  : []),
+                ...(operation.id === "selection"
+                  ? Object.entries(selectionQuery.shape).map(
+                      ([name, schema]) => ({
+                        name,
+                        in: "query",
+                        required: name === "provider",
+                        description: schema.description,
+                        schema: z.toJSONSchema(schema),
+                      }),
+                    )
+                  : []),
                 ...(operation.id === "followReceipt"
                   ? Object.entries(receiptFollowQuery.shape).map(
                       ([name, schema]) => ({
@@ -623,7 +798,9 @@ export function apiSchema(launchBound = false, selected?: Operation) {
                       }),
                     )
                   : []),
-                ...(["help", "schema"].includes(operation.id)
+                ...(["help", "schema", "targetHelp", "targetSchema"].includes(
+                  operation.id,
+                )
                   ? [
                       {
                         name: "operation",
@@ -656,8 +833,10 @@ export function apiSchema(launchBound = false, selected?: Operation) {
                     required: true,
                     description:
                       match[1] === "serverId"
-                        ? "Public server id from GET /v0; unknown targets fail without local fallback."
-                        : "Canonical YA session id from this target's session collection.",
+                        ? "Public server id from GET /v0/servers, or self for the receiving access server. Unknown targets fail without local fallback."
+                        : match[1] === "inputId"
+                          ? "Pending input id from this session's inputs list."
+                          : "Canonical YA session id from this target's session collection.",
                     schema: { type: "string", minLength: 1 },
                   }),
                 ),
@@ -706,7 +885,7 @@ export function apiSchema(launchBound = false, selected?: Operation) {
                             status as keyof typeof errorDescriptions
                           ],
                     content: {
-                      [operation.id === "help" &&
+                      [["help", "targetHelp"].includes(operation.id) &&
                       (status === 200 || status === 202)
                         ? "text/markdown"
                         : "application/json"]: {

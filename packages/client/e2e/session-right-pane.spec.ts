@@ -209,8 +209,8 @@ test("right pane discovers tool apps, resizes, parks and preserves typing", asyn
   if (await skip.isVisible()) await skip.click();
   const pane = page.getByRole("complementary", { name: "Session pane" });
   const appAction = page.getByRole("button", { name: "App", exact: true });
-  const sessionHeader = page.locator(".session-header");
-  const title = sessionHeader.locator(".session-title-text");
+  const sessionHeader = page.locator("[data-session-header]");
+  const title = sessionHeader.locator("[data-session-title-text]");
   await (await failedLinks).finished();
   await expect(title).toHaveText("Review implementation");
   // The links request runs even when no app can be resolved. Its transport
@@ -252,12 +252,12 @@ test("right pane discovers tool apps, resizes, parks and preserves typing", asyn
   await expect(pane).toHaveCount(0);
   await appAction.click();
   await expect(pane).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator(".message-list")).not.toHaveAttribute(
+  await expect(page.locator("[data-message-list]")).not.toHaveAttribute(
     "aria-busy",
     "true",
   );
-  await expect(page.locator(".sidebar-desktop")).toHaveClass(
-    /sidebar-collapsed/,
+  await expect(page.locator("[data-sidebar-desktop]")).toHaveAttribute(
+    "data-sidebar-collapsed",
   );
   const frame = pane.locator("iframe").contentFrame();
   await frame.getByLabel("Review note").fill("Keep this note");
@@ -268,10 +268,10 @@ test("right pane discovers tool apps, resizes, parks and preserves typing", asyn
     name: "Resize session pane",
   });
   const before = await pane.boundingBox();
-  const header = (await page.locator(".session-header").boundingBox())!;
+  const header = (await page.locator("[data-session-header]").boundingBox())!;
   expect(header.x + header.width).toBeLessThanOrEqual(before!.x + 1);
   expect(Math.abs(header.y - before!.y)).toBeLessThan(2);
-  const transcript = page.locator(".session-messages");
+  const transcript = page.locator("[data-session-messages]");
   await expect
     .poll(() =>
       transcript.evaluate(
@@ -332,8 +332,8 @@ test("right pane discovers tool apps, resizes, parks and preserves typing", asyn
     .toBeLessThan(widest - 10);
   await pane.getByRole("button", { name: "Minimize session pane" }).click();
   await expect(pane).toBeHidden();
-  await expect(page.locator(".sidebar-desktop")).not.toHaveClass(
-    /sidebar-collapsed/,
+  await expect(page.locator("[data-sidebar-desktop]")).not.toHaveAttribute(
+    "data-sidebar-collapsed",
   );
   const restore = page.getByRole("button", { name: /Restore.*plan\/review/ });
   await expect(restore).toBeVisible();
@@ -442,7 +442,7 @@ test("right pane discovers tool apps, resizes, parks and preserves typing", asyn
   finishStop?.();
   expect((await stopped).ok()).toBe(true);
   await page.reload();
-  await expect(page.locator(".session-header")).toBeVisible();
+  await expect(page.locator("[data-session-header]")).toBeVisible();
   await expect(appAction).toHaveCount(0);
   await expect(appLink).toBeVisible();
   emit?.({ ...result, uuid: "new-launch" });
@@ -556,11 +556,8 @@ test("Apps settings explains wildcard hosting without a domain default", async (
       await field.scrollIntoViewIfNeeded();
     }).toPass();
     await recordUiCapture(page, `apps-settings-${size.width}`);
-    if (size.width === 375) {
-      await page
-        .getByRole("button", { name: "plan .localhost", exact: true })
-        .click();
-    }
+    // The pane stays mounted across the phone breakpoint, so the app opened
+    // above is still open.
     await page
       .getByRole("checkbox", { name: "Public — no link required" })
       .scrollIntoViewIfNeeded();

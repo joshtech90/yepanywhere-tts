@@ -1,3 +1,4 @@
+import rowsStyles from "./SettingsRows.module.css";
 import type {
   BusyComposerDefaultAction,
   CollapsedComposerButtonPreference,
@@ -15,6 +16,7 @@ import {
   SessionToolbarPreview,
   ToolbarControlPreview,
 } from "../../components/SessionToolbarPreview";
+import { Banner } from "../../components/ui/Banner";
 import { Button } from "../../components/ui/Button";
 import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
 import { CommittedRangeNumberInput } from "../../components/ui/CommittedRangeNumberInput";
@@ -50,6 +52,11 @@ import { getQuestionReminderThresholds } from "../../lib/asyncQuestions";
 
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
+import {
+  HideInSettingsSearch,
+  SettingsSearchText,
+  useSettingsSearchScope,
+} from "./SettingsSearchContext";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 import toolbarSettingsStyles from "./ToolbarSettings.module.css";
@@ -184,10 +191,10 @@ function ControlPresenceSlider({
   const captionId = `${inputId}-caption`;
   const clearDraft = () => setDraftNotch(null);
   return (
-    <span className="session-toolbar-presence">
+    <span className={toolbarSettingsStyles.presence}>
       <CommittedRangeInput
         id={inputId}
-        className="session-toolbar-presence-range"
+        className={toolbarSettingsStyles.presenceRange}
         min={0}
         max={max}
         step={1}
@@ -207,17 +214,17 @@ function ControlPresenceSlider({
         aria-valuetext={caption}
         aria-describedby={captionId}
       />
-      <span className="session-toolbar-presence-ticks" aria-hidden="true">
+      <span className={toolbarSettingsStyles.presenceTicks} aria-hidden="true">
         {Array.from({ length: max + 1 }, (_, tick) => (
           <span
             key={tick}
-            className={`session-toolbar-presence-tick${
-              tick <= shownNotch ? " is-reached" : ""
+            className={`${toolbarSettingsStyles.presenceTick}${
+              tick <= shownNotch ? ` ${toolbarSettingsStyles.isReached}` : ""
             }`}
           />
         ))}
       </span>
-      <span className="session-toolbar-presence-labels" aria-hidden="true">
+      <span className={toolbarSettingsStyles.presenceLabels} aria-hidden="true">
         <span>
           {t(
             control.canDisable
@@ -227,7 +234,7 @@ function ControlPresenceSlider({
         </span>
         <span>{t("appearanceToolbarShowAlways")}</span>
       </span>
-      <span className="session-toolbar-presence-caption" id={captionId}>
+      <span className={toolbarSettingsStyles.presenceCaption} id={captionId}>
         {caption}
       </span>
     </span>
@@ -526,17 +533,32 @@ export function ToolbarSettings() {
     control: ToolbarControlMeta,
     placement: "hidden" | "shown",
   ) => (
-    <div
-      className={`session-toolbar-control-row is-${placement} ${
-        toolbarPresence[control.key] === "hidden" ||
-        toolbarPresence[control.key] === "off"
-          ? "is-currently-hidden"
-          : "is-currently-shown"
-      }`}
+    <SettingsItem
+      id={`toolbar-${control.key}`}
+      label={control.title}
+      description={control.description}
+      keywords={
+        control.key === "waveform"
+          ? [
+              t("appearanceToolbarWaveformButtonOpacityTitle"),
+              t("appearanceToolbarWaveformButtonOpacityDescription"),
+            ]
+          : undefined
+      }
+      layout="custom"
+      baseClassName={toolbarSettingsStyles.controlRow}
+      className={
+        placement === "hidden" ? toolbarSettingsStyles.isHidden : undefined
+      }
+      containerProps={
+        {
+          "data-toolbar-control": control.key,
+        } as React.HTMLAttributes<HTMLElement>
+      }
       key={control.key}
     >
       {control.hasToolbarPreview && (
-        <span className="session-toolbar-control-preview-cell">
+        <span className={toolbarSettingsStyles.controlPreviewCell}>
           <ToolbarControlPreview
             activationLabel={t("appearanceToolbarActivateControl", {
               control: control.title,
@@ -548,9 +570,13 @@ export function ToolbarSettings() {
           />
         </span>
       )}
-      <span className="session-toolbar-control-copy">
-        <strong>{control.title}</strong>
-        <span>{control.description}</span>
+      <span className={toolbarSettingsStyles.controlCopy}>
+        <strong>
+          <SettingsSearchText text={control.title} />
+        </strong>
+        <span>
+          <SettingsSearchText text={control.description} />
+        </span>
         {control.key === "waveform" && (
           <span className={toolbarSettingsStyles.waveformOpacityControl}>
             <span className={toolbarSettingsStyles.waveformOpacityCopy}>
@@ -574,14 +600,14 @@ export function ToolbarSettings() {
           </span>
         )}
       </span>
-      <span className="session-toolbar-control-actions">
+      <span className={toolbarSettingsStyles.controlActions}>
         <ControlPresenceSlider
           control={control}
           presence={toolbarPresence[control.key]}
           onCommitNotch={commitPresenceNotch}
         />
       </span>
-    </div>
+    </SettingsItem>
   );
 
   const renderSideGroup = (
@@ -603,7 +629,7 @@ export function ToolbarSettings() {
 
   return (
     <SettingsSection description={t("appearanceSessionToolbarDescription")}>
-      <div className="settings-group">
+      <div className={rowsStyles.group} data-settings-group>
         <SettingsItem
           label={t("audioMemoDefaultAction")}
           description={t("audioMemoDefaultActionDescription")}
@@ -625,6 +651,8 @@ export function ToolbarSettings() {
           label={t("appearanceToolbarDefaultActionTitle")}
           description={t("appearanceToolbarDefaultActionDescription")}
           doc="site/src/content/docs/sessions-and-approvals.md#steer-queue-and-interrupt"
+          // Message Delivery holds the searchable primary row.
+          searchable={false}
         >
           <Select
             value={busyComposerDefaultAction}
@@ -683,7 +711,7 @@ export function ToolbarSettings() {
           description={t(
             "appearanceToolbarConversationViewTurnLimitDescription",
           )}
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
         >
           <CommittedRangeNumberInput
             id="conversation-view-turn-limit"
@@ -716,7 +744,7 @@ export function ToolbarSettings() {
             "hide",
             "overflow",
           ]}
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
         >
           <CommittedRangeNumberInput
             id="question-reminder-turns"
@@ -734,20 +762,13 @@ export function ToolbarSettings() {
           />
         </SettingsItem>
 
-        <SettingsItem
-          label={t("appearanceSessionToolbarTitle")}
-          description={t("appearanceSessionToolbarDescription")}
-          keywords={toolbarControls.flatMap((control) => [
-            control.title,
-            control.description,
-          ])}
-          layout="custom"
-          className={toolbarSettingsStyles.settings}
-        >
-          <SessionToolbarPreview />
+        <ToolbarSettingsLayout>
+          <HideInSettingsSearch>
+            <SessionToolbarPreview />
+          </HideInSettingsSearch>
 
-          <div className="session-toolbar-zone">
-            <div className="session-toolbar-zone-heading">
+          <div className={toolbarSettingsStyles.zone} data-toolbar-zone>
+            <div className={toolbarSettingsStyles.zoneHeading}>
               <strong>{t("appearanceToolbarHiddenHeading")}</strong>
               <span>{t("appearanceToolbarHiddenDescription")}</span>
             </div>
@@ -765,10 +786,10 @@ export function ToolbarSettings() {
             </div>
           </div>
 
-          <div className="session-toolbar-zone-separator" />
+          <div className={toolbarSettingsStyles.zoneSeparator} />
 
-          <div className="session-toolbar-zone">
-            <div className="session-toolbar-zone-heading">
+          <div className={toolbarSettingsStyles.zone} data-toolbar-zone>
+            <div className={toolbarSettingsStyles.zoneHeading}>
               <strong>{t("appearanceToolbarShownHeading")}</strong>
               <span>{t("appearanceToolbarShownDescription")}</span>
             </div>
@@ -786,18 +807,33 @@ export function ToolbarSettings() {
             </div>
           </div>
 
-          <div className="settings-item-actions">
-            <Button
-              onClick={() => {
-                resetPresence();
-              }}
-            >
-              {t("appearanceSessionToolbarReset")}
-            </Button>
-          </div>
-        </SettingsItem>
-        {error && <p className="settings-warning">{error}</p>}
+          <HideInSettingsSearch>
+            <div className={rowsStyles.itemActions}>
+              <Button
+                onClick={() => {
+                  resetPresence();
+                }}
+              >
+                {t("appearanceSessionToolbarReset")}
+              </Button>
+            </div>
+          </HideInSettingsSearch>
+        </ToolbarSettingsLayout>
+        {error && <Banner tone="error">{error}</Banner>}
       </div>
     </SettingsSection>
+  );
+}
+
+/** Keep layout-only groups out of the filtered rows without remounting panes. */
+function ToolbarSettingsLayout({ children }: { children: React.ReactNode }) {
+  const scope = useSettingsSearchScope();
+  return (
+    <div
+      className={`${rowsStyles.item} ${toolbarSettingsStyles.settings}`}
+      data-toolbar-search={scope ? "" : undefined}
+    >
+      {children}
+    </div>
   );
 }

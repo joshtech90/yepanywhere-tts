@@ -381,6 +381,7 @@
 - synthetic-turn-injection - General user/assistant context delivery through
   native history insertion or attributed normal user turns.
 - acli-commentary - Declared tool prose and artifact capture handoffs in YA.
+- comments - Repository comment inventory and bounded source cleanup.
 
 - desktop-nightly-releases - Signed nightly publication and same-app Stable/Latest channels.
 - ya-agent-self — read-only owning-session inspection and command delivery.
@@ -489,3 +490,22 @@
 - required-sqlite - Required SQLite storage (renamed from optional-sqlite on
   2026-11-09): runtime adapters, data directory placement, transaction cost,
   and retiring designs that assumed no database.
+
+- css-ownership-and-leak-closure - Plan 191: exact dead-class detection, shared
+  controls that own their look, type and radius tokens, and draining global CSS.
+
+- agent-auth-router-startup-display - Keep the session account display current through startup without a new capability.
+
+- agent-api-bootstrap — Native instruction placement, transcript/title repair, and optional disclosure.
+
+- e2e-first-attempt-flakes - Browser cases that fail their first CI attempt and pass on retry: counting, diagnosis and fixes.
+
+- transcript-indexer - Plan 192: one forward transcript reader with provider source adapters and configured consumers (issues, Codex questions, vocabulary).
+
+- v0 review follow-ups and mesh testbed - Fixes from the 2026-11-13 independent v0 review, a scripted multi-profile mesh testbed, and eval/baseline tightening.
+- session-catalog-identity-conflicts - Preserve saved session ownership while isolating conflicting native catalogue observations.
+- provider-history-facts - Bounded provider-history reads: cost scales with the answer, not session length; upkeep with change, not session count. Lists every history reader and its remaining whole-file reads.
+
+- provider-cli-installations - Shared target-server CLI selection and cached offline execution verification.
+
+- timer-ownership - A lint check and per-file ledger that bound repeating, zero-delay and dropped-handle timers, plus the fixes that shrink the ledger.

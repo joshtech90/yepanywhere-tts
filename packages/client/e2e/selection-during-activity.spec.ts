@@ -5,6 +5,7 @@ import {
   decodeJsonFrame,
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
+import { readCollectionsOverRest } from "./support/managed-routes";
 import { createTestViteServer } from "./support/vite-server";
 import {
   disposeYaServerProcess,
@@ -45,7 +46,7 @@ function transcript() {
 }
 
 async function textPoint(page: Page, marker: string) {
-  return page.locator(".message-list").evaluate((list, text) => {
+  return page.locator("[data-message-list]").evaluate((list, text) => {
     const walker = document.createTreeWalker(list, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const textNode = node as Text;
@@ -88,6 +89,10 @@ async function openLiveSession(page: Page) {
       },
     });
     const projectId = Buffer.from(projectPath).toString("base64url");
+    // Response Streaming defaults off, which drops the delta-only live tail.
+    await page.addInitScript(() =>
+      localStorage.setItem("yep-anywhere-streaming-enabled", "true"),
+    );
     const now = Date.now();
     const row = {
       id: "sel-a",
@@ -102,6 +107,7 @@ async function openLiveSession(page: Page) {
       updatedAt: new Date(now - 60_000).toISOString(),
       messageCount: ROWS * 2,
     };
+    await readCollectionsOverRest(page);
     await page.route(/\/api\/sessions(?:\?|$)/, (route) =>
       route.fulfill({
         json: {
@@ -288,7 +294,7 @@ test("a drag keeps its press point when the browser loses it mid-drag", async ({
   const activity = session.startActivity();
   try {
     await page
-      .locator(".message-list")
+      .locator("[data-message-list]")
       .getByText("Reply 20 opens here")
       .scrollIntoViewIfNeeded();
     await page.mouse.wheel(0, -200);
@@ -382,7 +388,7 @@ test("a held button stops follow scrolling and a click resumes it", async ({
 }) => {
   test.setTimeout(180_000);
   const session = await openLiveSession(page);
-  const scroller = page.locator("main.session-messages");
+  const scroller = page.locator("main[data-session-messages]");
   const metrics = () =>
     scroller.evaluate((node) => ({
       height: node.scrollHeight,
@@ -403,7 +409,7 @@ test("a held button stops follow scrolling and a click resumes it", async ({
     const box = await scroller.boundingBox();
     if (!box) throw new Error("Missing transcript scroller");
     const point = await scroller.evaluate((viewport) => {
-      const content = viewport.querySelector(".message-list");
+      const content = viewport.querySelector("[data-message-list]");
       if (!content) return null;
       const bounds = viewport.getBoundingClientRect();
       const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);

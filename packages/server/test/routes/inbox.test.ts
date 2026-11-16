@@ -6,6 +6,8 @@ import type { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionIndexService } from "../../src/indexes/index.js";
 import type { NotificationService } from "../../src/notifications/index.js";
+import type { SessionMetadata } from "../../src/metadata/SessionMetadataService.js";
+import type { Process } from "../../src/supervisor/Process.js";
 import type { CodexSessionScanner } from "../../src/projects/codex-scanner.js";
 import type { ProjectScanner } from "../../src/projects/scanner.js";
 import {
@@ -95,20 +97,7 @@ describe("Inbox Routes", () => {
   let mockProjectQueueService: NonNullable<InboxDeps["projectQueueService"]>;
   let sessionsByDir: Map<string, SessionSummary[]>;
   let codexSessionsByPath: Map<string, SessionSummary[]>;
-  let metadataMap: Map<
-    string,
-    {
-      customTitle?: string;
-      isArchived?: boolean;
-      isStarred?: boolean;
-      nonHumanUserTurn?: {
-        messageId: string;
-        timestamp: string;
-        sourceSessionId: string;
-        acknowledged?: boolean;
-      };
-    }
-  >;
+  let metadataMap: Map<string, SessionMetadata>;
   let projectQueueItems: ProjectQueueItemSummary[];
   let processMap: Map<
     string,
@@ -117,6 +106,10 @@ describe("Inbox Routes", () => {
       state: { type: string };
       isRetainingProviderWork?: () => boolean;
       lastProviderContentTime?: Date | null;
+      provider?: Process["provider"];
+      resolvedModel?: Process["resolvedModel"];
+      thinking?: Process["thinking"];
+      appliedEffort?: Process["appliedEffort"];
     }
   >;
   let unreadMap: Map<string, boolean>;
@@ -188,6 +181,90 @@ describe("Inbox Routes", () => {
   }
 
   describe("tier categorization", () => {
+    it("overlays applied model settings without promoting list summaries or scanning detail", async () => {
+      const project = createProject("proj1", "myproject", "/sessions/proj1");
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set(
+        project.sessionDir,
+        ["live", "saved", "unknown", "default"].map((id) =>
+          createSession(id, project.id, minutesAgo(1)),
+        ),
+      );
+      const saved: NonNullable<SessionMetadata["effectiveLaunchSettings"]> = {
+        schemaVersion: 1,
+        revision: 1,
+        permissionMode: "default",
+        requestedModel: "gpt-6.1-sol",
+        thinking: { type: "enabled" },
+        effort: "high",
+        serviceTier: null,
+      };
+      metadataMap.set("live", { effectiveLaunchSettings: saved });
+      metadataMap.set("saved", { effectiveLaunchSettings: saved });
+      metadataMap.set("default", {
+        requestedModel: "old-model-must-not-reappear",
+        effectiveLaunchSettings: {
+          ...saved,
+          requestedModel: null,
+          thinking: null,
+          effort: null,
+        },
+      });
+      processMap.set("live", {
+        provider: "codex",
+        resolvedModel: "gpt-6-astra",
+        thinking: { type: "enabled" },
+        appliedEffort: "xhigh",
+        state: { type: "idle" },
+        isRetainingProviderWork: () => false,
+        getPendingInputRequest: () => undefined,
+      });
+      const response = await makeRequest({
+        scanner: mockScanner,
+        readerFactory: mockReaderFactory,
+        supervisor: mockSupervisor,
+        sessionMetadataService: mockSessionMetadataService,
+      });
+      const configs = Object.fromEntries(
+        response.recentActivity.map((item) => [
+          item.sessionId,
+          item.modelConfig,
+        ]),
+      );
+      expect(configs).toEqual({
+        live: {
+          provider: "codex",
+          model: "gpt-6-astra",
+          thinking: { type: "enabled" },
+          effort: "xhigh",
+        },
+        saved: {
+          provider: "claude",
+          model: "gpt-6.1-sol",
+          thinking: { type: "enabled" },
+          effort: "high",
+        },
+        unknown: undefined,
+        default: undefined,
+      });
+      // A process's cleared settings must not resurrect its saved High effort.
+      processMap.get("live")!.thinking = undefined;
+      processMap.get("live")!.appliedEffort = undefined;
+      const cleared = await makeRequest({
+        scanner: mockScanner,
+        readerFactory: mockReaderFactory,
+        supervisor: mockSupervisor,
+        sessionMetadataService: mockSessionMetadataService,
+      });
+      expect(
+        cleared.recentActivity.find((item) => item.sessionId === "live")
+          ?.modelConfig,
+      ).toEqual({
+        provider: "codex",
+        model: "gpt-6-astra",
+        thinking: { type: "disabled" },
+      });
+    });
     it("preserves independently observed question previews in Inbox", async () => {
       const project = createProject("proj1", "myproject", "/sessions/proj1");
       const asyncQuestions = {
@@ -245,12 +322,16 @@ describe("Inbox Routes", () => {
       expect(result.active).toHaveLength(0);
     });
 
-    it("categorizes a pending non-human turn into needsAttention", async () => {
+    it("keeps delivery flags in their normal unread tier without requesting attention", async () => {
+      vi.mocked(mockNotificationService.hasUnread).mockReturnValue(true);
       const project = createProject("proj1", "myproject", "/sessions/proj1");
       vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      // One instant for both rows: separate minutesAgo() calls can straddle a
+      // millisecond and make "acknowledged" the more recent session.
+      const updatedAt = minutesAgo(90);
       sessionsByDir.set("/sessions/proj1", [
-        createSession("delivered", "proj1", minutesAgo(90)),
-        createSession("acknowledged", "proj1", minutesAgo(90)),
+        createSession("delivered", "proj1", updatedAt),
+        createSession("acknowledged", "proj1", updatedAt),
       ]);
       metadataMap.set("delivered", {
         nonHumanUserTurn: {
@@ -277,9 +358,12 @@ describe("Inbox Routes", () => {
         sessionMetadataService: mockSessionMetadataService,
       });
 
-      expect(result.needsAttention).toHaveLength(1);
-      expect(result.needsAttention[0].sessionId).toBe("delivered");
-      expect(result.needsAttention[0].nonHumanUserTurn).toEqual({
+      expect(result.needsAttention).toHaveLength(0);
+      expect(result.unread8h.map((item) => item.sessionId)).toEqual([
+        "delivered",
+        "acknowledged",
+      ]);
+      expect(result.unread8h[0].nonHumanUserTurn).toEqual({
         messageId: "msg1",
         timestamp: expect.any(String),
         sourceSessionId: "sender",

@@ -1,3 +1,4 @@
+import listStyles from "../../src/components/SessionListLayout.module.css";
 import type {
   ProviderWorkItem,
   SessionProviderPhase,
@@ -9,7 +10,7 @@ import inboxStyles from "../../src/components/InboxContent.module.css";
 import { SessionListItem } from "../../src/components/SessionListItem";
 import { ThinkingIndicator } from "../../src/components/ThinkingIndicator";
 import { I18nProvider } from "../../src/i18n";
-import "../../src/styles/index.css";
+import "../../src/styles/purposeGlobals";
 import styles from "./Inbox.module.css";
 
 /**
@@ -369,7 +370,7 @@ function Section({
         <span className={inboxStyles.sectionCount}>{rows.length}</span>
       </h2>
       {note && <p className={styles.sectionNote}>{note}</p>}
-      <ul className="sessions-list">
+      <ul className={listStyles.list}>
         {rows.map((row) => (
           <Row key={row.id} row={row} now={now} showMark={showMark} />
         ))}

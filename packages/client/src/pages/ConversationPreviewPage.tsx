@@ -1,7 +1,10 @@
+import { SelectableCard } from "../components/ui/SelectableCard";
 import type { Content } from "@yep-anywhere/shared/experimental/simple-client.generated";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Button, ButtonBase, buttonClassName } from "../components/ui/Button";
+import { Badge } from "../components/ui/Badge";
+import { Banner } from "../components/ui/Banner";
+import { Button, buttonClassName } from "../components/ui/Button";
 import { Checkbox } from "../components/ui/Checkbox";
 import { Select } from "../components/ui/Field";
 import { type MessageKey, useI18n } from "../i18n";
@@ -62,7 +65,11 @@ export function PreviewContent({ content }: { content: Content }) {
         </div>
       );
     default:
-      return <p className={styles.notice}>{t("preview.unknown")}</p>;
+      return (
+        <Banner role="none" compact className={styles.notice}>
+          {t("preview.unknown")}
+        </Banner>
+      );
   }
 }
 
@@ -267,7 +274,8 @@ function Preview({
                   </h3>
                 )}
                 {group.rows.map(({ source: rowSource, session: row }) => (
-                  <ButtonBase
+                  <SelectableCard
+                    size="compact"
                     key={JSON.stringify([rowSource.host.id, row.id])}
                     className={styles.session}
                     aria-current={
@@ -291,7 +299,7 @@ function Preview({
                         ? row.projectName
                         : rowSource.host.displayName}
                     </small>
-                  </ButtonBase>
+                  </SelectableCard>
                 ))}
               </section>
             ))}
@@ -312,9 +320,7 @@ function Preview({
                 </small>
                 <h2>{session?.title ?? state.selection.sessionId}</h2>
                 <div className={styles.actions}>
-                  <span className={styles.badge}>
-                    {t("preview.readOnlyBadge")}
-                  </span>
+                  <Badge>{t("preview.readOnlyBadge")}</Badge>
                   {view && (
                     <span>{t(`preview.activity.${view.activity}`)}</span>
                   )}
@@ -340,37 +346,46 @@ function Preview({
                 data-testid="preview-conversation"
               >
                 {busy && (
-                  <p role="status" className={styles.notice}>
+                  <Banner className={styles.notice}>
                     {t("preview.loading")}
-                  </p>
+                  </Banner>
                 )}
                 {state.conversationStatus === "offline" && (
-                  <div role="status" className={styles.notice}>
-                    <p>{t("preview.disconnected")}</p>
-                    {source && (
-                      <Button
-                        className={styles.control}
-                        onClick={() => controller.include(source.host.id, true)}
-                      >
-                        {t("preview.reconnect")}
-                      </Button>
-                    )}
-                  </div>
+                  <Banner
+                    tone="warning"
+                    className={styles.notice}
+                    actions={
+                      source && (
+                        <Button
+                          className={styles.control}
+                          onClick={() =>
+                            controller.include(source.host.id, true)
+                          }
+                        >
+                          {t("preview.reconnect")}
+                        </Button>
+                      )
+                    }
+                  >
+                    {t("preview.disconnected")}
+                  </Banner>
                 )}
                 {state.conversationStatus === "invalid" && (
-                  <p role="alert" className={styles.notice}>
+                  <Banner tone="error" className={styles.notice}>
                     {t("preview.invalid")}
-                  </p>
+                  </Banner>
                 )}
                 {state.view?.kind === "error" && (
-                  <p role="status" className={styles.notice}>
+                  <Banner tone="error" role="status" className={styles.notice}>
                     {t(`preview.error.${state.view.code}`)}
-                  </p>
+                  </Banner>
                 )}
                 {state.view &&
                   state.view.kind !== "conversation" &&
                   state.view.kind !== "error" && (
-                    <p className={styles.notice}>{t("preview.unknown")}</p>
+                    <Banner role="none" className={styles.notice}>
+                      {t("preview.unknown")}
+                    </Banner>
                   )}
                 {view && (
                   <>
@@ -412,7 +427,9 @@ function Preview({
                       view.coverage.earlierOutsideScope !== "no" ||
                       (state.maxMessages >= 100 &&
                         view.coverage.earlierInScope)) && (
-                      <p className={styles.notice}>{t("preview.coverage")}</p>
+                      <Banner role="none" className={styles.notice}>
+                        {t("preview.coverage")}
+                      </Banner>
                     )}
                     {view.messages.length === 0 && (
                       <p className={styles.muted}>
@@ -453,22 +470,24 @@ function Preview({
                       </article>
                     ))}
                     {view.pendingRequests.map((request, index) => (
-                      <section
+                      <Banner
                         key={
                           request.kind === "question"
                             ? request.id
                             : `unknown:${index}`
                         }
+                        tone="warning"
+                        role="none"
+                        title={t("preview.needsAttention")}
                         className={styles.notice}
                       >
-                        <strong>{t("preview.needsAttention")}</strong>
                         <p>
                           {request.kind === "question"
                             ? request.prompt
                             : t("preview.unknown")}
                         </p>
                         <small>{t("preview.answerInFull")}</small>
-                      </section>
+                      </Banner>
                     ))}
                   </>
                 )}

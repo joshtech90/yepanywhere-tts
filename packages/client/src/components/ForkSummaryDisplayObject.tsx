@@ -1,8 +1,10 @@
+import styles from "./ForkSummaryDisplayObject.module.css";
 import type { ForkSummaryTranscriptDisplayObject } from "@yep-anywhere/shared";
 import { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
 import { Button } from "./ui/Button";
 import { Checkbox } from "./ui/Checkbox";
+import { Spinner } from "./ui/Spinner";
 
 function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -37,29 +39,36 @@ export function ForkSummaryDisplayObject({
   if (object.status === "generating") {
     return (
       <div
-        className="fork-summary-display-object fork-summary-display-object-generating"
+        className={styles.forkSummaryDisplayObject}
+        data-fork-summary-display-object-generating=""
+        data-fork-summary-display-object
         role="status"
         aria-live="polite"
       >
+        <Spinner size="small" />
         <span
-          className="fork-summary-display-object-spinner"
-          aria-hidden="true"
-        />
-        <span className="fork-summary-display-object-label">
+          className={styles.forkSummaryDisplayObjectLabel}
+          data-fork-summary-display-object-label
+        >
           {t("forkSummaryProgress")}
         </span>
-        <span className="fork-summary-display-object-elapsed">
+        <span
+          className={styles.forkSummaryDisplayObjectElapsed}
+          data-fork-summary-display-object-elapsed
+        >
           {formatElapsed(now - Date.parse(object.createdAt))}
         </span>
         <Checkbox
-          className="fork-summary-display-object-autoopen"
+          className={styles.forkSummaryDisplayObjectAutoopen}
+          data-fork-summary-display-object-autoopen
           label={t("forkSummaryAutoOpenToggle")}
           checked={object.autoOpenWhenReady ?? false}
           onCheckedChange={(checked) => onToggleAutoOpen(checked)}
         />
         <Button
           size="small"
-          className="fork-summary-display-object-cancel"
+          className={styles.forkSummaryDisplayObjectCancel}
+          data-fork-summary-display-object-cancel
           onClick={onCancel}
         >
           {t("forkSummaryCancelInFlight")}
@@ -71,17 +80,23 @@ export function ForkSummaryDisplayObject({
   if (object.status === "error") {
     return (
       <div
-        className="fork-summary-display-object fork-summary-display-object-error"
+        className={`${styles.forkSummaryDisplayObject} ${styles.forkSummaryDisplayObjectError}`}
+        data-fork-summary-display-object
+        data-fork-summary-display-object-error
         role="alert"
       >
-        <span className="fork-summary-display-object-label">
+        <span
+          className={styles.forkSummaryDisplayObjectLabel}
+          data-fork-summary-display-object-label
+        >
           {object.error
             ? `${t("forkSummaryFailed")}: ${object.error}`
             : t("forkSummaryFailed")}
         </span>
         <Button
           size="small"
-          className="fork-summary-display-object-cancel"
+          className={styles.forkSummaryDisplayObjectCancel}
+          data-fork-summary-display-object-cancel
           onClick={onCancel}
         >
           {t("forkSummaryDismiss")}
@@ -98,15 +113,20 @@ export function ForkSummaryDisplayObject({
       : undefined;
   return (
     <div
-      className="fork-summary-display-object fork-summary-display-object-ready"
+      className={styles.forkSummaryDisplayObject}
+      data-fork-summary-display-object
       role="status"
       aria-live="polite"
     >
-      <span className="fork-summary-display-object-label">
+      <span
+        className={styles.forkSummaryDisplayObjectLabel}
+        data-fork-summary-display-object-label
+      >
         {t("forkSummaryReadyPrefix")}
       </span>
       <a
-        className="fork-summary-display-object-link"
+        className={styles.forkSummaryDisplayObjectLink}
+        data-fork-summary-display-object-link
         href={targetHref ?? "#"}
         target="_blank"
         rel="noopener noreferrer"
@@ -116,7 +136,12 @@ export function ForkSummaryDisplayObject({
         {title} ↗
       </a>
       {stateLabel && (
-        <span className="fork-summary-display-object-state">{stateLabel}</span>
+        <span
+          className={styles.forkSummaryDisplayObjectState}
+          data-fork-summary-display-object-state
+        >
+          {stateLabel}
+        </span>
       )}
     </div>
   );

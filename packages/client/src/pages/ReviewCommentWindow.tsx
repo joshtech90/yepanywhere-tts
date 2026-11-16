@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { SessionHoverCardTarget } from "../components/SessionHoverCardTarget";
+import { Banner } from "../components/ui/Banner";
 import { Button } from "../components/ui/Button";
 import { Field, Select, Textarea } from "../components/ui/Field";
 import type { SourceReviewDefaultSession } from "../contexts/SourceReviewDefaultSessionContext";
@@ -84,24 +85,19 @@ export function ReviewCommentWindow({
         <>
           {/* review-comment-window-cancel and -add stay literal: no stylesheet
             declares them, so they are DOM hooks this module does not own. */}
-          <Button
-            className="review-comment-window-cancel"
-            onClick={onCancel}
-            disabled={busy}
-          >
+          <Button onClick={onCancel} disabled={busy}>
             {t("cancel")}
           </Button>
-          <Button
-            className="review-comment-window-add"
-            onClick={() => onAddToReview(text)}
-            disabled={!canSubmit}
-          >
+          <Button onClick={() => onAddToReview(text)} disabled={!canSubmit}>
             {t("sourceReviewAddToReview")}
           </Button>
           <div className={styles.submitActions}>
             <Field
               label={t("sourceReviewTargetLegend")}
               className={styles.destination}
+              error={
+                sessionsError ? t("sourceReviewSessionsUnavailable") : undefined
+              }
             >
               <Select
                 value={targetSessionId}
@@ -136,11 +132,6 @@ export function ReviewCommentWindow({
                 ))}
               </Select>
             </Field>
-            {sessionsError && (
-              <span className={styles.destinationError}>
-                {t("sourceReviewSessionsUnavailable")}
-              </span>
-            )}
             {defaultSession && targetSessionId === defaultSession.id ? (
               <SessionHoverCardTarget
                 sessionId={defaultSession.id}
@@ -218,7 +209,7 @@ export function ReviewCommentEditor({
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={onKeyDown}
       />
-      {error && <div className={styles.error}>{error}</div>}
+      {error && <Banner tone="error">{error}</Banner>}
       <div className={styles.actions}>{actions}</div>
     </div>
   );

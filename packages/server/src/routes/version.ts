@@ -105,6 +105,7 @@ import type {
   SpeechBackendCapabilities,
   SpeechBackendInfo,
 } from "../services/voice/SpeechBackend.js";
+import { isUpdateCheckEnabled } from "../update-check.js";
 import { isNewerSemver } from "../utils/semver.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -400,6 +401,7 @@ async function getLatestVersion(
   installId?: string,
   options?: { forceRefresh?: boolean },
 ): Promise<string | null> {
+  if (!isUpdateCheckEnabled()) return null;
   // Return cached value if fresh
   if (
     !options?.forceRefresh &&
@@ -653,6 +655,8 @@ export interface DeviceBridgeStatus {
 }
 
 export interface VersionRouteOptions {
+  cliInstallationsAvailable?: boolean;
+  collectionQueryUpdatesAvailable?: boolean;
   /** Owned update lookup; the default uses the public update service. */
   getLatestVersion?: typeof getLatestVersion;
   getDraftSyncAvailable?: () => boolean;
@@ -757,6 +761,13 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
     ...BASE_CAPABILITIES,
     SERVER_CAPABILITIES.artifactRelayPreview.name,
   ];
+  if (options?.collectionQueryUpdatesAvailable)
+    capabilities.push(
+      SERVER_CAPABILITIES.collectionQueryUpdates.name,
+      SERVER_CAPABILITIES.projectCollectionUpdates.name,
+      SERVER_CAPABILITIES.sidebarSessionSnapshot.name,
+      SERVER_CAPABILITIES.collectionMetadataFields.name,
+    );
   if (options?.getDraftSyncAvailable?.())
     capabilities.push(SERVER_CAPABILITIES.draftSync.name);
   if (options?.getRendezComposeAvailable?.())
@@ -771,13 +782,20 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
     // Cached older clients still use this bit; current clients use scoped responses.
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterServiceTiers.name);
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterRecovery.name);
+    capabilities.push(SERVER_CAPABILITIES.agentAuthRouterHosted.name);
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterPools.name);
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterOwnedPools.name);
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterMostRemaining.name);
     capabilities.push(SERVER_CAPABILITIES.agentAuthRouterSessionSwitch.name);
   }
+  if (options?.cliInstallationsAvailable)
+    capabilities.push(SERVER_CAPABILITIES.cliInstallations.name);
+  // The readiness route and the default setting mount together.
   if (options?.installedMachineControlAvailable)
-    capabilities.push(SERVER_CAPABILITIES.installedMachineControl.name);
+    capabilities.push(
+      SERVER_CAPABILITIES.installedMachineControl.name,
+      SERVER_CAPABILITIES.machineControlSetting.name,
+    );
   if (options?.agentSessionViewAvailable)
     capabilities.push(SERVER_CAPABILITIES.agentSessionView.name);
   if (options?.peerConnectionsAvailable) {
@@ -990,6 +1008,12 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
       sessionSandboxAvailability,
     });
     const deniedCapabilities = [
+      ...(!options?.collectionQueryUpdatesAvailable
+        ? [
+            SERVER_CAPABILITIES.collectionQueryUpdates.name,
+            SERVER_CAPABILITIES.projectCollectionUpdates.name,
+          ]
+        : []),
       SERVER_CAPABILITIES.projectSessionDefaults.name,
       ...(options?.deniedCapabilities ?? []),
     ];

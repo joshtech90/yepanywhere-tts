@@ -101,7 +101,7 @@ describe("MessageList selection and copy", () => {
     expect(screen.queryByRole("button", { name: "Copy Markdown" })).toBeNull();
     expect(
       extractMarkdownSnippetsFromSelection(
-        document.querySelector(".message-list")!,
+        document.querySelector("[data-message-list]")!,
       )[0],
     ).toMatchObject({
       markdown: "command",
@@ -367,7 +367,7 @@ describe("MessageList selection and copy", () => {
     const selectedTextNode = selectedElement.firstChild;
     expect(selectedTextNode).toBeTruthy();
     const codeBlock = document.querySelector(
-      ".code-block",
+      "[data-code-block]",
     ) as HTMLElement | null;
     expect(codeBlock).toBeTruthy();
     if (codeBlock) {
@@ -396,7 +396,7 @@ describe("MessageList selection and copy", () => {
 
     const nextSelectedElement = screen.getByText("Second item");
     const nextCodeBlock = document.querySelector(
-      ".code-block",
+      "[data-code-block]",
     ) as HTMLElement | null;
 
     expect(nextSelectedElement).toBe(selectedElement);
@@ -443,9 +443,9 @@ describe("MessageList selection and copy", () => {
   it("shields session chrome while transcript text is selected", () => {
     mockPointerCoarse(true);
 
-    const activeClass = "session-transcript-selection-active";
+    const activeAttribute = "data-session-transcript-selection-active";
     const { container, unmount } = render(
-      <div className="session-page">
+      <div data-session-page>
         <MessageList
           messages={[
             assistantMessage("assistant-1", "selected assistant text"),
@@ -453,7 +453,7 @@ describe("MessageList selection and copy", () => {
         />
       </div>,
     );
-    const shell = container.querySelector(".session-page");
+    const shell = container.querySelector("[data-session-page]");
     const selectedText = screen.getByText("selected assistant text").firstChild;
     expect(shell).toBeInstanceOf(HTMLElement);
     expect(selectedText).toBeTruthy();
@@ -469,41 +469,41 @@ describe("MessageList selection and copy", () => {
       document.dispatchEvent(new Event("selectionchange"));
     });
 
-    expect((shell as HTMLElement).classList.contains(activeClass)).toBe(true);
-    expect(document.body.classList.contains(activeClass)).toBe(true);
+    expect((shell as HTMLElement).hasAttribute(activeAttribute)).toBe(true);
+    expect(document.body.hasAttribute(activeAttribute)).toBe(true);
 
     selection?.removeAllRanges();
     act(() => {
       document.dispatchEvent(new Event("selectionchange"));
     });
 
-    expect((shell as HTMLElement).classList.contains(activeClass)).toBe(false);
-    expect(document.body.classList.contains(activeClass)).toBe(false);
+    expect((shell as HTMLElement).hasAttribute(activeAttribute)).toBe(false);
+    expect(document.body.hasAttribute(activeAttribute)).toBe(false);
 
     selection?.addRange(range);
     act(() => {
       document.dispatchEvent(new Event("selectionchange"));
     });
-    expect((shell as HTMLElement).classList.contains(activeClass)).toBe(true);
+    expect((shell as HTMLElement).hasAttribute(activeAttribute)).toBe(true);
 
     unmount();
 
-    expect((shell as HTMLElement).classList.contains(activeClass)).toBe(false);
-    expect(document.body.classList.contains(activeClass)).toBe(false);
+    expect((shell as HTMLElement).hasAttribute(activeAttribute)).toBe(false);
+    expect(document.body.hasAttribute(activeAttribute)).toBe(false);
   });
 
   it("does not shield session chrome for desktop pointer selection", () => {
     mockPointerCoarse(false);
 
-    const activeClass = "session-transcript-selection-active";
+    const activeAttribute = "data-session-transcript-selection-active";
     const { container } = render(
-      <div className="session-page">
+      <div data-session-page>
         <MessageList
           messages={[assistantMessage("assistant-1", "desktop selected text")]}
         />
       </div>,
     );
-    const shell = container.querySelector(".session-page");
+    const shell = container.querySelector("[data-session-page]");
     const selectedText = screen.getByText("desktop selected text").firstChild;
     expect(shell).toBeInstanceOf(HTMLElement);
     expect(selectedText).toBeTruthy();
@@ -519,8 +519,8 @@ describe("MessageList selection and copy", () => {
       document.dispatchEvent(new Event("selectionchange"));
     });
 
-    expect((shell as HTMLElement).classList.contains(activeClass)).toBe(false);
-    expect(document.body.classList.contains(activeClass)).toBe(false);
+    expect((shell as HTMLElement).hasAttribute(activeAttribute)).toBe(false);
+    expect(document.body.hasAttribute(activeAttribute)).toBe(false);
   });
 
   it("quotes recap selections through the reply pipeline", () => {
@@ -614,7 +614,7 @@ describe("MessageList selection and copy", () => {
     const quoteButton = await screen.findByRole("button", {
       name: "Quote reply",
     });
-    expect(quoteButton.closest(".message-list")).toBeTruthy();
+    expect(quoteButton.closest("[data-message-list]")).toBeTruthy();
     expect(
       quoteButton.closest('[data-selection-action-cluster="true"]'),
     ).toBeTruthy();
@@ -644,7 +644,9 @@ describe("MessageList selection and copy", () => {
       />,
     );
 
-    const messageList = document.querySelector<HTMLElement>(".message-list");
+    const messageList = document.querySelector<HTMLElement>(
+      "[data-message-list]",
+    );
     expect(messageList).toBeTruthy();
     if (!messageList) throw new Error("Message list is missing");
     Object.defineProperties(messageList, {
@@ -745,8 +747,8 @@ describe("MessageList selection and copy", () => {
     const quoteButton = await screen.findByRole("button", {
       name: "Quote reply",
     });
-    expect(quoteButton.closest(".modal")).toBeTruthy();
-    expect(quoteButton.closest(".message-list")).toBeNull();
+    expect(quoteButton.closest("[data-modal-frame]")).toBeTruthy();
+    expect(quoteButton.closest("[data-message-list]")).toBeNull();
 
     fireEvent.click(quoteButton);
 
@@ -826,7 +828,7 @@ describe("MessageList selection and copy", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "Select all" }));
 
-      const modal = document.querySelector<HTMLElement>(".modal");
+      const modal = document.querySelector<HTMLElement>("[data-modal-frame]");
       expect(document.getSelection()?.toString()).toBe("Selectable run output");
       expect(modal).toBeTruthy();
       expect(extractMarkdownSnippetsFromSelection(modal!)).toMatchObject([
@@ -839,7 +841,7 @@ describe("MessageList selection and copy", () => {
       expect(
         quoteButton.closest('[data-selection-action-cluster="true"]'),
       ).toBeTruthy();
-      expect(quoteButton.closest(".modal")).toBeTruthy();
+      expect(quoteButton.closest("[data-modal-frame]")).toBeTruthy();
     } finally {
       if (originalRangeRect) {
         Object.defineProperty(
@@ -884,7 +886,7 @@ describe("MessageList selection and copy", () => {
         </>,
       );
 
-      const modal = document.querySelector<HTMLElement>(".modal");
+      const modal = document.querySelector<HTMLElement>("[data-modal-frame]");
       const selectedElement = screen.getByText("Modal selected text");
       const selectedText = selectedElement.firstChild;
       expect(modal).toBeTruthy();

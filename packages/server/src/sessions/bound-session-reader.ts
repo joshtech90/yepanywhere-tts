@@ -50,6 +50,12 @@ export class BoundSessionReads {
   ) {}
 
   async read(input: BoundSessionRead): Promise<LoadedSession | null> {
+    // Indexed reads own Claude branch context. Complete fallback reads retain
+    // the full forest before route slicing.
+    const afterMessageId =
+      input.native.family === "claude" && !input.options?.tailCompactions
+        ? undefined
+        : input.afterMessageId;
     const reader = this.deps.readerFactory(
       { ...input.transcriptProject, provider: input.provider },
       input.native,
@@ -93,7 +99,7 @@ export class BoundSessionReads {
             await reader.getSession(
               input.native.id,
               input.projectId,
-              input.afterMessageId,
+              afterMessageId,
               options,
             ),
           )
@@ -132,7 +138,7 @@ export class BoundSessionReads {
         input.native.id,
         filePath,
         input.projectId,
-        input.afterMessageId,
+        afterMessageId,
         options,
       ]),
       sourceVersion: observed,
@@ -140,7 +146,7 @@ export class BoundSessionReads {
         reader.getSession(
           input.native.id,
           input.projectId,
-          input.afterMessageId,
+          afterMessageId,
           options,
         ),
       isCurrent: async (version) => {

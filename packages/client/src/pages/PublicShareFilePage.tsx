@@ -1,8 +1,11 @@
+import viewerStyles from "../components/FileViewer.module.css";
+import filePageStyles from "./FilePageLayout.module.css";
 import { DEFAULT_RELAY_URL, normalizeRelayUrl } from "@yep-anywhere/shared";
 import { useMemo } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { FileViewer, type FileViewerSource } from "../components/FileViewer";
 import { createPublicShareFileViewerSource } from "../components/publicShareFileViewerSource";
+import { Banner } from "../components/ui/Banner";
 import {
   type PublicShareContextValue,
   PublicShareProvider,
@@ -87,15 +90,15 @@ export function PublicShareFilePage() {
   }, [filePath, publicShareContext, relayConfig.error]);
 
   const content = (
-    <div className="file-page">
+    <div className={filePageStyles.root}>
       {!standaloneFile && (
-        <div className="file-page-nav">
-          <Link to={shareHref} className="file-page-back-link">
+        <div className={filePageStyles.nav}>
+          <Link to={shareHref} className={filePageStyles.backLink}>
             <span>{t("publicShareBackToShare" as never)}</span>
           </Link>
         </div>
       )}
-      <div className="file-page-content">
+      <div className={filePageStyles.content}>
         {source ? (
           <FileViewer
             projectId={projectId ?? ""}
@@ -107,10 +110,10 @@ export function PublicShareFilePage() {
             viewMode={viewMode}
           />
         ) : (
-          <div className="file-viewer">
-            <div className="file-viewer-error">
+          <div className={viewerStyles.fileViewer} data-file-viewer>
+            <Banner tone="error">
               {relayConfig.error || t("fileInvalidUrl" as never)}
-            </div>
+            </Banner>
           </div>
         )}
       </div>

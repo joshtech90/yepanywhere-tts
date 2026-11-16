@@ -33,6 +33,11 @@ import { useInboxResponseSnapshot } from "../lib/clientSummaryStore";
 import { INBOX_TIERS, type InboxTier } from "../lib/inboxTiers";
 import { useOptionalRemoteConnection } from "./RemoteConnectionContext";
 import { useCurrentSourceRuntime } from "./SourceRuntimeContext";
+import { useCollectionUpdates } from "../hooks/useCollectionUpdates";
+import {
+  collectionQueryIsLive,
+  pauseCollectionUpdates,
+} from "../lib/collectionUpdates";
 
 // Re-export types for consumers
 export type { InboxItem, InboxResponse } from "../api/client";
@@ -188,6 +193,8 @@ interface InboxContextValue {
   loading: boolean;
   /** Error from the last fetch attempt, if any */
   error: Error | null;
+  /** An incomplete catalogue must not hide the sessions we could read. */
+  warning?: Error | null;
   /** Force a full refresh with server sort order */
   refresh: () => Promise<void>;
   /** Refetch data (maintains stable ordering) */
@@ -293,6 +300,7 @@ export function InboxProvider({
 
   const shouldRevalidateInboxEvent = useCallback(
     (event: RetainedClientQueryEvent) => {
+      if (collectionQueryIsLive(runtime, INBOX_QUERY_KEY)) return false;
       if (event.eventType !== "session-updated") {
         return true;
       }
@@ -303,7 +311,7 @@ export function InboxProvider({
         !locallyPatchableSessionUpdatedIdsRef.current.has(sessionId)
       );
     },
-    [],
+    [runtime],
   );
 
   const {
@@ -331,20 +339,42 @@ export function InboxProvider({
     applySnapshot: applyInboxSnapshot,
   });
 
+  useCollectionUpdates<InboxResponse>({
+    runtime,
+    key: INBOX_QUERY_KEY,
+    path: "/inbox?summaryMode=retained",
+    catalogPresentation: "loading",
+    enabled: queryEnabled && isRemoteConnectionReady,
+    applySnapshot: applyInboxSnapshot,
+    fallback: () => {
+      void refetchInboxQuery({ background: true });
+    },
+  });
+
   /**
    * Force a full refresh with server-provided sort order.
    */
   const refresh = useCallback(async () => {
-    await refetchInboxQuery({ meta: { forceFullSort: true } });
-  }, [refetchInboxQuery]);
+    const resume = pauseCollectionUpdates(runtime, INBOX_QUERY_KEY);
+    try {
+      await refetchInboxQuery({ meta: { forceFullSort: true } });
+    } finally {
+      resume();
+    }
+  }, [refetchInboxQuery, runtime]);
 
   const refetch = useCallback(
     async (forceFullSort = false) => {
-      await refetchInboxQuery(
-        forceFullSort ? { meta: { forceFullSort: true } } : undefined,
-      );
+      const resume = pauseCollectionUpdates(runtime, INBOX_QUERY_KEY);
+      try {
+        await refetchInboxQuery(
+          forceFullSort ? { meta: { forceFullSort: true } } : undefined,
+        );
+      } finally {
+        resume();
+      }
     },
-    [refetchInboxQuery],
+    [refetchInboxQuery, runtime],
   );
 
   // Computed totals
@@ -368,7 +398,8 @@ export function InboxProvider({
         unread24h: inbox.unread24h,
         inbox,
         loading: loading || (queryEnabled && catalogState.awaitingFirstRows),
-        error: error ?? catalogState.refreshError,
+        error,
+        warning: catalogState.refreshError,
         refresh,
         refetch,
         totalNeedsAttention,

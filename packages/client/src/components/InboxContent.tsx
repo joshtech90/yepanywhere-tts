@@ -1,3 +1,6 @@
+import pageStyles from "../layouts/PageLayout.module.css";
+import collectionStyles from "./CollectionLayout.module.css";
+import listStyles from "./SessionListLayout.module.css";
 import {
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
   SESSION_CREATION_PROVENANCE_CAPABILITY,
@@ -17,6 +20,7 @@ import {
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { type InboxItem, useInboxContext } from "../contexts/InboxContext";
+import { InboxSessionMetadata } from "./InboxSessionMetadata";
 import {
   type InboxCreationFilter,
   useInboxCreationFilter,
@@ -43,6 +47,8 @@ import { FilterDropdown, type FilterOption } from "./FilterDropdown";
 import styles from "./InboxContent.module.css";
 import { SessionListItem } from "./SessionListItem";
 import { SessionAsyncQuestionsButton } from "./SessionAsyncQuestionsButton";
+import { Badge, type BadgeTone } from "./ui/Badge";
+import { Banner } from "./ui/Banner";
 import { Button, IconButton } from "./ui/Button";
 import { Popover } from "./ui/Popover";
 
@@ -59,7 +65,7 @@ interface TierConfig {
   hideWhenEmpty?: boolean;
   /** A "?" beside the title that opens this explanation. */
   helpKey?: string;
-  getBadge?: (item: InboxItem) => { label: string; className: string } | null;
+  getBadge?: (item: InboxItem) => { label: string; tone: BadgeTone } | null;
 }
 
 const TIER_CONFIGS: TierConfig[] = [
@@ -69,16 +75,10 @@ const TIER_CONFIGS: TierConfig[] = [
     colorClass: styles.tierAttention ?? "",
     getBadge: (item) => {
       if (item.pendingInputType === "tool-approval") {
-        return {
-          label: "inboxBadgeApproval",
-          className: styles.badgeApproval ?? "",
-        };
+        return { label: "inboxBadgeApproval", tone: "info" };
       }
       if (item.pendingInputType === "user-question") {
-        return {
-          label: "inboxBadgeQuestion",
-          className: styles.badgeQuestion ?? "",
-        };
+        return { label: "inboxBadgeQuestion", tone: "info" };
       }
       return null;
     },
@@ -227,15 +227,18 @@ function InboxProjectQueueItem({
       <Link className={styles.queueItemLink} to={href}>
         <span className={styles.queueItemTitleRow}>
           <strong className={styles.queueItemTitle}>{title}</strong>
-          <span className={styles.queueItemTargetBadge}>
+          <Badge size="small" className={styles.queueItemBadge}>
             {t("projectQueueTargetNewSession")}
-          </span>
-          <span
-            className="session-project-queue-badge"
-            title={t("projectQueueSidebarBadge")}
+          </Badge>
+          <Badge
+            size="small"
+            role="img"
+            aria-label={t("projectQueueSidebarBadge")}
+            tooltip={t("projectQueueSidebarBadge")}
+            className={styles.queueItemBadge}
           >
             Q
-          </span>
+          </Badge>
         </span>
         {showPromptPreview && (
           <span className={styles.queueItemPreview}>{prompt}</span>
@@ -326,7 +329,9 @@ function InboxSection({
     >
       <h2 className={styles.sectionHeader}>
         {t(config.titleKey as never)}
-        <span className={styles.sectionCount}>{sectionCount}</span>
+        <Badge shape="count" size="small" palette={{ color: "currentColor" }}>
+          {sectionCount}
+        </Badge>
         {config.helpKey && (
           <InboxSectionHelp
             title={t(config.titleKey as never)}
@@ -337,7 +342,7 @@ function InboxSection({
       {isEmpty ? (
         <p className={styles.sectionEmptyMessage}>{t("inboxNoSessions")}</p>
       ) : (
-        <ul className="sessions-list">
+        <ul className={listStyles.list}>
           {projectQueueItems.map((item) => (
             <InboxProjectQueueItem
               key={item.id}
@@ -371,6 +376,14 @@ function InboxSection({
                 providerPhase={item.providerPhase}
                 pendingInputType={item.pendingInputType}
                 mode="card"
+                cardMetadata={
+                  <InboxSessionMetadata
+                    item={item}
+                    showProjectName={!hideProjectName}
+                    showActivity={config.activityTier === true}
+                    badge={badge}
+                  />
+                }
                 openNonHumanUserTurn
                 showProjectName={!hideProjectName}
                 showTimestamp
@@ -411,7 +424,9 @@ function ReviewOutcomeSection({
     <section className={`${styles.section} ${styles.tierReviews}`}>
       <h2 className={styles.sectionHeader}>
         {t("inboxTierReviewOutcomes")}
-        <span className={styles.sectionCount}>{outcomes.length}</span>
+        <Badge shape="count" size="small" palette={{ color: "currentColor" }}>
+          {outcomes.length}
+        </Badge>
       </h2>
       <ul className={styles.reviewOutcomeList}>
         {outcomes.map(({ item, outcome }) => {
@@ -537,6 +552,7 @@ export function InboxContent({
     unread24h: allUnread24h,
     loading,
     error,
+    warning,
     refresh,
   } = useInboxContext();
 
@@ -704,9 +720,15 @@ export function InboxContent({
   };
 
   return (
-    <main className="page-scroll-container">
-      <div className={`page-content-inner ${styles.root}`}>
-        <div className={`inbox-toolbar ${styles.toolbar}`}>
+    <main className={pageStyles.pageScrollContainer} data-page-scroll-container>
+      <div
+        className={`${pageStyles.pageContentInner} ${styles.root}`}
+        data-page-content-inner
+      >
+        <div
+          className={`${collectionStyles.inboxToolbar} ${styles.toolbar}`}
+          data-inbox-toolbar
+        >
           <SessionAsyncQuestionsButton
             projectId={projectId}
             basePath={basePath}
@@ -743,35 +765,50 @@ export function InboxContent({
               multiSelect={false}
             />
           )}
-          <Button onClick={handleRefresh} disabled={refreshing || loading}>
-            <svg
-              className={refreshing ? styles.refreshSpinner : ""}
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <polyline points="23 4 23 10 17 10" />
-              <polyline points="1 20 1 14 7 14" />
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-            </svg>
+          <Button
+            onClick={handleRefresh}
+            disabled={refreshing || loading}
+            busy={refreshing}
+          >
+            {!refreshing && (
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="23 4 23 10 17 10" />
+                <polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+              </svg>
+            )}
             {refreshing ? t("inboxRefreshing") : t("inboxRefresh")}
           </Button>
         </div>
 
-        {pageLoading && <p className="loading">{t("inboxLoading")}</p>}
-
-        {error && (
-          <p className="error">{t("inboxError", { message: error.message })}</p>
+        {pageLoading && (
+          <p className={pageStyles.loading} data-loading>
+            {t("inboxLoading")}
+          </p>
         )}
 
-        {!pageLoading && !error && isEmpty && (
-          <div className="inbox-empty">
+        {error && (
+          <Banner tone="error">
+            {t("inboxError", { message: error.message })}
+          </Banner>
+        )}
+
+        {warning && (
+          <Banner tone="warning">{t("inboxIncompleteWarning")}</Banner>
+        )}
+
+        {!pageLoading && !error && !warning && isEmpty && (
+          <div className={collectionStyles.inboxEmpty} data-inbox-empty>
             <svg
               width="48"
               height="48"

@@ -1,3 +1,4 @@
+import codeStyles from "../renderers/CodeOutput.module.css";
 import {
   buildProjectFileViewerHref,
   type CitedFilePosition,
@@ -52,7 +53,8 @@ import { makeDisplayPath } from "../../lib/text";
 import { presentToolOutput } from "../../lib/toolOutputPresentation";
 import { FileViewerModal } from "../FilePathLink";
 import { createPublicShareFileViewerSource } from "../publicShareFileViewerSource";
-import { ButtonBase } from "./Button";
+import { IconButton } from "./Button";
+import toggleStyles from "./FixedFontRenderToggle.module.css";
 import { RenderModeGlyph } from "./RenderModeGlyph";
 
 interface FixedFontMathToggleProps {
@@ -346,7 +348,7 @@ function renderKatexHtml(tex: string, displayMode: boolean): string {
     });
   } catch {
     const wrapped = displayMode ? `$$${tex}$$` : `$${tex}$`;
-    return `<span class="fixed-font-math-error">${escapeHtml(wrapped)}</span>`;
+    return `<span>${escapeHtml(wrapped)}</span>`;
   }
 }
 
@@ -713,7 +715,7 @@ function renderInlineFixedFontContent(
 function diffClass(prefix: DiffAwareLine["prefix"]): string {
   if (prefix === "+") return "fixed-font-diff-added";
   if (prefix === "-") return "fixed-font-diff-removed";
-  if (prefix === " ") return "fixed-font-diff-context";
+  if (prefix === " ") return "";
   return "";
 }
 
@@ -863,7 +865,7 @@ function renderMarkdownLineContent(
     return {
       html: '<span class="fixed-font-markdown-rule" aria-hidden="true"></span>',
       changed: true,
-      className: "fixed-font-markdown-rule-line",
+      className: "",
     };
   }
 
@@ -939,7 +941,7 @@ function renderStandaloneDisplayMath(
         { content: "", prefix },
         {
           changed: true,
-          className: "fixed-font-markdown-display-math",
+          className: "",
           html: mathHtml,
         },
       ),
@@ -1294,7 +1296,8 @@ export function FixedFontMathToggle({
   return (
     <div
       ref={copySourceRef}
-      className="fixed-font-render-toggle"
+      className={codeStyles.fixedFontRenderToggle}
+      data-fixed-font-render-toggle
       data-render-mode={
         showRendered && rendered.changed ? "rendered" : "source"
       }
@@ -1309,11 +1312,15 @@ export function FixedFontMathToggle({
         sourceView
       )}
       {rendered.changed && (
-        <ButtonBase
+        <IconButton
+          variant="outline"
+          elevated
+          size="dense"
           ref={toggleBtnRef}
-          className={`fixed-font-render-toggle__button ${showRendered ? "is-rendered" : ""}`}
+          className={toggleStyles.button}
+          data-fixed-font-toggle=""
           onClick={handleToggleClick}
-          aria-label={showRendered ? "Show source" : "Show rendered view"}
+          label={showRendered ? "Show source" : "Show rendered view"}
           {...getTextTooltipAttributes(
             showRendered ? "Show source" : "Show rendered view",
             tooltipMode,
@@ -1321,7 +1328,7 @@ export function FixedFontMathToggle({
           aria-pressed={showRendered}
         >
           <RenderModeGlyph />
-        </ButtonBase>
+        </IconButton>
       )}
       {viewerLink && viewerProjectId !== "" && (
         <FileViewerModal

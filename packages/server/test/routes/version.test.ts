@@ -71,14 +71,30 @@ describe("Version Routes", () => {
       getServerCapabilities({ nativePush, deniedCapabilities: [name] }),
     ).not.toContain(name);
   });
+  it("advertises the sidebar snapshot only with its retained owner", () => {
+    const name = SERVER_CAPABILITIES.sidebarSessionSnapshot.name;
+    expect(getServerCapabilities()).not.toContain(name);
+    expect(
+      getServerCapabilities({ collectionQueryUpdatesAvailable: true }),
+    ).toContain(name);
+  });
+  it("advertises field metadata only with the retained collection owner", () => {
+    const name = SERVER_CAPABILITIES.collectionMetadataFields.name;
+    expect(getServerCapabilities()).not.toContain(name);
+    expect(
+      getServerCapabilities({ collectionQueryUpdatesAvailable: true }),
+    ).toContain(name);
+  });
   // A version-implied capability is inferred only from a release at least
   // its introducedIn. A source build between releases reports the previous
   // tag's version, so a capability left out of this list is invisible to the
   // client until that release ships; three went unseen this way on
   // 2026-09-28. Listing one a release already implies costs nothing: the
   // versioned encoding drops it.
-  it("advertises every version-implied capability explicitly", () => {
-    const advertised = new Set(getServerCapabilities());
+  it("advertises every version-implied capability explicitly when available", () => {
+    const advertised = new Set(
+      getServerCapabilities({ collectionQueryUpdatesAvailable: true }),
+    );
     const missing = Object.values(SERVER_CAPABILITIES)
       .filter(
         (definition) =>

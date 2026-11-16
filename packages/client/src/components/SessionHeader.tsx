@@ -1,3 +1,4 @@
+import launcherStyles from "./SidebarLauncher.module.css";
 import { useI18n } from "../i18n";
 import { ClearloopRemainingBadge } from "./ClearloopRemainingBadge";
 import { ClientLogRecordingBadge } from "./ClientLogRecordingBadge";
@@ -17,6 +18,7 @@ import {
 import { SessionRenameEditor } from "./SessionRenameEditor";
 import { SessionRouterAccountChip } from "./SessionRouterAccountChip";
 import { SessionAppAction } from "./SessionRightPane";
+import { Badge } from "./ui/Badge";
 import { ButtonBase, IconButton } from "./ui/Button";
 import { Menu, MenuGroup, MenuItem } from "./ui/Menu";
 import {
@@ -197,7 +199,9 @@ export interface SessionHeaderProps {
   saveTitleValue: ReturnType<typeof useSessionTitleEditing>["saveTitleValue"];
   session: ReturnType<typeof useSession>["session"];
   sessionId: string;
-  setModelPanelInitialTab: Dispatch<SetStateAction<"model" | "info">>;
+  setModelPanelInitialTab: Dispatch<
+    SetStateAction<"model" | "account" | "info">
+  >;
   setProjectAppFull: Dispatch<SetStateAction<boolean>>;
   setProjectAppOpen: Dispatch<SetStateAction<boolean>>;
   setProjectAppOpenedBy: Dispatch<SetStateAction<"session" | "user">>;
@@ -382,7 +386,8 @@ export function SessionHeader({
     <header
       ref={headerRef}
       data-session-read-scope={sessionId}
-      className={`session-header ${sessionHeaderStyles.header}`}
+      className={`${sessionHeaderStyles["session-header"]} ${sessionHeaderStyles.header}`}
+      data-session-header
       data-header-layout={headerLayout}
       data-inline-rename={
         isEditingTitle &&
@@ -393,14 +398,20 @@ export function SessionHeader({
       }
     >
       <div
-        className={`session-header-inner ${sessionHeaderStyles.row}${isWideScreen ? ` ${sessionHeaderStyles.noLeadingControl}` : ""}`}
+        className={`${sessionHeaderStyles["session-header-inner"]} ${sessionHeaderStyles.row}${isWideScreen ? ` ${sessionHeaderStyles.noLeadingControl}` : ""}`}
+        data-session-header-inner
       >
-        <div className={`session-header-left ${sessionHeaderStyles.left}`}>
+        <div
+          className={`${sessionHeaderStyles["session-header-left"]} ${sessionHeaderStyles.left}`}
+          data-session-header-left
+        >
           {/* Sidebar opener for the overlay sidebar only. On desktop the
             sidebar owns its own toggle, expanded or collapsed. */}
           {!isWideScreen && (
             <IconButton
-              className="sidebar-toggle"
+              className={launcherStyles.sidebarToggle}
+              data-sidebar-toggle
+              size="large"
               onClick={openSidebar}
               label={t("sessionOpenSidebar")}
             >
@@ -436,12 +447,14 @@ export function SessionHeader({
           {/* Project breadcrumb */}
           {project?.name && (
             <div
-              className={`project-breadcrumb-wrapper ${sessionHeaderStyles.project}`}
+              className={`${sessionHeaderStyles["project-breadcrumb-wrapper"]} ${sessionHeaderStyles.project}`}
+              data-project-breadcrumb-wrapper
             >
               <Link
                 ref={projectBreadcrumbRef}
                 to={`${basePath}/sessions?project=${projectId}`}
-                className="project-breadcrumb"
+                className={`${sessionHeaderStyles["project-breadcrumb"]}`}
+                data-project-breadcrumb
                 title={
                   project.caption
                     ? `${project.name}\n${project.caption.text}`
@@ -484,11 +497,13 @@ export function SessionHeader({
           )}
           <div
             ref={titleRowRef}
-            className={`session-title-row ${sessionHeaderStyles.titleRow}`}
+            className={`${sessionHeaderStyles["session-title-row"]} ${sessionHeaderStyles.titleRow}`}
+            data-session-title-row
           >
             {isStarred && (
               <svg
-                className="star-indicator-inline"
+                className={`${sessionHeaderStyles["star-indicator-inline"]}`}
+                data-star-indicator-inline
                 width="12"
                 height="12"
                 viewBox="0 0 24 24"
@@ -503,7 +518,10 @@ export function SessionHeader({
               </svg>
             )}
             {loading ? (
-              <span className="session-title-skeleton" />
+              <span
+                className={`${sessionHeaderStyles["session-title-skeleton"]}`}
+                data-session-title-skeleton
+              />
             ) : isEditingTitle &&
               !isDomLingerParked &&
               titleEditMode === "manual" ? (
@@ -514,9 +532,14 @@ export function SessionHeader({
                 onCancel={handleCancelEditingTitle}
               />
             ) : isEditingTitle ? (
-              <div ref={titleEditControlsRef} className="session-title-edit">
+              <div
+                ref={titleEditControlsRef}
+                className={`${sessionHeaderStyles["session-title-edit"]}`}
+                data-session-title-edit
+              >
                 <div
-                  className="session-title-edit-row"
+                  className={`${sessionHeaderStyles["session-title-edit-row"]}`}
+                  data-session-title-edit-row
                   title={
                     generatedRetitle?.deferredInsertion
                       ? generatedRetitle.submittedTurnText
@@ -526,7 +549,8 @@ export function SessionHeader({
                   <input
                     ref={attachTitleInput}
                     type="text"
-                    className="session-title-input"
+                    className={`${sessionHeaderStyles["session-title-input"]}`}
+                    data-session-title-input
                     value={
                       generatedRetitle?.deferredInsertion ? "" : renameValue
                     }
@@ -550,9 +574,12 @@ export function SessionHeader({
                   {titleEditMode === "retitle" && (
                     <IconButton
                       size="small"
-                      className={`session-title-retitle-accept${
-                        generatedRetitle?.deferredInsertion ? " is-armed" : ""
+                      className={`${sessionHeaderStyles["session-title-retitle-accept"]}${
+                        generatedRetitle?.deferredInsertion
+                          ? ` ${sessionHeaderStyles["is-armed"]}`
+                          : ""
                       }`}
+                      data-session-title-retitle-accept
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={handleAcceptGeneratedRetitle}
                       disabled={
@@ -640,7 +667,8 @@ export function SessionHeader({
                   generatedRetitle &&
                   !generatedRetitle.deferredInsertion && (
                     <div
-                      className={`session-title-retitle-status is-${generatedRetitle.status}`}
+                      className={`${sessionHeaderStyles["session-title-retitle-status"]} ${({ ready: sessionHeaderStyles["is-ready"], error: sessionHeaderStyles["is-error"], armed: sessionHeaderStyles["is-armed"] } as Record<string, string>)[generatedRetitle.status] ?? ""}`}
+                      data-session-title-retitle-status
                       title={
                         generatedRetitle.status === "generating"
                           ? generatedRetitle.submittedTurnText
@@ -660,13 +688,20 @@ export function SessionHeader({
             ) : (
               <>
                 <ButtonBase
-                  className={`session-title session-title-recent-trigger ${sessionHeaderStyles.titleWithBadge}`}
+                  className={`${sessionHeaderStyles["session-title"]} ${sessionHeaderStyles["session-title-recent-trigger"]} ${sessionHeaderStyles.titleWithBadge}`}
+                  data-session-title
+                  data-session-title-recent-trigger
                   onClick={() => setShowRecentSessions(!showRecentSessions)}
                   title={titleTooltip}
                   aria-haspopup="dialog"
                   aria-expanded={showRecentSessions}
                 >
-                  <span className="session-title-text">{displayTitle}</span>
+                  <span
+                    className={`${sessionHeaderStyles["session-title-text"]}`}
+                    data-session-title-text
+                  >
+                    {displayTitle}
+                  </span>
                   {session?.clearloop !== undefined && (
                     <ClearloopRemainingBadge
                       badge={session.clearloop}
@@ -679,9 +714,8 @@ export function SessionHeader({
                   SERVER_CAPABILITIES.agentAuthRouter.name,
                 ) && (
                   <SessionRouterAccountChip
-                    sessionId={actualSessionId}
                     binding={session?.routerBinding}
-                    provider={effectiveProvider}
+                    provider={effectiveProvider ?? null}
                     canSwitch={
                       serverHasCapability(
                         versionInfo,
@@ -694,14 +728,8 @@ export function SessionHeader({
                     }
                     className={sessionHeaderStyles.routerAccount}
                     onDetails={() => {
-                      setModelPanelInitialTab("info");
+                      setModelPanelInitialTab("account");
                       setShowModelSwitchModal(true);
-                    }}
-                    onSwitched={() => {
-                      // The binding and process are server-owned; reload
-                      // them as Restart provider does.
-                      draftControlsRef.current?.flushDraft();
-                      window.location.reload();
                     }}
                   />
                 )}
@@ -726,9 +754,12 @@ export function SessionHeader({
                 )}
                 <IconButton
                   size="small"
-                  className={`session-title-chevron-trigger${
-                    showRecentSessions ? " is-open" : ""
+                  className={`${sessionHeaderStyles["session-title-chevron-trigger"]}${
+                    showRecentSessions
+                      ? ` ${sessionHeaderStyles["is-open"]}`
+                      : ""
                   }`}
+                  data-session-title-chevron-trigger
                   onClick={() => setShowRecentSessions(!showRecentSessions)}
                   label={
                     showRecentSessions
@@ -739,7 +770,8 @@ export function SessionHeader({
                   aria-expanded={showRecentSessions}
                 >
                   <svg
-                    className="session-title-chevron"
+                    className={`${sessionHeaderStyles["session-title-chevron"]}`}
+                    data-session-title-chevron
                     width="12"
                     height="12"
                     viewBox="0 0 24 24"
@@ -788,16 +820,22 @@ export function SessionHeader({
               </>
             )}
             {!loading && isArchived && (
-              <span className="archived-badge">
+              <Badge
+                className={sessionHeaderStyles.archivedBadge}
+                data-testid="session-archived-badge"
+              >
                 {t("sessionArchivedBadge")}
-              </span>
+              </Badge>
             )}
           </div>
         </div>
-        <div className={`session-header-right ${sessionHeaderStyles.actions}`}>
+        <div
+          className={`${sessionHeaderStyles["session-header-right"]} ${sessionHeaderStyles.actions}`}
+          data-session-header-right
+        >
           <button
             type="button"
-            className={`auto-read-toggle ${autoReadEnabled ? "active" : ""}`}
+            className={sessionHeaderStyles["auto-read-toggle"]}
             onClick={toggleAutoRead}
             title={
               autoReadEnabled
@@ -865,7 +903,8 @@ export function SessionHeader({
           )}
           {!loading && effectiveProvider && (
             <ButtonBase
-              className={`provider-badge-button ${sessionHeaderStyles.modelButton}`}
+              className={`${sessionHeaderStyles["provider-badge-button"]} ${sessionHeaderStyles.modelButton}`}
+              data-provider-badge-button
               onClick={() => {
                 setModelPanelInitialTab("model");
                 setShowModelSwitchModal(true);
@@ -964,6 +1003,7 @@ export function SessionHeader({
               onReload={() => window.location.reload()}
               onShare={publicShareActionAvailable ? handleShare : undefined}
               triggerClassName={sessionHeaderStyles.menuTrigger}
+              triggerSize="large"
               shareLabel={
                 hideHeaderSecondary ? (
                   <SessionShareMenuLabel

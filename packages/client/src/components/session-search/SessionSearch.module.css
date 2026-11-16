@@ -10,7 +10,8 @@
   display: flex;
   gap: 4px;
 }
-.withDetail {
+.withDetail[data-main-content-constrained],
+.withDetail[data-main-content-mobile-inner] {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 40%);
   grid-template-rows: auto minmax(0, 1fr);
@@ -23,7 +24,8 @@
   border-left: 1px solid var(--border-color);
 }
 @media (width < 1100px) {
-  .withDetail {
+  .withDetail[data-main-content-constrained],
+  .withDetail[data-main-content-mobile-inner] {
     display: flex;
   }
   .detailHost {
@@ -39,25 +41,22 @@
   align-items: center;
   gap: 10px;
 }
-/* Compounded to outrank the checkbox's own top alignment, so the box sits
-   centered in the row. */
-.fields .field {
-  align-items: center;
-  min-height: 28px;
+/* Toolbar choice geometry belongs to Checkbox. */
+.field {
   white-space: nowrap;
 }
 .fields kbd {
   font:
-    11px ui-monospace,
+    var(--font-size-caption) ui-monospace,
     monospace;
   color: var(--text-secondary);
   border: 1px solid var(--border-color);
   padding: 1px 3px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 .searchIn {
   display: none;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 .search {
   flex: 0 1 340px;
@@ -84,11 +83,11 @@
   gap: 5px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   line-height: 15px;
   color: var(--text-secondary);
 }
-.statusDetails {
+.statusDetails.statusDetails {
   width: max-content;
   max-width: 280px;
 }
@@ -106,7 +105,7 @@
 }
 .diagnostics {
   margin-top: 12px;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
@@ -115,7 +114,6 @@
 }
 .diagnostics > summary {
   cursor: pointer;
-  min-height: 28px;
   align-content: center;
 }
 .content {
@@ -150,7 +148,7 @@
 .age {
   gap: 4px;
   font:
-    12px / 16px system-ui,
+    var(--font-size-sm) / 16px system-ui,
     sans-serif;
 }
 .limit {
@@ -158,7 +156,7 @@
   align-items: center;
   gap: 4px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   white-space: nowrap;
 }
 .limitInput {
@@ -172,7 +170,7 @@
   padding: 0 5px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .ageField > span,
 .ageInput {
@@ -204,13 +202,7 @@
 .ageField:focus-within {
   border-color: var(--accent-primary);
 }
-.dropdown {
-  min-height: 28px;
-  font:
-    12px / 16px system-ui,
-    sans-serif;
-  padding: 4px 6px;
-}
+
 .filters .dropdownContainer {
   width: auto;
   min-width: 0;
@@ -224,7 +216,7 @@
   gap: 4px 12px;
   padding: 5px 0;
   border-block: 1px solid var(--border-color);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 .selectionInfo {
   display: flex;
@@ -235,11 +227,6 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 30px;
-  color: var(--text-primary);
-  font-size: inherit;
-  text-decoration: underline;
-  text-underline-offset: 3px;
 }
 .selectionCancelIcon {
   color: var(--error-color);
@@ -263,7 +250,7 @@
 .progress,
 .help {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   margin: 8px 0;
 }
 .help svg {
@@ -279,10 +266,6 @@
   margin: 0;
   width: max-content;
   white-space: nowrap;
-}
-.error {
-  color: var(--error-color);
-  font-size: 12px;
 }
 .footer {
   display: grid;
@@ -300,7 +283,7 @@
   gap: 5px;
   border: 1px solid var(--border-color);
   padding: 8px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 @media (width < 1100px) {
   .manager {
@@ -314,13 +297,13 @@
 .manager small {
   color: var(--text-secondary);
 }
-.projectCta {
+.projectCta[data-global-sessions-project-cta] {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding: 6px 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 @container session-search-selection (max-width: 330px) {
   .statusFilters > span {
@@ -337,9 +320,6 @@
   }
   .fields kbd {
     display: none;
-  }
-  .fields .field {
-    min-height: 30px;
   }
   .search {
     flex: 1;

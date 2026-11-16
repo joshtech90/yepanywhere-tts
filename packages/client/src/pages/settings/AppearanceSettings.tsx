@@ -1,3 +1,19 @@
+import { undoEntry } from "./appearanceUndo";
+import thinkingStyles from "../../components/blocks/ThinkingBlock.module.css";
+import listStyles from "../../components/MessageList.module.css";
+import promptStyles from "../../components/blocks/UserPromptBlock.module.css";
+import textStyles from "../../components/blocks/TextBlock.module.css";
+import {
+  OUTPUT_FONT_CLASSES,
+  FIXED_FONT_CLASSES,
+} from "./appearanceFontClasses";
+import {
+  getSettingsIconStyleLabel,
+  getQuoteReplyButtonModeLabel,
+} from "./appearanceOptionLabels";
+import { settingsIconStyleClasses } from "./SettingsCategoryIcons";
+import rowsStyles from "./SettingsRows.module.css";
+import iconsStyles from "./SettingsCategoryIcons.module.css";
 import { SERVER_CAPABILITIES, serverHasCapability } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -83,7 +99,6 @@ import {
 } from "../../hooks/useOutputAppearance";
 import {
   QUOTE_REPLY_BUTTON_MODES,
-  type QuoteReplyButtonMode,
   useQuoteReplyButtonMode,
 } from "../../hooks/useQuoteReplyButtonMode";
 import { SettingsItem } from "./SettingsItem";
@@ -93,7 +108,6 @@ import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
 import {
   SETTINGS_ICON_STYLES,
-  type SettingsIconStyle,
   useSettingsIconStyle,
 } from "../../hooks/useSettingsIconStyle";
 import { useSidebarDuplicateHiding } from "../../hooks/useSidebarDuplicateHiding";
@@ -149,61 +163,10 @@ import {
   useGlobalProjectPathLinkSettings,
 } from "../../lib/projectPathLinkPreferences";
 import { useVersion } from "../../hooks/useVersion";
-
 const OUTPUT_INLINE_MATH_SAMPLE = "$E=mc^2$";
 
 function formatNumberSetting(value: number): string {
   return Number.isInteger(value) ? String(value) : String(value);
-}
-
-interface UndoEntry {
-  value: unknown;
-  restore: (value: unknown) => void;
-}
-
-// Pairs a live settings value with its restore path. The cast inside is
-// safe because construction guarantees value and setter share one T.
-function undoEntry<T>(
-  value: T,
-  set: (value: T) => void,
-  syncDraft?: (value: T) => void,
-): UndoEntry {
-  return {
-    value,
-    restore: (raw) => {
-      const restored = raw as T;
-      set(restored);
-      syncDraft?.(restored);
-    },
-  };
-}
-
-function getSettingsIconStyleLabel(
-  value: SettingsIconStyle,
-  translate: (key: string) => string,
-): string {
-  switch (value) {
-    case "flat":
-      return translate("appearanceSettingsIconStyleFlat");
-    case "flat-white":
-      return translate("appearanceSettingsIconStyleFlatWhite");
-    case "emoji":
-      return translate("appearanceSettingsIconStyleEmoji");
-  }
-}
-
-function getQuoteReplyButtonModeLabel(
-  value: QuoteReplyButtonMode,
-  translate: (key: string) => string,
-): string {
-  switch (value) {
-    case "block":
-      return translate("appearanceQuoteReplyButtonsBlock");
-    case "paragraph-hover":
-      return translate("appearanceQuoteReplyButtonsParagraphHover");
-    case "paragraph-always":
-      return translate("appearanceQuoteReplyButtonsParagraphAlways");
-  }
 }
 
 export function AppearanceSettings() {
@@ -625,7 +588,7 @@ export function AppearanceSettings() {
         "conversation view activity previews thinking",
       ]}
     >
-      <div className="settings-group">
+      <div className={rowsStyles.group} data-settings-group>
         <SettingsItem
           label={t("appearanceLanguageTitle")}
           description={t("appearanceLanguageDescription")}
@@ -664,19 +627,19 @@ export function AppearanceSettings() {
           label={t("appearanceSettingsIconStyleTitle")}
           description={t("appearanceSettingsIconStyleDescription")}
           valueText={getSettingsIconStyleLabel(settingsIconStyle, translate)}
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
         >
-          <div className="settings-item-actions">
+          <div className={rowsStyles.itemActions}>
             <SegmentedControl
               variant="cards"
-              className="settings-icon-style-selector"
+              className={styles.settingsIconStyleSelector}
               aria-label={t("appearanceSettingsIconStyleTitle")}
               options={SETTINGS_ICON_STYLES.map((style) => ({
                 value: style,
                 label: getSettingsIconStyleLabel(style, translate),
                 icon: (
                   <span
-                    className={`settings-category-icon settings-category-icon-local-access settings-category-icon-${style} settings-icon-style-preview`}
+                    className={`${iconsStyles.icon} ${iconsStyles.iconLocalAccess} ${settingsIconStyleClasses[style]} ${styles.settingsIconStylePreview}`}
                   >
                     {style === "emoji"
                       ? settingsCategoryEmojiIcons["local-access"]
@@ -692,9 +655,9 @@ export function AppearanceSettings() {
         <SettingsItem
           label={t("appearanceContentWidthTitle")}
           description={t("appearanceContentWidthDescription")}
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
         >
-          <div className="settings-item-actions">
+          <div className={rowsStyles.itemActions}>
             <CommittedRangeInput
               min={MIN_CONTENT_MAX_WIDTH_PX}
               max={MAX_CONTENT_MAX_WIDTH_PX}
@@ -738,9 +701,9 @@ export function AppearanceSettings() {
           description={t("appearanceSidebarSpacingDescription")}
           keywords={["sidebar spacing", "layout", "compact", "comfortable"]}
           valueText={getSidebarSpacingLabel(sidebarSpacing, translate)}
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
         >
-          <div className="settings-item-actions">
+          <div className={rowsStyles.itemActions}>
             <SegmentedControl
               aria-label={t("appearanceSidebarSpacingTitle")}
               options={SIDEBAR_SPACINGS.map((spacing) => ({
@@ -754,9 +717,9 @@ export function AppearanceSettings() {
         </SettingsItem>
         <SettingsItem
           label={t("appearanceOutputToolPreviewLinesLabel")}
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
         >
-          <div className="settings-item-actions">
+          <div className={rowsStyles.itemActions}>
             <CommittedRangeInput
               min={OUTPUT_TOOL_PREVIEW_LINE_COUNT_MIN}
               max={OUTPUT_TOOL_PREVIEW_LINE_COUNT_MAX}
@@ -916,11 +879,10 @@ export function AppearanceSettings() {
             t("appearanceGeneratedTitleLengthDescription"),
           ]}
           layout="custom"
-          baseClassName="settings-item-group"
-          className="generated-title-settings"
+          baseClassName={rowsStyles.itemGroup}
         >
-          <div className="settings-item-group-row">
-            <div className="settings-item-info">
+          <div className={rowsStyles.itemGroupRow}>
+            <div className={rowsStyles.itemInfo} data-settings-info>
               <strong>{t("appearanceGeneratedTitlesTitle")}</strong>
               <p>{t("appearanceGeneratedTitlesDescription")}</p>
             </div>
@@ -931,12 +893,14 @@ export function AppearanceSettings() {
             />
           </div>
           {generatedTitleEnabled && (
-            <div className="settings-item-group-row settings-item-group-row--field settings-item-group-row--wide-control">
-              <div className="settings-item-info">
+            <div
+              className={`${rowsStyles.itemGroupRow} ${rowsStyles.itemGroupRowField} ${rowsStyles.itemGroupRowWideControl}`}
+            >
+              <div className={rowsStyles.itemInfo} data-settings-info>
                 <strong>{t("appearanceGeneratedTitleLengthTitle")}</strong>
                 <p>{t("appearanceGeneratedTitleLengthDescription")}</p>
               </div>
-              <div className="settings-item-actions">
+              <div className={rowsStyles.itemActions}>
                 <CommittedRangeInput
                   min={GENERATED_TITLE_LENGTH_MIN}
                   max={GENERATED_TITLE_LENGTH_MAX}
@@ -1007,11 +971,13 @@ export function AppearanceSettings() {
         <SettingsItem
           label={t("appearanceTooltipDelayTitle")}
           description={t("appearanceTooltipDelayDescription")}
-          className="settings-item--wide-control settings-item--tooltip-control"
+          className={`${rowsStyles.itemWideControl} ${rowsStyles.itemTooltipControl}`}
         >
-          <div className="settings-item-actions tooltip-settings-actions">
+          <div
+            className={`${rowsStyles.itemActions} ${rowsStyles.tooltipSettingsActions}`}
+          >
             <SegmentedControl
-              className="tooltip-mode-selector"
+              className={styles.tooltipModeSelector}
               aria-label={t("appearanceTooltipModeTitle")}
               options={[
                 { value: "themed", label: t("appearanceTooltipModeThemed") },
@@ -1045,9 +1011,9 @@ export function AppearanceSettings() {
         <SettingsItem
           label={t("appearanceHoverCardHeightTitle")}
           description={t("appearanceHoverCardHeightDescription")}
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
         >
-          <div className="settings-item-actions">
+          <div className={rowsStyles.itemActions}>
             <CommittedRangeInput
               min={HOVERCARD_MAX_HEIGHT_MIN_PX}
               max={HOVERCARD_MAX_HEIGHT_MAX_PX}
@@ -1074,7 +1040,7 @@ export function AppearanceSettings() {
               }}
               aria-label={t("appearanceHoverCardHeightTitle")}
             />
-            <span className="settings-hovercard-lines">
+            <span className={styles.settingsHovercardLines}>
               ({hoverCardHeightLines}{" "}
               {hoverCardHeightLines === 1
                 ? t("appearanceHoverCardLineUnit")
@@ -1159,9 +1125,9 @@ export function AppearanceSettings() {
             quoteReplyButtonMode,
             translate,
           )}
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
         >
-          <div className="settings-item-actions">
+          <div className={rowsStyles.itemActions}>
             <SegmentedControl
               aria-label={t("appearanceQuoteReplyButtonsTitle")}
               options={QUOTE_REPLY_BUTTON_MODES.map((mode) => ({
@@ -1288,7 +1254,7 @@ export function AppearanceSettings() {
           label={t("appearanceTabTitleActivityTitle")}
           description={t("appearanceTabTitleActivityDescription")}
         >
-          <div className="settings-item-actions">
+          <div className={rowsStyles.itemActions}>
             <Switch
               checked={tabTitleActivityEnabled}
               aria-label={t("appearanceTabTitleActivityTitle")}
@@ -1332,7 +1298,7 @@ export function AppearanceSettings() {
           label={t("appearanceToolbarSettingsShortcutTitle")}
           description={t("appearanceToolbarSettingsShortcutDescription")}
         >
-          <div className="settings-item-actions">
+          <div className={rowsStyles.itemActions}>
             <Button onClick={() => navigate(`${basePath}/settings/toolbar`)}>
               {t("appearanceToolbarSettingsShortcutAction")}
             </Button>
@@ -1355,35 +1321,33 @@ export function AppearanceSettings() {
             t("appearanceOutputVerticalSpacingLabel"),
           ]}
           layout="custom"
-          className="output-appearance-settings"
+          className={styles.settings}
+          data-output-appearance
         >
-          <div className="output-appearance-panel">
-            <div className="output-appearance-controls">
-              <div className="output-appearance-title settings-item-info">
+          <div className={styles.panel}>
+            <div className={styles.controls}>
+              <div className={rowsStyles.itemInfo} data-settings-info>
                 <strong>{t("appearanceOutputTypographyTitle")}</strong>
               </div>
-              <div className="output-appearance-control">
-                <span className="output-appearance-label">
+              <div className={styles.control}>
+                <span className={styles.label}>
                   {t("appearanceOutputUiFontLabel")}
                 </span>
                 <SegmentedControl
-                  className="output-font-selector"
+                  className={styles.outputFontSelector}
                   aria-label={t("appearanceOutputUiFontLabel")}
                   options={OUTPUT_PROSE_FONTS.map((font) => ({
                     value: font,
                     label: getOutputProseFontLabel(font, translate),
-                    className: `output-font-option-${font}`,
+                    className: OUTPUT_FONT_CLASSES[font],
                   }))}
                   value={outputUiFont}
                   onChange={setOutputUiFont}
                 />
               </div>
 
-              <label
-                className="output-appearance-control"
-                htmlFor="ui-font-scale"
-              >
-                <span className="output-appearance-label">
+              <label className={styles.control} htmlFor="ui-font-scale">
+                <span className={styles.label}>
                   {t("appearanceFontSizeTitle")}
                 </span>
                 <CommittedRangeNumberInput
@@ -1407,10 +1371,10 @@ export function AppearanceSettings() {
                 ))}
               </datalist>
               <label
-                className="output-appearance-control"
+                className={styles.control}
                 htmlFor="user-turn-font-size-offset"
               >
-                <span className="output-appearance-label">
+                <span className={styles.label}>
                   {t("appearanceUserTurnSizeOffsetLabel")}
                 </span>
                 <CommittedRangeNumberInput
@@ -1425,10 +1389,10 @@ export function AppearanceSettings() {
                 />
               </label>
               <label
-                className="output-appearance-control"
+                className={styles.control}
                 htmlFor="tooltip-font-size-offset"
               >
-                <span className="output-appearance-label">
+                <span className={styles.label}>
                   {t("appearanceTooltipSizeOffsetLabel")}
                 </span>
                 <CommittedRangeNumberInput
@@ -1442,31 +1406,31 @@ export function AppearanceSettings() {
                   onCommit={setTooltipFontSizeOffsetPx}
                 />
               </label>
-              <div className="output-appearance-control">
-                <span className="output-appearance-label">
+              <div className={styles.control}>
+                <span className={styles.label}>
                   {t("appearanceOutputFontLabel")}
                 </span>
                 <SegmentedControl
-                  className="output-font-selector"
+                  className={styles.outputFontSelector}
                   aria-label={t("appearanceOutputFontLabel")}
                   options={OUTPUT_PROSE_FONTS.map((font) => ({
                     value: font,
                     label: getOutputProseFontLabel(font, translate),
-                    className: `output-font-option-${font}`,
+                    className: OUTPUT_FONT_CLASSES[font],
                   }))}
                   value={outputFont}
                   onChange={setOutputFont}
                 />
               </div>
 
-              <label
-                className="output-appearance-control"
-                htmlFor="output-font-size"
-              >
-                <span className="output-appearance-label">
+              <label className={styles.control} htmlFor="output-font-size">
+                <span className={styles.label}>
                   {t("appearanceOutputFontSizeLabel")}
                 </span>
-                <span className="output-appearance-slider-row">
+                <span
+                  className={rowsStyles.outputAppearanceSliderRow}
+                  data-range-number
+                >
                   <CommittedRangeInput
                     id="output-font-size"
                     min={OUTPUT_FONT_SIZE_MIN_PX}
@@ -1509,13 +1473,16 @@ export function AppearanceSettings() {
               </datalist>
 
               <label
-                className="output-appearance-control"
+                className={styles.control}
                 htmlFor="output-thinking-size-offset"
               >
-                <span className="output-appearance-label">
+                <span className={styles.label}>
                   {t("appearanceOutputThinkingSizeOffsetLabel")}
                 </span>
-                <span className="output-appearance-slider-row">
+                <span
+                  className={rowsStyles.outputAppearanceSliderRow}
+                  data-range-number
+                >
                   <CommittedRangeInput
                     id="output-thinking-size-offset"
                     min={OUTPUT_THINKING_FONT_SIZE_OFFSET_MIN_PX}
@@ -1551,17 +1518,17 @@ export function AppearanceSettings() {
                 </span>
               </label>
 
-              <div className="output-appearance-control">
-                <span className="output-appearance-label">
+              <div className={styles.control}>
+                <span className={styles.label}>
                   {t("appearanceOutputFixedFontLabel")}
                 </span>
                 <SegmentedControl
-                  className="output-font-selector"
+                  className={styles.outputFontSelector}
                   aria-label={t("appearanceOutputFixedFontLabel")}
                   options={OUTPUT_FIXED_FONTS.map((font) => ({
                     value: font,
                     label: getOutputFixedFontLabel(font, translate),
-                    className: `output-fixed-font-option-${font}`,
+                    className: FIXED_FONT_CLASSES[font],
                   }))}
                   value={outputFixedFont}
                   onChange={setOutputFixedFont}
@@ -1569,13 +1536,16 @@ export function AppearanceSettings() {
               </div>
 
               <label
-                className="output-appearance-control"
+                className={styles.control}
                 htmlFor="output-fixed-size-offset"
               >
-                <span className="output-appearance-label">
+                <span className={styles.label}>
                   {t("appearanceOutputFixedSizeOffsetLabel")}
                 </span>
-                <span className="output-appearance-slider-row">
+                <span
+                  className={rowsStyles.outputAppearanceSliderRow}
+                  data-range-number
+                >
                   <CommittedRangeInput
                     id="output-fixed-size-offset"
                     min={OUTPUT_FIXED_FONT_SIZE_OFFSET_MIN_PX}
@@ -1612,13 +1582,16 @@ export function AppearanceSettings() {
               </label>
 
               <label
-                className="output-appearance-control"
+                className={styles.control}
                 htmlFor="output-math-size-offset"
               >
-                <span className="output-appearance-label">
+                <span className={styles.label}>
                   {t("appearanceOutputMathSizeOffsetLabel")}
                 </span>
-                <span className="output-appearance-slider-row">
+                <span
+                  className={rowsStyles.outputAppearanceSliderRow}
+                  data-range-number
+                >
                   <CommittedRangeInput
                     id="output-math-size-offset"
                     min={OUTPUT_MATH_FONT_SIZE_OFFSET_MIN_PX}
@@ -1654,14 +1627,14 @@ export function AppearanceSettings() {
                 </span>
               </label>
 
-              <label
-                className="output-appearance-control"
-                htmlFor="output-line-spacing"
-              >
-                <span className="output-appearance-label">
+              <label className={styles.control} htmlFor="output-line-spacing">
+                <span className={styles.label}>
                   {t("appearanceOutputLineSpacingLabel")}
                 </span>
-                <span className="output-appearance-slider-row">
+                <span
+                  className={rowsStyles.outputAppearanceSliderRow}
+                  data-range-number
+                >
                   <CommittedRangeInput
                     id="output-line-spacing"
                     min={OUTPUT_LINE_SPACING_MIN_PERCENT}
@@ -1694,13 +1667,16 @@ export function AppearanceSettings() {
               </label>
 
               <label
-                className="output-appearance-control"
+                className={styles.control}
                 htmlFor="output-vertical-spacing"
               >
-                <span className="output-appearance-label">
+                <span className={styles.label}>
                   {t("appearanceOutputVerticalSpacingLabel")}
                 </span>
-                <span className="output-appearance-slider-row">
+                <span
+                  className={rowsStyles.outputAppearanceSliderRow}
+                  data-range-number
+                >
                   <CommittedRangeInput
                     id="output-vertical-spacing"
                     min={OUTPUT_VERTICAL_SPACING_MIN_PERCENT}
@@ -1735,9 +1711,9 @@ export function AppearanceSettings() {
               </label>
             </div>
 
-            <div className="output-appearance-specimen">
-              <div className="output-appearance-specimen-header">
-                <span className="output-appearance-specimen-label">
+            <div className={styles.specimen}>
+              <div className={styles.specimenHeader}>
+                <span className={styles.specimenLabel}>
                   {t("appearanceOutputSpecimenLabel")}
                 </span>
                 <Button onClick={resetOutputAppearance}>
@@ -1745,23 +1721,23 @@ export function AppearanceSettings() {
                 </Button>
               </div>
               <div
-                className="output-appearance-preview"
+                className={styles.preview}
                 role="region"
                 aria-label={t("appearanceOutputPreviewLabel")}
               >
                 <div className={tooltipStyles.specimen} data-tooltip-specimen>
                   {t("appearanceTooltipPreview")}
                 </div>
-                <div className="output-preview-system">
-                  <span className="output-preview-system-icon">ok</span>
+                <div className={styles.outputPreviewSystem}>
+                  <span className={styles.outputPreviewSystemIcon}>ok</span>
                   <span>System note: applied after reconnect.</span>
                 </div>
-                <div className="output-preview-prose">
+                <div className={styles.outputPreviewProse}>
                   <p>
                     Inline code like <code>codex update</code> stays fixed
                     width; prose wraps at phone width.
                   </p>
-                  <pre className="output-preview-fixed">
+                  <pre className={styles.outputPreviewFixed}>
                     <code>
                       {
                         "f0 = (x: 0) => ({ ok: x + 1 });\nfn S(v) -> { return v[0] ?? false }"
@@ -1773,7 +1749,8 @@ export function AppearanceSettings() {
                     {/* KaTeX output from a static settings preview sample. */}
                     <InnerHtml
                       as="span"
-                      className="output-preview-math"
+                      className={styles.outputPreviewMath}
+                      data-output-preview-math
                       trustedHtml={outputInlineMathHtml}
                     />
                   </p>
@@ -1784,32 +1761,39 @@ export function AppearanceSettings() {
                     <li>Math uses a TeX-like face.</li>
                   </ul>
                 </div>
-                <div className="output-preview-thinking thinking-content">
+                <div
+                  className={thinkingStyles.thinkingContent}
+                  data-thinking-content
+                >
                   <ThinkingText text="**Spacing** — thinking text stays quieter and smaller." />
                 </div>
-                <div className="output-preview-diff" aria-hidden="true">
+                <div className={styles.outputPreviewDiff} aria-hidden="true">
                   <div>
-                    <span className="output-preview-diff-gutter">+</span>
+                    <span className={styles.outputPreviewDiffGutter}>+</span>
                     <span>Diff prose follows the prose font.</span>
                   </div>
                   <div>
-                    <span className="output-preview-diff-gutter">-</span>
+                    <span className={styles.outputPreviewDiffGutter}>-</span>
                     <span>Paragraph space can be dialed down.</span>
                   </div>
                 </div>
-                <div className="output-preview-ui" aria-hidden="true">
-                  <div className="output-preview-ui-title">
+                <div className={styles.outputPreviewUi} aria-hidden="true">
+                  <div className={styles.outputPreviewUiTitle}>
                     Session title — uses the UI font and size
                   </div>
-                  <div className="output-preview-ui-composer">
+                  <div className={styles.outputPreviewUiComposer}>
                     Composer: type a message to the agent…
                   </div>
-                  <div className="message message-user-prompt">
-                    <div className="text-block">
+                  <div
+                    className={`${listStyles.message} ${promptStyles.messageUserPrompt}`}
+                    data-message
+                    data-message-user-prompt
+                  >
+                    <div className={textStyles.textBlock} data-text-block>
                       {t("appearanceUserTurnPreview")}
                     </div>
                   </div>
-                  <div className="output-preview-ui-caption">
+                  <div className={styles.outputPreviewUiCaption}>
                     Caption · updated 2m ago · 3 files
                   </div>
                 </div>

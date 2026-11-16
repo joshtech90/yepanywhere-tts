@@ -1,3 +1,4 @@
+import { SelectableCard } from "./ui/SelectableCard";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectPathLinkTarget } from "@yep-anywhere/shared";
 import { usePublicShareContext } from "../contexts/PublicShareContext";
@@ -10,7 +11,8 @@ import { useI18n } from "../i18n";
 import type { AsyncQuestion } from "../lib/asyncQuestions";
 import styles from "./AsyncQuestions.module.css";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { Button, ButtonBase, IconButton } from "./ui/Button";
+import { Banner } from "./ui/Banner";
+import { Button } from "./ui/Button";
 import { Textarea } from "./ui/Field";
 import { renderFixedFontRichContent } from "./ui/FixedFontMathToggle";
 
@@ -85,28 +87,53 @@ function InlineQuestion({
       setError(true);
     }
   };
+  // Opening a dismissed question from the menu still shows its responder.
+  const hidden = record?.dismissed === true && !active && !answered;
+  const secondaryActions = (
+    <>
+      <Button
+        variant="ghost"
+        size="small"
+        disabled={busy}
+        onClick={() => state.quote(question)}
+      >
+        {t("asyncQuestionQuoteMain")}
+      </Button>
+      <Button
+        variant="ghost"
+        size="small"
+        disabled={busy}
+        onClick={() => {
+          update(question.id, { dismissed: true });
+          if (active) state.returnToPrevious();
+        }}
+      >
+        {t("asyncQuestionDismissShort")}
+      </Button>
+    </>
+  );
   return (
     <div
-      className={`${styles.inlineQuestion} ${active ? styles.activeQuestion : ""}`}
+      className={`${styles.inlineQuestion} ${active ? styles.activeQuestion : ""} ${hidden ? styles.dismissedQuestion : ""}`}
       data-async-question-reply={question.id}
     >
       <div ref={root}>
         <MarkdownPreview className={styles.questionTitle} html={titleHtml} />
       </div>
-      {question.options.length > 0 && (
+      {question.options.length > 0 && !hidden && (
         <>
           <p className={styles.hint}>{t("asyncQuestionClickToSend")}</p>
           <ul className={styles.options}>
             {question.options.map((option, index) => (
               <li key={`${index}:${option}`}>
-                <ButtonBase
+                <SelectableCard
                   className={styles.option}
                   disabled={busy || answered}
                   onClick={() => void send(option)}
                 >
                   <span aria-hidden="true">•</span>
                   <span>{option}</span>
-                </ButtonBase>
+                </SelectableCard>
               </li>
             ))}
           </ul>
@@ -118,103 +145,87 @@ function InlineQuestion({
             ? t("asyncQuestionReplyQuoted")
             : t("asyncQuestionReplySent", { answer: record!.answer! })}
         </p>
-      ) : (
-        <>
-          {!active && (
+      ) : hidden ? (
+        <div className={styles.cardActions}>
+          <span className={styles.hint}>{t("asyncQuestionDismissed")}</span>
+          <Button
+            variant="ghost"
+            size="small"
+            onClick={() => update(question.id, { dismissed: false })}
+          >
+            {t("asyncQuestionRestoreShort")}
+          </Button>
+        </div>
+      ) : active ? (
+        <form
+          className={styles.replyForm}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (busy || !record?.draft.trim()) return;
+            void send(record?.draft ?? "");
+          }}
+        >
+          <Textarea
+            rows={3}
+            value={record?.draft ?? ""}
+            aria-label={t("asyncQuestionReplyTo", {
+              question: question.title,
+            })}
+            placeholder={t("asyncQuestionReplyPlaceholder")}
+            readOnly={busy}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.keyCode === 229)
+                return;
+              if (event.key === "Escape" && !busy) {
+                // The draft stays in the record; only the responder closes.
+                event.preventDefault();
+                event.stopPropagation();
+                state.returnToPrevious();
+                return;
+              }
+              if (event.key !== "Enter" || event.shiftKey) return;
+              event.preventDefault();
+              if (!event.repeat) event.currentTarget.form?.requestSubmit();
+            }}
+            onChange={(event) =>
+              update(question.id, { draft: event.target.value })
+            }
+          />
+          <div className={styles.replyActions}>
             <Button
               variant="ghost"
               size="small"
-              onClick={() => state.open(question)}
+              disabled={busy}
+              onClick={state.returnToPrevious}
             >
-              {t("asyncQuestionReply")}
+              {t("asyncQuestionCancel")}
             </Button>
-          )}
-          {active && (
-            <form
-              className={styles.replyForm}
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (busy || !record?.draft.trim()) return;
-                void send(record?.draft ?? "");
-              }}
+            {secondaryActions}
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={busy || !record?.draft.trim()}
             >
-              <Textarea
-                rows={3}
-                value={record?.draft ?? ""}
-                aria-label={t("asyncQuestionReplyTo", {
-                  question: question.title,
-                })}
-                placeholder={t("asyncQuestionReplyPlaceholder")}
-                readOnly={busy}
-                onKeyDown={(event) => {
-                  if (
-                    event.key !== "Enter" ||
-                    event.shiftKey ||
-                    event.nativeEvent.isComposing ||
-                    event.keyCode === 229
-                  )
-                    return;
-                  event.preventDefault();
-                  if (!event.repeat) event.currentTarget.form?.requestSubmit();
-                }}
-                onChange={(event) =>
-                  update(question.id, { draft: event.target.value })
-                }
-              />
-              <div className={styles.replyActions}>
-                <IconButton
-                  onClick={state.returnToPrevious}
-                  label={t("asyncQuestionBack")}
-                >
-                  <svg
-                    width="20"
-                    height="20"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="m10 5-7 7 7 7M3 12h18" />
-                  </svg>
-                </IconButton>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  disabled={busy || !record?.draft.trim()}
-                >
-                  {t(busy ? "asyncQuestionSending" : "asyncQuestionSend")}
-                </Button>
-              </div>
-            </form>
-          )}
-          <IconButton
-            onClick={() => state.quote(question)}
-            label={t("asyncQuestionQuoteMain")}
+              {t(busy ? "asyncQuestionSending" : "asyncQuestionSend")}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className={styles.cardActions}>
+          <Button
+            variant="ghost"
+            size="small"
+            onClick={() => state.open(question)}
           >
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="9" />
-              <path d="m10 8 4 4-4 4" />
-            </svg>
-          </IconButton>
-        </>
+            {t("asyncQuestionReply")}
+          </Button>
+          {secondaryActions}
+        </div>
       )}
       {error && (
-        <p role="alert" className={styles.error}>
+        <Banner tone="error" compact className={styles.sendFailure}>
           {t("asyncQuestionSendFailed")}
-        </p>
+        </Banner>
       )}
     </div>
   );

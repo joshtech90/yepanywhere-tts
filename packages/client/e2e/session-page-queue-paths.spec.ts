@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures.js";
+import { readCollectionsOverRest } from "./support/managed-routes.js";
 import {
   json,
   openSessionPage,
@@ -27,7 +28,7 @@ const queued = (
 const deferredPath = (tempId: string) =>
   `/sessions/${sessionId}/deferred/${tempId}`;
 const chip = (page: Page, text: string) =>
-  page.locator(".deferred-message").filter({ hasText: text });
+  page.locator("[data-deferred-message]").filter({ hasText: text });
 
 test("Edit returns a queued message with its effort command to the composer, only when the composer is free", async ({
   page,
@@ -55,7 +56,7 @@ test("Edit returns a queued message with its effort command to the composer, onl
   await expect(edit).toHaveCount(0);
   await session.composer.fill("");
   await page
-    .locator(".message-input-wrapper input[type=file]")
+    .locator("[data-message-input-wrapper] input[type=file]")
     .first()
     .setInputFiles({
       name: "pin-queue.txt",
@@ -238,6 +239,55 @@ test("recovered queue entries resume, steer and delete, and resuming makes the p
   ]);
 });
 
+test("a recovered entry the server already dropped leaves the page without a delete error", async ({
+  page,
+  baseURL,
+}) => {
+  const recovered = (id: string, content: string) =>
+    queued(`temp-${id}`, content, {
+      id,
+      kind: "patient",
+      status: "paused-after-restart",
+      metadata: { deliveryIntent: "patient" },
+    });
+  const session = await openSessionPage(page, baseURL, {
+    owner: "none",
+    deferredMessages: [
+      recovered("pin-rec-gone", "Deleted elsewhere"),
+      recovered("pin-rec-resumed", "Resumed elsewhere"),
+    ],
+  });
+  const base = `/sessions/${sessionId}/recovered-queue`;
+  const missing = { error: "Recovered queued message not found" };
+  await session.answer("DELETE", `${base}/pin-rec-gone`, (route) =>
+    json(route, 404, missing),
+  );
+  await session.answer("POST", `${base}/pin-rec-resumed/resume`, (route) =>
+    json(route, 404, missing),
+  );
+  // Another client removed both entries after this page last read the queue.
+  session.setDeferredMessages([
+    recovered("pin-rec-resumed", "Resumed elsewhere"),
+  ]);
+
+  await chip(page, "Deleted elsewhere")
+    .getByRole("button", { name: "Delete recovered queued message" })
+    .click();
+  // Deleting an entry that is already gone achieved what was asked.
+  await expect(chip(page, "Deleted elsewhere")).toHaveCount(0);
+  await expect(session.toast("Failed to delete")).toHaveCount(0);
+
+  session.setDeferredMessages([]);
+  await chip(page, "Resumed elsewhere")
+    .getByRole("button", { name: "Resume recovered queued message" })
+    .click();
+  // The resume did not happen here, so it still reports, and the chip goes.
+  await expect(
+    session.toast("Failed to resume recovered queued message"),
+  ).toBeVisible();
+  await expect(chip(page, "Resumed elsewhere")).toHaveCount(0);
+});
+
 test("Project Queue items in the session resume dispatch, cancel, edit into the composer and steer", async ({
   page,
   baseURL,
@@ -256,6 +306,7 @@ test("Project Queue items in the session resume dispatch, cancel, edit into the 
   const cancelItem = item("pin-pq-cancel", "Project item to cancel");
   const editItem = item("pin-pq-edit", "Project item to edit");
   const steerItem = item("pin-pq-steer", "Project item to steer");
+  await readCollectionsOverRest(page);
   await page.route("**/api/project-queue", (route) =>
     route.request().method() === "GET"
       ? route.fulfill({
@@ -313,7 +364,9 @@ test("Project Queue items in the session resume dispatch, cancel, edit into the 
     }),
   );
   const row = (text: string) =>
-    page.locator(".message-list .message-render-row").filter({ hasText: text });
+    page
+      .locator("[data-message-list] [data-message-render-row]")
+      .filter({ hasText: text });
 
   await row("Project item to cancel")
     .getByRole("button", { name: "Resume", exact: true })
@@ -367,7 +420,7 @@ test("cancelling an unconfirmed steer removes its row", async ({
     message: { role: "user", content: "Steer toward the parser" },
   });
   const steerRow = page
-    .locator(".message-list [data-render-id]")
+    .locator("[data-message-list] [data-render-id]")
     .filter({ hasText: "Steer toward the parser" });
   const steeringPath = `/sessions/${sessionId}/steering/pin-steer`;
   await session.answer("DELETE", steeringPath, (route) =>

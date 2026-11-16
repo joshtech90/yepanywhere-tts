@@ -27,7 +27,6 @@ import styles from "./useCodeFenceRenderers.module.css";
  */
 export const codeFenceRootClass: string = styles.root ?? "";
 
-const CODE_SELECTOR = "pre > code[class*='language-']";
 /** Every fenced block, labeled or not, gets a copy control. */
 const ANY_CODE_SELECTOR = "pre > code";
 const LANGUAGE_CLASS = /(?:^|\s)language-(\S+)/;
@@ -244,12 +243,16 @@ function enhance(
     const pre = code.parentElement;
     if (pre) {
       addCopyButton(pre);
-      void normalizeGrid(code).catch((error: unknown) =>
-        window.reportError(error),
-      );
+      // Raw message text contains React-owned links and text nodes. Replacing
+      // those nodes breaks reconciliation when issue metadata or text changes.
+      if (!pre.hasAttribute("data-text-block-source")) {
+        void normalizeGrid(code).catch((error: unknown) =>
+          window.reportError(error),
+        );
+      }
     }
   }
-  for (const code of root.querySelectorAll<HTMLElement>(CODE_SELECTOR)) {
+  for (const code of root.querySelectorAll<HTMLElement>(ANY_CODE_SELECTOR)) {
     const pre = code.parentElement;
     if (!pre) {
       continue;

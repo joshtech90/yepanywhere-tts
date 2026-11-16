@@ -1,3 +1,5 @@
+import rowsStyles from "../pages/settings/SettingsRows.module.css";
+import listStyles from "./SessionListLayout.module.css";
 /**
  * RemoteAccessSetup - Single-screen component for configuring remote access.
  *
@@ -18,6 +20,9 @@ import { isConnectionImpactDeclined } from "../api/connectionImpact";
 import { useI18n } from "../i18n";
 import { parseUserAgent } from "../lib/deviceDetection";
 import { QRCode } from "./QRCode";
+import styles from "./RemoteAccessSetup.module.css";
+import { Badge, type BadgeTone } from "./ui/Badge";
+import { Banner } from "./ui/Banner";
 import { Button } from "./ui/Button";
 import { Field, Select, TextInput } from "./ui/Field";
 import { Switch } from "./ui/Switch";
@@ -83,44 +88,46 @@ function getStatusDisplay(
   enabled: boolean,
   hasCredentials: boolean,
   t: (key: never) => string,
-): { text: string; className: string } {
+): { text: string; tone: BadgeTone; pending?: boolean } {
   if (!enabled) {
     return {
       text: t("remoteSetupStatusDisabled" as never),
-      className: "status-disabled",
+      tone: "neutral",
     };
   }
   if (!hasCredentials) {
     return {
       text: t("remoteSetupStatusNotConfigured" as never),
-      className: "status-warning",
+      tone: "warning",
     };
   }
   switch (status) {
     case "waiting":
       return {
         text: t("remoteSetupStatusConnected" as never),
-        className: "status-success",
+        tone: "accent",
       };
     case "connecting":
       return {
         text: t("remoteSetupStatusConnecting" as never),
-        className: "status-pending",
+        tone: "neutral",
+        pending: true,
       };
     case "registering":
       return {
         text: t("remoteSetupStatusRegistering" as never),
-        className: "status-pending",
+        tone: "neutral",
+        pending: true,
       };
     case "rejected":
       return {
         text: t("remoteSetupStatusUsernameTaken" as never),
-        className: "status-error",
+        tone: "danger",
       };
     default:
       return {
         text: t("remoteSetupStatusDisconnected" as never),
-        className: "status-warning",
+        tone: "warning",
       };
   }
 }
@@ -445,16 +452,14 @@ export function RemoteAccessSetup({
 
   if (loading || serverSettingsLoading) {
     return (
-      <div className="remote-access-setup">
-        <div className="remote-access-header">
+      <div className={styles.setup}>
+        <div className={styles.header}>
           <div>
             <h3>{title}</h3>
             <p>{description}</p>
           </div>
         </div>
-        <div className="remote-access-loading">
-          {t("remoteSetupLoading" as never)}
-        </div>
+        <div className={styles.loading}>{t("remoteSetupLoading" as never)}</div>
       </div>
     );
   }
@@ -504,8 +509,8 @@ export function RemoteAccessSetup({
   const canToggleOn = hasCredentials || (username && password);
 
   return (
-    <div className="remote-access-setup">
-      <div className="remote-access-header">
+    <div className={styles.setup}>
+      <div className={styles.header}>
         <div>
           <h3>{title}</h3>
           <p>{description}</p>
@@ -518,7 +523,7 @@ export function RemoteAccessSetup({
         />
       </div>
 
-      <form onSubmit={handleSave} className="remote-access-form">
+      <form onSubmit={handleSave} className={styles.form}>
         <Field id="remote-username" label={t("remoteSetupUsername" as never)}>
           <TextInput
             type="text"
@@ -633,29 +638,39 @@ export function RemoteAccessSetup({
 
         {yaClientInfo}
 
-        <div className="remote-access-status">
-          <span className="status-label">
+        <div className={styles.status}>
+          <span className={styles.statusLabel}>
             {t("remoteSetupStatus" as never)}
           </span>
-          <span className={`status-indicator ${status.className}`}>
+          <Badge
+            tone={status.tone}
+            icon={
+              <span className={status.pending ? styles.pending : undefined}>
+                ●
+              </span>
+            }
+          >
             {status.text}
-          </span>
-          {relayStatus?.error && (
-            <span className="status-error-detail">{relayStatus.error}</span>
-          )}
+          </Badge>
         </div>
 
+        {relayStatus?.error && (
+          <Banner tone="error" role="none" compact>
+            {relayStatus.error}
+          </Banner>
+        )}
+
         {(error || hookError) && (
-          <p className="form-error">{error || hookError}</p>
+          <Banner tone="error">{error || hookError}</Banner>
         )}
 
         {isEnabled && username && (
-          <div className="remote-access-connect">
-            <span className="connect-label">
+          <div className={styles.connect}>
+            <span className={styles.connectLabel}>
               {t("remoteSetupConnectFrom" as never)}
             </span>
-            <div className="connect-url-row">
-              <code className="connect-url">{connectUrl}</code>
+            <div className={styles.connectUrlRow}>
+              <code className={styles.connectUrl}>{connectUrl}</code>
               <Button
                 size="small"
                 onClick={() => handleCopyUrl(connectUrl)}
@@ -670,16 +685,16 @@ export function RemoteAccessSetup({
         )}
 
         {canShowQRCode && (
-          <div className="remote-access-qr">
+          <div className={styles.qr}>
             <Button onClick={() => setShowQRCode(!showQRCode)}>
               {showQRCode
                 ? t("remoteSetupHideQr" as never)
                 : t("remoteSetupShowQr" as never)}
             </Button>
             {showQRCode && qrCodeUrl && (
-              <div className="qr-code-container">
+              <div className={styles.qrCodeContainer}>
                 <QRCode value={qrCodeUrl} size={200} />
-                <p className="qr-code-hint">
+                <p className={styles.qrCodeHint}>
                   {t("remoteSetupQrHint" as never)}
                 </p>
               </div>
@@ -687,9 +702,9 @@ export function RemoteAccessSetup({
           </div>
         )}
 
-        <div className="remote-access-sessions">
-          <div className="sessions-header">
-            <span className="sessions-title">
+        <div className={styles.sessions}>
+          <div className={styles.sessionsHeader}>
+            <span className={styles.sessionsTitle}>
               {t("remoteSetupSessions" as never, { count: sessions.length })}
             </span>
             {sessions.length > 0 && (
@@ -704,15 +719,15 @@ export function RemoteAccessSetup({
               </Button>
             )}
           </div>
-          <p className="settings-hint">
+          <p className={rowsStyles.hint}>
             {t("remoteSetupSessionsDescription" as never)}
           </p>
           {sessions.length === 0 ? (
-            <p className="sessions-empty">
+            <p className={styles.sessionsEmpty}>
               {t("remoteSetupNoSessions" as never)}
             </p>
           ) : (
-            <ul className="sessions-list">
+            <ul className={listStyles.list}>
               {sessions.map((session) => {
                 const { browser, os } = session.userAgent
                   ? parseUserAgent(session.userAgent)
@@ -723,19 +738,19 @@ export function RemoteAccessSetup({
                 const hasDeviceInfo = session.userAgent || session.origin;
 
                 return (
-                  <li key={session.sessionId} className="session-item">
-                    <div className="session-info">
+                  <li key={session.sessionId} className={styles.sessionItem}>
+                    <div className={styles.sessionInfo}>
                       {hasDeviceInfo ? (
                         <>
-                          <span className="session-device">
+                          <span className={styles.sessionDevice}>
                             {browser} · {os}
                           </span>
                           {session.origin && (
-                            <code className="session-origin">
+                            <code className={styles.sessionOrigin}>
                               {session.origin}
                             </code>
                           )}
-                          <span className="session-dates">
+                          <span className={styles.sessionDates}>
                             {t("remoteSetupCreated" as never, {
                               date: formatRelativeDateWithT(
                                 session.createdAt,
@@ -753,11 +768,11 @@ export function RemoteAccessSetup({
                         </>
                       ) : (
                         <>
-                          <span className="session-created">
+                          <span>
                             {t("remoteSetupCreatedLabel" as never)}{" "}
                             {new Date(session.createdAt).toLocaleDateString()}
                           </span>
-                          <span className="session-last-used">
+                          <span>
                             {t("remoteSetupLastUsedLabel" as never)}{" "}
                             {new Date(session.lastUsed).toLocaleDateString()}
                           </span>
@@ -783,7 +798,7 @@ export function RemoteAccessSetup({
         </div>
 
         {hasChanges && (
-          <div className="remote-access-actions">
+          <div className={styles.actions}>
             <Button variant="primary" type="submit" disabled={isSaving}>
               {isSaving
                 ? t("remoteSetupSaving" as never)

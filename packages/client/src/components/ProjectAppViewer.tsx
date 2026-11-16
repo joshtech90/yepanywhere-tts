@@ -35,8 +35,10 @@ import { ComposerMicAction } from "./ComposerMicAction";
 import { AppViewerToolbar } from "./AppViewerToolbar";
 import { LastViewIcon } from "./LastViewIcon";
 import { ProjectAppIcon } from "./ProjectAppIcon";
+import { Banner } from "./ui/Banner";
 import { Button, ButtonBase, IconButton } from "./ui/Button";
 import { Checkbox } from "./ui/Checkbox";
+import { confirmDialog } from "./ui/ConfirmDialog";
 import { Field, Textarea, TextInput } from "./ui/Field";
 import actions from "./ViewerWindowActions.module.css";
 import styles from "./ProjectAppViewer.module.css";
@@ -727,13 +729,13 @@ export function ProjectAppViewer({
                       {crumb.current ? (
                         <span aria-current="page">{crumb.label}</span>
                       ) : (
-                        <ButtonBase
-                          className={styles.crumb}
+                        <Button
+                          variant="link"
                           title={crumb.path}
                           onClick={() => openFramePath(crumb.path)}
                         >
                           {crumb.label}
-                        </ButtonBase>
+                        </Button>
                       )}
                     </span>
                   ))}
@@ -879,8 +881,14 @@ export function ProjectAppViewer({
                     // A held press or right-click is deliberate enough to skip
                     // the confirmation a stray tap gets.
                     {...restartPress.handlers}
-                    onClick={restartPress.click(() => {
-                      if (window.confirm(t("projectAppRestartConfirm")))
+                    onClick={restartPress.click(async () => {
+                      if (
+                        await confirmDialog({
+                          title: t("projectAppRestartConfirmTitle"),
+                          message: t("projectAppRestartConfirm"),
+                          confirmLabel: t("projectAppRestart"),
+                        })
+                      )
                         void perform(restart);
                     })}
                   >
@@ -946,7 +954,11 @@ export function ProjectAppViewer({
           <p>{t("projectAppUpdateRequired")}</p>
         ) : (
           <>
-            {error && <p role="alert">{error}</p>}
+            {error && (
+              <Banner tone="error" compact>
+                {error}
+              </Banner>
+            )}
             {(!view || settings) && (
               <>
                 <p>
@@ -1358,13 +1370,16 @@ export function ProjectAppViewer({
                           <Button
                             variant="danger-outline"
                             disabled={busy}
-                            onClick={() => {
+                            onClick={async () => {
                               if (
-                                window.confirm(
-                                  t("projectAppReleaseConfirm", {
+                                await confirmDialog({
+                                  title: t("projectAppReleaseConfirmTitle"),
+                                  message: t("projectAppReleaseConfirm", {
                                     address: `${row.name}.${row.namespace}`,
                                   }),
-                                )
+                                  confirmLabel: t("projectAppRelease"),
+                                  tone: "danger",
+                                })
                               )
                                 void perform(() =>
                                   projectAppApi.addressAction(

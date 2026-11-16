@@ -209,7 +209,12 @@ describe("RemoteAccessSettings host identity", () => {
     });
 
     fireEvent.change(input, { target: { value: "two" } });
-    expect(screen.getByText("hostIdentityInvalid")).toBeTruthy();
+    const error = screen.getByText("hostIdentityInvalid");
+    // A field's error is described by the input, not announced per keystroke.
+    expect(input.getAttribute("aria-describedby")).toBe(
+      error.closest("[id]")?.id,
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
     fireEvent.blur(input);
     expect(mockUpdateSetting).not.toHaveBeenCalled();
 
@@ -257,7 +262,9 @@ describe("RemoteAccessSettings host identity", () => {
       batteryFloorPercent: 10,
     };
     render(<RemoteAccessSettings />);
-    const item = screen.getByText("hostAwakeTitle").closest(".settings-item");
+    const item = screen
+      .getByText("hostAwakeTitle")
+      .closest("[data-settings-item]");
     expect(item).not.toBeNull();
 
     fireEvent.click(within(item as HTMLElement).getByRole("switch"));

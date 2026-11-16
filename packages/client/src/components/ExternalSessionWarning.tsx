@@ -1,6 +1,8 @@
+import styles from "./ExternalSessionWarning.module.css";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { RiskAffordance } from "./RiskAffordance";
+import { Banner } from "./ui/Banner";
 
 /**
  * Warning shown while another process (a terminal Claude session, an IDE
@@ -72,19 +74,16 @@ export function ExternalSessionWarning({ active }: { active: boolean }) {
     : 0;
 
   return (
-    <div className="external-session-warning" role="status">
-      <span className="external-session-warning-text">
-        {t("sessionExternalWarning")}
-      </span>{" "}
+    <Banner tone="warning" compact>
+      {t("sessionExternalWarning")}{" "}
       <RiskAffordance
         label={t("sessionExternalWarningElapsed", {
           duration: formatDuration(elapsedSeconds),
         })}
-        labelClassName="external-session-warning-elapsed"
         modalTitle={t("sessionExternalWarningExplainTitle")}
         explanation={<ExternalSessionRiskExplanation />}
       />
-    </div>
+    </Banner>
   );
 }
 
@@ -96,7 +95,10 @@ export function ExternalSessionWarning({ active }: { active: boolean }) {
 function ExternalSessionRiskExplanation() {
   const { t } = useI18n();
   return (
-    <div className="external-session-risk-explanation">
+    <div
+      className={styles["external-session-risk-explanation"]}
+      data-external-session-risk-explanation
+    >
       <p>{t("sessionExternalRiskIntro")}</p>
       <ul>
         <li>
@@ -112,7 +114,10 @@ function ExternalSessionRiskExplanation() {
           {t("sessionExternalRiskLostBody")}
         </li>
       </ul>
-      <p className="external-session-risk-caveat">
+      <p
+        className={styles["external-session-risk-caveat"]}
+        data-external-session-risk-caveat
+      >
         {t("sessionExternalRiskCaveat")}
       </p>
     </div>

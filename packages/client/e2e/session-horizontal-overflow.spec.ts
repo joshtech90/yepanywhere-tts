@@ -1,13 +1,21 @@
 import type { Page, TestInfo } from "@playwright/test";
 import { join } from "node:path";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import {
+  openSessionPage,
+  twoTurns,
+  streamResponses,
+  liveUpdate,
+  typeEachKeyWithin100ms,
+} from "./support/session-page-harness.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 
 const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
 const projectId = Buffer.from(mockProjectPath).toString("base64url");
 const sessionId = "transcript-specimen-001";
 
 async function dismissOnboardingIfVisible(page: Page) {
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (
     await skip
       .waitFor({ state: "visible", timeout: 750 })
@@ -19,12 +27,14 @@ async function dismissOnboardingIfVisible(page: Page) {
 }
 
 async function installWideTable(page: Page) {
-  const list = page.locator(".session-messages .message-list");
+  const list = page.locator("[data-session-messages] [data-message-list]");
   await expect(list).not.toHaveAttribute("aria-busy", "true", {
     timeout: 10000,
   });
   const content = list
-    .locator('[data-render-id="specimen-assistant-2"] .text-block-content')
+    .locator(
+      '[data-render-id="specimen-assistant-2"] [data-text-block-content]',
+    )
     .first();
   await expect(content).toBeVisible({ timeout: 10000 });
   await content.evaluate((element) => {
@@ -72,12 +82,14 @@ async function installWideTable(page: Page) {
         caret-color: transparent !important;
         transition-duration: 0s !important;
       }
-      .message-age, [data-turn-rail] { visibility: hidden !important; }
+      [data-message-age], [data-turn-rail] { visibility: hidden !important; }
     `,
   });
   await page.evaluate(async () => {
     await document.fonts.ready;
-    const transcript = document.querySelector<HTMLElement>(".session-messages");
+    const transcript = document.querySelector<HTMLElement>(
+      "[data-session-messages]",
+    );
     const fixture = document.querySelector<HTMLElement>(
       "[data-horizontal-overflow-fixture]",
     );
@@ -106,11 +118,11 @@ async function shellGeometry(page: Page) {
     };
     return {
       windowScrollX: window.scrollX,
-      header: rectangle(".session-header"),
-      headerInner: rectangle(".session-header-inner"),
-      projectBreadcrumb: rectangle(".project-breadcrumb"),
-      title: rectangle(".session-title-row"),
-      composer: rectangle(".session-input"),
+      header: rectangle("[data-session-header]"),
+      headerInner: rectangle("[data-session-header-inner]"),
+      projectBreadcrumb: rectangle("[data-project-breadcrumb]"),
+      title: rectangle("[data-session-title-row]"),
+      composer: rectangle("[data-session-input]"),
     };
   });
 }
@@ -119,6 +131,100 @@ for (const viewport of [
   { name: "desktop", width: 1000, height: 600 },
   { name: "phone", width: 375, height: 812 },
 ] as const) {
+  test.describe(`composer layout on ${viewport.name}`, () => {
+    test.use({
+      hasTouch: viewport.name === "phone",
+      isMobile: viewport.name === "phone",
+    });
+    test(`keeps sent markers and Follow clear of the editor at ${viewport.name} width`, async ({
+      page,
+      baseURL,
+    }) => {
+      await page.setViewportSize(viewport);
+      await streamResponses(page);
+      await page.addInitScript(() =>
+        localStorage.setItem("yep-anywhere-theme", "dark"),
+      );
+      const session = await openSessionPage(page, baseURL, {
+        owner: "self",
+        processState: "in-turn",
+        messages: twoTurns,
+        ready: "The lexer splits words.",
+      });
+      const text =
+        "Please review the message layout on a phone. Ordinary paragraphs should wrap within the transcript and keep their delivery status visible.\n\nKeep the draft readable while live work continues.";
+      for (const [index, content] of [
+        text,
+        [{ type: "text", text }],
+      ].entries()) {
+        session.emit("message", {
+          type: "user",
+          uuid: `layout-echo-${index}`,
+          timestamp: new Date().toISOString(),
+          tempId: `layout-send-${index}`,
+          messageMetadata: { deliveryIntent: "steer" },
+          message: { role: "user", content },
+        });
+      }
+      const markers = page.locator("[data-user-prompt-delivery-marker]");
+      await expect(markers).toHaveCount(2);
+      for (const marker of await markers.all()) {
+        const geometry = await marker.evaluate((element) => {
+          const bubble = element.closest("[data-message-user-prompt]")!;
+          return {
+            markerLeft: element.getBoundingClientRect().left,
+            markerRight: element.getBoundingClientRect().right,
+            bubbleRight: bubble.getBoundingClientRect().right,
+            transcriptRight: document
+              .querySelector("[data-session-messages]")!
+              .getBoundingClientRect().right,
+          };
+        });
+        expect(
+          geometry.markerLeft - geometry.bubbleRight,
+        ).toBeGreaterThanOrEqual(0);
+        expect(geometry.markerLeft - geometry.bubbleRight).toBeLessThan(10);
+        expect(geometry.markerRight).toBeLessThanOrEqual(
+          geometry.transcriptRight,
+        );
+      }
+      const transcript = page.locator("[data-session-messages]");
+      expect(
+        await transcript.evaluate((el) => el.scrollWidth - el.clientWidth),
+      ).toBeLessThanOrEqual(1);
+      expect(
+        await page.evaluate(
+          () =>
+            document.documentElement.scrollWidth -
+            document.documentElement.clientWidth,
+        ),
+      ).toBeLessThanOrEqual(1);
+      await recordUiCapture(page, `sent-markers-${viewport.name}`);
+
+      await transcript.hover();
+      await page.mouse.wheel(0, -250);
+      const follow = page.locator("[data-message-follow-toggle]");
+      await expect(follow).toBeVisible();
+      const draft =
+        "Keep this first line completely readable. Continue reviewing the layout while new output arrives. This longer draft should wrap naturally over several lines, with every word visible and the Follow button above the editor.";
+      await session.composer.focus();
+      await typeEachKeyWithin100ms(session.composer, draft, (typed) => {
+        session.emit("message", liveUpdate(typed.length));
+      });
+      await expect(session.composer).toBeFocused();
+      await expect(follow).toBeVisible();
+      const followBox = await follow.boundingBox();
+      const editorBox = await session.composer.boundingBox();
+      expect(followBox!.y + followBox!.height).toBeLessThanOrEqual(
+        editorBox!.y,
+      );
+      await recordUiCapture(page, `follow-draft-${viewport.name}`);
+      await follow.click();
+      await expect(follow).not.toBeVisible();
+      await expect(session.composer).toHaveValue(draft);
+    });
+  });
+
   test(`keeps wide session content reachable at ${viewport.name} width`, async ({
     page,
     baseURL,
@@ -130,8 +236,9 @@ for (const viewport of [
 
     const geometry = await page.evaluate(() => {
       const documentElement = document.documentElement;
-      const transcript =
-        document.querySelector<HTMLElement>(".session-messages");
+      const transcript = document.querySelector<HTMLElement>(
+        "[data-session-messages]",
+      );
       if (!transcript) throw new Error("Transcript missing");
       return {
         documentClientWidth: documentElement.clientWidth,
@@ -152,7 +259,7 @@ for (const viewport of [
     await attachScreenshot(page, testInfo, `${viewport.name}-left-edge`);
 
     const horizontalPosition = await page
-      .locator(".session-messages")
+      .locator("[data-session-messages]")
       .evaluate((transcript) => {
         transcript.scrollLeft = Math.min(
           360,

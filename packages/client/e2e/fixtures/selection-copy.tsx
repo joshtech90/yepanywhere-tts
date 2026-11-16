@@ -1,11 +1,36 @@
+import markdownStyles from "../../src/components/MarkdownPreview.module.css";
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { I18nProvider } from "../../src/i18n";
 import { useSelectionActionPresentation } from "../../src/hooks/useSelectionActionPresentation";
 import { useQuoteableTextSource } from "../../src/hooks/useQuoteableTextSource";
 import { UserPromptBlock } from "../../src/components/blocks/UserPromptBlock";
-import "../../src/styles/index.css";
-import "../../src/styles/renderers.css";
+import { ToastProvider } from "../../src/contexts/ToastContext";
+import { toUrlProjectId, SERVER_CAPABILITIES } from "@yep-anywhere/shared";
+import { applyVersionSnapshot } from "../../src/lib/versionQuery";
+import { LOCAL_CLIENT_SUMMARY_SOURCE_KEY } from "../../src/lib/clientSummarySourceKey";
+import "../../src/styles/purposeGlobals";
+
+const publicProject = toUrlProjectId("/work/project");
+const privateProject = toUrlProjectId("/work/other");
+const viewerHref = `http://localhost:3400/projects/${publicProject}/file?path=docs%2Freport.md&line=12`;
+applyVersionSnapshot(
+  {
+    current: "0.10.2",
+    latest: null,
+    updateAvailable: false,
+    capabilities: [
+      SERVER_CAPABILITIES.projectService.name,
+      SERVER_CAPABILITIES.publicFileShares.name,
+    ],
+  },
+  {
+    sourceKey: LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+    key: "version",
+    coverage: {},
+    requestStartedAt: Date.now(),
+  },
+);
 
 function HistoryBlock({ index }: { index: number }) {
   const ref = useQuoteableTextSource<HTMLParagraphElement>(
@@ -17,12 +42,21 @@ function Fixture() {
   const root = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const source = useQuoteableTextSource<HTMLDivElement>(
-    "Copy this into the new session:\n\n> Continue the **Android preview** in `/Users/project`.\n>\n> Keep test data disposable.\n\nPlain assistant text.",
+    `Copy this into the new session:
+
+> Continue the **Android preview** in \`/Users/project\`.
+>
+> Keep test data disposable.
+
+Plain assistant text.`,
   );
   const rawSource = useQuoteableTextSource<HTMLPreElement>(
     "**literal_source**",
     undefined,
     "literal",
+  );
+  const publicSource = useQuoteableTextSource<HTMLParagraphElement>(
+    `Read [the report](${viewerHref}) and \`~/other/private.md\`.`,
   );
   const [value, setValue] = useState("");
   const [tick, setTick] = useState(0);
@@ -56,7 +90,8 @@ function Fixture() {
       <div ref={root} style={{ position: "relative" }}>
         <div
           ref={source}
-          className="markdown-rendered"
+          className={markdownStyles.markdownRendered}
+          data-markdown-rendered
           data-testid="copy-source"
         >
           <p>Copy this into the new session:</p>
@@ -77,6 +112,13 @@ function Fixture() {
         <pre ref={rawSource} data-testid="raw-selection">
           {"**literal_source**"}
         </pre>
+        <p ref={publicSource} data-testid="public-copy-source">
+          Read <a href={viewerHref}>the report</a> and{" "}
+          <a href={`/projects/${privateProject}/file?path=private.md`}>
+            <code>~/other/private.md</code>
+          </a>
+          .
+        </p>
         {Array.from({ length: 250 }, (_, i) => (
           <HistoryBlock key={i} index={i} />
         ))}
@@ -120,6 +162,8 @@ function Fixture() {
 }
 createRoot(document.getElementById("root")!).render(
   <I18nProvider>
-    <Fixture />
+    <ToastProvider>
+      <Fixture />
+    </ToastProvider>
   </I18nProvider>,
 );

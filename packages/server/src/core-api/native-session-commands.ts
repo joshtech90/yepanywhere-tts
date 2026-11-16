@@ -1,3 +1,4 @@
+import { nativeSessionControl } from "./native-session-control.js";
 import type { SessionCreationStore } from "../sessions/SessionCreationStore.js";
 import {
   thinkingOptionToConfig,
@@ -8,27 +9,48 @@ import type { Process } from "../supervisor/Process.js";
 import type { SessionCommandOwner } from "./session-commands.js";
 import { CoreApiError } from "./errors.js";
 import {
+  nativeSessionInputs,
+  type NativeSessionInputDeps,
+} from "./native-session-inputs.js";
+import {
   RouterRefusedBeforeProvider,
   type RouterBindingRef,
   routerSelectionFromBinding,
 } from "../services/AgentAuthRouter.js";
 
 /** Uses incumbent native ownership. Monitoring is shared per process, not caller. */
-export function nativeSessionCommandOwner(deps: {
-  supervisor: Pick<
-    Supervisor,
-    "startSession" | "getAllProcesses" | "getProcessForSession"
-  >;
-  globalInstructions: () => string | undefined;
-  creations?: SessionCreationStore;
-  /**
-   * The calling session's router pin and model, so a child of a routed
-   * session runs on the router rather than the owner's direct login.
-   */
-  callerLaunch?: (
-    sessionId: string,
-  ) => { routerBinding?: RouterBindingRef; model?: string } | undefined;
-}): SessionCommandOwner {
+export function nativeSessionCommandOwner(
+  deps: Omit<NativeSessionInputDeps, "supervisor"> & {
+    supervisor: Pick<
+      Supervisor,
+      "startSession" | "getAllProcesses" | "getProcessForSession"
+    > &
+      Partial<
+        Pick<
+          Supervisor,
+          | "interruptProcess"
+          | "abortProcessWithVerification"
+          | "pauseRecapsUntilUserTurn"
+        >
+      >;
+    dataDir?: string;
+    approvalAuditEnabled?: () => boolean;
+    globalInstructions: () => string | undefined;
+    creations?: SessionCreationStore;
+    /**
+     * The calling session's router pin and model, so a child of a routed
+     * session runs on the router rather than the owner's direct login.
+     */
+    callerLaunch?: (
+      sessionId: string,
+    ) => { routerBinding?: RouterBindingRef; model?: string } | undefined;
+    /**
+     * Whether a catalog project's directory still exists. The catalog keeps a
+     * project while its transcripts remain, after the directory is gone.
+     */
+    projectDirectoryExists?: (path: string) => Promise<boolean>;
+  },
+): SessionCommandOwner {
   type Watch = {
     pending: Map<string, { consumed: () => void; ended: () => void }>;
     release: () => void;
@@ -108,8 +130,19 @@ export function nativeSessionCommandOwner(deps: {
       if (!acquired.pending.size) acquired.release();
     };
   };
+  const control = nativeSessionControl(deps);
+  const inputs = nativeSessionInputs(deps);
   return {
+    ...control,
+    prepareControl(id, operation, pendingRequestId, response) {
+      return operation === "cancelInput"
+        ? inputs.prepareCancel(id, pendingRequestId ?? "")
+        : control.prepareControl!(id, operation, pendingRequestId, response);
+    },
+    checkInput: inputs.check,
+    inputs: inputs.list,
     close() {
+      inputs.close();
       for (const entry of watches.values()) entry.release();
       watches.clear();
       pending = 0;
@@ -118,31 +151,40 @@ export function nativeSessionCommandOwner(deps: {
       const process = deps.supervisor.getProcessForSession(id);
       return Boolean(process && !process.isTerminated);
     },
-    send(id, request, receipt, consumed, ended) {
+    async send(
+      id,
+      request,
+      receipt,
+      consumed,
+      ended,
+      progress = () => {},
+      admissible,
+    ) {
       const process = deps.supervisor.getProcessForSession(id);
       if (!process || process.isTerminated) return { accepted: false };
-      const release = watch(process, receipt.id, consumed, ended);
+      // Compaction reports its outcome through the queue, not input consumption.
+      const release =
+        request.type === "prompt"
+          ? watch(process, receipt.id, consumed, ended)
+          : () => {};
       try {
-        process.noteInputIntent();
-        const result = process.queueMessage(
-          {
-            text: request.message,
-            uuid: receipt.id,
-            tempId: receipt.id,
-            metadata: {
-              apiSubmissionId: receipt.id,
-              origin: "coordination",
-              sourceSessionId:
-                receipt.creator.principal.kind === "peer"
-                  ? undefined
-                  : (receipt.creator.sessionId ?? undefined),
-              serverReceivedAt: receipt.createdAt,
-            },
+        const result = await inputs.admit(
+          process,
+          request,
+          receipt,
+          (patch) => {
+            // Input that left the queue undelivered can no longer be consumed.
+            if (
+              patch.delivery === "cancelled" ||
+              patch.delivery === "uncertain"
+            )
+              release();
+            progress(patch);
           },
-          { allowSteer: false },
+          admissible,
         );
-        if (!result.success) release();
-        return { accepted: result.success };
+        if (!result.accepted) release();
+        return result;
       } catch (error) {
         release();
         throw error;
@@ -202,7 +244,10 @@ export function nativeSessionCommandOwner(deps: {
       const caller = callerId ? deps.callerLaunch?.(callerId) : undefined;
       // A routed caller's child gets a fresh pick from the caller's pool, or
       // its explicit account through a new pin (plan 183); never Direct.
-      const routed = caller?.routerBinding;
+      const explicitRouter = Boolean(
+        request.routerPoolId || request.routerAccountId,
+      );
+      const routed = explicitRouter ? undefined : caller?.routerBinding;
       let model = request.model === "default" ? undefined : request.model;
       if (routed) {
         if (routed.provider !== request.provider)
@@ -210,7 +255,7 @@ export function nativeSessionCommandOwner(deps: {
             rejected: true,
             message: `This session runs on an Agent Auth Router ${routed.provider} account, so it can start only ${routed.provider} sessions, which use the same router pool or account.`,
           };
-        model ??= caller.model;
+        model ??= caller?.model;
         if (!model)
           return {
             rejected: true,
@@ -218,12 +263,29 @@ export function nativeSessionCommandOwner(deps: {
               "Name a model: a session started from a router session needs one its router account offers.",
           };
       }
+      // No provider can start here; a refusal, not an uncertain launch.
+      if (
+        deps.projectDirectoryExists &&
+        !(await deps.projectDirectoryExists(project.path))
+      )
+        return {
+          rejected: true,
+          message: `The project's directory no longer exists on this server: ${project.path}`,
+        };
+      // The router has no default model; say so here, in v0's terms, before
+      // its own refusal reaches the receipt worded for the settings UI.
+      if (explicitRouter && !model)
+        return {
+          rejected: true,
+          message:
+            "Name a model: a router pool or account needs a model id from its selection catalog.",
+        };
       let result: Awaited<ReturnType<Supervisor["startSession"]>>;
       try {
         result = await deps.supervisor.startSession(
           project.path,
           {
-            text: request.message,
+            text: request.prompt,
             uuid: receipt.id,
             tempId: receipt.id,
             metadata: {
@@ -242,7 +304,16 @@ export function nativeSessionCommandOwner(deps: {
             model,
             requestedModel: request.model ?? model,
             ...thinking,
-            ...(routed ? routerSelectionFromBinding(routed) : {}),
+            ...(explicitRouter
+              ? {
+                  routerPoolId: request.routerPoolId,
+                  routerAccountId: request.routerAccountId,
+                  routerPolicy: request.routerPolicy,
+                  routerClaudeAiConnectors: request.routerClaudeAiConnectors,
+                }
+              : routed
+                ? routerSelectionFromBinding(routed)
+                : {}),
             serviceTier: request.serviceTier,
             globalInstructions: deps.globalInstructions(),
             recapMode: "off",

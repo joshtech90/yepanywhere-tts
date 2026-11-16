@@ -18,6 +18,39 @@ See also:
 
 ## Route Contract
 
+### Model and thinking display
+
+Session cards keep their metadata on one stable-height bottom line. Project,
+age, attention and current activity share the flexible left side; a compact,
+display-only model/thinking badge stays at the right. Long activity text
+truncates rather than wrapping or moving the badge. Phone widths use the
+existing condensed model and effort labels, with the full values in the
+tooltip and accessible name. Activity arriving or disappearing does not change
+the line's height.
+
+`modelConfig` is an optional Inbox response field. Live process model and
+applied thinking/effort take precedence; stopped sessions use their saved,
+last-applied launch settings. Unknown/default model identities are omitted.
+No model catalog lookup, transcript parse or per-row request is introduced.
+Missing effort does not imply Off or Auto: a known enabled thinking mode alone
+shows On, and known effort alone can show its level. Off requires an explicitly
+known disabled mode. With no useful settings, there is no badge.
+
+This additive display has no capability advertisement. Supported older servers
+(including v0.10.2 and v0.11.0) omit `modelConfig`; the client leaves the badge
+out and sends the same existing Inbox request. A complete Inbox snapshot owns
+these optional display facts; other collections cannot overwrite them, and an
+incomplete catalog accepts newly observed healthy rows and tier moves, retaining
+omitted rows as potentially stale within the existing twenty-row tier windows
+rather than declaring them deleted. Fresh rows take precedence; fallback rows
+and their model/phase details cannot accumulate during a persistent conflict. Missing
+optional model/phase details preserve their last observation until a complete
+snapshot supplies authoritative replacement. A catalogue failure/identity
+conflict shows a nonblocking warning alongside readable sessions; it does not
+show the all-caught-up empty state or hide healthy rows. A complete recovery
+replaces membership normally and clears the warning. No new request or response
+field is required: absent catalogue/error fields retain ordinary behavior.
+
 ### Client view filters
 
 Inbox's **Started via** dropdown combines with the project filter across all
@@ -52,8 +85,8 @@ places each session in the first matching tier.
 The tier order is:
 
 1. `needsAttention`: sessions with pending tool approval or a provider question
-   waiting for user input, or an unacknowledged user turn delivered from another
-   session.
+   waiting for user input. The sidebar Inbox badge and browser-tab title count
+   these sessions globally, independently of the Inbox's view filters.
 2. `active`: sessions currently in turn, idle sessions retaining provider
    background work, or existing sessions targeted by queued or dispatching
    Project Queue work.
@@ -67,19 +100,15 @@ The tier order is:
 Each tier is sorted by `updatedAt` descending and capped at 20 items. Archived
 sessions are skipped before tiering.
 
-**The walk is shared; the tiering is not.** Inbox is app-shell mounted, so a
-herd of tabs reconnecting would otherwise run a herd of independent walks over
-every project. The enriched row collection is single-flighted per
-`(project filter, session-collection generation)` — the same clock and the same
-deny-list over bus events that `GET /api/sessions` uses, described in
-[`session-catalog-observation.md`](session-catalog-observation.md). Tier
-membership is recomputed per request against the current clock and the current
-Project Queue, because the tiers are wall-clock windows: retaining a tiered
-response would freeze the 30-minute, 8-hour, and 24-hour boundaries at the
-instant of the walk, and a session would sit in `recentActivity` until
-something unrelated moved on the bus. Anything else added to the response that
-depends on wall-clock time or on state outside the deny-list belongs on the
-per-request side of that split.
+**Retained tier selection is SQL-owned; time remains per request.** Retained
+Inbox and global lists share the [collection query owner](session-collection-queries.md).
+It updates affected rows, applies project grants before tier limits and decodes
+at most 20 rows per tier. Active process and queued-ID selections are queried
+separately, then merged before their shared limit. Attention wins over Active;
+all later tiers exclude both. Each request supplies its clock and current
+Project Queue, so 30-minute, 8-hour and 24-hour boundaries keep advancing even
+without catalog changes. The unretained compatibility path retains its existing
+shared collection walk and per-request tiering.
 
 Inbox's collection read requires only session identity, title, and recency. A
 provider with a bounded list-summary reader may use it for dirty or uncached
@@ -103,7 +132,7 @@ it must not keep an active or idle session in the approval tier.
 
 ## Cross-Session Delivery Attention
 
-The `non-human-user-turn` capability owns a durable attention receipt for the
+The `non-human-user-turn` capability owns a durable delivery receipt for the
 latest explicitly sourced cross-session user turn. A sender uses the ordinary
 messages API with `messageMetadata.sourceSessionId`. This is caller-declared
 provenance, never authentication or permission to access another session.
@@ -123,15 +152,19 @@ identity. YA does not infer provenance from transcript text.
 acknowledgement tombstone to prevent replay from raising the same flag again.
 Session collections, detail, and Inbox expose pending `nonHumanUserTurn` or
 explicit `null`; an omitted field means unknown and does not erase known state.
-Inbox reads the receipt during tiering, including retained collection reads,
-so an otherwise old/read session can need attention without a live process.
-Archival filtering and the existing tier cap still apply.
+A pending receipt keeps a clickable flag on session rows, including Inbox
+rows, but does not change tier selection or contribute to the sidebar Inbox
+badge or browser-tab title count. Flagged sessions follow the same Active,
+Recent and Unread rules as other sessions; an old/read session is not pulled
+into Inbox solely because of a delivery. Questions and tool approvals still
+place a flagged session in Needs Attention. Both retained SQL and unretained
+queries use this rule. Archival filtering and the existing tier cap still apply.
 
 The session flag and its Inbox row link to `?nonHumanTurn=<messageId>`. The
 client loads older history when needed, scrolls to the rendered turn, then
 acknowledges that exact ID with `nonHumanUserTurnMessageId` on the existing
-mark-seen request. Both attention surfaces disappear together. A normal
-mark-seen request does not acknowledge a delivery; an old-turn acknowledgement
+mark-seen request. The flag disappears across the sidebar and Inbox together.
+A normal mark-seen request does not acknowledge a delivery; an old-turn acknowledgement
 cannot erase a newer delivery. A missing/unrenderable turn or failed
 acknowledgement keeps the receipt and reports an error. A request that names a
 turn is answered with `acknowledged`, true only when that exact receipt was
@@ -268,6 +301,12 @@ agent activity therefore becomes unread without a manual refresh even when the
 session was already present in an active or recent tier. An already-unread row
 may patch additive content fields locally because the event cannot make it
 more unread; `session-seen` remains the authority that clears that state.
+
+Seen state is stored per session in the profile's required SQLite database.
+Mark-seen/clear commits before the query invalidation or `session-seen` event;
+a failed write publishes no success and remains retryable. Ordinary reads do
+not load the full seen corpus. The one-time legacy JSON adoption and failure
+contract are in [required SQLite](required-sqlite.md#session-seen-state).
 
 Unread compares last-seen against provider-content freshness, not storage
 freshness. Claude summaries derive `updatedAt` from the latest meaningful

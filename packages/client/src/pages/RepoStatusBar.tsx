@@ -5,8 +5,10 @@ import type {
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { CopyButton } from "../components/CopyButton";
-import { ButtonBase } from "../components/ui/Button";
-import { Modal } from "../components/ui/Modal";
+import { Badge } from "../components/ui/Badge";
+import { Banner } from "../components/ui/Banner";
+import { Button } from "../components/ui/Button";
+import { Dialog } from "../components/ui/Dialog";
 import type { TranslationFn } from "../i18n";
 import { formatCommitDateTime } from "./CommitFilesPane";
 import styles from "./RepoStatusBar.module.css";
@@ -121,15 +123,16 @@ export function RepoStatusBar({
         </span>
         {status.upstream &&
           (previewsIncoming ? (
-            <ButtonBase
-              className={`${styles.upstream} ${styles.upstreamButton}`}
+            <Button
+              variant="link"
+              mono
               title={t("sourceOpenIncomingCommits", {
                 upstream: status.upstream,
               })}
               onClick={() => setIncomingOpen(true)}
             >
               → {status.upstream}
-            </ButtonBase>
+            </Button>
           ) : (
             <span className={styles.upstream} title={status.upstream}>
               → {status.upstream}
@@ -142,21 +145,22 @@ export function RepoStatusBar({
           </span>
         )}
         {!status.isClean && onSelectChanges ? (
-          <ButtonBase
-            className={`${styles.badge} ${styles.dirty} ${styles.badgeAction}`}
+          <Button
+            variant="attention-outline"
+            size="dense"
+            className={styles.badge}
             title={t("sourceOpenChanges")}
             onClick={onSelectChanges}
           >
             {t("gitStatusDirty")}
-          </ButtonBase>
+          </Button>
         ) : (
-          <span
-            className={`${styles.badge} ${
-              status.isClean ? styles.clean : styles.dirty
-            }`}
+          <Badge
+            tone={status.isClean ? "success" : "warning"}
+            className={styles.state}
           >
             {status.isClean ? t("gitStatusClean") : t("gitStatusDirty")}
-          </span>
+          </Badge>
         )}
       </div>
       {incomingOpen && projectId && (
@@ -200,49 +204,47 @@ function IncomingCommitsDialog({
   }, [projectId]);
 
   return (
-    <Modal title={t("sourceIncomingCommitsTitle")} onClose={onClose}>
-      <div className={styles.incomingDialog}>
-        <p className={styles.incomingIntro}>
-          {t("sourceIncomingCommitsDescription")}
+    <Dialog
+      title={t("sourceIncomingCommitsTitle")}
+      description={t("sourceIncomingCommitsDescription")}
+      size="large"
+      onClose={onClose}
+    >
+      {error ? (
+        <Banner tone="error">{t("sourceIncomingCommitsError")}</Banner>
+      ) : result === null ? (
+        <p className={styles.incomingState}>
+          {t("sourceIncomingCommitsLoading")}
         </p>
-        {error ? (
-          <p className={styles.incomingState} role="alert">
-            {t("sourceIncomingCommitsError")}
-          </p>
-        ) : result === null ? (
-          <p className={styles.incomingState}>
-            {t("sourceIncomingCommitsLoading")}
-          </p>
-        ) : result.commits.length === 0 ? (
-          <p className={styles.incomingState}>
-            {t("sourceIncomingCommitsEmpty", { upstream: result.upstream })}
-          </p>
-        ) : (
-          <>
-            <ul className={styles.incomingList}>
-              {result.commits.map((commit) => (
-                <li key={commit.hash} className={styles.incomingCommit}>
-                  <span className={styles.incomingCommitHeader}>
-                    <code title={commit.hash}>{commit.shortHash}</code>
-                    <strong className={styles.incomingSubject}>
-                      {commit.subject}
-                    </strong>
-                  </span>
-                  <span className={styles.incomingMeta}>
-                    {commit.authorName} ·{" "}
-                    {formatCommitDateTime(commit.authorDate)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            {result.truncated && (
-              <p className={styles.incomingTruncated}>
-                {t("sourceIncomingCommitsTruncated", { count: result.limit })}
-              </p>
-            )}
-          </>
-        )}
-      </div>
-    </Modal>
+      ) : result.commits.length === 0 ? (
+        <p className={styles.incomingState}>
+          {t("sourceIncomingCommitsEmpty", { upstream: result.upstream })}
+        </p>
+      ) : (
+        <>
+          <ul className={styles.incomingList}>
+            {result.commits.map((commit) => (
+              <li key={commit.hash} className={styles.incomingCommit}>
+                <span className={styles.incomingCommitHeader}>
+                  <code title={commit.hash}>{commit.shortHash}</code>
+                  <strong className={styles.incomingSubject}>
+                    {commit.subject}
+                  </strong>
+                </span>
+                <span className={styles.incomingMeta}>
+                  {commit.authorName} ·{" "}
+                  {formatCommitDateTime(commit.authorDate)}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {result.truncated && (
+            <p className={styles.incomingTruncated}>
+              {t("sourceIncomingCommitsTruncated", { count: result.limit })}
+            </p>
+          )}
+        </>
+      )}
+    </Dialog>
   );
 }

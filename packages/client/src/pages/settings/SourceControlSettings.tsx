@@ -1,4 +1,6 @@
+import rowsStyles from "./SettingsRows.module.css";
 import { useCallback, useMemo } from "react";
+import { Banner } from "../../components/ui/Banner";
 import { Select } from "../../components/ui/Field";
 import { Switch } from "../../components/ui/Switch";
 import { useServerSettings } from "../../hooks/useServerSettings";
@@ -66,9 +68,9 @@ export function SourceControlSettings() {
       description={t("sourceControlSettingsDescription")}
       doc="site/src/content/docs/files-and-source-control.md#source-control-page"
     >
-      <div className="settings-group">
+      <div className={rowsStyles.group} data-settings-group>
         <SettingsItem
-          className="settings-item--wide-control"
+          className={rowsStyles.itemWideControl}
           label={t("sourceControlCleanLandingTitle")}
           description={t("sourceControlCleanLandingDescription")}
           valueText={
@@ -131,7 +133,7 @@ export function SourceControlSettings() {
           />
         </SettingsItem>
       </div>
-      {error && <p className="settings-error">{error}</p>}
+      {error && <Banner tone="error">{error}</Banner>}
     </SettingsSection>
   );
 }

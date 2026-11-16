@@ -102,24 +102,22 @@ describe("scoped durable session identity", () => {
       ]),
     ).toThrow();
     const version = database.prepare("PRAGMA user_version");
-    const metadata = database.prepare(
-      "SELECT metadata FROM session_metadata WHERE session_id = ?",
-    );
     try {
       expect(version.get()).toMatchObject({ user_version: 16 });
       migrateDiscoveryDatabase(database);
       expect(version.get()).toMatchObject({
         user_version: DISCOVERY_MIGRATIONS.length,
       });
-      expect(metadata.get("ses_existing")).toEqual({
-        metadata: '{"customTitle":"keep","provider":"opencode"}',
-      });
+      expect(
+        database
+          .prepare("SELECT provider, custom_title, extra FROM session_metadata")
+          .all(),
+      ).toEqual([{ provider: "opencode", custom_title: "keep", extra: "{}" }]);
       expect(() =>
         migrateDiscoveryDatabase(database, discoveryMigrationPrefix(16)),
       ).toThrow(/newer/);
     } finally {
       version.finalize();
-      metadata.finalize();
     }
   });
 
@@ -224,7 +222,7 @@ describe("scoped durable session identity", () => {
       identities: store,
       getMetadata: () => undefined,
     } as unknown as SessionMetadataService;
-    const adopt = vi.spyOn(store, "adoptDiscoveredBatch");
+    const adopt = vi.spyOn(store, "observeDiscoveredBatch");
     const projected = await projectCatalogIdentities(
       [
         row("/fixture/a", "same-native"),
@@ -242,23 +240,34 @@ describe("scoped durable session identity", () => {
       "legacy-native",
     ]);
 
-    // A binding that disagrees still reaches adoption, which rejects the
-    // whole publication without adopting its other rows.
+    // Conflicting observations are withheld without blocking valid imports.
     await expect(
       projectCatalogIdentities(
         [
           row("/fixture/a", "unseen-native"),
-          row("/fixture/a", "same-native", toUrlProjectId("/wrong/project")),
+          row("/fixture/a", "same-native", projectId, "codex"),
         ],
         metadata,
       ),
-    ).rejects.toThrow(SessionIdentityConflict);
+    ).resolves.toEqual([
+      expect.objectContaining({ sessionId: "unseen-native" }),
+    ]);
+    // A bound Claude transcript observed under another folder is still the
+    // saved session: it keeps its saved project and is not a second claim.
+    await expect(
+      projectCatalogIdentities(
+        [row("/fixture/a", "same-native", toUrlProjectId("/wrong/project"))],
+        metadata,
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({ sessionId: "public-a", projectId }),
+    ]);
     await expect(
       projectCatalogIdentities(
         [row("/fixture/a", "same-native", projectId, "codex")],
         metadata,
       ),
-    ).rejects.toThrow(SessionIdentityConflict);
+    ).resolves.toEqual([]);
     expect(
       store.lookupNative(
         nativeSessionRef(
@@ -267,31 +276,78 @@ describe("scoped durable session identity", () => {
           parseNativeSessionId("unseen-native"),
         ),
       ),
-    ).toBeUndefined();
+    ).toMatchObject({ sessionId: "unseen-native" });
   });
 
   it("rejects partial bindings and preserves surrounding writes on transaction failure", () => {
     const { database, store } = fixture();
     database.exec(
-      `INSERT INTO session_metadata VALUES ('keep', '{"customTitle":"before"}')`,
+      `INSERT INTO session_metadata (session_id, custom_title, extra) VALUES ('keep', 'before', '{}')`,
     );
     expect(() =>
       database.transaction(() => {
-        database.exec(
-          `UPDATE session_metadata SET metadata = '{"customTitle":"after"}'`,
-        );
+        database.exec(`UPDATE session_metadata SET custom_title = 'after'`);
         database.exec(
           `INSERT INTO session_identities VALUES ('partial', 'claude', 'cA', '${createdAt}', 'claude', NULL, 'native')`,
         );
       }),
     ).toThrow();
     expect(store.resolveYa(parseYaSessionId("partial"))).toBeUndefined();
-    const select = database.prepare("SELECT metadata FROM session_metadata");
+    const select = database.prepare(
+      "SELECT custom_title FROM session_metadata",
+    );
     try {
-      expect(select.get()).toEqual({ metadata: '{"customTitle":"before"}' });
+      expect(select.get()).toEqual({ custom_title: "before" });
     } finally {
       select.finalize();
     }
+  });
+
+  it("withholds every ambiguous new claim and rolls back unexpected storage errors", () => {
+    const { database, store } = fixture();
+    const candidate = (id: string, scope: string, project = projectId) => ({
+      native: nativeSessionRef("claude", scope, parseNativeSessionId(id)),
+      provider: "claude" as const,
+      projectId: project,
+      createdAt,
+    });
+    for (const reverse of [false, true]) {
+      const claims = [
+        candidate("ambiguous", "/store/a"),
+        candidate("ambiguous", "/store/b"),
+      ];
+      const observed = store.observeDiscoveredBatch(
+        reverse ? claims.reverse() : claims,
+      );
+      expect(
+        observed.every((result) => result instanceof SessionIdentityConflict),
+      ).toBe(true);
+      expect(store.resolveYa(parseYaSessionId("ambiguous"))).toBeUndefined();
+    }
+    const sameNative = [
+      candidate("project-conflict", "/store/a"),
+      candidate("project-conflict", "/store/a", toUrlProjectId("/different")),
+    ];
+    expect(
+      store
+        .observeDiscoveredBatch(sameNative)
+        .every((result) => result instanceof SessionIdentityConflict),
+    ).toBe(true);
+    expect(
+      store.resolveYa(parseYaSessionId("project-conflict")),
+    ).toBeUndefined();
+    database.exec(
+      "CREATE TRIGGER fail_import BEFORE INSERT ON session_identities WHEN NEW.session_id='broken' BEGIN SELECT RAISE(ABORT,'storage failed'); END",
+    );
+    expect(() =>
+      store.observeDiscoveredBatch([
+        candidate("before-storage-error", "/store/a"),
+        candidate("broken", "/store/a"),
+      ]),
+    ).toThrow("storage failed");
+    expect(
+      store.resolveYa(parseYaSessionId("before-storage-error")),
+    ).toBeUndefined();
   });
 
   it("keeps the Codex rollout address native while projecting the public id and OSS launch variant", async () => {
@@ -396,6 +452,7 @@ describe("scoped durable session identity", () => {
       lastActivity: null,
     };
     const index = new SessionIndexService({
+      database: fixture().database,
       dataDir: join(root, "indexes"),
       projectsDir: project.sessionDir,
     });
@@ -650,6 +707,13 @@ describe("scoped durable session identity", () => {
             privateDir,
             currentProjectId,
           );
+          // Same native id in another store and project.
+          managedRow(
+            storage.getDatabase(),
+            "elsewhere-twin",
+            "native-file",
+            ambientDir,
+          );
         }
         app = createApp({
           grokSessionsDir,
@@ -666,6 +730,34 @@ describe("scoped durable session identity", () => {
         const result = await response.json();
         expect(result.session.id).toBe("permanent-ya");
         expect(result.session.nativeSessionId).toBe(nativeRef.id);
+        expect(result.session.nativeSessionFamily).toBe("claude");
+        // Viewer paths carry no storage scope; the path's project chooses.
+        const viewer = (project: string, family: string, id: string) =>
+          app!.app.request(
+            `/api/projects/${project}/native-sessions/${family}/${id}`,
+          );
+        for (const [project, sessionId] of [
+          [currentProjectId, "permanent-ya"],
+          [projectId, "elsewhere-twin"],
+        ]) {
+          const resolved = await viewer(project!, "claude", "native-file");
+          expect(resolved.status).toBe(200);
+          expect(await resolved.json()).toEqual({ sessionId });
+        }
+        const nowhere = toUrlProjectId("/nowhere");
+        expect((await viewer(nowhere, "claude", "native-file")).status).toBe(
+          409,
+        );
+        expect(
+          (await viewer(currentProjectId, "claude", "missing-native")).status,
+        ).toBe(200);
+        expect((await viewer(nowhere, "claude", "unknown")).status).toBe(404);
+        expect(
+          (await viewer(currentProjectId, "codex", "native-file")).status,
+        ).toBe(404);
+        expect(
+          (await viewer(currentProjectId, "nope", "native-file")).status,
+        ).toBe(400);
         expect(JSON.stringify(result.messages)).toContain(
           "correct private source",
         );

@@ -1,7 +1,7 @@
 # UI design and mockup exports
 
 > YA's design language is moving onto a small set of shared controls that are
-> shown and captured in a dev-only design playground. UI proposals use real
+> shown and captured in a separate design playground. UI proposals use real
 > client components in isolated Vite fixtures, exported as relocatable HTML,
 > CSS, JavaScript, fonts and linked captures.
 
@@ -22,7 +22,7 @@ for a session, and `pages/settings/` for settings. These paths are relative to
 reusing it. [UI architecture](ui-architecture.md) owns rendering boundaries;
 [CSS architecture](css-architecture.md) owns styles and their containment.
 
-`src/styles/index.css` supplies the existing dark/light/verydark themes,
+`src/styles/tokens.css` supplies the existing dark/light/verydark themes,
 semantic colors, spacing, typography, and bundled font faces; component-owned
 styles live beside their components in CSS Modules. Reuse those tokens and
 component SVGs. The normal UI font is the system sans; the example explicitly
@@ -37,26 +37,70 @@ Status: direction selected 2026-11-08.
 [Plan 182](../docs/tactical/182-design-playground-and-shared-controls.md)
 sequences the work. The playground, its token page, the undefined-property
 limit, the button and switch census, the shared button family, the
-shared switch and segmented control, the shared popover and menu, and the
-shared fields have landed. For controls without a
+shared switch and segmented control, the shared popover and menu, the
+shared fields, the shared banner, badge, spinner and tabs, and the dialog
+pattern have landed. For controls without a
 shared version yet, the owners above remain the reference.
+
+[Plan 191](../docs/tactical/191-css-ownership-and-leak-closure.md) landed
+2026-11-11. All React-authored markup now has module owners, including the
+composer, whose controls retain their appearance until plan 182's control pass.
+Exactly three purpose globals remain: tokens/themes/fonts, base document
+state/defaults, and generated HTML. `purposeGlobals.ts` imports KaTeX, tokens,
+generated, then base. The legacy stylesheets and migration tooling are removed.
+
+`css:classes` rejects literal/template class names and class selector strings
+in production client TS/TSX, following helpers and DOM/HTML builders. Use module
+exports, shared-control APIs and stable data hooks. Declared generated families
+and six external-document recognition exceptions are reviewed explicitly.
+`controls:check` enforces caller layout-only classes; `buttons:check` rejects
+hand-drawn ButtonBase surfaces; `tokens:check` requires token-owned type and
+radius values. Audit shows their counted exceptions and reasons.
+The global purpose check retains 145 generated contexts and zero base/token
+exceptions; React shells, source fallback rows, media groups and prefix gutters
+have module owners ([CSS contract](css-architecture.md#contract)).
+
+Ownership changes preserve user typography, responsive geometry and interaction
+states. Cross-module cascade ties have explicit winners; DOM consumers and
+fixtures use stable data boundaries. Sequential typing stays independent of
+streaming updates and acknowledges every key within 100 ms. Copy feedback and
+exact source selection remain part of those contracts. Remaining composer swaps,
+non-button overrides, specialized ButtonBase surfaces and semantic typography
+exceptions are listed in plan 191's follow-ups.
 
 **Buttons.** `src/components/ui/Button.tsx` owns the button family:
 
 - `Button`: variants `primary` (brand green), `secondary` (the default),
-  `outline`, `ghost`, `danger` and `danger-outline`; sizes `default`,
-  `small` and `dense`. `dense` (22 px) is for controls inside dense rows
+  `outline`, `ghost`, `link`, `success-outline`, `attention-outline`, `danger` and `danger-outline`;
+  sizes `default`, `small`, `dense`, `large`, `inline` and `inline-icon`. `link` is link-colored text,
+  transparent with an underline on hover. It inherits the surrounding font size
+  and line height, has no horizontal padding or minimum height on fine pointers,
+  and keeps the focus ring. Coarse pointers get an invisible hit area of at
+  least 44 px without growing the text line. `success-outline` is the green
+  outline used by copied transcript/tool/diff actions and active viewer links.
+  `attention-outline` is the shared warning outline for both newer-content
+  Reload actions and Force start. `elevated` gives Button/IconButton an opaque
+  surface and shadow over content: bulk select, public-share toggle/follow and
+  gallery arrows share it; filled variants retain their opaque tone.
+  `large` is 36 px (44 px on coarse pointers), used by page/header navigation
+  and the session-header menu. `dense` (22 px) is for controls inside dense rows
   (tool rows, code lines, hover-revealed copy actions): on coarse pointers
-  it keeps its drawn size and extends its hit area invisibly, so the row
-  does not grow.
+  it keeps its drawn size and extends its hit area by 8 px per side (38 px
+  total), so adjacent dense controls do not gain overlapping 11 px halos.
+  `touchTarget="large"` gives small controls a drawn 44 px touch target.
 - `IconButton`: icon-only; its required `label` is the accessible name and
   the tooltip, following the user's tooltip setting (`data-tooltip` for
   `TooltipLayer` when themed, `title` when native). `tooltip` replaces the
   tooltip text when it should say more than the name (a gesture hint, a
   freshness state). Defaults to `ghost`; a ghost with `aria-pressed="true"`
-  shows as a bordered, filled chip.
+  shows as a bordered, filled chip. A pressed secondary has a green border,
+  and weight 600; a pressed outline also gains the green border, weight 600
+  and hover surface. User chips use outline so their unselected border remains.
+  A popover/menu trigger uses `data-selected={open}` for the secondary or
+  outline selection border (outline also gains a fill), alongside `aria-haspopup` and `aria-expanded`; it is not a toggle.
 - `ButtonBase`: an unstyled button for clickable rows, cards, disclosure
-  arrows and chips. Its reset has zero specificity, so the owner's styles
+  arrows and image wrappers. Ordinary chips use Button/IconButton; rich
+  whole-card actions use SelectableCard (below). Its reset has zero specificity, so the owner's styles
   always win, including ancestor rules such as `.list button`; it keeps the
   focus ring. Its text is `--font-size-base` rather than inherited, the
   size raw buttons had, so a swapped row keeps its text size; an owner whose
@@ -71,30 +115,35 @@ submission while keeping focus. Coarse pointers get 44 px (default and
 icon) and 36 px (small) controls. A text glyph used as an icon (×, ↑)
 renders larger than label text. A caller's `className` adds layout only
 (margins, flex placement, width); the control owns colors, borders,
-padding, size and type. A caller rule that must override the control's look is compounded
-(`.chip.disabled`), because two single-class rules resolve by stylesheet
-order.
+padding, size and type. Look/size overrides require a counted reason in
+`design/census/control-override-allowlist.json`; `pnpm controls:check` (in lint)
+resolves module/global classes, states, media queries, descendant rules and
+obvious prop forwarding. `--record` only lowers counts. This applies to every
+shared control below, including field input and dialog body class props.
+Hover-revealed copy actions remain keyboard reachable; Enter/Space on the
+tool-header copy action copies without toggling the enclosing disclosure.
+Caller-supplied SVGs and keyboard hints may be styled as children; descendants
+owned by the shared control retain its look. See [CSS ownership](css-architecture.md#shared-control-caller-classes).
 
 Which variant: the single main submit or confirm action of a form or
 dialog is `primary`; a destructive confirm is `danger`; a destructive action
 beside others (Remove, Delete, Revoke, Forget) is `danger-outline`; Cancel,
 Close and every other action is `secondary`; an inline text action ("Show
 more", "Copy", "Edit") is `ghost` `small`; an icon-only button is an
-`IconButton`. `outline` remains for the few places that must differ from a
-neighbouring secondary.
+`IconButton`. A text action that should read as a link uses `link`. `outline`
+remains for the few places that must differ from a neighbouring secondary.
 
 Client buttons are on the shared controls except those the allowlist
-below names: tabs (a later family), listbox options, the composer's
-controls, the crash fallback page, and 15 pre-existing `role="button"`
-elements.
+below names: listbox options, the composer's controls, the crash fallback
+page, and 15 pre-existing `role="button"` elements.
 `pnpm buttons:check` (part of `pnpm lint`) keeps it so. It rejects:
 
-- a banned legacy class: any button, switch or option class from
-  `design/census/mapping.ts` without global rules (`toggle-switch`,
-  `font-size-option`, …), plus those recorded in the allowlist's
-  `bannedClasses`, so restoring a deleted rule does not lift the ban;
-- a raw `<button>` outside `ui/Button.tsx` and the shared selection and
-  menu controls, unless it has a tab role or sits in a composer file;
+- a retired legacy class recorded in `design/census/button-allowlist.json`'s
+  permanent `bannedClasses` list (`toggle-switch`, `font-size-option`, …).
+  Deleting a census row or restoring CSS never lifts a ban. Before retiring
+  a row whose rules are deleted, add all its retired classes to that list;
+- a raw `<button>` outside `ui/Button.tsx` and the shared selection, menu
+  and tab controls, unless it sits in a composer file;
 - a new `role="button"` element (use `ButtonBase`);
 - a CSS rule, module or global, whose selector reaches a bare `button`
   element and sets look or size properties (`.panel button { background:
@@ -117,12 +166,54 @@ elements.
   `ui/Checkbox.tsx` and `ui/Switch.tsx`, and a CSS rule whose selector
   styles a bare `input`, `select` or `textarea` element with look or size
   properties (`.form input { border: … }`); the legacy field classes
-  (`settings-input`, `settings-select`, …) once their rules are gone.
+  (`settings-input`, `settings-select`, …) once their rules are gone;
+- a tab role (`tab`, `tablist`, `tabpanel`) outside `ui/Tabs.tsx`, a
+  `@keyframes` set that rotates outside `ui/Spinner.module.css`, and the
+  legacy banner, badge, spinner and tab classes (`settings-warning`,
+  `form-error`, `badge-error`, `login-spinner`, `model-switch-tab`, …,
+  recorded in `bannedClasses`);
+- a native `window.confirm`, `alert` or `prompt` call outside
+  `ui/ConfirmDialog.tsx`, an `aria-modal` attribute or `alertdialog` role
+  outside `ui/Modal.tsx`, `ui/Dialog.tsx` and `ui/ConfirmDialog.tsx`, a
+  CSS Module rule outside `components/ui` that reaches into Modal's frame
+  (`:global(.modal…)` or `[data-modal-*]` frame hooks), a global `.modal…:has(…)` rule, and the old dialog
+  frame and footer classes (`model-switch-actions`, `onboarding-footer`, …,
+  recorded in `bannedClasses`).
 
 Exceptions sit in `design/census/button-allowlist.json`, each with a count
-and a reason; counts only fall (`--record`), and a later family inherits
-the entries that name it. The Census/Buttons "Button elements" state lists
-what is left.
+and a reason; counts only fall (`--record`). Audit / Reviewed exceptions lists
+all nonempty sections, including CSS rules and document listeners, with each
+file's count against its section's exception total. Composer-file exemptions
+are also visible under Audit / Unfinished migrations even when they need no
+counted entry.
+
+**Selectable cards.** `src/components/ui/SelectableCard.tsx` owns rich card
+and navigation-row surfaces. Hover uses a neutral border only on hover-capable
+fine pointers; `selected` sets `aria-pressed`, while navigation uses
+`aria-current` (`page` or `true`). Current/selected surfaces have a green border
+and tinted fill distinct from hover, including on touch. Ordinary actions omit
+both attributes. Default cards are at least 44 px tall; `size="compact"` gives
+36 px mouse rows and 44 px touch rows. `variant="quiet"` de-emphasizes secondary
+login choices with a transparent, dashed surface; `variant="accent"` keeps the
+project queue's 3 px leading accent. Disabled cards mute text without dimming
+children; `aria-busy` preserves full spinner emphasis while connecting.
+Caller classes own content layout only. Login/host/share/answer actions,
+SidePanel and project queue rows, child/conversation/settings/submission
+navigation share it. Specialized measured transcript previews retain ButtonBase
+with explicit reasons. Patterns/Selectable card shows these states.
+
+Buttons support `textFlow="wrap"` (inline text flow, anywhere wrapping) and
+`textFlow="truncate"` (a single ellipsized line within the caller's width).
+`mono` uses the fixed-font family and size; filename actions use this consistently
+across Read/Edit/ViewImage/WriteStdin and review-comment locations.
+`FileActionButton` supplies the wrapping mono link defaults for edit summaries.
+`size="inline"` keeps gallery chips at 0.78em without growing prose line boxes;
+`inline-icon` draws an 11 px path-copy icon. Both retain invisible 44 px coarse
+hit areas. `subdued` starts at 40% opacity and reveals on hover/focus/copy success.
+`CopyTextButton` uses Button/IconButton; success-outline feedback lasts 1.8 s.
+Prompt action slots and measured controls agree at 26 px fine / 36 px coarse,
+independent of prompt width. Math/render toggles use an opaque elevated surface
+and retain hover/focus reveal on both mouse and touch; they remain Tab reachable.
 
 **Switches and segmented controls.** `src/components/ui/Switch.tsx` is the
 on/off control: a native checkbox with `role="switch"` drawn as the 44×24
@@ -201,7 +292,8 @@ keep the menu open. A radio menu opens on its checked item. `Menu`'s
 `selection` says how checked items look: `mark` (default) puts a dot or
 check in a leading column; `highlight` tints the checked row instead, for
 select-style lists whose rows lead with their own dots or badges.
-`FilterDropdown` uses `highlight` for single-select. `MenuGroup`
+`FilterDropdown` uses `highlight` for single-select. Its `triggerSize` passes
+a shared Button size through; `triggerClassName` adds layout only. `MenuGroup`
 labels a group and `MenuSeparator` divides. `useMenuTrigger()` wires the
 trigger: `aria-haspopup="menu"`, `aria-expanded`, toggle on click,
 ArrowDown to open.
@@ -212,8 +304,7 @@ popover's close request, so popovers need the layer stack anyway; and
 trigger's own click. CSS anchor positioning is missing from older iOS
 WebKit (the native shell). One script path places every popover, and
 `Modal`'s anchored mode shares its placement function. `Modal` stays a
-portal `div` rather than `<dialog>`: moving it is the dialog family's
-decision (plan 182, family 7).
+portal `div` rather than `<dialog>` (see Dialogs below).
 
 Which control: a list of actions is a `Menu`; a one-of-several choice in a
 dropdown is a `Menu` of radio items, and a filter with several selections a
@@ -239,6 +330,20 @@ caller's render (the 100 ms rule in [AGENTS.md](../AGENTS.md)). Width
 defaults to the container's at zero specificity, so a caller's single
 layout class wins; the control owns everything else.
 
+`TextInput` accepts a decorative `leading` slot and a `trailing` slot for a
+clear action, shortcut or other content. Slots occupy their actual width, so
+text cannot run underneath actions. Supplying either prop, even with a null or
+undefined value, selects a stable wrapper: showing/hiding its content keeps
+the same native input, ref, focus and selection. `className` lays out that
+wrapper and `inputClassName` lays out its native input; without slots or a unit,
+`className` stays on the input. The native input retains Field naming, hints,
+validation, disabled state and event handling. Native search clear remains
+available with generic slots; `hideNativeSearchClear` suppresses it only when
+the caller supplies a replacement. The shared wrapper owns the
+focus/invalid ring. `Select` accepts a decorative `leading` slot with the same
+stable native-control contract. `touchTarget="large"` gives compact fields a
+44 px minimum on coarse pointers while preserving mouse density.
+
 `Field` is a label above one control, with an optional `hint` and `error`
 below: it names the control with `<label htmlFor>`, links the hint and
 error through `aria-describedby`, marks the control `aria-invalid` while
@@ -251,6 +356,11 @@ instead.
 in the accent green, with an optional `label` (clicking it toggles) and a
 muted `description` line that describes rather than names, and
 `onCheckedChange(checked, event)`. `indeterminate` shows a mixed state.
+`variant="row"` adds vertical row spacing, `option` adds a padded hover surface,
+and `toolbar` centers compact choices at 28 px (30 px on narrow layouts).
+Labelled choices can request `touchTarget="large"` for a 44 px coarse-pointer
+row. Whole-row clicks still operate the native input, including at the padded
+edge; disabled options do not acquire a hover surface.
 
 Which control: one setting on or off that applies at once is a `Switch`; a
 checkbox picks several independent things (a selection, a filter, an
@@ -258,12 +368,130 @@ checkbox picks several independent things (a selection, a filter, an
 together is a `SegmentedControl`; `Radio` is only for a choice whose
 options sit in separate rows or cards (the default among listed services).
 
+**Banners, badges, spinners and tabs.** `src/components/ui/Banner.tsx` is
+a message about a page, panel, form or action: `tone` `info`, `success`,
+`warning` or `error`, drawn as a box tinted from the tone's color with a
+tone-colored left edge, text in the primary text color. `title` is a bold
+first line, `actions` hold its buttons (they wrap under the text when the
+banner is narrow), and `onDismiss` with a `dismissLabel` adds a close
+button (the caller's translated label; the control takes no i18n
+context). An error banner is `role="alert"`, the
+others `role="status"`; a notice that is part of the page from the start,
+or comes from polled state, passes `role="none"` (`"note"` for an aside),
+so it is not read out on load or on every poll. A live region announces
+changes to content already on the page, so a result that replaces an
+earlier one (saved, then failed, then saved) keeps one mounted status
+element and changes its text, with an error banner beside it. `compact`
+tightens it for a row or small panel. `elevated` supplies the shared large shadow
+for notices floating above page content; caller classes supply their placement. An error or warning that belongs to
+one field is that `Field`'s `error` or `hint`, never an alert that fires
+as the user types. Toasts,
+tool output error text in the transcript, system message rows and empty
+states are not banners.
+
+`src/components/ui/Badge.tsx` is a short label that is not a control: a
+state, a kind or a count. `tone` is `neutral`, `info`, `success`,
+`warning`, `danger` or `accent` (the brand green, for "current", "default",
+"live"); `emphasis="soft"` is a tint with colored text and `solid` a filled
+chip for counts that ask for attention; `shape="count"` is a pill with
+tabular figures; `size="small"` fits dense rows; `mono` sets the code font.
+Soft text is the tone mixed toward the text color, and the accent and danger
+solid fills are darkened, so 10–11 px type stays above 4.5:1 in every
+theme. A component whose color comes from data (a provider's brand color)
+passes `palette={{ color, soft, onSolid }}`. `color` is required, `soft` and
+`onSolid` retain the selected tone's defaults when omitted. The Badge owns
+painting, text mixing and solid-fill darkening; callers provide a contrasting
+`onSolid` for custom solid palettes and verify it in every theme. Class names
+remain layout-only; they do not override private badge custom properties. A count or a state its text does not say needs `role="img"`
+with an `aria-label`; `tooltip` is visual and names nothing. A clickable
+chip is a button, not a badge. Only a badge with a `tooltip` subscribes to the
+tooltip setting, so badges cost nothing extra in the transcript.
+
+`src/components/ui/Spinner.tsx` is the one busy indicator: a ring in the
+current text color with one gap, `small` (0.9em, inline with text and in
+`Button`'s `busy` state), `default` (16 px) and `large` (32 px, page-level
+loading), slower under reduced motion. Without `label` it is decoration
+beside text that says what is happening; with `label` it is a
+`role="status"` named by the label, which it also holds as visually hidden
+text so screen readers announce it. It reads `--ya-activity-play` where an
+ancestor sets it, so a tool row scrolled out of view pauses its spinner;
+elsewhere it runs. Its keyframes are the client's
+only rotating set.
+
+`src/components/ui/Tabs.tsx` is a tab strip: `role="tablist"` with
+`role="tab"` buttons, one tab stop, Left/Right, Home and End that move and
+select (`activation="manual"` to move focus only), disabled tabs skipped.
+`variant="underline"` (default) heads a pane, dialog or panel and wraps
+onto a second row rather than scrolling tabs out of sight;
+`variant="pill"` sits in a toolbar or page header. `layout="fill"` gives
+equal columns whose labels wrap, `fill-phone` only at ≤760 px. A tab takes
+`icon` (decorative, so a state it shows, such as answered ✓, also goes in
+`ariaLabel`), `count` (a small count badge, part of its name unless
+`ariaLabel` replaces it) and `ariaLabel`. Tabs whose switch is costly (a
+route change, heavy panes) use `activation="manual"`. Given an `id`, the selected tab points at the
+`<TabPanel tabsId={id} value={tab}>` holding its pane, which is labelled
+by the tab.
+
+Which control: a message about a page or action is a `Banner`, a passing
+confirmation of an action a toast; a label beside content is a `Badge`;
+work in progress is a `Spinner`, or `busy` on the button that started it;
+switching between panes of one surface is `Tabs`, choosing a value a
+`SegmentedControl`.
+
+**Dialogs.** `src/components/ui/Modal.tsx` is the modal surface: overlay,
+Escape through the layer stack, Android back (`closeOnBackGesture`),
+optional anchoring beside a trigger, a header with the title and close
+button, and a scrolling content area. It is named by its title
+(`aria-labelledby`), keeps Tab inside itself, and returns focus to the
+element that opened it when it closes (or to the menu trigger, when a
+menu item that opened it went away with its menu). A Tab pressed while
+focus is on nothing, because the focused control was removed or
+disabled, goes back into the topmost modal. It stays a portaled `div` rather
+than a modal `<dialog>`: the tooltip layer, hover cards and selection
+actions portal into the body, and the top layer would draw over them and
+make them inert. Viewers (files, diffs, media, logs, process details) use
+`Modal` directly. `ui/Modal.module.css` owns the shared frame; stable
+`data-modal-*` hooks identify frame, overlay, header, title and scrolling content.
+Existing caller frame reach-ins remain counted exceptions, including attribute
+aliases, until shared variants replace their specific geometry requirements.
+
+`src/components/ui/Dialog.tsx` is the pattern for everything else shown
+over the page: a form, a choice, a notice. `size` is `small` (24rem, a
+confirmation or one field), `medium` (32rem, the default, a short form) or
+`large` (48rem, a long form or a list); on phones every size is a
+full-width card near the top, as tall as its content and clear of the
+keyboard (content that needs the whole screen sets its own height).
+`layer="confirm"` (`--z-confirm`) draws above every full-screen surface,
+for a question one of them asks.
+The body is padded and stacks its children with one gap; `description` is
+an intro sentence the dialog is described by; `footer` is the action row
+below the scrolling body, and `footerStart` holds actions for its other
+end (Back, Skip). The footer applies the button variant rule: Cancel and
+other secondary actions first, at most one `primary` action last, and a
+destructive confirmation `danger` instead of primary. A form keeps its
+`<form>` in the body and its submit button in the footer names it with the
+`form` attribute, so Enter in a field still submits. Width and padding come
+from `size`, never from a caller rule on Modal's frame.
+
+`confirmDialog({ title, message, confirmLabel, tone })` in
+`src/components/ui/ConfirmDialog.tsx` replaces `window.confirm`: a small
+`alertdialog` whose title asks the question ("Delete user?"), whose
+message says the consequence, and whose confirm button names the action;
+`tone="danger"` makes it a danger button and starts focus on Cancel. It
+draws on the confirm layer, above the source editor and other full-screen
+surfaces, and the same question asked again while open (a double click)
+is answered "no" at once. It resolves `true` or `false`, so the caller
+awaits it. One
+`ConfirmDialogHost` per entrypoint shows requests in turn; without one (a
+component test) it falls back to `window.confirm` with the message.
+`promptDialog` does the same for one text answer (`window.prompt`).
+
 **Layers.** The design language has four layers. Each lower layer may not
 depend on a higher one:
 
-1. **Tokens:** the theme custom properties in `src/styles/index.css`
+1. **Tokens:** the theme custom properties in `src/styles/tokens.css`
    (color, spacing, radius, type, shadow and the layer scale `--z-modal`,
-   `--z-popover`, `--z-tooltip`). Other fixed surfaces still carry their
+   `--z-popover`, `--z-confirm`, `--z-tooltip`). Other fixed surfaces still carry their
    own numbers, some above `--z-modal` (the source editor, the fullscreen
    file viewer and its toolbar, the prompt history rail); popovers stay
    above them, and moving them onto the scale is open. A token used in client CSS must be defined in every client
@@ -273,15 +501,27 @@ depend on a higher one:
    `--bg-elevated` (popovers, menus, raised cards) and `--bg-input` (fields);
    `--bg-error`, `--bg-warning`, `--bg-success` and `--bg-selected` are tints
    mixed from each theme's status and primary colors; `--shadow-sm/md/lg`
-   is the elevation scale; `--radius-full` makes a pill. Values every theme
+   is the elevation scale; `--radius-full` makes a pill. The type scale is
+   `--font-size-xs` 10px, `-caption` 11px, `-sm` 12px, `-base` 13px,
+   `-lg` 14px, `-xl` 16px and `-2xl` 18px at 100%. All seven follow the
+   UI font preference: the default 115% gives an 18.4px root (1rem), with
+   each type token multiplied by 1.15. The fixed counterpart
+   `--font-size-fixed-xs` stays at 10px for provider effort letters and toolbar
+   status slots whose width budgets are independent of UI scale; ordinary text
+   uses the scaled tokens. Rem conversions compare those computed sizes;
+   fixed radii do not scale with that preference. The radius scale is
+   `--radius-xs` 3px, `-sm` 4px, `-md` 6px, `-lg` 8px and `-full` 999px.
+   The Tokens/Scales page shows every step. A new step needs roughly eight
+   uses; uncommon heading/glyph sizes and user-configured output/source sizes
+   retain counted reasons instead. Values every theme
    shares, the dark defaults and the tints live in one `[data-theme]` block
    before the theme blocks, so a nested theme (a playground cell) resolves
    its own.
 2. **Controls:** prop-driven shared components in `src/components/ui/`, each
    with its own CSS Module. The planned set is `Button`, `IconButton`,
    `Switch`, `SegmentedControl`, `Checkbox`, `Field`, `Popover`, `Menu`,
-   `Banner`, `Badge`, `Spinner` and `Tabs`, beside the existing `Modal` and
-   `TooltipLayer`. A control renders from props alone: no server, router or
+   `Banner`, `Badge`, `Spinner`, `Tabs`, `Modal` and `Dialog` (with
+   `confirmDialog`), beside `TooltipLayer`. A control renders from props alone: no server, router or
    app-level context. Needing a service makes it a pattern or a scene.
 3. **Patterns:** reusable compositions of controls, such as a settings row,
    a confirm dialog or an icon toolbar group.
@@ -295,10 +535,10 @@ depend on a higher one:
   census, build the shared control, swap every use, delete the old CSS, ban
   the old way. The plan owns the order; composer controls are excluded until
   their own pass.
-- Each family's variants are chosen from its census page: every legacy
-  variant rendered next to the proposed canonical set. The
-  legacy-to-variant mapping lives in `packages/client/design/census/`, and
-  the swap follows it.
+- During a family sweep, choose variants from a temporary census of legacy
+  looks beside the proposed shared set. Once swept, remove those rows and
+  their mapping data; Controls/Patterns remain the standard to use, and
+  Audit distinguishes unfinished migrations from retained exceptions.
 - A swap adopts the canonical variant even where the old style differed;
   design changes are accepted and fallout is fixed as noticed. It is a quick
   cut in a few area-sized commits, not an opportunistic burn-down.
@@ -307,9 +547,15 @@ depend on a higher one:
   its old classes outright, and new code uses the shared control.
 
 **Playground.** `packages/client/design.html` is a separate entry served by
-the Vite dev server, so it opens at `/design.html` on the YA dev port (local
-or Tailscale). No production build lists it as an input, and it is not
-reachable on relay or hosted clients. Biome rejects any import of
+the Vite dev server at `/design.html` on the YA dev port (local or Tailscale).
+The remote static build also includes it, so the normal Latest deployment
+publishes it at `https://latest.yepanywhere.com/design.html` alongside the app,
+without a separate release or a running YA server. The same build works below
+a configured base path (for example `/remote/design.html` on the website).
+Audit data reflects the deployed source revision; development recomputes it
+as sources change. Hash links, themes, phone frames and isolated states work
+in both builds. The local packaged client does not include the playground.
+Biome rejects any import of
 `packages/client/design/`, a `*.specimen.tsx` file or the playground's data
 module from production client code.
 
@@ -317,15 +563,18 @@ Example files are `*.specimen.tsx`: beside their component under `src/`, or
 under `packages/client/design/` for playground-only pages. They use a
 Storybook-compatible subset of Component Story Format: a default export
 `{ title, component?, parameters }`, where `parameters.layer` is `token`,
-`control`, `pattern`, `scene` or `census`, and one exported function per
+`control`, `pattern` or `scene`, and one exported function per
 state, optionally named with `storyName`. Decorators, args, loaders and play
-functions are not supported. Ids follow Storybook's rules: `Census/Buttons`
-is `census-buttons`, and its `LegacyByVariant` state is
-`census-buttons--legacy-by-variant`. States keep source order.
+functions are not supported. Ids follow Storybook's rules: `Controls/Button`
+is `controls-button`, and its `Variants` state is
+`controls-button--variants`. States keep source order. The Audit report is
+a standalone page, not a specimen with visual states.
 
 | URL (after `/design.html`) | Shows |
 | --- | --- |
-| `#/` | Index, grouped by layer |
+| `#/` | Index, grouped by layer, plus the Audit report |
+| `#/audit` | One audit report, without state or theme comparisons |
+| `#/audit?section=exceptions` | Scroll to migrations, exceptions or generated section |
 | `#/<specimen-id>` | Every state, one column per theme (verydark, dark, light) |
 | `#/<state-id>` | One state across the themes |
 | `…?theme=light` | One theme only |
@@ -334,7 +583,7 @@ is `census-buttons`, and its `LegacyByVariant` state is
 
 Every page except an isolated state has a sidebar listing the layers and
 their specimens, with the current specimen's states expanded beneath it. Its
-top holds the global view settings: themes shown (all, or one of the three)
+top holds the specimen view settings: themes shown (all, or one of the three)
 and width (natural or phone). They live in the URL (`?theme=light`,
 `?phone`), and every playground link carries them, so a choice holds while
 navigating. With one theme chosen the whole page, sidebar included, takes
@@ -342,7 +591,7 @@ that theme; with all three, each cell carries its own and the shell stays
 dark. Below 760 px wide the sidebar
 becomes a drawer behind a **Pages** button, which closes on following a link,
 Escape or a tap outside it, and the theme columns stack. Specimens with
-`parameters.width: "fill"` (census and token pages) always stack their themes,
+`parameters.width: "fill"` (such as token pages) always stack their themes,
 and their rows wrap details under the name rather than narrowing a column.
 Each grid cell carries its own `data-theme`, so theme tokens resolve per cell.
 An isolated page marks `[data-design-ready]` once fonts load; a state still
@@ -351,11 +600,12 @@ to go. A state that throws renders its error in place and logs a console
 error.
 
 ```bash
-pnpm -s design:index                       # JSON: every specimen, state and URL
-pnpm -s design:shot census-buttons         # each state, dark theme, 1000 px
+pnpm -s design:index                       # JSON: pages, specimens, states and URLs
+pnpm -s design:shot audit --phone           # report once, desktop and phone
 pnpm -s design:shot tokens--colors --theme all --phone
+pnpm -s design:shot scenes-composer --theme all --phone
 pnpm -s design:shot controls-button--variants --grid --theme all
-pnpm -s design:shot census-buttons --url http://localhost:3400
+pnpm -s design:shot audit --url http://localhost:3400
 ```
 
 `design:index` parses the example files statically, so it needs no browser or
@@ -377,33 +627,51 @@ The playground's pages:
   family.
 - **Controls/Switch** and **Controls/SegmentedControl:** each state, both
   looks, sizes and layouts.
-- **Census/Buttons:** every global and CSS Module class named like a
-  button (`button`, `btn`), grouped by its destination in
-  `design/census/mapping.ts` (a shared variant, `ButtonBase`, a later
-  family, composer-excluded, or dead), each legacy sample beside the shared
-  control it becomes, with rows whose rules a swap already deleted marked
-  so; an **Unmapped** state listing any such class without a row; and
-  **Button elements, by directory**, which finds buttons by element rather
-  than class name: every raw `<button>`, every shared `Button`,
-  `IconButton` and `ButtonBase`, every `<a>`, `Link` or `<label>` whose
-  className names a button or calls `buttonClassName()`, and every element
-  with `role="button"`, each with its file, line and className expression.
-  Raw buttons that belong to a later family (menu or tab roles, the
-  composer's files) are counted apart from those still to swap. The scan
-  (`design/buttonElements.ts`, classification in `design/buttonFamilies.ts`)
-  parses production TSX with the TypeScript compiler.
-- **Controls/Field:** text inputs, selects and textareas in every state,
-  `Field` with hint and error, and checkboxes and radios.
-- **Census/Fields:** each legacy field class with its live use count,
-  grouped by the shared control it became, kept as a regression view.
-- **Census/Switches and segmented controls:** the shared controls, each
-  mapped legacy style with its live use count (all swept), every unmapped
-  global class and every matching CSS Module class, each rendered
-  standalone, kept as a regression view.
+- **Controls/Field:** text inputs, selects, textareas, checkboxes and radios.
+- **Controls/Menu**, **Controls/Banner**, **Controls/Badge**,
+  **Controls/Spinner** and **Controls/Tabs:** the shared states and variants.
+- **Controls/Dialog:** shared dialog sizes, forms, choices and confirmations.
+- **Patterns/Selectable card:** shared rich action and navigation surfaces.
+- **Scenes/Composer:** the same inert toolbar preview used in Settings, with
+  fixed standard and all-controls-enabled configurations. Standard uses the
+  desktop-default control set at every width so comparisons hold the controls
+  constant. Optional actions use their normal priorities and More behavior.
+  Both scenes are non-recording and omit the waveform. Web dictation does not
+  show that waveform in the real toolbar either; the Settings preview retains
+  its separate synthetic demonstration. Context usage is fixed at 84%, with
+  a fixed reference clock and opacity. The context meter and microphone render without
+  their live settings editors. Scenes fit the available frame width instead of
+  the Settings preview’s wide scrolling surface. Scenes do not fetch server
+  data or change saved toolbar presence or waveform opacity; Settings continues
+  to use the user's live configuration. These scenes show the toolbar, not an editable message box.
+- **Audit / Unfinished migrations:** composer raw buttons/fields and counted
+  control/type/radius findings, with source locations. Their CSS already has
+  module owners; shared-control adoption remains plan 182's follow-up.
+- **Audit / Reviewed exceptions:** caller appearance overrides, specialized
+  ButtonBase surfaces, type/radius values and every nonempty element/interaction
+  allowlist category. Permanent bans remain enforcement history, not findings.
+- **Audit / Generated-content boundaries:** generated class families and their
+  producers, context-dependent generated styles, and external markup recognition.
+  These may be deliberate continuing boundaries rather than migration work.
 
-Global class counts are static whole-token counts in production
-TypeScript, served by a dev-only Vite plugin and refreshed when sources
-change; classes built at runtime are not seen.
+The Audit renders once in the shell's theme, hides specimen view settings,
+and has no state, isolated-view link or theme grid. Three overview links jump
+into its sections; native disclosures reveal the detailed rows and are collapsed
+initially. Counts can overlap across checks. Rows show the element/class,
+location or use count, recorded reason and resolution. Counts and reasons come
+directly from enforcement lists. A retained exception is not automatically
+unfinished work. Old `census-*` page and `--remaining` state URLs open the
+corresponding Audit section, even with `?iso` from an old capture link.
+
+`design:index` lists Audit under `pages`, separately from `specimens`.
+`design:shot audit --phone` captures the full report at desktop and phone
+widths; `--theme` changes the shell theme without duplicating the report in a
+grid. The separate directory inventory and shared/link counts remain removed;
+parser scans of raw buttons and fields still supply lint and the composer rows.
+
+The Vite data plugin refreshes composer locations and runtime match counts
+when source or census inputs change and freezes them into the remote build.
+It does not load every component's CSS Module to render legacy samples.
 
 No visual-regression test of the playground runs in CI. Screenshots are
 taken on demand.

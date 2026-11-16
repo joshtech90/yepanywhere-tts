@@ -24,20 +24,66 @@ records the measurements.
 - `rendez-composer.spec.ts` no longer sleeps 10.5s to restate a fake-timer
   unit contract.
 - The three cases that failed every attempt on `main` pass: the account-chip
-  and long-context effort assertions now follow the chip menu and the effort
+  and long-context effort assertions now follow the Account tab and the effort
   radio group, and the correction-attachment case was repaired separately in
   `55b466d50`. The model switch modal's thinking heading no longer shows a raw
   `{mode}` placeholder.
 - `budgetSeconds` in the durations record fails CI planning when the suite's
   planned case time exceeds 50 minutes
   ([suite time budget](../topics/e2e-testing.md#suite-time-budget)).
+- November 10 repairs preserve turn-narrowed indexed transcript cursors, follow
+  the account chip's direct Account tab, and reveal the copy control again after
+  its earlier copied state expires. The Hono adapter patch also fixes the
+  in-process proxy's premature empty response. The full macOS run passes 592
+  cases with 14 skips and no retries in 7.0 minutes; hosted acceptance remains
+  pending.
+- The sidebar performance harness retains mounted-session lifecycle state across
+  timing-buffer resets. Its Linux run passes the unchanged 200 ms switch p95
+  ceiling at 26.8 ms and verifies cleanup; this is local ARM64 evidence.
+
+November 11 hosted follow-up: source `23021f5e6` confirms the account and
+copy-control repairs, but still fails removed menu/retained-layer selectors,
+the former grant-specific bootstrap preview, and a stale desktop action-grid
+expectation. Those assertions now follow the emitted state hooks, stable
+`/v0/me` bootstrap, and measured two-column packing. Six focused browser
+cases pass locally without retries. The native-allocation route fixture now
+explicitly admits its Claude catalog family, preserving the quarantine and
+public-identity assertions; the full workspace suite passes. Source `ae932ec61`
+passes all 26 jobs in [CI 42966233783](https://github.com/kzahel/yepanywhere/actions/runs/42966233783)
+and all nine jobs in [runtime/SQLite 42966233796](https://github.com/kzahel/yepanywhere/actions/runs/42966233796).
+The browser shards pass 602 cases with 12 skips. Three unrelated cases need
+retries: remote creation draft handoff, attachment drop and diff scrolling.
+The repaired cases pass first attempt; repeated first-attempt suite reliability
+remains open.
+
+The later docs-only repeat exposes remote draft suffix loss and a missing
+incoming-share chip; twenty focused local repetitions pass unchanged. The
+remote case led to a deterministic draft-key handoff regression: an edit in
+the new editor's layout phase writes under the previous key, then passive
+hydration erases it. Hydration/identity handoff now runs before interaction.
+The hook regression fails on the previous code; 22 hook checks, ten cross-host
+browser repetitions with the accepted reply released during sequential typing,
+and nine broader draft/scroll browser cases pass locally. Each browser key
+retains the unchanged 100 ms acknowledgement ceiling. The share upload succeeds
+in the captured trace, but delaying the session read did not reproduce its
+later chip loss, so no speculative attachment change was made.
+
+Source `3bd3414e9` passes all 26 [CI jobs](https://github.com/kzahel/yepanywhere/actions/runs/42973315052)
+and nine [runtime jobs](https://github.com/kzahel/yepanywhere/actions/runs/42973315142),
+but the remote-creation retry report still records a lost first key. A second
+deterministic regression exposes the relay gate committing host B's document
+under host A's stale connected state, before the disconnect effect removes it.
+Only the route-confirmed connected branch now admits a page; a different host
+stays in the existing startup shell until its first connection succeeds. The
+regression fails on the previous code, and all nine gate checks pass locally.
+This is presentation admission under existing connection ownership, with no
+new identity, authorization or protocol boundary.
 
 ## Remaining
 
 1. **First-attempt failures are common.** Five comparison runs failed 5–11
    cases each; most passed on retry. Recurring cases:
-   `limited-instructions.spec.ts:103` (with the
-   [proxy header defect](frontend-proxy-writes-headers-twice.md)),
+   `limited-instructions.spec.ts:103`,
    `session-creation-remote-qualification.spec.ts:232`,
    `session-creation-recovery.spec.ts:47`, `session-page-fork-paths.spec.ts:349`,
    `explored-group-containment.spec.ts:154`, `acli-commentary.spec.ts:223`,

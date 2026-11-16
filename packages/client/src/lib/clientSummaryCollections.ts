@@ -1,7 +1,4 @@
-import type {
-  SessionClearloopBadge,
-  SessionProviderPhase,
-} from "@yep-anywhere/shared";
+import type { SessionClearloopBadge } from "@yep-anywhere/shared";
 import type {
   AgentActivity,
   PendingInputType,
@@ -17,9 +14,13 @@ import type {
   RetainedProjectCollectionState,
   ProviderRuntimeStatus,
 } from "@yep-anywhere/shared";
-import type { GlobalSessionItem, InboxResponse } from "../api/client";
+import type {
+  GlobalSessionItem,
+  InboxItem,
+  InboxResponse,
+} from "../api/client";
 import type { Project, SessionStatus } from "../types";
-import type { InboxTier } from "./inboxTiers";
+import { INBOX_TIERS, type InboxTier } from "./inboxTiers";
 
 export type SessionCollectionObservationKind =
   | "full-snapshot"
@@ -156,6 +157,12 @@ export interface ProjectQueueCountSource {
   snapshotObservedAt?: number;
 }
 
+export type InboxRowDetails = Pick<InboxItem, "providerPhase" | "modelConfig">;
+
+export function inboxRowDetails(item: InboxItem): InboxRowDetails {
+  return { providerPhase: item.providerPhase, modelConfig: item.modelConfig };
+}
+
 export interface InboxCollectionState {
   catalog?: RetainedSessionCollectionState;
   tiers: Record<InboxTier, readonly string[]>;
@@ -164,7 +171,7 @@ export interface InboxCollectionState {
    * apart from session records so other collections cannot clear or freeze
    * it.
    */
-  providerPhases?: ReadonlyMap<string, SessionProviderPhase>;
+  rowDetails?: ReadonlyMap<string, InboxRowDetails>;
   requestStartedAt?: number;
   fetchedAt?: number;
 }
@@ -173,6 +180,34 @@ export interface InboxCounts {
   needsAttention: number;
   active: number;
   total: number;
+}
+
+/** Accept proved rows from an incomplete read without treating omissions as deletion. */
+export function acceptInboxRows(
+  previous: InboxCollectionState,
+  incomingTiers: InboxCollectionState["tiers"],
+  incomingDetails: InboxCollectionState["rowDetails"],
+  catalog?: RetainedSessionCollectionState,
+): Pick<InboxCollectionState, "tiers" | "rowDetails"> {
+  const incoming = { tiers: incomingTiers, rowDetails: incomingDetails };
+  if (catalog?.complete !== false) return incoming;
+  const observed = new Set(INBOX_TIERS.flatMap((tier) => incoming.tiers[tier]));
+  const tiers = { ...incoming.tiers };
+  for (const tier of INBOX_TIERS)
+    tiers[tier] = [
+      ...incoming.tiers[tier],
+      ...previous.tiers[tier].filter((id) => !observed.has(id)),
+    ].slice(0, 20); // Match the server's bounded tier window; fresh rows win.
+  const rowDetails = new Map<string, InboxRowDetails>();
+  for (const id of INBOX_TIERS.flatMap((tier) => tiers[tier])) {
+    const details = incoming.rowDetails?.get(id);
+    const old = previous.rowDetails?.get(id);
+    rowDetails.set(id, {
+      providerPhase: details?.providerPhase ?? old?.providerPhase,
+      modelConfig: details?.modelConfig ?? old?.modelConfig,
+    });
+  }
+  return { tiers, rowDetails };
 }
 
 export interface SessionCollectionState {

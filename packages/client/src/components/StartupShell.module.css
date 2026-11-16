@@ -31,7 +31,7 @@
 .headerProject,
 .headerTitle,
 .composerLine {
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-tertiary);
 }
 
@@ -55,16 +55,6 @@
   color: var(--text-muted);
   font-size: var(--font-size-sm);
   text-align: center;
-}
-
-.spinner {
-  width: 1.25rem;
-  height: 1.25rem;
-  flex: 0 0 auto;
-  border: 2px solid var(--border-subtle);
-  border-top-color: var(--app-yep-green);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
 }
 
 .composerSlot {
@@ -96,7 +86,7 @@
   align-self: flex-end;
   width: 2rem;
   height: 2rem;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: var(--bg-tertiary);
 }
 
@@ -104,12 +94,6 @@
   .shell {
     height: 100dvh;
     min-height: 100dvh;
-  }
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
   }
 }
 
@@ -170,7 +154,7 @@
   border-radius: 50%;
   opacity: 0;
   animation:
-    spin 0.8s linear infinite,
+    cockpit-shell-spin 0.8s linear infinite,
     cockpit-shell-appear 0.2s ease 0.6s forwards;
 }
 
@@ -186,6 +170,12 @@
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+@keyframes cockpit-shell-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes cockpit-shell-appear {

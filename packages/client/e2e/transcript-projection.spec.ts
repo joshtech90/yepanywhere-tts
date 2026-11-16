@@ -8,7 +8,7 @@ const projectId = Buffer.from(mockProjectPath).toString("base64url");
 const sessionId = "transcript-specimen-001";
 
 async function dismissOnboardingIfVisible(page: Page) {
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (
     await skip
       .waitFor({ state: "visible", timeout: 750 })
@@ -20,7 +20,7 @@ async function dismissOnboardingIfVisible(page: Page) {
 }
 
 async function waitForCompletedTranscript(page: Page) {
-  const list = page.locator(".session-messages .message-list");
+  const list = page.locator("[data-session-messages] [data-message-list]");
   await expect(list).toBeVisible({ timeout: 10000 });
   await expect(list).not.toHaveAttribute("aria-busy", "true", {
     timeout: 10000,
@@ -35,7 +35,7 @@ async function waitForCompletedTranscript(page: Page) {
 }
 
 async function topLevelRenderRows(page: Page) {
-  return page.locator(".message-list").evaluate((list) =>
+  return page.locator("[data-message-list]").evaluate((list) =>
     Array.from(
       list.querySelectorAll<HTMLElement>("[data-render-id][data-render-type]"),
     )
@@ -62,10 +62,10 @@ async function attachTranscriptScreenshots(
         caret-color: transparent !important;
         transition-duration: 0s !important;
       }
-      .message-age, [data-turn-rail] { visibility: hidden !important; }
+      [data-message-age], [data-turn-rail] { visibility: hidden !important; }
     `,
   });
-  const transcript = page.locator(".session-messages");
+  const transcript = page.locator("[data-session-messages]");
   for (const position of ["top", "tail"] as const) {
     await transcript.evaluate((element, wanted) => {
       element.scrollTop = wanted === "top" ? 0 : element.scrollHeight;
@@ -136,8 +136,9 @@ for (const specimen of [
     );
 
     const widths = await page.evaluate(() => {
-      const transcript =
-        document.querySelector<HTMLElement>(".session-messages");
+      const transcript = document.querySelector<HTMLElement>(
+        "[data-session-messages]",
+      );
       return {
         documentClient: document.documentElement.clientWidth,
         documentScroll: document.documentElement.scrollWidth,

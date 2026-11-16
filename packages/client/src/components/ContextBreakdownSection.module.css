@@ -9,7 +9,7 @@
 }
 
 /* The subscription block that follows has no separator of its own. */
-.breakdown + :global(.subscription-usage-header) {
+.breakdown + [data-subscription-usage-header] {
   padding-top: var(--space-2);
   border-top: 1px solid var(--border-color);
 }
@@ -52,7 +52,7 @@
   height: 4px;
   overflow: hidden;
   background: var(--bg-tertiary);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .windowUsed {
@@ -77,10 +77,15 @@
   background: var(--warning-color);
 }
 
-.caption {
-  margin-top: var(--space-1);
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
+.connector {
+  display: block;
+  width: 100%;
+  height: 12px;
+  margin-block: calc(-1 * var(--space-1));
+  overflow: visible;
+  stroke: var(--text-dimmed);
+  stroke-width: 1px;
+  stroke-dasharray: 2.5 2.5;
 }
 
 .composition {
@@ -88,7 +93,7 @@
   gap: 2px;
   height: 8px;
   overflow: hidden;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
 }
 
 .composition > span {
@@ -145,7 +150,7 @@ button.head:hover {
   width: 8px;
   height: 8px;
   background: var(--segment);
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
 }
 
 .label,

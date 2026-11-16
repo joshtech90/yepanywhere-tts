@@ -231,11 +231,18 @@ let clientBuild = null;
 let clientBuildPromise = null;
 const retiredClientBuilds = [];
 let providerRuntimeHostChild = null;
+let replacingProviderRuntimeHost = false;
 let wrapperControlServer = null;
 const wrapperControlSockets = new Set();
 const providerRuntimeProcessGroups = new Map();
 let serverGeneration = 0;
-let unexpectedRecoveryUsed = false;
+// Only the wrapper ends a YA lifetime. A backend exit it did not request (a
+// crash, or another process signalling the backend) is replaced, within a
+// budget that stops a crash loop.
+const BACKEND_RECOVERY_LIMIT = 3;
+const BACKEND_RECOVERY_WINDOW_MS = 60_000;
+const BACKEND_RECOVERY_DELAY_MS = 500;
+const backendRecoveryTimes = [];
 let shutdownPromise = null;
 let obsoleteInstanceReapPromise = null;
 
@@ -575,12 +582,37 @@ async function startProviderRuntimeHost() {
   });
   host.on("exit", (code, signal) => {
     if (providerRuntimeHostChild === host) providerRuntimeHostChild = null;
-    if (wrapperState === "shutting-down") return;
+    if (wrapperState === "shutting-down" || replacingProviderRuntimeHost) {
+      return;
+    }
     console.error(
       `[ProviderRuntimeHost] Exited unexpectedly (code=${code}, signal=${signal})`,
     );
     void shutdownWrapper("Provider runtime host exited unexpectedly", 1);
   });
+}
+
+/**
+ * A reload keeps the provider host so its sessions survive. A host that stays
+ * unanswering for the whole wait has no usable sessions left, and the
+ * replacement backend could not start one, so replace it instead.
+ */
+async function replaceUnresponsiveProviderRuntimeHost() {
+  if (!providerHostPaths) return;
+  const discovery = await waitForProviderHost();
+  if (discovery.state !== "absent" && discovery.state !== "unresponsive") {
+    return;
+  }
+  console.error(
+    `[Reload] Provider runtime host is ${discovery.state}${discovery.error ? ` (${discovery.error})` : ""}; replacing it`,
+  );
+  replacingProviderRuntimeHost = true;
+  try {
+    await stopProviderRuntimeHost();
+    await startProviderRuntimeHost();
+  } finally {
+    replacingProviderRuntimeHost = false;
+  }
 }
 
 async function stopProviderRuntimeHost() {
@@ -735,6 +767,10 @@ async function startWrapperControlServer() {
   }
   env.YEP_DEV_WRAPPER_PORT = String(address.port);
   env.YEP_DEV_WRAPPER_TOKEN = wrapperToken;
+  // Identity for the backend's instance record, so local tools stop the
+  // wrapper (the whole YA lifetime) rather than a backend it would replace.
+  env.YEP_DEV_WRAPPER_PID = String(process.pid);
+  env.YEP_DEV_WRAPPER_STARTED_AT = String(Math.round(performance.timeOrigin));
 }
 
 async function closeWrapperControlServer() {
@@ -792,6 +828,8 @@ async function completeServerReload(server) {
     if (wrapperState !== "reloading") return;
     if (client) client.yaReloading = true;
     await stopManagedChild(client, "Vite reload");
+    if (wrapperState !== "reloading") return;
+    await replaceUnresponsiveProviderRuntimeHost();
   } catch (error) {
     console.error(`[Reload] ${errorMessage(error)}`);
     await shutdownWrapper("Development reload cleanup failed", 1);
@@ -810,7 +848,25 @@ async function completeServerReload(server) {
   await removeRetiredClientBuilds();
 }
 
-async function recoverUnexpectedServer(server, code) {
+async function recoverUnexpectedServer(server, code, signal) {
+  const now = Date.now();
+  while (
+    backendRecoveryTimes.length > 0 &&
+    now - backendRecoveryTimes[0] > BACKEND_RECOVERY_WINDOW_MS
+  ) {
+    backendRecoveryTimes.shift();
+  }
+  if (backendRecoveryTimes.length >= BACKEND_RECOVERY_LIMIT) {
+    await shutdownWrapper(
+      `Backend exited (code=${code}, signal=${signal}) after ${BACKEND_RECOVERY_LIMIT} restarts within ${BACKEND_RECOVERY_WINDOW_MS / 1000}s; giving up`,
+      1,
+    );
+    return;
+  }
+  backendRecoveryTimes.push(now);
+  console.error(
+    `[Recovery] Backend exited without a wrapper request (code=${code}, signal=${signal}); restarting it (${backendRecoveryTimes.length}/${BACKEND_RECOVERY_LIMIT} within ${BACKEND_RECOVERY_WINDOW_MS / 1000}s). To stop this YA, signal the dev wrapper (pid ${process.pid}) or run \`pnpm ya:instance stop\`.`,
+  );
   try {
     await stopManagedChild(server, "backend recovery", 2_000);
   } catch (error) {
@@ -818,9 +874,13 @@ async function recoverUnexpectedServer(server, code) {
     await shutdownWrapper("Backend recovery cleanup failed", 1);
     return;
   }
+  // A terminal signal to the whole tree can reach the backend first; give the
+  // wrapper's own handler a moment to claim the shutdown before replacing it.
+  await new Promise((resolve) =>
+    setTimeout(resolve, BACKEND_RECOVERY_DELAY_MS),
+  );
   if (wrapperState !== "running" || serverChild !== server) return;
-  if (serverChild === server) serverChild = null;
-  console.error(`[Recovery] Backend exited with code ${code}; retrying once`);
+  serverChild = null;
   startServer();
 }
 
@@ -909,19 +969,10 @@ function startServer() {
     // Windows can report process death to kill(pid, 0) before Node delivers
     // this event. A retired launcher must not recover or stop its replacement.
     if (serverChild !== server) return;
-    if (wrapperState === "shutting-down") return;
-    if (wrapperState === "reloading") {
+    if (wrapperState === "shutting-down" || wrapperState === "reloading") {
       return;
     }
-    if (code !== null && code !== 0 && !unexpectedRecoveryUsed) {
-      unexpectedRecoveryUsed = true;
-      void recoverUnexpectedServer(server, code);
-      return;
-    }
-    void shutdownWrapper(
-      `Backend exited without reload intent (code=${code}, signal=${signal})`,
-      code === 0 ? 0 : 1,
-    );
+    void recoverUnexpectedServer(server, code, signal);
   });
 
   return server;

@@ -1,3 +1,4 @@
+import promptStyles from "./blocks/UserPromptBlock.module.css";
 import { planThumbnail } from "@yep-anywhere/shared";
 import { getPersistedAttachmentUploadUrl } from "../lib/attachmentUploadUrl";
 export { getPersistedAttachmentUploadUrl } from "../lib/attachmentUploadUrl";
@@ -527,9 +528,12 @@ function ImageAttachmentChip({
         )}
       {showModal && (
         <Modal title={originalName} onClose={() => setShowModal(false)}>
-          <div className="uploaded-image-modal">
-            {loading && <div className="image-loading">Loading...</div>}
-            {error && <div className="image-error">Failed to load image</div>}
+          <div
+            className={promptStyles.uploadedImageModal}
+            data-uploaded-image-modal
+          >
+            {loading && <div>Loading...</div>}
+            {error && <div>Failed to load image</div>}
             {fullUrl && <img src={fullUrl} alt={originalName} />}
           </div>
         </Modal>

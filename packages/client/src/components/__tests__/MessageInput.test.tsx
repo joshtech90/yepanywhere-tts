@@ -43,6 +43,7 @@ import {
 import { setBrowserXaiSttApiKey } from "../../lib/speechProviders/xaiCredentials";
 import { MessageInput } from "../MessageInput";
 import toolbarStyles from "../MessageInputToolbar.module.css";
+import draftStyles from "../SpeechDraftField.module.css";
 import { getSourceRuntimeRegistry } from "../../lib/sourceRuntime";
 import {
   MessageInputToolbarView,
@@ -492,7 +493,8 @@ vi.mock("../VoiceInputButton", async () => {
         return (
           <button
             type="button"
-            className={`voice-input-button ${props.className ?? ""}`.trim()}
+            className={props.className}
+            data-voice-input-button
             data-speech-method={props.speechMethod}
             onClick={() => {
               props.onListeningStart?.();
@@ -1037,29 +1039,33 @@ describe("MessageInput", () => {
 
     try {
       expect(textarea.getAttribute("enterkeyhint")).toBe("enter");
-      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+      expect(
+        document.querySelector("[data-message-input-toolbar]"),
+      ).toBeTruthy();
 
       fireEvent.focus(textarea);
       act(() => viewport.setHeight(480));
 
-      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
       expect(
-        document.querySelector(".message-input-keyboard-compact"),
+        document.querySelector("[data-message-input-toolbar]"),
+      ).toBeTruthy();
+      expect(
+        document.querySelector("[data-message-input-keyboard-compact]"),
       ).toBeNull();
       expect(
-        document.querySelector(".message-input-keyboard-primary"),
+        document.querySelector("[data-message-input-keyboard-primary]"),
       ).toBeNull();
 
       fireEvent.change(textarea, { target: { value: "mobile send" } });
       const keyboardAction = document.querySelector(
-        ".message-input-keyboard-primary",
+        "[data-message-input-keyboard-primary]",
       ) as HTMLButtonElement | null;
       expect(keyboardAction).toBeTruthy();
       expect(keyboardAction?.textContent).toContain("toolbarSend");
       expect(
-        document.querySelector(".message-input-keyboard-more"),
+        document.querySelector("[data-message-input-keyboard-more]"),
       ).toBeTruthy();
-      expect(document.querySelector(".message-input-toolbar")).toBeNull();
+      expect(document.querySelector("[data-message-input-toolbar]")).toBeNull();
 
       fireEvent.pointerDown(keyboardAction as HTMLButtonElement);
       fireEvent.click(keyboardAction as HTMLButtonElement);
@@ -1067,16 +1073,22 @@ describe("MessageInput", () => {
       expectSubmission(onSend, "mobile send", "direct");
       expect(document.activeElement).not.toBe(textarea);
       expect(
-        document.querySelector(".message-input-keyboard-primary"),
+        document.querySelector("[data-message-input-keyboard-primary]"),
       ).toBeNull();
-      expect(document.querySelector(".message-input-keyboard-more")).toBeNull();
-      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+      expect(
+        document.querySelector("[data-message-input-keyboard-more]"),
+      ).toBeNull();
+      expect(
+        document.querySelector("[data-message-input-toolbar]"),
+      ).toBeTruthy();
 
       act(() => viewport.setHeight(800));
       expect(
-        document.querySelector(".message-input-keyboard-primary"),
+        document.querySelector("[data-message-input-keyboard-primary]"),
       ).toBeNull();
-      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+      expect(
+        document.querySelector("[data-message-input-toolbar]"),
+      ).toBeTruthy();
     } finally {
       viewport.restore();
     }
@@ -1099,7 +1111,7 @@ describe("MessageInput", () => {
       fireEvent.compositionStart(textarea);
 
       const keyboardAction = document.querySelector(
-        ".message-input-keyboard-primary",
+        "[data-message-input-keyboard-primary]",
       ) as HTMLButtonElement;
       fireEvent.pointerDown(keyboardAction);
       fireEvent.click(keyboardAction);
@@ -1148,7 +1160,7 @@ describe("MessageInput", () => {
 
       fireEvent.click(
         document.querySelector(
-          ".message-input-keyboard-primary",
+          "[data-message-input-keyboard-primary]",
         ) as HTMLButtonElement,
       );
 
@@ -1171,7 +1183,7 @@ describe("MessageInput", () => {
       fireEvent.focus(textarea);
       act(() => viewport.setHeight(480));
       expect(
-        document.querySelector(".message-input-keyboard-compact"),
+        document.querySelector("[data-message-input-keyboard-compact]"),
       ).toBeNull();
 
       act(() => viewport.setHeight(800));
@@ -1179,14 +1191,14 @@ describe("MessageInput", () => {
         target: { value: "keyboard voice transcript" },
       });
       expect(
-        document.querySelector(".message-input-keyboard-compact"),
+        document.querySelector("[data-message-input-keyboard-compact]"),
       ).toBeNull();
 
       act(() => viewport.setHeight(480));
       expect(
-        document.querySelector(".message-input-keyboard-primary"),
+        document.querySelector("[data-message-input-keyboard-primary]"),
       ).toBeTruthy();
-      expect(document.querySelector(".message-input-toolbar")).toBeNull();
+      expect(document.querySelector("[data-message-input-toolbar]")).toBeNull();
     } finally {
       viewport.restore();
     }
@@ -1218,18 +1230,18 @@ describe("MessageInput", () => {
       fireEvent.change(textarea, { target: { value: "wait until done" } });
 
       const actions = document.querySelectorAll(
-        ".message-input-keyboard-action",
+        "[data-message-input-keyboard-actions] button:not([data-message-input-keyboard-more])",
       );
       expect(actions).toHaveLength(3);
-      expect(actions[0]?.classList.contains("voice-input-button")).toBe(true);
+      expect(actions[0]?.hasAttribute("data-voice-input-button")).toBe(true);
       expect(actions[0]?.textContent).toBe("voice");
-      expect(actions[1]?.classList.contains("queue-mode")).toBe(true);
+      expect(actions[1]?.getAttribute("data-delivery-kind")).toBe("queue");
       expect(actions[1]?.getAttribute("aria-label")).toBe("toolbarQueueLabel");
       expect(actions[1]?.textContent).toBe("→");
-      expect(actions[2]?.classList.contains("steer-mode")).toBe(true);
+      expect(actions[2]?.getAttribute("data-delivery-kind")).toBe("steer");
       expect(actions[2]?.getAttribute("aria-label")).toBe("Steer current turn");
       expect(
-        actions[2]?.querySelector(".message-input-keyboard-primary-label")
+        actions[2]?.querySelector("[data-message-input-keyboard-primary-label]")
           ?.textContent,
       ).toBe("Steer");
       expect(actions[2]?.textContent).toBe("Steer↗");
@@ -1249,7 +1261,7 @@ describe("MessageInput", () => {
       fireEvent.change(nextTextarea, { target: { value: "steer now" } });
       fireEvent.click(
         document.querySelector(
-          ".message-input-keyboard-primary",
+          "[data-message-input-keyboard-primary]",
         ) as HTMLButtonElement,
       );
       expectSubmission(onSend, "steer now", "steer");
@@ -1271,7 +1283,7 @@ describe("MessageInput", () => {
       expect(voicePropsState.current?.inlineWaveform).toBe(true);
 
       const speechSlot = document.querySelector(
-        ".message-input-keyboard-secondary-slot",
+        "[data-message-input-keyboard-secondary-slot]",
       );
       expect(speechSlot?.getAttribute("data-waveform-reserved")).toBe("true");
       expect(speechSlot?.getAttribute("data-waveform-active")).toBeNull();
@@ -1279,10 +1291,12 @@ describe("MessageInput", () => {
       act(() => voicePropsState.current?.onWaveformActiveChange?.(true));
 
       expect(
-        document.querySelector(".message-input-keyboard-secondary-slot"),
+        document.querySelector("[data-message-input-keyboard-secondary-slot]"),
       ).toBe(speechSlot);
       expect(speechSlot?.getAttribute("data-waveform-active")).toBe("true");
-      expect(speechSlot?.querySelector(".voice-input-button")).toBeTruthy();
+      expect(
+        speechSlot?.querySelector("[data-voice-input-button]"),
+      ).toBeTruthy();
     } finally {
       viewport.restore();
     }
@@ -1321,16 +1335,20 @@ describe("MessageInput", () => {
       fireEvent.change(textarea, { target: { value: "start the turn" } });
       fireEvent.click(
         document.querySelector(
-          ".message-input-keyboard-primary",
+          "[data-message-input-keyboard-primary]",
         ) as HTMLButtonElement,
       );
 
       expectSubmission(onSend, "start the turn", "direct");
       expect(
-        document.querySelectorAll(".message-input-keyboard-action"),
+        document.querySelectorAll("[data-message-input-keyboard-action]"),
       ).toHaveLength(0);
-      expect(document.querySelector(".message-input-keyboard-more")).toBeNull();
-      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+      expect(
+        document.querySelector("[data-message-input-keyboard-more]"),
+      ).toBeNull();
+      expect(
+        document.querySelector("[data-message-input-toolbar]"),
+      ).toBeTruthy();
     } finally {
       viewport.restore();
     }
@@ -1359,7 +1377,9 @@ describe("MessageInput", () => {
       act(() => textarea.focus());
       act(() => viewport.setHeight(480));
 
-      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+      expect(
+        document.querySelector("[data-message-input-toolbar]"),
+      ).toBeTruthy();
       fireEvent.change(textarea, { target: { value: "project later" } });
 
       const more = screen.getByRole("button", {
@@ -1371,7 +1391,7 @@ describe("MessageInput", () => {
       expect(more.getAttribute("aria-expanded")).toBe("true");
       expect(document.activeElement).toBe(textarea);
       const morePanel = document.querySelector(
-        ".message-input-keyboard-more-panel",
+        "[data-message-input-keyboard-more-panel]",
       );
       expect(
         morePanel?.querySelector('[aria-label="Queue for Project Queue"]'),
@@ -1393,12 +1413,12 @@ describe("MessageInput", () => {
 
       expect(
         document.querySelector(
-          ".message-input-keyboard-project-queue-slot .project-queue-mode",
+          "[data-message-input-keyboard-project-queue-slot] [data-project-queue-mode]",
         ),
       ).toBeTruthy();
       expect(
         document.querySelector(
-          ".message-input-keyboard-project-queue-new-session-slot .project-queue-new-session-button",
+          "[data-message-input-keyboard-project-queue-new-session-slot] [data-project-queue-new-session-button]",
         ),
       ).toBeTruthy();
       fireEvent.click(
@@ -1447,21 +1467,23 @@ describe("MessageInput", () => {
       fireEvent.change(textarea, { target: { value: "queue this later" } });
 
       const projectQueueNewSessionSlot = document.querySelector(
-        ".message-input-keyboard-project-queue-new-session-slot",
+        "[data-message-input-keyboard-project-queue-new-session-slot]",
       );
 
       expect(
-        document.querySelector(".message-input-keyboard-project-queue-slot"),
+        document.querySelector(
+          "[data-message-input-keyboard-project-queue-slot]",
+        ),
       ).toBeNull();
       expect(projectQueueNewSessionSlot).toBeTruthy();
       expect(
         document.querySelector(
-          ".message-input-keyboard-session-alternate-slot",
+          "[data-message-input-keyboard-session-alternate-slot]",
         ),
       ).toBeNull();
       expect(
         projectQueueNewSessionSlot?.querySelector(
-          ".project-queue-new-session-button",
+          "[data-project-queue-new-session-button]",
         ),
       ).toBeTruthy();
 
@@ -1473,12 +1495,12 @@ describe("MessageInput", () => {
 
       expect(
         document.querySelector(
-          ".message-input-keyboard-project-queue-slot .project-queue-mode",
+          "[data-message-input-keyboard-project-queue-slot] [data-project-queue-mode]",
         ),
       ).toBeTruthy();
       expect(
         document.querySelector(
-          ".message-input-keyboard-session-alternate-slot .queue-mode",
+          "[data-message-input-keyboard-session-alternate-slot] [data-delivery-kind=queue]",
         ),
       ).toBeTruthy();
     } finally {
@@ -1500,11 +1522,13 @@ describe("MessageInput", () => {
       fireEvent.change(textarea, { target: { value: "send normally" } });
 
       expect(
-        document.querySelector(".message-input-keyboard-project-queue-slot"),
+        document.querySelector(
+          "[data-message-input-keyboard-project-queue-slot]",
+        ),
       ).toBeNull();
       expect(
         document.querySelector(
-          ".message-input-keyboard-project-queue-new-session-slot",
+          "[data-message-input-keyboard-project-queue-new-session-slot]",
         ),
       ).toBeNull();
     } finally {
@@ -2133,20 +2157,22 @@ describe("MessageInput", () => {
 
     function recallItems() {
       return Array.from(
-        document.querySelectorAll(".composer-recall-menu .slash-command-item"),
+        document.querySelectorAll(
+          "[data-composer-recall-menu] [data-slash-command-item]",
+        ),
       );
     }
 
     function activeRecallItem() {
       return document.querySelector(
-        ".composer-recall-menu .slash-command-item.active",
+        "[data-composer-recall-menu] [data-composer-recall-active]",
       );
     }
 
     function recallGoToButtons() {
       return Array.from(
         document.querySelectorAll<HTMLButtonElement>(
-          ".composer-recall-menu .composer-recall-goto",
+          "[data-composer-recall-menu] [data-composer-recall-goto]",
         ),
       );
     }
@@ -2182,7 +2208,7 @@ describe("MessageInput", () => {
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
 
-      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(document.querySelector("[data-composer-recall-menu]")).toBeNull();
     });
 
     it("does not open over an attachment-only draft", () => {
@@ -2193,7 +2219,7 @@ describe("MessageInput", () => {
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
 
-      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(document.querySelector("[data-composer-recall-menu]")).toBeNull();
     });
 
     it("moves the selection with Arrow keys and drafts on Enter", () => {
@@ -2207,7 +2233,7 @@ describe("MessageInput", () => {
 
       fireEvent.keyDown(textarea, { key: "Enter" });
       expect(textarea.value).toBe("debug the crash");
-      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(document.querySelector("[data-composer-recall-menu]")).toBeNull();
     });
 
     it("drafts the clicked entry", () => {
@@ -2222,7 +2248,7 @@ describe("MessageInput", () => {
       fireEvent.click(runItem);
 
       expect(textarea.value).toBe("run the tests");
-      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(document.querySelector("[data-composer-recall-menu]")).toBeNull();
     });
 
     it("closes and keeps the draft on Escape", () => {
@@ -2232,10 +2258,12 @@ describe("MessageInput", () => {
       fireEvent.change(textarea, { target: { value: "de" } });
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
-      expect(document.querySelector(".composer-recall-menu")).not.toBeNull();
+      expect(
+        document.querySelector("[data-composer-recall-menu]"),
+      ).not.toBeNull();
 
       fireEvent.keyDown(textarea, { key: "Escape" });
-      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(document.querySelector("[data-composer-recall-menu]")).toBeNull();
       expect(textarea.value).toBe("de");
     });
 
@@ -2243,22 +2271,26 @@ describe("MessageInput", () => {
       const textarea = renderMessageInput(vi.fn(), { turnRecall });
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
-      expect(document.querySelector(".composer-recall-menu")).not.toBeNull();
+      expect(
+        document.querySelector("[data-composer-recall-menu]"),
+      ).not.toBeNull();
 
       const handled = fireEvent.keyDown(textarea, { key: "a" });
       // Not consumed: the keystroke is allowed to reach the composer.
       expect(handled).toBe(true);
-      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(document.querySelector("[data-composer-recall-menu]")).toBeNull();
     });
 
     it("restores focus loss by closing the drawer", () => {
       const textarea = renderMessageInput(vi.fn(), { turnRecall });
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
-      expect(document.querySelector(".composer-recall-menu")).not.toBeNull();
+      expect(
+        document.querySelector("[data-composer-recall-menu]"),
+      ).not.toBeNull();
 
       fireEvent.blur(textarea);
-      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(document.querySelector("[data-composer-recall-menu]")).toBeNull();
     });
 
     it("leaves plain ArrowUp last-submission recall intact", () => {
@@ -2268,7 +2300,7 @@ describe("MessageInput", () => {
       fireEvent.keyDown(textarea, { key: "ArrowUp" });
 
       expect(onRecall).toHaveBeenCalledTimes(1);
-      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(document.querySelector("[data-composer-recall-menu]")).toBeNull();
     });
 
     it("omits the per-row go-to control when onGoToTurn is absent", () => {
@@ -2300,7 +2332,7 @@ describe("MessageInput", () => {
       // draft untouched (no recall, and no Esc-style restore).
       expect(onGoToTurn).toHaveBeenCalledTimes(1);
       expect(onGoToTurn).toHaveBeenCalledWith("turn-debug");
-      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(document.querySelector("[data-composer-recall-menu]")).toBeNull();
       expect(textarea.value).toBe("de");
     });
 
@@ -2314,10 +2346,12 @@ describe("MessageInput", () => {
         fireEvent.change(textarea, { target: { value: "de" } });
 
         const openButton = document.querySelector(
-          ".message-input-keyboard-compact .composer-recall-open",
+          "[data-message-input-keyboard-compact] [data-composer-recall-open]",
         ) as HTMLButtonElement | null;
         expect(openButton).toBeTruthy();
-        expect(document.querySelector(".composer-recall-menu")).toBeNull();
+        expect(
+          document.querySelector("[data-composer-recall-menu]"),
+        ).toBeNull();
 
         fireEvent.pointerDown(openButton as HTMLButtonElement);
         fireEvent.click(openButton as HTMLButtonElement);
@@ -2343,7 +2377,7 @@ describe("MessageInput", () => {
 
         expect(
           document.querySelector(
-            ".message-input-keyboard-compact .composer-recall-open",
+            "[data-message-input-keyboard-compact] [data-composer-recall-open]",
           ),
         ).toBeNull();
       } finally {
@@ -2363,7 +2397,7 @@ describe("MessageInput", () => {
 
         expect(
           document.querySelector(
-            ".message-input-keyboard-compact .composer-recall-open",
+            "[data-message-input-keyboard-compact] [data-composer-recall-open]",
           ),
         ).toBeNull();
       } finally {
@@ -2386,7 +2420,7 @@ describe("MessageInput", () => {
 
         expect(
           document.querySelector(
-            ".message-input-keyboard-compact .composer-recall-open",
+            "[data-message-input-keyboard-compact] [data-composer-recall-open]",
           ),
         ).toBeNull();
       } finally {
@@ -2731,11 +2765,11 @@ describe("MessageInput", () => {
     });
 
     await waitFor(() => {
-      expect(document.querySelector(".speech-draft-mirror")).toBeNull();
+      expect(document.querySelector("[data-speech-draft-mirror]")).toBeNull();
     });
     expect(
-      document.querySelector(".speech-draft-field")?.classList,
-    ).not.toContain("has-interim");
+      document.querySelector("[data-speech-draft-field]")?.classList,
+    ).not.toContain(draftStyles.hasInterim);
     expect(textarea.selectionStart).toBe(5);
 
     // The field stays editable while transcription is pending.
@@ -2763,13 +2797,13 @@ describe("MessageInput", () => {
       voicePropsState.current?.onInterimTranscript?.("live words");
     });
     const interim = await waitFor(() => {
-      const el = document.querySelector(".speech-interim-inline");
+      const el = document.querySelector("[data-speech-interim-inline]");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(interim.nextElementSibling?.classList).toContain(
-      "speech-interim-caret",
-    );
+    expect(
+      interim.nextElementSibling?.hasAttribute("data-speech-interim-caret"),
+    ).toBe(true);
     // Explicit Stop freezes exactly what the mirror showed into the editable
     // draft before finalization clears the provisional rendering.
     let committedVisibleInterim = false;
@@ -2781,13 +2815,13 @@ describe("MessageInput", () => {
       voicePropsState.current?.onPendingSpeechChange?.("finalizing");
     });
     await waitFor(() => {
-      expect(document.querySelector(".speech-draft-mirror")).toBeNull();
+      expect(document.querySelector("[data-speech-draft-mirror]")).toBeNull();
       expect(textarea.value).toBe("alpha live words omega");
     });
     expect(committedVisibleInterim).toBe(true);
     expect(
-      document.querySelector(".speech-draft-field")?.classList,
-    ).not.toContain("has-interim");
+      document.querySelector("[data-speech-draft-field]")?.classList,
+    ).not.toContain(draftStyles.hasInterim);
     expect(document.activeElement).toBe(textarea);
 
     fireEvent.keyDown(textarea, { key: "Escape" });
@@ -2818,7 +2852,7 @@ describe("MessageInput", () => {
     });
 
     await waitFor(() =>
-      expect(document.querySelector(".speech-draft-mirror")).toBeNull(),
+      expect(document.querySelector("[data-speech-draft-mirror]")).toBeNull(),
     );
   });
 
@@ -2840,11 +2874,11 @@ describe("MessageInput", () => {
     });
 
     await waitFor(() => {
-      expect(document.querySelector(".speech-draft-mirror")).toBeNull();
+      expect(document.querySelector("[data-speech-draft-mirror]")).toBeNull();
     });
     expect(
-      document.querySelector(".speech-draft-field")?.classList,
-    ).not.toContain("has-interim");
+      document.querySelector("[data-speech-draft-field]")?.classList,
+    ).not.toContain(draftStyles.hasInterim);
     expect(textarea.value).toBe("draft");
     expect(textarea.selectionStart).toBe(5);
   });
@@ -2872,7 +2906,7 @@ describe("MessageInput", () => {
     });
 
     const interim = await waitFor(() => {
-      const el = document.querySelector(".speech-interim-inline");
+      const el = document.querySelector("[data-speech-interim-inline]");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -2897,7 +2931,7 @@ describe("MessageInput", () => {
     });
 
     const interim = await waitFor(() => {
-      const el = document.querySelector(".speech-interim-inline");
+      const el = document.querySelector("[data-speech-interim-inline]");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -2992,7 +3026,9 @@ describe("MessageInput", () => {
       voicePropsState.current?.onInterimTranscript?.("spoken first");
     });
     await waitFor(() =>
-      expect(document.querySelector(".speech-interim-inline")).not.toBeNull(),
+      expect(
+        document.querySelector("[data-speech-interim-inline]"),
+      ).not.toBeNull(),
     );
 
     textarea.setSelectionRange(0, 0);
@@ -3007,9 +3043,9 @@ describe("MessageInput", () => {
       );
     });
     expect(textarea.value).toBe("existing text");
-    expect(document.querySelector(".speech-interim-inline")?.textContent).toBe(
-      "spoken first still speaking",
-    );
+    expect(
+      document.querySelector("[data-speech-interim-inline]")?.textContent,
+    ).toBe("spoken first still speaking");
 
     act(() => {
       voicePropsState.current?.onTranscript?.("spoken first still speaking");
@@ -3147,9 +3183,9 @@ describe("MessageInput", () => {
     });
 
     await waitFor(() => {
-      expect(document.querySelector(".speech-draft-mirror")?.textContent).toBe(
-        "hello there world",
-      );
+      expect(
+        document.querySelector("[data-speech-draft-mirror]")?.textContent,
+      ).toBe("hello there world");
       expect(textarea.value).toBe("hello world");
       expect(textarea.selectionStart).toBe(5);
     });
@@ -3171,18 +3207,18 @@ describe("MessageInput", () => {
     });
 
     await waitFor(() => {
-      expect(document.querySelector(".speech-draft-mirror")?.textContent).toBe(
-        "alpha beta gamma draft",
-      );
+      expect(
+        document.querySelector("[data-speech-draft-mirror]")?.textContent,
+      ).toBe("alpha beta gamma draft");
     });
 
     textarea.setSelectionRange("alpha ".length, "alpha beta".length);
     fireEvent.select(textarea);
 
     await waitFor(() => {
-      expect(document.querySelector(".speech-draft-mirror")?.textContent).toBe(
-        "alpha beta gamma draft",
-      );
+      expect(
+        document.querySelector("[data-speech-draft-mirror]")?.textContent,
+      ).toBe("alpha beta gamma draft");
       expect(textarea.value).toBe("alpha beta gamma");
     });
 
@@ -4625,7 +4661,7 @@ describe("MessageInput", () => {
 
     const row = screen
       .getByText("User-turn reverse search")
-      .closest(".session-shortcuts-row");
+      .closest("[data-session-shortcuts-row]");
     const keys = Array.from(row?.querySelectorAll("kbd") ?? []).map(
       (key) => key.textContent,
     );
@@ -4642,7 +4678,7 @@ describe("MessageInput", () => {
 
     const row = screen
       .getByText("Full-session reverse search")
-      .closest(".session-shortcuts-row");
+      .closest("[data-session-shortcuts-row]");
     const keys = Array.from(row?.querySelectorAll("kbd") ?? []).map(
       (key) => key.textContent,
     );
@@ -4659,7 +4695,7 @@ describe("MessageInput", () => {
 
     const row = screen
       .getByText("Expand / restore composer")
-      .closest(".session-shortcuts-row");
+      .closest("[data-session-shortcuts-row]");
     const keys = Array.from(row?.querySelectorAll("kbd") ?? []).map(
       (key) => key.textContent,
     );
@@ -4676,7 +4712,7 @@ describe("MessageInput", () => {
 
     const row = screen
       .getByText("Queue for Project Queue")
-      .closest(".session-shortcuts-row");
+      .closest("[data-session-shortcuts-row]");
     const keys = Array.from(row?.querySelectorAll("kbd") ?? []).map(
       (key) => key.textContent,
     );
@@ -5166,7 +5202,9 @@ describe("MessageInput", () => {
     expect(screen.getByText("at 10m ago")).toBeTruthy();
     expect(screen.getByText("6m ago")).toBeTruthy();
     // The decoupled float carries only the ages, never the liveness chip.
-    expect(container.querySelector(".composer-liveness-status")).toBeNull();
+    expect(
+      container.querySelector("[data-composer-liveness-status]"),
+    ).toBeNull();
   });
 
   it("floats the freshness/position age over the composer even when not compact if session status is disabled", () => {
@@ -5214,8 +5252,10 @@ describe("MessageInput", () => {
     expect(screen.getByText("at 10m ago")).toBeTruthy();
     expect(screen.getByText("6m ago")).toBeTruthy();
     // Still the floating presentation (not the inline row) and ages only.
-    expect(container.querySelector(".status-floats")).toBeTruthy();
-    expect(container.querySelector(".composer-liveness-status")).toBeNull();
+    expect(container.querySelector("[data-status-floats]")).toBeTruthy();
+    expect(
+      container.querySelector("[data-composer-liveness-status]"),
+    ).toBeNull();
   });
 
   it("keeps the liveness chip out of the float even when it would show inline", () => {
@@ -5266,7 +5306,9 @@ describe("MessageInput", () => {
       />,
     );
 
-    expect(container.querySelector(".composer-liveness-status")).toBeNull();
+    expect(
+      container.querySelector("[data-composer-liveness-status]"),
+    ).toBeNull();
     expect(screen.queryByText("now")).toBeNull();
     expect(screen.getByText("at 10m ago")).toBeTruthy();
     expect(screen.getByText("6m ago")).toBeTruthy();
@@ -5323,9 +5365,11 @@ describe("MessageInput", () => {
       screen.getByText("Claude rate limited - retry at 5:20 PM"),
     ).toBeTruthy();
     expect(
-      container.querySelector(".composer-provider-runtime-status"),
+      container.querySelector("[data-composer-provider-runtime-status]"),
     ).toBeTruthy();
-    expect(container.querySelector(".composer-liveness-status")).toBeNull();
+    expect(
+      container.querySelector("[data-composer-liveness-status]"),
+    ).toBeNull();
   });
 
   it("never shows a current position age, even without a freshness label", () => {
@@ -6095,7 +6139,7 @@ describe("MessageInput", () => {
       onStop,
     });
     fireEvent.change(textarea, { target: { value: "keep this draft" } });
-    const send = document.querySelector(".send-button-with-help");
+    const send = document.querySelector("[data-send-button-with-help]");
     expect(send).not.toBeNull();
     fireEvent.contextMenu(send!);
     fireEvent.keyDown(textarea, { key: "Escape" });
@@ -6104,7 +6148,9 @@ describe("MessageInput", () => {
     expect(
       screen.queryByRole("button", { name: "newSessionQueueExit" }),
     ).toBeNull();
-    fireEvent.contextMenu(document.querySelector(".send-button-with-help")!);
+    fireEvent.contextMenu(
+      document.querySelector("[data-send-button-with-help]")!,
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "newSessionQueueExit" }),
     );
@@ -6395,7 +6441,7 @@ describe("MessageInput", () => {
       />,
     );
 
-    const indicator = container.querySelector(".context-usage-indicator");
+    const indicator = container.querySelector("[data-context-usage-indicator]");
     expect(indicator).toBeTruthy();
     expect(indicator?.closest("button")).toBe(null);
   });
@@ -6424,14 +6470,14 @@ describe("MessageInput", () => {
       />,
     );
 
-    const toolbar = container.querySelector(".message-input-toolbar");
-    const waveform = container.querySelector(".composer-speech-waveform");
+    const toolbar = container.querySelector("[data-message-input-toolbar]");
+    const waveform = container.querySelector("[data-composer-speech-waveform]");
     expect(waveform).toBeTruthy();
     expect(
-      waveform?.parentElement?.classList.contains("message-input-left"),
+      waveform?.parentElement?.hasAttribute("data-message-input-left"),
     ).toBe(false);
     expect(
-      waveform?.parentElement?.querySelector(".message-input-left"),
+      waveform?.parentElement?.querySelector("[data-message-input-left]"),
     ).toBeTruthy();
     expect(toolbar?.contains(waveform)).toBe(true);
     expect(
@@ -6519,11 +6565,11 @@ describe("MessageInput", () => {
       '[data-file-viewer-controller-slot="true"]',
     );
     expect(slot?.parentElement?.parentElement).toBe(
-      container.querySelector(".message-input-toolbar"),
+      container.querySelector("[data-message-input-toolbar]"),
     );
-    expect(slot?.previousElementSibling?.classList).toContain(
-      "message-input-left",
-    );
+    expect(
+      slot?.previousElementSibling?.hasAttribute("data-message-input-left"),
+    ).toBe(true);
     expect(controller.querySelector("bdi")?.textContent).toBe(
       "/workspace/docs/guide.md",
     );
@@ -6534,18 +6580,11 @@ describe("MessageInput", () => {
       ),
     ).toBe("35%");
     const inlineContext = container.querySelector(
-      ".message-input-actions .context-toolbar-control",
+      "[data-message-input-actions] [data-context-toolbar-control]",
     );
-    expect(inlineContext?.classList).toContain("composer-bottom-overflow-late");
-    expect(inlineContext?.classList).not.toContain(
-      "composer-bottom-overflow-pinned",
+    expect(inlineContext?.getAttribute("data-session-toolbar-priority")).toBe(
+      "last",
     );
-    expect(
-      screen.getByRole("button", { name: "voiceInputStartLabel" }).classList,
-    ).not.toContain("composer-bottom-overflow-late");
-    expect(
-      screen.getByRole("button", { name: "Send" }).classList,
-    ).not.toContain("composer-bottom-overflow-late");
     const restoreButton = screen.getByRole("button", {
       name: "Restore file viewer: /workspace/docs/guide.md:12",
     });
@@ -6711,7 +6750,9 @@ describe("MessageInput", () => {
       "Steer current turn\nEnter",
     );
     expect(button.getAttribute("title")).toBe(null);
-    expect(container.querySelector(".send-button-with-help")).toBe(button);
+    expect(container.querySelector("[data-send-button-with-help]")).toBe(
+      button,
+    );
   });
 
   it("uses only the browser title on the primary send action in native mode", () => {
@@ -6892,7 +6933,7 @@ describe("MessageInput", () => {
     expect(onProjectQueue).toHaveBeenCalledTimes(1);
     expect(
       container.querySelectorAll(
-        ".composer-bottom-overflow-menu .context-toolbar-control",
+        "[data-composer-bottom-overflow-menu] [data-context-toolbar-control]",
       ),
     ).toHaveLength(1);
   });
@@ -7018,20 +7059,21 @@ describe("MessageInput", () => {
       }) as DOMRect;
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
       function getToolbarTestRect(this: HTMLElement) {
-        if (this.classList.contains("message-input-toolbar")) return rect(100);
+        if (this.hasAttribute("data-message-input-toolbar")) return rect(100);
         if (
-          this.classList.contains("message-input-left") ||
-          this.classList.contains("message-input-actions")
+          this.hasAttribute("data-message-input-left") ||
+          this.hasAttribute("data-message-input-actions")
         ) {
           return rect(1);
         }
-        if (this.classList.contains("composer-bottom-overflow"))
-          return rect(24);
-        if (this.classList.contains("attach-button")) return rect(80);
-        if (this.classList.contains("send-button-with-help")) return rect(40);
+        if (this.hasAttribute("data-composer-bottom-overflow")) return rect(24);
+        if (this.hasAttribute("data-attach-button")) return rect(80);
+        if (this.hasAttribute("data-send-button-with-help")) return rect(40);
         if (
-          this.classList.contains("composer-bottom-overflow-inline") &&
-          this.querySelector(".mode-selector-container")
+          this.classList.contains(
+            toolbarStyles.composerBottomOverflowInline!,
+          ) &&
+          this.querySelector("[data-mode-selector-container]")
         ) {
           return rect(40);
         }
@@ -7093,18 +7135,18 @@ describe("MessageInput", () => {
     try {
       const { container, rerender } = render(renderMeasuredToolbar(true));
       const toolbar = () =>
-        container.querySelector(".message-input-toolbar") as HTMLElement;
+        container.querySelector("[data-message-input-toolbar]") as HTMLElement;
       act(() => {
         resizeCallback?.([resizeEntry(toolbar(), 100)], {} as ResizeObserver);
       });
-      expect(toolbar().classList.contains("overflow-tier-early")).toBe(true);
+      expect(toolbar().getAttribute("data-overflow-tier")).toBe("early");
 
       rerender(renderMeasuredToolbar(false));
       act(() => {
         resizeCallback?.([resizeEntry(toolbar(), 100)], {} as ResizeObserver);
       });
 
-      expect(toolbar().classList.contains("overflow-tier-none")).toBe(true);
+      expect(toolbar().getAttribute("data-overflow-tier")).toBe("none");
     } finally {
       Object.defineProperty(window, "ResizeObserver", {
         configurable: true,
@@ -7327,7 +7369,9 @@ describe("MessageInput bang commands", () => {
 
   const bangMenuLabels = () =>
     Array.from(
-      document.querySelectorAll(".bang-completion-menu .slash-command-item"),
+      document.querySelectorAll(
+        "[data-bang-completion-menu] [data-slash-command-item]",
+      ),
     ).map((el) => el.textContent);
 
   it("ranks global history above token candidates in the menu", async () => {
@@ -7343,10 +7387,10 @@ describe("MessageInput bang commands", () => {
     );
     // History rows carry the distinguishing class; candidates do not.
     const items = document.querySelectorAll(
-      ".bang-completion-menu .slash-command-item",
+      "[data-bang-completion-menu] [data-slash-command-item]",
     );
-    expect(items[0]?.classList.contains("bang-history-item")).toBe(true);
-    expect(items[2]?.classList.contains("bang-history-item")).toBe(false);
+    expect(items[0]?.hasAttribute("data-bang-history-item")).toBe(true);
+    expect(items[2]?.hasAttribute("data-bang-history-item")).toBe(false);
   });
 
   it("applies a highlighted history row as the whole !! body", async () => {
@@ -7364,7 +7408,7 @@ describe("MessageInput bang commands", () => {
     fireEvent.keyDown(textarea, { key: "Tab" });
     expect((textarea as HTMLTextAreaElement).value).toBe("!!git status");
     // The menu closes after a whole-line history apply.
-    expect(document.querySelector(".bang-completion-menu")).toBeNull();
+    expect(document.querySelector("[data-bang-completion-menu]")).toBeNull();
   });
 
   it("applies a token candidate by replacing only the token", async () => {
@@ -7417,14 +7461,18 @@ describe("MessageInput bang commands", () => {
     });
     fireEvent.change(textarea, { target: { value: "!!gi" } });
     await waitFor(() =>
-      expect(document.querySelector(".bang-completion-menu")).toBeTruthy(),
+      expect(
+        document.querySelector("[data-bang-completion-menu]"),
+      ).toBeTruthy(),
     );
     fireEvent.keyDown(textarea, { key: "Escape" });
-    expect(document.querySelector(".bang-completion-menu")).toBeNull();
+    expect(document.querySelector("[data-bang-completion-menu]")).toBeNull();
     // Typing further changes the query key, so the menu is eligible again.
     fireEvent.change(textarea, { target: { value: "!!git" } });
     await waitFor(() =>
-      expect(document.querySelector(".bang-completion-menu")).toBeTruthy(),
+      expect(
+        document.querySelector("[data-bang-completion-menu]"),
+      ).toBeTruthy(),
     );
   });
 

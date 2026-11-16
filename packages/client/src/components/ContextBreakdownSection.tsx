@@ -1,3 +1,4 @@
+import popoverStyles from "./ContextUsagePopover.module.css";
 import type {
   ContextBreakdown,
   ContextBreakdownCategory,
@@ -165,7 +166,7 @@ function Breakdown({ breakdown }: { breakdown: ContextBreakdown }) {
 
   return (
     <div className={styles.breakdown}>
-      <div className="context-threshold-popover-title">
+      <div className={popoverStyles.contextThresholdPopoverTitle}>
         {t("contextBreakdownTitle")}
       </div>
       <div className={styles.summary}>
@@ -202,7 +203,14 @@ function Breakdown({ breakdown }: { breakdown: ContextBreakdown }) {
           />
         )}
       </div>
-      <div className={styles.caption}>{t("contextBreakdownComposition")}</div>
+      <svg className={styles.connector} aria-hidden="true">
+        <line
+          x1={`${percentOf(breakdown.totalTokens)}%`}
+          y1="0"
+          x2="100%"
+          y2="100%"
+        />
+      </svg>
       <div className={styles.composition} aria-hidden="true">
         {used.map((category) => (
           <span
@@ -264,7 +272,7 @@ export function ContextBreakdownSection({
     case "loading":
       return (
         <div className={styles.breakdown}>
-          <div className="context-threshold-popover-title">
+          <div className={popoverStyles.contextThresholdPopoverTitle}>
             {t("contextBreakdownTitle")}
           </div>
           <div className={styles.aside}>{t("contextBreakdownLoading")}</div>
@@ -273,7 +281,7 @@ export function ContextBreakdownSection({
     case "error":
       return (
         <div className={styles.breakdown}>
-          <div className="context-threshold-popover-title">
+          <div className={popoverStyles.contextThresholdPopoverTitle}>
             {t("contextBreakdownTitle")}
           </div>
           <div className={styles.aside}>

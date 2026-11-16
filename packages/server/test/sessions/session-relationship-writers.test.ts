@@ -16,11 +16,16 @@ import { SessionMetadataService } from "../../src/metadata/SessionMetadataServic
 import { PeerOutboundStore } from "../../src/peer-api/outbound-store.js";
 import type { SavedCreationRequest } from "../../src/sessions/SessionCreationStore.js";
 import { reconcileSessionRelationships } from "../../src/sessions/session-relationship-reconciliation.js";
-import { migrateDiscoveryDatabase } from "../../src/storage/discovery-sqlite.js";
+import {
+  discoveryMigrationPrefix,
+  migrateDiscoveryDatabase,
+} from "../../src/storage/discovery-sqlite.js";
+import { profileSessionRelationships } from "../../src/sessions/SessionRelationshipWriter.js";
 import {
   openSqliteOrThrow,
   type SqliteDatabase,
 } from "../../src/storage/sqlite.js";
+import { writeStoredMetadata } from "../utils/session-metadata-database.js";
 
 const roots: string[] = [],
   databases: SqliteDatabase[] = [];
@@ -298,7 +303,7 @@ it("retracts only metadata evidence on an explicit clear while retaining indepen
   ).toBe("superseded");
 });
 
-it("records trusted v0 creation in admission before its later receipt callback, and reconciles that exact saved correlation after a crash", async () => {
+it("records trusted v0 creation in admission before its later receipt callback, and reconciles that exact saved correlation while the receipt is retained", async () => {
   const f = await fixture();
   const { receipt } = f.reserve();
   const input = {
@@ -364,12 +369,7 @@ it("publishes creator edges atomically with receipts, only after a destination i
   f.receipts.update(receipt.id, { sessionId: "new-ya" });
   f.receipts.update(receipt.id, { sessionId: "new-ya" });
   expect(seen).toEqual(["dispatching"]);
-  f.receipts.recoverInterrupted();
-  expect(f.receipts.get(receipt.id)).toMatchObject({
-    state: "uncertain",
-    delivery: "uncertain",
-    sessionId: "new-ya",
-  });
+  expect(f.receipts.get(receipt.id)?.sessionId).toBe("new-ya");
   expect(f.reserve().created).toBe(false);
   expect(f.edges("new-ya")[0]).toMatchObject({
     type: "created_session",
@@ -390,7 +390,7 @@ it("publishes creator edges atomically with receipts, only after a destination i
   expect(f.edges("canonical-ya")).toHaveLength(1);
   f.reserve({
     requestId: "send-existing-0001",
-    kind: "sendMessage",
+    kind: "prompt",
     sessionId: "existing",
   });
   const operator = f.reserve({
@@ -510,26 +510,21 @@ it("resumes bounded SQL-only reconciliation after interruption and imports old r
       lineage: { continuedFrom: "previous" },
     },
   });
-  const incoming = f.reserve();
-  f.receipts.update(incoming.receipt.id, { sessionId: "receipt-child" });
-  const insert = f.database.prepare(
-    "INSERT INTO session_metadata(session_id, metadata) VALUES (?, ?)",
-  );
-  try {
-    f.database.transaction(() => {
-      for (let i = 0; i < 205; i++)
-        insert.run(
+  f.database.transaction(() =>
+    writeStoredMetadata(
+      f.database,
+      Object.fromEntries(
+        Array.from({ length: 205 }, (_, i) => [
           `legacy-${String(i).padStart(3, "0")}`,
-          JSON.stringify({
+          {
             forkedFromSessionId: "old-source",
             creationProvenance: { surface: "api" },
             initialPrompt: "SECRET-PROMPT",
-          }),
-        );
-    });
-  } finally {
-    insert.finalize();
-  }
+          },
+        ]),
+      ),
+    ),
+  );
   // Simulate existing authoritative owners at the additive migration boundary.
   f.database.exec(
     "DELETE FROM session_relationship_evidence; DELETE FROM session_relationship_edges; DELETE FROM session_relationship_checkpoints;",
@@ -580,8 +575,7 @@ it("resumes bounded SQL-only reconciliation after interruption and imports old r
       reopened.database,
       "SELECT COUNT(*) AS total FROM session_relationship_edges WHERE active = 1",
     )[0],
-  ).toEqual({ total: 208 });
-  expect(reopened.edges("receipt-child")).toHaveLength(1);
+  ).toEqual({ total: 207 });
   expect(
     reopened
       .edges(saved.sessionId)
@@ -610,20 +604,6 @@ it("resumes bounded SQL-only reconciliation after interruption and imports old r
 it("resolves only local historical aliases during import and ignores unrepresentable legacy relationship values", async () => {
   const f = await fixture();
   const local = f.reserve();
-  f.receipts.update(local.receipt.id, { sessionId: "old-child" });
-  const peer = f.reserve({
-    requestId: "peer-alias-0001",
-    creator: {
-      ...f.creator,
-      serverId: "remote",
-      principal: { kind: "peer" },
-      authentication: {
-        credentialId: "private",
-        sessionAttribution: "source-attested",
-      },
-    },
-  });
-  f.receipts.update(peer.receipt.id, { sessionId: "peer-child" });
   const outbound = f.outbound.reserve(
     {
       sourceServerId: f.writer.serverId,
@@ -655,7 +635,7 @@ it("resolves only local historical aliases during import and ignores unrepresent
     insert.finalize();
   }
   f.database.exec(
-    `INSERT INTO session_metadata VALUES ('legacy-invalid', '{"forkedFromSessionId":{"bad":"value"}}'); DELETE FROM session_relationship_evidence; DELETE FROM session_relationship_edges; DELETE FROM session_relationship_checkpoints;`,
+    `INSERT INTO session_metadata (session_id, extra) VALUES ('legacy-invalid', '{"forkedFromSessionId":{"bad":"value"}}'); DELETE FROM session_relationship_evidence; DELETE FROM session_relationship_edges; DELETE FROM session_relationship_checkpoints;`,
   );
   await reconcileSessionRelationships(
     f.database,
@@ -663,13 +643,6 @@ it("resolves only local historical aliases during import and ignores unrepresent
     new AbortController().signal,
     (id) => f.receipts.resolveId(id),
   );
-  expect(f.edges("canonical-child")[0]).toMatchObject({
-    source: f.resource("canonical-initiator"),
-    target: f.resource("canonical-child"),
-  });
-  expect(f.edges("peer-child")[0]).toMatchObject({
-    source: { kind: "session", serverId: "remote", sessionId: "initiator" },
-  });
   expect(
     f
       .edges("canonical-initiator")
@@ -683,7 +656,7 @@ it("resolves only local historical aliases during import and ignores unrepresent
 it("pages opaque Unicode session keys in SQLite order without skipping a frontier row", async () => {
   const f = await fixture();
   const insert = f.database.prepare(
-    "INSERT INTO session_metadata(session_id, metadata) VALUES (?, ?)",
+    "INSERT INTO session_metadata(session_id, forked_from_session_id, extra) VALUES (?, ?, '{}')",
   );
   try {
     f.database.transaction(() => {
@@ -697,7 +670,7 @@ it("pages opaque Unicode session keys in SQLite order without skipping a frontie
         "\uE000",
         "\u{10000}",
       ])
-        insert.run(id, '{"forkedFromSessionId":"origin"}');
+        insert.run(id, "origin");
     });
   } finally {
     insert.finalize();
@@ -715,4 +688,103 @@ it("pages opaque Unicode session keys in SQLite order without skipping a frontie
       "SELECT COUNT(*) AS total FROM session_relationship_edges WHERE active = 1",
     )[0],
   ).toEqual({ total: 101 });
+});
+
+it("keeps v0 receipt creator relationships when migration 039 drops the receipts and reconciliation resumes", async () => {
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  const root = await mkdtemp(join(tmpdir(), "ya-relationship-writers-"));
+  roots.push(root);
+  const database = openSqliteOrThrow(join(root, "profile.sqlite"));
+  databases.push(database);
+  migrateDiscoveryDatabase(database, discoveryMigrationPrefix(38));
+  const writer = profileSessionRelationships(database);
+  const receipt: ApiReceipt = {
+    id: "historical-receipt",
+    requestId: "historical-0001",
+    kind: "createSession",
+    state: "accepted",
+    projectId: "project",
+    sessionId: "created-child",
+    creator: {
+      serverId: writer.serverId,
+      sessionId: "historical-parent",
+      launchId: "historical-launch",
+      principal: { kind: "superuser" },
+    },
+    destinationServerId: writer.serverId,
+    createdAt: "2026-11-10T00:00:00.000Z",
+    updatedAt: "2026-11-10T00:00:00.000Z",
+    delivery: "consumed",
+    completion: "unknown",
+  };
+  const insert = database.prepare(
+    "INSERT INTO agent_api_receipts (id, scope_key, payload_hash, kind, project_id, session_id, source_session_id, state, receipt_json) VALUES (?, 'scope', 'hash', 'createSession', 'project', ?, ?, 'accepted', ?)",
+  );
+  try {
+    database.transaction(() => {
+      // As the version 38 receipt owner committed a createSession receipt.
+      insert.run(
+        receipt.id,
+        receipt.sessionId,
+        receipt.creator.sessionId,
+        JSON.stringify(receipt),
+      );
+      writer.receiptWithinTransaction(receipt);
+      // Reconciliation saved a cursor inside its former receipts phase.
+      writer.index.publishWithinTransaction({
+        observation: {
+          producer: "ya-relationship-reconciliation-v1",
+          sourceKey: "profile",
+          sourceVersion: "1",
+          extractorVersion: 1,
+          observedAt: receipt.createdAt,
+        },
+        expectedRevision: null,
+        facts: [],
+        progress: {
+          state: "partial",
+          cursor: JSON.stringify({ phase: 2, through: "", high: null }),
+        },
+      });
+    });
+  } finally {
+    insert.finalize();
+  }
+  migrateDiscoveryDatabase(database);
+  expect(
+    query(
+      database,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'agent_api_%' ORDER BY name",
+    ),
+  ).toEqual([{ name: "agent_api_session_aliases" }]);
+  await reconcileSessionRelationships(
+    database,
+    writer,
+    new AbortController().signal,
+  );
+  expect(
+    writer.index.checkpoint("ya-relationship-reconciliation-v1", "profile")
+      ?.state,
+  ).toBe("complete");
+  const [edge, ...others] = writer.index.list({
+    resource: writer.session("created-child"),
+    direction: "incoming",
+    limit: 10,
+  }).edges;
+  expect(others).toEqual([]);
+  expect(edge).toMatchObject({
+    type: "created_session",
+    source: writer.session("historical-parent"),
+  });
+  expect(writer.index.evidence(edge!.id)).toEqual([
+    expect.objectContaining({
+      producer: "v0-receipt-v1",
+      sourceKey: "historical-receipt",
+      state: "active",
+      metadata: {
+        receiptId: "historical-receipt",
+        launchId: "historical-launch",
+      },
+    }),
+  ]);
 });

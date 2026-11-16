@@ -1,3 +1,4 @@
+import taskStyles from "./TaskPresentation.module.css";
 import { useCallback, useMemo, useState } from "react";
 import { useRecentProjectPathLinks } from "../../../hooks/useRecentProjectPathLinks";
 import { getCachedWebTranscriptProjection } from "../../../lib/webTranscriptProjection";
@@ -28,7 +29,7 @@ export function TaskNestedContent({
   );
 
   return (
-    <div className="task-nested-content">
+    <div className={taskStyles.taskNestedContent} data-task-nested-content>
       {renderItems.map((item) => (
         <RenderItemComponent
           key={item.id}
@@ -39,28 +40,5 @@ export function TaskNestedContent({
         />
       ))}
     </div>
-  );
-}
-
-export function Spinner() {
-  return (
-    <svg
-      className="spinner"
-      viewBox="0 0 16 16"
-      width="12"
-      height="12"
-      aria-hidden="true"
-    >
-      <circle
-        cx="8"
-        cy="8"
-        r="6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeDasharray="24"
-        strokeDashoffset="8"
-      />
-    </svg>
   );
 }

@@ -285,7 +285,7 @@ export function compareReports(baseline, current) {
 }
 
 async function dismissOnboarding(page) {
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (
     await skip
       .waitFor({ state: "visible", timeout: 750 })
@@ -300,7 +300,7 @@ async function waitForStableTranscript(
   page,
   { minimumRenderRows, settleMs, timeoutMs },
 ) {
-  await page.waitForSelector(".session-messages .message-list", {
+  await page.waitForSelector("[data-session-messages] [data-message-list]", {
     timeout: timeoutMs,
   });
 
@@ -309,7 +309,9 @@ async function waitForStableTranscript(
   let priorSignature = null;
   while (Date.now() <= deadline) {
     const state = await page.evaluate(() => {
-      const list = document.querySelector(".session-messages .message-list");
+      const list = document.querySelector(
+        "[data-session-messages] [data-message-list]",
+      );
       const rows = Array.from(
         list?.querySelectorAll("[data-render-id][data-render-type]") ?? [],
       ).filter(
@@ -362,8 +364,8 @@ async function installStableCaptureStyle(page) {
         transition-duration: 0s !important;
         transition-delay: 0s !important;
       }
-      .message-age,
-      .reload-banner,
+      [data-message-age],
+      [data-reload-banner],
       [data-turn-rail],
       .selection-quote-button {
         visibility: hidden !important;
@@ -384,8 +386,10 @@ async function collectTranscriptState(page) {
         byte.toString(16).padStart(2, "0"),
       ).join("");
     };
-    const list = document.querySelector(".session-messages .message-list");
-    const scroll = document.querySelector(".session-messages");
+    const list = document.querySelector(
+      "[data-session-messages] [data-message-list]",
+    );
+    const scroll = document.querySelector("[data-session-messages]");
     if (!(list instanceof HTMLElement) || !(scroll instanceof HTMLElement)) {
       throw new Error("Transcript containers are missing");
     }
@@ -410,7 +414,7 @@ async function collectTranscriptState(page) {
       typeCounts[type] = (typeCounts[type] ?? 0) + 1;
       const clone = row.cloneNode(true);
       for (const dynamic of clone.querySelectorAll(
-        ".message-age, [data-turn-rail], button, [role='status']",
+        "[data-message-age], [data-turn-rail], button, [role='status']",
       )) {
         dynamic.remove();
       }
@@ -446,7 +450,7 @@ async function collectTranscriptState(page) {
 }
 
 async function capturePosition(page, outputPath, position) {
-  const scroll = page.locator(".session-messages");
+  const scroll = page.locator("[data-session-messages]");
   await scroll.evaluate((element, wanted) => {
     element.scrollTop = wanted === "top" ? 0 : element.scrollHeight;
   }, position);

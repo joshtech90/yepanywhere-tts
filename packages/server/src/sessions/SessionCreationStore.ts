@@ -1,4 +1,9 @@
 import {
+  CREATION_PROJECTION_SQL,
+  creationProjection,
+  type ProjectionRow,
+} from "./creation-collection-rows.js";
+import {
   isClaudeCopyBoundary,
   type ClaudeCopyBoundary,
 } from "./claude-copy-boundary.js";
@@ -96,22 +101,6 @@ export interface SessionCreationProjection {
   deleted: boolean;
   creation: SessionCreationStatus;
 }
-interface ProjectionRow {
-  creation_id: string;
-  generation: number;
-  session_id: string;
-  project_id: string;
-  provider: ProviderName;
-  created_at: string;
-  updated_at: string;
-  native_bound: number;
-  deleted: number;
-  input_expected: number;
-  attempt_id: string;
-  state: CreationState;
-  delivery: CreationDelivery;
-  detail_json: string;
-}
 export interface CreationAttemptFence {
   readonly creationId: string;
   readonly attemptId: string;
@@ -186,11 +175,13 @@ interface RetryRow {
   failed_attempt: string;
   result_attempt: string;
 }
-const MAX_OPERATIONS = 10_000,
-  MAX_PAYLOAD = 512 * 1024 * 1024,
-  MAX_REQUEST = 256 * 1024,
-  MAX_ATTEMPTS = 64,
-  MAX_ATTEMPT_BYTES = 64 * 1024 * 1024;
+/**
+ * Per-item bounds only. There is no lifetime total: saved creations are rows
+ * in the profile database, and a ceiling on their count or bytes would stop
+ * session creation for good once reached.
+ */
+const MAX_REQUEST = 256 * 1024,
+  MAX_ATTEMPTS = 64;
 const keyPattern = /^[A-Za-z0-9_-]{8,128}$/;
 function key(value: string): string {
   if (typeof value !== "string" || !keyPattern.test(value))
@@ -447,7 +438,7 @@ export class SessionCreationStore {
   private readonly listeners = new Set<
     (sessionId: YaSessionId, creation: SessionCreationStatus) => void
   >();
-  /** Exists only during one synchronous transaction, bounded by creation capacity. */
+  /** Exists only during one synchronous transaction; holds the creations it touched. */
   private transactionChanges?: Set<string>;
 
   subscribeChanges(
@@ -500,8 +491,7 @@ export class SessionCreationStore {
     | "bySession"
     | "attempt"
     | "retry"
-    | "capacity"
-    | "reserve"
+    | "generation"
     | "insert"
     | "insertAttempt"
     | "updateAttempt"
@@ -528,9 +518,7 @@ export class SessionCreationStore {
       advanceGeneration: database.prepare(
         "UPDATE session_creation_capacity SET generation = generation + 1 WHERE id = 1",
       ),
-      projections: database.prepare(
-        "SELECT c.id AS creation_id, a.generation, i.session_id, i.project_id, i.provider, i.created_at, a.updated_at, i.native_id IS NOT NULL AS native_bound, c.deleted, c.input_expected, a.id AS attempt_id, a.state, a.delivery, a.detail_json FROM session_creations c JOIN session_identities i ON i.session_id = c.session_id JOIN session_creation_attempts a ON a.id = c.current_attempt",
-      ),
+      projections: database.prepare(CREATION_PROJECTION_SQL),
       byId: database.prepare("SELECT * FROM session_creations WHERE id = ?"),
       publicByKey: database.prepare(
         "SELECT session_id FROM session_creations WHERE owner_key = ? AND request_key = ?",
@@ -550,11 +538,8 @@ export class SessionCreationStore {
       retry: database.prepare(
         "SELECT * FROM session_creation_retries WHERE creation_id = ? AND retry_key = ?",
       ),
-      capacity: database.prepare(
-        "SELECT * FROM session_creation_capacity WHERE id = 1",
-      ),
-      reserve: database.prepare(
-        "UPDATE session_creation_capacity SET operations = operations + ?, payload_bytes = payload_bytes + ?, attempt_bytes = attempt_bytes + ?, attachment_bytes = attachment_bytes + ? WHERE id = 1",
+      generation: database.prepare(
+        "SELECT generation FROM session_creation_capacity WHERE id = 1",
       ),
       insert: database.prepare(
         "INSERT INTO session_creations (id, owner_key, request_key, request_hash, session_id, payload_json, payload_bytes, context_json, current_attempt, attempt_count, created_at, initial_input_id, input_expected) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
@@ -578,7 +563,7 @@ export class SessionCreationStore {
   }
   /** One fixed-size scalar read; no per-session scan or timer. */
   get generation(): number {
-    return this.statements.capacity.get<{ generation: number }>()!.generation;
+    return this.statements.generation.get<{ generation: number }>()!.generation;
   }
 
   /** Once per Hono startup: compact control rows only, never saved prompts. */
@@ -638,36 +623,23 @@ export class SessionCreationStore {
 
   /** At most 10,000 compact rows; never fetch/parse saved request payloads. */
   listProjections(): SessionCreationProjection[] {
-    return this.statements.projections.all<ProjectionRow>().map((row) => {
-      assertUrlProjectId(row.project_id);
-      const detail: Pick<
-        SessionCreationStatus,
-        "failure" | "failureDetail" | "kind"
-      > = JSON.parse(row.detail_json);
-      return {
-        sessionId: parseYaSessionId(row.session_id),
-        projectId: row.project_id,
-        provider: row.provider,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        nativeBound: row.native_bound === 1,
-        deleted: row.deleted === 1,
-        creation: {
-          state: row.state,
-          attemptId: row.attempt_id,
-          updatedAt: row.updated_at,
-          delivery: row.delivery,
-          ...(row.input_expected === 0
-            ? { initialInputExpected: false as const }
-            : {}),
-          ...(detail.kind === "copy" ? { kind: "copy" as const } : {}),
-          ...(detail.failure ? { failure: detail.failure } : {}),
-          ...(detail.failureDetail
-            ? { failureDetail: detail.failureDetail }
-            : {}),
-        },
-      };
-    });
+    return this.statements.projections
+      .all<ProjectionRow>()
+      .map(creationProjection);
+  }
+
+  /** One fixed optional statement, retained until the store closes. */
+  private projectionBySession?: SqliteStatement;
+
+  /** Indexed compact control facts, without reading saved input payloads. */
+  projectionForSession(
+    sessionId: string,
+  ): SessionCreationProjection | undefined {
+    this.projectionBySession ??= this.database.prepare(
+      `${CREATION_PROJECTION_SQL} WHERE i.session_id = ?`,
+    );
+    const row = this.projectionBySession.get<ProjectionRow>(sessionId);
+    return row && creationProjection(row);
   }
 
   /** Point status avoids decoding the immutable request/context payload. */
@@ -798,36 +770,6 @@ export class SessionCreationStore {
         : {}),
     };
   }
-  assertAttachmentCapacity(bytes: number): void {
-    const usage = this.statements.capacity.get<{ attachment_bytes: number }>()!;
-    if (
-      !Number.isSafeInteger(bytes) ||
-      bytes < 0 ||
-      usage.attachment_bytes + bytes > 2 * 1024 ** 3
-    )
-      throw new SessionCreationCapacityError();
-  }
-  private reserve(
-    operations: number,
-    payload: number,
-    attempts: number,
-    attachments = 0,
-  ): void {
-    const usage = this.statements.capacity.get<{
-      operations: number;
-      payload_bytes: number;
-      attempt_bytes: number;
-      attachment_bytes: number;
-    }>()!;
-    if (
-      usage.operations + operations > MAX_OPERATIONS ||
-      usage.payload_bytes + payload > MAX_PAYLOAD ||
-      usage.attempt_bytes + attempts > MAX_ATTEMPT_BYTES ||
-      usage.attachment_bytes + attachments > 2 * 1024 ** 3
-    )
-      throw new SessionCreationCapacityError();
-    this.statements.reserve.run(operations, payload, attempts, attachments);
-  }
   /** No provider effects. The exact initial text and normalized facts commit together. */
   admit(input: {
     requestId: string;
@@ -935,12 +877,6 @@ export class SessionCreationStore {
         () => {
           if (this.statements.byKey.get(ownerKey(context.owner), requestId))
             throw new SessionCreationConflict();
-          this.reserve(
-            1,
-            bytes,
-            detailBytes,
-            request.attachments?.files.reduce((sum, f) => sum + f.size, 0) ?? 0,
-          );
           this.metadata.identities.allocateWithinTransaction({
             sessionId,
             provider: request.provider,
@@ -1054,7 +990,6 @@ export class SessionCreationStore {
       }),
       size = Buffer.byteLength(detail);
     if (size > 8192) throw new SessionCreationCapacityError();
-    this.reserve(0, 0, size - previous.detail_bytes);
     this.statements.updateAttempt.run(
       generation,
       state,
@@ -1359,7 +1294,6 @@ export class SessionCreationStore {
         ...(current.request?.intent === "copy" ? { kind: "copy" } : {}),
       });
       const detailBytes = Buffer.byteLength(detail);
-      this.reserve(0, 0, detailBytes);
       const attempt = randomUUID();
       this.statements.insertAttempt.run(
         attempt,
@@ -1383,8 +1317,7 @@ export class SessionCreationStore {
   /** Tombstones retain request/hash and retry results; replay can never relaunch. */
   delete(fence: CreationAttemptFence): void {
     this.transaction(() => {
-      const current = this.assertCurrent(fence),
-        row = this.statements.byId.get<OperationRow>(current.id)!;
+      const current = this.assertCurrent(fence);
       this.update(
         fence,
         "deleted",
@@ -1393,21 +1326,11 @@ export class SessionCreationStore {
         fence.generation + 1,
       );
       this.statements.removePayload.run(current.id);
-      this.reserve(
-        0,
-        -row.payload_bytes,
-        0,
-        -(
-          current.request?.attachments?.files.reduce(
-            (sum, f) => sum + f.size,
-            0,
-          ) ?? 0
-        ),
-      );
     });
   }
   close(): void {
     this.listeners.clear();
+    this.projectionBySession?.finalize();
     for (const statement of Object.values(this.statements))
       statement.finalize();
   }

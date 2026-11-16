@@ -1,3 +1,5 @@
+import pathStyles from "../../FilePathLink.module.css";
+import readStyles from "./ReadRenderer.module.css";
 import { toolDisplayContracts } from "./toolDisplayContracts";
 import { defineTool } from "./defineTool";
 import { useCallback, useState } from "react";
@@ -9,7 +11,7 @@ import {
   LocalMediaModal,
   useLocalFileScope,
 } from "../../LocalMediaModal";
-import { ButtonBase } from "../../ui/Button";
+import { Button } from "../../ui/Button";
 
 function getFileName(path: string): string {
   return getPathBasename(path);
@@ -22,26 +24,37 @@ function getFileName(path: string): string {
 function ViewImageButton({
   path,
   className,
+  inline,
   onClick,
   onContextMenu,
   projectPath,
 }: {
   path: string;
-  className: string;
+  className: string | undefined;
+  inline?: boolean;
   onClick: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent<Element>) => void;
   projectPath?: string | null;
 }) {
   const displayPath = makeDisplayPath(path, projectPath);
   return (
-    <ButtonBase
+    <Button
+      mono
+      textFlow="wrap"
+      variant={inline ? "link" : "outline"}
+      size="small"
       className={className}
       onClick={onClick}
       onContextMenu={onContextMenu}
     >
-      {getFileName(displayPath)}
-      <span className="file-line-count-inline">(image)</span>
-    </ButtonBase>
+      {getFileName(displayPath)}{" "}
+      <span
+        className={pathStyles.fileLineCountInline}
+        data-file-line-count-inline
+      >
+        (image)
+      </span>
+    </Button>
   );
 }
 
@@ -51,11 +64,13 @@ function ViewImageButton({
 function ViewImageClickable({
   path,
   buttonClass,
+  inline,
   stopPropagation,
   projectPath,
 }: {
   path: string;
-  buttonClass: string;
+  buttonClass: string | undefined;
+  inline?: boolean;
   stopPropagation?: boolean;
   projectPath?: string | null;
 }) {
@@ -80,6 +95,7 @@ function ViewImageClickable({
       <ViewImageButton
         path={path}
         className={buttonClass}
+        inline={inline}
         onContextMenu={imageActions.handleContextMenu}
         projectPath={projectPath}
         onClick={(e) => {
@@ -106,10 +122,10 @@ export const viewImageRenderer = defineTool(toolDisplayContracts.ViewImage, {
   renderToolUse(input, context) {
     const { path } = input;
     return (
-      <div className="read-image-result">
+      <div className={readStyles.readImageResult} data-read-image-result>
         <ViewImageClickable
           path={path}
-          buttonClass="file-link-button"
+          buttonClass={pathStyles.fileLinkButton}
           projectPath={context.projectPath}
         />
       </div>
@@ -120,10 +136,10 @@ export const viewImageRenderer = defineTool(toolDisplayContracts.ViewImage, {
     if (!input) return null;
     const { path } = input;
     return (
-      <div className="read-image-result">
+      <div className={readStyles.readImageResult} data-read-image-result>
         <ViewImageClickable
           path={path}
-          buttonClass="file-link-button"
+          buttonClass={pathStyles.fileLinkButton}
           projectPath={context.projectPath}
         />
       </div>
@@ -144,7 +160,8 @@ export const viewImageRenderer = defineTool(toolDisplayContracts.ViewImage, {
     return (
       <ViewImageClickable
         path={path}
-        buttonClass="file-link-inline"
+        buttonClass={pathStyles.fileLinkInline}
+        inline
         projectPath={context.projectPath}
         stopPropagation
       />

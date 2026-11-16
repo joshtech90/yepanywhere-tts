@@ -1,9 +1,22 @@
+import diffStyles from "../components/renderers/DiffOutput.module.css";
+import {
+  collectDiffHunks,
+  formatBytes,
+  getBinaryPatchSkip,
+  getDiffSourceText,
+  getPostChangeText,
+  getDiffScrollRoot,
+  getRelativeScrollRatio,
+  restoreRelativeScrollRatio,
+} from "./gitDiffPreviewContent";
+import previewLayoutStyles from "./SourcePreviewLayout.module.css";
+import statusStyles from "./SourceStatus.module.css";
+import diffControlsStyles from "../components/DiffContextControls.module.css";
 import type {
   GitDiffPreviewSkipped,
   GitDiffResult,
   GitFileChange,
   GitFileDiffMode,
-  PatchHunk,
   ReviewCommentRevision,
 } from "@yep-anywhere/shared";
 import {
@@ -23,6 +36,7 @@ import { api } from "../api/client";
 import { CopyButton } from "../components/CopyButton";
 import { FileRevisionLink } from "../components/FileRevisionLink";
 import { MarkdownPreview } from "../components/MarkdownPreview";
+import { Banner } from "../components/ui/Banner";
 import { IconButton } from "../components/ui/Button";
 import { renderFixedFontRichContent } from "../components/ui/FixedFontMathToggle";
 import { Modal } from "../components/ui/Modal";
@@ -43,29 +57,6 @@ import styles from "./GitStatusDiffPreview.module.css";
 import headerStyles from "../components/ViewerHeader.module.css";
 
 const GIT_DIFF_MAX_RENDERED_HTML_CHARS = 1_000_000 * 20;
-
-function getDiffSourceText(hunks: PatchHunk[]): string {
-  return hunks.flatMap((hunk) => hunk.lines).join("\n");
-}
-
-function getPostChangeText(hunks: PatchHunk[]): string | null {
-  if (hunks.length === 0) return null;
-  return hunks
-    .map((hunk) =>
-      hunk.lines
-        .filter((line) => line.startsWith(" ") || line.startsWith("+"))
-        .map((line) => line.slice(1))
-        .join("\n"),
-    )
-    .join("\n");
-}
-
-function getDiffScrollRoot(content: HTMLElement): HTMLElement {
-  return (
-    content.closest<HTMLElement>(".git-diff-preview-body, .modal-content") ??
-    content
-  );
-}
 
 export interface GitDiffViewState {
   showFullContext?: boolean;
@@ -147,17 +138,6 @@ function revisionForDiffSource(source: GitDiffSource): string | undefined {
     return source.headSha;
   }
   return undefined;
-}
-
-function getRelativeScrollRatio(element: HTMLElement): number {
-  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-  if (maxScrollTop === 0) return 0;
-  return Math.min(1, Math.max(0, element.scrollTop / maxScrollTop));
-}
-
-function restoreRelativeScrollRatio(element: HTMLElement, ratio: number): void {
-  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-  element.scrollTop = maxScrollTop * Math.min(1, Math.max(0, ratio));
 }
 
 /**
@@ -320,8 +300,12 @@ export const GitDiffPreview = forwardRef<
   }, [fileKey, onRetainScrollRatio]);
 
   return (
-    <section className="git-diff-preview-pane">
-      <div className="git-diff-preview-body" ref={bodyRef}>
+    <section className={previewLayoutStyles.pane} data-source-preview-pane>
+      <div
+        className={previewLayoutStyles.body}
+        data-source-preview-body
+        ref={bodyRef}
+      >
         {file && fileKey ? (
           <GitDiffBody
             file={file}
@@ -365,7 +349,7 @@ export const GitDiffPreview = forwardRef<
               path=""
               actions={headerActions}
             />
-            <div className="git-diff-placeholder">
+            <div className={styles.placeholder}>
               {t("gitStatusSelectFileForDiff")}
             </div>
           </>
@@ -428,7 +412,7 @@ export function GitDiffModal({
       closeOnBackGesture
       contentRef={bodyRef}
     >
-      <div className="git-diff-preview-header-actions">
+      <div className={styles.previewHeaderActions} data-source-preview-actions>
         <FileRevisionLink
           showAuthor
           projectId={projectId}
@@ -686,31 +670,30 @@ export function GitDiffBody({
         />
       )}
       {initialLoading && (
-        <div className="git-diff-loading">{t("gitStatusLoadingDiff")}</div>
+        <div className={statusStyles.diffLoading}>
+          {t("gitStatusLoadingDiff")}
+        </div>
       )}
-      {!diffResult && error && <div className="git-diff-error">{error}</div>}
+      {error && <Banner tone="error">{error}</Banner>}
       {diffResult && (
-        <>
-          {error && <div className="git-diff-error">{error}</div>}
-          <GitDiffContent
-            key={requestKey}
-            file={file}
-            fileKey={fileKey}
-            projectId={projectId}
-            source={source}
-            diffResult={diffResult}
-            retainedDiffView={liveDiffViewRef.current.view}
-            onRetainDiffView={retainLiveDiffView}
-            paneHeader={paneHeader}
-            onHunkNavigationChange={onHunkNavigationChange}
-            onCommentEditorOpenChange={onCommentEditorOpenChange}
-            captureReviewProjections={captureReviewProjections}
-            ignoreWhitespace={ignoreWhitespace}
-            onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
-            onProjectionRequestFailure={onProjectionRequestFailure}
-            t={t}
-          />
-        </>
+        <GitDiffContent
+          key={requestKey}
+          file={file}
+          fileKey={fileKey}
+          projectId={projectId}
+          source={source}
+          diffResult={diffResult}
+          retainedDiffView={liveDiffViewRef.current.view}
+          onRetainDiffView={retainLiveDiffView}
+          paneHeader={paneHeader}
+          onHunkNavigationChange={onHunkNavigationChange}
+          onCommentEditorOpenChange={onCommentEditorOpenChange}
+          captureReviewProjections={captureReviewProjections}
+          ignoreWhitespace={ignoreWhitespace}
+          onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
+          onProjectionRequestFailure={onProjectionRequestFailure}
+          t={t}
+        />
       )}
     </>
   );
@@ -1083,9 +1066,7 @@ function GitDiffContent({
     if (showingMarkdownPreview || previewSkipped || !contentRef.current) {
       return [];
     }
-    return Array.from(
-      contentRef.current.querySelectorAll<HTMLElement>(".line-hunk"),
-    );
+    return collectDiffHunks(contentRef.current);
   }, [previewSkipped, showingMarkdownPreview]);
 
   const updateHunkPosition = useCallback(() => {
@@ -1187,7 +1168,7 @@ function GitDiffContent({
 
   const hunkNavigation =
     hunkPosition.count > 0 ? (
-      <span className="diff-hunk-navigation">
+      <span className={styles.diffHunkNavigation}>
         <IconButton
           label={t("sourcePreviousHunkShortcut")}
           size="small"
@@ -1195,7 +1176,7 @@ function GitDiffContent({
         >
           ‹
         </IconButton>
-        <span className="diff-hunk-indicator">
+        <span className={styles.diffHunkIndicator} data-source-hunk-position>
           {hunkPosition.index + 1}/{hunkPosition.count}
         </span>
         <IconButton
@@ -1222,7 +1203,7 @@ function GitDiffContent({
           onClick={onToggleIgnoreWhitespace}
           aria-pressed={ignoreWhitespace}
         >
-          <span className="diff-whitespace-glyph" aria-hidden="true">
+          <span className={styles.diffWhitespaceGlyph} aria-hidden="true">
             _+
           </span>
         </IconButton>
@@ -1296,7 +1277,7 @@ function GitDiffContent({
     editor: ReactNode,
   ) =>
     displayResult.structuredPatch.length === 0 ? (
-      <div className="git-diff-empty-projection">
+      <div className={styles.emptyProjection}>
         {ignoreWhitespace
           ? t("gitStatusWhitespaceChangesHidden")
           : t("gitStatusNoContentChanges")}
@@ -1343,21 +1324,31 @@ function GitDiffContent({
           {toolbarButtons}
         </DiffPaneToolbar>
       ) : (
-        <div className="diff-context-controls source-diff-context-controls">
-          <span className="diff-context-path">{file.path}</span>
-          <div className="diff-context-buttons">{toolbarButtons}</div>
+        <div
+          className={`${diffControlsStyles.controls} ${styles.sourceDiffContextControls}`}
+          data-diff-context-controls
+        >
+          <span className={diffControlsStyles.path} data-diff-context-path>
+            {file.path}
+          </span>
+          <div className={diffControlsStyles.buttons} data-diff-context-buttons>
+            {toolbarButtons}
+          </div>
         </div>
       )}
-      {contextError && <div className="diff-context-error">{contextError}</div>}
+      {contextError && <Banner tone="error">{contextError}</Banner>}
       <div
-        className="diff-modal-content source-diff-pane diff-gutter-aligned"
+        className={`${diffStyles.diffModalContent} ${styles.sourceDiffPane} ${diffStyles.diffGutterAligned}`}
+        data-diff-modal-content
+        data-diff-gutter-aligned
+        data-source-diff-pane
         ref={mountContent}
         style={{ "--diff-sticky-top": `${toolbarHeight}px` } as CSSProperties}
       >
         {plainDiff && !previewSkipped && !showingMarkdownPreview && (
-          <div className={styles.plainNotice}>
+          <Banner role="none" compact className={styles.notice}>
             {t("gitStatusDiffPlainMode")}
-          </div>
+          </Banner>
         )}
         {showingMarkdownPreview && renderedPreviewHtml ? (
           <MarkdownPreview html={renderedPreviewHtml} sourcePath={file.path} />
@@ -1413,26 +1404,44 @@ function DiffPaneToolbar({
   return (
     <div
       ref={toolbarRef}
-      className={`git-diff-pane-toolbar ${headerStyles.header}`}
+      className={`${styles.paneToolbar} ${headerStyles.header}`}
+      data-source-diff-toolbar
     >
       <div className={headerStyles.identity}>
-        <span className="git-diff-file-identity" title={path || title}>
+        <span
+          className={styles.fileIdentity}
+          data-source-diff-identity
+          title={path || title}
+        >
           {directoryPath && (
             <>
-              <span className="git-diff-toolbar-path">{directoryPath}</span>
-              <span className="git-diff-toolbar-separator" aria-hidden="true">
+              <span className={styles.toolbarPath} data-source-diff-path>
+                {directoryPath}
+              </span>
+              <span className={styles.toolbarSeparator} aria-hidden="true">
                 /
               </span>
             </>
           )}
-          <h3 className="git-diff-preview-title">{title}</h3>
+          <h3 className={previewLayoutStyles.title} data-source-preview-title>
+            {title}
+          </h3>
         </span>
         {revision}
       </div>
       <div className={headerStyles.actions}>
-        {children && <div className="diff-context-buttons">{children}</div>}
+        {children && (
+          <div className={diffControlsStyles.buttons} data-diff-context-buttons>
+            {children}
+          </div>
+        )}
         {actions && (
-          <div className="git-diff-preview-header-actions">{actions}</div>
+          <div
+            className={styles.previewHeaderActions}
+            data-source-preview-actions
+          >
+            {actions}
+          </div>
         )}
       </div>
     </div>
@@ -1569,14 +1578,14 @@ function GitDiffPreviewSkippedState({
   t: TranslationFn;
 }) {
   return (
-    <div className="git-diff-preview-skipped">
-      <div className="git-diff-preview-skipped-title">
+    <div className={styles.previewSkipped}>
+      <div className={styles.previewSkippedTitle}>
         {t("gitStatusDiffPreviewSkipped")}
       </div>
-      <div className="git-diff-preview-skipped-message">
+      <div className={styles.previewSkippedMessage}>
         {getDiffPreviewSkippedMessage(previewSkipped, t)}
       </div>
-      <dl className="git-diff-preview-skipped-details">
+      <dl className={styles.previewSkippedDetails}>
         <div>
           <dt>{t("gitStatusDiffPreviewSkippedPath")}</dt>
           <dd>{file.path}</dd>
@@ -1616,42 +1625,6 @@ function GitDiffPreviewSkippedState({
   );
 }
 
-function getBinaryPatchSkip(
-  structuredPatch: PatchHunk[],
-): GitDiffPreviewSkipped | null {
-  let characters = 0;
-  let suspiciousControls = 0;
-
-  for (const hunk of structuredPatch) {
-    for (const line of hunk.lines) {
-      for (const char of line) {
-        const codePoint = char.codePointAt(0);
-        if (codePoint === undefined) continue;
-        if (codePoint === 0 || codePoint === 0xfffd) {
-          return { reason: "binary" };
-        }
-        characters += 1;
-        if (
-          (codePoint < 0x20 &&
-            codePoint !== 0x08 &&
-            codePoint !== 0x09 &&
-            codePoint !== 0x0a &&
-            codePoint !== 0x0c &&
-            codePoint !== 0x0d &&
-            codePoint !== 0x1b) ||
-          codePoint === 0x7f
-        ) {
-          suspiciousControls += 1;
-        }
-      }
-    }
-  }
-
-  return suspiciousControls / Math.max(characters, 1) > 0.01
-    ? { reason: "binary" }
-    : null;
-}
-
 function getDiffPreviewSkippedMessage(
   previewSkipped: GitDiffPreviewSkipped,
   t: TranslationFn,
@@ -1666,18 +1639,4 @@ function getDiffPreviewSkippedMessage(
     case "html-too-large":
       return t("gitStatusDiffPreviewSkippedHtmlTooLarge");
   }
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  if (bytes < 1024 * 1024) {
-    return `${formatFraction(bytes / 1024)} KB`;
-  }
-  return `${formatFraction(bytes / (1024 * 1024))} MB`;
-}
-
-function formatFraction(value: number): string {
-  return value >= 10 ? value.toFixed(0) : value.toFixed(1);
 }

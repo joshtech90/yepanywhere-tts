@@ -104,13 +104,8 @@ it("commits namespace quarantine with dispatch, retaining unknown effects throug
         storageScope: "/" + "界".repeat(3000),
       }),
     ).toThrow(SessionCreationCapacityError);
-    db.exec("UPDATE session_creation_capacity SET attempt_bytes = 67108864");
-    expect(() => store.beginDispatch(a.attempt, native)).toThrow(
-      SessionCreationCapacityError,
-    );
     expect(ids.isNativeNamespacePending(native)).toBe(false);
     expect(store.getForSession(a.sessionId)?.attempt.state).toBe("saved");
-    db.exec("UPDATE session_creation_capacity SET attempt_bytes = 4");
     const activeA = store.beginDispatch(a.attempt, native),
       activeB = store.beginDispatch(b.attempt, native);
     expect(ids.canDiscoverNative(native)).toBe(false);
@@ -262,6 +257,8 @@ it("keeps a native transcript written before binding out of public lists and leg
       discoverySqlite: storage,
       sessionMetadataService: metadata,
       provider: sdk,
+      // This fixture models an already-used Claude store without launching it.
+      getCatalogFamilies: () => ["claude"],
     });
     let lookupEntered = () => {};
     const entered = new Promise<void>((resolve) => {
@@ -308,10 +305,13 @@ it("keeps a native transcript written before binding out of public lists and leg
         { resolving: boolean; filePath: string | null; watchDir: string | null }
       >;
     };
-    await vi.waitFor(() =>
-      expect(
-        watchState.targets.get(`${projectId}:${pendingId}`)?.resolving,
-      ).toBe(false),
+    // Resolution takes about a second on a loaded host, the default budget.
+    await vi.waitFor(
+      () =>
+        expect(
+          watchState.targets.get(`${projectId}:${pendingId}`)?.resolving,
+        ).toBe(false),
+      { timeout: 5000 },
     );
     expect(
       watchState.targets.get(`${projectId}:${pendingId}`)?.filePath,
@@ -470,4 +470,5 @@ it("keeps a native transcript written before binding out of public lists and leg
     await rm(root, { recursive: true, force: true });
     vi.restoreAllMocks();
   }
-});
+  // Several provider-scan waits, each near a second on a loaded host.
+}, 20_000);

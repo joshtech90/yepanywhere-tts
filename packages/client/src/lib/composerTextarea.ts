@@ -106,7 +106,7 @@ function getTextareaMinimumHeight(textarea: HTMLTextAreaElement): number {
 
 function getComposerChromeHeight(textarea: HTMLTextAreaElement): number {
   const composer = textarea.closest(
-    '[data-composer-shell="true"], .message-input',
+    '[data-composer-shell="true"], [data-message-input]',
   );
   if (!(composer instanceof HTMLElement)) return 0;
   return Math.max(
@@ -121,7 +121,7 @@ function getFullPaneComposerMaxTextareaHeight(
   minimumHeight: number,
 ): number {
   const host = textarea.closest('[data-composer-full-pane="true"]');
-  const sessionSplit = textarea.closest(".session-split");
+  const sessionSplit = textarea.closest("[data-session-split]");
   const layoutHost = sessionSplit ?? host;
   const layoutHeight =
     layoutHost instanceof HTMLElement
@@ -135,7 +135,7 @@ function getFullPaneComposerMaxTextareaHeight(
   if (!Number.isFinite(availableHeight) || availableHeight <= 0) {
     return Number.POSITIVE_INFINITY;
   }
-  const sessionInput = textarea.closest(".session-input");
+  const sessionInput = textarea.closest("[data-session-input]");
   const surroundingChromeHeight =
     sessionSplit instanceof HTMLElement &&
     sessionInput instanceof HTMLElement &&
@@ -236,4 +236,11 @@ export function scrollCollapsedTextareaToCursor(
     maxScrollTop,
     Math.max(0, hardLineIndex * lineHeight),
   );
+}
+
+export function getComposerViewportHeight(): number {
+  const visualViewportHeight = window.visualViewport?.height;
+  return typeof visualViewportHeight === "number"
+    ? Math.min(window.innerHeight, visualViewportHeight)
+    : window.innerHeight;
 }

@@ -1,6 +1,6 @@
 # Agent Auth Router
 
-YA supports an optional local Agent Auth Router (AAR) connection for pinned native Claude and Codex sessions on macOS and Linux.
+YA supports an optional local or hosted HTTPS Agent Auth Router (AAR) connection for pinned native Claude and Codex sessions on macOS and Linux.
 Router-owned pools offer every selection policy the connected AAR lists
 (currently Manual, Round robin, Most remaining and Weekly pace) for new sessions.
 A pool's policy is its default; New Session can choose another router policy or
@@ -13,8 +13,10 @@ The design and deferred work are in [plan 143](../docs/tactical/143-agent-auth-r
 
 1. Enroll accounts with the AAR app or CLI and start the router. Its default
    private control socket is `~/.agent-auth-router/control.sock`.
-2. As the YA owner, open **Settings → Providers → Agent Auth Router**. Use
-   **Connect local router**, optionally specifying a different socket path.
+2. As the YA owner, open **Settings → Providers → Agent Auth Router**. Choose
+   **On this computer** and **Connect local router**, optionally specifying a
+   different socket path. For a hosted router, choose **Hosted** and follow the
+   [code-pairing setup](#hosted-https-router-2026-11-15).
    With router-owned pools, pairing initially grants no accounts. In AAR,
    grant this integration permission to use a pool. Its current members become
    available without restarting or pairing again. New Session refreshes discovery
@@ -45,7 +47,8 @@ Settings distinguishes a **saved pairing** from an on-demand reachability check.
 Opening the panel or choosing **Check status** checks the same router identity
 and granted accounts, and reports unavailable, revoked, incompatible or insecure
 connections without copying raw router responses or filesystem paths to the UI.
-There is no background polling, automatic reconnect or account substitution.
+There is no background account polling, automatic reconnect or account substitution.
+Hosted code pairing has a finite server-owned waiting loop, described below.
 Status reads never retry cleanup or change pairing/revocation state.
 
 A healthy pairing shows the check time and whether it uses AAR's default
@@ -129,11 +132,14 @@ editor; this fallback grants no global administration authority. In New Session,
 model, and optionally another router policy or an account. The session header shows a
 compact chip with the pin's saved pool and account names, never the raw account
 id; it falls back to the policy (AAR's label captured at launch, else its id) for
-pins saved without names and is hidden on narrow screens. Its tooltip lists pool, account, policy and reason. With
-`agent-auth-router-session-switch` the chip opens an account menu (direct
-Claude and Codex sessions show a "Direct" chip while a router is connected);
-otherwise it opens Session Info, whose Router section lists the names with the
-pool, account, binding and router ids. The pin keeps AAR's names as display labels captured at
+pins saved without names and is hidden on narrow screens. Its tooltip lists
+pool, account, policy and reason. The chip is a shortcut to the **Account** tab
+in the model/session dialog, with no separate dropdown. On phones, tap the
+model pill and select Account. With `agent-auth-router-session-switch`, that
+pane offers Pool and Router account dropdowns plus an explicit Apply action,
+using the same owner, executor and sandbox restrictions at every width. Without switching support it
+shows the saved account read-only. Session Info retains the detailed pin ids.
+The pin keeps AAR's names as display labels captured at
 launch, so an AAR outage or removed account still shows which account to restore;
 a resume refreshes a renamed account and backfills a missing pool name, and the
 unavailable-account error names the saved account. Identity remains the ids.
@@ -142,8 +148,36 @@ continuation, remote executors, limited users and sandboxes cannot change a pin.
 
 **Switching an existing session's account**
 ([plan 185](../docs/tactical/185-switch-session-router-account.md)). The
-chip menu lists the provider's pool accounts, then Direct and Session info.
-Picking one calls `POST /api/agent-auth-router/sessions/:id/switch`
+Account tab shows the current binding separately from the draft selection.
+Choose a Pool and Router account, or **This computer (direct login)** in Pool.
+Both dropdowns use New Session's pool and account rows: each pool shows how
+many of its accounts fit and their best remaining quota, and each account
+shows its status dot, cached quota windows with reset times and any reason it
+cannot serve the session. The pane offers accounts only, never router policies,
+because the switch pins one account. The current account is marked Current.
+Fit is judged as the switch route judges it: the first of the session's live
+resolved model and saved requested model (without a `[1m]` suffix) that the
+account's own catalog resolves, with the saved thinking, effort and tier. An
+account that cannot serve them is shown disabled with the reason, and a pool
+with no such account is disabled; with no known model only disabled accounts
+are excluded and the route decides. Cached quota and auth states remain advice.
+Changing either dropdown has no server-side effect. Changing pools clears the
+account choice; Apply stays disabled until a different, available account is
+selected (or Direct is selected for a routed session). Discovery refreshes do
+not silently substitute another account. A refusal preserves the draft for
+retry and leaves the saved binding unchanged. Controls lock while applying.
+An older binding without a pool shows a distinct current-account placeholder
+and can still switch to Direct or to a pool account.
+The explanation beside **Apply account change** states that applying stops the
+provider immediately, interrupts an active turn, and resumes this conversation
+on the selected account only when the next message is sent. There is no queued
+switch at the end of the current turn.
+
+A direct session's header shows a "Direct" chip only when the router has a
+pool with an enabled account for that session's provider; a connected router
+serving only the other provider shows nothing.
+
+Applying calls `POST /api/agent-auth-router/sessions/:id/switch`
 (`{routerPoolId, routerAccountId}` or `{direct: true}`), which:
 
 1. allocates, prepares (policy `manual`, the picked account) and commits the
@@ -153,7 +187,9 @@ Picking one calls `POST /api/agent-auth-router/sessions/:id/switch`
 2. saves the new binding, or removes it for Direct; a router pick saves the
    concrete model as the requested model, since the router refuses aliases;
 3. kills the provider process whatever its state, as Kill does (not
-   `/terminate`), because it holds the old credential;
+   `/terminate`), because it holds the old credential. It does not wait for
+   an in-flight turn or background work
+   ([gap](../gaps/router-switch-kills-in-flight-work.md));
 4. cancels the old allocation (best effort; cleanup stays retryable).
 
 A process that obtained the old token just before the switch and registers
@@ -606,7 +642,7 @@ and descriptions. Each row launches the `resolvedModel` the members' CLIs
 report (a `[1m]` suffix is dropped for admission). A row with no reported
 target, conflicting targets, or a target absent from every member's catalog
 stays listed but disabled with the reason; catalog models no row launches
-follow under Previous models. Older routers keep the family guess (newest
+follow under Other models. Older routers keep the family guess (newest
 `claude-<family>-*`). The model status line shows the oldest member catalog
 age, and Refresh re-reads each member. An unavailable
 selection remains selected and cannot silently fall back to direct login.
@@ -623,6 +659,22 @@ changes, discarding obsolete results. There is no idle polling; quota admission
 still happens when starting a session. Recovery and usage diagnostics remain in
 Settings. Browser tests cover desktop/phone layouts and sequential prompt typing
 during discovery; synthetic AAR integration tests prove the native boundaries.
+
+## Session account display during startup
+
+Saved-session detail and metadata responses include the current public
+`routerBinding` when allocation has recorded it, even before a native
+transcript exists. The client reconciles that pin through its existing,
+coalesced metadata refresh when the provider binds its native session. The
+header and Account tab update without reloading or replacing the transcript,
+newer title, model or composer draft. No additional polling is introduced.
+
+This correction reuses the existing optional field and endpoints, with no new
+capability or version gate. A missing field leaves the client's known pin
+unchanged; older servers can retain their startup display until a full detail
+read supplies the pin. Older clients ignore the additive startup field. The
+existing router capability and allocation, failure and direct-login rules keep
+their meanings.
 
 ## New Session defaults
 
@@ -668,3 +720,88 @@ live changes and older-version fallback follow [service tiers](service-tier.md#a
 The router remains the owner of account eligibility and credentials; YA never
 borrows speed availability from its direct login. This is an additive optional
 feature, not a change to the existing routing or process-configuration capabilities.
+
+## Hosted HTTPS router (2026-11-15)
+
+Start AAR's opt-in public listener behind a TLS reverse proxy with a valid
+certificate, following [AAR's hosted setup](https://github.com/kzahel/agent-auth-router/blob/main/docs/remote.md).
+Then the owner can choose **On this computer** or **Hosted** in the existing
+Settings → Providers router card. Local pairing keeps its private socket
+contract. Hosted requires a bare HTTPS origin, with no credentials, path,
+query or fragment. Its editable name defaults to `Yep Anywhere on <hostname>`;
+the name identifies this YA installation in AAR's approval list. It is not a
+principal or a grant. The YA owner authorizes connection setup; AAR authenticates
+the installation's separate integration credential and enforces pool grants.
+Browser/relay reachability supplies neither of those authorities.
+
+YA sends control requests from the server to `/control/v1/*`, using normal
+certificate and hostname verification. It never follows redirects, downgrades
+to HTTP, or sends control requests from the browser. Discovery requires protocol
+1, `manual-bindings`, `remote-pairing-v1`, a stable router ID, and an inference
+origin exactly matching the configured HTTPS origin (including its port).
+Certificate failures, unreachable hosts, unsupported pairing and protocol or
+identity mismatches have distinct safe errors. No failure substitutes a direct
+provider login or another account.
+
+**Connect** privately persists a random integration ID and control credential
+before sending `{id, name, tokenHash}` to AAR. A lost reply repeats that same
+identity and hash. The code screen shows AAR's code, an expiry countdown and
+**Open router dashboard**, pointing to the same origin's `/#pair` without a
+prefilled code. The owner types the code in Connections → Pair a device and
+chooses pool grants in AAR. Pending responses expose the code, link and expiry
+to the YA owner, never the control credential, its hash or a socket path.
+
+One server-owned timer polls pairing status at AAR's bounded interval, with no
+overlap. Pending URL, name, integration identity, credential, code and deadline
+live in the private durable store, so closing the tab or restarting YA resumes
+waiting. Approval stops polling and exposes the ordinary accounts, pools,
+quotas and pinned-session behavior. Expiry stops waiting and offers **Get a new
+code**. A pending request dropped by AAR (401, including a router restart) is
+shown as expired. Lost replies or unreachable routers stop automatic work at
+the pending deadline; the private identity remains available for explicit
+recovery. An unacknowledged request gets a ten-minute recovery budget.
+
+**Cancel** fences new launches immediately. AAR currently has no unauthenticated
+pending-request deletion operation: YA retains the private credential and
+boundedly observes the original request. If approval raced cancellation, YA
+revokes it before declaring disconnection; a 401 acknowledges that no active
+grant remains. Expiry or unavailable AAR leaves explicit disconnect/recovery
+available. YA does not claim that issued credentials were revoked without an
+acknowledgement. Disconnecting an established connection retries only on the
+owner's explicit action, rather than starting background reconnect work.
+
+A connected router that later answers 401 is shown as removed/revoked and offers
+**Pair again**. This acknowledges the old revocation and creates a distinct
+integration for new sessions. Unreachable routers offer **Check status** and
+keep pins. One router is configured per installation: changing between local
+and hosted, or changing origins, requires Disconnect first. Old sessions retain
+their old router/integration binding and cannot move to a new pairing. Native
+Claude/Codex adapters receive the same per-binding token and `/claude` or
+`/codex` launch URL as before; only the validated origin changes.
+
+Optional capability 162 (`agent-auth-router-hosted`) covers the three hosted
+setup/status/cancel routes and their public status metadata. It is advertised
+with the existing router integration on supported macOS/Linux installations.
+Without it, clients show only local controls and send no hosted requests. The
+2026-11-15 review inspected the optional-feature corpus, stable `v0.12.0`
+(2026-11-12) and `v0.11.0` (2026-10-24): both have the local routes and neither
+has hosted operations. Existing capability meanings and the remote protocol
+level are unchanged. Older clients can observe additive status fields and
+Disconnect; they cannot initiate hosted pairing. Downgrading routed app data
+remains unsupported.
+
+HTTPS service tests cover trusted and rejected certificates, endpoint and
+router-identity checks, lost pairing/commit replies, private file permissions,
+restart/pin recovery, cancellation/approval races, revocation, limited-user
+refusal, and server-owned polling shutdown. The TLS fixture requires OpenSSL;
+hosts without it skip that fixture. Browser checks use synthetic API responses
+and concurrent updates with 48-account fixture data; they cover real sequential
+URL/name typing, code presentation, approval, and desktop/phone layout.
+The browser case took 6.3 seconds (21.7 seconds including shared setup) on
+macOS/Node 24.22.1; all 90 sequential characters retained focus and input identity,
+with a maximum measured acknowledgement of 17 ms. Final 1000×600 and 375×812
+form/code captures were presented through the artifact facility and inspected:
+fields fit, instructions wrap, and dashboard/Cancel controls remain clear. These prove
+the hosted control/launch boundary on macOS, not a new live-provider or public
+reverse-proxy qualification. Linux/Windows native qualification remains pending;
+Windows router UI remains unavailable in this slice.

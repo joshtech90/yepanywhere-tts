@@ -1,3 +1,4 @@
+import rowsStyles from "./SettingsRows.module.css";
 import type { CacheMissBillingRecord } from "@yep-anywhere/shared";
 import {
   type CSSProperties,
@@ -8,7 +9,7 @@ import {
 } from "react";
 import { Link } from "react-router-dom";
 import { MessageAge } from "../../components/MessageAge";
-import { ButtonBase } from "../../components/ui/Button";
+import { ButtonBase, Button } from "../../components/ui/Button";
 import { Field, Select, TextInput } from "../../components/ui/Field";
 import {
   type CacheMissEventOutcomeFilter,
@@ -313,7 +314,7 @@ export function CacheMissEventTable({
       </div>
 
       {groups.length === 0 ? (
-        <p className="settings-empty">
+        <p className={rowsStyles.empty}>
           {events.length === 0
             ? t("cacheMissBillingEventsEmpty")
             : outcomeFilteredEvents.length === 0
@@ -473,7 +474,8 @@ export function CacheMissEventTable({
                               aria-hidden="true"
                             />
                             {previousEventId ? (
-                              <ButtonBase
+                              <Button
+                                variant="link"
                                 className={styles.messageJump}
                                 title={referenceTitle || undefined}
                                 aria-label={navigationTitle}
@@ -482,7 +484,7 @@ export function CacheMissEventTable({
                                 }
                               >
                                 {eventMessageReference(event)}
-                              </ButtonBase>
+                              </Button>
                             ) : (
                               <span title={referenceTitle || undefined}>
                                 {eventMessageReference(event)}

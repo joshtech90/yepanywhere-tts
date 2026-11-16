@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Banner } from "../../components/ui/Banner";
 import { Button } from "../../components/ui/Button";
 import { Textarea } from "../../components/ui/Field";
 import { useI18n } from "../../i18n";
@@ -238,12 +239,15 @@ export function SettingsClipboardTransfer() {
           </div>
         </>
       )}
-      <span
-        className={`${styles.status} ${error ? styles.error : ""}`}
-        role={error ? "alert" : "status"}
-      >
-        {error ?? status}
+      {/* Always mounted, so a result after a failed try is announced. */}
+      <span className={styles.status} role="status">
+        {error ? null : status}
       </span>
+      {error && (
+        <Banner tone="error" compact>
+          {error}
+        </Banner>
+      )}
     </section>
   );
 }

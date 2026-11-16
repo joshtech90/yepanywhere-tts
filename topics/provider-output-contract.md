@@ -211,20 +211,28 @@ and ordinary input after it ends. Source message id plus question index identify
 the local question; neither a `Q:` prefix nor a random subsequent user turn
 establishes answer identity. Successful submission shows **Reply sent**, which
 does not assert provider consumption. Failure retains the draft and pending
-state. **Quote reply in main composer** is a secondary action: reveal the
+state. **Reply in composer** is a secondary action: reveal the
 question, insert its full quote through the existing composer insertion/undo
 path, preserve existing text, and focus the main composer. Moving the reply to
 the main composer immediately marks the question answered locally and clears
 its reminders, including cross-session counts. The transcript says the reply
 was moved to the main composer; it does not claim delivery to the provider.
-Return uses a back-arrow icon and Quote uses a circled right chevron, with
-accessible action labels and tooltips.
+The card's actions are worded buttons, not icons: **Write a reply** (or, with
+the inline composer open, **Cancel**), **Reply in composer**, and **Dismiss**,
+with **Send reply** at the trailing edge of the open composer.
+
+**Dismiss** on the card is the same local dismissal as in the menu. A
+dismissed, unanswered card keeps its question text, muted, and replaces the
+options and actions with **Dismissed** and **Restore**. Opening a dismissed
+question from the menu still shows its inline composer.
 
 Before visiting a question, save the reading anchor, offset, and Follow intent.
 Navigating among questions retains that first return destination. Successful
-inline submission, or **Return to previous position**, restores the saved
+inline submission, **Cancel**, Escape in the inline composer, or dismissing
+the open question closes the inline composer and restores the saved
 anchor with Follow off, or the current live bottom with Follow restored, then
-focuses the main composer without browser-induced scrolling. Failure does not
+focuses the main composer without browser-induced scrolling. Cancel and Escape
+keep the inline draft. Failure does not
 perform this transition. New navigation, focus movement, or pointer/wheel
 interaction while submission is pending takes precedence over stale return
 state. A render row without connected, measurable geometry is not a completed
@@ -233,20 +241,30 @@ Initial progressive transcript loading must finish revealing the rows before
 the question jump consumes its scroll and focus request.
 
 The persistent composer toolbar, including its collapsed form, offers a muted
-amber outlined speech-bubble/question-mark button. With room it reads
-**3 questions · 1 turn ago**, using the youngest counted question's age.
+amber outlined speech-bubble button whose question mark is drawn heavier than
+the bubble and fills most of it. With room it reads
+**3 questions · 1 turn ago**, using the youngest counted question's age,
+and omits the age while that question is still in the current turn.
 Actual toolbar space removes the age first and then the noun, retaining the
 icon and count with a full accessible label. There is no pulse or focus theft.
 The wider, viewport-capped menu opens upward and may cover the composer.
 Oldest questions appear at the top, newest at the bottom. Each ellipsized,
-single-line preview has an outlined background, a bare muted turn-age numeral
-outside its left edge, a right-side **×**, and a separator between rows.
+single-line preview has an outlined background, a right-side worded
+**Dismiss** button, and a separator between rows. When the question's time
+is known, the row shows how long ago it was asked (**2h**, **3d**) at its
+trailing edge; the row tooltip adds the question's age in turns once it is at
+least one turn old. **×** appears only in the menu heading, where it closes
+the menu.
 Opening focuses the newest row; arrow keys navigate and Escape closes.
 
-**×** silently dismisses a reminder without navigating, deleting transcript
-content, or asserting an answer. Right-click or long-press opens a one-action
-dismiss menu; holding alone deletes nothing. **Show dismissed** permits
-recovery. Opening or closing the menu resolves nothing. An unseen dot clears
+**Dismiss** silently dismisses a reminder without navigating, deleting
+transcript content, or asserting an answer. Right-click or long-press opens a
+one-action dismiss menu; holding alone deletes nothing. With two or more
+undismissed questions listed, **Dismiss all** in the menu footer dismisses
+every one of them: one session's in the composer menu, every listed session's
+in the Inbox and sidebar menus. **Show dismissed** permits recovery, where
+each row's button reads **Restore**. Opening or closing the menu resolves
+nothing. An unseen dot clears
 only after at least 60% of the actual question title is visible in an active
 tab. Seen and sent are independent states.
 
@@ -265,6 +283,11 @@ no separate feature-enable setting. For a positive value `n`:
 - A text change counts once; unchanged notifications and clearing to empty
   do not count. Inline answer typing does not age reminders. Whichever turn
   or edit threshold arrives first governs each stage.
+- Turns never advance in a session left idle, so a question also reaches the
+  retired stage three days after it was asked, whatever its turn and edit
+  ages. A question without its own time is aged from its session's last
+  activity, which it cannot postdate; with neither, only turns and edits
+  age it.
 - A focused button or open menu is not retired underneath the interaction.
   New questions restore visibility without reviving old aged/dismissed counts.
 
@@ -292,7 +315,10 @@ window aging out. Dismissal without a sent quote reply remains local state.
 The server's existing bounded recent-question scan excludes questions answered
 by this same quote-reply rule, so unopened-session reminders also recover after
 client storage loss. It compares full titles before clipping previews and
-introduces no new response fields or capability. Older servers may still show
+introduces no new capability. Each preview carries an optional `askedAt`, the
+question message's recorded time; absent from older servers and from
+projections persisted before it existed, it falls back to session activity as
+described under reminder duration. Older servers may still show
 collection reminders until the new client opens that transcript and saves its
 recovered answers locally.
 
@@ -308,12 +334,14 @@ masquerade as a known zero.
 Session-row question counts sit outside the title area's hover-menu overlay.
 The menu and count retain separate, non-overlapping click targets on desktop
 and touch layouts, including compact sidebar rows. A compact row's trailing
-project name and status letter share that protection: the overlay may cover
-title text only, and they remain visible and clickable while it is shown.
+project name and status letter sit inside the title area, so the overlay
+covers them and its trigger keeps one horizontal position on every row; they
+reappear when the overlay hides and stay a link to the same session.
 
 Click or right-click a count to open previews directly. Aggregate menus group
 questions by session, with the most recently updated session last; questions
-within each group remain oldest-first. Compact counts retain an icon and
+within each group remain oldest-first. Each session heading shows how long ago
+that session was last active. Compact counts retain an icon and
 accessible description. Where space is tightest — a sidebar session row, the
 sidebar Inbox entry, a crowded composer — the control is the icon plus any
 current count and never spells out its name, so it cannot crowd out the title
@@ -491,6 +519,35 @@ page content in the prose output font (it is web prose, not terminal
 output) and mirrors the shell-output preview affordances via the shared
 primitives in `renderers/tools/outputPreview.tsx` (first-N-lines clamp,
 tail tooltip, hidden-line badge, hover copy button, click-for-modal).
+
+### Citations in assistant answers
+
+Assistant Markdown resolves complete `\uE200cite\uE202turn…\uE201` markers to
+ordinary external links labeled with the source hostname; the link title holds
+the source page title and optional line locator. Multiple source IDs produce
+separate links. Inline and fenced code retain literal markers. Malformed or
+incomplete markers remain literal until complete. Missing, evicted, conflicting,
+or unsafe source URLs render a readable `[turn…]` reference without an invented
+link. Original provider text and transcripts remain unchanged.
+
+Sources come only from tool results in the available transcript window:
+normalized Web pages, raw browsing page headers, or nested MCP/code-mode JSON
+output. User prompts and assistant prose cannot introduce source facts. URLs
+must be HTTP(S) without embedded credentials; titles and destinations are escaped
+and pass through the existing Markdown sanitizer. A source outside the loaded
+history/replay window stays unresolved; citation rendering does not start a
+transcript scan, network request, or provider call to recover it.
+
+Persisted responses collect source facts once before parallel message
+augmentation. A live subscription collects each result once and releases its
+index with the augmenter. Each index retains at most 1,024 sources and 512 KiB of
+UTF-16 source text, evicting oldest entries; one result's extraction is capped
+at 4,194,304 visited characters, 4,096 values and twelve nesting levels. Markdown cache
+keys snapshot only the current answer's cited source facts, so another session
+or an arriving source cannot reuse a stale or wrong link, and unrelated sources
+do not invalidate the answer. The existing server block renderer produces the
+links for both streaming and completed HTML. No React history scan, browser-side
+citation index, new protocol field, or additional dependency is involved.
 
 ## Inline base64 is interchange-only
 

@@ -1,9 +1,11 @@
+import chromeExternalSessionWarningStyles from "./ExternalSessionWarning.module.css";
+import styles from "./PendingToolWarning.module.css";
 import { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
 import { useTheme } from "../hooks/useTheme";
 import { toolRegistry } from "./renderers/tools";
 import { RiskAffordance } from "./RiskAffordance";
-import { IconButton } from "./ui/Button";
+import { Banner } from "./ui/Banner";
 
 /**
  * Blue "unfinished tool call" banner: shown when a session has no detected
@@ -59,13 +61,19 @@ export function PendingToolWarning({
     : t("pendingToolWarningWaiting", { tool: toolName });
 
   return (
-    <div
-      className="external-session-warning pending-tool-warning"
-      role="status"
+    <Banner
+      tone="info"
+      compact
+      onDismiss={onDismiss}
+      dismissLabel={t("sessionPendingElsewhereDismiss")}
     >
-      <div className="pending-tool-warning-copy">
+      <div
+        className={styles["pending-tool-warning-copy"]}
+        data-pending-tool-warning-copy
+      >
         <svg
-          className="pending-tool-warning-icon"
+          className={styles["pending-tool-warning-icon"]}
+          data-pending-tool-warning-icon
           width="14"
           height="14"
           viewBox="0 0 24 24"
@@ -87,7 +95,6 @@ export function PendingToolWarning({
               label={t("pendingToolWarningElapsed", {
                 duration: formatDuration(elapsedSeconds),
               })}
-              labelClassName="external-session-warning-elapsed"
               modalTitle={t("pendingToolWarningExplainTitle")}
               explanation={
                 <PendingToolRiskExplanation
@@ -100,28 +107,7 @@ export function PendingToolWarning({
           )}
         </span>
       </div>
-      <IconButton
-        size="small"
-        className="pending-tool-warning-close"
-        label={t("sessionPendingElsewhereDismiss")}
-        onClick={onDismiss}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M18 6 6 18" />
-          <path d="m6 6 12 12" />
-        </svg>
-      </IconButton>
-    </div>
+    </Banner>
   );
 }
 
@@ -143,9 +129,20 @@ function PendingToolRiskExplanation({
 }) {
   const { t } = useI18n();
   return (
-    <div className="external-session-risk-explanation">
-      <div className="pending-tool-warning-call">
-        <span className="pending-tool-warning-call-label">
+    <div
+      className={
+        chromeExternalSessionWarningStyles["external-session-risk-explanation"]
+      }
+      data-external-session-risk-explanation
+    >
+      <div
+        className={styles["pending-tool-warning-call"]}
+        data-pending-tool-warning-call
+      >
+        <span
+          className={styles["pending-tool-warning-call-label"]}
+          data-pending-tool-warning-call-label
+        >
           {toolRegistry.getDisplayName(toolName, "pending")}
         </span>
         {toolRegistry.renderToolUse(toolName, toolInput, {
@@ -168,7 +165,12 @@ function PendingToolRiskExplanation({
           {t("pendingToolRiskDiscardBody")}
         </li>
       </ul>
-      <p className="external-session-risk-caveat">
+      <p
+        className={
+          chromeExternalSessionWarningStyles["external-session-risk-caveat"]
+        }
+        data-external-session-risk-caveat
+      >
         {t("pendingToolRiskCaveat")}
       </p>
     </div>

@@ -102,17 +102,15 @@ test("automatically discovers Jira and GitHub references from viewed and recent 
   await settings(false);
   await page.setViewportSize({ width: 1000, height: 600 });
   await page.goto(`${baseURL}/settings/issues`);
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (await skip.isVisible()) await skip.click();
   await expect(
-    page.getByLabel("Enable automatic issue discovery (experimental)"),
+    page.getByLabel("Enable automatic issue discovery"),
   ).toBeVisible();
   const scopeBox = await page.getByLabel("Indexing scope").boundingBox();
   expect(scopeBox!.width).toBeGreaterThan(100);
   expect(scopeBox!.x + scopeBox!.width).toBeLessThanOrEqual(1000);
-  await page
-    .getByLabel("Enable automatic issue discovery (experimental)")
-    .check();
+  await page.getByLabel("Enable automatic issue discovery").check();
   await expect
     .poll(
       async () =>
@@ -203,7 +201,7 @@ test("automatically discovers Jira and GitHub references from viewed and recent 
       await expect(
         page.getByRole("main").getByText("Working on", { exact: false }),
       ).toBeVisible();
-      const share = page.locator(".session-header").getByRole("button", {
+      const share = page.locator("[data-session-header]").getByRole("button", {
         name: /active viewer|Open public share controls/,
       });
       if (size.width === 375) {

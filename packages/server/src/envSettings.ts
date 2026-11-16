@@ -152,6 +152,12 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     description: "Open the dashboard in your default browser on startup.",
   },
   {
+    name: "YEP_UPDATE_CHECK",
+    group: "Server & network",
+    description:
+      "Set false to stop checking updates.yepanywhere.com for new app and device bridge versions. Default true.",
+  },
+  {
     name: "MAINTENANCE_PORT",
     group: "Server & network",
     description:
@@ -269,18 +275,6 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     group: "Sessions & scanning",
     description:
       "Session index full-validation interval (ms). 0 validates every request.",
-  },
-  {
-    name: "SESSION_INDEX_WRITE_LOCK_TIMEOUT_MS",
-    group: "Sessions & scanning",
-    description:
-      "Timeout (ms) to acquire the cross-process session index write lock.",
-  },
-  {
-    name: "SESSION_INDEX_WRITE_LOCK_STALE_MS",
-    group: "Sessions & scanning",
-    description:
-      "Age (ms) after which a session index write lock is considered stale.",
   },
   {
     name: "SESSION_INDEX_SUMMARY_PARSE_CONCURRENCY",
@@ -604,6 +598,20 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
   },
 
   // Authentication
+  {
+    name: "YEP_AUTH_PASSWORD",
+    group: "Authentication",
+    secret: true,
+    description:
+      "Password for a bare --setup-auth. The CLI removes it from the environment at startup.",
+  },
+  {
+    name: "YEP_REMOTE_ACCESS_PASSWORD",
+    group: "Authentication",
+    secret: true,
+    description:
+      "Password for a bare --password with --setup-remote-access. The CLI removes it from the environment at startup.",
+  },
   {
     name: "AUTH_DISABLED",
     group: "Authentication",

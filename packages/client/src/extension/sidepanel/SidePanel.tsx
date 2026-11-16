@@ -1,3 +1,4 @@
+import { SelectableCard } from "../../components/ui/SelectableCard";
 import {
   issueLookupUrl,
   type IssueItem,
@@ -8,6 +9,7 @@ import { ProviderBadge } from "../../components/ProviderBadge";
 import { SessionProviderPhasePill } from "../../components/SessionProviderPhase";
 import { NotificationBadge } from "../../components/StatusBadge";
 import { ThinkingIndicator } from "../../components/ThinkingIndicator";
+import { Badge } from "../../components/ui/Badge";
 import { Button, ButtonBase, IconButton } from "../../components/ui/Button";
 import { useI18n } from "../../i18n";
 import { formatBriefAge } from "../../lib/sessionAge";
@@ -162,7 +164,8 @@ function SessionRow({
   const { t } = useI18n();
   return (
     <li>
-      <ButtonBase
+      <SelectableCard
+        size="compact"
         className={styles.row}
         aria-label={t("extensionPanelOpenSession", { title: session.title })}
         onClick={(event) => onOpen(session, event)}
@@ -197,7 +200,7 @@ function SessionRow({
             {t("extensionPanelMentions", { count: session.mentions })}
           </span>
         )}
-      </ButtonBase>
+      </SelectableCard>
     </li>
   );
 }
@@ -266,7 +269,8 @@ function IssueRow({ item, onOpen }: { item: IssueItem; onOpen: () => void }) {
   const title = item.title ?? item.confirmation?.title;
   return (
     <li>
-      <ButtonBase
+      <SelectableCard
+        size="compact"
         className={styles.row}
         aria-label={t("extensionPanelOpenIssue", { key: item.key })}
         disabled={!item.url}
@@ -305,7 +309,7 @@ function IssueRow({ item, onOpen }: { item: IssueItem; onOpen: () => void }) {
               .join(" · ")}
           </span>
         </span>
-      </ButtonBase>
+      </SelectableCard>
     </li>
   );
 }
@@ -616,13 +620,14 @@ export function SidePanel() {
               (item) => item.host.id === host.id && item.status === "ok",
             );
             return (
-              <span key={host.id} className={styles.hostChip}>
-                <span
-                  className={online ? styles.online : styles.offline}
-                  aria-hidden="true"
-                />
+              <Badge
+                key={host.id}
+                icon={
+                  <span className={online ? styles.online : styles.offline} />
+                }
+              >
                 {host.displayName}
-              </span>
+              </Badge>
             );
           })}
         </span>

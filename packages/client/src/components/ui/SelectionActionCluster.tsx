@@ -1,14 +1,15 @@
 import type {
   CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
 import { useTextTooltipAttributes } from "../../hooks/useTooltipAppearance";
-import { ButtonBase } from "./Button";
+import { IconButton, buttonClassName } from "./Button";
 import styles from "./SelectionActionCluster.module.css";
 
-export const SELECTION_ACTION_BUTTON_SIZE_PX = 30;
+export const SELECTION_ACTION_BUTTON_SIZE_PX = 32;
 export const SELECTION_ACTION_BUTTON_MOBILE_SIZE_PX = 44;
 export const SELECTION_ACTION_GAP_PX = 6;
 
@@ -25,6 +26,10 @@ interface SelectionActionButtonProps {
   onClick?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   onPointerDown?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onPointerUp?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerMove?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerCancel?: () => void;
+  onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
   specimen?: boolean;
 }
 
@@ -68,24 +73,37 @@ export function SelectionActionButton({
   onClick,
   onPointerDown,
   onPointerUp,
+  onPointerMove,
+  onPointerCancel,
+  onContextMenu,
+  onKeyDown,
   specimen = false,
 }: SelectionActionButtonProps) {
-  const className = `${styles.button} ${KIND_STYLES[kind]} ${specimen ? styles.specimen : ""}`;
+  const className = specimen ? styles.specimen : undefined;
+  const glyph = <span className={KIND_STYLES[kind]}>{GLYPHS[kind]}</span>;
   const tooltip = useTextTooltipAttributes(label);
   if (specimen) {
     return (
       <span
-        className={className}
+        className={buttonClassName({
+          variant: "secondary",
+          icon: true,
+          elevated: true,
+          className,
+        })}
         aria-hidden="true"
         data-selection-action-specimen={kind}
       >
-        {GLYPHS[kind]}
+        {glyph}
       </span>
     );
   }
 
   return (
-    <ButtonBase
+    <IconButton
+      variant="secondary"
+      elevated
+      label={label}
       {...tooltip}
       className={className}
       onMouseDown={(event) => event.preventDefault()}
@@ -94,11 +112,15 @@ export function SelectionActionButton({
         onPointerDown?.(event);
       }}
       onPointerUp={onPointerUp}
+      onPointerMove={onPointerMove}
+      onPointerCancel={onPointerCancel}
+      onContextMenu={onContextMenu}
+      onKeyDown={onKeyDown}
       onClick={onClick}
       aria-label={label}
     >
-      {GLYPHS[kind]}
-    </ButtonBase>
+      {glyph}
+    </IconButton>
   );
 }
 

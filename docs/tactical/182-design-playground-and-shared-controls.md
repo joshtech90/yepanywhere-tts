@@ -6,11 +6,12 @@ Status: rewritten 2026-11-08 around one control family at a time. The
 playground, token page, undefined-property limit, button and switch census,
 the shared `Button`/`IconButton`/`ButtonBase`, the screen tour and the
 whole button family (census, swap, delete, ban), the token pass, the
-switch and segmented-control family, the menu and popover family and the
-field family have landed. Order agreed with the maintainer on 2026-11-09:
-the token pass (done), switches and segmented controls (done), menus and
-popovers (done), fields (done), then banners/badges/spinners/tabs, the
-dialog pattern, and the composer last. Each step runs end to end
+switch and segmented-control family, the menu and popover family, the
+field family, the banner, badge, spinner and tab family and the dialog
+pattern have landed. Order agreed with the maintainer on 2026-11-09: the
+token pass (done), switches and segmented controls (done), menus and
+popovers (done), fields (done), banners/badges/spinners/tabs (done), the
+dialog pattern (done), and the composer last, still open. Each step runs end to end
 (implement, independent review, commit) before the next starts.
 
 ## Why
@@ -74,11 +75,15 @@ of slightly different styles.
 ## What has landed
 
 - **Playground** (`packages/client/design.html`, `packages/client/design/`):
-  dev-only entry with a sidebar, global theme and width settings kept in the
+  separate entry with a sidebar, global theme and width settings kept in the
   URL, per-theme grids, phone frames, and chromeless isolated states.
   `pnpm -s design:index` lists every example statically; `pnpm -s
   design:shot` captures states through the artifact-capture presentation.
   Biome rejects production imports of the playground or example files.
+  On 2026-11-10 the maintainer requested hosted availability: the remote build
+  now includes `design.html` and its source census snapshot in the normal
+  deployment output, including Latest. Website 1.14.1 publishes it at
+  `/remote/design.html`; Latest retains its normal successful-CI deployment gate.
 - **Token page and undefined-property limit:** theme colors and scales in
   each theme, and every custom property read but never defined, with its
   sites. `pnpm css:check` rejects new undefined names and more reads of
@@ -108,17 +113,13 @@ of slightly different styles.
   exist.
 - **Shared buttons** (`src/components/ui/Button.tsx`, Controls/Button page):
   `Button`, `IconButton`, `ButtonBase` and `buttonClassName`, built from the
-  census prototypes, which the button census now renders instead.
-- **Button mapping:** every global (54) and CSS Module (79) class *named*
-  like a button has a destination in `design/census/mapping.ts`;
-  Census/Buttons shows each beside what it becomes, and its Unmapped state
-  is empty. That census finds classes by name and only those with rules,
-  so the **element census** (Census/Buttons, "Button elements, by
-  directory") finds buttons by element instead: every raw and shared
-  button, button-classed link or label, and `role="button"` element in
-  production TSX, with file, line and className. At its landing it found
-  594 raw buttons to swap and 129 left for later families (30 menu, 36
-  option, 13 switch, 3 tab, 47 composer).
+  original census prototypes; Controls/Button renders the shared variants.
+- **Button census:** at its landing the mapping covered 54 global and 79
+  module names; the element scan found 594 raw buttons to swap and 129 for
+  later families. Plan 191 step 5 removes the completed-family pages and
+  mapping. Current open work is Audit / Unfinished migrations, with counted
+  reasons under Reviewed exceptions; permanent bans live in
+  `button-allowlist.json`.
 - **Button family done (2026-11-08):** every button outside the composer
   and the allowlisted later-family controls is on `Button`, `IconButton`,
   `ButtonBase` or `buttonClassName`: the
@@ -180,7 +181,7 @@ of slightly different styles.
   `Modal`'s capture-phase Escape cancels its close request, and `auto`
   light dismiss races React state; popovers instead join `Modal`'s layer
   stack (`useModalLayer` can now decline an Escape), and `Modal` stays a
-  portal `div`. A census (Census/Menus and popovers, `LEGACY_MENUS`) found
+  portal `div`. The former menu census found
   23 hand-rolled surfaces in scope (plus the anchored `Modal`, kept); all
   moved: the session menu (no roles,
   Escape or focus handling before), the account chip, the project
@@ -215,10 +216,9 @@ of slightly different styles.
   a dead composer popover deleted.
 - **Field family done (2026-11-09):** `Field`, `TextInput`, `Textarea` and
   `Select` (`ui/Field.tsx`) and `Checkbox` and `Radio` (`ui/Checkbox.tsx`),
-  with a Controls/Field page, tests and a Census/Fields page
-  (`LEGACY_FIELDS`). A census by element found 332 raw inputs, selects and
-  textareas: 77 checkboxes, 63 selects, 22 textareas, 9 radios and the rest
-  text, number, password, url and search boxes, 205 of them in settings,
+  with a Controls/Field page, tests and a temporary field census. A census
+  by element found 332 raw inputs, selects and textareas: 77 checkboxes,
+  63 selects, 22 textareas, 9 radios and the rest text, number, password, url and search boxes, 205 of them in settings,
   styled by `settings-input` (~70 uses), `settings-select` (~20), the
   `form-*` and `login-field` rules and about 40 module look rules. All moved
   except range, file and hidden inputs, the composer's fields and seven
@@ -252,13 +252,87 @@ of slightly different styles.
   colors, unnamed fields got names, and the ban now reads `:is()` and
   `:where()` subjects, rules after `@layer`/`@import` statements and
   `max-` sizes.
+- **Banner, badge, spinner and tab family done (2026-11-09):** `Banner`,
+  `Badge`, `Spinner` and `Tabs`/`TabPanel` (`ui/`), each with a Controls
+  page, tests, and a temporary status-family census in the family's order.
+  The census found the settings and form message styles (`settings-warning` ~25 uses,
+  `form-error`, `form-warning`, `login-error`), a dozen one-off notice
+  boxes, 13 notice components and many module error and notice classes;
+  the renderers' `.badge` family (~70 uses) and about 45 named badge
+  classes; eight spinner classes with fourteen rotate keyframe sets (five
+  of them a global `spin` overriding each other); and three tab strips,
+  one with roving focus. About 270 files moved, area by area: messages
+  became `Banner`s in the matching tone (notice components keep their
+  logic and placement and draw their box through it), labels and counts
+  `Badge`s (brand and tracker colors through `--badge-color`), every
+  busy indicator `Spinner` or a button's `busy`, and the source control,
+  model switch and question panel strips `Tabs`. Toasts, tool output
+  error text, system message rows and clickable chips stayed what they
+  were. About 850 lines of global CSS went with the classes, and the
+  layout classes kept on the shared controls lost their look properties.
+  `pnpm buttons:check` now also bans tab roles outside `Tabs`, rotating
+  keyframes outside `Spinner` (the new-session submit's spinner is
+  allowlisted for the composer) and the legacy status classes, and tab
+  buttons lost their exemption. An Opus review (2026-11-09) found two blockers, both
+  fixed: equal-width source control tabs cut their labels (fill tabs now
+  wrap, and `fill-phone` keeps equal columns to narrow screens), and
+  single-field validation errors had become alerts that interrupted
+  typing (they are role-less again, still linked to their fields). Its
+  other fixes: badge text mixed toward the text color and darker solid
+  fills for 4.5:1 contrast, source tabs with manual activation (arrowing
+  had pushed history entries), notices from polled or initial state no
+  longer announced, one mounted status region kept where saved and failed
+  results alternate, labelled spinners holding their text, answered
+  question tabs named as such, floating banners' shadows back, the
+  attention badges blue again, unnamed count badges named, about ten
+  missed error lines and count pills swapped, and weakened tests
+  restored.
+- **Dialog pattern done (2026-11-10):** `Dialog` and `confirmDialog`/
+  `promptDialog` (`ui/Dialog.tsx`, `ui/ConfirmDialog.tsx`), a Controls
+  page whose states open their dialogs, tests, and a temporary dialog and
+  confirmation census. The census found 32 files rendering `<Modal>`: 19 forms, choices and notices, each with its
+  own width hack (`:global(.modal):has(…)` in modules and global
+  stylesheets), padding and action row, the action row usually inside the
+  scrolling body and in varying order; viewers (diff, file, blame, media,
+  logs, process and tool details); three hand-rolled modal surfaces
+  (GoalPanel, SourceEditor, FilePathLink's file viewer); and 20 native
+  `window.confirm` calls plus one `window.prompt`. `Modal` stays a
+  portaled `div` rather than a modal `<dialog>`, because the tooltip
+  layer, hover cards and selection actions portal into the body and the
+  top layer would cover them and make them inert; it gained a Tab trap,
+  focus return to its opener, `aria-labelledby` its title (ReactNode
+  titles were unnamed), an `alertdialog` role and a footer slot. The 19
+  dialogs moved onto `Dialog` (`small`/`medium`/`large`, a description,
+  the action row as a footer with Cancel first and one primary or danger
+  action last, cards near the top on phones at every size), the confirmations onto
+  `confirmDialog` with a question title, the old prompt as the message and
+  a named action, and the project copy name onto `promptDialog`. Viewers
+  stayed on `Modal`. About 190 lines of global CSS went (the model switch
+  action rows, onboarding footer and progress dots, schema warning frame,
+  share and provider editor widths). `pnpm buttons:check` now also bans
+  native confirm, alert and prompt calls, `aria-modal` and `alertdialog`
+  outside the shared dialogs, rules that reach into Modal's frame (viewers'
+  and the composer's are allowlisted) and the old frame and footer classes.
+  An Opus review (2026-11-10) found one blocker, fixed: confirmations drew
+  at `--z-modal`, under the full-screen source editor, so its discard and
+  rebuild questions were invisible yet focused (Enter approved an unseen
+  command); they now draw on a `--z-confirm` layer, with an E2E click that
+  fails if covered. Its other fixes: a Tab from a removed or disabled
+  control returns into the topmost modal, focus returns to the menu
+  trigger when a menu item opened the dialog, large dialogs are cards on
+  phones too (onboarding and the file share dialog are medium), the
+  handoff dialog's wide full-pane composer is wide again, model switch
+  sections no longer double their spacing, the ban catches
+  `window.confirm?.(`, `window["confirm"](`, cast and bare `:global .modal`
+  forms and skips definitions and comments, and copy and spacing nits.
 - **Screen tour:** `pnpm -s design:tour --label <name>` (the
   [topic](../../topics/ui-design.md#shared-controls-and-the-design-playground)
   owns the contract).
-- **Button and switch census:** proposed canonical variants beside every
-  mapped legacy style, unmapped global classes with live use counts from a
-  dev-only Vite plugin, and every matching CSS Module class. Proposed
-  mapping in `design/census/mapping.ts`.
+- **Open-work audit:** plan 191 step 5 removed swept-family samples. The
+  Audit report now separates unfinished migrations, reviewed exceptions and
+  generated-content boundaries. Each row gives its element/class, location
+  or count, reason and resolution; shared Controls/Patterns retain the
+  standard examples.
 
 The [topic](../../topics/ui-design.md#shared-controls-and-the-design-playground)
 owns the contract for all three.
@@ -285,8 +359,9 @@ when all five are:
 5. **Ban.** Lint rejects the deleted global class names and, for the
    family's element, new styling outside the shared control (exact rule
    chosen per family, with composer files exempt until their pass). The
-   family's census page then shows no legacy entries and stays as a
-   regression view.
+   family's swept census rows and page are removed; permanent class bans
+   stay in `button-allowlist.json`. Controls/Patterns show the standard,
+   while Audit distinguishes unfinished migrations from reviewed exceptions.
 
 **Screen tour.** Before the first swap commit, add a capture script that
 opens the main screens (projects, a session, new session, each settings
@@ -338,10 +413,10 @@ switch roles.
     reset, focus ring, `type="button"`) so resets are not repeated;
   - menu items, tabs, segmented options, switches → left for their family;
   - composer controls → excluded.
-- **Mapping first.** Extend `design/census/mapping.ts` to assign every
-  global and module button class (40 unmapped global, 69 module), and
-  switch the census to show each legacy class beside the variant it
-  becomes. The maintainer skims that page; the swap then follows the table.
+- **Mapping first (completed).** The original temporary mapping assigned
+  each button class a shared destination before the sweep. Plan 191 step 5
+  removes that completed inventory; Audit / Unfinished migrations retains
+  the open pass.
 - **Batches** in the order above, one commit each (large batches may split
   by subdirectory). Each batch deletes the legacy rules it leaves unused and
   runs the screen tour before and after.
@@ -392,7 +467,9 @@ editors the allowlist names.
 
 ### 5 — banners, badges, spinners and tabs
 
-Each with its own census, in that order.
+Each with its own census, in that order. **Done 2026-11-09** (What has
+landed). Left for other families: the composer's spinner and messages
+(composer); toasts keep their own stack.
 
 ### 7 — dialog pattern
 
@@ -405,12 +482,16 @@ and a confirm-dialog helper replace the per-feature layouts and the
 `window.confirm` calls where a styled confirm fits. Census first: every
 `Modal` caller with its width, header and footer shape. Also decide
 whether `Modal` moves onto `<dialog>` for its focus trap, if family 2 has
-not.
+not. **Done 2026-11-10** (What has landed): `Modal` stays a `div` with
+its own trap. Left for other families: the composer's full-pane form
+inside the handoff dialog (composer).
 
 ### 6 — composer controls
 
 A careful census and pass over the session input and new-session form
-controls, which the earlier families exclude.
+controls, which the earlier families exclude. Start at Audit / Unfinished
+migrations for live class/element locations and Reviewed exceptions
+for counted reasons; swept-family inventories were removed by plan 191 step 5.
 
 ## Supporting work
 
@@ -454,7 +535,6 @@ These are not control families; each is scheduled where noted.
 ## Not in scope
 
 - Visual-regression tests in CI.
-- Publishing the playground on relay or hosted clients.
 - Converting all 96 `api` importers to context.
 
 ## Sources consulted

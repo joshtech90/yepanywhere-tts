@@ -1,4 +1,8 @@
-import type { SessionCreationStatus } from "./session-creation.js";
+import type {
+  SessionCreationProvenance,
+  SessionCreationStatus,
+} from "./session-creation.js";
+import type { NativeViewerFields } from "./session-identity.js";
 /**
  * App-specific types that extend SDK types with runtime/computed fields.
  *
@@ -599,6 +603,13 @@ export interface DurableLocalCommandMessage extends AppMessageExtensions {
   session_id: string;
   isSynthetic: true;
   placementAfterMessageId?: string;
+  /**
+   * The slash-command line YA delivered to the provider to produce this
+   * receipt, e.g. `/goal <objective>`. The provider persists its own copy of
+   * that line, which the receipt makes redundant, so transcript merging drops
+   * the copy instead of rendering the command twice.
+   */
+  providerCommandText?: string;
 }
 
 export interface DurableRecapMessage extends AppMessageExtensions {
@@ -633,22 +644,10 @@ export interface DurableSyntheticDoneMessage extends AppMessageExtensions {
   yaSyntheticSource: "done";
 }
 
-/**
- * What first created a YA-owned session: a YA UI, or (`api`) an HTTP
- * request that identified no UI, such as an agent or script.
- */
-export interface SessionCreationProvenance {
-  surface: "web" | "desktop" | "api";
-  /** Browser page origin, which may be a hosted UI rather than the server. */
-  clientOrigin?: string;
-  /** Version of the frontend bundle that submitted the create request. */
-  clientVersion?: string;
-  /** Desktop application's source commit, when its runtime reports one. */
-  clientCommit?: string;
-}
-
 /** Session summary for list views, without full message content. */
-export interface AppSessionSummary extends SessionSandboxSummary {
+export interface AppSessionSummary
+  extends SessionSandboxSummary,
+    NativeViewerFields {
   /** null clears a known receipt; omission preserves unknown older-server state. */
   nonHumanUserTurn?: NonHumanUserTurn | null;
   /** Bounded recent question previews; absence means this projection is unknown. */
@@ -658,6 +657,11 @@ export interface AppSessionSummary extends SessionSandboxSummary {
       index: number;
       title: string;
       age: number;
+      /**
+       * When the question's message was recorded. Absent from older servers
+       * and from projections persisted before the field existed.
+       */
+      askedAt?: string;
     }[];
     omitted: boolean;
   };
@@ -694,8 +698,6 @@ export interface AppSessionSummary extends SessionSandboxSummary {
   creationProvenance?: SessionCreationProvenance;
   /** Durable YA startup evidence; absent on legacy/external sessions. */
   creation?: SessionCreationStatus;
-  /** Provider's bound rollout ID for viewer URLs; never a YA resource key. */
-  nativeSessionId?: string;
   /** Public, immutable account pin. Never contains transport credentials. */
   routerBinding?: {
     poolId?: string;
@@ -1434,78 +1436,4 @@ export function isConversationMessage(
     msg.type === "system" ||
     msg.type === "summary"
   );
-}
-
-// =============================================================================
-// Connected Browser Types
-// =============================================================================
-
-/**
- * Information about a connected browser profile.
- */
-export interface ConnectionInfo {
-  /** Unique identifier for the browser profile */
-  browserProfileId: string;
-  /** Number of active tabs/connections from this browser profile */
-  connectionCount: number;
-  /** ISO timestamp of the first connection from this browser profile */
-  connectedAt: string;
-  /** Optional friendly name for the device (from push subscription) */
-  deviceName?: string;
-}
-
-/**
- * Response from GET /api/connections endpoint.
- */
-export interface ConnectionsResponse {
-  connections: ConnectionInfo[];
-}
-
-// =============================================================================
-// Browser Profile Origin Tracking
-// =============================================================================
-
-/**
- * Origin information for a browser profile connection.
- * Tracks where a browser profile has connected from.
- */
-export interface BrowserProfileOrigin {
-  /** Full origin string (e.g., "https://localhost:3400") */
-  origin: string;
-  /** URL scheme (e.g., "https", "http") */
-  scheme: string;
-  /** Hostname without port (e.g., "localhost", "phone.tailnet") */
-  hostname: string;
-  /** Port number, or null if default port */
-  port: number | null;
-  /** User agent string for browser identification */
-  userAgent: string;
-  /** ISO timestamp of first connection from this origin */
-  firstSeen: string;
-  /** ISO timestamp of most recent connection from this origin */
-  lastSeen: string;
-}
-
-/**
- * Browser profile information with origin tracking.
- * Persisted server-side to track device connections.
- */
-export interface BrowserProfileInfo {
-  /** Unique browser profile identifier */
-  browserProfileId: string;
-  /** All origins this profile has connected from */
-  origins: BrowserProfileOrigin[];
-  /** ISO timestamp when this profile was first seen */
-  createdAt: string;
-  /** ISO timestamp of most recent activity */
-  lastActiveAt: string;
-  /** Optional friendly name (from push subscription) */
-  deviceName?: string;
-}
-
-/**
- * Response from GET /api/browser-profiles endpoint.
- */
-export interface BrowserProfilesResponse {
-  profiles: BrowserProfileInfo[];
 }

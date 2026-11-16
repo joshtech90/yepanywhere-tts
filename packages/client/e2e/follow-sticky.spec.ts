@@ -23,12 +23,12 @@ const viewports = [
 test.use({ serviceWorkers: "block" });
 
 async function dismissOnboardingIfVisible(page: Page) {
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (await skip.isVisible().catch(() => false)) await skip.click();
 }
 
 async function bottomGap(page: Page) {
-  return page.locator(".message-list").evaluate((list) => {
+  return page.locator("[data-message-list]").evaluate((list) => {
     const viewport = list.parentElement;
     if (!viewport) throw new Error("Message list has no scroll viewport");
     return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
@@ -45,15 +45,18 @@ async function capture(page: Page, name: string) {
   });
 }
 
-async function clickSidebarSession(page: Page, sessionPath: string) {
-  const sidebar = page.locator(".sidebar");
-  if (!(await sidebar.isVisible().catch(() => false))) {
-    await page.getByRole("button", { name: "Open sidebar" }).click();
-    await expect(sidebar).toBeVisible();
-  }
-  const sessionLink = sidebar.locator(`a[href="${sessionPath}"]`).first();
-  await expect(sessionLink).toBeVisible();
-  await sessionLink.click();
+/**
+ * Move to another session in-app, as a sidebar click would, without a reload.
+ *
+ * The sidebar lists only the most recent sessions, and a worker server shared
+ * with earlier specs can push these older fixture sessions out of it, so
+ * the router is driven directly instead of through a sidebar link.
+ */
+async function navigateInApp(page: Page, sessionPath: string) {
+  await page.evaluate((path) => {
+    history.pushState(null, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, sessionPath);
 }
 
 async function readSessionScrollMemory(page: Page, targetSessionId: string) {
@@ -93,7 +96,7 @@ for (const viewport of viewports) {
       page.getByRole("main").getByText("Previous message"),
     ).toBeVisible({ timeout: 10_000 });
 
-    await page.locator(".message-list").evaluate((list) => {
+    await page.locator("[data-message-list]").evaluate((list) => {
       const spacer = document.createElement("div");
       spacer.dataset.followRaceSpacer = "true";
       spacer.textContent = "Simulated live output after Follow";
@@ -107,7 +110,7 @@ for (const viewport of viewports) {
     });
     await expect.poll(() => bottomGap(page)).toBeLessThanOrEqual(4);
 
-    await page.locator(".message-list").evaluate((list) => {
+    await page.locator("[data-message-list]").evaluate((list) => {
       const scrollViewport = list.parentElement;
       if (!scrollViewport)
         throw new Error("Message list has no scroll viewport");
@@ -134,7 +137,7 @@ for (const viewport of viewports) {
           requestAnimationFrame(() => resolve());
         }),
     );
-    await page.locator(".message-list").evaluate((list) => {
+    await page.locator("[data-message-list]").evaluate((list) => {
       const scrollViewport = list.parentElement;
       const spacer = list.querySelector<HTMLElement>(
         "[data-follow-race-spacer]",
@@ -171,7 +174,7 @@ for (const viewport of viewports) {
     ).toBeVisible({ timeout: 10_000 });
     await expect.poll(() => bottomGap(page)).toBeLessThanOrEqual(4);
 
-    await page.locator(".message-list").evaluate((list) => {
+    await page.locator("[data-message-list]").evaluate((list) => {
       const scrollViewport = list.parentElement;
       if (!scrollViewport) {
         throw new Error("Message list has no scroll viewport");
@@ -198,7 +201,7 @@ for (const viewport of viewports) {
       }
       for (const key of keys) localStorage.removeItem(key);
     }, SESSION_SCROLL_MEMORY_STORAGE_PREFIX);
-    await page.locator(".message-list").evaluate((list) => {
+    await page.locator("[data-message-list]").evaluate((list) => {
       list.parentElement?.dispatchEvent(new Event("scroll"));
     });
     await expect
@@ -220,7 +223,7 @@ for (const viewport of viewports) {
       .toBe(true);
 
     const otherSessionPath = `/projects/${projectId}/sessions/user-turn-presentation-001`;
-    await clickSidebarSession(page, otherSessionPath);
+    await navigateInApp(page, otherSessionPath);
     await expect(page).toHaveURL(`${baseURL}${otherSessionPath}`);
     await expect(
       page
@@ -228,7 +231,7 @@ for (const viewport of viewports) {
         .getByText("The short-width-dependent turn is complete."),
     ).toBeVisible();
 
-    await clickSidebarSession(
+    await navigateInApp(
       page,
       `/projects/${projectId}/sessions/${scrollMemorySessionId}`,
     );
@@ -277,7 +280,7 @@ for (const viewport of viewports) {
       }
       for (const key of keys) localStorage.removeItem(key);
     }, SESSION_SCROLL_MEMORY_STORAGE_PREFIX);
-    await page.locator(".message-list").evaluate((list) => {
+    await page.locator("[data-message-list]").evaluate((list) => {
       const scrollViewport = list.parentElement;
       if (!scrollViewport) {
         throw new Error("Message list has no scroll viewport");
@@ -304,7 +307,7 @@ for (const viewport of viewports) {
     );
     expect(highWaterSnapshot).not.toBeNull();
 
-    await page.locator(".message-list").evaluate((list) => {
+    await page.locator("[data-message-list]").evaluate((list) => {
       const scrollViewport = list.parentElement;
       if (!scrollViewport) {
         throw new Error("Message list has no scroll viewport");
@@ -320,17 +323,17 @@ for (const viewport of viewports) {
       .toEqual(highWaterSnapshot);
 
     const otherSessionPath = `/projects/${projectId}/sessions/user-turn-presentation-001`;
-    await clickSidebarSession(page, otherSessionPath);
+    await navigateInApp(page, otherSessionPath);
     await expect(page).toHaveURL(`${baseURL}${otherSessionPath}`);
     await expect
       .poll(() => readSessionScrollMemory(page, scrollMemorySessionId))
       .toEqual(highWaterSnapshot);
-    await clickSidebarSession(page, sessionPath);
+    await navigateInApp(page, sessionPath);
     await expect(page).toHaveURL(sessionUrl);
     await expect
       .poll(async () => {
         const restoredTop = await page
-          .locator(".message-list")
+          .locator("[data-message-list]")
           .evaluate((list) => list.parentElement?.scrollTop ?? -1);
         return Math.abs(restoredTop - highWaterSnapshot.scrollTop);
       })
@@ -343,7 +346,7 @@ for (const viewport of viewports) {
     await expect
       .poll(async () => {
         const restoredTop = await page
-          .locator(".message-list")
+          .locator("[data-message-list]")
           .evaluate((list) => list.parentElement?.scrollTop ?? -1);
         return Math.abs(restoredTop - highWaterSnapshot.scrollTop);
       })
@@ -407,7 +410,7 @@ privateTest(
       ).toBeVisible({ timeout: 10_000 });
       await expect
         .poll(() =>
-          page.locator(".message-list").evaluate((list) => {
+          page.locator("[data-message-list]").evaluate((list) => {
             const port = list.parentElement;
             return port ? port.scrollHeight - port.clientHeight : 0;
           }),
@@ -421,7 +424,7 @@ privateTest(
         }
         for (const key of keys) localStorage.removeItem(key);
       }, SESSION_SCROLL_MEMORY_STORAGE_PREFIX);
-      await page.locator(".message-list").evaluate((list) => {
+      await page.locator("[data-message-list]").evaluate((list) => {
         const scrollViewport = list.parentElement;
         if (!scrollViewport) {
           throw new Error("Message list has no scroll viewport");
@@ -447,7 +450,7 @@ privateTest(
       );
       expect(highWaterSnapshot).not.toBeNull();
 
-      await page.locator(".message-list").evaluate((list) => {
+      await page.locator("[data-message-list]").evaluate((list) => {
         const scrollViewport = list.parentElement;
         if (!scrollViewport) {
           throw new Error("Message list has no scroll viewport");
@@ -466,7 +469,7 @@ privateTest(
       await page.reload();
       await expect
         .poll(async () => {
-          const list = page.locator(".message-list");
+          const list = page.locator("[data-message-list]");
           const history = page
             .getByRole("main")
             .getByText("Server restart paragraph 180.", { exact: true });

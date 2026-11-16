@@ -1,20 +1,11 @@
 /*
- * Reload notice: the fixed bottom-right stack, the banner itself, its
- * message and warning text, and the layout of its reload / safe-restart /
- * dismiss buttons, which are shared Buttons that own their look. Rules
- * move here in their original cascade order.
+ * Reload notice: the fixed bottom-right stack, the placement of the shared
+ * Banner inside it (the Banner owns the box, tone and dismiss button), its
+ * message and warning text, and the layout of its reload / safe-restart
+ * buttons, which are shared Buttons that own their look.
  *
- * Two literals stay on the elements alongside these module classes:
- *
- * - `reload-banner` on the banner root is an interop hook. The global
- *   `body.session-transcript-selection-active` rule in `styles/index.css`
- *   names it to suppress text selection behind the transcript-selection
- *   shield, and `scripts/transcript-artifact-smoke.mjs` hides it to keep
- *   transcript captures stable. That rule stays global and unchanged.
- *
- * - `reload-banner-stack` on the stack is a geometry hook.
- *   `ReloadBannerStack` measures the stack against `.session-input`, and
- *   the focused test stubs those rects by class.
+ * The banner and stack expose stable data boundaries for document selection
+ * shielding, transcript captures and stack placement measurement.
  *
  * `--reload-banner-stack-lift` is an inline custom property written by
  * that placement effect; custom properties are not scoped by CSS Modules,
@@ -38,39 +29,33 @@
 
 .banner {
   position: relative;
-  display: flex;
   width: max-content;
   max-width: 100%;
-  min-height: 40px;
-  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
   box-sizing: border-box;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3);
-  color: #000;
-  background: var(--warning-color);
-  border: 1px solid rgba(0, 0, 0, 0.24);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
+  /*
+   * One row: message, actions, dismiss. The shared Banner wraps, and its
+   * message body has a 16rem basis, so this shrink-to-fit notice otherwise
+   * puts the short message on a line of its own above the buttons.
+   */
+  flex-wrap: nowrap;
 }
 
-.content,
-.actions {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
+.banner > :first-child {
+  flex: 1 1 auto;
+}
+
+/* The dismiss button tops a wrapped banner; on one row it centers with it. */
+.banner > :last-child {
+  align-self: center;
 }
 
 .content {
+  display: inline-flex;
+  align-items: center;
   flex: 1 1 auto;
   gap: var(--space-2);
-}
-
-.actions {
-  gap: var(--space-1);
-  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .message {
@@ -106,18 +91,6 @@
   transform: translateY(1px);
 }
 
-/* The ghost dismiss takes the banner's dark text: the control's muted
-   ghost color is unreadable on the amber and red fills. Compound so it
-   outranks the shared variant regardless of stylesheet order. */
-.banner .dismiss {
-  color: inherit;
-}
-
-/* Warning state for unsafe restart */
-.warning {
-  background: var(--error-color);
-}
-
 /* Mobile adjustments */
 @media (width <= 600px) {
   .stack {
@@ -130,37 +103,37 @@
   }
 
   .banner {
-    align-items: stretch;
-    justify-content: center;
-    flex-direction: column;
-    gap: var(--space-1);
     width: 100%;
     max-width: none;
-    min-height: 0;
-    padding: var(--space-1) var(--space-2);
   }
 
-  .content,
-  .actions {
-    width: 100%;
+  /*
+   * Two or more actions (Reload plus Safe or Cancel) do not fit one phone row
+   * beside the status: keep the message and dismiss on top and right-align
+   * the actions on a row of their own, rather than stacking the buttons and
+   * truncating the status.
+   */
+  .banner:has(> :nth-child(2) > :nth-child(2)) {
+    flex-wrap: wrap;
+  }
+
+  .banner:has(> :nth-child(2) > :nth-child(2)) > :first-child {
+    flex: 1 1 0;
+  }
+
+  .banner:has(> :nth-child(2) > :nth-child(2)) > :nth-child(2) {
+    order: 1;
+    flex: 1 0 100%;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
   }
 
   .content {
+    width: 100%;
     justify-content: flex-start;
-    min-height: 26px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .actions {
-    justify-content: flex-end;
-    gap: var(--space-1);
-    min-height: 30px;
-  }
-
-  .message {
-    flex-shrink: 0;
   }
 
   .warningText {

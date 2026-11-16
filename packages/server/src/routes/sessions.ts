@@ -1,6 +1,5 @@
 import type { NestedHarnessRelationshipService } from "../sessions/NestedHarnessRelationshipService.js";
 import type { ProviderChildRelationshipService } from "../sessions/ProviderChildRelationshipService.js";
-import { creationStatusForSession } from "../sessions/session-creation-view.js";
 import { sessionCreationReceipt } from "../sessions/session-creation-acceptance.js";
 import {
   ALL_PERMISSION_MODES,
@@ -44,6 +43,7 @@ import { createSessionProjectRouting } from "./session-project-routing.js";
 import { createSessionCreationRequests } from "./session-creation-requests.js";
 import { registerSessionCreationRoutes } from "./session-creation-routes.js";
 import { registerSessionResumeRoutes } from "./session-resume-routes.js";
+import { registerNativeSessionRoutes } from "./native-session-routes.js";
 import {
   type StartSessionBody,
   hasSessionMessageContent,
@@ -80,6 +80,10 @@ import {
 } from "../sessions/session-sandbox-inheritance.js";
 import { parseSessionSandboxLevel } from "./session-sandbox-settings.js";
 import { parseSlashCommandSubmission } from "../sdk/slashCommandEmulation.js";
+import {
+  deferSessionInput,
+  prepareQueuedCompaction,
+} from "./session-input-admission.js";
 import { dispatchProviderCommand } from "../supervisor/provider-command.js";
 import { tryRestartCompact } from "../supervisor/restart-compaction.js";
 import type { PermissionMode, SDKMessage, UserMessage } from "../sdk/types.js";
@@ -95,7 +99,7 @@ import type { GeminiSessionReader } from "../sessions/gemini-reader.js";
 import type { GrokSessionReader } from "../sessions/grok-reader.js";
 import type { PiSessionReader } from "../sessions/pi-reader.js";
 import { extractLastAgentExcerpt } from "../sessions/agent-excerpt.js";
-import { lastRewindableClaudeRowId } from "../sessions/claude-messages.js";
+import { readSessionRewindBoundRowId } from "../sessions/claude-rewind-bound.js";
 import {
   getCodexProviderForkTurnId,
   normalizeSession,
@@ -1266,8 +1270,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
   };
 
   /**
-   * The transcript's last row on disk, read once the session's process has
-   * stopped: every row up to it belongs to a rewind recorded now, and the
+   * The transcript's last non-progress row with a uuid, read once the process
+   * has stopped: every row up to it belongs to a rewind recorded now, and the
    * resumed continuation is written after it.
    */
   const readRewindBoundRowId = async (
@@ -1283,21 +1287,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       providerResolutionDeps(deps),
       providerName,
     );
-    const loaded = await resolved?.source.reader.getSession(
-      resolved.nativeSessionId,
-      projectId,
-      undefined,
-      { includeOrphans: false },
-    );
-    const data = loaded?.data;
-    switch (data?.provider) {
-      case "claude":
-      case "claude-gateway":
-      case "claude-ollama":
-        return lastRewindableClaudeRowId(data.session.messages);
-      default:
-        return undefined;
-    }
+    return resolved
+      ? readSessionRewindBoundRowId(
+          resolved.source.reader,
+          resolved.nativeSessionId,
+          projectId,
+        )
+      : undefined;
   };
 
   const interruptOldProcessForHandoff = async (
@@ -1362,46 +1358,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     return true;
   };
 
-  routes.get("/sessions/:sessionId/native-source", async (c) => {
-    if (principalFor(c).kind !== "superuser")
-      return c.json({ error: "Operator access required" }, 403);
-    const sessionId = c.req.param("sessionId");
-    if (!isYaSessionId(sessionId))
-      return c.json({ error: "Invalid session ID" }, 400);
-    const identity = storedIdentityFor(sessionId);
-    if (
-      !identity ||
-      creationStatusForSession(
-        deps.sessionMetadataService,
-        sessionId,
-        deps.signal,
-      )?.state === "deleted"
-    )
-      return c.json({ error: "Session not found" }, 404);
-    const result = {
-      sessionId: identity.sessionId,
-      provider: identity.provider,
-      projectId: identity.projectId,
-      native: identity.native,
-      transcriptPath: null as string | null,
-    };
-    if (!identity.native) return c.json({ ...result, status: "unbound" });
-    const project = await deps.scanner.getOrCreateProject(identity.projectId);
-    if (!project) return c.json({ ...result, status: "missing" });
-    const reader = deps.readerFactory(
-      { ...project, provider: identity.provider },
-      identity.native,
-    );
-    if (!reader.getSessionFilePath)
-      return c.json({ ...result, status: "unsupported" });
-    const transcriptPath = await reader.getSessionFilePath(identity.native.id);
-    return c.json({
-      ...result,
-      transcriptPath,
-      status: transcriptPath ? "available" : "missing",
-    });
-  });
-
+  registerNativeSessionRoutes(routes, deps);
   const sessionDetailRouting = {
     resolveSessionProjectRouting,
     buildSessionProjectRedirectPath,
@@ -1551,9 +1508,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         }
       }
 
-      // Claude uses the fast reverse-scan when there is no durable overlay to
-      // compare; every other provider goes through the cross-provider load +
-      // normalize, then a shared extractor on the uniform message form.
+      // A bounded reader's undefined is unknown, never a cue for a complete
+      // read; only readers with no bounded excerpt yet take that one.
       const sourceDeps = providerResolutionDeps(deps);
       const bound = boundSessionSource(
         transcriptProject,
@@ -1575,12 +1531,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             )
           : undefined;
       const readable = bound ?? legacy;
-      lastAgentText ??= readable?.source.reader.getLastAgentExcerpt
-        ? await readable.source.reader.getLastAgentExcerpt(
-            readable.nativeSessionId,
-          )
-        : undefined;
-      if (lastAgentText === undefined) {
+      const reader = readable?.source.reader;
+      if (lastAgentText === undefined && reader?.getLastAgentExcerpt) {
+        lastAgentText = await reader.getLastAgentExcerpt(
+          readable!.nativeSessionId,
+        );
+      } else if (lastAgentText === undefined) {
         const normalized = await loadRestartSourceSession(
           transcriptProject,
           sessionId,
@@ -4423,39 +4379,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // must retain its selected delivery boundary.
     const parsed = parseSlashCommandSubmission(body.message);
     if (parsed?.name === "compact" && body.deferred) {
-      if (
-        process.provider !== "codex" &&
-        !isClaudeSdkProviderName(process.provider)
-      )
-        return c.json(
-          { error: "Queued compaction is unavailable for this provider" },
-          409,
-        );
-      if (
-        userMessage.attachments?.length ||
-        userMessage.images?.length ||
-        userMessage.documents?.length
-      )
-        return c.json(
-          { error: "Queue compaction separately from attachments" },
-          400,
-        );
-      const commands = await process.supportedCommands();
-      if (
-        !commands?.some(
-          (command) => command.name.replace(/^\//, "") === "compact",
-        )
-      )
-        return c.json(
-          { error: "This session does not advertise compaction" },
-          409,
-        );
-      if (userMessage.metadata)
-        userMessage.metadata.compactAboveContextPercent = undefined;
-      userMessage.queuedCompact = {
-        command: "compact",
-        argument: parsed.argument,
-      };
+      const refusal = await prepareQueuedCompaction(
+        process,
+        userMessage,
+        parsed.argument,
+      );
+      if (refusal) return c.json({ error: refusal.message }, refusal.status);
     }
     if (parsed && !userMessage.queuedCompact) {
       const providerResult = await dispatchProviderCommand(
@@ -4490,12 +4419,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       process.queuedCompactionBlocksInput ||
       (userMessage.metadata?.turnEffort && process.state.type !== "idle")
     ) {
-      if (body.mode) {
-        process.setPermissionMode(body.mode);
-      }
-      await process.primeSupportedCommandsForMessage(userMessage);
-      const deferredResult = process.deferMessage(userMessage, {
-        promoteIfReady: true,
+      const deferredResult = await deferSessionInput(process, userMessage, {
+        mode: body.mode,
       });
       if (!deferredResult.success) {
         return c.json(
@@ -4506,7 +4431,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           410,
         );
       }
-      await process.waitForPatientQueuePersistenceIdle();
       return c.json({
         queued: true,
         deferred: deferredResult.deferred,

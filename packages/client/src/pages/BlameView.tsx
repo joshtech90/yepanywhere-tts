@@ -1,3 +1,4 @@
+import statusStyles from "./SourceStatus.module.css";
 import {
   DEFAULT_SNIPPET_CONTEXT_RADIUS,
   type FileContentResponse,
@@ -19,6 +20,7 @@ import {
 import { api } from "../api/client";
 import { CopyButton } from "../components/CopyButton";
 import { FileRevisionLink } from "../components/FileRevisionLink";
+import { Banner } from "../components/ui/Banner";
 import { ButtonBase, IconButton } from "../components/ui/Button";
 import { InnerHtml } from "../components/ui/InnerHtml";
 import {
@@ -316,9 +318,12 @@ export function BlameView({
                 data-blame-row=""
                 className={`${styles.row} ${
                   commentedLines.has(lineNumber)
-                    ? `${styles.hasReviewComment} has-review-comment`
+                    ? `${styles.hasReviewComment} `
                     : ""
                 }`}
+                data-has-review-comment={
+                  commentedLines.has(lineNumber) ? "" : undefined
+                }
               >
                 {line?.uncommitted ? (
                   <span
@@ -409,21 +414,23 @@ export function BlameView({
 
   if (contentLoading && !blame) {
     return (
-      <section className={`blame-view ${styles.root}`}>
-        <div className="git-diff-loading">{t("gitStatusLoading")}</div>
+      <section className={styles.root} data-source-blame-view>
+        <div className={statusStyles.diffLoading}>{t("gitStatusLoading")}</div>
       </section>
     );
   }
   if (contentError && blameError && !blame) {
     return (
-      <section className={`blame-view ${styles.root}`}>
-        <div className="git-diff-error">{contentError}</div>
+      <section className={styles.root} data-source-blame-view>
+        <Banner tone="error" className={styles.notice}>
+          {contentError}
+        </Banner>
       </section>
     );
   }
 
   return (
-    <section className={`blame-view ${styles.root}`} ref={containerRef}>
+    <section className={styles.root} data-source-blame-view ref={containerRef}>
       <div className={styles.header}>
         <span className={styles.pathGroup} data-blame-path-group="">
           <span className={styles.path} title={path}>
@@ -466,17 +473,19 @@ export function BlameView({
         />
       </div>
       {contentError && (
-        <div className={`git-diff-error ${styles.contentError}`}>
+        <Banner tone="error" compact className={styles.notice}>
           {contentError}
-        </div>
+        </Banner>
       )}
       {blameError && (
-        <div className={styles.provenanceError} role="status">
+        <Banner tone="warning" compact className={styles.notice}>
           {t("sourceBlameUnavailable")}
-        </div>
+        </Banner>
       )}
       {file && !file.metadata.isText && !blame && (
-        <div className="git-status-empty">{t("fileViewerBinary")}</div>
+        <div className={statusStyles.statusEmpty} data-source-empty>
+          {t("fileViewerBinary")}
+        </div>
       )}
       <div
         className={styles.lines}
@@ -534,7 +543,7 @@ function BlameCodeCell({
   const sharedProps = {
     // `blame-line-target` carries no CSS; it is the DOM contract the blame
     // tests and line-target navigation address the cell by.
-    className: `${styles.code} blame-line-target`,
+    className: styles.code,
     "data-blame-code": "",
     role: enabled ? ("button" as const) : undefined,
     tabIndex: enabled ? 0 : undefined,

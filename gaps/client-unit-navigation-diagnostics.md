@@ -38,3 +38,67 @@ no-flash/typing checks are clean. Neither navigation event can be attributed
 from these stacks, so changing global links or suppressing jsdom diagnostics
 would expand this presentation fix into an unrelated fixture audit. Evidence:
 ignored `tasks/creation-notice-test-node24.log`.
+
+2026-11-10: CSS ownership plan 191 step 1's passing final workspace run emits
+five timer-only navigation diagnostics, with 7,333 client and 7,256 server
+cases passing. The 91 focused CSS-tooling/Git Status cases emit none. No
+navigation implementation was changed; attribution still requires a separate
+fixture audit rather than global link suppression. Evidence: ignored
+`.artifacts/design-tour/191-comparison/logs/workspace-final.log`.
+
+2026-11-11: the Audit-page cleanup's passing workspace run repeats five
+`Error: Not implemented: navigation (except hash changes)` diagnostics with
+only jsdom timer stacks (7,375 client and 7,341 server tests pass). The focused
+design-index test and desktop/phone browser cases are clean. This playground
+change does not change production navigation; identifying the source still
+requires the separate fixture audit described above. No global navigation
+suppression was added. Evidence: ignored `.artifacts/design-audit/tests.log`.
+
+2026-11-12: plan 190's measurement checkpoint and separate redundant-import
+cleanup repeat five timer-only navigation diagnostics in the passing workspace
+run (7,389 client and 7,382 server tests, 94 server skips). The cleanup's isolated
+API smoke is clean and no production navigation changes. The stacks still do
+not identify a triggering test; changing global links or suppressing diagnostics
+would be an unrelated fixture audit. Evidence: `/tmp/p190/regroup/tests.log`.
+
+2026-11-12: the passing v0 selection/discovery workspace run on Node 24.22.1
+repeats five timer-only navigation diagnostics. No client navigation changes
+are part of this slice; all 137 focused core/agent-API checks are clean. The
+same unowned asynchronous stacks prevent a safely isolated fix here; no
+global suppression was added. Evidence: `/tmp/ya-v0-tests-final.log`.
+
+2026-11-12: the final collection-stream repair workspace run passes 7,400 server
+tests (94 skips) and 7,394 client tests, repeating the same five unowned
+jsdom navigation diagnostics. Its focused collection/transport cases are
+clean. This change does not modify links or document navigation; the timer-only
+stacks still require a separate fixture attribution audit rather than global
+suppression. Evidence: `/tmp/collection-fix-test-final.log`.
+
+2026-11-13: plan 192's passing initial workspace run repeats the five unowned
+jsdom navigation diagnostics, with 7,401 client cases passing. No client source
+changes in this API/control slice. The asynchronous stacks still identify no
+triggering test; a safe repair needs the fixture attribution audit above,
+not global navigation interception or diagnostic suppression.
+
+2026-11-14: conversation-window/backing-store verification on Node 24.22.1
+again prints five timer-only jsdom navigation diagnostics while all 7,419
+client cases pass. The API's focused reader/core/HTTP cases are clean and no
+client navigation code changed. The asynchronous stacks still provide no
+owning fixture, so an isolated repair requires the attribution audit above.
+Evidence: local `/tmp/ya-conversation-tests-node24.log`.
+
+2026-11-14: reusable peer-channel verification on Node 24.22.1 repeats five
+`Error: Not implemented: navigation (except hash changes)` diagnostics with
+only jsdom timer stacks. The 52 focused peer/identity-service checks are clean;
+no client navigation changes belong to this transport slice. The stacks still
+do not identify an owning fixture, so an isolated repair needs the attribution
+audit above rather than a global diagnostic filter. Evidence:
+[workspace test log](/tmp/ya-peer-all-final.log).
+
+
+2026-11-15: hosted AAR pairing verification on Node 24.22.1 repeats five
+unattributed jsdom navigation diagnostics while all 7,420 client tests pass.
+The ten focused router component checks and real-browser code/typing checks
+emit none. The timer-only stacks still do not identify their link fixtures;
+a safe isolated fix needs the attribution audit above, rather than suppressing
+navigation globally. Evidence: local `/tmp/yar-tests-stable.log`.

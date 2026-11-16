@@ -107,6 +107,56 @@ describe("WorkingTreeBrowser", () => {
     sessionRecords.clear();
   });
 
+  it("names the changed-file count when embedded in history", async () => {
+    listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+    const detailedT = (key: string, vars?: Record<string, string | number>) =>
+      vars ? `${key} ${JSON.stringify(vars)}` : key;
+
+    render(
+      <MemoryRouter>
+        <WorkingTreeBrowser
+          projectId="p1"
+          embeddedInHistory
+          status={{
+            isGitRepo: true,
+            branch: "main",
+            upstream: null,
+            ahead: 0,
+            behind: 0,
+            isClean: false,
+            files: [
+              {
+                path: "src/a.ts",
+                status: "M",
+                staged: false,
+                linesAdded: 1,
+                linesDeleted: 0,
+              },
+              {
+                path: "src/b.ts",
+                status: "M",
+                staged: false,
+                linesAdded: 1,
+                linesDeleted: 0,
+              },
+            ],
+          }}
+          isWideScreen={false}
+          t={detailedT}
+        />
+      </MemoryRouter>,
+    );
+
+    const count = await screen.findByRole("img", {
+      name: 'sourceChangedFileCount {"count":2}',
+    });
+    expect(count.textContent).toBe("2");
+  });
+
   it("keeps a clean working tree as the Changes landing", async () => {
     const onBrowseHistory = vi.fn();
     listReviewComments.mockResolvedValue({
@@ -335,11 +385,13 @@ describe("WorkingTreeBrowser", () => {
     ).toBe("sourceWorktreePartialDescription");
     expect(screen.queryByText("sourceWorktreeUnstaged")).toBeNull();
     expect(screen.queryByText("sourceWorktreeUntracked")).toBeNull();
-    expect(document.querySelectorAll(".commit-file-item")).toHaveLength(1);
-    const row = document.querySelector(".commit-file-item");
+    expect(document.querySelectorAll("[data-source-file-item]")).toHaveLength(
+      1,
+    );
+    const row = document.querySelector("[data-source-file-item]");
     expect(row?.getAttribute("data-tooltip")).toBe("src/dirty.ts");
     expect(
-      row?.querySelector(".git-status-badge")?.getAttribute("data-tooltip"),
+      row?.querySelector('[role="img"]')?.getAttribute("data-tooltip"),
     ).toBe("M — sourceFileStatusModified");
     await waitFor(() =>
       expect(getGitDiff).toHaveBeenCalledWith(
@@ -708,6 +760,7 @@ describe("WorkingTreeBrowser", () => {
               },
             ],
           }}
+          fileFocusRequest={1}
           isWideScreen={false}
           t={detailedT}
         />
@@ -718,6 +771,7 @@ describe("WorkingTreeBrowser", () => {
       name: 'sourceExpandUntrackedFolder {"path":"generated/"}',
     });
     expect(expand.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).not.toBe(expand);
     expect(screen.queryByText("file-00.ts")).toBeNull();
     expect(screen.getByRole("status").textContent).toBe(
       'sourceUntrackedFolderScanProgress {"loaded":1,"total":1}',
@@ -1034,7 +1088,7 @@ describe("WorkingTreeBrowser", () => {
     const finalPath = document.querySelector(
       '[data-source-path="generated/file-399.ts"]',
     );
-    const finalRow = finalPath?.closest(".commit-file-item");
+    const finalRow = finalPath?.closest("[data-source-file-item]");
     if (!finalRow) throw new Error("Final generated file row is missing");
     getFile.mockImplementation(() => new Promise(() => {}));
     translationCalls = 0;
@@ -1181,31 +1235,32 @@ describe("WorkingTreeBrowser", () => {
     );
     const stagedRow = document
       .querySelector('[data-source-path="src/staged.ts"]')
-      ?.closest(".commit-file-item");
+      ?.closest("[data-source-file-item]");
     if (!stagedRow) throw new Error("Staged file row is missing");
-    expect(stagedRow.querySelector(".worktree-file-state")?.textContent).toBe(
-      "✓",
-    );
+    expect(
+      stagedRow.querySelector("[role=img][aria-label^=sourceWorktree]")
+        ?.textContent,
+    ).toBe("✓");
     expect(
       stagedRow
-        .querySelector(".worktree-file-state")
+        .querySelector("[role=img][aria-label^=sourceWorktree]")
         ?.getAttribute("data-tooltip"),
     ).toBe("sourceWorktreeStaged");
     expect(
       document
         .querySelector('[data-source-path="src/unstaged.ts"]')
-        ?.closest(".commit-file-item")
-        ?.querySelector(".worktree-file-state"),
+        ?.closest("[data-source-file-item]")
+        ?.querySelector("[role=img][aria-label^=sourceWorktree]"),
     ).toBeNull();
     const untrackedRow = document
       .querySelector('[data-source-path="src/untracked.ts"]')
-      ?.closest(".commit-file-item");
+      ?.closest("[data-source-file-item]");
     if (!untrackedRow) throw new Error("Untracked file row is missing");
-    expect(untrackedRow.querySelector(".worktree-file-state")).toBeNull();
     expect(
-      untrackedRow
-        .querySelector(".git-status-badge")
-        ?.getAttribute("data-tooltip"),
+      untrackedRow.querySelector("[role=img][aria-label^=sourceWorktree]"),
+    ).toBeNull();
+    expect(
+      untrackedRow.querySelector('[role="img"]')?.getAttribute("data-tooltip"),
     ).toBe("? — sourceFileStatusUntracked");
   });
 
@@ -1608,8 +1663,8 @@ describe("WorkingTreeBrowser", () => {
             .getAttribute("aria-pressed"),
         ).toBe("true");
         const scrollRootSelector = isWideScreen
-          ? ".git-diff-preview-body"
-          : ".modal-content";
+          ? "[data-source-preview-body]"
+          : "[data-modal-content]";
         const firstScrollRoot =
           document.querySelector<HTMLElement>(scrollRootSelector);
         if (!firstScrollRoot) throw new Error("Diff scroll root is missing");
@@ -1733,7 +1788,9 @@ describe("WorkingTreeBrowser", () => {
           }),
         ),
       );
-      expect(document.querySelector(".modal") !== null).toBe(!isWideScreen);
+      expect(document.querySelector("[data-modal-frame]") !== null).toBe(
+        !isWideScreen,
+      );
     },
   );
 });

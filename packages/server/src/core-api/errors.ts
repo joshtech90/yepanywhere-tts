@@ -1,6 +1,9 @@
 /** Wire errors shared by core and the trusted provider/controller bridge. */
 const statuses = {
   unauthorized: 401,
+  not_found: 404,
+  peer_incompatible: 501,
+  request_not_pending: 409,
   peer_unavailable: 503,
   peer_unsupported: 501,
   peer_identity_mismatch: 502,
@@ -21,8 +24,12 @@ const statuses = {
   catalog_not_ready: 503,
   controller_unavailable: 503,
   conversation_unavailable: 503,
+  selection_unavailable: 503,
   relationships_unavailable: 503,
   anchor_unavailable: 404,
+  compaction_unsupported: 409,
+  input_not_pending: 409,
+  input_not_cancellable: 409,
 } as const;
 export class CoreApiError extends Error {
   constructor(

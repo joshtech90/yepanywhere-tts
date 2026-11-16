@@ -6,6 +6,7 @@ import {
   assertUrlProjectId,
   nativeSessionFamily,
   nativeSessionRef,
+  nativeViewerFields,
   parseNativeSessionId,
   parseYaSessionId,
   type NativeSessionRef,
@@ -141,9 +142,13 @@ function decode(row: IdentityRow | undefined): SessionIdentity | undefined {
 
 /** Profile-owned indexed identity lookup, with no per-session cache or timers. */
 export class SessionIdentityStore {
-  // Seven fixed statements, released with this owner or the database.
+  // Seven fixed statements and one prepared on first use, all released with
+  // this owner or the database.
   private readonly byPublicId: SqliteStatement;
   private readonly byNativeRef: SqliteStatement;
+  // Only viewer-path resolution reads it, so a server that never resolves one
+  // does not hold it; the test statement ceiling counts every live statement.
+  private byFamilyNativeId: SqliteStatement | undefined;
   private readonly byNativeIds: SqliteStatement;
   private readonly insert: SqliteStatement;
   private readonly bind: SqliteStatement;
@@ -178,6 +183,11 @@ export class SessionIdentityStore {
     return decode(this.byPublicId.get<IdentityRow>(sessionId));
   }
 
+  /** Public native fields for a session's viewer URL; empty while unbound. */
+  viewerFields(sessionId: YaSessionId) {
+    return nativeViewerFields(this.resolveYa(sessionId)?.native);
+  }
+
   lookupNative(native: NativeSessionRef): SessionIdentity | undefined {
     validateNative(native);
     return decode(
@@ -187,6 +197,24 @@ export class SessionIdentityStore {
         native.id,
       ),
     );
+  }
+
+  /**
+   * Viewer-path resolution, which carries no storage scope: every identity
+   * bound to this native id in any of the family's stores. Callers refuse
+   * more than one rather than choosing.
+   */
+  lookupViewerNative(
+    family: NativeSessionFamily,
+    id: NativeSessionId,
+  ): SessionIdentity[] {
+    // Family-prefix range of the unique binding index; scopes per family are few.
+    this.byFamilyNativeId ??= this.database.prepare(
+      "SELECT * FROM session_identities WHERE native_family = ? AND native_id = ?",
+    );
+    return this.byFamilyNativeId
+      .all<IdentityRow>(family, id)
+      .map((row) => decode(row)!);
   }
 
   /**
@@ -265,6 +293,58 @@ export class SessionIdentityStore {
     );
   }
 
+  /**
+   * Read-side discovery isolates identity conflicts without weakening strict
+   * adoption. Preflight before writing so ambiguous new public claims do not
+   * acquire whichever native source happened to be enumerated first.
+   * All valid adoptions still share one transaction; storage failures roll back.
+   */
+  observeDiscoveredBatch(
+    inputs: readonly DiscoveredSessionIdentity[],
+  ): Array<SessionIdentity | SessionIdentityConflict | undefined> {
+    if (inputs.length === 0) return [];
+    return this.database.transaction(() => {
+      const observations = inputs.map((input) => {
+        try {
+          return this.adopt(input, false, true);
+        } catch (error) {
+          if (error instanceof SessionIdentityConflict) return error;
+          throw error;
+        }
+      });
+      const claims = new Map<
+        string,
+        { signature: string; positions: number[] }
+      >();
+      const ambiguous = new Set<string>();
+      for (const [position, identity] of observations.entries()) {
+        if (!identity || identity instanceof SessionIdentityConflict) continue;
+        const signature = JSON.stringify([
+          identity.provider,
+          identity.projectId,
+          identity.native?.family,
+          identity.native?.storageScope,
+          identity.native?.id,
+        ]);
+        const previous = claims.get(identity.sessionId);
+        if (previous) {
+          previous.positions.push(position);
+          if (previous.signature !== signature)
+            ambiguous.add(identity.sessionId);
+        } else
+          claims.set(identity.sessionId, { signature, positions: [position] });
+      }
+      for (const id of ambiguous)
+        for (const position of claims.get(id)!.positions)
+          observations[position] = new SessionIdentityConflict();
+      return observations.map((identity, index) =>
+        identity && !(identity instanceof SessionIdentityConflict)
+          ? this.adopt(inputs[index]!)
+          : identity,
+      );
+    });
+  }
+
   /** Only a known successful owned native copy may bypass discovery quarantine. */
   adoptCopiedNative(
     input: Omit<DiscoveredSessionIdentity, "legacyProvider">,
@@ -275,6 +355,7 @@ export class SessionIdentityStore {
   private adopt(
     input: DiscoveredSessionIdentity,
     copied = false,
+    preflight = false,
   ): SessionIdentity | undefined {
     validateNative(input.native);
     if (nativeSessionFamily(input.provider) !== input.native.family) {
@@ -295,6 +376,14 @@ export class SessionIdentityStore {
     const provider = input.legacyProvider ?? input.provider;
     if (nativeSessionFamily(provider) !== input.native.family)
       throw new SessionIdentityConflict();
+    if (preflight)
+      return {
+        sessionId,
+        provider,
+        projectId: input.projectId,
+        createdAt: input.createdAt,
+        native: input.native,
+      };
     this.insert.run(
       sessionId,
       provider,
@@ -349,6 +438,8 @@ export class SessionIdentityStore {
   close(): void {
     this.byPublicId.finalize();
     this.byNativeRef.finalize();
+    this.byFamilyNativeId?.finalize();
+    this.byFamilyNativeId = undefined;
     this.byNativeIds.finalize();
     this.insert.finalize();
     this.bind.finalize();

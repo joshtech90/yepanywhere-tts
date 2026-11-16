@@ -148,7 +148,9 @@ This is planned opt-in work; it does not reprioritize the
 
 The browser and phone never connect directly to AAR. Their existing YA
 HTTP/WebSocket or encrypted relay connection reaches the YA server; that server
-connects locally to AAR. Remote use of YA does not expose AAR administration.
+connects to AAR locally, or over HTTPS to a hosted router (see
+[Hosted router](#hosted-router-2026-11-15)). Remote use of YA does not expose
+AAR administration.
 Keep AAR headless and independently usable; do not make it depend on YA's
 desktop shell, browser, relay or provider host.
 
@@ -167,7 +169,10 @@ Unix-domain socket in AAR's private state directory. HTTP is the protocol;
 the Unix socket is its local transport. Check directory/socket ownership and
 permissions, handle Unix path-length limits, and do not unlink an arbitrary
 existing socket during startup or shutdown. Never advertise control operations
-on the inference listener.
+on the inference listener. AAR's opt-in public listener satisfies this rule:
+it is a separate dispatcher that routes `/control/` and the inference paths to
+separate handlers with separate credential classes, and the inference listener
+itself still serves no control operations.
 
 Use the existing loopback HTTP inference listener for official agent clients.
 Control and inference use separate credential classes and authorization paths;
@@ -178,9 +183,10 @@ metadata feed is a later capability if measured demand justifies it.
 macOS/Linux local sockets are the first transport. Windows named pipes require
 verified owner access controls and supported HTTP transport before claiming
 parity; do not silently fall back to unauthenticated loopback control. Remote
-control later uses the same operations over HTTPS with explicit pairing,
-normal certificate verification and a deliberate network bind. Private-network
-or SSH-tunnel deployment is separate scope, not a new public service default.
+control uses the same operations over HTTPS with explicit pairing, normal
+certificate verification and a deliberate network bind. AAR now implements its
+side; see [Hosted router](#hosted-router-2026-11-15). Private-network or
+SSH-tunnel deployment is separate scope, not a new public service default.
 
 ### Identity and authority
 
@@ -489,8 +495,9 @@ test processes afterward. Official upstream account stores remain authoritative.
 Update durable contracts in the owning YA topics (provider routing, gateway
 services, subscription usage, successor launch behavior) and AAR docs, then
 user/operator setup guidance. Publish explicit provider/platform coverage.
-HTTPS remote control, Windows parity, metadata SSE, cross-account continuation,
-automatic failover and a router desktop installer remain later extensions.
+Windows parity, metadata SSE, cross-account continuation, automatic failover
+and a router desktop installer remain later extensions. HTTPS remote control is
+the [hosted router](#hosted-router-2026-11-15) follow-up.
 
 ## Verification and completion criteria
 
@@ -526,3 +533,86 @@ accounts, memberships and grants. Older router editing remains scoped to its
 legacy contract. See the [durable compatibility contract](../../topics/agent-auth-router.md#router-owned-pool-compatibility).
 The desktop implementation and signed-candidate acceptance belong to AAR's
 [owning plan](https://github.com/kzahel/agent-auth-router/blob/main/docs/router-owned-pools-and-desktop.md).
+
+### Hosted router (2026-11-15)
+
+AAR now has an opt-in public listener (`aar serve --public-origin https://HOST`)
+on a loopback port that a TLS reverse proxy exposes. On one origin, it routes
+`/claude` and `/codex` to inference, `/control/v1/*` to integration control,
+and everything else to the AAR dashboard. Owner administration is not
+reachable there. Network pairing is code-approved: `POST /control/v1/pair` with
+`{id, name, tokenHash}` returns a pending `userCode`, `verificationUri`,
+`expiresAt` and `interval`. The owner types that code in AAR's dashboard or CLI
+and chooses pool grants in the same step. Until approval, authenticated
+operations, including `GET /control/v1/pair/status`, answer 403
+`pairing_pending`. `/control/v1/info` reports the public origin as
+`inferenceOrigin` and adds `remote-pairing-v1`. The contract and limits are in
+[AAR's hosted router document](https://github.com/kzahel/agent-auth-router/blob/main/docs/remote.md).
+
+The separate public dispatcher satisfies the
+[local control connection](#local-control-connection) rule: control and
+inference keep separate handlers and credential classes, and the inference
+listener serves no control operations. One router can therefore serve YA
+servers on several machines without a private network, while each YA keeps
+full pool selection, quotas, pinning, switching and recovery.
+
+YA's hosted connection slice is implemented (2026-11-15): HTTPS control,
+private durable code pairing, restart recovery and the settings controls below.
+The [owning contract](../../topics/agent-auth-router.md#hosted-https-router-2026-11-15)
+records capability 162, the checked stable-server corpus, cancellation semantics
+and qualification limits. Existing local/provider behavior remains covered by
+its prior proofs; new hosted control checks use an isolated TLS router fixture.
+Public deployment and additional native-platform qualification remain follow-ups.
+
+#### Hosted router settings (agreed 2026-11-15)
+
+Extend the existing **Settings → Providers → Agent Auth Router** card. After
+pairing, accounts, pools, the New Session selector and binding details behave
+exactly as with a local router.
+
+1. **Choose the router.** The card offers **On this computer** (today's socket
+   flow, unchanged) or **Hosted**. Hosted asks for an HTTPS URL and a **Name**.
+   The name defaults to `Yep Anywhere on <hostname>`, can be edited before
+   connecting, and is what the owner sees in AAR's approval list.
+2. **Connect** runs on the YA server, never in the browser. It reads
+   `/control/v1/info` with normal certificate verification, requires protocol 1
+   and `remote-pairing-v1`, then creates the control credential and sends only
+   its hash to `POST /control/v1/pair`. Failures are specific and plain:
+   unreachable host, certificate not valid for the host, protocol mismatch, or
+   no hosted pairing support.
+3. **Code screen.** It shows the `userCode` prominently, the instruction to
+   open the router's dashboard (Connections → Pair a device), type the code and
+   choose pools, an **Open router dashboard** link to `verificationUri`, an
+   expiry countdown and **Cancel**.
+   - The YA server polls `GET /control/v1/pair/status` at the returned
+     `interval`. The pending request (URL, integration ID, credential, code,
+     expiry) is kept in YA's private server state, so closing the tab or
+     restarting YA resumes waiting. Starting from a phone over the relay works
+     the same way.
+   - On expiry, or if the router dropped the request (a 401 while pending,
+     e.g. after an AAR restart), the screen says the code expired and offers
+     **Get a new code**.
+4. **Connected.** The card shows "Connected to `<host>`" and the router's
+   accounts and pools.
+5. **Later failures.**
+   - Unreachable router: "Can't reach `<host>`" with **Retry**; sessions keep
+     their pins.
+   - Revocation by the router owner (401 for an active pairing): the card says
+     the router removed this computer and offers **Pair again**.
+
+Decisions:
+
+- **One router per YA installation.** Bindings are tied to the router ID, so
+  switching between local and hosted means Disconnect, then pair the new
+  router. Existing routed sessions stay with the old router and are not moved.
+  Multiple simultaneous routers are out of scope.
+- **The owner types the code.** The verification link does not carry the code,
+  so an approval always means the owner typed the code shown on this YA. A
+  prefilled one-tap link with a name confirmation is a possible later
+  convenience, not part of this slice.
+- **The control credential stays on the YA server.** It is a long-lived bearer
+  credential. It lives only in YA's private server state and never appears in
+  browser storage, settings exports, launch metadata, logs or transcripts, in
+  line with the [Secrets](#verification-and-completion-criteria)
+  verification row.
+

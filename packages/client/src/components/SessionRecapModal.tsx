@@ -1,3 +1,5 @@
+import rowLayoutStyles from "../pages/settings/SettingsRows.module.css";
+import rowsStyles from "../pages/settings/SettingsRows.module.css";
 import {
   DEFAULT_RECAP_AFTER_SECONDS,
   HELPER_SIDE_MODEL_CHEAPEST,
@@ -14,9 +16,10 @@ import { useI18n } from "../i18n";
 import { getRecapModeDescription } from "../lib/recapModes";
 import { RecapAfterSecondsControl } from "./RecapAfterSecondsControl";
 import styles from "./SessionRecapModal.module.css";
+import { Banner } from "./ui/Banner";
 import { Button } from "./ui/Button";
+import { Dialog } from "./ui/Dialog";
 import { Select } from "./ui/Field";
-import { Modal } from "./ui/Modal";
 import { SegmentedControl } from "./ui/SegmentedControl";
 
 interface SessionRecapModalProps {
@@ -186,79 +189,79 @@ export function SessionRecapModal({
   ]);
 
   return (
-    <Modal
+    <Dialog
       title={t("sessionRecapTitle")}
+      size="medium"
       onClose={isSaving ? () => {} : onClose}
-    >
-      <div className="settings-group session-recap-modal">
-        <div className="settings-item model-settings-item">
-          <div className="settings-item-info">
-            <strong>{t("sessionRecapModeTitle")}</strong>
-            <p>{t("sessionRecapModeDescription")}</p>
-          </div>
-          <SegmentedControl
-            className="model-settings-chip-group"
-            aria-label={t("sessionRecapModeTitle")}
-            options={RECAP_MODE_ORDER.map((mode) => ({
-              value: mode,
-              label: modeLabel(mode, t),
-              tooltip: getRecapModeDescription(mode, t, recapAfterSeconds),
-              disabled: !modeAvailability[mode],
-            }))}
-            value={recapMode}
-            onChange={setRecapMode}
-            disabled={isLoading || isSaving}
-          />
-          <p className="recap-mode-caption">
-            {getRecapModeDescription(recapMode, t, recapAfterSeconds)}
-          </p>
-        </div>
-
-        {recapMode !== "off" && (
-          <RecapAfterSecondsControl
-            value={recapAfterSeconds}
-            disabled={isLoading || isSaving}
-            mode={recapMode}
-            onCommit={setRecapAfterSeconds}
-          />
-        )}
-
-        {recapMode === "side-session" && (
-          <label className="settings-item model-settings-item">
-            <div className="settings-item-info">
-              <strong>{t("helperSideModelTitle")}</strong>
-              <p>{t("helperSideModelDescription")}</p>
-            </div>
-            <Select
-              className={styles.modelSelect}
-              value={effectiveHelperSideModel}
-              onChange={(event) => setHelperSideModel(event.target.value)}
-              disabled={isLoading || isSaving}
-            >
-              {modelOptions.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))}
-            </Select>
-          </label>
-        )}
-
-        {error && <p className="settings-warning">{error}</p>}
-
-        <div className="model-switch-actions">
+      footer={
+        <>
           <Button onClick={onClose} disabled={isSaving}>
             {t("modalCancel")}
           </Button>
           <Button
             variant="primary"
             onClick={() => void save()}
-            disabled={isLoading || isSaving || !modeAvailability[recapMode]}
+            busy={isSaving}
+            disabled={isLoading || !modeAvailability[recapMode]}
           >
-            {isSaving ? t("providersSaving") : t("sessionRecapSave")}
+            {t("sessionRecapSave")}
           </Button>
+        </>
+      }
+    >
+      {error && <Banner tone="error">{error}</Banner>}
+      <div className={`${rowsStyles.item} ${rowLayoutStyles.modelItem}`}>
+        <div className={rowsStyles.itemInfo} data-settings-info>
+          <strong>{t("sessionRecapModeTitle")}</strong>
+          <p>{t("sessionRecapModeDescription")}</p>
         </div>
+        <SegmentedControl
+          className={rowLayoutStyles.modelChipGroup}
+          aria-label={t("sessionRecapModeTitle")}
+          options={RECAP_MODE_ORDER.map((mode) => ({
+            value: mode,
+            label: modeLabel(mode, t),
+            tooltip: getRecapModeDescription(mode, t, recapAfterSeconds),
+            disabled: !modeAvailability[mode],
+          }))}
+          value={recapMode}
+          onChange={setRecapMode}
+          disabled={isLoading || isSaving}
+        />
+        <p className={styles.recapModeCaption} data-recap-mode-caption>
+          {getRecapModeDescription(recapMode, t, recapAfterSeconds)}
+        </p>
       </div>
-    </Modal>
+
+      {recapMode !== "off" && (
+        <RecapAfterSecondsControl
+          value={recapAfterSeconds}
+          disabled={isLoading || isSaving}
+          mode={recapMode}
+          onCommit={setRecapAfterSeconds}
+        />
+      )}
+
+      {recapMode === "side-session" && (
+        <label className={`${rowsStyles.item} ${rowLayoutStyles.modelItem}`}>
+          <div className={rowsStyles.itemInfo} data-settings-info>
+            <strong>{t("helperSideModelTitle")}</strong>
+            <p>{t("helperSideModelDescription")}</p>
+          </div>
+          <Select
+            className={styles.modelSelect}
+            value={effectiveHelperSideModel}
+            onChange={(event) => setHelperSideModel(event.target.value)}
+            disabled={isLoading || isSaving}
+          >
+            {modelOptions.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+      )}
+    </Dialog>
   );
 }

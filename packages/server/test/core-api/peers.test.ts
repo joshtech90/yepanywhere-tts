@@ -1,12 +1,10 @@
-import {
-  seedHistoricalReceiptAlias,
-  seedHistoricalOutboundAlias,
-} from "../support/legacy-session-aliases.js";
+import { apiCommand } from "../support/api-command-request.js";
+import { seedHistoricalOutboundAlias } from "../support/legacy-session-aliases.js";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { SUPERUSER } from "../../src/auth/principal.js";
 import { CoreApi, type CoreApiSources } from "../../src/core-api/service.js";
 import {
@@ -42,7 +40,7 @@ const body = {
   requestId: "peer-create-001",
   projectId: "p",
   provider: "codex",
-  message: "Review the change",
+  prompt: "Review the change",
   permissionMode: "default",
 };
 function fixture(id: string) {
@@ -59,7 +57,10 @@ function fixture(id: string) {
     updatedAt: "",
   }));
   let starts = 0,
-    sends = 0;
+    sends = 0,
+    refusal: string | undefined,
+    crash = false,
+    held: Promise<void> | undefined;
   const subscriptions = new ConversationSubscriptions(async (sessionId) => ({
     close() {},
     async read() {
@@ -82,9 +83,22 @@ function fixture(id: string) {
     id,
     receipts,
     {
-      async start(_project, _request, _receipt, _settled, _failed, consumed) {
+      async start(
+        _project,
+        _request,
+        _receipt,
+        _settled,
+        _failed,
+        consumed,
+        allocated,
+      ) {
         starts++;
         const sessionId = `created-${starts}`;
+        // Native admission names the session before it starts or refuses it.
+        if (refusal || held || crash) allocated?.(sessionId);
+        if (crash) throw new Error("native start crashed");
+        if (refusal) return { rejected: true, message: refusal };
+        await held;
         sessions.push({ ...sessions[0]!, id: sessionId });
         consumed?.();
         return { sessionId };
@@ -161,6 +175,22 @@ function fixture(id: string) {
     sessions,
     starts: () => starts,
     sends: () => sends,
+    refuseStarts: (message: string) => {
+      refusal = message;
+    },
+    crashStarts: () => {
+      crash = true;
+    },
+    holdStarts: () => {
+      let release!: () => void;
+      held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return () => {
+        held = undefined;
+        release();
+      };
+    },
     launch: (value?: ApiLaunchContext) => {
       launch = value;
     },
@@ -196,14 +226,14 @@ function connect(
 const post = (fixture: Fixture, path: string, payload: unknown = body) =>
   fixture.app.request(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    ...apiCommand(payload),
   });
 const peerHeaders = (
   token: string,
   context = { sessionId: "parent", launchId: "launch-A" },
 ) => ({
   Authorization: `Bearer ${token}`,
+  "X-YA-Peer-Envelope": "2",
   "X-YA-Peer-Context": Buffer.from(JSON.stringify(context)).toString(
     "base64url",
   ),
@@ -240,10 +270,10 @@ it("creates, messages and follows across real v0 authentication, with separate d
   });
   expect(receipt.destinationServerId).toBe("B");
   expect(receipt.sessionId).toBe("created-1");
-  const message = await post(a, "/v0/servers/B/sessions/created-1/messages", {
+  const message = await post(a, "/v0/servers/B/sessions/created-1/inputs", {
     requestId: "peer-message-001",
-    message: "Please explain",
-    delivery: "queue",
+    type: "prompt",
+    text: "Please explain",
   });
   expect(message.status).toBe(202);
   expect(b.sends()).toBe(1);
@@ -285,16 +315,17 @@ it("creates, messages and follows across real v0 authentication, with separate d
       ).json()
     ).initiated,
   ).toEqual([]);
-  seedHistoricalReceiptAlias(b.receipts, "parent", "local-renamed");
   expect(b.receipts.get(first.id)?.creator.sessionId).toBe("parent");
+  const forwarded = await a.app.request("/v0/servers/B/projects");
+  expect(forwarded.headers.get("cache-control")).toBe("no-store");
   expect(
-    (await (await a.app.request("/v0/servers/B/projects")).json()).items.map(
-      (p: { id: string }) => p.id,
-    ),
+    (await forwarded.json()).items.map((p: { id: string }) => p.id),
   ).toEqual(["p"]);
-  expect(
-    (await a.app.request("/v0/servers/B/sessions/private/conversation")).status,
-  ).toBe(404);
+  const refused = await a.app.request(
+    "/v0/servers/B/sessions/private/conversation",
+  );
+  expect(refused.status).toBe(404);
+  expect(refused.headers.get("cache-control")).toBe("no-store");
   expect(
     (
       await post(a, "/v0/servers/B/sessions", {
@@ -376,6 +407,10 @@ it("persists uncertain intent before sending, recovers a lost response with one 
   expect((await post(a, "/v0/servers/B/sessions")).status).toBe(503);
   await b.commands.idle();
   expect(a.outbound.list("parent", 0, 10).items[0]?.state).toBe("uncertain");
+  // Connections activity shows the creation whose reply never arrived.
+  expect(a.outbound.forPeer("B")).toMatchObject([
+    { state: "uncertain", sessionId: null, sourceSessionId: "parent" },
+  ]);
   seedHistoricalOutboundAlias(a.outbound, "parent", "canonical");
   a.launch({
     id: "canonical",
@@ -408,7 +443,7 @@ it("persists uncertain intent before sending, recovers a lost response with one 
     (
       await post(a, "/v0/servers/B/sessions", {
         ...body,
-        message: "Different prompt",
+        prompt: "Different prompt",
       })
     ).status,
   ).toBe(409);
@@ -443,9 +478,10 @@ it("keeps same-project peer receipts private and rechecks grants on replay and p
   ).toBe(404);
   expect(
     (
-      await post(a, "/v0/servers/B/sessions/created-1/messages", {
+      await post(a, "/v0/servers/B/sessions/created-1/inputs", {
         requestId: "revoked-input-001",
-        message: "No",
+        type: "prompt",
+        text: "No",
       })
     ).status,
   ).toBe(404);
@@ -501,6 +537,110 @@ it("fences target revocation while a create waits on its catalog before durable 
   expect(b.starts()).toBe(0);
 });
 
+it("lets a peer follow its creation while the target is still launching the named session", async () => {
+  const a = fixture("A"),
+    b = fixture("B");
+  connect(a, b);
+  a.launch({
+    id: "parent",
+    launchId: "launching-create",
+    management: true,
+    peerAccess: true,
+  });
+  const release = b.holdStarts();
+  const receipt = await (await post(a, "/v0/servers/B/sessions")).json();
+  await vi.waitFor(() =>
+    expect(b.receipts.get(receipt.id)?.sessionId).toBe("created-1"),
+  );
+  const launching = await a.app.request(
+    `/v0/servers/B/receipts/${receipt.id}/follow?waitMs=0`,
+  );
+  expect(launching.status).toBe(200);
+  expect((await launching.json()).receipt).toMatchObject({
+    state: "dispatching",
+    sessionId: "created-1",
+  });
+  release();
+  await b.commands.idle();
+  expect(
+    await (await a.app.request(`/v0/servers/B/receipts/${receipt.id}`)).json(),
+  ).toMatchObject({ state: "accepted", sessionId: "created-1" });
+  // Once established, a session moved outside the grant hides its receipt.
+  b.sessions.find((s) => s.id === "created-1")!.projectId = "secret";
+  expect(
+    (await a.app.request(`/v0/servers/B/receipts/${receipt.id}`)).status,
+  ).toBe(404);
+});
+it("lets a peer read why the target refused its creation, though no session exists", async () => {
+  const a = fixture("A"),
+    b = fixture("B");
+  connect(a, b);
+  a.launch({
+    id: "parent",
+    launchId: "refused-create",
+    management: true,
+    peerAccess: true,
+  });
+  b.refuseStarts("Router rejected the operation");
+  const created = await post(a, "/v0/servers/B/sessions");
+  expect(created.status).toBe(202);
+  const receipt = await created.json();
+  await b.commands.idle();
+  const observed = await a.app.request(`/v0/servers/B/receipts/${receipt.id}`);
+  expect(observed.status).toBe(200);
+  expect(await observed.json()).toMatchObject({
+    state: "failed",
+    sessionId: "created-1",
+    failure: {
+      code: "admission_rejected",
+      message: "Router rejected the operation",
+    },
+  });
+  expect(
+    (
+      await a.app.request(
+        `/v0/servers/B/receipts/${receipt.id}/follow?waitMs=0`,
+      )
+    ).status,
+  ).toBe(200);
+  // An identical retry resolves the same refused receipt without a new start.
+  expect((await (await post(a, "/v0/servers/B/sessions")).json()).id).toBe(
+    receipt.id,
+  );
+  expect(b.starts()).toBe(1);
+  // Another peer still cannot read it.
+  const c = fixture("C");
+  connect(c, b);
+  expect(
+    (await c.app.request(`/v0/servers/B/receipts/${receipt.id}`)).status,
+  ).toBe(404);
+});
+it("lets a peer read an uncertain creation whose named session exists in no project", async () => {
+  const a = fixture("A"),
+    b = fixture("B");
+  connect(a, b);
+  a.launch({
+    id: "parent",
+    launchId: "uncertain-create",
+    management: true,
+    peerAccess: true,
+  });
+  b.crashStarts();
+  const receipt = await (await post(a, "/v0/servers/B/sessions")).json();
+  await b.commands.idle();
+  const observed = await a.app.request(`/v0/servers/B/receipts/${receipt.id}`);
+  expect(observed.status).toBe(200);
+  expect(await observed.json()).toMatchObject({
+    state: "uncertain",
+    sessionId: "created-1",
+    failure: { code: "launch_uncertain" },
+  });
+  // The launch may have got far enough to exist; then access is rechecked.
+  b.sessions.push({ ...b.sessions[0]!, id: "created-1", projectId: "secret" });
+  expect(
+    (await a.app.request(`/v0/servers/B/receipts/${receipt.id}`)).status,
+  ).toBe(404);
+});
 it("checks a receipt's current session project and outgoing revocation before releasing a result", async () => {
   const a = fixture("A"),
     b = fixture("B");
@@ -580,40 +720,37 @@ it("authorizes conflicting receipts before disclosing mismatch and accepts targe
     b.receiver.request(path, {
       method: "POST",
       headers: {
+        ...apiCommand(payload).headers,
         Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
+        "X-YA-Peer-Envelope": "2",
       },
-      body: JSON.stringify(payload),
+      body: apiCommand(payload).body,
     });
-  for (const message of [body.message, "Conflicting private request"])
+  for (const message of [body.prompt, "Conflicting private request"])
     expect(
-      (await direct("/v0/servers/B/sessions", { ...body, message })).status,
+      (await direct("/v0/servers/B/sessions", { ...body, prompt: message }))
+        .status,
     ).toBe(404);
   const input = {
     requestId: "canonical-input-001",
-    message: "Explain",
-    delivery: "queue",
+    type: "prompt",
+    text: "Explain",
   };
   expect(
-    (await post(a, "/v0/servers/B/sessions/parent/messages", input)).status,
+    (await post(a, "/v0/servers/B/sessions/parent/inputs", input)).status,
   ).toBe(202);
-  seedHistoricalReceiptAlias(b.receipts, "parent", "canonical-target");
-  b.sessions.find((s) => s.id === "parent")!.id = "canonical-target";
-  const retry = await post(a, "/v0/servers/B/sessions/parent/messages", input);
+  const retry = await post(a, "/v0/servers/B/sessions/parent/inputs", input);
   expect(retry.status).toBe(202);
-  expect(await retry.json()).toMatchObject({
-    requestedSessionId: "parent",
-    sessionId: "canonical-target",
-  });
+  expect(await retry.json()).toMatchObject({ sessionId: "parent" });
   expect(b.sends()).toBe(1);
   expect(b.receipts.get(created.id)?.creator.sessionId).toBeNull();
   b.directory.put({ ...grant, projects: [] });
-  for (const message of [input.message, "Conflicting private input"])
+  for (const message of [input.text, "Conflicting private input"])
     expect(
       (
-        await direct("/v0/servers/B/sessions/parent/messages", {
+        await direct("/v0/servers/B/sessions/parent/inputs", {
           ...input,
-          message,
+          text: message,
         })
       ).status,
     ).toBe(404);
@@ -632,7 +769,11 @@ it("releases all receiver slots on revocation of unfinished request bodies, even
     return b.receiver.request(
       new Request("http://127.0.0.1/v0/servers/B/sessions", {
         method: "POST",
-        headers: { Authorization: `Bearer ${ab.token}` },
+        headers: {
+          Authorization: `Bearer ${ab.token}`,
+          "X-YA-Peer-Envelope": "2",
+          "Idempotency-Key": "blocked-body-001",
+        },
         body: stream,
         duplex: "half",
       } as RequestInit & { duplex: "half" }),
@@ -709,20 +850,19 @@ it("repeats create/message/follow over two owned ephemeral loopback TCP listener
   const origin = `http://127.0.0.1:${address.port}`;
   const response = await fetch(`${origin}/v0/servers/B/sessions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    ...apiCommand(body),
   });
   expect(response.status).toBe(202);
   await response.json();
   await b.commands.idle();
   const input = await fetch(
-    `${origin}/v0/servers/B/sessions/created-1/messages`,
+    `${origin}/v0/servers/B/sessions/created-1/inputs`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      ...apiCommand({
         requestId: "tcp-message-001",
-        message: "Explain",
+        type: "prompt",
+        text: "Explain",
       }),
     },
   );
@@ -735,4 +875,29 @@ it("repeats create/message/follow over two owned ephemeral loopback TCP listener
   expect(
     (await following.json()).conversation.messages[0].content[0].text,
   ).toContain("Reviewed");
+});
+
+it("resolves self at the access server for local commands and canonical receipts while peers remain explicit", async () => {
+  const a = fixture("A"),
+    b = fixture("B");
+  connect(a, b);
+  const self = await (await a.app.request("/v0/servers/self")).json();
+  expect(self).toMatchObject({ id: "A", local: true });
+  const response = await a.app.request("/v0/servers/self/sessions", {
+    method: "POST",
+    ...apiCommand(body),
+  });
+  expect(response.status).toBe(202);
+  const receipt = await response.json();
+  await a.commands.idle();
+  const observed = await (
+    await a.app.request(`/v0/servers/self/receipts/${receipt.id}`)
+  ).json();
+  expect(observed).toMatchObject({
+    destinationServerId: "A",
+    state: "accepted",
+  });
+  expect(a.starts()).toBe(1);
+  expect(b.starts()).toBe(0);
+  expect((await a.app.request("/v0/servers/typo/projects")).status).toBe(404);
 });

@@ -10,6 +10,7 @@ import {
 } from "./authentication-contracts.js";
 import {
   peerConnectionMetadataSchema,
+  PEER_AUDIT_LIMIT,
   peerAuditSchema,
   recordPeerAudit,
   rememberPeer,
@@ -26,7 +27,7 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { isValidRelayUsername } from "@yep-anywhere/shared";
-import { operations, type Operation } from "../core-api/contracts.js";
+import { operations } from "../core-api/contracts.js";
 import { CoreApiError } from "../core-api/errors.js";
 import { generateVerifier } from "../crypto/srp-server.js";
 import { enforceOwnerOnlyPathPermissionsStrict } from "../utils/filePermissions.js";
@@ -39,7 +40,27 @@ const boundedId = z.string().min(1).max(4096);
 const resourceOperations = operations
   .filter((op) => op.path.includes(":serverId"))
   .map((op) => op.id);
-const ops = z.array(z.enum(resourceOperations)).min(1).max(32);
+/**
+ * Operations in every Server Connections control list since that UI shipped
+ * on 2026-10-31. A record written before the allOperations marker that still
+ * holds all of them was paired as trusted control, not narrowed explicitly.
+ */
+const legacyControlBaseline = [
+  "server",
+  "access",
+  "capabilities",
+  "projects",
+  "providers",
+  "sessions",
+  "session",
+  "conversation",
+  "followConversation",
+  "createSession",
+  "receipt",
+  "relationships",
+  "followReceipt",
+];
+const ops = z.array(z.string().min(1).max(128)).min(1).max(32);
 const publicUuid = z.string().uuid();
 const expiration = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const generation = z.number().int().min(1).max(2_147_483_647);
@@ -144,6 +165,7 @@ const incomingSchema = z
     automaticSignIn: z.literal(false).optional(),
     pairingOrigin: z.literal("server-connections").optional(),
     allProjects: z.literal(true).optional(),
+    allOperations: z.literal(true).optional(),
     projects: z.array(boundedId).max(64),
     operations: ops,
     expiresAt: expiration,
@@ -156,6 +178,7 @@ const outgoingSchema = outgoingPeerRequest
     allProjects: z.literal(true).optional(),
     authentication: outgoingAuthentication.optional(),
     pairingOrigin: z.literal("server-connections").optional(),
+    allOperations: z.literal(true).optional(),
   })
   .strict();
 
@@ -258,7 +281,7 @@ export const identityServiceOutboxSchema = z
   .strict();
 const stateSchema = legacyStateBase
   .extend({
-    version: z.literal(3),
+    version: z.literal(4),
     enabled: z.boolean().optional(),
     connections: z.array(peerConnectionMetadataSchema).max(128).optional(),
     audit: z.array(peerAuditSchema).max(512).optional(),
@@ -313,6 +336,7 @@ const stateSchema = legacyStateBase
           (p.origin === "fleet" &&
             (!validBinding(p.binding) ||
               p.allProjects === true ||
+              p.allOperations === true ||
               !!p.authentication ||
               p.binding.source.profileId !== p.sourceServerId ||
               p.binding.target.profileId !== state.serverId ||
@@ -333,6 +357,7 @@ const stateSchema = legacyStateBase
           (p.origin === "fleet" &&
             (!validBinding(p.binding) ||
               p.allProjects === true ||
+              p.allOperations === true ||
               !!p.authentication ||
               !!p.invitation.authentication ||
               p.binding.source.profileId !== state.serverId ||
@@ -431,12 +456,7 @@ export function uiPairingOperation(
   const incoming = "sourceServerId" in peer;
   const id = incoming ? peer.id : peer.invitation.credentialId,
     generation = incoming ? peer.generation : peer.invitation.generation;
-  if (
-    generation !== 1 ||
-    !peer.allProjects ||
-    resourceOperations.some((op) => !peer.operations.includes(op))
-  )
-    return;
+  if (generation !== 1 || !peer.allProjects || !peer.allOperations) return;
   const expiry = incoming ? peer.expiresAt : peer.invitation.expiresAt;
   return state.audit?.find(
     (e) =>
@@ -460,9 +480,92 @@ export function uiPairing(
   );
 }
 
-export function peerGrantOperations(operations: readonly Operation[]) {
+/**
+ * Operations a stored grant authorizes in this build. A trusted-control
+ * pairing covers every current resource operation, so a later release's
+ * operations reach it without re-pairing; any other grant keeps its list.
+ */
+export function peerOperations(peer: {
+  allOperations?: true;
+  operations: readonly string[];
+}): string[] {
+  return [...(peer.allOperations ? resourceOperations : peer.operations)];
+}
+
+/**
+ * Whether a record written before the allOperations marker was made as
+ * trusted control and never narrowed. Server Connections records an
+ * operation id with every issuance and import; the owner API records none.
+ * Every retained entry for the incoming credential, or every outgoing import
+ * for the target since its last removal (replacement keeps the list across
+ * credential ids), must carry one. The history must reach creation: the
+ * incoming generation 1 entry, which pruning (oldest first) would remove
+ * before any later one, or for outgoing an audit that was never pruned.
+ * pairingOrigin alone cannot show the absence of a later explicit rotation,
+ * so ambiguity stays fixed.
+ */
+function legacyTrustedControl(
+  state: Readonly<PeerAccessState>,
+  peer: StoredIncomingPeer | StoredOutgoingPeer,
+) {
+  if (
+    peer.origin !== "manual" ||
+    !peer.allProjects ||
+    peer.allOperations ||
+    legacyControlBaseline.some((op) => !peer.operations.includes(op))
+  )
+    return false;
+  const incoming = "sourceServerId" in peer;
+  const id = incoming ? peer.id : peer.invitation.credentialId,
+    generation = incoming ? peer.generation : peer.invitation.generation;
+  const audit = state.audit ?? [];
+  const target = incoming ? undefined : peer.invitation.targetServerId;
+  // Outgoing replacement can carry a list to a new credential id, so trace
+  // every import for the target since its last removal.
+  let since = 0;
+  if (target)
+    audit.forEach((e, index) => {
+      if (e.action === "outgoing-removed" && e.serverId === target)
+        since = index + 1;
+    });
+  const history = audit
+    .slice(since)
+    .filter((e) =>
+      incoming
+        ? e.action === "incoming-issued" &&
+          e.serverId === peer.sourceServerId &&
+          e.credentialId === id
+        : e.action === "outgoing-imported" && e.serverId === target,
+    );
+  return (
+    history.some((e) => e.credentialId === id && e.generation === generation) &&
+    history.every((e) => !!e.operationId) &&
+    (incoming
+      ? history.some((e) => e.generation === 1)
+      : audit.length < PEER_AUDIT_LIMIT)
+  );
+}
+
+/** Version 4 marks pre-marker trusted-control pairings once, at load. */
+function adoptTrustedControl(state: PeerAccessState) {
+  const adopt = <T extends StoredIncomingPeer | StoredOutgoingPeer>(peer: T) =>
+    legacyTrustedControl(state, peer)
+      ? {
+          ...peer,
+          allOperations: true as const,
+          operations: [...resourceOperations],
+        }
+      : peer;
+  return {
+    ...state,
+    incoming: state.incoming.map(adopt),
+    outgoing: state.outgoing.map(adopt),
+  };
+}
+
+export function peerGrantOperations(operations: readonly string[]) {
   const result = [
-    ...new Set<Operation>(["server", "access", "capabilities", ...operations]),
+    ...new Set<string>(["server", "access", "capabilities", ...operations]),
   ];
   if (
     result.some((op) =>
@@ -472,8 +575,15 @@ export function peerGrantOperations(operations: readonly Operation[]) {
         "receipt",
         "followReceipt",
         "relationships",
+        "requests",
+        "respond",
+        "cancel",
+        "stop",
         "createSession",
-        "sendMessage",
+        "prompt",
+        "createInput",
+        "inputs",
+        "cancelInput",
       ].includes(op),
     ) &&
     !result.includes("session")
@@ -524,11 +634,11 @@ export class PeerAccessStore {
         const loaded = JSON.parse(await readFile(this.path, "utf8"));
         const legacy =
           loaded.version === 1 ? legacyStateSchema.parse(loaded) : undefined;
-        const saved = stateSchema.parse(
+        const parsed = stateSchema.parse(
           legacy
             ? {
                 ...legacy,
-                version: 3,
+                version: 4,
                 incoming: legacy.incoming.map((p) => ({
                   ...p,
                   origin: "manual",
@@ -545,13 +655,17 @@ export class PeerAccessStore {
                 ),
                 fleet: { epoch: 0, enrollment: null, outbox: [] },
               }
-            : loaded.version === 2
-              ? { ...loaded, version: 3 }
+            : loaded.version === 2 || loaded.version === 3
+              ? { ...loaded, version: 4 }
               : loaded,
         );
+        const saved =
+          loaded.version === 4
+            ? parsed
+            : stateSchema.parse(adoptTrustedControl(parsed));
         if (saved.serverId !== this.serverId)
           throw new Error("Peer state belongs to another logical server");
-        if (legacy || loaded.version === 2)
+        if (loaded.version !== 4)
           await writeFileAtomically(this.path, JSON.stringify(saved), {
             mode: 0o600,
             durable: true,
@@ -560,7 +674,7 @@ export class PeerAccessStore {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         this.state = {
-          version: 3,
+          version: 4,
           selected: {},
           fleet: { epoch: 0, enrollment: null, outbox: [] },
           serverId: this.serverId,
@@ -704,7 +818,10 @@ export class PeerAccessStore {
       this.pendingMutations--;
     });
   }
-  private validateGrant(input: z.infer<typeof rotatePeerRequest>) {
+  private validateGrant(
+    input: z.infer<typeof rotatePeerRequest>,
+    requested: readonly string[] = input.operations,
+  ) {
     if (input.authentication && input.automaticSignIn === false)
       throw new CoreApiError(
         "invalid_request",
@@ -721,9 +838,11 @@ export class PeerAccessStore {
         "Peer expiry is outside its authentication policy window",
         400,
       );
-    const operations = peerGrantOperations(input.operations);
+    const operations = peerGrantOperations(requested);
     if (
-      operations.some((op) => op === "createSession" || op === "sendMessage") &&
+      operations.some((op) =>
+        ["createSession", "prompt", "createInput"].includes(op),
+      ) &&
       input.acknowledgeExecutionAuthority !== "server-account"
     )
       throw new CoreApiError(
@@ -761,7 +880,6 @@ export class PeerAccessStore {
       const input = rotateId
         ? rotatePeerRequest.parse(value)
         : incomingPeerRequest.parse(value);
-      const operations = this.validateGrant(input);
       const current = this.read();
       const previous = rotateId
         ? current.incoming.find(
@@ -774,6 +892,14 @@ export class PeerAccessStore {
           "Incoming peer record not found",
           404,
         );
+      // Server Connections setup creates trusted control and renewal keeps
+      // it; an owner API grant or rotation states its own fixed list.
+      const allOperations =
+        pairingOrigin && (!previous || previous.allOperations === true);
+      const operations = this.validateGrant(
+        input,
+        allOperations ? resourceOperations : input.operations,
+      );
       const sourceServerId =
         previous?.sourceServerId ??
         incomingPeerRequest.parse(value).sourceServerId;
@@ -812,7 +938,9 @@ export class PeerAccessStore {
           (rotateId &&
             (!existing ||
               existing.id !== rotateId ||
-              existing.generation !== previous!.generation)) ||
+              existing.generation !== previous!.generation ||
+              (existing.allOperations === true) !==
+                (previous!.allOperations === true))) ||
           (!rotateId && existing)
         )
           throw new CoreApiError(
@@ -849,6 +977,7 @@ export class PeerAccessStore {
             ? { pairingOrigin: "server-connections" as const }
             : {}),
           ...(input.allProjects ? { allProjects: true as const } : {}),
+          ...(allOperations ? { allOperations: true as const } : {}),
           projects: [...new Set(input.projects)],
           operations,
           expiresAt: input.expiresAt,
@@ -936,7 +1065,15 @@ export class PeerAccessStore {
         generation: input.invitation.generation,
       });
       const { replace: _replace, ...record } = input;
-      record.operations = peerGrantOperations(record.operations);
+      // Server Connections import is trusted control and renewal keeps it;
+      // the owner API import states its own fixed list.
+      const allOperations =
+        !!operationId &&
+        !!identity &&
+        (!existing || existing.allOperations === true);
+      record.operations = peerGrantOperations(
+        allOperations ? resourceOperations : record.operations,
+      );
       next.outgoing = [
         ...next.outgoing.filter(
           (p) =>
@@ -949,6 +1086,7 @@ export class PeerAccessStore {
             ? { pairingOrigin: "server-connections" as const }
             : {}),
           ...(verifiedAllProjects ? { allProjects: true as const } : {}),
+          ...(allOperations ? { allOperations: true as const } : {}),
         },
       ];
       if (

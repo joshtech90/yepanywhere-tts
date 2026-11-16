@@ -1,8 +1,12 @@
+import commandStyles from "./SettingsCommand.module.css";
+import rowsStyles from "./SettingsRows.module.css";
+import agentStyles from "./AgentContextSettings.module.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   LATEX_MATH_RENDERING_CLIENT_CAPABILITY,
   buildEffectiveAgentContext,
 } from "@yep-anywhere/shared";
+import { Banner } from "../../components/ui/Banner";
 import { Button } from "../../components/ui/Button";
 import { Checkbox } from "../../components/ui/Checkbox";
 import { Textarea } from "../../components/ui/Field";
@@ -136,7 +140,7 @@ export function AgentContextSettings() {
         t("agentContextSuggestedLatexDescription"),
       ]}
     >
-      <div className="settings-group">
+      <div className={rowsStyles.group} data-settings-group>
         <SettingsItem
           label={t("agentContextGlobalInstructions")}
           description={t("agentContextGlobalInstructionsDescription")}
@@ -145,12 +149,13 @@ export function AgentContextSettings() {
             style: { flexDirection: "column", alignItems: "stretch" },
           }}
         >
-          <div className="settings-item-info">
+          <div className={rowsStyles.itemInfo} data-settings-info>
             <strong>{t("agentContextGlobalInstructions")}</strong>
             <p>{t("agentContextGlobalInstructionsDescription")}</p>
           </div>
           <Textarea
             mono
+            aria-label={t("agentContextGlobalInstructions")}
             value={instructions}
             onChange={(e) => {
               const value = e.target.value.slice(0, MAX_LENGTH);
@@ -158,7 +163,6 @@ export function AgentContextSettings() {
               recomputeHasChanges({ instructions: value });
               setSaveError(null);
             }}
-            placeholder={t("agentContextPlaceholder")}
             rows={10}
           />
           <div
@@ -169,24 +173,17 @@ export function AgentContextSettings() {
               marginTop: "var(--space-2)",
             }}
           >
-            <span className="settings-hint">
+            <span className={rowsStyles.hint}>
               {t("agentContextCharacters", {
                 current: instructions.length.toLocaleString(),
                 max: MAX_LENGTH.toLocaleString(),
               })}
             </span>
-            <Button
-              variant="primary"
-              type="submit"
-              disabled={!hasChanges || isSaving}
-            >
-              {isSaving ? t("providersSaving") : t("providersSave")}
-            </Button>
           </div>
         </SettingsItem>
 
         <HideInSettingsSearch>
-          <div className="settings-subsection-heading">
+          <div className={agentStyles.heading}>
             <strong>{t("agentContextSuggestedHintsTitle")}</strong>
             <p>{t("agentContextSuggestedHintsDescription")}</p>
           </div>
@@ -198,7 +195,7 @@ export function AgentContextSettings() {
           description={t("agentContextSuggestedLatexDescription")}
           layout="custom"
         >
-          <div className="settings-item-info">
+          <div className={rowsStyles.itemInfo} data-settings-info>
             <strong>{t("agentContextSuggestedLatexTitle")}</strong>
             <p>{t("agentContextSuggestedLatexDescription")}</p>
           </div>
@@ -217,34 +214,41 @@ export function AgentContextSettings() {
 
         <HideInSettingsSearch>
           <div
-            className="settings-item"
+            className={rowsStyles.item}
             style={{ flexDirection: "column", alignItems: "stretch" }}
           >
-            <div className="settings-item-info">
+            <div className={rowsStyles.itemInfo} data-settings-info>
               <strong>{t("agentContextSuggestedLatexPreviewTitle")}</strong>
               <p>{t("agentContextSuggestedLatexPreviewDescription")}</p>
             </div>
-            <pre className="settings-command-preview">
+            <pre className={commandStyles.preview}>
               {`[Client capabilities]\n${LATEX_MATH_RENDERING_CLIENT_CAPABILITY}`}
             </pre>
           </div>
 
           <details>
-            <summary className="settings-hint">
+            <summary className={rowsStyles.hint}>
               {t("agentContextPreviewSummary")}
             </summary>
-            <pre className="settings-command-preview">
+            <pre className={commandStyles.preview}>
               {effectiveAgentContext ?? t("agentContextPreviewEmpty")}
             </pre>
           </details>
         </HideInSettingsSearch>
       </div>
 
-      <HideInSettingsSearch>
-        {(saveError || error) && (
-          <p className="settings-warning">{saveError || error}</p>
-        )}
-      </HideInSettingsSearch>
+      <div className={rowsStyles.formActions}>
+        <Button
+          variant="primary"
+          type="submit"
+          disabled={!hasChanges || isSaving}
+        >
+          {isSaving ? t("providersSaving") : t("providersSave")}
+        </Button>
+      </div>
+      {(saveError || error) && (
+        <Banner tone="error">{saveError || error}</Banner>
+      )}
     </SettingsSection>
   );
 }

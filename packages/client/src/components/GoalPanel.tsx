@@ -8,7 +8,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
-import { Button, buttonClassName, IconButton } from "./ui/Button";
+import { Banner } from "./ui/Banner";
+import { Button, IconButton } from "./ui/Button";
 import { Field, Textarea } from "./ui/Field";
 import { LinkifiedText } from "./ui/LinkifiedText";
 import { CopyTextButton } from "./ui/CopyTextButton";
@@ -151,8 +152,8 @@ export function GoalPanel({
               text={objective}
               label={t("goalPanelCopy")}
               copiedLabel={t("goalPanelCopied")}
-              className={buttonClassName({ variant: "ghost", icon: true })}
-              copiedClassName={styles.copied}
+              variant="ghost"
+              size="default"
             />
             <IconButton
               ref={closeRef}
@@ -188,7 +189,11 @@ export function GoalPanel({
               )}
             </p>
           )}
-          {failed && <p role="alert">{t("goalPanelFailed")}</p>}
+          {failed && (
+            <Banner tone="error" compact>
+              {t("goalPanelFailed")}
+            </Banner>
+          )}
         </div>
         {onCommand && (
           <div className={styles.actions}>

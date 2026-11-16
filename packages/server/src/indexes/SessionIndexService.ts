@@ -2,15 +2,15 @@
  * SessionIndexService caches session summaries to avoid re-parsing session files.
  * Uses mtime/size for cache invalidation - only re-parses when files change.
  *
- * Production summaries live in SQLite. Existing JSON scopes are imported lazily.
+ * Summaries live in SQLite. Legacy `indexes/*.json` scopes are deleted, not
+ * imported: they are rebuildable from provider transcripts.
  *
  * Supports any provider whose reader implements ISessionReader. For providers
  * where session IDs can't be derived from filenames (e.g., Gemini), the reader
  * must implement the optional `listSessionFiles()` method.
  */
 
-import { createHash } from "node:crypto";
-import type { Stats } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -40,6 +40,7 @@ import {
 import type { ISessionIndexService, SessionIndexListOptions } from "./types.js";
 import type { SqliteDatabase } from "../storage/sqlite.js";
 import { SqliteSessionSummaryIndex } from "./SqliteSessionSummaryIndex.js";
+import { contextSummaryTitle } from "../sessions/injected-context-title.js";
 
 const LOG_CACHE_PERF = process.env.SESSION_INDEX_LOG_PERF === "true";
 const DEFAULT_SUMMARY_PARSE_CONCURRENCY = 1;
@@ -98,10 +99,6 @@ const STRUCTURALLY_COMPATIBLE_VERSIONS: ReadonlySet<number> = new Set([
 const CLAUDE_EMPTY_SUMMARY_REPAIR_VERSION = 5;
 const CLAUDE_LOCAL_COMMAND_CAVEAT_TITLE_PREFIX = "<local-command-caveat>";
 
-type PersistedSessionIndexState = Omit<SessionIndexState, "version"> & {
-  version: number;
-};
-
 function needsClaudeSummaryRefresh(
   summary: CachedSessionSummary,
   persistedVersion: number,
@@ -132,14 +129,58 @@ function needsClaudeSummaryRefresh(
   );
 }
 
-function migrateCachedForkLineage(summary: CachedSessionSummary): void {
+function migrateCachedForkLineage(summary: CachedSessionSummary): boolean {
   if (!summary.parentSessionId || summary.parentSessionKind) {
-    return;
+    return false;
   }
   // Provider summaries never owned the interactive `/btw` Mother link. Before
   // the lineage split, Codex `forked_from_id` was cached in parentSessionId.
+  // Returns whether the summary changed.
   summary.forkedFromSessionId ??= summary.parentSessionId;
   delete summary.parentSessionId;
+  return true;
+}
+
+const PROJECT_SCANNER_CACHE_FILE = "project-scanner-cache.json";
+
+/** A top-level `indexes/` name the pre-SQLite JSON writer could have used. */
+function isLegacyScopeFileName(name: string): boolean {
+  return name.endsWith(".json") && name !== PROJECT_SCANNER_CACHE_FILE;
+}
+
+/** `<scope>.json.tmp-<pid>-<time>-<random>` left by an interrupted write. */
+function isLegacyScopeTempFileName(name: string): boolean {
+  const marker = name.lastIndexOf(".json.tmp-");
+  return (
+    marker > 0 && isLegacyScopeFileName(name.slice(0, marker + ".json".length))
+  );
+}
+
+/** `<scope>.json.lock` directory left by a crashed writer. */
+function isLegacyScopeLockName(name: string): boolean {
+  return (
+    name.endsWith(".json.lock") &&
+    isLegacyScopeFileName(name.slice(0, -".lock".length))
+  );
+}
+
+function isLegacySummaryScope(content: Buffer): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content.toString("utf-8"));
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    return false;
+  const scope = parsed as Record<string, unknown>;
+  return (
+    typeof scope.version === "number" &&
+    typeof scope.projectId === "string" &&
+    typeof scope.sessions === "object" &&
+    scope.sessions !== null &&
+    !Array.isArray(scope.sessions)
+  );
 }
 
 interface SessionIndexLargestCacheMiss {
@@ -239,9 +280,12 @@ interface SummaryParseTask {
 }
 
 export interface SessionIndexServiceOptions {
-  /** Shared required server database. Standalone index fixtures may use legacy files. */
-  database?: SqliteDatabase;
-  /** Directory to store index files (defaults to ~/.yep-anywhere/indexes) */
+  /** Shared server database that holds the summary index. */
+  database: SqliteDatabase;
+  /**
+   * Index state directory (defaults to ~/.yep-anywhere/indexes). Holds the
+   * discovery shards; legacy JSON summary scopes found here are deleted.
+   */
   dataDir?: string;
   /** Claude projects directory (defaults to ~/.claude/projects) */
   projectsDir?: string;
@@ -254,10 +298,6 @@ export interface SessionIndexServiceOptions {
   fullValidationIntervalMs?: number;
   /** Optional event bus for watcher-driven invalidation. */
   eventBus?: EventBus;
-  /** Max time to wait for cross-process write lock (ms). */
-  writeLockTimeoutMs?: number;
-  /** Age at which lock directories are treated as stale and removed (ms). */
-  writeLockStaleMs?: number;
   /** Max concurrent summary parses across all session-index scopes. */
   summaryParseConcurrency?: number;
   /** Interval for active cold-index progress logs. */
@@ -268,7 +308,7 @@ export interface SessionIndexServiceOptions {
 
 /** Provider summary validation, durable selected-row reads, and bounded hot scopes. */
 export class SessionIndexService implements ISessionIndexService {
-  private readonly summaryStore?: SqliteSessionSummaryIndex;
+  private readonly summaryStore: SqliteSessionSummaryIndex;
   private dataDir: string;
   private projectsDir: string;
   /** Least recently used first; bounded by `maxCacheSize` scopes. */
@@ -279,8 +319,6 @@ export class SessionIndexService implements ISessionIndexService {
   private pendingSaves: Set<string> = new Set();
   private maxCacheSize: number;
   private fullValidationIntervalMs: number;
-  private writeLockTimeoutMs: number;
-  private writeLockStaleMs: number;
   private summaryParseConcurrency: number;
   private warmupProgressLogIntervalMs: number;
   private lastFullValidationAt: Map<string, number> = new Map();
@@ -292,7 +330,7 @@ export class SessionIndexService implements ISessionIndexService {
    */
   private dirtyRevisions: Map<string, number> = new Map();
   private lastDirtyRevision = 0;
-  /** Scopes with a persisted index file (loaded or written this run). */
+  /** Scopes with a persisted SQL index (loaded or written this run). */
   private persistedIndexScopes: Set<string> = new Set();
   /** In-flight background full validations, keyed by validation key. */
   private backgroundValidations: Map<string, Promise<void>> = new Map();
@@ -324,10 +362,11 @@ export class SessionIndexService implements ISessionIndexService {
   };
   private unsubscribeEventBus: (() => void) | null = null;
   private eventBus: EventBus | null = null;
+  /** One-time removal of legacy JSON summary scopes, started by initialize(). */
+  private legacyCleanup: Promise<void> | null = null;
 
-  constructor(options: SessionIndexServiceOptions = {}) {
-    if (options.database)
-      this.summaryStore = new SqliteSessionSummaryIndex(options.database);
+  constructor(options: SessionIndexServiceOptions) {
+    this.summaryStore = new SqliteSessionSummaryIndex(options.database);
     const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
     this.dataDir =
       options.dataDir ?? path.join(home, ".yep-anywhere", "indexes");
@@ -338,8 +377,6 @@ export class SessionIndexService implements ISessionIndexService {
       0,
       options.fullValidationIntervalMs ?? 0,
     );
-    this.writeLockTimeoutMs = Math.max(0, options.writeLockTimeoutMs ?? 2000);
-    this.writeLockStaleMs = Math.max(1000, options.writeLockStaleMs ?? 10000);
     this.summaryParseConcurrency = Math.max(
       1,
       Math.floor(
@@ -406,38 +443,71 @@ export class SessionIndexService implements ISessionIndexService {
   }
 
   /**
-   * Initialize the service by ensuring the data directory exists.
+   * Initialize the service by ensuring the data directory exists. Legacy
+   * JSON summary cleanup runs in the background and never blocks startup.
    */
   async initialize(): Promise<void> {
     await fs.mkdir(this.dataDir, { recursive: true });
+    this.legacyCleanup ??= this.removeLegacySummaryFiles().catch((error) => {
+      getLogger().warn(
+        { err: error },
+        "[SessionIndexService] Failed to remove legacy JSON summary files",
+      );
+    });
   }
 
   /**
-   * Get the index file path for a session directory.
-   * For paths inside projectsDir, encodes the relative path with %2F for slashes.
-   * For external paths (e.g., Gemini's ~/.gemini/tmp/), uses a hash-based name.
+   * Delete the JSON summary scopes and writer leftovers that predate SQLite.
+   *
+   * No import marker is needed: summaries are a cache rebuildable from
+   * provider transcripts, and the database is now required, so this JSON is
+   * never read again. The directory also holds live non-summary state (the
+   * project scanner cache, `git-untracked/`, `session-discovery/`, the file
+   * completion repository), so only top-level entries that are recognizably
+   * legacy summary scopes are removed.
    */
-  getIndexPath(sessionDir: string, reader?: ISessionReader): string {
-    const scopeKey = this.getScopeKey(sessionDir, reader);
-    if (scopeKey !== sessionDir || !path.isAbsolute(scopeKey)) {
-      const hash = createHash("sha256")
-        .update(scopeKey)
-        .digest("hex")
-        .slice(0, 16);
-      return path.join(this.dataDir, `ext-${hash}.json`);
+  private async removeLegacySummaryFiles(): Promise<void> {
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(this.dataDir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
     }
-
-    const relative = path.relative(this.projectsDir, scopeKey);
-    if (relative.startsWith("..")) {
-      // Path is outside projectsDir or a logical reader scope — hash it
-      const hash = createHash("sha256")
-        .update(scopeKey)
-        .digest("hex")
-        .slice(0, 16);
-      return path.join(this.dataDir, `ext-${hash}.json`);
+    let removedCount = 0;
+    let removedBytes = 0;
+    for (const entry of entries) {
+      const entryPath = path.join(this.dataDir, entry.name);
+      if (entry.isFile() && isLegacyScopeFileName(entry.name)) {
+        // One file at a time: some scopes are several megabytes.
+        let content: Buffer;
+        try {
+          content = await fs.readFile(entryPath);
+        } catch {
+          continue;
+        }
+        if (!isLegacySummaryScope(content)) continue;
+        await fs.rm(entryPath, { force: true });
+        removedCount += 1;
+        removedBytes += content.byteLength;
+      } else if (entry.isFile() && isLegacyScopeTempFileName(entry.name)) {
+        const size = await fs
+          .stat(entryPath)
+          .then((stats) => stats.size)
+          .catch(() => 0);
+        await fs.rm(entryPath, { force: true });
+        removedCount += 1;
+        removedBytes += size;
+      } else if (entry.isDirectory() && isLegacyScopeLockName(entry.name)) {
+        await fs.rm(entryPath, { recursive: true, force: true });
+        removedCount += 1;
+      }
     }
-    const encoded = relative.replace(/[/\\]/g, "%2F");
-    return path.join(this.dataDir, `${encoded}.json`);
+    if (removedCount > 0) {
+      getLogger().info(
+        `[SessionIndexService] Removed ${removedCount} legacy JSON summary entries (${removedBytes} bytes) from ${this.dataDir}`,
+      );
+    }
   }
 
   /**
@@ -455,7 +525,7 @@ export class SessionIndexService implements ISessionIndexService {
     const existing = this.indexLoadPromises.get(scopeKey);
     if (existing) return existing;
 
-    const loadPromise = this.loadIndexFromDisk(sessionDir, projectId, reader);
+    const loadPromise = this.loadPersistedIndex(sessionDir, projectId, reader);
     const trackedPromise = loadPromise.finally(() => {
       if (this.indexLoadPromises.get(scopeKey) === trackedPromise) {
         this.indexLoadPromises.delete(scopeKey);
@@ -465,101 +535,71 @@ export class SessionIndexService implements ISessionIndexService {
     return trackedPromise;
   }
 
-  private async loadIndexFromDisk(
-    sessionDir: string,
-    projectId: UrlProjectId,
-    reader?: ISessionReader,
-  ): Promise<SessionIndexState> {
-    const index = await this.loadPersistedIndex(sessionDir, projectId, reader);
-    this.summaryStore?.save(this.getScopeKey(sessionDir, reader), index);
-    return index;
-  }
-
+  /**
+   * Read a scope, storing it again only when it was repaired, upgraded or
+   * started fresh: rewriting an unchanged scope rereads and reserializes
+   * every row (gap item 4).
+   */
   private async loadPersistedIndex(
     sessionDir: string,
     projectId: UrlProjectId,
     reader?: ISessionReader,
   ): Promise<SessionIndexState> {
     const scopeKey = this.getScopeKey(sessionDir, reader);
-    const indexPath = this.getIndexPath(sessionDir, reader);
-    const cacheKey = scopeKey;
+    const cached = this.indexCache.get(scopeKey);
+    if (cached) return cached;
 
-    // Check memory cache first
-    const cached = this.indexCache.get(cacheKey);
-    if (cached) {
-      /*
-      logger.debug(
-        `[SessionIndexService] Memory cache hit for project (${Object.keys(cached.sessions).length} sessions)`,
-      );
-      */
-      return cached;
-    }
-    /*
-    logger.debug(
-      `[SessionIndexService] Memory cache miss, loading from disk: ${indexPath}`,
-    );
-    */
-
-    const stored = this.summaryStore?.read(scopeKey);
+    let loaded: { index: SessionIndexState; stored: boolean } | undefined;
     try {
-      const parsed =
-        stored ??
-        (JSON.parse(
-          await fs.readFile(indexPath, "utf-8"),
-        ) as PersistedSessionIndexState);
+      const parsed = this.summaryStore.read(scopeKey);
 
-      // Validate version and projectId
+      // A missing scope starts fresh: it is rebuilt from provider files.
       if (
+        parsed &&
         STRUCTURALLY_COMPATIBLE_VERSIONS.has(parsed.version) &&
         parsed.projectId === projectId
       ) {
-        const compatible: SessionIndexState = {
+        const index: SessionIndexState = {
           ...parsed,
           version: CURRENT_VERSION,
         };
+        loaded = { index, stored: parsed.version === CURRENT_VERSION };
         // Repair only the provider summaries known to violate the current
         // summary contract instead of rebuilding every provider's shared index.
-        for (const [sessionId, summary] of Object.entries(
-          compatible.sessions,
-        )) {
-          migrateCachedForkLineage(summary);
+        for (const [sessionId, summary] of Object.entries(index.sessions)) {
+          if (migrateCachedForkLineage(summary)) loaded.stored = false;
           if (needsClaudeSummaryRefresh(summary, parsed.version)) {
-            delete compatible.sessions[sessionId];
+            delete index.sessions[sessionId];
             this.markSessionDirtyByScopeKey(scopeKey, sessionId);
+            loaded.stored = false;
           }
         }
-        this.indexCache.set(cacheKey, compatible);
-        this.persistedIndexScopes.add(cacheKey);
-        this.evictIfNeeded();
-        return compatible;
       }
-
-      // Version mismatch or different project - start fresh
-      const fresh: SessionIndexState = {
-        version: CURRENT_VERSION,
-        projectId,
-        sessions: {},
-      };
-      this.indexCache.set(cacheKey, fresh);
-      this.evictIfNeeded();
-      return fresh;
     } catch (error) {
-      // File doesn't exist or is invalid - start fresh
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        getLogger().warn(
-          { err: error },
-          `[SessionIndexService] Failed to load index for ${scopeKey}, starting fresh`,
-        );
-      }
-      const fresh: SessionIndexState = {
-        version: CURRENT_VERSION,
-        projectId,
-        sessions: {},
-      };
-      this.indexCache.set(cacheKey, fresh);
-      this.evictIfNeeded();
-      return fresh;
+      loaded = undefined;
+      getLogger().warn(
+        { err: error },
+        `[SessionIndexService] Failed to load index for ${scopeKey}, starting fresh`,
+      );
     }
+    if (loaded) {
+      this.indexCache.set(scopeKey, loaded.index);
+      this.persistedIndexScopes.add(scopeKey);
+      this.evictIfNeeded();
+      if (!loaded.stored) this.summaryStore.save(scopeKey, loaded.index);
+      return loaded.index;
+    }
+
+    // Missing, invalid, version mismatch or different project - start fresh
+    const fresh: SessionIndexState = {
+      version: CURRENT_VERSION,
+      projectId,
+      sessions: {},
+    };
+    this.indexCache.set(scopeKey, fresh);
+    this.evictIfNeeded();
+    this.summaryStore.save(scopeKey, fresh);
+    return fresh;
   }
 
   /**
@@ -603,109 +643,18 @@ export class SessionIndexService implements ISessionIndexService {
     const index = this.indexCache.get(scopeKey);
     if (!index) return;
 
-    if (this.summaryStore) {
-      try {
-        if (sessionId !== undefined)
-          this.summaryStore.saveSummary(scopeKey, index, sessionId);
-        else this.summaryStore.save(scopeKey, index);
-        this.persistedIndexScopes.add(scopeKey);
-      } catch (error) {
-        getLogger().error(
-          { err: error },
-          `[SessionIndexService] Failed to save SQL index for ${scopeKey}`,
-        );
-        throw error;
-      }
-      return;
-    }
-
-    const indexPath = this.getIndexPath(sessionDir, reader);
-    const lockPath = `${indexPath}.lock`;
-    const tempPath = `${indexPath}.tmp-${process.pid}-${Date.now()}-${Math.random()
-      .toString(16)
-      .slice(2)}`;
-
     try {
-      // Ensure directory exists
-      await fs.mkdir(path.dirname(indexPath), { recursive: true });
-      await this.withWriteLock(lockPath, async () => {
-        const content = JSON.stringify(index, null, 2);
-        await fs.writeFile(tempPath, content, "utf-8");
-        await fs.rename(tempPath, indexPath);
-      });
+      if (sessionId !== undefined)
+        this.summaryStore.saveSummary(scopeKey, index, sessionId);
+      else this.summaryStore.save(scopeKey, index);
       this.persistedIndexScopes.add(scopeKey);
     } catch (error) {
-      await fs.unlink(tempPath).catch(() => {
-        // Best-effort cleanup for failed atomic writes.
-      });
       getLogger().error(
         { err: error },
-        `[SessionIndexService] Failed to save index for ${scopeKey}`,
+        `[SessionIndexService] Failed to save SQL index for ${scopeKey}`,
       );
       throw error;
     }
-  }
-
-  private async withWriteLock<T>(
-    lockPath: string,
-    callback: () => Promise<T>,
-  ): Promise<T> {
-    await this.acquireWriteLock(lockPath);
-    try {
-      return await callback();
-    } finally {
-      await fs.rm(lockPath, { recursive: true, force: true }).catch(() => {
-        // Best-effort lock cleanup.
-      });
-    }
-  }
-
-  private async acquireWriteLock(lockPath: string): Promise<void> {
-    const start = Date.now();
-    while (true) {
-      try {
-        await fs.mkdir(lockPath);
-        return;
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "EEXIST") {
-          throw error;
-        }
-
-        const stale = await this.isLockStale(lockPath);
-        if (stale) {
-          await fs.rm(lockPath, { recursive: true, force: true }).catch(() => {
-            // Best-effort stale lock cleanup.
-          });
-          continue;
-        }
-
-        if (Date.now() - start >= this.writeLockTimeoutMs) {
-          throw new Error(
-            `Timed out acquiring session index write lock: ${lockPath}`,
-          );
-        }
-
-        await this.sleep(25);
-      }
-    }
-  }
-
-  private async isLockStale(lockPath: string): Promise<boolean> {
-    try {
-      const stats = await fs.stat(lockPath);
-      return Date.now() - stats.mtimeMs > this.writeLockStaleMs;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
-        return false;
-      }
-      throw error;
-    }
-  }
-
-  private async sleep(ms: number): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private getScopedLoadKey(
@@ -895,8 +844,7 @@ export class SessionIndexService implements ISessionIndexService {
     return {
       id: sessionId,
       projectId,
-      title: cached.title,
-      fullTitle: cached.fullTitle,
+      ...contextSummaryTitle(cached),
       createdAt: cached.createdAt,
       updatedAt: cached.updatedAt,
       messageCount: cached.messageCount,
@@ -2142,7 +2090,7 @@ export class SessionIndexService implements ISessionIndexService {
         type: "session-updated",
         sessionId,
         projectId,
-        title: cached.title,
+        title: contextSummaryTitle(cached).title,
         messageCount: cached.messageCount,
         updatedAt: cached.updatedAt,
         contextUsage: cached.contextUsage,
@@ -2348,7 +2296,7 @@ export class SessionIndexService implements ISessionIndexService {
     options?: { acceptAppendedFile?: boolean },
   ): Promise<SessionSummary | null> {
     const scopeKey = this.getScopeKey(sessionDir, reader);
-    const stored = this.summaryStore?.get(
+    const stored = this.summaryStore.get(
       scopeKey,
       projectId,
       sessionId,
@@ -2451,6 +2399,6 @@ export class SessionIndexService implements ISessionIndexService {
     this.stopWarmupProgressTimer();
     this.unsubscribeEventBus?.();
     this.unsubscribeEventBus = null;
-    this.summaryStore?.dispose();
+    this.summaryStore.dispose();
   }
 }

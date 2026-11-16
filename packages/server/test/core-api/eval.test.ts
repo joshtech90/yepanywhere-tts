@@ -1,3 +1,4 @@
+import { apiCommand } from "../support/api-command-request.js";
 import { request } from "node:http";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
@@ -15,6 +16,7 @@ import {
   PROJECT_ID,
   OWN_SESSION_ID,
   type Answer,
+  type Trace,
 } from "../../../../scripts/agent-api-eval/cases.js";
 
 const empty: Answer = {
@@ -131,7 +133,10 @@ function read(
         socketPath: env.AGENT_YA_V0_SOCKET,
         method: body === undefined ? "GET" : "POST",
         headers: authenticated
-          ? { Authorization: env.AGENT_YA_V0_AUTHORIZATION }
+          ? {
+              Authorization: env.AGENT_YA_V0_AUTHORIZATION,
+              ...(body !== undefined ? apiCommand(body).headers : {}),
+            }
           : {},
       },
       (response) => {
@@ -145,7 +150,7 @@ function read(
       },
     );
     req.on("error", reject);
-    req.end(body === undefined ? undefined : JSON.stringify(body));
+    req.end(body === undefined ? undefined : apiCommand(body).body);
   });
 }
 
@@ -290,7 +295,7 @@ it.each([false, true])(
             requestId: "eval-create-1",
             projectId: PROJECT_ID,
             provider: "codex",
-            message: "Release review",
+            prompt: "Release review",
           })
         ).body,
       );
@@ -303,10 +308,11 @@ it.each([false, true])(
       await read(fixture.environment, path + "/conversation");
       const input = {
         requestId: "eval-message-1",
-        message: "Follow-up artifact",
+        type: "prompt",
+        text: "Follow-up artifact",
       };
       const sent = JSON.parse(
-        (await read(fixture.environment, path + "/messages", true, input)).body,
+        (await read(fixture.environment, path + "/inputs", true, input)).body,
       );
       await read(fixture.environment, path + "/relationships");
       await read(fixture.environment, path + "/conversation/follow?waitMs=0");
@@ -320,7 +326,7 @@ it.each([false, true])(
         grade("workflow", answer, fixture.trace, false, fixture.apiServerId),
       ).toBe(false);
       const repeated = JSON.parse(
-        (await read(fixture.environment, path + "/messages", true, input)).body,
+        (await read(fixture.environment, path + "/inputs", true, input)).body,
       );
       expect(repeated.id).toBe(sent.id);
       expect(
@@ -352,3 +358,295 @@ it.each([false, true])(
   },
   20_000,
 );
+
+it("discovers, creates and verifies a routed worker through the private HTTP adapter with focused docs", async () => {
+  const fixture = await createFixture("selection");
+  try {
+    const help = await read(fixture.environment, "/v0/help");
+    expect(help.status).toBe(200);
+    expect(help.body).toContain("/v0/schema?operation=createSession");
+    expect(help.body).toContain("| `selection` | GET |");
+    // The prior shipped help was 15,884 UTF-8 bytes (same bootstrap).
+    // Keep discovery below that observed baseline, including the new index.
+    expect(Buffer.byteLength(help.body)).toBeLessThan(15884);
+    const focused = await read(
+      fixture.environment,
+      "/v0/schema?operation=createSession",
+    );
+    const full = await read(fixture.environment, "/v0/schema");
+    expect(Buffer.byteLength(focused.body)).toBeLessThan(
+      Buffer.byteLength(full.body),
+    );
+    const schema = JSON.parse(focused.body);
+    expect(Object.keys(schema.paths)).toHaveLength(1);
+    const properties =
+      schema.paths["/v0/servers/{serverId}/sessions"].post.requestBody.content[
+        "application/json"
+      ].schema.properties;
+    expect(properties.routerPoolId).toBeDefined();
+    const root = "/v0/servers/self";
+    const choices = JSON.parse(
+      (await read(fixture.environment, `${root}/selection?provider=codex`))
+        .body,
+    );
+    expect(choices.accounts[0].models[0].serviceTiers[0].id).toBe("priority");
+    const created = JSON.parse(
+      (
+        await read(fixture.environment, `${root}/sessions`, true, {
+          requestId: "selection-eval-01",
+          projectId: PROJECT_ID,
+          provider: "codex",
+          prompt: "Review release",
+          routerPoolId: choices.pools[0].id,
+          model: choices.accounts[0].models[0].id,
+          thinking: "on:high",
+          serviceTier: "priority",
+          permissionMode: "plan",
+        })
+      ).body,
+    );
+    let receipt = JSON.parse(
+      (await read(fixture.environment, `${root}/receipts/${created.id}`)).body,
+    );
+    // Dispatch is asynchronous: identical-key/receipt observation never relaunches.
+    if (!receipt.sessionId)
+      receipt = JSON.parse(
+        (await read(fixture.environment, `${root}/receipts/${created.id}`))
+          .body,
+      );
+    const inspected = await read(
+      fixture.environment,
+      `${root}/sessions/${receipt.sessionId}`,
+    );
+    expect(inspected.status).toBe(200);
+    const answer = {
+      ...empty,
+      sessionId: "eval-worker-1",
+      supported: true,
+      answer: "release-model|high|priority|release-pool|release-account|plan",
+    };
+    expect(grade("selection", answer, fixture.trace)).toBe(true);
+    expect(
+      grade(
+        "selection",
+        answer,
+        fixture.trace.filter((entry) => !entry.inspection),
+      ),
+    ).toBe(false);
+    expect(
+      grade(
+        "selection",
+        answer,
+        fixture.trace.map((entry) =>
+          entry.inspection
+            ? {
+                ...entry,
+                inspection: {
+                  ...entry.inspection,
+                  settings: { ...entry.inspection.settings, effort: "low" },
+                },
+              }
+            : entry,
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      grade(
+        "operation",
+        { ...empty, answer: "createSession" },
+        fixture.trace.filter((entry) => entry.path !== "/v0/schema"),
+      ),
+    ).toBe(true);
+    expect(
+      grade("operation", { ...empty, answer: "createSession" }, fixture.trace),
+    ).toBe(false);
+  } finally {
+    await fixture.close();
+  }
+});
+
+it.each(["target_contract", "approval", "controls"] as const)(
+  "grades %s from protected peer effects and rejects unsupported claims",
+  // Windows ARM64 owned VM exhausted 5 s; 20 s retains 4x that observed floor.
+  { timeout: 20_000 },
+  async (caseId) => {
+    const fixture = await createFixture(caseId, true);
+    const root = `/v0/servers/${fixture.apiServerId}`;
+    const get = (path: string) => read(fixture.environment, root + path);
+    const post = (path: string, input: unknown) =>
+      read(fixture.environment, root + path, true, input);
+    let answer = { ...empty };
+    try {
+      await get("/help");
+      if (caseId === "target_contract") {
+        await get("/schema?operation=targetProbe");
+        expect((await get("/extension/probe?proof=wrong")).status).toBe(400);
+        const result = await get("/extension/probe?proof=target-shape-37");
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body).unfamiliarField).toEqual([
+          "retained",
+          37,
+        ]);
+        answer.answer = "target-artifact-6e2";
+        await fixture.peers!.source.store.mutate((state) => {
+          state.outgoing[0]!.operations = state.outgoing[0]!.operations.filter(
+            (op) => op !== "targetProbe",
+          );
+        });
+        expect(
+          (await get("/extension/probe?proof=target-shape-37")).status,
+        ).toBe(403);
+        await fixture.peers!.source.store.mutate((state) => {
+          state.outgoing[0]!.operations.push("targetProbe");
+        });
+        await fixture.peers!.target.store.mutate((state) => {
+          state.incoming[0]!.operations = state.incoming[0]!.operations.filter(
+            (op) => op !== "targetProbe",
+          );
+        });
+        expect(
+          (await get("/extension/probe?proof=target-shape-37")).status,
+        ).toBe(403);
+      } else if (caseId === "approval") {
+        await get("/sessions/approval-worker/requests");
+        const input = { requestId: "approve-fixture-001", response: "approve" };
+        const response = await post(
+          "/sessions/approval-worker/requests/permission-001/response",
+          input,
+        );
+        expect(response.status).toBe(202);
+        const receipt = JSON.parse(response.body);
+        expect(
+          JSON.parse(
+            (
+              await post(
+                "/sessions/approval-worker/requests/permission-001/response",
+                input,
+              )
+            ).body,
+          ).id,
+        ).toBe(receipt.id);
+        await get(`/receipts/${receipt.id}`);
+        expect(
+          (
+            await post(
+              "/sessions/approval-worker/requests/permission-001/response",
+              { ...input, requestId: "different-approval-001" },
+            )
+          ).status,
+        ).toBe(409);
+        await get("/sessions/approval-worker/conversation");
+        answer = {
+          ...answer,
+          sessionId: "approval-worker",
+          answer: "approved-artifact-4d8",
+        };
+      } else {
+        for (const [id, op] of [
+          ["interrupt-worker", "cancel"],
+          ["stop-worker", "stop"],
+        ]) {
+          const response = await post(`/sessions/${id}/${op}`, {
+            requestId: `${op}-fixture-001`,
+          });
+          expect(response.status).toBe(202);
+          await get(`/receipts/${JSON.parse(response.body).id}`);
+          await get(`/sessions/${id}`);
+        }
+        answer = {
+          ...answer,
+          sessionIds: ["interrupt-worker", "stop-worker"],
+          answer: "idle|terminated",
+        };
+      }
+      expect(
+        grade(caseId, answer, fixture.trace, false, fixture.apiServerId),
+      ).toBe(true);
+      expect(grade(caseId, answer, [], false, fixture.apiServerId)).toBe(false);
+      expect(
+        grade(
+          caseId,
+          answer,
+          fixture.trace.map((t) => ({
+            ...t,
+            receipt: undefined,
+            artifact: undefined,
+            sessionState: undefined,
+            pendingId: undefined,
+          })),
+          false,
+          fixture.apiServerId,
+        ),
+      ).toBe(false);
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+it("grades a request by what it asked for, however the agent spelled its URL", () => {
+  const root = `/v0/servers/${SERVER_ID}`;
+  const answer = { ...empty, answer: "target-artifact-6e2" };
+  const entry = (path: string, extra: Partial<Trace> = {}): Trace => ({
+    method: "GET",
+    path,
+    status: 200,
+    bytes: 1,
+    elapsedMs: 1,
+    atMs: 1,
+    ...extra,
+  });
+  const probe = { artifact: "target-artifact-6e2" };
+  const spelled = (help: string, schema: string, proof: string) => [
+    entry(help),
+    entry(schema),
+    entry(proof, probe),
+  ];
+  expect(
+    grade(
+      "target_contract",
+      answer,
+      spelled(
+        `${root}/help`,
+        `${root}/schema?operation=targetProbe`,
+        `${root}/extension/probe?proof=target-shape-37`,
+      ),
+    ),
+  ).toBe(true);
+  // A trailing slash, the self alias, percent-encoding, an empty trailing
+  // parameter separator and a reordered query all name the same requests.
+  expect(
+    grade(
+      "target_contract",
+      answer,
+      spelled(
+        "/v0/servers/self/help/",
+        `/v0/servers/${encodeURIComponent(SERVER_ID)}/schema?operation=targetProbe&`,
+        `${root}/extension/probe?proof=target%2Dshape%2D37`,
+      ),
+    ),
+  ).toBe(true);
+  // A different request is still a different request.
+  expect(
+    grade(
+      "target_contract",
+      answer,
+      spelled(
+        `${root}/help`,
+        `${root}/schema?operation=createSession`,
+        `${root}/extension/probe?proof=target-shape-37`,
+      ),
+    ),
+  ).toBe(false);
+  expect(
+    grade(
+      "target_contract",
+      answer,
+      spelled(
+        `${root}/help`,
+        `${root}/schema?operation=targetProbe`,
+        `${root}/extension/probe?proof=target-shape-38`,
+      ),
+    ),
+  ).toBe(false);
+});

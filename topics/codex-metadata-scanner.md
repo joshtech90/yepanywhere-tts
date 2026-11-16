@@ -78,11 +78,16 @@ index:
   hits/misses/suspect records, first-line reads by representation, and
   cache-backed compressed discovery. Normal scans log these metrics at debug;
   slow scans warn.
-- `ProjectScanner` keeps a short-lived project snapshot and coalesces
-  concurrent scans. Invalidation advances a change revision; a scan that
-  overlaps a newer file event may satisfy its original caller but cannot mark
-  that old result fresh. Snapshot-file writes are serialized, coalesce one
-  latest trailing result, and atomically replace the disposable cache file.
+- `ProjectScanner` uses profile-owned SQL project facts in production and
+  coalesces concurrent structural scans. Ordinary known Claude/Codex modifications
+  update only affected activity rows after indexed membership/version checks;
+  project points use identity lookups. Exact-root observation epochs certify
+  cache reuse; unobserved nonempty roots keep TTL discovery. Prior epoch evidence
+  survives invalidation, and proof capture precedes the reuse decision. Structural
+  or ambiguous changes retain native enumeration. Standalone consumers may still
+  opt into the serialized/coalesced JSON snapshot writer. The
+  [project owner contract](session-catalog-observation.md#retained-project-discovery-owner)
+  owns the bounds, registration checks and remaining fallback.
 - `SessionIndexService` persists normalized session summaries and avoids
   reparsing unchanged sessions, but full validation still enumerates files
   through the reader and stats discovered paths.
@@ -96,6 +101,53 @@ index now avoids rereading `session_meta` for observed known rollouts, including
 ordinary append/mtime/size changes. It does not change the underlying
 enumeration cost: discovering an uncached or invalidated Codex tree still walks
 provider-owned rollout files.
+
+Discovered-file and immutable-rollout lookup belong to the existing store-root
+cache, shared by project readers. A reader keeps its project selector and
+detail/parsed-transcript state, but no complete copies of the store's session
+or rollout-path maps. Lists return project-filtered views of the shared
+enumeration. Sharing native facts does not grant access: the existing scoped
+native/public identity and project checks remain at their owning boundaries.
+
+The lookup index retains one winning compact record per observed session and
+one locator per known active/archived rollout in that root cache's lifetime:
+O(sessions + rollouts) per source root, without a project-count multiplier.
+Validated competing files retain one compact candidate per path until the
+next authoritative replacement, which clears them; root invalidation releases
+the owner. This remains linear in known files, with no project multiplier.
+Proof and enumeration/version keys are weak; expired cutoff maps are not
+retained by the lookup index. Unknown ids do not create negative-cache entries.
+Cached lineage paths check plain/compressed representation precedence, and
+moved/missing locators are discarded before searching active and archived
+roots. All enumerated rollout paths are refreshed, including ancestors that
+are not the winning head of a logical session. Root invalidation
+replaces the owner and fences old asynchronous completions; closing one
+project reader does not erase state or finite work shared by siblings.
+
+Accepted exact-file observations join compatible enumeration scopes without
+certifying their completeness or freshness. They publish the validated file,
+never a different cached incumbent. Fresh enumeration records acquisition
+sequence; exact points record publication sequence. Weak per-file proofs
+retain newer positive evidence even when the winning path is unchanged or a
+validated fallback initially loses to the cached winner or is displaced later.
+Ordinary cache hits cannot refresh that proof. Watcher rereads use the same
+point publication boundary.
+
+Only a complete, unfiltered scan proves absence. It can retire missing heads
+and select older surviving files while preserving individually newer validated
+facts. The resulting enumeration and root lookups agree. Authoritative
+replacement advances read authority and drops older filtered/pending scopes;
+their callers retry rather than resurrecting deleted winners. Exact-file and
+child observations capture the owner/read version before asynchronous
+validation and publish only while it remains current. Root `ENOENT` proves
+absence; other root-stat failures propagate and preserve accepted facts.
+Path-read sequence fences prevent older enumeration from replacing newer exact
+path evidence. Native watcher epochs, archive lineage, filename/representation precedence
+and existing root-alias observation behavior are preserved.
+
+The [plan 190 ownership audit](../docs/research/190-cold-session-ownership.md#isolated-ownership-measurements)
+records the former per-reader mirrors and their attribution. Implementation
+qualification and before/after evidence are recorded with that plan.
 
 Cached Codex metadata is treated as suspect and reread when the file identity
 changes for the same representation, when a plain file shrinks below the

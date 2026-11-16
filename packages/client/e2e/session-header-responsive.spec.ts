@@ -6,6 +6,10 @@ import {
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import {
+  readCollectionsOverRest,
+  routeWithDrain,
+} from "./support/managed-routes.js";
 import { recordUiCapture } from "./support/ui-capture.js";
 
 test.use({ serviceWorkers: "block", hasTouch: true });
@@ -13,7 +17,7 @@ test.use({ serviceWorkers: "block", hasTouch: true });
 async function expectHeaderSizing(header: Locator, controlSize: number) {
   await expect.poll(async () => (await header.boundingBox())?.height).toBe(44);
   const controls = header.locator(
-    ".sidebar-toggle, .provider-badge-button, .session-menu-trigger",
+    "[data-sidebar-toggle], [data-provider-badge-button], [data-session-menu-trigger]",
   );
   const row = (await header.boundingBox())!;
   for (const control of await controls.all()) {
@@ -45,8 +49,12 @@ test("header preserves identity, overflow actions and rename typing during live 
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
     localStorage.setItem("yep-anywhere-project-code-names-enabled", "true");
+    // Response Streaming defaults off; the rename typing below runs against
+    // rendered streaming rows.
+    localStorage.setItem("yep-anywhere-streaming-enabled", "true");
   });
-  await page.route(/\/api\/projects(?:\?|$)/, async (route) => {
+  await readCollectionsOverRest(page);
+  await routeWithDrain(page, /\/api\/projects(?:\?|$)/, async (route) => {
     const response = await route.fetch();
     const body = await response.json();
     await route.fulfill({
@@ -60,21 +68,25 @@ test("header preserves identity, overflow actions and rename typing during live 
       },
     });
   });
-  await page.route(/\/api\/projects\/[^/?]+(?:\?|$)/, async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      json: {
-        ...body,
-        project: {
-          ...body.project,
-          name: "tomfit-content-service",
-          codeName: "tfc",
+  await routeWithDrain(
+    page,
+    /\/api\/projects\/[^/?]+(?:\?|$)/,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({
+        json: {
+          ...body,
+          project: {
+            ...body.project,
+            name: "tomfit-content-service",
+            codeName: "tfc",
+          },
         },
-      },
-    });
-  });
-  await page.route("**/api/settings", async (route) => {
+      });
+    },
+  );
+  await routeWithDrain(page, "**/api/settings", async (route) => {
     const response = await route.fetch();
     const body = await response.json();
     await route.fulfill({
@@ -219,14 +231,14 @@ test("header preserves identity, overflow actions and rename typing during live 
   });
   await page.setViewportSize({ width: 1000, height: 600 });
   await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
-  const header = page.locator("header.session-header");
+  const header = page.locator("header[data-session-header]");
   const menu = header.getByRole("button", {
     name: "Session options",
     exact: true,
   });
   await expect(header).toHaveAttribute("data-header-layout", "full");
-  await expect(header.locator(".project-breadcrumb")).toHaveText("tfc");
-  await expect(header.locator(".session-title-text")).toHaveText(title);
+  await expect(header.locator("[data-project-breadcrumb]")).toHaveText("tfc");
+  await expect(header.locator("[data-session-title-text]")).toHaveText(title);
   await expect(
     header.getByRole("button", {
       name: "1 issue or pull request associated with this session",
@@ -252,7 +264,9 @@ test("header preserves identity, overflow actions and rename typing during live 
   await page.setViewportSize({ width: 1000, height: 600 });
   await input.pressSequentially(desktopTitle);
   await input.press("Enter");
-  await expect(header.locator(".session-title-text")).toHaveText(desktopTitle);
+  await expect(header.locator("[data-session-title-text]")).toHaveText(
+    desktopTitle,
+  );
 
   // The same tier returns on widening; overflow never competes with the title.
   const projectLink = header.getByRole("link", {
@@ -274,7 +288,7 @@ test("header preserves identity, overflow actions and rename typing during live 
   });
   await expect(projectLink).toHaveText("tomfit-content-service");
   const titleFontSize = await header
-    .locator(".session-title")
+    .locator("[data-session-title]")
     .evaluate((element) => getComputedStyle(element).fontSize);
   for (const width of [320, 375, 599, 600, 601, 650, 720, 1000, 650, 375]) {
     await page.setViewportSize({ width, height: 812 });
@@ -285,13 +299,13 @@ test("header preserves identity, overflow actions and rename typing during live 
     await expect(menu).toBeInViewport();
     expect(
       await header
-        .locator(".session-title")
+        .locator("[data-session-title]")
         .evaluate((element) => getComputedStyle(element).fontSize),
     ).toBe(titleFontSize);
     await expect(projectLink).toBeInViewport();
     const projectBox = (await projectLink.boundingBox())!;
     const titleBox = (await header
-      .locator(".session-title-row")
+      .locator("[data-session-title-row]")
       .boundingBox())!;
     expect(projectBox.width).toBeGreaterThanOrEqual(50);
     expect(projectBox.x + projectBox.width).toBeLessThanOrEqual(titleBox.x);
@@ -306,8 +320,8 @@ test("header preserves identity, overflow actions and rename typing during live 
       (element) => element.scrollWidth > element.clientWidth,
     ),
   ).toBe(true);
-  await expect(header.locator(".provider-badge")).toHaveText("So 6.1H");
-  await expect(header.locator(".session-title-text")).toBeVisible();
+  await expect(header.locator("[data-provider-badge]")).toHaveText("So 6.1H");
+  await expect(header.locator("[data-session-title-text]")).toBeVisible();
   await expect(
     header.getByRole("button", {
       name: "1 issue or pull request associated with this session",
@@ -315,10 +329,10 @@ test("header preserves identity, overflow actions and rename typing during live 
   ).toHaveCount(0);
   const geometry = await header.evaluate((element) => {
     const title = element
-      .querySelector(".session-title-text")!
+      .querySelector("[data-session-title-text]")!
       .getBoundingClientRect();
     const menu = element
-      .querySelector(".session-menu-trigger")!
+      .querySelector("[data-session-menu-trigger]")!
       .getBoundingClientRect();
     return {
       titleWidth: title.width,
@@ -423,7 +437,9 @@ test("header preserves identity, overflow actions and rename typing during live 
   refuseSave = false;
   await input.press("Enter");
   await expect(dialog).toHaveCount(0);
-  await expect(header.locator(".session-title-text")).toHaveText("Retry title");
+  await expect(header.locator("[data-session-title-text]")).toHaveText(
+    "Retry title",
+  );
   // The shared dialog history entry lets Android Back cancel without a save.
   await menu.click();
   await page.getByRole("menuitem", { name: "Rename...", exact: true }).click();
@@ -441,7 +457,7 @@ test("header preserves identity, overflow actions and rename typing during live 
   await expect(
     page.getByRole("region", { name: "Issue search results" }),
   ).toBeVisible();
-  await expectHeaderSizing(page.locator("header.session-header"), 44);
+  await expectHeaderSizing(page.locator("header[data-session-header]"), 44);
   await expect(
     page.getByRole("menuitem", { name: "Rename...", exact: true }),
   ).toHaveCount(0);
@@ -457,12 +473,17 @@ test("header preserves identity, overflow actions and rename typing during live 
     await mousePage.goto(
       `${baseURL}/projects/${projectId}/sessions/${sessionId}`,
     );
-    const mouseHeader = mousePage.locator("header.session-header");
-    await expect(mouseHeader.locator(".session-menu-trigger")).toBeVisible();
+    const mouseHeader = mousePage.locator("header[data-session-header]");
+    await expect(
+      mouseHeader.locator("[data-session-menu-trigger]"),
+    ).toBeVisible();
     await expectHeaderSizing(mouseHeader, 36);
     await recordUiCapture(mousePage, "session-header-mouse-desktop");
     await mousePage.goto(`${baseURL}/projects`);
-    await expectHeaderSizing(mousePage.locator("header.session-header"), 36);
+    await expectHeaderSizing(
+      mousePage.locator("header[data-session-header]"),
+      36,
+    );
   } finally {
     await mousePage.close();
   }

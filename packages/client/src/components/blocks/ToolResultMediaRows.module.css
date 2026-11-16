@@ -36,11 +36,6 @@
   background: transparent;
 }
 
-button.filename {
-  color: var(--link-color);
-  cursor: pointer;
-}
-
 button.filename:hover,
 button.filename:focus-visible {
   text-decoration: underline;
@@ -74,17 +69,16 @@ button.filename:focus-visible {
   aspect-ratio: var(--tool-result-media-aspect-ratio);
   color: var(--text-muted, #888);
   border: 1px solid var(--border-color, #333);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--bg-code, #1e1e1e);
 }
 
-.loading,
-.error {
+.loading {
   padding: 12px;
 }
 
 .error {
-  color: var(--error-color, #f48771);
+  margin: 12px;
 }
 
 .imageButton {

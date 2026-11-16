@@ -106,11 +106,6 @@ describe("ToolApprovalPanel", () => {
       "Allow Bash wget --spider https://example.org?",
     );
     expect(root?.querySelector(`.${styles.option}`)).toBeTruthy();
-
-    const renderedClasses = Array.from(root?.querySelectorAll("[class]") ?? [])
-      .map((element) => element.className)
-      .join(" ");
-    expect(renderedClasses).not.toContain("tool-approval-");
   });
 
   it("keeps collapse and keyboard approval actions wired to the panel", async () => {
@@ -166,7 +161,6 @@ describe("ToolApprovalPanel", () => {
     const root = container.firstElementChild;
     const toggle = screen.getByRole("button", { name: "Expand approval" });
     expect(root?.querySelector(`.${styles.panel}`)).toBeNull();
-    expect(toggle.classList.contains(styles.hasPending!)).toBe(true);
     expect(
       toggle.querySelector("svg")?.classList.contains(styles.chevronUp!),
     ).toBe(true);

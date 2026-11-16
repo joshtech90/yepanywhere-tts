@@ -17,7 +17,7 @@ const sessionId = "explored-images-001";
 
 async function openExploredGroup(page: Page, baseURL: string) {
   await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (
     await skip
       .waitFor({ state: "visible", timeout: 750 })
@@ -26,9 +26,9 @@ async function openExploredGroup(page: Page, baseURL: string) {
   ) {
     await skip.click();
   }
-  const summary = page.locator(".conversation-activity-summary");
+  const summary = page.locator("[data-conversation-activity-summary]");
   if (await summary.count()) await summary.first().click();
-  await expect(page.locator(".explored-entry")).toHaveCount(2, {
+  await expect(page.locator("[data-explored-entry]")).toHaveCount(2, {
     timeout: 15000,
   });
 }
@@ -60,7 +60,7 @@ test("grouped image reads show thumbnails that open the viewer", async ({
   await recordUiCapture(page, "explored-image-strip-desktop");
 
   await thumbnails.first().click();
-  await expect(page.locator(".modal--image-viewer")).toHaveCount(1, {
+  await expect(page.locator("[data-modal-image-viewer]")).toHaveCount(1, {
     timeout: 10000,
   });
   await page.keyboard.press("Escape");

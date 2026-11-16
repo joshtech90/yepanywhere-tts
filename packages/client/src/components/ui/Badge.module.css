@@ -1,0 +1,102 @@
+.badge {
+  --badge-color: var(--text-secondary);
+  --badge-soft: var(--bg-hover);
+  --badge-on: var(--bg-surface);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--badge-soft);
+  /* Mixed toward the text color so small type stays above 4.5:1 on the
+     tint in every theme, keeping the tone's hue. */
+  color: color-mix(in srgb, var(--badge-color) 60%, var(--text-primary));
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-caption);
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.neutral {
+  --badge-color: var(--text-secondary);
+  --badge-soft: var(--bg-hover);
+  --badge-on: var(--bg-surface);
+}
+
+.info {
+  --badge-color: var(--link-color);
+  --badge-soft: color-mix(in srgb, var(--link-color) 14%, transparent);
+  --badge-on: var(--accent-contrast);
+}
+
+.success {
+  --badge-color: var(--success-color);
+  --badge-soft: var(--bg-success);
+  --badge-on: var(--accent-contrast);
+}
+
+.warning {
+  --badge-color: var(--warning-color);
+  --badge-soft: var(--bg-warning);
+  --badge-on: var(--accent-contrast);
+}
+
+.danger {
+  --badge-color: var(--error-color);
+  --badge-soft: var(--bg-error);
+  --badge-on: #fff;
+}
+
+.accent {
+  --badge-color: var(--app-yep-green);
+  --badge-soft: color-mix(in srgb, var(--app-yep-green) 16%, transparent);
+  --badge-on: #fff;
+}
+
+.solid {
+  background: var(--badge-color);
+  color: var(--badge-on);
+}
+
+/* White text needs a darker fill than the tone's own color. */
+.accent.solid,
+.danger.solid {
+  background: color-mix(in srgb, var(--badge-color) 78%, #000);
+}
+
+.small {
+  min-height: 15px;
+  padding: 0 4px;
+  font-size: var(--font-size-xs);
+}
+
+.count {
+  justify-content: center;
+  min-width: 18px;
+  border-radius: var(--radius-full);
+}
+
+.count.small {
+  min-width: 15px;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+
+.icon {
+  display: inline-flex;
+  font-size: 1em;
+  line-height: 1;
+}
+
+@media (forced-colors: active) {
+  .badge {
+    border: 1px solid CanvasText;
+  }
+}

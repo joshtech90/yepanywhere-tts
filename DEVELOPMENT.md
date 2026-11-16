@@ -91,6 +91,11 @@ catch-up paths, read `topics/architecture-mandates.md`. In particular, an idle
 provider session and a closed client tab must never indefinitely consume server
 resources.
 
+`pnpm lint` fails when a production source file gains a repeating, zero-delay
+or dropped-handle timer beyond `scripts/timer-ownership.json`. Give the timer
+an owner that stops it rather than adding an entry; see
+[timer ownership](topics/architecture-mandates.md#timer-ownership).
+
 ## Oversized Source Files
 
 Production source files over 1,500 lines are frozen at a recorded budget, and
@@ -180,12 +185,14 @@ are not a requirement to read every neighboring document.
 | When the task involves… | Read / required action |
 | --- | --- |
 | Source edits or OS-sensitive behavior | [Testing](docs/development/testing.md): required checks, Linux/macOS/Windows coverage, and platform limitations. |
+| Writing or reviewing source comments | [Code comments](topics/comments.md): retain intent and constraints; remove narration recoverable from nearby code. |
 | Adding, reviewing, removing, or accelerating tests at any level | [Test value and CI cost](docs/development/testing.md#test-value-and-ci-cost): retention by likely regression value, authority to remove shallow tests, and runtime in seconds. |
 | Choosing a test level, adding or changing browser tests, or deciding local E2E scope | [E2E testing](topics/e2e-testing.md): unique boundary, cost, retry evidence, and focused local verification. |
 | Source formatting, warning cleanup, or a commit | [Code quality](docs/development/code-quality.md): warning-free checks, exact-file formatting, no routine import/export reordering, and explicit re-exports (no `export *`). |
 | Authentication, named principals, project/session access grants, hosted issuer trust, or peer authorization | [Security](topics/security.md) and [principals and grants](topics/principals-and-grants.md): state how the proposed slice relates to the shared vocabulary before choosing a feature-local identity or authorization shape. |
+| A content security policy, iframe sandbox, cookie flag, or security response header; or replacing a custom modal, popover, tooltip or virtualized list with a browser primitive | [Deliberate departures from standard web practice](topics/web-practice-exceptions.md): the recorded need and compensating control for each loosening and declined recommendation. Add a row for any new departure. |
 | Any change in `packages/client`, UI copy, or a chatty client console | [Client development](docs/development/client.md): English-only i18n additions and `pnpm console:scan`. |
-| Client styles, a legacy stylesheet, or a React component emitting legacy global classes | [CSS architecture](topics/css-architecture.md): CSS Modules, containment, and the `css:touched` ownership check. Run `pnpm css:check` for style changes. |
+| Client styles, class names or DOM styling hooks | [CSS architecture](topics/css-architecture.md): CSS Modules, three global purposes, class-string/usage checks and counted exceptions. Run `pnpm css:check`, `pnpm css:classes` and `pnpm css:hooks` for style changes. |
 | UI appearance/interaction proposals or mockup authoring/export | [UI design](topics/ui-design.md), before choosing fixtures or rendering/export commands. Prose-only requests remain prose-only. |
 | UI tweaks or browser verification | [UI testing](topics/ui-testing.md): final desktop/phone captures by default, produced through the repository's artifact capture facility so the images are presented rather than only archived; browser fallback and explicit user-owned visual verification. |
 | A test timeout, or a CI-only test failure | [Test time budgets](topics/test-time-budgets.md): budgets come from measured runs at 2-4x the observed maximum, counting a limit a run timed out at; rewrite an assertion whose subject was never the clock. |
@@ -198,6 +205,7 @@ are not a requirement to read every neighboring document.
 | Codex provider schemas, scanner, normalization, app-server protocol, or target-version/API/protocol refreshes | [Provider development](docs/development/providers.md): inspect pinned upstream source; read-only audits may proceed, but enacting Codex compatibility edits requires user approval. |
 | Provider integration tests or refactors to scheduling, steering, tools, cancellation or native persistence | [Native provider testing](topics/native-provider-testing.md): prefer actual executables against scripted local model APIs, semantic action/assertion scenarios, and explicit qualification limits. |
 | Any provider refresh, transcript schema, or tool-result schema change | [Provider development](docs/development/providers.md) and the applicable [provider refresh](topics/provider-refresh.md) sections; preserve audited-through version markers and run schema validation. |
+| Planning provider-history acquisition, caches, indexes or a new history-derived consumer | [Provider history facts and queries](topics/provider-history-facts.md): use a tail read or the provider's existing index rather than another whole-history scanner or cache, and add the consumer to its inventory. |
 | SQLite adapter changes, SQL callers, statement lifetimes, or test ceilings | [Runtime-portable SQLite](topics/required-sqlite.md#runtime-portable-sqlite): use the shared runtime intersection, reuse prepared statements, and obtain maintainer consensus before widening the boundary. |
 | Dependencies, install scripts, lockfile updates, or audit findings | [Dependency maintenance](docs/development/dependencies.md): install-script allowlist and advisory justifications/revisit triggers. |
 | Creating/editing tactical plans or retiring completed plans/gaps | [Documentation and plans](docs/development/documentation.md): descriptive step names and durable-content migration before retirement. |

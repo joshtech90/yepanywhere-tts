@@ -1,8 +1,9 @@
 import { useCallback, useId, useRef, useState } from "react";
 import { useI18n } from "../i18n";
+import { Banner } from "./ui/Banner";
 import { Button } from "./ui/Button";
+import { Dialog } from "./ui/Dialog";
 import { TextInput } from "./ui/Field";
-import { Modal } from "./ui/Modal";
 import styles from "./SessionRenameEditor.module.css";
 
 interface SessionRenameEditorProps {
@@ -24,6 +25,7 @@ export function SessionRenameEditor({
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const inputId = useId();
+  const formId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const closing = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
@@ -55,10 +57,29 @@ export function SessionRenameEditor({
     }
   };
 
+  const dialog = presentation === "dialog";
+  const saveButton = (
+    <Button
+      type="submit"
+      form={formId}
+      variant="primary"
+      busy={saving}
+      disabled={!value.trim()}
+    >
+      {t("sessionRenameSave")}
+    </Button>
+  );
+  const cancelButton = (
+    <Button disabled={saving} onClick={cancel}>
+      {t("sessionRenameCancel")}
+    </Button>
+  );
+
   const form = (
     <form
       ref={formRef}
-      className={presentation === "dialog" ? styles.dialog : styles.inline}
+      id={formId}
+      className={dialog ? styles.dialog : styles.inline}
       onSubmit={(event) => {
         event.preventDefault();
         void save();
@@ -79,7 +100,7 @@ export function SessionRenameEditor({
         }}
         onBlur={(event) => {
           if (
-            presentation === "dialog" ||
+            dialog ||
             formRef.current?.contains(event.relatedTarget as Node | null)
           )
             return;
@@ -101,35 +122,36 @@ export function SessionRenameEditor({
           }
         }}
       />
-      <div className={styles.actions}>
-        <Button
-          type="submit"
-          variant="primary"
-          disabled={saving || !value.trim()}
-        >
-          {t("sessionRenameSave")}
-        </Button>
-        <Button disabled={saving} onClick={cancel}>
-          {t("sessionRenameCancel")}
-        </Button>
-      </div>
+      {!dialog && (
+        <div className={styles.actions}>
+          {saveButton}
+          {cancelButton}
+        </div>
+      )}
       {failed && (
-        <p className={styles.error} role="alert">
+        <Banner tone="error" compact className={styles.failure}>
           {t("sessionRenameFailed")}
-        </p>
+        </Banner>
       )}
     </form>
   );
 
-  return presentation === "dialog" ? (
-    <Modal
+  return dialog ? (
+    <Dialog
       title={t("sessionRenameDialogTitle")}
+      size="small"
       onClose={cancel}
       initialFocusRef={inputRef}
       closeOnBackGesture
+      footer={
+        <>
+          {cancelButton}
+          {saveButton}
+        </>
+      }
     >
       {form}
-    </Modal>
+    </Dialog>
   ) : (
     form
   );

@@ -1,3 +1,4 @@
+import { createCliInstallationRoutes } from "./cli-installations.js";
 /**
  * Server settings API routes
  */
@@ -191,6 +192,10 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
   const app = new Hono<{
     Variables: Record<typeof PRINCIPAL_VARIABLE, Principal>;
   }>();
+  app.route(
+    "/cli-installations",
+    createCliInstallationRoutes(deps.serverSettingsService),
+  );
   let settingsUpdateTail: Promise<void> = Promise.resolve();
   const serializeSettingsUpdate = <T>(
     operation: () => Promise<T>,
@@ -732,16 +737,20 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
         } else if (typeof body.allowedHosts === "string") {
           updates.allowedHosts = body.allowedHosts;
         }
+        const requestHost = c.req.header("host");
         const refusal = refuseUnconfirmedImpact(
           c,
           allowedHostsChangeImpact(
             getRequestConnectionPath(c),
             c.req.header("origin"),
-            { host: isAllowedHost, origin: isAllowedOrigin },
+            {
+              host: isAllowedHost,
+              origin: (origin) => isAllowedOrigin(origin, requestHost),
+            },
             {
               host: (host) => wouldAllowHost(host, updates.allowedHosts),
               origin: (origin) =>
-                wouldAllowOrigin(origin, updates.allowedHosts),
+                wouldAllowOrigin(origin, requestHost, updates.allowedHosts),
             },
           ),
         );

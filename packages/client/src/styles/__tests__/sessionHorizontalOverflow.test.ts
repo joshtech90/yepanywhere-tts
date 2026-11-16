@@ -3,12 +3,18 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
-const sessionStylesheetUrl = new URL("../index.css", import.meta.url);
+const sessionStylesheetUrl = new URL(
+  "../../pages/SessionPage.module.css",
+  import.meta.url,
+);
 const galleryStylesheetUrl = new URL(
   "../../components/TurnImageGallery.module.css",
   import.meta.url,
 );
-const rendererStylesheetUrl = new URL("../renderers.css", import.meta.url);
+const rendererStylesheetUrl = new URL(
+  "../../components/renderers/CodeOutput.module.css",
+  import.meta.url,
+);
 const sessionPageStylesheetUrl = new URL(
   "../../pages/SessionPage.module.css",
   import.meta.url,
@@ -31,14 +37,12 @@ describe("session horizontal overflow contract", () => {
       /\.session-split\.session-split-with-aside\s*>\s*\.session-messages\s*\{[^}]*overflow-x:\s*auto\s*;/s,
     );
     expect(sessionPageCss).toMatch(
-      /\.sessionSplit:global\(\.session-split\)\s*\{[^}]*min-width:\s*0\s*;[^}]*grid-template:[^;]*\/\s*minmax\(0,\s*1fr\)\s*;/s,
+      /\.sessionSplit\.session-split\s*\{[^}]*min-width:\s*0\s*;[^}]*grid-template:[^;]*\/\s*minmax\(0,\s*1fr\)\s*;/s,
     );
     expect(sessionPageCss).toMatch(/\.messages\s*\{[^}]*min-width:\s*0\s*;/s);
     expect(galleryCss).toMatch(
       /\.rows\s*\{[^}]*overflow:\s*auto\s+hidden\s*;/s,
     );
-    expect(rendererCss).toMatch(
-      /\.code-block\s*\{[^}]*overflow-x:\s*auto\s*;/s,
-    );
+    expect(rendererCss).toMatch(/\.codeBlock\s*\{[^}]*overflow-x:\s*auto\s*;/s);
   });
 });

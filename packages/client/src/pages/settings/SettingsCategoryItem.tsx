@@ -1,4 +1,6 @@
-import { ButtonBase } from "../../components/ui/Button";
+import categoryStyles from "./SettingsCategoryItem.module.css";
+import { SelectableCard } from "../../components/ui/SelectableCard";
+
 import { SettingsCategoryIcon } from "./SettingsCategoryIcons";
 import { renderSettingsSearchHighlight } from "./SettingsSearchContext";
 import type { SettingsCategory } from "./types";
@@ -18,18 +20,20 @@ export function SettingsCategoryItem({
   highlightQuery,
 }: SettingsCategoryItemProps) {
   return (
-    <ButtonBase
-      className={`settings-category-item ${isActive ? "active" : ""}`}
+    <SelectableCard
+      size="compact"
+      className={categoryStyles.item}
+      aria-current={isActive ? "page" : undefined}
       onClick={onClick}
     >
-      <SettingsCategoryIcon id={category.id} />
-      <div className="settings-category-text">
-        <span className="settings-category-label">
+      <SettingsCategoryIcon id={category.id} active={isActive} />
+      <div className={categoryStyles.text}>
+        <span className={categoryStyles.label} data-settings-category-label>
           {highlightQuery
             ? renderSettingsSearchHighlight(category.label, highlightQuery)
             : category.label}
         </span>
-        <span className="settings-category-description">
+        <span className={categoryStyles.description}>
           {highlightQuery
             ? renderSettingsSearchHighlight(
                 category.description,
@@ -38,7 +42,9 @@ export function SettingsCategoryItem({
             : category.description}
         </span>
       </div>
-      <span className="settings-category-chevron">›</span>
-    </ButtonBase>
+      <span className={categoryStyles.chevron} data-settings-category-chevron>
+        ›
+      </span>
+    </SelectableCard>
   );
 }

@@ -1,17 +1,103 @@
 import { Hono } from "hono";
 import { expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   EMPTY_LIMITED_USER_GRANTS,
+  nativeSessionRef,
+  parseNativeSessionId,
+  parseYaSessionId,
   toUrlProjectId,
 } from "@yep-anywhere/shared";
 import type { SessionCatalogRow } from "../../src/sessions/catalog-types.js";
 import {
   type Principal,
   PRINCIPAL_VARIABLE,
+  SUPERUSER,
 } from "../../src/auth/principal.js";
+import {
+  closeTestDiscoveryDatabases,
+  openTestDiscoveryDatabase,
+} from "../utils/session-metadata-database.js";
+import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { productionApiSources } from "../../src/core-api/production-sources.js";
 import { CoreApi } from "../../src/core-api/service.js";
 import { createV0Routes } from "../../src/routes/v0/index.js";
+
+it("keeps shared native store locations out of collection summaries", async () => {
+  const projectId = toUrlProjectId("/work/visible");
+  const locations: SessionCatalogRow["location"][] = [
+    { kind: "database", path: "/native/opencode.db", recordId: "ses_native" },
+    { kind: "provider", recordId: "provider-handle" },
+  ];
+  const rows: SessionCatalogRow[] = locations.map((location, index) => ({
+    sessionId: `session-${index}`,
+    projectId,
+    projectPath: "/work/visible",
+    projectIdentityKey: projectId,
+    catalogFamily: "opencode",
+    provider: "opencode",
+    storeKey: "fixture",
+    sourceVersion: "fixture",
+    fidelity: "head",
+    updatedAt: "2026-11-14T00:00:00Z",
+    location,
+  }));
+  const sources = productionApiSources({
+    scanner: {
+      readRetainedProjects: async () => ({
+        projects: [],
+        complete: true,
+        refreshing: false,
+      }),
+    },
+    sessions: {
+      read: async () => ({
+        rows,
+        catalog: {
+          catalogEpoch: "fixture",
+          catalogGeneration: 1,
+          complete: true,
+          refreshing: false,
+        },
+      }),
+    },
+    providers: () => [],
+    hiddenProjects: async () => new Set(),
+  });
+  const app = new Hono<{ Variables: { yaPrincipal: Principal } }>();
+  app.use("*", async (c, next) => {
+    c.set(PRINCIPAL_VARIABLE, SUPERUSER);
+    await next();
+  });
+  app.route("/v0", createV0Routes(new CoreApi("A", sources)));
+  expect(
+    JSON.stringify(await (await app.request("/v0/servers/A/sessions")).json()),
+  ).not.toContain("/native/");
+  expect(
+    (await (await app.request("/v0/servers/A/sessions/session-0")).json())
+      .backingStore,
+  ).toMatchObject({
+    serverId: "A",
+    kind: "database",
+    path: "/native/opencode.db",
+    recordId: "ses_native",
+    format: "sqlite",
+    shared: true,
+    history: "unknown",
+  });
+  expect(
+    (await (await app.request("/v0/servers/A/sessions/session-1")).json())
+      .backingStore,
+  ).toMatchObject({
+    serverId: "A",
+    kind: "provider",
+    path: null,
+    recordId: "provider-handle",
+    format: null,
+  });
+});
 
 it("rejects native cross-project collisions before session-wide metadata can hide them", async () => {
   const visible = toUrlProjectId("/work/visible"),
@@ -102,4 +188,147 @@ it("rejects native cross-project collisions before session-wide metadata can hid
   expect((await app.request("/v0/servers/A/sessions/same-id")).status).toBe(
     404,
   );
+});
+
+it("keeps a session under the YA id its creator holds once only its native transcript remains", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ya-v0-identity-"));
+  try {
+    const database = openTestDiscoveryDatabase(dir);
+    const metadata = new SessionMetadataService({ dataDir: dir, database });
+    await metadata.initialize();
+    const projectId = toUrlProjectId("/work/visible");
+    const publicId = parseYaSessionId("11111111-1111-4111-8111-111111111111");
+    // Codex names its own thread; YA binds that thread to the id it issued.
+    const thread = "019a1d69-0bed-73b0-9c88-2720d31c25c8";
+    database.transaction(() => {
+      metadata.identities.allocateWithinTransaction({
+        sessionId: publicId,
+        provider: "codex",
+        projectId,
+        createdAt: "2026-11-13T00:00:00.000Z",
+      });
+      metadata.identities.bindWithinTransaction(
+        publicId,
+        nativeSessionRef("codex", "/store", parseNativeSessionId(thread)),
+      );
+    });
+    const row: SessionCatalogRow = {
+      sessionId: thread,
+      projectId,
+      projectPath: "/work/visible",
+      projectIdentityKey: projectId,
+      title: "Finished work",
+      updatedAt: "2026-11-13T00:00:00Z",
+      catalogFamily: "codex",
+      storeKey: "/store",
+      nativeStorageScope: "/store",
+      sourceVersion: "fixture",
+      fidelity: "head",
+      location: { kind: "file", path: `/store/rollout-${thread}.jsonl` },
+    };
+    let nativeRows = [row];
+    let running = true;
+    const sources = productionApiSources({
+      scanner: {
+        readRetainedProjects: async () => ({
+          projects: [],
+          complete: true,
+          refreshing: false,
+        }),
+      },
+      sessions: {
+        read: async () => ({
+          rows: nativeRows,
+          catalog: {
+            catalogEpoch: "fixture",
+            catalogGeneration: 1,
+            complete: true,
+            refreshing: false,
+          },
+        }),
+      },
+      metadata,
+      sessionState: () => (running ? "idle" : "not-running"),
+      // While its process lives, the owner lists the session by its YA id.
+      ownedSessions: () =>
+        running
+          ? [
+              {
+                id: publicId,
+                projectId,
+                provider: "codex",
+                title: "Finished work",
+                updatedAt: "",
+                state: "idle",
+              },
+            ]
+          : [],
+      providers: () => [],
+      hiddenProjects: async () => new Set(),
+    });
+    const app = new Hono<{ Variables: { yaPrincipal: Principal } }>();
+    app.use("*", async (c, next) => {
+      c.set(PRINCIPAL_VARIABLE, SUPERUSER);
+      await next();
+    });
+    app.route("/v0", createV0Routes(new CoreApi("A", sources)));
+    for (const state of ["idle", "not-running"]) {
+      running = state === "idle";
+      const listed = await (await app.request("/v0/servers/A/sessions")).json();
+      // One session, one id: never a second row under the native thread id.
+      expect(
+        listed.items.map((item: { id: string; state: string }) => [
+          item.id,
+          item.state,
+        ]),
+      ).toEqual([[publicId, state]]);
+      const detail = await app.request(`/v0/servers/A/sessions/${publicId}`);
+      expect(detail.status).toBe(200);
+      expect((await detail.json()).backingStore).toMatchObject({
+        serverId: "A",
+        kind: "file",
+        format: "jsonl",
+        nativeSessionId: thread,
+        path: `/store/rollout-${thread}.jsonl`,
+        history: "unknown",
+      });
+      expect(
+        (await app.request(`/v0/servers/A/sessions/${thread}`)).status,
+      ).toBe(404);
+    }
+    const healthy = { ...row, sessionId: "healthy-import" };
+    nativeRows = [
+      {
+        ...row,
+        projectId: toUrlProjectId("/work/conflicting"),
+        projectPath: "/work/conflicting",
+      },
+      healthy,
+    ];
+    const partial = await app.request("/v0/servers/A/sessions");
+    expect(partial.status).toBe(200);
+    const partialBody = await partial.json();
+    expect(partialBody.items.map((item: { id: string }) => item.id)).toEqual([
+      healthy.sessionId,
+    ]);
+    expect(partialBody.catalog.complete).toBe(false);
+    const unavailable = await app.request(`/v0/servers/A/sessions/${publicId}`);
+    expect(unavailable.status).toBe(503);
+    expect((await unavailable.json()).error.code).toBe("catalog_not_ready");
+    running = true;
+    const owned = await app.request(`/v0/servers/A/sessions/${publicId}`);
+    expect(owned.status).toBe(200);
+    expect((await owned.json()).projectId).toBe(projectId);
+    running = false;
+    expect(
+      (await app.request(`/v0/servers/A/sessions/${healthy.sessionId}`)).status,
+    ).toBe(200);
+    nativeRows = [row, healthy];
+    expect(
+      (await app.request(`/v0/servers/A/sessions/${publicId}`)).status,
+    ).toBe(200);
+  } finally {
+    closeTestDiscoveryDatabases();
+    await rm(dir, { recursive: true });
+  }
 });

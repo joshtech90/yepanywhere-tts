@@ -21,6 +21,9 @@ See also:
 - [`inbox.md`](inbox.md)
 - [`architecture-mandates.md`](architecture-mandates.md)
 - [`server-cache-publication.md`](server-cache-publication.md)
+- [`provider-history-facts.md`](provider-history-facts.md) — proposed common
+  source-fact/query architecture; catalog observation remains the discovery and
+  freshness owner rather than becoming a transcript payload index.
 
 ## Retained Global Sessions and Inbox
 
@@ -32,6 +35,16 @@ time-dependent tiers are computed from these rows plus current metadata,
 ownership, recap, and notification overlays. Recaps may advance display order
 but do not make provider content unread. Counts describe the accepted catalog,
 so they may change when reconciliation discovers additional sessions.
+
+Retained lists and Inbox share one lifecycle-owned SQL working index per
+`RetainedSessionCollections`; see [collection query ownership](session-collection-queries.md).
+Catalog deltas, keyed metadata/creation/seen changes and the finite live-process
+set update it. SQL applies grants, filters and page/tier limits before decoding
+response rows. Grouped counters serve unread and population statistics. This
+removes the former 20 ms full-projection walk cache. Canonical metadata and native catalog reads now use bounded parsed working
+sets; complete callers materialize their own results. The catalog owner retains
+a generation descriptor and at most 256 point rows / 8 MiB estimated payload,
+not a parsed corpus.
 
 Both summary modes admit a row by the same query rules: the archived, starred,
 project, and cursor filters, and a `q` matched against title, custom title,
@@ -47,8 +60,18 @@ Each response includes `catalogEpoch`, `catalogGeneration`, `complete`, and
 it does not mean every optional field is fresh. Generation 0 has no accepted
 enumeration. Its empty result cannot delete rows a client already holds.
 Saved rows remain visible while a replacement is built or a provider fails.
+Public identity projection can independently make a response incomplete when
+native rows conflict with stored session ownership. Healthy rows remain
+available, while existing `refreshError` supplies a generic warning; completeness
+recovers when those rows are repaired or removed. This does not mutate native
+enumeration facts or silently move sessions to a discovered project.
 An empty first-ever catalog keeps the existing loading state until refresh
 settles; a failed refresh exposes its error alongside any saved rows.
+A whole discovery that finds no native session store publishes no generation.
+Once it settles in the running server, that empty generation-0 catalog reports
+`complete: true`, so a missing session is a definite absence rather than a
+permanent `catalog_not_ready`. After a restart it is incomplete again until
+the first discovery settles.
 
 `RetainedSessionCollections` owns one finite refresh shared by both routes and
 all callers. The first read loads durable state and queues reconciliation after
@@ -131,6 +154,151 @@ These are work-count and lifecycle evidence, not browser latency measurements.
 Viewport prioritization, cross-tab persistence, conditional catalog deltas, and
 other collection consumers remain part of the broader architecture below.
 
+## Authoritative session and Inbox query updates
+
+`collection-query-updates` selects `GET /api/activity/collections?queries=...`.
+A mounted source owns one NDJSON response for up to eight bounded queries:
+retained `/sessions` first windows (up to 500 rows, including project/star/category
+filters) and `/inbox` (five tiers, each at most 20). Complete prompt search and
+coverage beyond 500 rows remain ordinary reads. Live pagination enlarges the
+authoritative first window, including sessions with equal timestamps. Queries cannot name arbitrary routes,
+additional parameters, duplicate parameters or external origins. This is a new
+capability, not an extension of `retained-session-collections`.
+
+The first message for each query is a replacement (`base: null`). Later messages
+carry an exact predecessor revision, changed complete rows, removed row ids,
+and changed authoritative ordered memberships and metadata/counts. Omitted
+fields inside a changed row remain omitted; unchanged rows are not resent.
+Client normalization preserves higher-fidelity facts under its existing rules.
+No client infers server query membership from a process status or timestamp.
+Lost, duplicated, stale or malformed deltas cannot silently advance the view:
+reacquisition starts with a fresh bounded replacement. Server restart requires
+no replay log or population-sized browser catch-up.
+
+A shared view is keyed by the resolved principal/grants, an opaque fingerprint
+of the request authentication headers/private login context, and canonical query.
+Different credentials do not share authentication or a retained response.
+It uses the existing filtered collection routes, original authentication headers
+and private request environment. A peer viewer's read cannot borrow a departed
+viewer's request credentials. The limited-user stream route authorizes only
+this delegation; the nested canonical routes continue resolving identity and
+filtering grants before limits/counts. Other activity REST inventory remains
+operator-only. No new principal, grant or bearer credential is introduced.
+
+The profile owns at most 64 active views and 32 MiB accepted snapshot JSON, with
+at most 2 MiB per view and 32 streams. It subscribes to the existing bus only
+while a view is retained. One shared wake coalesces events; events during a read
+survive into one trailing acquisition. Independent viewers share the same read.
+An indexed SQL deadline includes eligible rows outside the displayed Inbox
+frontier, so an aging hidden row can enter a later tier without client polling.
+Automatic archive boundaries use the existing UTC-midnight cutoff and the same
+scheduler. A project-filtered page includes all accessible projects in its
+statistics deadline, matching the global statistics it returns. Deadline work exists only
+while a relevant view exists; no recurring empty-corpus timer is added.
+
+Slow streams retain at most one pending frame per query and 2 MiB queued wire
+text. Replacing queued deltas produces a replacement frame; a stream over its
+budget closes instead of accumulating history. A slow writer cannot block the
+shared acquisition or healthy peers. Query errors retain the existing client
+REST/event fallback; cleanup aborts queued/in-flight work, releases listeners
+and accepted views, and fences late completion.
+
+Collection NDJSON is an explicitly streamed response over encrypted WebSocket
+and relay transports. Cancelling its body or disconnecting the logical client
+releases its views, including when acquisition finishes after cancellation.
+An unsupported tunnel refuses the request before creating a producer. The
+client requires both the existing collection capability and a transport able to
+stream responses; plain multiplex WebSocket and native bridges with only finite
+response lifetimes retain REST/event ownership. Older supported stable servers
+(v0.8.0 through v0.11.0, including latest two v0.11.0/v0.10.2) lack the
+collection capabilities and receive no collection subscription request.
+
+View capacity is checked before opening a successful response: a full owner
+answers 429, a retired owner 503, without a partial acquisition or stack trace.
+Failure backoff belongs to the source and survives fallback REST reads and
+query-set changes (250 ms initially, doubling to at most five seconds). A valid
+replacement for every subscribed query resets it; visibility/reconnect may
+explicitly reacquire. Headers or partial initial query coverage cannot reset
+failure backoff or repeatedly defer the REST fallback.
+Quiet collections have no file-transfer inactivity deadline. Connection health
+and explicit cancellation still own their lifetime; ordinary file responses
+retain their bounded progress deadline.
+
+Client stream ownership is source/query scoped and ref-counted. Identical
+consumers and their retained controller share publication. A pushed result
+invalidates older HTTP admission and cancels pending whole-query revalidation.
+A live query suppresses activity-triggered list refetch. Explicit REST refresh
+pauses the pushed query until that read is accepted, then reopens with fresh
+canonical SQL. Live pagination grows the shared first window directly rather
+than alternating cursor pages and streamed replacements. Shared coverage widens
+to retained rows; beyond 500 rows the existing complete-pagination lifecycle
+remains in use. Source changes,
+pagehide and final unmount retire the old subscription; visibility/reconnect
+reacquire a replacement. No browser transcript persistence is added.
+
+### Project and ProjectQueue query extension
+
+`project-collection-updates` separately selects retained `/projects` and global
+`/project-queue` interests on the same stream. It does not extend the meaning of
+`collection-query-updates`; clients with only that older contract continue
+sending session/Inbox queries only. Canonical routes retain authentication,
+principal/grant filtering and underlying route availability. Project stream
+reads never ask for complete discovery. Neither stream adds launch authority.
+
+Project rows, queue items, recovered patient rows and scheduler-status records
+carry group-qualified identities. Queue statuses reconstruct their canonical
+project-keyed map, including authoritative removal and omitted optional fields.
+Session responses keep project choices as metadata under their original wire
+contract. Empty and incomplete project collections retain the existing client
+store semantics; a complete empty collection clears membership.
+
+The existing bounds apply to all groups together: at most 500 project rows, or
+500 total queue/item/recovery/status rows. Oversized canonical responses fail
+stream acquisition; an accepted REST response over the bound disables that
+interest, preserving the complete existing consumer rather than truncating it.
+This bounds streamed working state and wire updates. Canonical retained project
+materialization and native SQL project aggregation can still visit the eligible
+population; sharing/diffing these reads does not make that underlying work
+proportional to a changed session.
+
+Project interests acquire on accepted project publications and live overlays
+(counts, captions, code names and queue changes), not raw transcript-file events.
+Queue interests acquire on their own changes and relevant catalog/metadata/live
+scheduler inputs. Identical authorized viewers share each acquisition. While
+queue interest exists, the shared server wake honors future `nextAttemptAt` and
+`quietEligibleAt` and retains the prior five-second missed-event guard only for
+`ready`/`dispatching` states. A past waiting deadline is attempted once and cannot
+create a recurring empty timer. Final interest release cancels its wake.
+
+A live queue stream retires the browser deadline/backstop contribution; stream
+failure restores legacy revalidation/backstop while reconnect reacquires a fresh
+replacement. Explicit reads and queue mutations pause pushed admission through
+the accepted canonical snapshot and then reopen. Mutation failures also release
+that hold. A REST-only query without retained stream interest cannot pause or
+restart unrelated supported interests. Source changes cannot publish into the
+replacement source.
+
+The stable review corpus remains v0.8.0/v0.8.1 and the 60-day core releases
+v0.9.0, v0.9.1, v0.9.2, v0.10.0, v0.10.1, v0.10.2, v0.11.0; latest two are
+v0.11.0/v0.10.2. All lack the new extension and keep REST/events/queue backstop,
+with no project query sent. Capability 157 starts in 0.12.0 and is withdrawn
+without the collection event owner. Its fallback shares the recorded 2027-02-09
+sunset; no supported fallback or existing capability contract is removed here.
+
+### Collection-update compatibility review — 2026-11-11
+
+The current supported v0.8.0 baseline through v0.11.0 lacks this endpoint. The
+60-day core review corpus is v0.9.0, v0.9.1, v0.9.2, v0.10.0, v0.10.1,
+v0.10.2 and v0.11.0; v0.11.0/v0.10.2 are the latest two. The broader standing
+baseline also includes v0.8.0/v0.8.1. All retain existing collection behavior.
+The plan 190 capability/full-reload rollout and maintainer's instruction to
+proceed authorize this additive contract. Unknown, absent or denied support
+issues no stream request and keeps existing retained/complete REST plus event
+revalidation. Availability is withdrawn when the app has no event owner.
+Fixed capability/fallback retirement is registered for 2027-02-09; no existing
+capability meaning, hosted floor, authentication or transport format changes.
+Projects, Project Queue and transcript/render delivery remain separate followups.
+
 ## Retained recent visits
 
 Servers advertising `retained-recents` accept `summaryMode=retained` on
@@ -174,15 +342,37 @@ These indexes are memory-only; hiding still preserves native files and sessions.
 Servers advertising `retained-projects` accept `summaryMode=retained` on
 `GET /api/projects`. `ProjectScanner.readRetainedProjects` returns the last
 accepted collection without awaiting a transcript scan or current sandbox
-counts. The scanner reuses its existing persisted snapshot across restarts,
-including an expired snapshot, only for the same provider roots, enabled
-providers, metadata store and workstream store. A retained disk read cannot
-certify a later complete read as fresh. Hidden projects are filtered and current
+counts. Production retains accepted native discovery in profile SQLite, one compact
+row per project, scoped to native roots, enabled providers and metadata store.
+The scanner keeps its existing project-sized read projection. Standalone
+consumers may still opt into the legacy snapshot file. Retained restoration
+cannot certify a complete read before native startup reconciliation. Hidden projects are filtered and current
 display names and ownership overlay saved rows. With no saved enumeration,
 registered projects seed an incomplete collection. Once discovery has run, its
 membership takes precedence over registrations, so a deleted registered
-directory cannot reappear from metadata. Newly registered directories join on
-the next refresh without adding request-time filesystem probes.
+directory cannot reappear from metadata. Metadata membership mutations/reload
+advance a local discovery revision. Complete reads validate registered-only
+directory existence in bounded batches; point reads check only the requested
+registration. Native points neither walk nor copy unrelated registrations.
+
+`ProjectDiscoveryFacts` owns ordinary known Claude/Codex file modifications:
+indexed catalog location/version evidence, bounded native metadata and stable
+file identity qualify an update to the affected project activity only. Native
+counts/path choices remain those established by discovery. Claude activity is
+directory mtime; Codex activity is rollout activity. Missing/ambiguous membership,
+creation/deletion/replacement/truncation, changed cwd and path elections retain
+complete discovery. See [implementation and evidence](../docs/research/190-project-discovery-facts.md).
+
+Complete-read freshness requires uninterrupted exact-root observer epochs
+captured before enumeration. Capture precedes the cache-reuse decision; prior
+epoch evidence survives structural invalidation, so a new watcher cannot certify
+an earlier native inventory. Unwatched nonempty roots keep the old TTL fallback;
+empty/absent roots use negative evidence rechecked at that TTL. No new timer is
+introduced. A batch owns at most 1,024 pending paths, processes at most 256 per
+transaction, finalizes statements after each operation and fences late publication
+on invalidation/disposal. Production no longer writes the legacy project JSON
+cache. Structural fallback and other-provider native SQL aggregates can still
+visit the population.
 
 Server creation starts retained snapshot restoration and one finite discovery
 refresh before any client request. A saved snapshot can serve readers while
@@ -192,7 +382,12 @@ Accepted complete reads and retained reads share the scanner's snapshot and
 persistence owner. Failed refreshes preserve it, expose the error and impose a
 five-second admission backoff. A later read or event can retry; there is no
 periodic scan timer. Refresh completion emits `projects-changed` with
-`collectionRefresh: true`. Limited users receive this completion signal even
+`collectionRefresh: true`, naming only the projects whose facts changed since
+the scanner last announced (added, removed, or any field changed); a refresh
+that changed none still announces itself, with no ids. A catalog publication
+that changes the native project view announces the same way, and not at all
+when no project changed. Project pages refetch only when named; project lists
+refetch on every announcement. Limited users receive this completion signal even
 when no affected project is accessible, with an empty project-id list; they
 never receive catalog error details. Disposal
 cancels queued work, drains active retained work and prevents its publication.
@@ -457,12 +652,22 @@ a process-wide transcript store.
 
 Use a disk/RAM hierarchy:
 
-- YA app-data storage holds the durable compact catalog, shard metadata,
-  generation lineage, and cold rows needed after restart;
+- YA app-data storage holds the durable compact catalog: the
+  `session_catalog` tables of `discovery.sqlite`
+  ([plan 189](../docs/tactical/189-session-catalog-in-sqlite.md) step 3),
+  with the epoch, generation and tombstone horizon in `catalog_state` and
+  store coverage in `catalog_sources`. A publication diffs the scanned rows
+  against the published ones by row hash and writes only changed rows and
+  tombstones, in one transaction that advances the generation; a scan that
+  changes nothing writes nothing and advances nothing. A row's key is
+  `(family, store, native id)`, so a session whose project changed is
+  updated in place, never deleted and re-added. The `session-catalog/`
+  files earlier versions wrote are imported once, keeping their epoch and
+  generation, and then deleted;
 - RAM holds the current generation's parsed rows (exactly one generation,
-  replaced at publication by the rows it wrote; about the size of the row
-  JSON, and two generations while one is being built), bounded hot project
-  rows,
+  loaded from the tables at startup and replaced at publication by the rows
+  it wrote; about the size of the row JSON, and two generations while one
+  is being built), each project's rows grouped on first project read,
   query memberships/counts, current indexes, in-flight work, and live/interest
   state under byte and age budgets;
 - bounded head/tail projections may be retained with the exact provider source
@@ -588,28 +793,31 @@ that name/mtime inventory as a reason to parse unchanged cold transcripts.
 Every durable catalog lineage has a random `catalogEpoch` and a monotonic
 `catalogGeneration`. Resetting/rebuilding incompatible catalog state changes
 the epoch; restart over valid persisted state preserves it. Durable state is a
-cache and must never keep the server from starting: state that cannot be read
-or that no longer matches the current shard layout ends its lineage at a fresh
-epoch and generation 0, and reconciliation refills it. This includes a shard
-the current manifest names but that is missing or holds an unparseable row,
-whenever a read finds it: the read answers from generation 0 instead of
-failing, and a reconciliation still based on the abandoned generation fails
-rather than publishing over the reset. A process that holds a generation's
-parsed rows (because it published them or has read them whole once) serves
-reads from memory, so damage to that generation's files is not reported
-there. The next publication rewrites every shard and so heals it; if a damaged
-shard changed, that publication's delta becomes a replacement
-(`deltaBaseUnreadable`) rather than failing. Each accepted row,
-membership, count, and delta identifies the catalog generation and provider
-source version from which it was derived.
+cache and must never keep the server from starting: a missing `catalog_state`
+starts a lineage at a fresh epoch and generation 0, and so does a stored row
+that can no longer be reassembled, or legacy catalog files proven damaged;
+reconciliation refills it. Reads are served from memory, so nothing after
+startup ends a lineage. A failed publication writes nothing, leaves the
+published generation and memory unchanged, and is retried by the next
+refresh. Each accepted row, membership and count identifies the catalog
+generation from which it was derived.
 
-The global generation is one component of a vector, not the whole clock. Each
-shard carries a digest of its rows plus the generation in which that digest
-last changed, so a caller holding a shard's generation is unaffected by writes
-landing in other shards. Publication compares digests: an unchanged shard keeps
-its generation, is never re-read to compute a delta, and lets its retained rows
-survive into the new generation. Split the clock further — per projection kind
-— only when measurement shows the shard component is too coarse.
+The generation advances only when a row or the store coverage changed. Each
+changed row carries the generation it changed in (`changed_gen`) and a
+removed row stays as a tombstone with its generation, so "changes since
+generation N" is one indexed query. Tombstones older than 10,000
+generations are purged in steps, and `tombstone_horizon` names the oldest
+generation from which every deletion is still known; a reader further behind
+reads in full.
+
+Server consumers follow publications through that log rather than walking
+every row (plan 189 step 4): `readChanges(since)` returns the live rows written
+and the keys removed after a reader's token, or every row (`full`) without a
+token, for another epoch, behind the tombstone horizon, or behind a generation
+stored whole over tables that had moved. Change readers keep their token in
+memory, so each starts a process with one full read. The issue indexer, the
+project view and speech-vocabulary learning read this way; the project view
+folds only the projects its changed rows touch.
 
 Unfiltered, starred, project/search, Inbox, queue-title, hover, and stats
 projections read one accepted generation plus ordered overlay deltas. A client
@@ -619,13 +827,13 @@ never replaces the last complete accepted generation, and a response cannot
 mix an absence from a newer incomplete shard into an otherwise older complete
 snapshot.
 
-Retain only a byte/time-bounded delta window. A client generation outside that
-window receives a compact replacement snapshot; the server does not preserve
-an unbounded event history merely to satisfy a very old browser cache. An
-unrelated row change may advance the global generation without changing a
-given query membership, in which case conditional reconciliation advances the
-token with no replacement rows — and where that query maps to one shard, its
-shard generation answers no-change without consulting the delta window at all.
+Clients do not ask conditionally yet (plan 189 step 8). When they do, a
+client generation behind the tombstone horizon, or from another epoch,
+receives a compact replacement snapshot; the server does not preserve an
+unbounded history merely to satisfy a very old browser cache. An unrelated
+row change may advance the global generation without changing a given query
+membership, in which case conditional reconciliation advances the token with
+no replacement rows.
 
 ### The session-collection generation is a different clock
 
@@ -846,8 +1054,8 @@ relocated session visibly grouped under its former project.
 - Moving an active session from project A to B updates its sidebar project
   immediately, and a later lifecycle event carrying launch project A cannot
   move it back.
-- A write to one project leaves every other shard's generation, retained rows,
-  and delta comparison untouched.
+- A scan that changes nothing advances no generation and writes no row; one
+  changed session writes one row (`SessionCatalogService.test.ts`).
 - A `q` naming a word only the initial prompt carries returns that session in
   retained mode, and the retained and complete modes return the same rows for
   one query.
@@ -855,15 +1063,16 @@ relocated session visibly grouped under its former project.
   per-project reader would, grouped by canonical host path, without the store
   being walked once per project.
 - A row whose provider directory name encodes a path is still keyed by the
-  decoded canonical path, so two families in one project land in one shard.
+  decoded canonical path, so two families in one project land in one project.
 - A recent-mode pass skips a stale entry before reading it, and a later
   complete pass over the same store still produces that entry.
-- Unreadable or layout-incompatible durable catalog state starts a new epoch
-  and still serves requests, rather than failing initialization.
-- A missing or corrupt shard in the current generation starts a new epoch on
-  the read that finds it, and that reset itself schedules a full
-  reconciliation that rebuilds the catalog; no session file change or restart
-  is needed to trigger it.
+- Stored rows that cannot be reassembled, or damaged legacy catalog files,
+  start a new epoch and still serve requests, rather than failing
+  initialization; the first ordinary read rebuilds by full discovery.
+- The legacy `session-catalog/` generation is imported with its epoch and
+  generation and the folder deleted only once the tables hold that
+  generation or a later one, or the files are proven damaged; any other read
+  error keeps it and fails the start, to be retried.
 - Loss/eviction of browser persistence changes only cold-fetch cost, not visible
   correctness or the ability to reconnect.
 
@@ -871,14 +1080,42 @@ relocated session visibly grouped under its former project.
 ## Accepted session point lookups
 
 Collection consumers may restore one project's accepted catalog rows without
-starting reconciliation, summary enrichment or native history loading. The
-existing source-versioned project-shard owner coalesces concurrent reads and
-retains unchanged shard content across generations. Point lookups neither adopt
-identities nor reset an unreadable generation into provider discovery. A bad
-shard leaves the title unknown; normal collection reconciliation owns recovery. A known public identity requires its exact family, original scope
+starting reconciliation, summary enrichment or native history loading. They
+read the published generation's rows from memory, grouped by project once per
+generation. Point lookups neither adopt identities nor start provider
+discovery; a row absent from the published generation leaves the title
+unknown, and normal collection reconciliation owns recovery. A known public identity requires its exact family, original scope
 and native ID, and validates any working-project assignment. Unbound legacy
 lookups require unique project/provider membership and honor pending native
 allocation quarantine; same-string rows in other stores cannot stand in for a
 known binding. Missing or ambiguous facts remain unknown, not authority to
 invoke another reader. Project Queue uses this path for target and named
 blocker titles, preserving custom-title precedence and nullable unknown titles.
+
+## SQL catalog ownership and partial publication
+
+SQLite owns accepted native rows, live row counts and provider store coverage.
+Startup reads the generation descriptor/coverage without decoding all native
+rows. Point, changed-file and project reads use indexed SQL predicates. Explicit
+complete reads remain available to discovery and consumers requiring a full
+replacement; they do not expand the retained parsed cache.
+
+A scoped publication distinguishes a complete scan of named stores from a delta
+with explicit removed native keys. Unnamed stores and their coverage survive.
+Only changed rows/deletions advance a generation, in one transaction with the
+row count. A failed scan/write keeps the prior generation. Existing source
+version guards reject stale optional enrichment. New Claude files may join a
+store only when its direct-file rows agree on one canonical project; ambiguous,
+empty or unrecognized stores conservatively rediscover. Unknown Codex/Gemini
+files retain discovery until their membership can be established safely.
+
+Known changed files do not read/yield unchanged native rows. The optional Codex
+question pass inspects changed rows; unarchiving explicitly reconsiders that
+session. Initial discovery inspects unresolved Codex rows. Creation confirmation
+and internally observed activity use native-ID lookups rather than full reads.
+Native project views hydrate SQL aggregates and retain only project-sized
+results. Aggregation still visits eligible native rows in SQL; it is not a
+constant-cost per-project rollup guarantee.
+
+Accepted source precedence is family/store order with stable SQL insertion order
+within a store. This remains stable on restart, including duplicate aliases.

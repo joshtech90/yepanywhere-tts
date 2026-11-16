@@ -8,6 +8,11 @@
 
 Topic: required-sqlite (commits before 2026-11-09 used `optional-sqlite`)
 
+[Provider history](provider-history-facts.md) inventories history readers and
+the homes for facts derived from history. The adapter and storage rules stay
+here; rebuildable facts live in the
+[cache database](#rebuildable-cache-database) rather than `discovery.sqlite`.
+
 Verified: 2026-10-11
 
 See also: [YA environment variables](ya-env-vars.md) for `YEP_DATA_DIR`.
@@ -15,7 +20,8 @@ See also: [YA environment variables](ya-env-vars.md) for `YEP_DATA_DIR`.
 ## Startup policy
 
 The server opens `{dataDir}/discovery.sqlite` once at startup, before any
-service that stores state in it. If it cannot, the server logs one actionable
+service that stores state in it, and the
+[rebuildable cache database](#rebuildable-cache-database) beside it. If it cannot, the server logs one actionable
 `[Startup]` line and exits with a non-zero status. Every failure is fatal:
 
 - the runtime has no SQLite builtin;
@@ -234,10 +240,42 @@ It performs no network access or transcript acquisition; rows fill only when
 viewed with the relevant feature enabled.
 
 Version 25 adds provider session-summary scopes and per-session summary rows.
-These cross-session indexes share the required database. Legacy JSON scopes
-import on demand, preserving their files for rollback; migration initialization
-creates only the tables. Indexed selected-session reads do not load the scope's
-other summaries. See [session index validation](session-index-validation.md).
+These cross-session indexes share the required database. Indexed
+selected-session reads do not load the scope's other summaries. See
+[session index validation](session-index-validation.md). Version 30 rebuilds
+the summary rows as a rowid table with the uncapped `fullTitle` in its own
+last column (`full_title`, NULL for a null title) and the rest of the summary
+as JSON. A title holding a lone surrogate or a NUL stays in the JSON, because
+a text column would replace the surrogate and node:sqlite cuts text at a NUL.
+Rows that are not JSON objects, or whose scope is gone, are not carried
+over; the cache rebuilds them from transcripts. Version 31 gives
+[session metadata](#session-metadata) its queried columns. Version 32 adds
+canonical session seen rows/import markers and guarded partial indexes for
+metadata feature/recovery queries.
+
+Version 35 adds rebuildable Claude transcript source headers, compact source
+facts, visible row positions, orphan tool facts and leased staging manifests.
+It performs no provider reads or backfill at migration/startup. Source payload
+remains in the native file; profile-owned detail acquisition populates the index.
+See [Claude acquisition](claude.md#transcript-acquisition-and-retention) and
+[the implementation evidence](../docs/research/190-claude-durable-index.md).
+
+Version 38 drops the version 35 and 36 tables: the Claude transcript index
+moved to the [rebuildable cache database](#rebuildable-cache-database). The
+freed pages stay in the file for reuse; the migration does not vacuum.
+
+Version 39 drops `agent_api_receipts`: v0 API receipts are now held in server
+memory for the life of the process
+([HTTP v0](http-api-v0.md#creation-and-retry-receipts)). Creator relationships
+recorded from those receipts stay in the relationship tables, and
+`agent_api_session_aliases` stays because historical alias rows are still read.
+
+Version 36 adds rebuildable Claude node/tool ownership, source-offset lookup,
+pending queues and a semantic task-reducer checkpoint. The profile-owned writer
+updates affected rows and its source header in one transaction; ordinary appends
+no longer restore the complete source graph. Old checkpoints bootstrap these
+facts lazily on a changed read, with no migration-time transcript reads/backfill.
+See [SQL writer ownership/evidence](../docs/research/190-claude-sql-writer.md).
 
 One statically registered, consecutive migration sequence owns `user_version`.
 Historical SQL lives in frozen named modules; released migrations are append-only.
@@ -251,7 +289,10 @@ conversion's backup must be a consistent SQLite backup, not a live file copy.
 
 Pending migrations and version advancement run in one immediate transaction.
 Foreign keys are enabled and lock waits are bounded to 250 ms, including the
-migration lock. The default rollback journal remains unchanged. Even a no-op
+migration lock. Cache spill is off, so a transaction larger than the page
+cache also fails within that bound while an outside reader holds a shared
+lock, instead of waiting out the timeout once per spill for as long as the
+reader stays. The default rollback journal remains unchanged. Even a no-op
 startup takes the immediate lock; concurrent mixed-version profile use is not
 supported. Lock contention at startup refuses to start, without data loss.
 
@@ -267,6 +308,44 @@ restoring a consistent pre-upgrade backup.
 
 Other JSON metadata/caches and OpenCode's independently owned database and
 reader are unaffected.
+
+## Rebuildable cache database
+
+`{dataDir}/cache.sqlite` holds only facts that can be recomputed from provider
+history. It opens at startup beside `discovery.sqlite`, with the same lock
+wait and cache-spill settings, and closes with it. The Claude transcript
+index is its first tenant; new history-derived facts belong here rather than
+in `discovery.sqlite` ([provider history](provider-history-facts.md#where-derived-facts-live)).
+
+Deleting the file while the server is stopped is always safe. Each session's
+facts are rebuilt the next time that session is read; nothing is rebuilt at
+startup.
+
+Its schema is a list of steps in `packages/server/src/storage/cache-sqlite.ts`,
+separate from the discovery migrations and not frozen:
+
+- A plain step alters a database at the previous version and keeps its rows.
+- A rebuild step carries the complete schema. A database older than it is
+  deleted and starts again empty.
+
+Each schema change picks one. Keep rows when the rebuild they save is worth
+the alter statement; rebuild when the tables change shape. Steps before the
+latest rebuild can never run again and may be deleted.
+
+The file is replaced by an empty one, with one `[CacheSqlite]` log line naming
+the reason, when it is foreign, malformed, written by a newer build, older
+than the latest rebuild step, or when a plain step fails. A newer build's
+cache therefore never blocks starting an older build, unlike
+`discovery.sqlite`. A locked file is not replaced, because another process is
+using it; startup fails as it does for a locked discovery database, and it
+also fails when the replacement cannot be created.
+
+One schema version covers the whole file, so a rebuild step discards every
+tenant's facts. Give a tenant its own version or file when that cost becomes
+real.
+
+Durable state never goes in this file: anything a user chose or that cannot
+be recomputed stays in `discovery.sqlite`.
 
 Relay and push broker moved off `better-sqlite3` to this adapter on 2026-09-10,
 so the repository ships no native SQLite addon and needs no compiler on any
@@ -295,6 +374,39 @@ Migration 10 adds `session_metadata`, one row per session keyed by session id,
 holding that session's metadata object as JSON, and `session_metadata_import`,
 a single row recording that the legacy file was handled.
 
+Migration 31 rebuilds `session_metadata` as a rowid table with a unique
+`session_id`. Queried keys are columns: `provider`, `working_project_id`,
+`is_archived` and `is_starred` (0/1), `custom_title`, `sidebar_category`,
+`parent_session_id`, `parent_session_kind`, `forked_from_session_id`,
+`executor`, `sandbox_level`, and `initial_prompt` last. Everything else stays
+JSON in `extra`.
+
+- **Columns hold only what they store exactly.** A key moves to its column
+  only when its value has the column's type (a string; `true`/`false` for the
+  0/1 columns) and, for text, holds no lone surrogate or NUL, which SQLite
+  would replace or node:sqlite would cut. Otherwise it stays in `extra`, and a
+  key present in `extra` wins over its column on read. Rows that are not JSON
+  objects are carried over in `extra` unchanged. Lazy initialization does not
+  decode unrelated rows; invalid JSON still fails when read.
+  `metadata/session-metadata-rows.ts` is the runtime codec; the migration
+  freezes its own key list.
+- **Same values.** Reading reassembles each object with equal values; only
+  top-level key order changes (column keys come after `extra`'s), which no
+  reader observes. Encoding is deterministic, so a loaded object compares equal
+  to its row and is not rewritten. The exception is a string holding a
+  literal backslash before `ud8…` or `u0000`: the migration's GLOB matches it
+  and keeps it in `extra`, while the codec would give it its column, so the
+  first save of that session writes the row once. This profile has none.
+- **Point queries.** Recorded providers, the `claude-ollama` check and
+  `project-write` sandbox sessions are indexed queries (partial indexes on
+  `provider` and `sandbox_level = 'project-write'`; each query repeats the
+  indexed condition); the debug counts scan the narrow columns. The partial
+  index on `working_project_id` is for plan 189 step 7's project pages.
+  Sessions with uncommitted changes are excluded from the SQL and answered from
+  memory, so a pending or failed save never makes an answer stale. SQL readers
+  of a column fall back to `extra` (`coalesce(column, json_extract(extra, …))`)
+  so a value kept there reads as before.
+
 - **One-time import.** On first start after the upgrade, YA imports
   `{dataDir}/session-metadata.json` in one transaction and records the import.
   Pre-version-3 lineage fields are converted on the way in. A missing file
@@ -312,16 +424,58 @@ a single row recording that the legacy file was handled.
   for retry. Saves are synchronous, so requests arriving during a drain
   coalesce. Callers change metadata through service methods, not by mutating
   returned projections.
-- **Cold reads remain open work.** Initialization still parses and retains all
-  metadata objects. Point comparisons reduce save work and duplicate retention,
-  but do not make startup or whole-corpus projection consumers lazy.
+- **Bounded cold reads.** Ordinary startup reads only import state and indexed
+  interrupted-display owners. Clean objects and absent results share a
+  256-entry / 8 MiB estimated string-payload LRU. Dirty updates and deletion
+  tombstones stay pinned until commit, even under pressure or failed saves.
+  Returned objects are read-only projections; reference identity lasts while
+  hot, and callers mutate through service methods. SQL batches contain at most
+  256 keys and return a local snapshot independently of LRU admission. Oversized
+  batches can exceed the clean cache's byte budget transiently; they are not
+  repeatedly reread through the cache to construct their result.
+- **Scoped views.** Running clearloop IDs, display-object owners, billing-event
+  owners and restart recovery use guarded partial SQL indexes. Feature views
+  omit the full prompt column and do not populate the clean cache. Explicit
+  `getAllMetadata` exports remain complete snapshots for diagnostics; there is
+  no resident full metadata map. Feature views may still visit all matching
+  feature owners; this is not a claim of output-only billing-query cost.
 - **Concurrent first start.** The import re-checks its marker inside its
   transaction, so two connections initializing together import once.
 - **Maintenance scripts.** `scripts/prune-stale-index-entries.ts` edits rows
-  directly and refuses until the server has imported; stop the server before
-  running it, because a running server keeps its own copy and writes it back.
+  directly through the codec and refuses until the server has imported and
+  migrated them to version 31; stop the server before
+  running it, because live hot/dirty entries and derived query state are not invalidated
+  by an offline script.
 - **Restart recovery.** Fork-summary jobs left `generating` and bang commands
   left `running` load as interrupted errors, as before.
+
+## Session seen state
+
+Version 32 stores `session_last_seen(session_id, entry_json)` and a single
+`session_last_seen_import` marker. Each entry remains exact JSON (including
+escaped message IDs), rather than a whole-profile serialized map. Ordinary
+reads use indexed session keys; an explicit all-seen export is still available
+for the existing HTTP response. The service retains no corpus or miss map.
+
+The first initialization imports `{dataDir}/notifications.json` and its marker
+in one transaction, rechecking the marker after acquiring the lock. A missing
+file records an empty import. Unreadable, invalid or failed imports refuse
+initialization, leave the source untouched and can be retried after repair.
+The committed marker prevents later leftovers/edits from resurrecting cleared
+rows; cleanup of the imported file is best-effort. The JSON writer is removed.
+
+Mark-seen compares the provided timestamp, server time and existing row using
+the previous lexical timestamp rule. The comparison and one-row upsert share
+an immediate transaction, so another connection cannot replace newer state
+with an older mark. Clear deletes only that key. Calls resolve after commit;
+seen events and query invalidations are published afterward. A failed mutation
+leaves the previous SQL value visible, publishes nothing, and rejects for retry.
+`flush` has no deferred writer to drain. Statements have a fixed vocabulary and
+are finalized with the service or profile connection. Metadata import marker
+statements are startup-owned and finalized immediately after initialization.
+
+The native catalog mirror and TEMP list-query construction remain separate
+[plan 190](../docs/tactical/190-active-session-cost-at-scale.md) work.
 
 ## Availability and frontend compatibility
 

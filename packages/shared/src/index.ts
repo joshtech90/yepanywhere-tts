@@ -1,6 +1,8 @@
-export type {
-  SessionCreationStatus,
-  SessionCreationReceipt,
+export {
+  type SessionCreationStatus,
+  type SessionCreationProvenance,
+  type SessionCreationReceipt,
+  isSessionCreationPending,
 } from "./session-creation.js";
 export type {
   ArtifactVhost,
@@ -1226,7 +1228,6 @@ export type {
   ForkSummaryTranscriptDisplayObject,
   TranscriptDisplayObject,
   AppSessionSummary,
-  SessionCreationProvenance,
   AppSession,
   SessionEffectiveModelSettings,
   EffectiveSessionLaunchSettings,
@@ -1248,14 +1249,14 @@ export type {
   InputRequest,
   // Recents types
   EnrichedRecentEntry,
-  // Connected browser types
+} from "./app-types.js";
+export type {
   ConnectionInfo,
   ConnectionsResponse,
-  // Browser profile types
   BrowserProfileOrigin,
   BrowserProfileInfo,
   BrowserProfilesResponse,
-} from "./app-types.js";
+} from "./browser-connections.js";
 
 export type {
   ToolDisplayAction,
@@ -1923,13 +1924,12 @@ export {
   parseNativeSessionId,
   nativeSessionFamily,
   nativeSessionRef,
+  nativeViewerFields,
   type YaSessionId,
   type NativeSessionId,
   type NativeSessionFamily,
   type NativeSessionRef,
 } from "./session-identity.js";
-
-export { isSessionCreationPending } from "./session-creation.js";
 export {
   parseProviderSteeringState,
   parseSteeringModeSettings,

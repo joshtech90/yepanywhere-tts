@@ -28,6 +28,8 @@ const independent = new Set<Operation>([
   "describe",
   "help",
   "schema",
+  "targetHelp",
+  "targetSchema",
   "me",
   "servers",
   "server",
@@ -102,6 +104,8 @@ export async function createAgentApiRuntime(options: {
   });
   const reader: { read: ApiReadPort } = {
     read: async (operation, caller, input = {}) => {
+      if (input.serverId === "self")
+        input = { ...input, serverId: options.serverId };
       const peerLease = Boolean(
         input.launch?.peerAccess && input.launch.peerGrantId,
       );

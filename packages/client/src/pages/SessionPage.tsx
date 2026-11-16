@@ -1,7 +1,15 @@
+import { sessionSplitAppearance } from "./sessionSplitAppearance";
+import chromeBtwAsidePaneStyles from "../components/BtwAsidePane.module.css";
+import {
+  SessionPageInvalidRoute,
+  getSessionLoadingProgressText,
+} from "./SessionLoadingProgress";
+import pageStyles from "../layouts/PageLayout.module.css";
 import { FileDropZone } from "../components/FileDropZone";
 import { SessionRouteModuleFallback } from "../components/SessionRouteModuleFallback";
 import { SessionComposerFooter } from "../components/SessionComposerFooter";
 import { SessionHeader } from "../components/SessionHeader";
+import type { SessionModelPanelTab } from "../components/ModelSwitchModal";
 import { SessionPageModals } from "../components/SessionPageModals";
 import { useActingPrincipal } from "../hooks/useActingPrincipal";
 import { pendingSessionCreation } from "../lib/sessionCreation";
@@ -75,7 +83,6 @@ import {
 } from "../components/SessionManagedViewer";
 import { LastSessionFile } from "../components/LastSessionFile";
 import styles from "./SessionPage.module.css";
-
 import { BtwAsidePane } from "../components/BtwAsidePane";
 import { SessionRightPane } from "../components/SessionRightPane";
 import { useSessionRightPane } from "../hooks/useSessionRightPane";
@@ -142,7 +149,6 @@ import {
   useLongContextEffortGuard,
 } from "../hooks/useLongContextEffortGuard";
 import { useSessionLoadingProgress } from "../hooks/useSessionLoadingProgress";
-import type { SessionLoadProgress } from "../hooks/useSessionMessages";
 import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
 import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
 import { useLongPress } from "../hooks/useLongPress";
@@ -360,29 +366,6 @@ export function SessionPage({
       </StreamingMarkdownProvider>
     </GlossaryProjectProvider>
   );
-}
-
-function SessionPageInvalidRoute() {
-  const { t } = useI18n();
-  return <div className="error">{t("sessionInvalidUrl")}</div>;
-}
-
-function getSessionLoadingProgressText(
-  progress: SessionLoadProgress,
-  t: ReturnType<typeof useI18n>["t"],
-): string | null {
-  switch (progress.stage) {
-    case "fetching":
-      return null;
-    case "rendering":
-      return t("sessionLoadingRenderingTranscript", {
-        count: progress.messageCount ?? 0,
-      });
-    case "idle":
-    case "complete":
-    case "error":
-      return null;
-  }
 }
 
 const SESSION_LOADING_PROGRESS_DETAILS_DELAY_MS = 1500;
@@ -1679,11 +1662,9 @@ function SessionPageContent({
   const [pendingElsewhereDismissedToolId, setPendingElsewhereDismissedToolId] =
     useState<string | null>(null);
 
-  // Model switch modal state
   const [showModelSwitchModal, setShowModelSwitchModal] = useState(false);
-  const [modelPanelInitialTab, setModelPanelInitialTab] = useState<
-    "model" | "info"
-  >("model");
+  const [modelPanelInitialTab, setModelPanelInitialTab] =
+    useState<SessionModelPanelTab>("model");
   const openSessionInfo = useCallback(() => {
     setShowRecentSessions(false);
     setModelPanelInitialTab("info");
@@ -2944,7 +2925,11 @@ function SessionPageContent({
 
     if (isNotFound && actualSessionId) {
       return (
-        <div className="error" style={{ maxWidth: 520, margin: "40px auto" }}>
+        <div
+          className={pageStyles.error}
+          data-error
+          style={{ maxWidth: 520, margin: "40px auto" }}
+        >
           <h2 style={{ marginTop: 0 }}>{t("sessionNotFoundTitle")}</h2>
           <p style={{ color: "#666" }}>{t("sessionNotFoundDescription")}</p>
           <div
@@ -2978,7 +2963,7 @@ function SessionPageContent({
               {t("sessionNotFoundGoBack")}
             </Button>
           </div>
-          <p style={{ fontSize: "12px", color: "#888", marginTop: 20 }}>
+          <p className={styles.notFoundSessionId}>
             {t("sessionNotFoundSessionId")} <code>{actualSessionId}</code>
           </p>
         </div>
@@ -3138,6 +3123,7 @@ function SessionPageContent({
         />
 
         <SessionPageModals
+          draftControlsRef={draftControlsRef}
           actualSessionId={actualSessionId}
           basePath={basePath}
           chooseLongContextEffortWarning={chooseLongContextEffortWarning}
@@ -3197,16 +3183,11 @@ function SessionPageContent({
           )}
 
         <div
-          className={`${styles.sessionSplit} session-split${
-            wantBtwSplitLayout ? " session-split-with-aside" : ""
-          }${
-            wantBtwSplitLayout && btwSidePaneCollapsed
-              ? " session-split-aside-collapsed"
-              : ""
-          }`}
+          {...sessionSplitAppearance(wantBtwSplitLayout, btwSidePaneCollapsed)}
         >
           <main
-            className={`${styles.messages} session-messages`}
+            className={`${styles.messages} ${styles["session-messages"]}`}
+            data-session-messages
             tabIndex={-1}
             data-session-read-scope={sessionId}
             {...transcriptComposerFocus}
@@ -3224,10 +3205,10 @@ function SessionPageContent({
               </div>
             )}
             {loading ? (
-              <div className="loading">
+              <div className={pageStyles.loading} data-loading>
                 <div>{t("sessionLoading")}</div>
                 {sessionLoadingProgressText && (
-                  <div className="loading-detail">
+                  <div className={pageStyles.loadingDetail} data-loading-detail>
                     {sessionLoadingProgressText}
                   </div>
                 )}
@@ -3237,7 +3218,6 @@ function SessionPageContent({
                 projectId={projectId}
                 projectPath={project?.path ?? null}
                 sessionId={sessionId}
-                sessionTitle={displayTitle}
                 provider={effectiveProvider}
                 model={effectiveModelConfig?.requestedModel ?? liveBadgeModel}
                 thinking={sourceReviewModelSettings.thinking}
@@ -3451,7 +3431,8 @@ function SessionPageContent({
           )}
           {wantBtwSplitLayout && btwSidePaneCollapsed && (
             <ButtonBase
-              className="session-btw-pane-handle"
+              className={`${chromeBtwAsidePaneStyles["session-btw-pane-handle"]}`}
+              data-session-btw-pane-handle
               onClick={() => setBtwSidePaneCollapsed(false)}
               title="Maximize /btw aside pane"
               aria-label="Maximize /btw aside pane"

@@ -13,7 +13,7 @@
 
 .groupTitle {
   margin: 0;
-  font-size: 0.9rem;
+  font-size: var(--font-size-lg);
   font-weight: 600;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -27,7 +27,7 @@
   padding: 12px 16px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 
 .itemInfo {
@@ -44,14 +44,6 @@
 .itemStatus {
   font-size: 0.8em;
   color: var(--text-secondary);
-}
-
-.itemStatus.running {
-  color: var(--app-yep-green);
-}
-
-.itemStatus.stopped {
-  color: var(--text-muted);
 }
 
 .itemActions {
@@ -158,12 +150,7 @@
 }
 
 .error {
-  padding: 12px 16px;
   margin: 8px 0;
-  background: var(--bg-error);
-  color: var(--error-color);
-  border-radius: 6px;
-  font-size: 0.9em;
 }
 
 .connecting {

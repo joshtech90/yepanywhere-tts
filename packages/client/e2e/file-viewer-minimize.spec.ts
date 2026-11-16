@@ -22,7 +22,7 @@ const externalReadmePath = join(
 );
 
 async function dismissOnboardingIfVisible(page: Page) {
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (
     await skip
       .waitFor({ state: "visible", timeout: 750 })
@@ -54,7 +54,7 @@ test("recalls the last file after Close and reload only where the margin fits", 
   await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
   await dismissOnboardingIfVisible(page);
   await page.locator('a[data-ya-private-project-file-link="true"]').click();
-  const viewer = page.locator(".file-viewer");
+  const viewer = page.locator("[data-file-viewer]");
   await expect(viewer).toBeVisible();
   await viewer.getByRole("button", { name: "Close", exact: true }).click();
   const reopen = page.getByRole("button", { name: /Restore file viewer:/ });
@@ -147,7 +147,7 @@ test("keeps the viewer open while transcript rich text settles", async ({
   await expect(absoluteLink).toBeVisible({ timeout: 10000 });
   await absoluteLink.click();
 
-  const viewer = page.locator(".file-viewer");
+  const viewer = page.locator("[data-file-viewer]");
   await expect(viewer).toBeVisible();
   await page.waitForTimeout(750);
   await expect(viewer).toBeVisible();
@@ -185,9 +185,9 @@ test("keeps the viewer open and responsive across session width changes", async 
     await page.waitForTimeout(750);
     await absoluteLink.click();
 
-    const viewer = page.locator(".file-viewer");
-    const viewerBody = viewer.locator(".file-viewer-body");
-    const quoteButtons = viewer.locator(".text-block-quote-paragraph");
+    const viewer = page.locator("[data-file-viewer]");
+    const viewerBody = viewer.locator("[data-file-viewer-body]");
+    const quoteButtons = viewer.locator("[data-text-block-quote-paragraph]");
     const lastParagraph = viewer.getByText(
       "Paragraph 3000 keeps enough wrapping text in the expanded viewer to exercise responsive layout.",
       { exact: true },
@@ -258,7 +258,7 @@ test("finds within the file viewer after a click in its content", async ({
     );
     await expect(absoluteLink).toBeVisible({ timeout: 10000 });
     await absoluteLink.click();
-    const viewer = page.locator(".file-viewer");
+    const viewer = page.locator("[data-file-viewer]");
     await expect(viewer.getByText("beta needle")).toBeVisible();
     await recordUiCapture(page, "file-viewer-find-idle-1200");
     const findBox = page.getByRole("searchbox", { name: "Find in this view" });
@@ -282,7 +282,9 @@ test("finds within the file viewer after a click in its content", async ({
       await page.evaluate(() => {
         const highlight = CSS.highlights.get("yep-find-current");
         const range = highlight ? [...highlight][0] : undefined;
-        return range?.startContainer.parentElement?.closest(".file-viewer")
+        return range?.startContainer.parentElement?.closest(
+          "[data-file-viewer]",
+        )
           ? range.toString()
           : null;
       }),
@@ -293,7 +295,7 @@ test("finds within the file viewer after a click in its content", async ({
     // field remains visible while its action row has room.
     await expect(findBox).toBeVisible();
     await expect(findBox).toHaveValue("");
-    await expect(viewer.locator(".file-viewer-body")).toBeFocused();
+    await expect(viewer.locator("[data-file-viewer-body]")).toBeFocused();
   } finally {
     writeFileSync(externalReadmePath, originalReadme);
   }
@@ -326,7 +328,7 @@ test("in the right pane, finds past a wide table and keeps its place on reload",
     await dismissOnboardingIfVisible(page);
     await page.locator('a[data-ya-private-project-file-link="true"]').click();
     const pane = page.getByRole("complementary", { name: "Session pane" });
-    const body = pane.locator(".file-viewer-body");
+    const body = pane.locator("[data-file-viewer-body]");
     await pane.getByText("Filler 0.", { exact: true }).click();
     await page.keyboard.press("Control+f");
     await page
@@ -365,8 +367,8 @@ test("finds past a wide table, and a reload keeps the viewer where it was", asyn
     await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
     await dismissOnboardingIfVisible(page);
     await page.locator('a[data-ya-private-project-file-link="true"]').click();
-    const viewer = page.locator(".file-viewer");
-    const body = viewer.locator(".file-viewer-body");
+    const viewer = page.locator("[data-file-viewer]");
+    const body = viewer.locator("[data-file-viewer-body]");
     await viewer.getByText("Filler 0.", { exact: true }).click();
     await page.keyboard.press("Control+f");
     await page
@@ -452,13 +454,13 @@ for (const viewport of [
     await page.waitForTimeout(750);
     await absoluteLink.click();
 
-    const viewer = page.locator(".file-viewer");
+    const viewer = page.locator("[data-file-viewer]");
     await expect(viewer).toBeVisible();
     // The header never trades the filename away for controls: they take their
     // own header row instead of squeezing the path into a one-glyph column.
     const [pathBox, actionsBox] = await Promise.all([
-      viewer.locator(".file-viewer-path").boundingBox(),
-      viewer.locator(".file-viewer-actions").boundingBox(),
+      viewer.locator("[data-file-viewer-path]").boundingBox(),
+      viewer.locator("[data-file-viewer-actions]").boundingBox(),
     ]);
     if (!pathBox || !actionsBox) {
       throw new Error("Expected file viewer header layout boxes");
@@ -470,8 +472,8 @@ for (const viewport of [
     ).toBe(true);
     if (viewport.width <= 800) {
       const [modalBox, composerBox] = await Promise.all([
-        page.locator(".file-viewer-modal").boundingBox(),
-        page.locator(".session-input").boundingBox(),
+        page.locator("[data-file-viewer-modal]").boundingBox(),
+        page.locator("[data-session-input]").boundingBox(),
       ]);
       expect(modalBox?.x).toBe(0);
       expect(modalBox?.width).toBe(viewport.width);
@@ -497,7 +499,7 @@ for (const viewport of [
     await expect(controller).toBeVisible();
     await expect(controller).toContainText("README.md");
     const [leftControlsBox, controllerBox] = await Promise.all([
-      page.locator(".message-input-left").boundingBox(),
+      page.locator("[data-message-input-left]").boundingBox(),
       controller.boundingBox(),
     ]);
     if (!leftControlsBox || !controllerBox) {
@@ -511,16 +513,20 @@ for (const viewport of [
     ).toBeVisible();
     if (viewport.width <= 800) {
       await expect(
-        page.locator(".message-input-toolbar .voice-input-button"),
+        page.locator("[data-message-input-toolbar] [data-voice-input-button]"),
       ).toBeVisible();
       await expect(
-        page.locator(".message-input-toolbar .send-button-with-help"),
+        page.locator(
+          "[data-message-input-toolbar] [data-send-button-with-help]",
+        ),
       ).toBeVisible();
     }
 
     await capture(page, `${viewport.name}-open`);
     if (viewport.name === "desktop") {
-      const modeButton = page.locator(".message-input-toolbar .mode-button");
+      const modeButton = page.locator(
+        "[data-message-input-toolbar] [data-mode-button]",
+      );
       await expect(modeButton).toBeVisible();
       const modeButtonBox = await modeButton.boundingBox();
       if (!modeButtonBox) {
@@ -530,7 +536,8 @@ for (const viewport of [
         ({ x, y }) =>
           document
             .elementFromPoint(x, y)
-            ?.closest(".message-input-toolbar .mode-button") !== null,
+            ?.closest("[data-message-input-toolbar] [data-mode-button]") !==
+          null,
         {
           x: modeButtonBox.x + modeButtonBox.width / 2,
           y: modeButtonBox.y + modeButtonBox.height / 2,
@@ -543,7 +550,7 @@ for (const viewport of [
       );
       await expect(viewer).not.toBeVisible();
       await expect(controller).toBeVisible();
-      await expect(page.locator(".mode-selector-dropdown")).toBeVisible();
+      await expect(page.locator("[data-mode-selector-dropdown]")).toBeVisible();
       await capture(page, "desktop-toolbar-action-parked");
       await page.keyboard.press("Escape");
       await controller
@@ -552,7 +559,7 @@ for (const viewport of [
       await expect(viewer).toBeVisible();
     } else {
       const conversationButton = page.locator(
-        ".message-input-toolbar .conversation-view-toolbar-button",
+        "[data-message-input-toolbar] [data-conversation-view-toolbar-button]",
       );
       await expect(conversationButton).toBeVisible();
       const conversationButtonBox = await conversationButton.boundingBox();
@@ -564,7 +571,7 @@ for (const viewport of [
           document
             .elementFromPoint(x, y)
             ?.closest(
-              ".message-input-toolbar .conversation-view-toolbar-button",
+              "[data-message-input-toolbar] [data-conversation-view-toolbar-button]",
             ) !== null,
         {
           x: conversationButtonBox.x + conversationButtonBox.width / 2,
@@ -590,7 +597,7 @@ for (const viewport of [
       await expect(viewer).toBeVisible();
     }
     if (viewport.width <= 800) {
-      const viewerBody = viewer.locator(".file-viewer-body");
+      const viewerBody = viewer.locator("[data-file-viewer-body]");
       const finalLine = viewer.getByText(
         "End of file viewer clearance specimen.",
         { exact: true },
@@ -601,7 +608,7 @@ for (const viewport of [
       await expect(finalLine).toBeVisible();
       const [finalLineBox, toolbarBox] = await Promise.all([
         finalLine.boundingBox(),
-        page.locator(".message-input-toolbar").boundingBox(),
+        page.locator("[data-message-input-toolbar]").boundingBox(),
       ]);
       if (!finalLineBox || !toolbarBox) {
         throw new Error("Expected final line and toolbar to have layout boxes");

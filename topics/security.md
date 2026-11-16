@@ -20,6 +20,33 @@ is enabled, every `/api` route except the `/api/auth` login and status routes
 refuses a request that carries no valid credential; no operator route answers
 ahead of the host, CORS, custom-header, and authentication checks.
 
+Password guessing at `POST /api/auth/login`, for the superuser and limited
+users alike, is throttled in memory: each client address may sustain five
+rejected passwords a minute (burst five) and all addresses together thirty
+(burst thirty). Every attempt holds a slot until its outcome is known, so
+concurrent guesses cannot outrun the limit, and only a rejected password
+keeps its slot, so correct logins are never charged. A refused attempt gets
+HTTP 429 with `Retry-After` before any password is checked. The address is
+the TCP peer, never a forwarded header, so clients behind one reverse proxy
+share its limit. Restart clears the counters.
+
+`yepanywhere --setup-auth` replaces the local password without the old one,
+and `--setup-remote-access` sets the Remote Access password. Besides a
+command-line value, each reads its password from a file or standard input
+(`--setup-auth-pwfile <path|->`, `--password-file <path|->`) or, when the
+flag is given no value, from `YEP_AUTH_PASSWORD` or
+`YEP_REMOTE_ACCESS_PASSWORD`. The CLI removes both variables from its
+environment at startup whether or not they are used, so a server and its
+agents never inherit them.
+
+Browser origins earn credentialed CORS and YA WebSocket access only when they
+are the allowed host being requested, a built-in loopback/private-network/Tauri
+origin, or an explicitly allowed host. Any web page can mint the opaque
+`Origin: null` with a sandboxed iframe, and anyone can publish one under
+`*.ts.net` with Tailscale Funnel, so neither is trusted on its own. A
+`*.ts.net` name remains an allowed Host, and its own pages keep same-origin
+access.
+
 The practical trust boundary is therefore **can use normal authenticated YA,
 including creating or controlling an ordinary session**. That authority should
 be treated as the authority of the operating-system account running YA. An
@@ -351,12 +378,32 @@ Remote Access is therefore content-private from the relay operator, not
 anonymous, metadata-private, or availability-protected. This claim does not
 cover public shares, which deliberately use a different plaintext relay path.
 
+The server holds a relay connection only while Remote Access is enabled.
+Disabling it keeps the password verifier and relay settings for re-enabling,
+but closes the server's relay registration and does not reconnect, including
+after a restart; only enabling, or saving a new Remote Access password,
+connects again. Remote Access logins already established over the relay are
+not ended by disabling. The relay may release a username that stays
+unregistered for its reclaim period (90 days on the default relay).
+
 The client is part of the trust root. Malicious JavaScript served by a hosted
 client origin, a privileged browser extension, or a compromised packaged app
 can steal a password or cached resume secret before transport encryption helps.
 Use signed/bundled or locally served client assets when the threat model
 includes compromise of both the relay and live hosted client delivery; see
 [`trusted-client-packaging.md`](trusted-client-packaging.md).
+
+## Update Server Contact
+
+The server asks `updates.yepanywhere.com` for the newest release when a client
+requests version information, reusing the answer for a day unless the client
+asks for a fresh check, and sends its version and random install identifier.
+It never installs anything. The device bridge status asks the same host for
+the newest bridge version. Setting `YEP_UPDATE_CHECK=false` (or `0`, `no`,
+`off`) stops both checks; the server then reports no newer release or bridge.
+Downloading the device bridge, an explicit user action, still asks for the
+bridge version it needs. The desktop runtime skips the release check on its
+own.
 
 ## Multiple YA Servers And Orchestration
 

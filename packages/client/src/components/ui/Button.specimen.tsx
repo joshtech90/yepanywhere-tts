@@ -53,7 +53,11 @@ const TRASH = (
 );
 
 function sampleText(variant: string) {
-  return variant.startsWith("danger") ? "Delete" : "Save changes";
+  return variant === "link"
+    ? "Show more"
+    : variant.startsWith("danger")
+      ? "Delete"
+      : "Save changes";
 }
 
 export function Variants() {
@@ -101,6 +105,22 @@ export function Small() {
     </div>
   );
 }
+
+/** The three header navigation/menu uses need 36px mouse and 44px touch targets. */
+export function Large() {
+  return (
+    <div style={row}>
+      <IconButton size="large" label="Open sidebar">
+        {PLUS}
+      </IconButton>
+      <IconButton size="large" label="Session options">
+        ⋯
+      </IconButton>
+      <Button size="large">Header action</Button>
+    </div>
+  );
+}
+Large.storyName = "Large (header targets)";
 
 export function WithIcon() {
   return (
@@ -153,21 +173,86 @@ LinkLooksLikeButton.storyName = "Link styled with buttonClassName";
 export function Base() {
   return (
     <div style={column}>
-      <ButtonBase
-        style={{
-          padding: "var(--space-2) var(--space-3)",
-          borderRadius: "var(--radius-md)",
-          background: "var(--bg-surface)",
-          border: "1px solid var(--border-color)",
-          width: "18rem",
-        }}
-      >
-        A clickable card: ButtonBase plus its owner's styles
+      <ButtonBase aria-expanded={false}>
+        ▸ A rich disclosure row keeps its owner's layout
       </ButtonBase>
-      <ButtonBase style={{ color: "var(--link-color)" }}>
-        An unstyled disclosure
-      </ButtonBase>
+      <Button variant="link">An inline text action uses Button</Button>
     </div>
   );
 }
 Base.storyName = "ButtonBase (owner styles)";
+
+export function InlineAndSelected() {
+  return (
+    <div style={column}>
+      <p style={{ fontSize: "var(--font-size-lg)", lineHeight: 1.5 }}>
+        Read the <Button variant="link">documentation</Button> before
+        continuing. The inline action follows this text's font and baseline.
+      </p>
+      <div style={row}>
+        <Button variant="secondary">Unselected</Button>
+        <Button variant="secondary" aria-pressed>
+          Selected
+        </Button>
+        <Button variant="outline" aria-pressed>
+          Selected user
+        </Button>
+        <Button
+          data-selected
+          variant="secondary"
+          aria-haspopup="menu"
+          aria-expanded={false}
+        >
+          Filter with selection
+        </Button>
+      </div>
+      <div style={row}>
+        <Button elevated>Floating action</Button>
+        <IconButton elevated label="Floating add">
+          {PLUS}
+        </IconButton>
+        <Button elevated variant="primary">
+          Select filtered
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function TextFlowAndInline() {
+  return (
+    <div style={{ display: "grid", gap: 12, width: "100%", maxWidth: 320 }}>
+      <Button
+        variant="outline"
+        textFlow="truncate"
+        style={{ maxWidth: "12ch" }}
+      >
+        An extraordinarily long project name
+      </Button>
+      <Button variant="link" textFlow="wrap" mono>
+        src/a-very-long-filename-that-wraps-inside-a-phone-width.ts:123
+      </Button>
+      <p>
+        Prose with an{" "}
+        <Button variant="outline" size="inline">
+          inline gallery
+        </Button>{" "}
+        action.
+      </p>
+      <div>
+        <IconButton label="Copy inline path" size="inline-icon" subdued>
+          ⧉
+        </IconButton>
+      </div>
+      <Button size="small" touchTarget="large">
+        Small mouse, 44 px touch
+      </Button>
+      <Button variant="outline" data-selected>
+        Open popover
+      </Button>
+      <Button variant="attention-outline" elevated>
+        Pending approval
+      </Button>
+    </div>
+  );
+}

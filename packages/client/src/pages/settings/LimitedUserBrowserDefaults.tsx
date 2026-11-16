@@ -6,6 +6,7 @@ import {
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
 import { limitedUserDefaultsApi } from "../../api/limitedUserDefaultsClient";
+import { Banner } from "../../components/ui/Banner";
 import { Button, IconButton } from "../../components/ui/Button";
 import { TextInput } from "../../components/ui/Field";
 import { useI18n } from "../../i18n";
@@ -85,7 +86,7 @@ export function LimitedUserBrowserDefaults() {
 
   const entries = Object.entries(draft).sort(([a], [b]) => a.localeCompare(b));
   const status = error
-    ? error
+    ? null
     : operation === "fetching"
       ? t("loading")
       : published
@@ -125,13 +126,17 @@ export function LimitedUserBrowserDefaults() {
       {operation === null && !backup && !error && (
         <p className={styles.hint}>{t("usersBrowserDefaultsNoBackup")}</p>
       )}
-      <span
-        className={`${styles.status} ${error ? styles.error : ""}`}
-        role={error ? "alert" : "status"}
-      >
+      {/* Always mounted, so a result after a failed try is announced. */}
+      <span className={styles.status} role="status">
         {status}
-        {dirty && ` · ${t("usersBrowserDefaultsUnsaved")}`}
+        {status && dirty && ` · ${t("usersBrowserDefaultsUnsaved")}`}
       </span>
+      {error && (
+        <Banner tone="error" compact>
+          {error}
+          {dirty && ` · ${t("usersBrowserDefaultsUnsaved")}`}
+        </Banner>
+      )}
       {entries.length > 0 && (
         <details>
           <summary className={styles.hint}>

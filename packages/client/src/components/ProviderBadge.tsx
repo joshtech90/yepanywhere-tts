@@ -6,6 +6,7 @@ import {
   normalizeEffortLevelForProvider,
 } from "../lib/effortLevels";
 import { useI18n } from "../i18n";
+import { Badge } from "./ui/Badge";
 import styles from "./ProviderBadge.module.css";
 
 const PROVIDER_COLORS: Record<ProviderName, string> = {
@@ -46,6 +47,8 @@ interface ProviderBadgeProps {
   compact?: boolean;
   /** Keep model identity and abbreviated effort in a narrow session header. */
   condensed?: boolean;
+  /** Show known thinking/effort for any provider, as on Inbox cards. */
+  showThinking?: boolean;
   /** Model name to display alongside provider (e.g., "opus", "sonnet") */
   model?: string;
   /** Current thinking mode for live process config */
@@ -65,6 +68,7 @@ export function ProviderBadge({
   provider,
   compact = false,
   condensed = false,
+  showThinking = false,
   model,
   thinking,
   effort,
@@ -80,17 +84,26 @@ export function ProviderBadge({
     typeof model === "string" &&
     model.toLowerCase().startsWith("gpt-");
 
-  const effortTone = isGptModel
-    ? getIndicatorToneFromProcess(thinking, effort, provider)
-    : null;
+  const showKnownThinking = showThinking || isGptModel;
+  const effortTone =
+    showKnownThinking && (thinking || effort)
+      ? effort && thinking?.type !== "disabled"
+        ? normalizeEffortLevelForProvider(effort, provider)
+        : getIndicatorToneFromProcess(thinking, effort, provider)
+      : null;
 
   const effortLabel = (() => {
-    if (!isGptModel) return null;
+    if (!showKnownThinking) return null;
     if (!thinking && !effort) return null;
-    if (!thinking || thinking.type === "disabled") {
+    if (thinking?.type === "disabled") {
       return t("modelSettingsThinkingOffLabel");
     }
-    if (!effort) return t("modelSettingsThinkingAutoLabel");
+    if (!effort)
+      return t(
+        showThinking
+          ? "modelSettingsThinkingOnLabel"
+          : "modelSettingsThinkingAutoLabel",
+      );
     const level = normalizeEffortLevelForProvider(effort, provider);
     const label = getEffortLevelLabel(level, provider, t);
     if (level === "medium") return t("effortLevelMediumShortLabel");
@@ -127,7 +140,7 @@ export function ProviderBadge({
   const shortEffort = effortTone
     ? {
         off: "Off",
-        auto: "Auto",
+        auto: showThinking ? "On" : "Auto",
         low: "L",
         medium: "M",
         high: "H",
@@ -152,7 +165,7 @@ export function ProviderBadge({
   if (compact) {
     return (
       <span
-        className={`provider-badge-stripe ${className}`}
+        className={className}
         style={{ backgroundColor: color }}
         title={fullTitle}
         role="img"
@@ -179,46 +192,55 @@ export function ProviderBadge({
 
   return (
     <span
-      className={`provider-badge ${styles.badge} ${condensed ? styles.condensed : ""} ${className}`}
-      style={{ borderColor: color, color }}
+      className={` ${styles.root} ${className}`}
+      data-provider-badge=""
       title={accessibleTitle}
       role="img"
       aria-label={accessibleTitle}
     >
-      <span className={dotClass} style={dotStyle} />
-      <span className={`provider-badge-label ${styles.model}`}>
-        {condensed ? (
-          <span style={modelColorStyle}>{condensedModel}</span>
-        ) : modelParts ? (
-          <>
-            {modelParts.providerGlyph}
-            {modelParts.subProvider ? ` ${modelParts.subProvider}` : ""}
-            {modelParts.modelLabel ? (
-              <span className="provider-badge-model" style={modelColorStyle}>
-                {` ${modelParts.modelLabel}`}
-              </span>
-            ) : null}
-          </>
-        ) : provider === "antigravity" ? (
-          "Agy"
-        ) : (
-          label
-        )}
-      </span>
-      {effortLabel && effortTone && (
-        <span
-          className={styles.effort}
-          title={t("providerBadgeEffort", { effort: effortLabel })}
-        >
-          <span
-            className={`${styles.effortDot} ${effortToneClass}`}
-            aria-hidden="true"
-          />
-          <span className={styles.effortLabel}>
-            {condensed ? shortEffort : effortLabel}
-          </span>
+      <Badge
+        size="small"
+        palette={{
+          color,
+          soft: `color-mix(in srgb, ${color} 12%, transparent)`,
+        }}
+        className={`${styles.badge} ${condensed ? styles.condensed : ""}`}
+      >
+        <span className={dotClass} style={dotStyle} />
+        <span className={styles.model}>
+          {condensed ? (
+            <span style={modelColorStyle}>{condensedModel}</span>
+          ) : modelParts ? (
+            <>
+              {modelParts.providerGlyph}
+              {modelParts.subProvider ? ` ${modelParts.subProvider}` : ""}
+              {modelParts.modelLabel ? (
+                <span style={modelColorStyle}>
+                  {` ${modelParts.modelLabel}`}
+                </span>
+              ) : null}
+            </>
+          ) : provider === "antigravity" ? (
+            "Agy"
+          ) : (
+            label
+          )}
         </span>
-      )}
+        {effortLabel && effortTone && (
+          <span
+            className={styles.effort}
+            title={t("providerBadgeEffort", { effort: effortLabel })}
+          >
+            <span
+              className={`${styles.effortDot} ${effortToneClass}`}
+              aria-hidden="true"
+            />
+            <span className={styles.effortLabel}>
+              {condensed ? shortEffort : effortLabel}
+            </span>
+          </span>
+        )}
+      </Badge>
     </span>
   );
 }

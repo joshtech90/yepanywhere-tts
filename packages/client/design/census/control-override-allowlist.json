@@ -1,0 +1,70 @@
+{
+  "buttons": {
+    "components/BulkActionBar.tsx": {
+      "count": 7,
+      "reason": "Phone bulk-selection actions stack icon and label with vertical padding; this multiline dock presentation has no ordinary button-size equivalent. Floating elevation now belongs to the shared control."
+    },
+    "components/EmulatorNavButtons.tsx": {
+      "count": 3,
+      "reason": "The three device Back/Home/Overview keys are 48 px circles, unlike ordinary app actions; retain their distinct device-navigation target."
+    },
+    "components/ImageViewer.tsx": {
+      "count": 2,
+      "reason": "Gallery previous/next controls retain their round 44 px shape and centering transform over an image. Their opaque surface and shadow now come from shared elevation."
+    },
+    "components/InboxContent.tsx": {
+      "count": 1,
+      "reason": "The section help trigger inherits its tier heading color so its question mark and count identify the same attention tier."
+    },
+    "components/LastSessionFile.tsx": {
+      "count": 1,
+      "reason": "The restore-last-viewer affordance keeps its vertical centering transform and 55% opacity until hover/focus so it remains subordinate to the active viewer."
+    },
+    "components/SessionHeader.tsx": {
+      "count": 1,
+      "reason": "Retitle Accept has an armed-countdown accent and fractional disabled opacity. The caller-owned chevron transform and binary reveal no longer count."
+    },
+    "components/SessionMenu.tsx": {
+      "count": 1,
+      "reason": "The session-row ... trigger appears on a row already washed in --bg-hover, the shared ghost and elevated hover colour, so it draws its own raised chip and a darker hover/open state to stay visible against that wash."
+    },
+    "components/ViewerWindowActions.tsx": {
+      "count": 1,
+      "reason": "One-shot reload watch uses a dashed accent border; continuous watch uses an inset accent ring. Both newer-content reloads now share attention-outline with Force start."
+    },
+    "extension/sidepanel/SidePanel.tsx": {
+      "count": 1,
+      "reason": "New-session actions wrap long host names in a narrow extension panel; their vertical padding prevents multiline labels touching the border."
+    },
+    "pages/settings/UsersSettings.tsx": {
+      "count": 1,
+      "reason": "Disabled accounts remain selectable for administration, with muted struck-through names rather than disabled buttons; pressed styling is now shared."
+    }
+  },
+  "controls": {
+    "components/ModelSwitchModal.tsx": {
+      "count": 1,
+      "reason": "The tab strip uses the surrounding model-switch panel background; leave the shared Tabs surface decision to the non-button pass."
+    },
+    "components/RemoteCompatibilityNotices.tsx": {
+      "count": 1,
+      "reason": "The read-only multiline command field sizes to its explicit rows instead of the shared textarea minimum. Floating notice elevation now belongs to Banner."
+    },
+    "components/SourceEditor.tsx": {
+      "count": 1,
+      "reason": "The target-file Field has panel padding around its chooser; retain the editor target-picker grouping."
+    },
+    "pages/ConversationPreviewPage.tsx": {
+      "count": 1,
+      "reason": "Source checkboxes are padded weighted host-selection rows; preserve the preview selector until the non-button pass."
+    },
+    "pages/GlobalSessionsPage.tsx": {
+      "count": 1,
+      "reason": "Manager-scope checkbox needs vertical row padding in the global-search selection toolbar."
+    },
+    "pages/settings/GatewayServicesSettings.tsx": {
+      "count": 1,
+      "reason": "The editable service id uses semibold text beside the service heading; defer the field typography decision."
+    }
+  }
+}

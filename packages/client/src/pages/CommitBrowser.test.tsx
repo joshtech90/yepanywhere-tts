@@ -105,9 +105,25 @@ function cleanStatus(): GitStatusInfo {
   };
 }
 
-function installScrollIntoViewMock() {
+function installScrollIntoViewMock(hunkGeometry = false) {
   const original = Element.prototype.scrollIntoView;
   const mock = vi.fn();
+  const originalRect = Element.prototype.getBoundingClientRect;
+  // jsdom's zero rectangles otherwise make the initial frame select the last
+  // hunk, racing the navigation command. Keep both below the scroll threshold.
+  const geometry = hunkGeometry
+    ? vi
+        .spyOn(Element.prototype, "getBoundingClientRect")
+        .mockImplementation(function (this: Element) {
+          const hunks = Array.from(
+            document.querySelectorAll("[data-diff-hunk-header], .line-hunk"),
+          );
+          const index = hunks.indexOf(this);
+          return index < 0
+            ? originalRect.call(this)
+            : new DOMRect(0, 100 + index * 400, 600, 40);
+        })
+    : undefined;
   Object.defineProperty(Element.prototype, "scrollIntoView", {
     configurable: true,
     value: mock,
@@ -115,6 +131,7 @@ function installScrollIntoViewMock() {
   return {
     fn: mock,
     restore() {
+      geometry?.mockRestore();
       if (original) {
         Object.defineProperty(Element.prototype, "scrollIntoView", {
           configurable: true,
@@ -330,7 +347,7 @@ describe("CommitBrowser", () => {
     );
     expect(
       document
-        .querySelector(".commit-file-item.selected")
+        .querySelector("[data-source-file-item][data-source-selected]")
         ?.querySelector("[data-source-path]")
         ?.getAttribute("data-source-path"),
     ).toBe("src/linked.ts");
@@ -368,7 +385,9 @@ describe("CommitBrowser", () => {
     expect(await screen.findAllByText("older blamed commit")).toHaveLength(2);
     expect(getGitCommit).toHaveBeenCalledWith("p1", DIRECT_SHA);
     expect(
-      document.querySelector(".commit-list-item.selected")?.textContent,
+      document.querySelector(
+        "[data-source-revision-item][data-source-selected]",
+      )?.textContent,
     ).toContain("ccccccc");
   });
 
@@ -447,7 +466,7 @@ describe("CommitBrowser", () => {
     );
     expect(
       document
-        .querySelector(".commit-file-item.selected")
+        .querySelector("[data-source-file-item][data-source-selected]")
         ?.querySelector("[data-source-path]")
         ?.getAttribute("data-source-path"),
     ).toBe("src/x.ts");
@@ -701,7 +720,9 @@ describe("CommitBrowser", () => {
     );
 
     expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
-    const workingTreeRow = document.querySelector(".commit-list-working-tree");
+    const workingTreeRow = document.querySelector(
+      "[data-source-working-tree-revision]",
+    );
     expect(workingTreeRow?.textContent).toContain("sourceUncommitted");
     expect(workingTreeRow?.textContent).toContain("sourceChangedFileCount");
     const workingTreeLink = workingTreeRow?.querySelector("a");
@@ -742,20 +763,20 @@ describe("CommitBrowser", () => {
 
     await waitFor(() => expect(getGitCommit).toHaveBeenCalledWith("p1", SHA));
     const workingTreeRow = document.querySelector(
-      ".commit-list-working-tree .commit-list-item",
+      "[data-source-working-tree-revision] [data-source-revision-item]",
     ) as HTMLButtonElement;
     const commitRow = document.querySelector(
-      ".commit-list-row:not(.commit-list-working-tree) .commit-list-item",
+      "[data-source-revision-row]:not([data-source-working-tree-revision]) [data-source-revision-item]",
     ) as HTMLButtonElement;
-    expect(workingTreeRow.classList.contains("selected")).toBe(false);
-    expect(commitRow.classList.contains("selected")).toBe(true);
+    expect(workingTreeRow.hasAttribute("data-source-selected")).toBe(false);
+    expect(commitRow.hasAttribute("data-source-selected")).toBe(true);
     expect(screen.getByText("gitStatusClean")).toBeDefined();
     expect(screen.getByText("sourceWorkingTreeCleanDescription")).toBeDefined();
     expect(screen.queryByText("sourceUncommitted")).toBeNull();
     expect(screen.queryByText("gitStatusWorkingTreeClean")).toBeNull();
 
     fireEvent.click(workingTreeRow);
-    expect(workingTreeRow.classList.contains("selected")).toBe(true);
+    expect(workingTreeRow.hasAttribute("data-source-selected")).toBe(true);
     expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
     expect(await screen.findByText("gitStatusWorkingTreeClean")).toBeDefined();
     expect(screen.getByText("first commit")).toBeDefined();
@@ -932,7 +953,9 @@ describe("CommitBrowser", () => {
     expect(row.getAttribute("href")).toBe(`/git-status?rev=${SHA}`);
     expect(
       document
-        .querySelector(".commit-list-working-tree .commit-list-item")
+        .querySelector(
+          "[data-source-working-tree-revision] [data-source-revision-item]",
+        )
         ?.getAttribute("href"),
     ).toBe("/git-status");
 
@@ -1027,7 +1050,7 @@ describe("CommitBrowser", () => {
       expect(getGitCommitSearchManifest).toHaveBeenCalledWith("p1"),
     );
     await waitFor(() =>
-      expect(document.querySelector(".source-search-index-status")).toBeNull(),
+      expect(document.querySelector("[data-source-search-status]")).toBeNull(),
     );
   });
 
@@ -1368,7 +1391,9 @@ describe("CommitBrowser", () => {
     );
 
     await screen.findByText("first commit");
-    const badges = await screen.findAllByTitle("sourceCommentCount");
+    const badges = await screen.findAllByRole("img", {
+      name: "sourceCommentCount",
+    });
     expect(badges.some((badge) => badge.textContent === "1")).toBe(true);
   });
 
@@ -1408,16 +1433,18 @@ describe("CommitBrowser", () => {
       .mockReturnValue({ isCollapsed: false } as Selection);
     try {
       fireEvent.click(compactBody);
-      expect(document.querySelector(".commit-message-full")).toBeNull();
+      expect(document.querySelector("[data-source-commit-message]")).toBeNull();
 
       getSelection.mockReturnValue(null);
       fireEvent.click(compactBody);
       await waitFor(() =>
-        expect(document.querySelector(".commit-message-full")).not.toBeNull(),
+        expect(
+          document.querySelector("[data-source-commit-message]"),
+        ).not.toBeNull(),
       );
-      expect(document.querySelector(".commit-message-full")?.textContent).toBe(
-        `first commit\n\n${first}\n${second}`,
-      );
+      expect(
+        document.querySelector("[data-source-commit-message]")?.textContent,
+      ).toBe(`first commit\n\n${first}\n${second}`);
     } finally {
       getSelection.mockRestore();
     }
@@ -1447,7 +1474,9 @@ describe("CommitBrowser", () => {
       });
 
       await waitFor(() =>
-        expect(document.querySelector(".commit-message-full")).not.toBeNull(),
+        expect(
+          document.querySelector("[data-source-commit-message]"),
+        ).not.toBeNull(),
       );
     },
   );
@@ -1612,7 +1641,9 @@ describe("CommitBrowser", () => {
       fireEvent.click(message);
     });
     await waitFor(() =>
-      expect(document.querySelector(".commit-message-view")).not.toBeNull(),
+      expect(
+        document.querySelector("[data-source-commit-view]"),
+      ).not.toBeNull(),
     );
     await act(async () => {
       fireEvent.keyDown(window, { key: "]" });
@@ -1624,7 +1655,7 @@ describe("CommitBrowser", () => {
           ?.getAttribute("data-source-selected-path"),
       ).toBe("src/first.ts"),
     );
-    expect(document.querySelector(".commit-message-view")).toBeNull();
+    expect(document.querySelector("[data-source-commit-view]")).toBeNull();
     const revealedFirst = await findSourcePath("src/first.ts");
     expect(document.activeElement).toBe(revealedFirst.closest("button"));
     expect(sourcePath("src/second.ts")).toBeDefined();
@@ -1634,7 +1665,7 @@ describe("CommitBrowser", () => {
     ).toHaveLength(1);
 
     const diffBody = document.querySelector<HTMLElement>(
-      ".git-diff-preview-body",
+      "[data-source-preview-body]",
     )!;
     Object.defineProperties(diffBody, {
       clientHeight: { configurable: true, value: 200 },
@@ -1765,7 +1796,9 @@ describe("CommitBrowser", () => {
     );
     await waitFor(() => {
       expect(document.querySelector("[data-blame-row]")).not.toBeNull();
-      expect(document.querySelector(".commit-files-column")).not.toBeNull();
+      expect(
+        document.querySelector("[data-source-column=files]"),
+      ).not.toBeNull();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "sourceToggleBlame" }));
@@ -1824,7 +1857,7 @@ describe("CommitBrowser", () => {
         },
       ],
     });
-    const scrollIntoView = installScrollIntoViewMock();
+    const scrollIntoView = installScrollIntoViewMock(true);
 
     try {
       render(
@@ -1834,16 +1867,23 @@ describe("CommitBrowser", () => {
       );
 
       await waitFor(() =>
-        expect(document.querySelectorAll(".line-hunk")).toHaveLength(2),
+        expect(
+          document.querySelectorAll("[data-diff-hunk-header], .line-hunk"),
+        ).toHaveLength(2),
       );
-      fireEvent.click(document.querySelector(".commit-file-item")!);
+      await waitFor(() =>
+        expect(
+          document.querySelector("[data-source-hunk-position]")?.textContent,
+        ).toBe("1/2"),
+      );
+      fireEvent.click(document.querySelector("[data-source-file-item]")!);
 
       expect(scrollIntoView.fn).toHaveBeenCalledWith({
         block: "start",
         behavior: "smooth",
       });
       expect(scrollIntoView.fn.mock.instances[0]).toBe(
-        document.querySelectorAll(".line-hunk")[1],
+        document.querySelectorAll("[data-diff-hunk-header], .line-hunk")[1],
       );
     } finally {
       scrollIntoView.restore();
@@ -1877,7 +1917,7 @@ describe("CommitBrowser", () => {
         },
       ],
     });
-    const scrollIntoView = installScrollIntoViewMock();
+    const scrollIntoView = installScrollIntoViewMock(true);
 
     try {
       render(
@@ -1887,25 +1927,74 @@ describe("CommitBrowser", () => {
       );
 
       await waitFor(() =>
-        expect(document.querySelectorAll(".line-hunk")).toHaveLength(2),
+        expect(
+          document.querySelectorAll("[data-diff-hunk-header], .line-hunk"),
+        ).toHaveLength(2),
       );
       const search = screen.getByPlaceholderText("sourceSearchCommits");
+      await waitFor(() =>
+        expect(
+          document.querySelector("[data-source-hunk-position]")?.textContent,
+        ).toBe("1/2"),
+      );
       fireEvent.keyDown(search, { key: "n" });
       expect(scrollIntoView.fn).not.toHaveBeenCalled();
 
       fireEvent.keyDown(window, { key: "n" });
       expect(scrollIntoView.fn).toHaveBeenCalledTimes(1);
       expect(scrollIntoView.fn.mock.instances[0]).toBe(
-        document.querySelectorAll(".line-hunk")[1],
+        document.querySelectorAll("[data-diff-hunk-header], .line-hunk")[1],
       );
 
       fireEvent.keyDown(window, { key: "p" });
       expect(scrollIntoView.fn).toHaveBeenCalledTimes(2);
       expect(scrollIntoView.fn.mock.instances[1]).toBe(
-        document.querySelectorAll(".line-hunk")[0],
+        document.querySelectorAll("[data-diff-hunk-header], .line-hunk")[0],
       );
     } finally {
       scrollIntoView.restore();
+    }
+  });
+  it("scrolls the working-tree pane into view on phone selection", async () => {
+    primeApis();
+    const scroll = installScrollIntoViewMock();
+    try {
+      render(
+        <MemoryRouter>
+          <CommitBrowser
+            projectId="p1"
+            status={cleanStatus()}
+            isWideScreen={false}
+            t={t}
+          />
+        </MemoryRouter>,
+      );
+      // The clean tree initially opens its newest commit on phone.
+      await waitFor(() =>
+        expect(
+          document.querySelector("[data-source-detail-subject]")?.textContent,
+        ).toBe("first commit"),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "sourceCommitHistory" }),
+      );
+      const row = await waitFor(() => {
+        const element = document.querySelector(
+          "[data-source-working-tree-revision] a",
+        );
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      scroll.fn.mockClear();
+      fireEvent.click(row);
+      await waitFor(() =>
+        expect(scroll.fn.mock.instances).toContain(
+          document.querySelector("[data-source-working-history]"),
+        ),
+      );
+      expect(scroll.fn).toHaveBeenCalledWith({ block: "start" });
+    } finally {
+      scroll.restore();
     }
   });
 });

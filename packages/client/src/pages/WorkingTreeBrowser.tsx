@@ -1,4 +1,14 @@
 import {
+  mergeWorkingTreeFiles,
+  sameWorktreeRow,
+  type WorktreeFileChange,
+} from "./worktreeFileChanges";
+import { WorktreeStateMarker } from "./WorktreeStateMarker";
+import columnsStyles from "../components/SourceColumnLayout.module.css";
+import detailStyles from "./SourceDetail.module.css";
+import rowsStyles from "./SourceRows.module.css";
+import statusStyles from "./SourceStatus.module.css";
+import {
   getSessionDisplayTitle,
   type GitFileChange,
   type GitStatusInfo,
@@ -24,6 +34,7 @@ import { ResizableSourceColumns } from "../components/ResizableSourceColumns";
 import {
   SourceFileOutline,
   SourceFileSectionDivider,
+  SourceFolderCount,
   type SourceOutlinePathProps,
 } from "../components/SourceFileOutline";
 import { SourceFileHeaderActions } from "../components/SourceFileHeaderActions";
@@ -50,7 +61,6 @@ import {
   handleSourceListKeyDown,
   suppressSourceKeyboardTooltips,
 } from "../hooks/useSourceKeyboard";
-import { useTextTooltipAttributes } from "../hooks/useTooltipAppearance";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import type { TranslationFn } from "../i18n";
 import {
@@ -59,8 +69,11 @@ import {
   useClientSummarySourceKey,
 } from "../lib/clientSummaryStore";
 import { writeClipboardText } from "../lib/clipboard";
+import { Badge } from "../components/ui/Badge";
+import { Banner } from "../components/ui/Banner";
 import { Modal } from "../components/ui/Modal";
 import { CommitHistoryParentLink } from "./CommitHistoryParentLink";
+import { SourceCommentCountBadge } from "./SourceCommentCountBadge";
 import styles from "./WorkingTreeBrowser.module.css";
 import {
   GitDiffModal,
@@ -69,9 +82,6 @@ import {
   type GitDiffSource,
   type GitDiffViewState,
 } from "./GitStatusDiffPreview";
-
-type WorktreeState = "staged" | "unstaged" | "both" | "untracked";
-type WorktreeFileChange = GitFileChange & { worktreeState: WorktreeState };
 
 const WORKING_TREE_SOURCE: GitDiffSource = {
   kind: "working-tree-history",
@@ -163,13 +173,17 @@ const WorkingTreeFileRow = memo(function WorkingTreeFileRow({
   const fullDisplayPath = sourceFileDisplayPath(file);
 
   return (
-    <li className={`commit-file-row ${sourceRowMenuSurface}`}>
+    <li
+      className={`${rowsStyles.commitFileRow} ${sourceRowMenuSurface}`}
+      data-source-file-row
+    >
       <SourceFileRowButton
         path={fullDisplayPath}
         type="button"
-        className={`commit-file-item ${selected ? "selected" : ""}`}
+        className={`${rowsStyles.commitFileItem} ${selected ? rowsStyles.selected : ""}`}
         disabled={isFolder}
         data-source-list-item
+        data-source-selected={selected || undefined}
         data-source-file-item
         onFocus={() => {
           if (isWideScreen && !isFolder && !selected) {
@@ -190,23 +204,20 @@ const WorkingTreeFileRow = memo(function WorkingTreeFileRow({
           {displayPath}
         </SourceFilePath>
         {(file.linesAdded !== null || file.linesDeleted !== null) && (
-          <span className="git-line-counts">
+          <span className={rowsStyles.gitLineCounts}>
             {file.linesAdded ? (
-              <span className="git-lines-added">+{file.linesAdded}</span>
+              <span className={rowsStyles.gitLinesAdded}>
+                +{file.linesAdded}
+              </span>
             ) : null}
             {file.linesDeleted ? (
-              <span className="git-lines-deleted">−{file.linesDeleted}</span>
+              <span className={rowsStyles.gitLinesDeleted}>
+                −{file.linesDeleted}
+              </span>
             ) : null}
           </span>
         )}
-        {commentCount > 0 && (
-          <span
-            className="source-comment-badge"
-            title={t("sourceCommentCount", { count: commentCount })}
-          >
-            {commentCount}
-          </span>
-        )}
+        <SourceCommentCountBadge count={commentCount} t={t} />
         <SourceReviewStateBadges states={reviewStates} t={t} />
       </SourceFileRowButton>
       {!isFolder && (
@@ -956,8 +967,8 @@ export function WorkingTreeBrowser({
   );
 
   const hasRetainedEditorTarget = commentEditorOpen && selectedFile !== null;
-  const rootClassName = `working-tree-browser ${
-    embeddedInHistory ? "working-tree-browser-history" : ""
+  const rootClassName = `${columnsStyles.workingTreeBrowser} ${
+    embeddedInHistory ? columnsStyles.workingTreeBrowserHistory : ""
   }`.trim();
   const openHistory = onBackToRevisions ?? onBrowseHistory;
   const historyParentLink = openHistory ? (
@@ -982,26 +993,29 @@ export function WorkingTreeBrowser({
       <div
         ref={rootRef}
         className={rootClassName}
+        data-source-working-history={embeddedInHistory || undefined}
         data-testid="working-tree-browser"
       >
         {historyParentLink}
         {embeddedInHistory ? (
-          <div className="working-tree-clean-state working-tree-history-clean">
-            <span className="working-tree-clean-icon" aria-hidden="true">
+          <div
+            className={`${styles.cleanState} ${columnsStyles.workingTreeHistoryClean}`}
+          >
+            <span className={styles.cleanIcon} aria-hidden="true">
               ✓
             </span>
-            <div className="git-status-empty">
+            <div className={statusStyles.statusEmpty} data-source-empty>
               {t("gitStatusWorkingTreeClean")}
             </div>
             <p>{t("sourceWorkingTreeCleanDescription")}</p>
           </div>
         ) : (
-          <div className="working-tree-clean-landing">
-            <div className="working-tree-clean-state">
-              <span className="working-tree-clean-icon" aria-hidden="true">
+          <div className={styles.cleanLanding}>
+            <div className={styles.cleanState}>
+              <span className={styles.cleanIcon} aria-hidden="true">
                 ✓
               </span>
-              <div className="git-status-empty">
+              <div className={statusStyles.statusEmpty} data-source-empty>
                 {t("gitStatusWorkingTreeClean")}
               </div>
               <p>{t("sourceWorkingTreeCleanDescription")}</p>
@@ -1016,35 +1030,48 @@ export function WorkingTreeBrowser({
     <div
       ref={rootRef}
       className={rootClassName}
+      data-source-working-history={embeddedInHistory || undefined}
       data-testid="working-tree-browser"
     >
       {historyParentLink}
       <ResizableSourceColumns
         layout="files"
         enabled={!embeddedInHistory}
-        className="working-tree-browser-columns"
+        className={columnsStyles.workingTreeBrowserColumns!}
         t={t}
       >
-        <div className="commit-files-column working-tree-files-column">
-          <div className="source-detail-banner">
+        <div
+          className={`${columnsStyles.commitFilesColumn} ${columnsStyles.workingTreeFilesColumn}`}
+          data-source-column="files"
+          data-source-working-files
+        >
+          <div className={detailStyles.banner} data-source-detail-banner>
             {revisionNavigation}
             {embeddedInHistory ? (
-              <span className="source-detail-identity working-tree-detail-identity">
-                <span className="working-tree-detail-title-row">
-                  <span className="source-detail-subject">
+              <span className={detailStyles.identity}>
+                <span className={styles.detailTitleRow}>
+                  <span
+                    className={detailStyles.subject}
+                    data-source-detail-subject
+                  >
                     {t("sourceWorkingTree")}
                   </span>
-                  <span
-                    className="working-tree-detail-count"
-                    title={t("sourceChangedFileCount", {
+                  <Badge
+                    shape="count"
+                    size="small"
+                    role="img"
+                    aria-label={t("sourceChangedFileCount", {
+                      count: files.length,
+                    })}
+                    tooltip={t("sourceChangedFileCount", {
                       count: files.length,
                     })}
                   >
                     {files.length}
-                  </span>
+                  </Badge>
                 </span>
                 <span
-                  className="source-detail-title"
+                  className={detailStyles.title}
                   title={t("sourceWorkingTreeDescription")}
                 >
                   {t("sourceUncommitted")}
@@ -1053,12 +1080,12 @@ export function WorkingTreeBrowser({
             ) : (
               <>
                 <span
-                  className="source-detail-title"
+                  className={detailStyles.title}
                   title={t("sourceWorkingTreeDescription")}
                 >
                   {t("sourceUncommittedChanges")}
                 </span>
-                <span className="source-detail-count">
+                <span className={detailStyles.count}>
                   {t("sourceChangedFileCount", { count: files.length })}
                 </span>
               </>
@@ -1077,9 +1104,9 @@ export function WorkingTreeBrowser({
               </span>
             )}
             {effectiveInventoryPending && effectiveInventoryError && (
-              <span className={styles.scanProgress} role="alert">
+              <Banner tone="error" compact className={styles.scanNotice}>
                 {t("gitStatusErrorPrefix")} {effectiveInventoryError.message}
-              </span>
+              </Banner>
             )}
             {supportsUntrackedCache && untrackedFiles?.truncated && (
               <span className={styles.scanProgress} role="status">
@@ -1101,9 +1128,9 @@ export function WorkingTreeBrowser({
               </span>
             )}
             {untrackedCacheError && (
-              <span className={styles.scanProgress} role="status">
+              <Banner tone="warning" compact className={styles.scanNotice}>
                 {t("sourceUntrackedCacheError")}
-              </span>
+              </Banner>
             )}
             <ChangesetFileFilter
               query={fileQuery}
@@ -1115,7 +1142,8 @@ export function WorkingTreeBrowser({
           <div onKeyDown={handleSourceListKeyDown}>
             {trackedOutlineItems.length > 0 && (
               <SourceFileOutline
-                className="commit-file-list"
+                className={rowsStyles.commitFileList}
+                data-source-file-list
                 items={trackedOutlineItems}
                 scopeKey={`${projectId}:working-tree:tracked`}
                 query={fileQuery}
@@ -1136,7 +1164,8 @@ export function WorkingTreeBrowser({
                 </SourceFileSectionDivider>
                 {untrackedOutlineItems.length > 0 && (
                   <SourceFileOutline
-                    className="commit-file-list"
+                    className={rowsStyles.commitFileList}
+                    data-source-file-list
                     items={untrackedOutlineItems}
                     scopeKey={`${projectId}:working-tree:untracked`}
                     query={fileQuery}
@@ -1151,14 +1180,18 @@ export function WorkingTreeBrowser({
                   />
                 )}
                 {untrackedFolderEntries.length > 0 && (
-                  <ul className="commit-file-list">
+                  <ul
+                    className={rowsStyles.commitFileList}
+                    data-source-file-list
+                  >
                     {untrackedFolderEntries.map((entry) => (
                       <li key={entry.path} className={styles.folderGroup}>
                         <div className={styles.folderHeader}>
                           <SourceFileRowButton
                             path={entry.path}
                             type="button"
-                            className="commit-file-item"
+                            className={rowsStyles.commitFileItem}
+                            data-source-folder-header
                             disabled={
                               loadingUntrackedFolders.has(entry.path) ||
                               (!supportsUntrackedCache && !entry.info) ||
@@ -1208,23 +1241,15 @@ export function WorkingTreeBrowser({
                             >
                               {entry.path}
                             </SourceFilePath>
-                            {(cachedFolderCounts.get(entry.path) ??
-                              entry.info?.files.length) !== undefined && (
-                              <span
-                                className={styles.folderCount}
-                                title={
-                                  entry.info?.truncated
-                                    ? t("sourceUntrackedFolderTruncated", {
-                                        count: entry.info.files.length,
-                                      })
-                                    : undefined
-                                }
-                              >
-                                {cachedFolderCounts.get(entry.path) ??
-                                  entry.info?.files.length}
-                                {entry.info?.truncated ? "+" : ""}
-                              </span>
-                            )}
+                            <SourceFolderCount
+                              className={styles.folderCount}
+                              count={
+                                cachedFolderCounts.get(entry.path) ??
+                                entry.info?.files.length
+                              }
+                              truncated={entry.info?.truncated}
+                              t={t}
+                            />
                           </SourceFileRowButton>
                         </div>
                         {entry.children.length > 0 && (
@@ -1260,7 +1285,9 @@ export function WorkingTreeBrowser({
             )}
           </div>
           {listEntries.length === 0 && !effectiveInventoryPending && (
-            <div className="git-status-empty">{t("sourceNoMatches")}</div>
+            <div className={statusStyles.statusEmpty} data-source-empty>
+              {t("sourceNoMatches")}
+            </div>
           )}
         </div>
 
@@ -1456,93 +1483,4 @@ function expandUntrackedFolders(
       };
     });
   });
-}
-
-/** Whether two merged rows describe the same working-tree state for a path. */
-function sameWorktreeRow(
-  previous: WorktreeFileChange,
-  next: WorktreeFileChange,
-): boolean {
-  return (
-    previous.path === next.path &&
-    previous.status === next.status &&
-    previous.staged === next.staged &&
-    previous.worktreeState === next.worktreeState &&
-    previous.linesAdded === next.linesAdded &&
-    previous.linesDeleted === next.linesDeleted &&
-    previous.origPath === next.origPath &&
-    previous.lastEditor?.sessionId === next.lastEditor?.sessionId &&
-    previous.lastEditor?.observedAt === next.lastEditor?.observedAt
-  );
-}
-
-/** Collapse index/worktree layers into one HEAD-to-filesystem row per path. */
-function mergeWorkingTreeFiles(files: GitFileChange[]): WorktreeFileChange[] {
-  const byPath = new Map<string, GitFileChange[]>();
-  for (const file of files) {
-    const entries = byPath.get(file.path);
-    if (entries) entries.push(file);
-    else byPath.set(file.path, [file]);
-  }
-
-  return Array.from(byPath.values(), (entries) => {
-    const untracked = entries.find((file) => file.status === "?");
-    const staged = entries.find((file) => file.staged);
-    const unstaged = entries.find(
-      (file) => !file.staged && file.status !== "?",
-    );
-    const rename = entries.find(
-      (file) => file.status === "R" || file.status === "C",
-    );
-    const representative =
-      untracked ?? rename ?? unstaged ?? staged ?? entries[0]!;
-    const worktreeState: WorktreeState = untracked
-      ? "untracked"
-      : staged && unstaged
-        ? "both"
-        : staged
-          ? "staged"
-          : "unstaged";
-    const singleLayer = entries.length === 1;
-    const origPath = entries.find((file) => file.origPath)?.origPath;
-    const lastEditor = entries.find((file) => file.lastEditor)?.lastEditor;
-    return {
-      path: representative.path,
-      status: representative.status,
-      staged: worktreeState === "staged",
-      linesAdded: singleLayer ? representative.linesAdded : null,
-      linesDeleted: singleLayer ? representative.linesDeleted : null,
-      ...(origPath ? { origPath } : {}),
-      ...(lastEditor ? { lastEditor } : {}),
-      worktreeState,
-    };
-  });
-}
-
-function WorktreeStateMarker({
-  state,
-  t,
-}: {
-  state: WorktreeState;
-  t: TranslationFn;
-}) {
-  const label =
-    state === "both"
-      ? t("sourceWorktreePartialDescription")
-      : state === "staged"
-        ? t("sourceWorktreeStaged")
-        : null;
-  const tooltipAttributes = useTextTooltipAttributes(label);
-  if (!label) return null;
-
-  return (
-    <span
-      className={`worktree-file-state worktree-file-state-${state}`}
-      role="img"
-      aria-label={label}
-      {...tooltipAttributes}
-    >
-      {state === "both" ? t("sourceWorktreePartial") : "✓"}
-    </span>
-  );
 }

@@ -31,6 +31,7 @@ import {
 } from "../lib/deliveryState";
 import { getMessageId } from "@yep-anywhere/shared/transcript/message";
 import { findPendingTasks } from "../lib/pendingTasks";
+import { pickNativeViewerFields } from "../lib/sessionViewerUrl";
 import {
   extractParentSessionIdFromAgentFileEvent,
   extractSessionIdFromFileEvent,
@@ -78,6 +79,7 @@ import {
   useStreamingContent,
 } from "./useStreamingContent";
 import { getStreamingEnabled } from "./useStreamingEnabled";
+import { shouldRefreshSessionMetadata } from "../lib/sessionDetail/sessionMetadataRefresh";
 
 export type ProcessState = "idle" | "in-turn" | "waiting-input";
 
@@ -1697,9 +1699,7 @@ export function useSession(
         return {
           ...prev,
           ...(event.creation !== undefined && { creation: event.creation }),
-          ...(event.nativeSessionId !== undefined && {
-            nativeSessionId: event.nativeSessionId,
-          }),
+          ...pickNativeViewerFields(event),
           ...(event.title !== undefined && { customTitle: event.title }),
           ...(event.archived !== undefined && { isArchived: event.archived }),
           ...(event.starred !== undefined && { isStarred: event.starred }),
@@ -1731,12 +1731,7 @@ export function useSession(
           }),
         };
       });
-      if (
-        Object.keys(event).every((key) =>
-          ["type", "sessionId", "timestamp"].includes(key),
-        )
-      )
-        void fetchSessionMetadata();
+      if (shouldRefreshSessionMetadata(event)) void fetchSessionMetadata();
       if (event.recapAfterSeconds !== undefined) {
         setStatus((prev) =>
           prev.owner === "self"

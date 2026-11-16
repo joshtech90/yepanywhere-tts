@@ -339,7 +339,8 @@ fork/clone migration step. The [roadmap](../docs/roadmap/README.md) owns priorit
 
 ## Current implementation
 
-- SQLite is required. Migration 10 stores metadata JSON keyed by `session_id`;
+- SQLite is required. Migration 10 stores metadata JSON keyed by `session_id`
+  (migration 31 moves its queried keys into columns);
   it does not supply the general indexed provider/native-id relationship or
   durable startup-attempt state described here. See
   [session metadata](required-sqlite.md#session-metadata).
@@ -359,7 +360,11 @@ fork/clone migration step. The [roadmap](../docs/roadmap/README.md) owns priorit
   entries without allowing an in-flight read to re-admit them afterward.
 - Claude/Codex discovery adopts native evidence in a publication transaction.
   Full, lightweight and retained collections project an existing binding back to
-  its public id and launch variant. The native catalogue/index keys and physical
+  its public id and launch variant. A bound row's projection is kept for as
+  long as its published row object lives, per identity store, because a
+  binding is never changed or removed and an unchanged catalogue row keeps its
+  object; rows without a native scope, unbound or conflicting rows and
+  OpenCode-overridden rows are projected on every read (`projectCatalogIdentities`, plan 189 step 7). The native catalogue/index keys and physical
   file locations remain native. Merged readers report the actual native root;
   a private transcript is not adopted under its merged reader's ambient root.
   Summary references carry the resolved native id for subsequent source reads.
@@ -367,6 +372,40 @@ fork/clone migration step. The [roadmap](../docs/roadmap/README.md) owns priorit
   that string may also be another session's unrelated public metadata key.
   Other provider adoption and the remaining source/watch consumers are still
   being migrated before differing-id launches are enabled.
+- Claude catalogue rows with an exact existing native binding keep that
+  binding's public session id and saved project, whatever folder the
+  transcript was observed under. Claude records the folder its process ran
+  in, which differs from the saved project when that was selected through a
+  link (or `/tmp` on macOS) before [project paths](project-paths.md) resolved
+  links at selection. The binding names the transcript's own directory and
+  id, so the row is the saved session: a link retargeted or removed later is
+  not a second claim, raises no conflict and withholds nothing. The observed
+  folder never re-homes a session; only the saved project is published, so
+  this neither merges projects nor authorizes another native storage scope.
+  The projection reads no filesystem state and is kept like any other bound
+  row.
+- Read-side catalogue projection withholds conflicting native observations
+  while continuing to publish healthy rows. The selected project, public id,
+  native binding, metadata and transcript are never rewritten to settle a
+  conflict. An independently established managed/live session may still supply
+  its canonical summary under its saved project. Strict adoption/startup
+  operations continue to refuse conflicts. New discovery preflights a batch
+  before writing: competing new claims for one public id are all withheld,
+  independent of enumeration order, and valid imports share one transaction.
+  Unexpected storage/validation failures still propagate and roll back.
+  Retained list/Inbox/sidebar and recents responses use existing `complete:false`
+  and a generic `refreshError` when observations are withheld. v0 session lists
+  likewise report incomplete state; missing direct v0 reads use the existing
+  `503 catalog_not_ready`, while independently proved resources remain readable.
+  Native evidence stays private to the request or the lifecycle-owned derived
+  source index; no raw paths, conflict identities or per-row logs enter warnings.
+  Unresolved rows are rechecked on normal reads without a new poller, including
+  after checkpoint restoration. Repair or removal clears their uncertainty.
+  Compatibility review uses the existing `complete`/`refreshError` fields in
+  v0.9.0, v0.9.1, v0.9.2, v0.10.0, v0.10.1, v0.10.2 and v0.11.0. No route,
+  response field or capability meaning is added. When catalogue/error fields are
+  absent, the current client keeps its ordinary presentation and sends the same
+  requests; older clients retain their existing incomplete-result presentation.
 - Focused Claude/Codex watches resolve the stored native root/id while retaining
   the subscription's YA id and effective project in change events. Provider hints
   cannot override that binding, and event paths remain physical native paths.
@@ -721,17 +760,31 @@ bounded recovery checks, explicit failure controls and reduced-motion behavior.
 The transcript owns the prompt's display once delivery is confirmed.
 
 Providers should publish the actual native session ID as soon as it is known.
-The committed binding is projected as optional `nativeSessionId` in detail,
-metadata and creation-change events. A current viewer replaces its history
-entry with `/projects/P/sessions/N?yaSessionId=Y` when N differs from Y: N is
-the provider's rollout ID; Y remains the permanent YA resource identity. The
-query disambiguates native IDs shared by providers/stores without exposing the
-storage root. No native-ID guessing, registry remap or resource migration occurs.
-The sidebar, API operations and retained DOM use Y. URL replacement preserves
-the mounted session, draft, hash and unrelated query parameters; reload resolves
-Y again. Existing Y-only URLs remain readable. An older server omits the optional
-field and the current client keeps its existing URL; older clients ignore the
-field. Native-facing links require a current client that understands the query.
+The committed binding is projected as optional `nativeSessionId` and
+`nativeSessionFamily` in detail, metadata and creation-change events. When N
+differs from Y, a current viewer replaces its history entry with
+`/projects/P/sessions/F/N`: F is the native family (`codex`, `pi`, …), N the
+provider's rollout ID, and Y remains the permanent YA resource identity. When
+they are equal, as for Claude, the URL stays `/sessions/Y`. The sidebar, API
+operations and retained DOM use Y. URL replacement preserves the mounted
+session, draft, hash and query parameters, because the client remembers which
+Y it gave that path.
+
+A cold load of `/sessions/F/N` asks
+`GET /api/projects/P/native-sessions/F/N`, which returns `{ sessionId: Y }`
+from the identity registry; nothing is guessed from transcripts. The path has
+no storage scope, so the project chooses between stores that bound the same N:
+a session whose original or working project is P wins. With no match in P, a
+single match elsewhere is returned, and the detail route redirects it as for
+any stale project link. Several matches return 409, never a choice. The route
+is project-scoped, so limited users get it exactly where they can view the
+project.
+
+`nativeSessionFamily` marks a server with that route. An older server sends
+only `nativeSessionId`; the current client then keeps the earlier form,
+`/sessions/N?yaSessionId=Y`, which stays readable, and upgrades it to the path
+form once its server supports the route. Existing Y-only URLs remain readable.
+Older clients ignore both fields. Native-facing links require a current client.
 Replacing only the native viewer label preserves ownership of an in-flight
 creation acknowledgement and its recovery control. Ownership checks compare
 the YA resource and history entry; leaving that view still prevents a late
@@ -865,8 +918,9 @@ launch input or being restarted.
 
 Legacy raw files and inline images are sealed by the same immutable digest/claim
 owner as staged attachments. Inline images have a 32 MiB combined decoded limit;
-64 files/images per operation and 64 MiB per ordinary file remain bounded by
-the existing 2 GiB profile claim budget. Limited raw paths must resolve to that
+each operation carries at most 64 files/images, each legacy raw file at most
+64 MiB, and at most 2 GiB in all. There is no profile-wide claim total.
+Limited raw paths must resolve to that
 account's staged draft. Literal document references retain their original text
 semantics. Native adapters that cannot carry inline images save a failed
 resource before effects instead of dropping them. The initial native input
@@ -1055,23 +1109,27 @@ and resolved launch facts, retaining committed router references in their
 existing private store. A bounded internal-reason enum covers retained helper
 purposes; explicit legacy adoption handles old unknowns, never a fresh default.
 
-**Bounds and retention.** Retain at most 10,000 creation operations and 512 MiB
-of serialized saved creation payload per profile; a normalized request may be
-at most 256 KiB. Refuse excess before launch with a recoverable draft. Existing
-v0 receipt capacity remains independently authoritative. Reads and identical
-replays work at capacity. No silent receipt expiry or automatic failed-attempt
+**Bounds and retention.** Bounds are per item, never lifetime totals: a
+normalized request may be at most 256 KiB, and an oversized one is refused
+before launch with a recoverable draft. There is no profile-wide ceiling on
+the number of creation operations or their saved bytes, because a total that
+deletion barely releases would eventually stop session creation for good. The
+`session_creation_capacity` row keeps only its `generation` change stamp; its
+old `operations`, `payload_bytes`, `attempt_bytes` and `attachment_bytes`
+columns are frozen at their last values and unread. Existing v0 receipt
+capacity remains independently authoritative. No silent receipt expiry or automatic failed-attempt
 deletion. An explicit session deletion may release payload/attachments but
 retains retry identity/hash and a deleted tombstone; replay cannot launch again.
 Keep at most 16 outstanding native admission promises, using incumbent worker
 capacity and bounded shared dispatch, not a timer per attempt.
 
 Each operation retains at most 64 attempts. Serialized attempt/error/evidence
-data is capped at 8 KiB per attempt and 64 MiB per profile; safe error text is
-at most 1 KiB and evidence uses bounded structured fields, never raw stderr.
-Account and refuse before reserving another attempt or calling router/provider
-effects. Existing payload/status and identical replays remain available. No
-automatic attempt eviction is selected; deleted tombstones still consume the
-10,000-operation budget. Capacity refusal cannot mutate the current attempt.
+data is capped at 8 KiB per attempt; safe error text is at most 1 KiB and
+evidence uses bounded structured fields, never raw stderr. Refuse before
+inserting another attempt or calling router/provider effects. Existing
+payload/status and identical replays remain available. No automatic attempt
+eviction is selected; deleted tombstones are retained. A bound refusal cannot
+mutate the current attempt.
 
 **Attempts and retry.** Persist a dispatching marker before external startup.
 After restart, saved/queued work with proof of no dispatch can be re-admitted
@@ -1117,19 +1175,22 @@ non-acceptance. Draft acknowledgement checks the captured live file selection,
 including unfinished uploads, in addition to persisted text/attachment state;
 a newer paste stays on the form and continues uploading. Retain
 claimed bytes until explicit deletion or a documented confirmed-delivery release
-under existing media-preservation policy. Cap claimed bytes at 2 GiB per profile
-and references at 64 per creation, in addition to the configured upload limit;
-capacity refusal preserves staged files and drafts. No project-local write is
-authorized by these decisions. Queue items retain original source at enqueue;
-first promotion admits the session under the item's stable operation key.
+under existing media-preservation policy. Cap references at 64 and claimed
+bytes at 2 GiB per creation (`MAX_OPERATION_ATTACHMENT_BYTES`); a staged file
+is otherwise bounded only by the configured upload limit. There is no
+per-profile claimed-byte total. A bound refusal preserves staged
+files and drafts. No project-local write is authorized by these decisions.
+Queue items retain original source at enqueue; first promotion admits the
+session under the item's stable operation key.
 
-Reserve byte/reference capacity durably before sealing, not only after a claim
-succeeds. Reservations, sealed-unclaimed objects and accepted claims count
-together against 2 GiB and 65,536 per-profile reference slots. Unclaimed
-reservations/sealed copies expire after 24 hours and are reclaimed in bounded
-batches of at most 64 through shared maintenance; accepted claims do not expire
-by that rule. Their original draft staging keeps its existing retention policy.
-Crash cleanup verifies no accepted claim before releasing a reservation/object.
+Sealed copies are written before the claim commits. Once per process, the
+first seal scans for partial copies and for sealed copies older than seven
+days that no live operation claims, and removes them (`creation-attachments.ts`
+`cleanup`). A deleted or refused operation's copy is therefore removed by the
+first scan after it is seven days old, which on a long-running server means
+the next restart. No per-profile byte or reference total applies; plan 189 step 1
+removed the 2 GiB lifetime claim total. Original draft staging keeps its
+existing retention policy.
 
 **Public web contract.** Introduce `POST /api/session-creations` with a caller
 `requestId`, project/detached selection, exact initial text, existing launch
@@ -1287,9 +1348,9 @@ claim. The current attempt/generation and canonical provider family/store scope
 commit in the same transaction as dispatch. The scope comes from trusted launch
 configuration, including the actual account/sandbox store; it is never a client
 hint or an id-format inference. The private namespace evidence remains in the
-attempt's existing 8 KiB/64 MiB budgets. Oversized or over-capacity evidence
-refuses dispatch and rolls back the claim. Claims are bounded by the profile's
-10,000 operations; they have no timers or automatic expiry.
+attempt's 8 KiB detail bound. Oversized evidence refuses dispatch and rolls
+back the claim. There is at most one claim per creation operation; claims have
+no timers or automatic expiry.
 
 While a claim exists, unknown native discoveries in that namespace cannot be
 adopted or exposed as another public session. Existing reverse bindings stay
@@ -1334,7 +1395,7 @@ machine-control choice and selected global instructions. Permission patterns
 and nested data are copied; unknown option fields, actor hints, environment
 objects and desktop-control credential proof are excluded. Retired execution
 and resume-only options cannot enter this new-session snapshot. The serialized
-snapshot shares the existing 256 KiB request and 512 MiB profile payload bounds.
+snapshot shares the existing 256 KiB request bound.
 Changed saved choices conflict on request-key reuse; identical choices replay.
 
 These are submitted choices, not current authorization or proof that a provider

@@ -1,4 +1,3 @@
-import { seedHistoricalReceiptAlias } from "../support/legacy-session-aliases.js";
 import { expect, it, vi } from "vitest";
 import { openSqliteOrThrow } from "../../src/storage/sqlite.js";
 import { migrateDiscoveryDatabase } from "../../src/storage/discovery-sqlite.js";
@@ -7,7 +6,7 @@ import {
   SessionCommands,
   type SessionCommandOwner,
 } from "../../src/core-api/session-commands.js";
-import { sendMessageRequest } from "../../src/core-api/command-contracts.js";
+import { inputRequest } from "../../src/core-api/command-contracts.js";
 import { CoreApi } from "../../src/core-api/service.js";
 import { SUPERUSER } from "../../src/auth/principal.js";
 
@@ -20,9 +19,10 @@ const session = {
   state: "in-turn",
 };
 const launch = { id: "parent", launchId: "launch", management: true as const };
-const input = sendMessageRequest.parse({
+const input = inputRequest.parse({
   requestId: "follow-up-001",
-  message: "Give the result",
+  type: "prompt",
+  text: "Give the result",
 });
 function fixture(owner: SessionCommandOwner) {
   const database = openSqliteOrThrow(":memory:");
@@ -71,13 +71,13 @@ it("binds retry identity to native input, follows consumption, and preserves rec
   });
   try {
     const [first, retry] = await Promise.all([
-      f.core.call("sendMessage", SUPERUSER, {
+      f.core.call("createInput", SUPERUSER, {
         serverId: "A",
         sessionId: "target",
         body: input,
         launch,
       }),
-      f.core.call("sendMessage", SUPERUSER, {
+      f.core.call("createInput", SUPERUSER, {
         sessionId: "target",
         body: input,
         launch,
@@ -87,16 +87,16 @@ it("binds retry identity to native input, follows consumption, and preserves rec
       state: "accepted",
       delivery: "unknown",
       completion: "unknown",
-      kind: "sendMessage",
+      kind: "input",
       creator: { sessionId: "parent" },
     });
     const id = (first as { id: string }).id;
     expect(retry).toHaveProperty("id", id);
     expect(sends).toBe(1);
     await expect(
-      f.core.call("sendMessage", SUPERUSER, {
+      f.core.call("createInput", SUPERUSER, {
         sessionId: "target",
-        body: { ...input, message: "different" },
+        body: { ...input, text: "different" },
         launch,
       }),
     ).rejects.toMatchObject({ code: "request_id_conflict", status: 409 });
@@ -118,21 +118,21 @@ it("binds retry identity to native input, follows consumption, and preserves rec
     running = false;
     ended();
     expect(
-      await f.core.call("sendMessage", SUPERUSER, {
+      await f.core.call("createInput", SUPERUSER, {
         sessionId: "target",
         body: input,
         launch,
       }),
     ).toMatchObject({ id, delivery: "consumed" });
     await expect(
-      f.core.call("sendMessage", SUPERUSER, {
+      f.core.call("createInput", SUPERUSER, {
         sessionId: "target",
         body: { ...input, requestId: "follow-up-002" },
         launch,
       }),
     ).rejects.toMatchObject({ code: "session_not_running", status: 409 });
     await expect(
-      f.core.call("sendMessage", SUPERUSER, {
+      f.core.call("createInput", SUPERUSER, {
         sessionId: "target",
         body: input,
         launch: { id: "parent", launchId: "read-only" },
@@ -155,7 +155,7 @@ it("keeps stronger consumption evidence after a late admission error", async () 
     },
   });
   try {
-    const receipt = await f.core.call("sendMessage", SUPERUSER, {
+    const receipt = await f.core.call("createInput", SUPERUSER, {
       sessionId: "target",
       body: input,
       launch,
@@ -185,7 +185,7 @@ it("marks missing consumption uncertain after owner loss/restart and releases re
   };
   const f = fixture(owner);
   try {
-    const receipt = f.commands.send(session, input, launch);
+    const receipt = await f.commands.input(session, input, launch);
     ended();
     expect(f.store.get(receipt.id)).toMatchObject({
       state: "accepted",
@@ -194,7 +194,7 @@ it("marks missing consumption uncertain after owner loss/restart and releases re
     });
     const restarted = new SessionCommands("A", f.store, owner, () => true);
     expect(
-      restarted.replaySend("target", input, {
+      restarted.replayInput("target", input, {
         ...launch,
         launchId: "replacement",
       }),
@@ -219,36 +219,6 @@ it("marks missing consumption uncertain after owner loss/restart and releases re
   }
 });
 
-it("replays after target alias changes without repeating input and publishes committed remaps", async () => {
-  let sends = 0;
-  const f = fixture({
-    async start() {
-      return { rejected: true };
-    },
-    canSend: () => true,
-    send() {
-      sends++;
-      return { accepted: true };
-    },
-  });
-  try {
-    const first = f.commands.send(session, input, launch);
-    const initial = await f.commands.follow(first.id, {});
-    const waiting = f.commands.follow(first.id, { after: initial.cursor });
-    seedHistoricalReceiptAlias(f.store, "target", "canonical-target");
-    expect(await waiting).toMatchObject({
-      changed: true,
-      receipt: { sessionId: "canonical-target" },
-    });
-    expect(
-      f.commands.send({ ...session, id: "canonical-target" }, input, launch).id,
-    ).toBe(first.id);
-    expect(sends).toBe(1);
-  } finally {
-    f.close();
-  }
-});
-
 it("bounds receipt observers, releases aborted capacity, and keeps a newer subscribed publication over a stale initial read", async () => {
   const f = fixture({
     async start() {
@@ -259,7 +229,7 @@ it("bounds receipt observers, releases aborted capacity, and keeps a newer subsc
   });
   const abort = new AbortController();
   try {
-    const receipt = f.commands.send(session, input, launch);
+    const receipt = await f.commands.input(session, input, launch);
     const initial = await f.commands.follow(receipt.id, { waitMs: "0" });
     const waits = Array.from({ length: 128 }, () =>
       f.commands

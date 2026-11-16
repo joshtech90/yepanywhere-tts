@@ -63,6 +63,7 @@ const {
     unread24h: [] as Array<Record<string, unknown>>,
     loading: false,
     error: null as Error | null,
+    warning: null as Error | null,
   },
 }));
 
@@ -255,6 +256,7 @@ describe("InboxContent", () => {
     inboxState.unread24h = [];
     inboxState.loading = false;
     inboxState.error = null;
+    inboxState.warning = null;
     projectQueueItems.length = 0;
     versionState.version = { capabilities: [PROJECT_QUEUE_CAPABILITY] };
     serverSettingsState.settings = {
@@ -279,6 +281,29 @@ describe("InboxContent", () => {
     fireEvent.click(screen.getByRole("button", { name: "filterByLabel" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: option }));
   }
+
+  it("keeps healthy sessions visible beside a catalogue warning and suppresses a misleading empty state", () => {
+    inboxState.warning = new Error("Some folders could not be matched");
+    inboxState.active = [makeInboxItem("healthy", "one")];
+    const view = renderInbox(<InboxContent />);
+    expect(screen.getByTestId("session-healthy")).toBeTruthy();
+    expect(screen.getByText("inboxIncompleteWarning")).toBeTruthy();
+    inboxState.active = [];
+    view.rerender(
+      <MemoryRouter>
+        <InboxContent />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText("inboxEmptyTitle")).toBeNull();
+    inboxState.warning = null;
+    view.rerender(
+      <MemoryRouter>
+        <InboxContent />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText("inboxIncompleteWarning")).toBeNull();
+    expect(screen.getByText("inboxEmptyTitle")).toBeTruthy();
+  });
 
   it("combines creation and project filters across tiers and remembers each source", () => {
     versionState.version = {
@@ -599,14 +624,6 @@ describe("InboxContent", () => {
     expect(statusOf("queue-failed").className).not.toBe(
       statusOf("queue-dispatching").className,
     );
-
-    // No legacy global inbox vocabulary survives on migrated nodes.
-    for (const id of ["queue-queued", "queue-dispatching", "queue-failed"]) {
-      expect(itemFor(id).className).not.toMatch(/\binbox-project-queue-item\b/);
-      expect(statusOf(id).className).not.toMatch(
-        /\binbox-project-queue-item__status\b/,
-      );
-    }
   });
 
   it("renders capability-gated unread review outcome cards", async () => {

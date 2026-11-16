@@ -1,9 +1,11 @@
+import rowsStyles from "./SettingsRows.module.css";
 import { useCallback } from "react";
 import { canServerUpdateCodex } from "../../api/codexUpdateStatus";
 import {
   CodexDetectedInstall,
   codexManualUpdateHint,
 } from "../../components/CodexUpdateGuidance";
+import { Banner } from "../../components/ui/Banner";
 import { Button } from "../../components/ui/Button";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { useToastContext } from "../../contexts/ToastContext";
@@ -62,7 +64,7 @@ export function CodexUpdatePanel() {
             {status.installed} → {status.latest}
           </span>
         ) : (
-          <span className="settings-hint">
+          <span className={rowsStyles.hint}>
             {t("providersCodexUpdateUpToDate", {
               version: status.installed,
             })}
@@ -78,13 +80,13 @@ export function CodexUpdatePanel() {
             href={status.releaseUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="settings-link"
+            className={rowsStyles.link}
           >
             {t("providersCodexUpdateReleaseNotes")}
           </a>
         )}
         <div className={styles.policy}>
-          <span className="settings-hint">
+          <span className={rowsStyles.hint}>
             {t("providersCodexUpdatePolicyTitle")}
           </span>
           <SegmentedControl
@@ -111,16 +113,16 @@ export function CodexUpdatePanel() {
 
       <CodexDetectedInstall
         status={status}
-        className={`settings-hint ${styles.detected}`}
+        className={`${rowsStyles.hint} ${styles.detected}`}
       />
 
       {status.belowMinimum && status.minimumSupported && (
-        <p className="settings-warning">
+        <Banner tone="warning" compact className={styles.message}>
           {t("codexUpdateBelowMinimum", {
             installed: status.installed,
             minimum: status.minimumSupported,
           })}
-        </p>
+        </Banner>
       )}
 
       {updateAvailable && (
@@ -132,7 +134,7 @@ export function CodexUpdatePanel() {
                 : t("providersCodexUpdateNow")}
             </Button>
           ) : status.manualInstallCommand ? (
-            <span className="settings-hint">
+            <span className={rowsStyles.hint}>
               {t("providersCodexUpdateWithInstaller")}
             </span>
           ) : null}
@@ -150,14 +152,20 @@ export function CodexUpdatePanel() {
               </Button>
             </>
           )}
-          {manualHint && <span className="settings-hint">{t(manualHint)}</span>}
+          {manualHint && (
+            <span className={rowsStyles.hint}>{t(manualHint)}</span>
+          )}
         </div>
       )}
 
-      {error && <p className={`settings-hint ${styles.error}`}>{error}</p>}
+      {error && (
+        <Banner tone="error" compact className={styles.message}>
+          {error}
+        </Banner>
+      )}
       {installOutput && (
         <details className={styles.output}>
-          <summary className="settings-hint">
+          <summary className={rowsStyles.hint}>
             {t("providersCodexUpdateInstallOutput")}
           </summary>
           <pre className={styles.outputText}>{installOutput}</pre>

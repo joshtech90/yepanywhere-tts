@@ -525,45 +525,95 @@ describe("Codex reference-backed rollout lineage", () => {
     );
   });
 
-  it("rejects a non-contiguous ordinal appended to a warm lineage cache", async () => {
-    const rootPrefix = [
+  it("replays provisional leaf metadata without replacing inherited entries or losing ordinal validation", async () => {
+    const root = [
       sessionMeta({ id: ROOT_ID, ordinal: 0 }),
-      userMessage(1, "Inherited root prompt"),
-      assistantMessage(2, "Inherited root answer"),
+      userMessage(1, "Inherited prompt"),
+      assistantMessage(2, "Inherited answer"),
     ];
-    await writeFile(rolloutPath(sessionsDir, ROOT_ID), jsonl(rootPrefix));
-
+    await writeFile(rolloutPath(sessionsDir, ROOT_ID), jsonl(root));
     const childPath = rolloutPath(sessionsDir, CHILD_ID);
     await writeFile(
       childPath,
-      jsonl([
+      JSON.stringify(
         sessionMeta({
           id: CHILD_ID,
           ordinal: 3,
-          historyBase: prefixPosition(ROOT_ID, rootPrefix),
+          historyBase: prefixPosition(ROOT_ID, root),
         }),
-        userMessage(4, "Valid child prompt"),
-      ]),
+      ),
     );
-
     const reader = new CodexSessionReader({ sessionsDir });
-    await expect(
-      reader.getSession(CHILD_ID, PROJECT_ID),
-    ).resolves.not.toBeNull();
-
+    const initial = await reader.getSession(CHILD_ID, PROJECT_ID);
+    expect(initial?.data.session.entries.map((e) => e.ordinal)).toEqual([
+      3, 1, 2,
+    ]);
+    await appendFile(childPath, "\n" + jsonl([userMessage(4, "Local prompt")]));
+    const replay = await reader.getSession(CHILD_ID, PROJECT_ID);
+    const rebuilt = await new CodexSessionReader({ sessionsDir }).getSession(
+      CHILD_ID,
+      PROJECT_ID,
+    );
+    expect(replay?.data.session.entries).toEqual(rebuilt?.data.session.entries);
+    expect(replay?.data.session.entries.map((e) => e.ordinal)).toEqual([
+      3, 1, 2, 4,
+    ]);
     await appendFile(childPath, jsonl([assistantMessage(99, "Invalid gap")]));
-    const errorLog = vi
-      .spyOn(getLogger(), "error")
-      .mockImplementation(() => undefined);
-
+    vi.spyOn(getLogger(), "error").mockImplementation(() => undefined);
     await expect(reader.getSession(CHILD_ID, PROJECT_ID)).rejects.toThrow(
       "non-contiguous leaf ordinal",
     );
-    await expect(
-      new CodexSessionReader({ sessionsDir }).getSession(CHILD_ID, PROJECT_ID),
-    ).rejects.toThrow("non-contiguous leaf ordinal");
-    expect(errorLog).toHaveBeenCalledTimes(2);
   });
+
+  it.each([true, false])(
+    "rejects a non-contiguous ordinal with trailing newline %s in warm and cold lineage reads",
+    async (newline) => {
+      const rootPrefix = [
+        sessionMeta({ id: ROOT_ID, ordinal: 0 }),
+        userMessage(1, "Inherited root prompt"),
+        assistantMessage(2, "Inherited root answer"),
+      ];
+      await writeFile(rolloutPath(sessionsDir, ROOT_ID), jsonl(rootPrefix));
+
+      const childPath = rolloutPath(sessionsDir, CHILD_ID);
+      await writeFile(
+        childPath,
+        jsonl([
+          sessionMeta({
+            id: CHILD_ID,
+            ordinal: 3,
+            historyBase: prefixPosition(ROOT_ID, rootPrefix),
+          }),
+          userMessage(4, "Valid child prompt"),
+        ]),
+      );
+
+      const reader = new CodexSessionReader({ sessionsDir });
+      await expect(
+        reader.getSession(CHILD_ID, PROJECT_ID),
+      ).resolves.not.toBeNull();
+
+      await appendFile(
+        childPath,
+        JSON.stringify(assistantMessage(99, "Invalid gap")) +
+          (newline ? "\n" : ""),
+      );
+      const errorLog = vi
+        .spyOn(getLogger(), "error")
+        .mockImplementation(() => undefined);
+
+      await expect(reader.getSession(CHILD_ID, PROJECT_ID)).rejects.toThrow(
+        "non-contiguous leaf ordinal",
+      );
+      await expect(
+        new CodexSessionReader({ sessionsDir }).getSession(
+          CHILD_ID,
+          PROJECT_ID,
+        ),
+      ).rejects.toThrow("non-contiguous leaf ordinal");
+      expect(errorLog).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("follows nested lineage through an archived ancestor", async () => {
     const archivedDir = join(codexHome, "archived_sessions");
@@ -748,4 +798,50 @@ describe("Codex reference-backed rollout lineage", () => {
     expect(loaded?.summary.title).toBe("Compressed root prompt");
     expect(loaded?.summary.messageCount).toBe(2);
   });
+
+  itIfNativeZstd(
+    "refreshes a nonwinning ancestor locator when its authoritative plain representation appears",
+    async () => {
+      if (!zstdCompressSync) throw new Error("zstd compression is unavailable");
+      const prefix = [
+        sessionMeta({ id: ROOT_ID, ordinal: 0 }),
+        userMessage(1, "Ancestor plain representation"),
+        assistantMessage(2, "Inherited answer"),
+      ];
+      const compressed = rolloutPath(sessionsDir, ROOT_ID, ".jsonl.zst");
+      await writeFile(compressed, zstdCompressSync(Buffer.from(jsonl(prefix))));
+      await writeFile(
+        replacementRolloutPath(sessionsDir, ROOT_ID, REPLACEMENT_ID),
+        jsonl([
+          sessionMeta({
+            id: ROOT_ID,
+            ordinal: 3,
+            historyBase: prefixPosition(ROOT_ID, prefix),
+          }),
+          userMessage(4, "Newer rollout"),
+        ]),
+      );
+      const warm = new CodexSessionReader({ sessionsDir });
+      const fresh = new CodexSessionReader({ sessionsDir });
+      try {
+        expect(
+          (await warm.getSession(ROOT_ID, PROJECT_ID))?.summary.title,
+        ).toBe("Ancestor plain representation");
+        await writeFile(rolloutPath(sessionsDir, ROOT_ID), jsonl(prefix));
+        await writeFile(
+          compressed,
+          "corrupted older compressed representation",
+        );
+        const now = Date.now();
+        vi.spyOn(Date, "now").mockReturnValue(now + 60_000);
+        await warm.listSessionFiles(sessionsDir);
+        const loaded = await fresh.getSession(ROOT_ID, PROJECT_ID);
+        expect(loaded?.summary.title).toBe("Ancestor plain representation");
+        expect(loaded?.summary.messageCount).toBe(3);
+      } finally {
+        await warm.close();
+        await fresh.close();
+      }
+    },
+  );
 });

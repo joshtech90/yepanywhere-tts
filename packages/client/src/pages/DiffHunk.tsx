@@ -1,3 +1,4 @@
+import diffStyles from "../components/renderers/DiffOutput.module.css";
 import { type CSSProperties, useLayoutEffect, useRef, useState } from "react";
 import { InnerHtml } from "../components/ui/InnerHtml";
 import { useI18n } from "../i18n";
@@ -300,7 +301,7 @@ function DiffHunk({
         <div className={styles.controlProbe} data-diff-control-probe="" />
       )}
       {layout.tall && header && (
-        <div className={`${styles.header} line-hunk`} data-diff-hunk-header="">
+        <div className={styles.header} data-diff-hunk-header="">
           {header}
         </div>
       )}
@@ -378,10 +379,7 @@ function DiffScrollGroup({
       style={{ "--diff-scroll-width": `${group.width}px` } as CSSProperties}
     >
       {!tall && (header || control) && (
-        <div
-          className={`${styles.header} ${header ? "line-hunk" : ""}`}
-          data-diff-hunk-header=""
-        >
+        <div className={styles.header} data-diff-hunk-header="">
           <span>{header}</span>
           {control}
         </div>
@@ -415,7 +413,8 @@ function DiffScrollGroup({
                 }}
               >
                 <InnerHtml
-                  className={`${styles.content} highlighted-diff`}
+                  className={`${styles.content} ${diffStyles.highlightedDiff}`}
+                  data-highlighted-diff
                   trustedHtml={`<pre class="shiki"><code>${html ?? '<span class="line"> </span>'}</code></pre>`}
                 />
               </div>

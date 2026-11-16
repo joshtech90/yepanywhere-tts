@@ -88,7 +88,7 @@ describe("composer textarea edits", () => {
 describe("composer textarea sizing", () => {
   it("resizes expanded textareas within the viewport cap", () => {
     const composer = document.createElement("div");
-    composer.className = "message-input";
+    composer.setAttribute("data-message-input", "");
     const textarea = document.createElement("textarea");
     textarea.rows = 3;
     composer.append(textarea);
@@ -208,9 +208,9 @@ describe("composer textarea sizing", () => {
 
   it("uses the session split as the in-session growth limit", () => {
     const split = document.createElement("div");
-    split.className = "session-split";
+    split.setAttribute("data-session-split", "");
     const input = document.createElement("div");
-    input.className = "session-input";
+    input.setAttribute("data-session-input", "");
     const host = document.createElement("div");
     host.dataset.composerFullPane = "true";
     const composer = document.createElement("div");

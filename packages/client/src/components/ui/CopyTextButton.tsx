@@ -8,14 +8,21 @@ import {
 } from "react";
 import { useTextTooltipAttributes } from "../../hooks/useTooltipAppearance";
 import { writeClipboardText } from "../../lib/clipboard";
-import { ButtonBase } from "./Button";
+import {
+  Button,
+  IconButton,
+  type ButtonSize,
+  type ButtonVariant,
+} from "./Button";
 import styles from "./CopyTextButton.module.css";
 
 interface Props {
   text: string;
   label: string;
-  className: string;
-  copiedClassName?: string;
+  className?: string;
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  subdued?: boolean;
   copiedLabel?: string;
   showTextLabel?: boolean;
   onClick?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
@@ -25,10 +32,13 @@ export const CopyTextButton = memo(function CopyTextButton({
   text,
   label,
   className,
-  copiedClassName = "copied",
+  variant = "secondary",
+  size = "small",
+  subdued = false,
   copiedLabel = "Copied message text",
   showTextLabel = false,
   onClick,
+  ...attributes
 }: Props) {
   const [copied, setCopied] = useState(false);
   const copiedResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -65,18 +75,36 @@ export const CopyTextButton = memo(function CopyTextButton({
   );
 
   const tooltip = useTextTooltipAttributes(copied ? copiedLabel : label);
+  const icon = copied ? <CheckIcon /> : <CopyIcon />;
+  if (!showTextLabel) {
+    return (
+      <IconButton
+        {...attributes}
+        label={copied ? copiedLabel : label}
+        variant={copied ? "success-outline" : variant}
+        size={size}
+        subdued={subdued}
+        className={className}
+        onClick={handleCopy}
+      >
+        {icon}
+      </IconButton>
+    );
+  }
   return (
-    <ButtonBase
+    <Button
+      {...attributes}
       {...tooltip}
-      className={`${className}${copied ? ` ${copiedClassName}` : ""}`}
+      variant={copied ? "success-outline" : variant}
+      size={size}
+      subdued={subdued}
+      className={className}
       onClick={handleCopy}
       aria-label={copied ? copiedLabel : label}
     >
-      {copied ? <CheckIcon /> : <CopyIcon />}
-      {showTextLabel && (
-        <span className={styles.label}>{copied ? "Copied" : "Copy"}</span>
-      )}
-    </ButtonBase>
+      {icon}
+      <span className={styles.label}>{copied ? "Copied" : "Copy"}</span>
+    </Button>
   );
 });
 

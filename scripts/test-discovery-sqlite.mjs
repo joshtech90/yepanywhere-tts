@@ -14,13 +14,17 @@ const [expected, storageDir = "packages/server/dist/storage", sharedFile] =
   process.argv.slice(2);
 // SQLite is required: every supported runtime must provide it.
 assert.equal(expected, "ready", "Pass ready");
-const { DiscoverySqliteService, migrateDiscoveryDatabase } = await import(
+const {
+  DISCOVERY_MIGRATIONS,
+  DiscoverySqliteService,
+  migrateDiscoveryDatabase,
+} = await import(
   pathToFileURL(resolve(storageDir, "discovery-sqlite.js")).href
 );
 const { loadSqliteDriver } = await import(
   pathToFileURL(resolve(storageDir, "sqlite.js")).href
 );
-const { SessionRelationshipStore } = await import(
+const { SessionRelationshipStore, relationshipResourceKey } = await import(
   pathToFileURL(resolve(storageDir, "../sessions/SessionRelationshipStore.js"))
     .href
 );
@@ -28,6 +32,19 @@ const { SessionMetadataService } = await import(
   pathToFileURL(resolve(storageDir, "../metadata/SessionMetadataService.js"))
     .href
 );
+const { SessionCatalogSqliteStore } = await import(
+  pathToFileURL(resolve(storageDir, "../services/session-catalog-sqlite.js"))
+    .href
+);
+const { SqliteSessionSummaryIndex } = await import(
+  pathToFileURL(resolve(storageDir, "../indexes/SqliteSessionSummaryIndex.js"))
+    .href
+);
+const { encodeMetadata, readStoredMetadata, SessionMetadataRows } =
+  await import(
+    pathToFileURL(resolve(storageDir, "../metadata/session-metadata-rows.js"))
+      .href
+  );
 const { ApiReceiptStore } = await import(
   pathToFileURL(resolve(storageDir, "../core-api/receipt-store.js")).href
 );
@@ -36,6 +53,260 @@ const { reconcileSessionRelationships } = await import(
     resolve(storageDir, "../sessions/session-relationship-reconciliation.js"),
   ).href
 );
+
+const { ProjectDiscoveryFacts } = await import(
+  pathToFileURL(resolve(storageDir, "../projects/project-discovery-facts.js"))
+    .href
+);
+const { SessionCollectionSql } = await import(
+  pathToFileURL(resolve(storageDir, "../services/session-collection-sql.js"))
+    .href
+);
+async function collectionCursorContract(database) {
+  const sql = new SessionCollectionSql(database);
+  try {
+    sql.beginReplacement();
+    const rows = Array.from({ length: 203 }, (_, i) => ({
+      id: `row-${i % 3 === 0 ? "A" : "a"}-${i}-项目`,
+      projectId: "L2ZpeHR1cmU",
+      projectName: "Fixture",
+      title: `Row ${i}`,
+      provider: "claude",
+      updatedAt: new Date(
+        1_700_000_000_000 - Math.floor(i / 71) * 1000,
+      ).toISOString(),
+      isStarred: true,
+      ownership: { owner: "none" },
+      activity: "idle",
+    }));
+    rows.forEach((row, i) => {
+      sql.put(row, null, i, false, false);
+    });
+    await sql.finishReplacement(new AbortController().signal);
+    const expected = [...rows].sort(
+      (a, b) =>
+        Date.parse(b.updatedAt) - Date.parse(a.updatedAt) ||
+        a.id.localeCompare(b.id),
+    );
+    const ids = [];
+    let afterCursor;
+    do {
+      const found = sql.select({ limit: 31, starredOnly: true, afterCursor });
+      ids.push(...found.map((row) => row.id));
+      const last = found.at(-1);
+      afterCursor =
+        found.length === 31 && last
+          ? JSON.stringify([JSON.parse(last.item).updatedAt, last.id])
+          : undefined;
+    } while (afterCursor);
+    assert.deepEqual(
+      ids,
+      expected.map((row) => row.id),
+    );
+    // Sparse candidates use the same scope, cursor and locale-tie policy without
+    // walking the timeline. Duplicates and unknown ids cannot change membership.
+    const candidates = [
+      rows[202].id,
+      rows[4].id,
+      rows[3].id,
+      rows[2].id,
+      rows[4].id,
+      "missing",
+    ];
+    const sparse = expected.filter((row) => candidates.includes(row.id));
+    const originalPrepare = database.prepare.bind(database);
+    let candidateSql;
+    database.prepare = (query) => {
+      if (!candidateSql && query.startsWith("SELECT id,updated_ms FROM"))
+        candidateSql = query;
+      return originalPrepare(query);
+    };
+    try {
+      assert.deepEqual(
+        sql
+          .select({ limit: 10, sessionIds: candidates }, "attention=0")
+          .map((r) => r.id),
+        sparse.map((r) => r.id),
+      );
+    } finally {
+      database.prepare = originalPrepare;
+    }
+    assert(
+      candidateSql,
+      "Capture the actual queued-candidate production SELECT",
+    );
+    assert.deepEqual(sql.select({ limit: 10, sessionIds: [] }), []);
+    assert.deepEqual(
+      sql.select({
+        limit: 10,
+        sessionIds: candidates,
+        accessibleProjectIds: [],
+      }),
+      [],
+    );
+    assert.deepEqual(
+      sql
+        .select({
+          limit: 10,
+          sessionIds: candidates,
+          accessibleProjectIds: [rows[0].projectId],
+          searchQuery: "row 202",
+        })
+        .map((r) => r.id),
+      [rows[202].id],
+    );
+    const sparseTail = sql.select({
+      limit: 10,
+      sessionIds: candidates,
+      afterCursor: JSON.stringify([sparse[0].updatedAt, sparse[0].id]),
+    });
+    assert.deepEqual(
+      sparseTail.map((r) => r.id),
+      sparse.slice(1).map((r) => r.id),
+    );
+    const planStatement = database.prepare(
+      "EXPLAIN QUERY PLAN " + candidateSql,
+    );
+    const plan = planStatement.all(JSON.stringify(candidates), 10);
+    planStatement.finalize();
+    assert(
+      plan.some((r) => /SEARCH .* USING INDEX .*\(id=\?\)/.test(r.detail)),
+      JSON.stringify(plan),
+    );
+    assert(
+      !plan.some((r) => /SCAN collection_query_.*_rows/.test(r.detail)),
+      JSON.stringify(plan),
+    );
+    sql.put({ ...rows[202], isArchived: true }, null, 202, false, false);
+    assert.deepEqual(
+      sql.select({ limit: 10, sessionIds: candidates }).map((r) => r.id),
+      sparse.filter((row) => row.id !== rows[202].id).map((r) => r.id),
+    );
+    assert.deepEqual(
+      sql
+        .select({ limit: 10, sessionIds: candidates, includeArchived: true })
+        .map((r) => r.id),
+      sparse.map((r) => r.id),
+    );
+    sql.put(rows[202], null, 202, false, false);
+    // A failed SQL continuation must fail the read, never masquerade as an
+    // authoritative empty page after the tuple parser catches an exception.
+    const prepare = database.prepare.bind(database);
+    let fail = true;
+    database.prepare = (query) => {
+      const statement = prepare(query);
+      return {
+        get: statement.get.bind(statement),
+        run: statement.run.bind(statement),
+        finalize: statement.finalize.bind(statement),
+        all: (...args) => {
+          if (fail) {
+            fail = false;
+            throw Error("injected continuation failure");
+          }
+          return statement.all(...args);
+        },
+      };
+    };
+    try {
+      assert.throws(
+        () =>
+          sql.select({
+            limit: 31,
+            afterCursor: JSON.stringify([rows[0].updatedAt, rows[0].id]),
+          }),
+        /injected continuation failure/,
+      );
+    } finally {
+      database.prepare = prepare;
+    }
+  } finally {
+    sql.dispose();
+  }
+}
+
+async function projectDiscoveryFactsContract(database) {
+  const source = new ProjectDiscoveryFacts({
+    database,
+    scope: () => ({
+      claude: "/unused",
+      codex: null,
+      gemini: null,
+      metadata: null,
+    }),
+    codexSessionsDir: "/unused",
+    queued: () => {},
+    changed: () => {},
+    invalidate: () => {},
+  });
+  const project = {
+    id: Buffer.from("/native/quoted-'项目").toString("base64url"),
+    path: "/native/quoted-'项目",
+    name: "quoted-'项目",
+    sessionDir: "/claude/store",
+    sessionCount: 2,
+    sessionCountsByProvider: { claude: 1, codex: 1 },
+    provider: "claude",
+    activeOwnedCount: 0,
+    activeExternalCount: 0,
+    lastActivity: "2026-11-11T00:00:00.000Z",
+  };
+  try {
+    assert.equal(source.retained(), undefined);
+    source.replace([project]);
+    assert.deepEqual(source.project(project.id), project);
+    database.exec(
+      "CREATE TEMP TRIGGER reject_project_fact BEFORE INSERT ON project_discovery_facts WHEN NEW.project_id='reject' BEGIN SELECT RAISE(ABORT,'project fact rollback'); END",
+    );
+    assert.throws(
+      () =>
+        source.replace([
+          project,
+          { ...project, id: "reject", path: "/native/reject" },
+        ]),
+      /project fact rollback/,
+    );
+    assert.deepEqual(source.retained(), [project]);
+    assert.equal(
+      source.project(project.id),
+      undefined,
+      "failed replacement must not certify a complete read",
+    );
+    database.exec("DROP TRIGGER reject_project_fact");
+    source.replace([{ ...project, sessionCount: 3 }]);
+    assert.equal(source.project(project.id).sessionCount, 3);
+    database.exec("UPDATE project_discovery_facts SET payload='not JSON'");
+    assert.equal(
+      source.retained(),
+      undefined,
+      "derived retention must be rebuildable",
+    );
+    source.replace([project]);
+    assert.deepEqual(source.project(project.id), project);
+    assert.equal(
+      source.observe({
+        type: "file-change",
+        provider: "claude",
+        changeType: "modify",
+        fileType: "session",
+        path: "/unmapped-file.jsonl",
+        relativePath: "unmapped-file.jsonl",
+        timestamp: "2026-11-11T00:00:00.000Z",
+      }),
+      true,
+    );
+    await source.flush();
+    assert.equal(
+      source.ready,
+      false,
+      "unknown file membership revokes complete proof",
+    );
+    assert.deepEqual(source.retained(), [project]);
+  } finally {
+    await source.dispose();
+  }
+  assert.throws(() => source.replace([project]), /disposed/);
+}
 
 // This must execute on both engines: Bun includes trigger writes in changes,
 // while Node reports only the direct row. A migration-only probe misses that.
@@ -102,6 +373,84 @@ function relationshipContract(database) {
     assert.equal(publish("v3", 3, "complete", [fact("three")]), true);
     assert.deepEqual(children(), ["three"]);
     assert.equal(store.checkpoint("runtime-contract", "parent").revision, 4);
+    // The portable bulk adapter must match the existing bounded store exactly,
+    // including page continuations and the first20 evidence policy.
+    const many = Array.from({ length: 70 }, (_, i) => fact(`bulk-${i}`));
+    assert.equal(publish("v4", 4, "complete", many), true);
+    for (let i = 0; i < 21; i++)
+      store.record(
+        { ...observation("v4"), producer: `a-${String(i).padStart(2, "0")}` },
+        [
+          {
+            ...many[0],
+            trust: i % 2 ? "peer-attested" : "provider-observed",
+            metadata: { title: `Evidence ${i}` },
+          },
+        ],
+      );
+    const batch = store.batch();
+    let after;
+    do {
+      const expected = store.list({
+        resource: parent,
+        direction: "outgoing",
+        type: "provider_child",
+        limit: 32,
+        after,
+      });
+      const actual = batch
+        .pages([{ resource: parent, after }], "outgoing", "provider_child", 32)
+        .get(relationshipResourceKey(parent));
+      assert.deepEqual(actual, expected);
+      const evidence = batch.evidence(expected.edges.map((edge) => edge.id));
+      for (const edge of expected.edges) {
+        assert.deepEqual(
+          evidence.get(edge.id),
+          store.evidence(edge.id, { limit: 20 }),
+        );
+        if (edge.target.sessionId === "bulk-0") {
+          assert.equal(evidence.get(edge.id).length, 20);
+          assert.deepEqual(
+            evidence.get(edge.id).map((row) => row.producer),
+            Array.from(
+              { length: 20 },
+              (_, i) => `a-${String(i).padStart(2, "0")}`,
+            ),
+          );
+          assert(
+            evidence.get(edge.id).some((row) => row.trust === "peer-attested"),
+          );
+          assert(
+            evidence
+              .get(edge.id)
+              .some((row) => row.trust === "provider-observed"),
+          );
+        }
+
+        assert.deepEqual(
+          batch
+            .pages([{ resource: edge.target }], "incoming", "provider_child", 2)
+            .get(relationshipResourceKey(edge.target)),
+          store.list({
+            resource: edge.target,
+            direction: "incoming",
+            type: "provider_child",
+            limit: 2,
+          }),
+        );
+      }
+      after = actual.next;
+    } while (after);
+    store.dispose();
+    assert.throws(() => store.list({ resource: parent }), /disposed/);
+    assert.throws(() => store.evidence("edge"), /disposed/);
+    assert.throws(() => store.batch(), /disposed/);
+    assert.throws(
+      () =>
+        batch.pages([{ resource: parent }], "outgoing", "provider_child", 32),
+      /disposed/,
+    );
+    assert.throws(() => batch.evidence(["edge"]), /disposed/);
   } finally {
     store.dispose();
   }
@@ -184,7 +533,7 @@ async function relationshipWriterContract(dataDir) {
   );
   assert.equal(receipts.get(receipt.id).sessionId, null);
   const legacy = database.prepare(
-    "INSERT INTO session_metadata(session_id, metadata) VALUES (?, ?)",
+    "INSERT INTO session_metadata(session_id, forked_from_session_id, extra) VALUES (?, ?, '{}')",
   );
   try {
     database.transaction(() => {
@@ -196,7 +545,7 @@ async function relationshipWriterContract(dataDir) {
         "\uE000",
         "\u{10000}",
       ])
-        legacy.run(id, '{"forkedFromSessionId":"origin"}');
+        legacy.run(id, "origin");
     });
   } finally {
     legacy.finalize();
@@ -240,7 +589,365 @@ async function relationshipWriterContract(dataDir) {
   );
   reopened.close();
 }
+// The catalog publication's UPSERTs, INSERT ... SELECT ... ON CONFLICT and
+// cascading text rows, on whichever SQLite each runtime links.
+function catalogContract(database) {
+  const store = new SessionCatalogSqliteStore(database);
+  const row = (sessionId, title) => ({
+    catalogFamily: "codex",
+    storeKey: "/store",
+    sessionId,
+    projectId: "id",
+    projectPath: "/p",
+    projectIdentityKey: "/p",
+    updatedAt: "2026-11-09T00:00:00.000Z",
+    ...(title === undefined ? {} : { title }),
+    fidelity: "head",
+    sourceVersion: sessionId,
+    location: { kind: "file", path: `/store/${sessionId}` },
+  });
+  const long = "t".repeat(600);
+  const state = (generation) => ({
+    epoch: "e",
+    generation,
+    completedAt: "2026-11-09T00:00:00.000Z",
+  });
+  store.writeGeneration(state(1), [row("a", long), row("b", null)], []);
+  assert.deepEqual(store.readRows(), [row("a", long), row("b", null)]);
+  const next = store.writeGeneration(state(2), [row("a", "short")], []);
+  assert.deepEqual(next, {
+    rowsWritten: 1,
+    rowsTombstoned: 1,
+    tombstonesPurged: 0,
+    lineageReplaced: false,
+  });
+  assert.deepEqual(store.readRows(), [row("a", "short")]);
+  // A publication's changes: resurrect a tombstone, tombstone by key.
+  const changed = store.applyChanges(
+    state(3),
+    2,
+    [
+      { type: "upsert", row: row("b", long) },
+      { type: "delete", key: row("a") },
+    ],
+    [],
+  );
+  assert.deepEqual(changed, {
+    rowsWritten: 1,
+    rowsTombstoned: 1,
+    tombstonesPurged: 0,
+    lineageReplaced: false,
+  });
+  assert.deepEqual(store.readRows(), [row("b", long)]);
+  // Change readers follow changed_gen: what generation 3 wrote or removed.
+  assert.deepEqual(
+    store
+      .readChangedKeys(2)
+      .sort((x, y) => x.key.sessionId.localeCompare(y.key.sessionId)),
+    [
+      {
+        key: { catalogFamily: "codex", storeKey: "/store", sessionId: "a" },
+        deleted: true,
+      },
+      {
+        key: { catalogFamily: "codex", storeKey: "/store", sessionId: "b" },
+        deleted: false,
+      },
+    ],
+  );
+  assert.deepEqual(store.readChangedKeys(3), []);
+  // A moved row is an upsert and a delete of one key; the upsert wins.
+  store.applyChanges(
+    state(4),
+    3,
+    [
+      { type: "upsert", row: row("b", "moved") },
+      { type: "delete", key: row("b") },
+    ],
+    [],
+  );
+  assert.deepEqual(store.readRows(), [row("b", "moved")]);
+  // A tombstone loses its text at once and its row at the horizon.
+  store.applyChanges(
+    state(5),
+    4,
+    [{ type: "upsert", row: row("c", long) }],
+    [],
+  );
+  store.applyChanges(state(6), 5, [{ type: "delete", key: row("c") }], []);
+  assert.equal(
+    database.prepare("SELECT count(*) AS n FROM session_catalog_text").get().n,
+    0,
+  );
+  const purged = store.applyChanges(state(7), 6, [], [], 6);
+  assert.equal(purged.tombstonesPurged, 2);
+  assert.equal(store.readState().tombstoneHorizon, 6);
+  assert.deepEqual(
+    store.readRowsWithHashes().map(({ row }) => row),
+    [row("b", "moved")],
+  );
+  assert.throws(() => store.applyChanges(state(8), 3.5, [], []), /follow/);
+  store.writeGeneration({ ...state(0), epoch: "f" }, [], []);
+  assert.equal(
+    database.prepare("SELECT count(*) AS n FROM session_catalog_text").get().n,
+    0,
+  );
+}
+/** Migration 029 derives each issue job's catalog key with JSON functions. */
+function issueJobMigrationContract() {
+  const database = loadSqliteDriver().open(":memory:");
+  try {
+    migrateDiscoveryDatabase(database, DISCOVERY_MIGRATIONS.slice(0, 28));
+    const insert = database.prepare(
+      "INSERT INTO issue_index_jobs(session_id,project_id,source_version,state,updated_at,source_json,priority) VALUES (?,'p','v','indexed',1,?,0)",
+    );
+    insert.run(
+      "a",
+      JSON.stringify({
+        catalogFamily: "codex",
+        storeKey: "/s",
+        nativeSessionId: "n",
+      }),
+    );
+    insert.run("b", JSON.stringify({ catalogFamily: "codex", storeKey: "/s" }));
+    // JSON functions must spell the key as JSON.stringify does.
+    const odd = '/s"t\\o\u2028r\u0001e😀';
+    insert.run("c", JSON.stringify({ catalogFamily: "codex", storeKey: odd }));
+    insert.run("v", "null");
+    insert.finalize();
+    migrateDiscoveryDatabase(database);
+    assert.deepEqual(
+      database
+        .prepare(
+          "SELECT session_id, catalog_key FROM issue_index_jobs ORDER BY session_id",
+        )
+        .all()
+        .map((job) => ({ ...job })),
+      [
+        { session_id: "a", catalog_key: '["codex","/s","n"]' },
+        { session_id: "b", catalog_key: '["codex","/s","b"]' },
+        { session_id: "c", catalog_key: JSON.stringify(["codex", odd, "c"]) },
+        { session_id: "v", catalog_key: null },
+      ],
+    );
+  } finally {
+    database.close();
+  }
+}
+/**
+ * Migration 030 moves `fullTitle` out with JSON functions; the rest of each
+ * summary must read back as written, numbers and escapes included, or every
+ * scope would be rewritten on its next save.
+ */
+function summaryTitleMigrationContract() {
+  const database = loadSqliteDriver().open(":memory:");
+  try {
+    migrateDiscoveryDatabase(database, DISCOVERY_MIGRATIONS.slice(0, 29));
+    database.exec("INSERT INTO session_summary_scopes VALUES ('s', 'p', 5)");
+    const odd = 'a"b\\c\u2028d\u0001e😀\ud800f';
+    const written = {
+      plain: {
+        title: "t",
+        fullTitle: "t long",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        messageCount: 3,
+        contextUsage: { inputTokens: 12345, percentage: 0.6170000000000001 },
+        indexedBytes: 9007199254740991,
+        fileMtime: 1731111111111.1235,
+        provider: "codex",
+      },
+      odd: {
+        title: odd,
+        fullTitle: odd.repeat(500),
+        lastAgentText: odd,
+        n: -0.5e-7,
+      },
+      // Escapes JSON functions must keep as written, in a summary that
+      // json_remove does rewrite (no lone surrogate or NUL).
+      escaped: {
+        title: "q",
+        fullTitle: 'a"b\\c\u2028d\u0001e😀/\t'.repeat(500),
+        lastAgentText: 'x"y\\z\u0001',
+        sizes: [1.5, 1e21, 12345678901234567000, 0.1, -5e-7],
+      },
+      nul: { title: "n", fullTitle: "before\u0000after" },
+      untitled: { title: null, fullTitle: null, isEmpty: true },
+    };
+    const insert = database.prepare(
+      "INSERT INTO session_summary_index (scope, session_id, summary) VALUES ('s', ?, ?)",
+    );
+    for (const [id, summary] of Object.entries(written))
+      insert.run(id, JSON.stringify(summary));
+    insert.finalize();
+    migrateDiscoveryDatabase(database);
+    assert.deepEqual(
+      database
+        .prepare(
+          "SELECT session_id, full_title IS NOT NULL AS split FROM session_summary_index ORDER BY session_id",
+        )
+        .all()
+        .map((row) => [row.session_id, Number(row.split)]),
+      [
+        ["escaped", 1],
+        ["nul", 0],
+        ["odd", 0],
+        ["plain", 1],
+        ["untitled", 0],
+      ],
+    );
+    const store = new SqliteSessionSummaryIndex(database);
+    try {
+      const sessions = store.read("s").sessions;
+      for (const [id, summary] of Object.entries(written)) {
+        assert.deepEqual(sessions[id], summary);
+        assert.equal(JSON.stringify(sessions[id]), JSON.stringify(summary));
+      }
+    } finally {
+      store.dispose();
+    }
+  } finally {
+    database.close();
+  }
+}
+/**
+ * Migration 031 on this driver's SQLite: typed values move to columns, the
+ * rest stays in `extra` exactly, and every row encodes back unchanged.
+ */
+function metadataColumnsMigrationContract() {
+  const database = loadSqliteDriver().open(":memory:");
+  try {
+    migrateDiscoveryDatabase(database, DISCOVERY_MIGRATIONS.slice(0, 30));
+    const odd = 'a"b\\c\u2028d\u0001e😀/\t';
+    const written = {
+      plain: {
+        provider: "codex",
+        workingProjectId: "L3RtcA",
+        isArchived: true,
+        isStarred: false,
+        customTitle: odd,
+        initialPrompt: odd.repeat(500),
+        effectiveLaunchSettings: { revision: 2, ratio: 0.6170000000000001 },
+        sizes: [1.5, 1e21, 12345678901234567000, 0.1, -5e-7],
+        nested: { text: odd },
+      },
+      lone: { customTitle: "cut \ud83d", sandboxLevel: "project-write" },
+      nul: { initialPrompt: "before\u0000after", executor: "host" },
+      mistyped: { provider: 7, isArchived: "yes", customTitle: null },
+    };
+    const insert = database.prepare(
+      "INSERT INTO session_metadata (session_id, metadata) VALUES (?, ?)",
+    );
+    for (const [id, metadata] of Object.entries(written))
+      insert.run(id, JSON.stringify(metadata));
+    insert.finalize();
+    migrateDiscoveryDatabase(database);
+    assert.deepEqual(
+      database
+        .prepare(
+          "SELECT session_id, provider, is_archived, is_starred, custom_title IS NOT NULL AS title, initial_prompt IS NOT NULL AS prompt, sandbox_level FROM session_metadata ORDER BY session_id",
+        )
+        .all()
+        .map((row) => ({ ...row })),
+      [
+        {
+          session_id: "lone",
+          provider: null,
+          is_archived: null,
+          is_starred: null,
+          title: 0,
+          prompt: 0,
+          sandbox_level: "project-write",
+        },
+        {
+          session_id: "mistyped",
+          provider: null,
+          is_archived: null,
+          is_starred: null,
+          title: 0,
+          prompt: 0,
+          sandbox_level: null,
+        },
+        {
+          session_id: "nul",
+          provider: null,
+          is_archived: null,
+          is_starred: null,
+          title: 0,
+          prompt: 0,
+          sandbox_level: null,
+        },
+        {
+          session_id: "plain",
+          provider: "codex",
+          is_archived: 1,
+          is_starred: 0,
+          title: 1,
+          prompt: 1,
+          sandbox_level: null,
+        },
+      ],
+    );
+    const stored = readStoredMetadata(database);
+    const rows = new SessionMetadataRows(database);
+    try {
+      for (const [id, metadata] of Object.entries(written)) {
+        assert.deepEqual(stored.get(id), metadata);
+        assert.ok(rows.matches(id, encodeMetadata(stored.get(id))), id);
+        // The writer stores what the migration stored, on this driver too.
+        rows.write(`${id}-written`, encodeMetadata(metadata));
+        assert.deepEqual(
+          readStoredMetadata(database).get(`${id}-written`),
+          metadata,
+        );
+      }
+    } finally {
+      rows.dispose();
+    }
+  } finally {
+    database.close();
+  }
+}
 try {
+  issueJobMigrationContract();
+  summaryTitleMigrationContract();
+  metadataColumnsMigrationContract();
+  const catalog = openService(join(temporary, "catalog"));
+  catalogContract(catalog.getDatabase());
+  await projectDiscoveryFactsContract(catalog.getDatabase());
+  await collectionCursorContract(catalog.getDatabase());
+  // A transaction larger than the page cache must fail fast, not stall, while
+  // an outside reader holds its shared lock (cache_spill is off).
+  const reader = loadSqliteDriver().open(
+    join(temporary, "catalog", "discovery.sqlite"),
+  );
+  reader.exec("BEGIN");
+  reader.prepare("SELECT count(*) FROM session_catalog").get();
+  const started = Date.now();
+  assert.throws(
+    () =>
+      new SessionCatalogSqliteStore(catalog.getDatabase()).writeGeneration(
+        { epoch: "g", generation: 1, completedAt: "2026-11-09T00:00:00.000Z" },
+        Array.from({ length: 5000 }, (_, index) => ({
+          catalogFamily: "codex",
+          storeKey: "/store",
+          sessionId: `big-${index}`,
+          projectId: "id",
+          projectPath: "/p",
+          projectIdentityKey: "/p",
+          updatedAt: "2026-11-09T00:00:00.000Z",
+          title: "w".repeat(1000),
+          fidelity: "head",
+          sourceVersion: "v",
+          location: { kind: "file", path: `/store/big-${index}` },
+        })),
+        [],
+      ),
+    /locked|busy/i,
+  );
+  assert.ok(Date.now() - started < 5000, "a blocked write must fail fast");
+  reader.exec("ROLLBACK");
+  reader.close();
+  catalog.close();
   const relationships = openService(join(temporary, "relationships"));
   relationshipContract(relationships.getDatabase());
   relationships.close();

@@ -147,7 +147,7 @@
   white-space: nowrap;
 }
 
-.age {
+.age.age {
   color: var(--text-muted);
 }
 
@@ -173,19 +173,12 @@
   height: 0.55rem;
   flex: 0 0 auto;
   border: 1px solid color-mix(in srgb, var(--cache-session-color) 65%, black);
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: var(--cache-session-color);
 }
 
 .messageJump {
-  min-height: 2.25rem;
-  color: var(--accent-color);
-  font-size: inherit;
   white-space: nowrap;
-}
-
-.messageJump:hover {
-  text-decoration: underline;
 }
 
 .miss {

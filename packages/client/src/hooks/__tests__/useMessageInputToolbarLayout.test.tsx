@@ -1,5 +1,7 @@
+import toolbarStyles from "../../components/MessageInputToolbar.module.css";
 import { render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { DEFAULT_SESSION_TOOLBAR_PRIORITY } from "../useSessionToolbarPresence";
 import { useMeasuredComposerOverflow } from "../useMessageInputToolbarLayout";
 
 afterEach(() => {
@@ -29,6 +31,12 @@ it.each([true, false])(
         useMeasuredComposerOverflow({
           layoutKey: String(composing),
           hasControls: true,
+          priority: {
+            ...DEFAULT_SESSION_TOOLBAR_PRIORITY,
+            modeSelector: "first",
+            attachments: samePriority ? "first" : "mid",
+          },
+          pinOnlyMicrophone: false,
         });
       return (
         <div
@@ -37,10 +45,10 @@ it.each([true, false])(
           data-testid="toolbar"
           data-tier={tier}
         >
-          <div className="message-input-left">
+          <div data-message-input-left>
             <button
               type="button"
-              className="composer-bottom-overflow-inline composer-bottom-overflow-early"
+              className={toolbarStyles.composerBottomOverflowInline}
               data-session-toolbar-control="modeSelector"
               style={{
                 display: hiddenControls.has("modeSelector") ? "none" : "block",
@@ -51,7 +59,7 @@ it.each([true, false])(
             <button
               type="button"
               data-session-toolbar-control="attachments"
-              className={`composer-bottom-overflow-inline composer-bottom-overflow-${samePriority ? "early" : "medium"}`}
+              className={toolbarStyles.composerBottomOverflowInline}
               style={{
                 display: hiddenControls.has("attachments") ? "none" : "block",
               }}
@@ -59,11 +67,11 @@ it.each([true, false])(
               Second
             </button>
           </div>
-          <div className="message-input-actions">
+          <div data-message-input-actions>
             <button
               type="button"
               data-width="20"
-              className="composer-bottom-overflow-inline"
+              className={toolbarStyles.composerBottomOverflowInline}
               data-session-toolbar-control="microphone"
             >
               Pinned

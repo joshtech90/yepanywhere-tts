@@ -160,7 +160,7 @@ window.yaNativeFixtureModule = yaNativeFixtureModule;
       ).restoreNativeSource(),
     );
     await expect(page.locator("[data-connection-status]")).toHaveCount(0);
-    await expect(page.locator(".project-list-cards")).toBeVisible();
+    await expect(page.locator("[data-project-list-cards]")).toBeVisible();
     expect(await page.evaluate(() => performance.timeOrigin)).toBe(
       coldDocument,
     );
@@ -177,7 +177,7 @@ window.yaNativeFixtureModule = yaNativeFixtureModule;
       .catch((error) => {
         throw new Error(`${error.message}\n${errors.join("\n")}`);
       });
-    const skip = page.locator(".onboarding-skip-all");
+    const skip = page.getByRole("button", { name: "Skip all", exact: true });
     if (await skip.isVisible().catch(() => false)) await skip.click();
     const composer = page.locator("textarea[data-composer-input]");
     await expect(composer).toBeVisible();
@@ -192,9 +192,9 @@ window.yaNativeFixtureModule = yaNativeFixtureModule;
         window as unknown as { restoreNativeSource: () => void }
       ).restoreNativeSource(),
     );
-    await expect(page.locator(".message-list")).toBeVisible();
+    await expect(page.locator("[data-message-list]")).toBeVisible();
     await expect(
-      page.locator(".session-messages").getByRole("status"),
+      page.locator("[data-session-messages]").getByRole("status"),
     ).toHaveCount(0);
     expect(await page.evaluate(() => performance.timeOrigin)).toBe(
       sessionDocument,

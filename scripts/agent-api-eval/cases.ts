@@ -1,6 +1,10 @@
+import { isFullSchemaPath } from "./documentation-metrics.js";
+import { TARGET_ARTIFACT, TARGET_PROOF } from "./target-contract.js";
+import { correctSelection } from "./selection.js";
+import type { ApiSessionInspection } from "../../packages/server/src/core-api/selection-contracts.js";
 import type { ApiSession } from "../../packages/server/src/core-api/contracts.js";
 
-export const FIXTURE_REVISION = "agent-api-peers-8";
+export const FIXTURE_REVISION = "agent-api-selection-9";
 export const SERVER_ID = "00000000-0000-4000-8000-000000000001";
 export const OWN_SESSION_ID = "eval-owning-session";
 export const PROJECT_ID = "orchid-project";
@@ -32,6 +36,16 @@ sessions.push({
   updatedAt: "2026-01-02T00:00:00.000Z",
 });
 export const CASES = {
+  target_contract:
+    "Discover the other server's target-only probe operation from its own documentation and exact schema, use it, and report the returned artifact exactly in answer. Do not assume the access server implements the same API.",
+  approval:
+    "A worker named Approval worker is blocked. Inspect why, approve its pending permission request, and read the artifact it produces afterward. Report the worker session id and that artifact exactly in answer. Do not claim success from admission alone.",
+  controls:
+    "Interrupt the worker named Interrupt worker and stop the worker named Stop worker. Inspect their control receipts and resulting session states. Report their ids in sessionIds and answer as interrupt-state|stop-state using observed session state values. Do not automatically resume them.",
+  selection:
+    "Discover the Codex pool named Release pool and its model/effort/speed choices. Create one worker in Orchid on that pool using its Release model, high thinking effort, Fast speed, and plan permission mode. Read the worker session back and verify all those settings plus its selected pool and account. Report the worker id in sessionId, supported=true only after verification, and answer exactly as model|effort|serviceTier|poolId|accountId|permissionMode using observed values. Do not infer completion from creation acceptance.",
+  operation:
+    "Find the operation id and HTTP method/path used to create sessions, then fetch only that operation's exact schema. Report its operation id in answer. Avoid downloading the full OpenAPI schema.",
   workflow:
     "Create one Codex worker in Orchid and read its initial release answer. Queue a follow-up asking for its follow-up artifact, repeat that identical submission with the same retry key once, and follow its receipt for input consumption. Reconnect to its conversation and inspect trusted creation provenance. Report the worker id in sessionId, creator session id in sessionIds, and final follow-up artifact exactly in answer. Do not infer successful task completion from queue acceptance.",
   create:
@@ -69,7 +83,17 @@ export interface Answer {
   answer: string;
 }
 export interface Trace {
-  receipt?: { id: string; kind: string; delivery: string };
+  inspection?: ApiSessionInspection;
+  receipt?: {
+    id: string;
+    kind: string;
+    delivery: string;
+    state?: string;
+    result?: Record<string, unknown>;
+  };
+  sessionState?: string;
+  pendingId?: string;
+  artifact?: string;
   follow?: { cursor: string; reset: boolean; changed: boolean };
   method: string;
   path: string;
@@ -100,6 +124,33 @@ export const answerSchema = {
   ],
   additionalProperties: false,
 };
+/**
+ * One spelling per request, so a grader compares what was asked for and not
+ * how the agent typed it: decoded path segments, no trailing slash, the
+ * `self` alias resolved, and query parameters decoded and sorted.
+ */
+export function canonicalRequestPath(path: string, targetServerId: string) {
+  const url = new URL(path, "http://fixture");
+  const segments = url.pathname.split("/").map((segment) => {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return segment;
+    }
+  });
+  while (segments.length > 2 && segments.at(-1) === "") segments.pop();
+  if (
+    segments[1] === "v0" &&
+    segments[2] === "servers" &&
+    segments[3] === "self"
+  )
+    segments[3] = targetServerId;
+  const query = [...url.searchParams]
+    .sort(([a, x], [b, y]) => a.localeCompare(b) || x.localeCompare(y))
+    .map(([name, value]) => `${name}=${value}`)
+    .join("&");
+  return query ? `${segments.join("/")}?${query}` : segments.join("/");
+}
 export function grade(
   caseId: CaseId,
   answer: Answer | null,
@@ -122,14 +173,148 @@ export function grade(
     typeof answer.answer !== "string"
   )
     return false;
+  // self is interpreted at the access server; normalize for evidence matching.
+  trace = trace.map((entry) => ({
+    ...entry,
+    path: canonicalRequestPath(entry.path, targetServerId),
+  }));
   switch (caseId) {
+    case "target_contract":
+      return (
+        answer.answer === TARGET_ARTIFACT &&
+        read(`${root}/help`) &&
+        trace.some(
+          (t) =>
+            t.status === 200 &&
+            t.path === `${root}/schema?operation=targetProbe`,
+        ) &&
+        trace.some(
+          (t) =>
+            t.status === 200 &&
+            t.path === `${root}/extension/probe?proof=${TARGET_PROOF}` &&
+            t.artifact === TARGET_ARTIFACT,
+        )
+      );
+    case "approval":
+      return (
+        answer.sessionId === "approval-worker" &&
+        answer.answer === "approved-artifact-4d8" &&
+        trace.some(
+          (t) =>
+            t.status === 200 &&
+            t.path === `${root}/sessions/approval-worker/requests` &&
+            t.pendingId === "permission-001",
+        ) &&
+        trace.some(
+          (t) =>
+            t.method === "POST" &&
+            t.status === 202 &&
+            t.path ===
+              `${root}/sessions/approval-worker/requests/permission-001/response`,
+        ) &&
+        trace.some(
+          (t) =>
+            t.status === 200 &&
+            t.receipt?.kind === "respond" &&
+            t.receipt.state === "accepted" &&
+            t.receipt.result?.accepted === true,
+        ) &&
+        trace.some(
+          (t) =>
+            t.status === 200 &&
+            t.path.startsWith(
+              `${root}/sessions/approval-worker/conversation`,
+            ) &&
+            t.artifact === "approved-artifact-4d8",
+        )
+      );
+    case "controls":
+      return (
+        answer.answer === "idle|terminated" &&
+        ["interrupt-worker", "stop-worker"].every((id) =>
+          answer.sessionIds.includes(id),
+        ) &&
+        ["cancel", "stop"].every(
+          (kind) =>
+            trace.some(
+              (t) =>
+                t.method === "POST" &&
+                t.status === 202 &&
+                t.path ===
+                  `${root}/sessions/${kind === "cancel" ? "interrupt" : "stop"}-worker/${kind}`,
+            ) &&
+            trace.some(
+              (t) =>
+                t.status === 200 &&
+                t.receipt?.kind === kind &&
+                t.receipt.state === "accepted" &&
+                (kind === "cancel"
+                  ? t.receipt.result?.interrupted === true
+                  : t.receipt.result?.stopped === true),
+            ),
+        ) &&
+        trace.some(
+          (t) =>
+            t.status === 200 &&
+            t.path === `${root}/sessions/interrupt-worker` &&
+            t.sessionState === "idle",
+        ) &&
+        trace.some(
+          (t) =>
+            t.status === 200 &&
+            t.path === `${root}/sessions/stop-worker` &&
+            t.sessionState === "terminated",
+        )
+      );
+    case "operation":
+      return (
+        /\bcreateSession\b/.test(answer.answer) &&
+        trace.some(
+          (entry) =>
+            entry.status === 200 &&
+            [
+              "/v0/schema?operation=createSession",
+              `${root}/schema?operation=createSession`,
+            ].includes(entry.path),
+        ) &&
+        !trace.some(
+          (entry) => entry.status === 200 && isFullSchemaPath(entry.path),
+        )
+      );
+    case "selection":
+      return (
+        answer.sessionId === "eval-worker-1" &&
+        answer.supported === true &&
+        answer.answer ===
+          "release-model|high|priority|release-pool|release-account|plan" &&
+        trace.some(
+          (entry) =>
+            entry.status === 200 &&
+            entry.path.startsWith(`${root}/selection?`) &&
+            new URL(entry.path, "http://fixture").searchParams.get(
+              "provider",
+            ) === "codex",
+        ) &&
+        trace.some(
+          (entry) =>
+            entry.method === "POST" &&
+            entry.status === 202 &&
+            entry.path === `${root}/sessions`,
+        ) &&
+        trace.some(
+          (entry) =>
+            entry.status === 200 &&
+            entry.path === `${root}/sessions/eval-worker-1` &&
+            correctSelection(entry.inspection),
+        )
+      );
     case "workflow": {
       const sent = trace.filter(
         (entry) =>
           entry.method === "POST" &&
           entry.status === 202 &&
-          entry.path === `${root}/sessions/eval-worker-1/messages` &&
-          entry.receipt?.kind === "sendMessage",
+          entry.path === `${root}/sessions/eval-worker-1/inputs` &&
+          entry.receipt?.kind === "input",
       );
       const repeated =
         sent.length >= 2 &&

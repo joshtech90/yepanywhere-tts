@@ -591,8 +591,8 @@ fetches, range reads and XHTML still receive the original bytes.
 
 ### Configuration and delivery
 
-Settings → Apps owns artifact and static-vhost settings. Local Access and
-Remote Access link to that category.
+Settings → Apps owns artifact and static-vhost settings. Remote Access links
+to that category.
 Listener serving defaults off. Managed relay previews do not enable this
 listener. Enabling local access pre-fills
 `http://artifacts.localhost:<YA port>`; the complete address remains editable.
@@ -1062,9 +1062,10 @@ as described above. `/api`, `/public-api`, desktop bootstrap, and YA control
 WebSocket upgrades remain unavailable on artifact hosts.
 Registered artifact hostnames stay excluded from YA host/CORS/WebSocket trust
 until process exit, including after disable/reconfiguration and with wildcard
-allowed-host settings. Opaque `Origin: null` is also rejected once an artifact
-host has been registered, preventing a navigated artifact from borrowing that
-legacy origin allowance. Native named Tauri origins keep their existing rules.
+allowed-host settings. YA never trusts an opaque `Origin: null` for CORS or
+WebSocket upgrades, since any web page can mint one with a sandboxed iframe;
+once an artifact host has been registered, every YA request carrying it is
+also refused outright. Native named Tauri origins keep their existing rules.
 
 Admission authorizes the selected HTML file's containing directory, subject to
 the current file-access allow-set on every read. Relative traversal, hidden

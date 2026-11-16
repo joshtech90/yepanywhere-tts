@@ -25,6 +25,10 @@ import {
   listSessionsAcrossProviders,
 } from "../../src/sessions/provider-resolution.js";
 import { RetainedSessionCollections } from "../../src/services/RetainedSessionCollections.js";
+import {
+  closeTestDiscoveryDatabases,
+  openTestDiscoveryDatabase,
+} from "../utils/session-metadata-database.js";
 import { collectionCatalogAdapters } from "../../src/sessions/catalog-adapters/collection-catalog-adapters.js";
 import { readRetainedSessionItems } from "../../src/routes/retained-session-collections.js";
 import { vocabularySessions } from "../../src/services/voice/vocabulary-sessions.js";
@@ -269,6 +273,7 @@ it("projects discovery once across native collections and scoped summary lookups
 
       collections = new RetainedSessionCollections({
         dataDir: join(root, "catalog"),
+        database: openTestDiscoveryDatabase(join(root, "catalog")),
         adapters: (rows, signal, changedPaths) =>
           collectionCatalogAdapters(
             {
@@ -338,15 +343,16 @@ it("projects discovery once across native collections and scoped summary lookups
               sessionDir: globalRoot,
             }) as import("../../src/sessions/codex-reader.js").CodexSessionReader,
         };
-        const nativeCatalog = {
-          read: async () => ({ rows: [row], catalog }),
-          invalidate: vi.fn(),
-        };
         const collect = async (sourceRow: typeof row) => {
           const sessions = vocabularySessions(
             {
-              ...nativeCatalog,
-              read: async () => ({ rows: [sourceRow], catalog }),
+              readChanges: async () => ({
+                ...catalog,
+                full: true,
+                rows: [sourceRow],
+                removed: [],
+              }),
+              invalidate: vi.fn(),
             },
             app!.scanner,
             vocabularyDeps,
@@ -416,6 +422,7 @@ it("projects discovery once across native collections and scoped summary lookups
     app?.stopNotifications();
     await app?.disposeSessionReaders();
     storage?.close();
+    closeTestDiscoveryDatabases();
     await rm(root, { recursive: true, force: true });
     vi.restoreAllMocks();
   }

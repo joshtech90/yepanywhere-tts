@@ -1,3 +1,4 @@
+import modalStyles from "./ui/Modal.module.css";
 import {
   fromUrlProjectId,
   isUrlProjectId,
@@ -162,7 +163,11 @@ export function FilePathCopyButton({ filePath }: { filePath: string }) {
       text={filePath}
       label="Copy path"
       copiedLabel="Copied path"
-      className="file-path-copy"
+      className={styles.filePathCopy}
+      data-file-path-copy
+      variant="ghost"
+      size="inline-icon"
+      subdued
       onClick={(event) => event.stopPropagation()}
     />
   );
@@ -518,14 +523,19 @@ export const FilePathLink = memo(function FilePathLink({
       <FileDiffLinkCluster>
         <a
           href={fileViewUrl ?? "#"}
-          className="file-path-link"
+          className={styles.filePathLink}
+          data-file-path-link
           onClick={handleClick}
           onContextMenu={handleContextMenu}
           {...tooltipAttributes}
         >
-          <span className="file-path-link-name">{text}</span>
+          <span className={styles.filePathLinkName} data-file-path-link-name>
+            {text}
+          </span>
           {visibleSuffix && (
-            <span className="file-path-link-line">{visibleSuffix}</span>
+            <span className={styles.filePathLinkLine} data-file-path-link-line>
+              {visibleSuffix}
+            </span>
           )}
         </a>
         {showCopyButton && <FilePathCopyButton filePath={viewerFilePath} />}
@@ -923,12 +933,13 @@ export function FileViewerModal({
   const sessionViewerLayer =
     publicShareContext === null
       ? (document.querySelector<HTMLElement>(
-          ".navigation-route-layer.is-active [data-session-viewer-layer]",
+          "[data-navigation-route-layer][data-navigation-active] [data-session-viewer-layer]",
         ) ?? document.querySelector<HTMLElement>("[data-session-viewer-layer]"))
       : null;
   const modalContent = (
     <div
-      className="modal-overlay"
+      className={modalStyles.modalOverlay}
+      data-modal-overlay
       aria-hidden={minimized || undefined}
       style={minimized ? { display: "none" } : undefined}
       onClick={handleOverlayClick}
@@ -936,11 +947,11 @@ export function FileViewerModal({
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: click only stops propagation, keyboard handled globally */}
       <dialog
-        className={`modal file-viewer-modal ${styles.fileViewerModal} ${
-          viewMode === "range"
-            ? `file-viewer-modal-compact ${styles.fileViewerModalCompact}`
-            : ""
+        className={`${modalStyles.modal} ${styles.fileViewerModal} ${
+          viewMode === "range" ? `${styles.fileViewerModalCompact}` : ""
         }`}
+        data-modal-frame
+        data-file-viewer-modal
         {...QUOTE_SELECTION_ROOT_ATTRIBUTES}
         open
         onClick={(e) => e.stopPropagation()}
@@ -954,9 +965,9 @@ export function FileViewerModal({
     publicShareContext === null
       ? (sessionViewerLayer ??
         document.querySelector<HTMLElement>(
-          ".navigation-route-layer.is-active .session-page",
+          "[data-navigation-route-layer][data-navigation-active] [data-session-page]",
         ) ??
-        document.querySelector<HTMLElement>(".session-page"))
+        document.querySelector<HTMLElement>("[data-session-page]"))
       : null;
 
   return createPortal(

@@ -2,20 +2,18 @@
 
 Topic: http-api-v0
 
-Status: local compact reads/following and opt-in native creation/messaging
-implemented, 2026-10-30. The maintainer selected
-HTTP-first design, explicit server addressing, agent-discoverable identity/access,
-and creation provenance, then authorized implementation. The delivered subset
-is specified below; peer routing/enrollment remain later slices.
-Launch-bound bootstrap is implemented. [Implementation and tests](../docs/tactical/165-http-api-v0.md)
-track the staged work. This does not reprioritize releases or restart the
-archived session-core campaign.
+Status: local reads/following, native creation/queued prompts, directional
+peer access, target-owned forwarding and basic session controls are implemented.
+Revision `2026-11-13.1` adds target help/schema, opaque peer operations,
+header-based retry keys and requests/respond/cancel/stop under
+[plan 192](../docs/tactical/192-v0-session-control-and-peer-contracts.md).
+The API remains alpha and deliberately unstable. Release priority is unchanged.
 
 ## Implemented local read contract
 
 The ordinary app mounts `/v0`, `/v0/schema`, `/v0/me`, `/v0/servers`, and the
 self server's description, access, capabilities, projects, providers, sessions
-and single-session summary routes. Unknown targets never execute locally.
+and single-session detail routes. Unknown targets never execute locally.
 Compact conversations/following and separately authorized creation, messaging,
 receipts and provenance are specified below. Other planned resources remain
 absent.
@@ -38,14 +36,14 @@ Peer projections and limited-user provenance restrictions remain unchanged.
 This local projection adds no remote traversal or new grant.
 An opted-in related-section error fails the whole reply; retry from a fresh
 related page, or omit opt-in to read receipts alone. This additive optional
-projection keeps revision `2026-11-01.1`: absence is its compatibility signal,
+projection originally kept revision `2026-11-01.1`: absence is its compatibility signal,
 and existing access servers need no revision-only upgrade for receipt reads.
 Unreleased source builds that first introduced `related` can ignore the later
 direction/type filters; no stable release contains that intermediate contract.
 Callers needing those filters against arbitrary source builds must validate
 returned predicates/directions or consult the generated query schema.
 
-- `/v0` returns public server id, revision `2026-11-01.1`, unstable status and
+- `/v0` returns public server id, current revision `2026-11-13.1`, unstable status and
   discovery links. The documentation slice adds Markdown
   help at `/v0/help`, links help/me/schema from discovery, and generates field
   descriptions, operation semantics and example requests alongside OpenAPI.
@@ -66,8 +64,8 @@ returned predicates/directions or consult the generated query schema.
   filtering precedes pagination; hidden lists do not revoke direct access.
 - Projects use the existing retained project projection. Providers are exposed
   harness descriptors and supported steering/permission controls; this endpoint
-  performs no installation/authentication/model discovery. A model catalog is
-  later work. Sessions are retained native-catalog summaries with current
+  performs no installation/authentication/model discovery. Explicit launch catalog discovery is available through `selection`,
+  described below. Sessions are retained native-catalog summaries with current
   metadata/runtime overlays, not full transcripts or messages.
 - Catalog responses report `complete` and `refreshing`. A missing detail in an
   incomplete catalog returns `503 catalog_not_ready`; a missing or inaccessible
@@ -222,10 +220,22 @@ requests. Examples below are proposed routes, not installed endpoints:
 | `GET /v0/servers/{serverId}/sessions` | Bounded, filtered session catalog |
 | `POST /v0/servers/{serverId}/sessions` | Create a native YA session in a selected workspace |
 | `GET /v0/servers/{serverId}/sessions/{sessionId}` | Session facts and state |
-| `PATCH /v0/servers/{serverId}/sessions/{sessionId}` | Supported configuration/metadata changes |
-| `GET /v0/servers/{serverId}/sessions/{sessionId}/messages` | Bounded visible history |
-| `POST /v0/servers/{serverId}/sessions/{sessionId}/messages` | Submit input with explicit supported delivery semantics |
+| `GET /v0/servers/{serverId}/sessions/{sessionId}/requests` | Pending permission/question input |
+| `POST /v0/servers/{serverId}/sessions/{sessionId}/requests/{requestId}/response` | Answer permission input |
+| `POST /v0/servers/{serverId}/sessions/{sessionId}/cancel` | Existing YA interrupt behavior |
+| `POST /v0/servers/{serverId}/sessions/{sessionId}/stop` | Verified provider shutdown |
+| `GET /v0/servers/{serverId}/sessions/{sessionId}/conversation` | Bounded visible history |
+| `POST /v0/servers/{serverId}/sessions/{sessionId}/inputs` | Queue a prompt or compaction through YA's queue |
+| `GET /v0/servers/{serverId}/sessions/{sessionId}/inputs` | Pending queued input |
+| `POST /v0/servers/{serverId}/sessions/{sessionId}/inputs/{inputId}/cancel` | Remove pending queued input |
 | `GET /v0/servers/{serverId}/sessions/{sessionId}/relationships` | Recorded provenance and optional related-session links |
+
+A `sessionId` is the session's YA id for its whole life: collections, detail,
+receipts, relationships and conversations name a session by the id its
+creation receipt reported, while its process runs and after it ends. A provider
+that names its own conversation, such as a Codex thread id, never replaces
+that id, and the same session is never listed twice under both spellings.
+[Session identity](session-identity.md) owns the binding.
 
 Choose explicit observation, pending-input and interrupt/stop operations before
 their implementation. Do not hide them in ambiguous configuration patches.
@@ -242,14 +252,34 @@ Implemented in revision `2026-10-30.4`: `GET
 ids, exact visible prose/Markdown, observed activity, bounded failure/media
 references, read-only pending attention, coverage and an opaque content revision.
 It excludes routine tool bodies, thinking and rendered HTML. This is a filtered
-projection, not an LLM summary or a completion verdict. Truncation, byte limits,
-recent-two-compaction scope and unknown evidence remain explicit. `idle` does not
-establish successful completion. Provider/history shapes outside acquisition
-support return `503 conversation_unavailable`; no native history is guessed.
+projection, not an LLM summary or a completion verdict. The response is one JSON
+object, not JSONL: `messages`, `activity`, `pendingRequests`, `revision` and
+`coverage` travel together. Truncation, byte limits, compaction scope and unknown
+evidence remain explicit. `idle` does not establish successful completion.
+Provider/history shapes outside acquisition support return `503 conversation_unavailable`; no native history is guessed.
 
-`maxMessages` is 1–100, default 20. `anchorMessageId` selects an existing stable
-visible message; an unavailable anchor returns `404 anchor_unavailable`, without
-silently moving to the latest window. Unknown window parameters fail. The
+Revision `2026-11-14.1` accepts positive decimal `maxMessages` and
+`tailCompactions` counts up to 999999999. Defaults are 20 messages inside two
+compaction boundaries; applied ceilings are 100 messages and 20 boundaries.
+`maxMessages` narrows the compaction scope, never extends it. With fewer than
+N boundaries the available session beginning is in scope. Larger valid requests
+return 200 with `coverage.requestedMessages`, `requestedCompactions`, applied
+`maxMessages`/`compactions` and `limitedBy: ["serverLimit", ...]`. A request
+can still be complete if all available messages fit below the applied ceiling.
+Malformed, zero, fractional, negative and out-of-range counts return 400.
+
+Acquisition byte/record limits return a usable recent suffix with
+`completeForRequest=false`, `earlierInScope` and `limitedBy` evidence. A single
+oversized source record becomes an explicitly truncated unavailable-content
+message rather than an apparently complete older answer. Payload limits may
+omit additional content and messages. Fewer returned messages do not alone
+mean incompleteness: a short session can contain fewer than requested.
+Unsupported providers, unresolved identity, unreadable sources and the initial
+publication deadline still return explicit errors. Missing anchors do not
+silently select a different window.
+
+`anchorMessageId` selects an existing stable visible message; an unavailable
+anchor returns `404 anchor_unavailable`, without silently moving to the latest window. Unknown window parameters fail. The
 served help and OpenAPI schema describe the same bounds and examples. A launch
 read lease can read this surface; no creation, sending or approval authority is
 added by this slice. Resource access is checked before acquiring history.
@@ -262,8 +292,38 @@ Final-consumer removal cancels source work and releases watches/viewers.
 An exact managed Claude/Codex owner may precede retained catalog materialization:
 its summary and bounded replay are immediately usable, with incomplete history
 coverage. A later catalog row reconciles normal durable history. Unsupported
-owners and mismatched/ambiguous identities never supply guessed history. Native
-acquisition constraints are owned by [Simple Client API](simple-client-api.md).
+owners and mismatched/ambiguous identities never supply guessed history.
+Production acquisition reuses the app's native Claude/Codex readers, normalizes
+branch/lineage evidence, then selects a byte/record-bounded normalized window.
+This fixes the experimental reader's retained-input refusal for long sessions;
+it does not promise bounded disk I/O for every history. Reader fallbacks, SQL
+index consolidation and cancellation propagation are deferred in the
+[acquisition cost gap](../gaps/conversation-window-acquisition-cost.md).
+[Provider history facts and queries](provider-history-facts.md) supplies the
+proposed shared architecture and consumer inventory for that follow-up,
+including reuse of the implemented Claude durable index and Codex windows.
+[Simple Client API](simple-client-api.md) owns projection and observation rules.
+
+### Native backing-store descriptors
+
+In revision `2026-11-14.1`, authorized single-session detail includes
+`backingStore`. Collection summaries do not include native storage locations.
+The descriptor reports owning `serverId`, provider, native session id, location
+`kind` (`file`, `database`, `provider`, or `unavailable`), nullable `path`,
+`format`, `recordId` and `shared`, and `history` (`unknown` or `unavailable`).
+A database location is shared and requires its provider-native session selector;
+a file's sharing status may be unknown. Unobserved formats remain null. An
+owner without an observed native resource returns `unavailable` with null
+location fields instead of a guessed filename.
+
+Paths are absolute locations on the owning server, not URLs or a promise that
+the caller can access that filesystem. Local agents with filesystem access may
+use native tools such as `rg` on JSONL; a database needs its provider-specific
+schema and session selector. A leaf may require ancestors, sidecars or live
+unpersisted state, so a descriptor never claims complete history. Metadata
+resolution runs only after the existing session/project/creator authorization
+and ambiguity checks. Native ids remain explicitly separate from public YA
+session ids; this grants no arbitrary file download, shell or database access.
 
 ## Bounded HTTP following
 
@@ -289,8 +349,9 @@ promises current-state recovery, not event-log replay or every intermediate
 message. Coverage still describes retained history limits.
 
 One request owns at most one response and one bounded wait. There is no SSE/PTY
-or permanent per-client loop in this slice. Identical requests share source
-acquisition and coalescing. A disconnect, deadline, controller replacement or
+or permanent per-client loop in this slice. Requests for the same session and
+applied compaction scope share acquisition and coalescing; different message
+limits share that source. A disconnect, deadline, controller replacement or
 launch-credential revocation cancels demand; the final consumer releases the
 source/watch/viewer. Active private reads revoked or detached return 503 where
 the transport remains writable; later revoked-credential requests return 401.
@@ -334,8 +395,8 @@ session before dispatch. Preserve v0 state meanings, authorization and native
 input semantics when extracting shared implementation; the web contract needs
 its own capability rather than broadening `agent-api-management`.
 
-`POST /v0/servers/{serverId}/sessions` accepts strict JSON with `requestId`,
-`projectId`, `provider` and exact initial `message`. Optional model,
+`POST /v0/servers/{serverId}/sessions` accepts an `Idempotency-Key` header
+and strict JSON with `projectId`, `provider` and exact initial `prompt`. Optional model,
 thinking/effort, permission mode and service tier map to incumbent native
 launch controls. Permission mode defaults to `default`; bypass must be explicit.
 Only configured local Claude/Codex providers and catalog projects are qualified.
@@ -345,7 +406,7 @@ context and native launch ownership/admission remain shared with existing YA
 sessions. V0 asks for settled native identity before reporting an accepted
 canonical session id. Fork and /btw parenting remain separate from creator facts.
 
-The response is `202` with a durable receipt before native launch completion.
+The response is `202` with a receipt before native launch completion.
 Use a caller-generated 8–128 character retry key and repeat the identical body
 after response loss. Scoped retry identity includes authenticated principal,
 origin server/session, operation, target project/session and request id; a new
@@ -359,28 +420,47 @@ replay, provider restart or fallback routing.
 `GET /v0/servers/{serverId}/receipts/{receiptId}` observes `dispatching`,
 `queued`, `accepted`, `failed` or `uncertain`. These describe admission evidence,
 not successful response completion. Native capacity rejection is recorded as a
-known failure. An exception after reservation, queued startup failure, or an
-unfinished reservation recovered after restart is uncertain; never generate a
-new retry key merely to escape that uncertainty. Unique live-owner API-input
+known failure. An exception after reservation or a queued startup failure is uncertain; never
+generate a new retry key merely to escape that uncertainty. Unique live-owner API-input
 admission/consumption evidence can reconcile a target binding without launching
 again. Inherited transcript UUIDs and optimistic user echoes are not admission
 proof. Missing, evicted or ambiguous evidence remains uncertain. Cancellation
 after reservation cannot assert that a provider was never launched.
 
-Receipts persist in the profile discovery SQLite database, separately from
-native transcripts and existing client creation hints. They contain no prompt
-bodies or credentials. The implementation retains at most **10,000 receipts**,
-with no silent expiry or deletion; further new requests fail capacity rather
-than forgetting retry identity. Replays and reads remain available at capacity.
-At most 16 native admission promises run concurrently, and native Supervisor
-queues retain their existing limits. No new background poller or workflow queue
-is added. Creation provenance and retry keys survive profile restart. Alias
-reconciliation is bounded to 32 hops and updates both relationship ends. Future
-retention/export/pruning needs its own explicit idempotency-window contract.
+Receipts and their retry identity last for the server process only. They are
+held in memory, separately from native transcripts and existing client creation
+hints, and contain no prompt bodies or credentials. After a YA restart every
+earlier receipt id returns `404 receipt_not_found`, and a retried key is a new
+request: it is admitted, and can launch or deliver again. A caller that lost a
+response across a restart must inspect existing sessions and their
+conversations before retrying. Nothing is resent automatically, and an
+unfinished operation is not reported as uncertain after the restart, because
+its receipt no longer exists.
+
+Each process retains at most **10,000 receipts**. At capacity a new request
+evicts the oldest receipt that is no longer in flight; its id then returns 404
+and its key becomes a new request. Receipts still in flight (dispatching,
+queued, or accepted input awaiting delivery or compaction evidence) are never
+evicted; only when all 10,000 are in flight does a new request fail
+`503 receipt_capacity`. Replays and reads of retained receipts remain available
+at capacity. There is no expiry timer.
+
+The trusted creator of a v0-created session is not a receipt: it is committed
+to the [relationship graph](session-relationships.md) as a `created_session`
+fact before the receipt records the session id, and survives restart. Migration
+39 dropped the former `agent_api_receipts` table; creator relationships
+recorded from it remain. At most 16 native admission promises run
+concurrently, and native Supervisor queues retain their existing limits. No new
+background poller or workflow queue is added. Public session ids remapped by
+builds before 2026-11-03 still resolve through their recorded aliases, bounded
+to 32 hops; nothing writes new aliases.
 
 `GET /v0/servers/{serverId}/sessions/{sessionId}/relationships` returns the
-first recorded v0 creation receipt and a bounded page of initiated command
-receipts. `creation=null` does not prove that an older session was human-created.
+session's v0 creation receipt and a bounded page of initiated command receipts
+retained by the current server process. After a restart `creation` is null and
+`initiated` lists only newer commands; the durable creator remains readable as
+a `created_session` relationship with `includeRelated=true`. `creation=null`
+does not prove that a session was human-created.
 
 The [durable relationship design](session-relationships.md) proposes a shared
 application read model for these trusted creator facts, provider children and
@@ -403,36 +483,107 @@ no oversized request may reserve or launch work.
 
 ### Attributed queued input and consumption
 
-`POST /v0/servers/{serverId}/sessions/{sessionId}/messages` accepts strict JSON
-`{requestId,message,delivery?:"queue"}`. It uses the same explicit management
-opt-in, trusted origin and durable scoped retry rules as creation. `message`
-is nonblank exact text, at most 100,000 characters. Only the incumbent active
-native owner can accept a new input; otherwise return `409 session_not_running`.
-There is no implicit resume, interruption, steering, mode/model change or provider
+`POST /v0/servers/{serverId}/sessions/{sessionId}/inputs` (`createInput`)
+accepts strict JSON `{type:"prompt",text,delivery?}` or
+`{type:"compact",instructions?,delivery?}` and an `Idempotency-Key` header.
+It uses the same explicit management opt-in, trusted origin and process-lifetime
+scoped retry rules as creation. `text` is nonblank exact text, at most 100,000
+characters; slash text is not translated. Only the incumbent active native
+owner can accept a new input; otherwise return `409 session_not_running`.
+There is no implicit resume, interruption, mode/model change or provider
 restart. An authorized identical retry resolves the original receipt before
 looking at the mutable catalog or checking whether its process still runs.
 A conflicting body/key returns 409; no input is repeated.
 
-A `202` receipt's `state=accepted` means native queue admission. `delivery=unknown`
-awaits evidence. `delivery=consumed` means the native provider input iterator
-consumed that API input; it does not mean provider acknowledgement or successful
-response completion. Native batching can consume several submitted messages in
-one turn, including interrupt concatenation. Internal constituent identities
-survive that batching and hosted queue notifications. They are server-stamped;
-the public request body cannot supply submission/origin metadata. Queue removal
-or a user echo alone never establishes consumption.
+Input enters YA's provider-agnostic queue through the same admission code as
+the composer's `POST /api/sessions/{id}/messages`
+(`routes/session-input-admission.ts`), so delivery intents, queued compaction
+and patient persistence cannot drift between humans and agents. The provider's
+native input queue is not exposed (no `direct` delivery):
+
+- `deferred` (default) is YA's regular queue, delivered at the next turn
+  boundary. `patient` waits for verified idle plus the default quiet interval
+  and survives restart as `paused-after-restart`. `steer` (prompts only) joins
+  an active turn where the provider supports steering and otherwise queues
+  after it. An idle session receives deferred and steer input at once.
+- `type:"compact"` is [explicit queued compaction](queued-messages.md#explicit-queued-compaction),
+  never parsed from text. Claude receives `/compact <instructions>`; Codex uses
+  its native compaction RPC and ignores instructions. Later input waits until
+  compaction succeeds; a failure holds it until the compaction is cancelled.
+  A session that cannot queue compaction returns
+  `409 compaction_unsupported` before any receipt exists. Provider descriptors
+  report `compaction: {supported, honorsInstructions}`.
+- A follow-up after compaction is simply a second queued input. Self-compaction
+  is compact, then the continuation prompt, then ending the turn.
+
+The receipt id is also the input's queue id (`tempId`), so receipt, list entry
+and cancellation share one id. A `202` receipt's `state=accepted` means YA queue
+admission. `input` reports `{type, delivery, status, compaction?}`: `status` is
+`queued`, `released` (handed to the provider), `cancelled` (removed before
+delivery) or `paused` (left the live queue without delivery evidence, for
+example across a restart, with `delivery=uncertain`). `delivery=consumed`
+means the native provider input iterator consumed that API input; it does not
+mean provider acknowledgement or successful response completion. Native
+batching can consume several submitted messages in one turn, including
+interrupt concatenation; constituent identities survive that batching. They are
+server-stamped; the public request body cannot supply submission/origin
+metadata. A user echo alone never establishes consumption. Compact receipts
+report `compaction` pending, compacting, compacted, failed or unconfirmed, and
+`completion` compacted, failed or unconfirmed (no outcome after 180 seconds),
+because YA observes that outcome; a compacted input reports `delivery=consumed`.
+Claude consuming the `/compact` text is not compaction evidence, and a queue
+drain or transfer that removes a compaction reports `paused` with uncertain
+delivery rather than success. A prompt counts as released only with native
+admission or consumption evidence; an ambiguous removal, such as an interrupt
+that drains and requeues the queue, leaves it queued. Admission rechecks command authority
+and owner shutdown synchronously before the queue mutation.
+A steer the provider takes directly into its active turn yields no
+consumption evidence, so its delivery stays unknown (uncertain once the owner
+ends). Prompt `completion=unknown` remains explicit; idle or an unrelated reply
+does not complete it. Follow the session's compact prose to interpret the response.
 
 When an owner completes, aborts or detaches, or existing session controls remove
-unconsumed input, `delivery=uncertain` is explicit. Restart conservatively marks admitted but
-unconfirmed delivery uncertain. Receipt reads/follow can reattach to a uniquely
+unconsumed input, `delivery=uncertain` is explicit. A YA restart forgets the
+receipt instead; inspect the session's pending inputs and conversation. Receipt reads/follow can reattach to a uniquely
 identified incumbent owner and reconcile positive admission/consumption evidence;
-they never automatically requeue input. Each process/queue retains at most 512
+they never automatically requeue input. Queue status is observed only while the
+admitting command owner runs. Each process/queue retains at most 512
 positive API identities for this reconciliation; absent evidence is inconclusive.
 Native observation shares one monitor per process, bounded to 128 processes and
 1,024 pending API inputs, and releases after consumption, cancellation, completion
-or command service shutdown. No transcript poller is added. `completion=unknown` remains
-explicit for every receipt; idle or an unrelated reply does not complete it.
-Follow the session's compact prose to interpret the response.
+or command service shutdown. No transcript poller is added.
+
+`GET .../sessions/{sessionId}/inputs` (`inputs`) lists the canonical queue
+projection in delivery order, at most 500 items: composer-queued items with
+`receiptId: null`, restart-paused patient items (also for a stopped session),
+a running compaction and YA-owned commands (`type:"command"`, not
+cancellable). Items report id, type, recorded delivery intent, status
+(`queued`, `paused-after-restart`, `compacting`, `failed`, `unconfirmed`),
+cancellability, creation time and recorded creator provenance (`origin`,
+`sourceSessionId`, `sentByUser`). Limited users are refused; peers need an
+explicit `inputs` grant and see `text: null` without `conversation`.
+
+`POST .../sessions/{sessionId}/inputs/{inputId}/cancel` (`cancelInput`) with
+`{}` and an `Idempotency-Key` removes a queued or restart-paused item, or a v0
+steer the provider has not consumed. It replaces the internal deferred,
+recovered-queue and steering deletion routes for agents. A dispatched
+compaction or YA-owned command returns `409 input_not_cancellable`; input no
+longer pending returns `409 input_not_pending`, both before any receipt exists.
+The receipt result is `{cancelled:true,inputId}`. It is a POST rather than
+`DELETE` so every v0 mutation keeps one retry, receipt and peer-envelope
+contract. Steer now, resuming paused items, editing, delivery changes,
+reordering and the cross-session Project Queue are not exposed.
+
+Session reads report `state: "compacting"` while a YA-scheduled compaction
+(queued, or a patient compact-first gate) runs, which the provider reports as
+an ordinary turn. Compaction started by typed provider text is not detected.
+
+`createInput` replaced the earlier `prompt` operation without a route alias,
+and a grant naming `prompt` authorizes nothing. Trusted-control pairings cover
+every current operation ([peer access](peer-access.md#server-connections-settings)),
+so they reach `createInput`, `inputs` and `cancelInput` without re-pairing; an
+explicit grant needs each by name. Both endpoints of a forwarded call need this
+build.
 
 `GET /v0/servers/{serverId}/receipts/{receiptId}/follow` is operator-only like
 receipt reads. The first request returns `{cursor,changed:true,receipt}`. Reissue
@@ -491,6 +642,12 @@ writes or legacy `/api/*`. Turning it off revokes current access; turning it on
 again applies to new launches. Old servers omit the control through the separate
 `agent-api-bootstrap` capability (introduced in the 0.11.1 line).
 
+The bootstrap enters native Claude system context or Codex developer context;
+it never prefixes the submitted user request. Its stable text tells the agent
+to discover current grants from `/v0/me`. Codex history can expose the exact
+fragment through a collapsed informational disclosure. See
+[placement and resume behavior](agent-context-injection.md#http-v0-bootstrap-placement).
+
 Connection variables are `AGENT_YA_V0_URL`, `AGENT_YA_V0_SOCKET` (Unix only)
 and `AGENT_YA_V0_AUTHORIZATION` (the complete `Bearer …` header value). They are
 separate from the unchanged legacy self/view `AGENT_YA_API_URL/TOKEN` and from
@@ -532,7 +689,11 @@ loops. Abort/end revokes and releases the runtime when the last launch ends.
 Disable is sticky across pending starts and applies by public profile id to
 hosted workers. `/me`, help/schema and local identity stay available while a
 hosted controller detaches; dependent catalogs return retryable
-`controller_unavailable` until a matching controller attaches. The authenticated
+`controller_unavailable` until a matching controller attaches. A controller
+that cannot parse its worker's request can only be a different version of the
+same code, since the worker validated it first; it answers
+`503 controller_unavailable` naming the version mismatch and the restart that
+resolves it, never a `400` that blames the caller. The authenticated
 worker socket dispatches only bounded catalog reads; stale replies and stalled
 reads are cancelled. An older source host without revocation support must be
 restarted before launching with this option. In-process desktop/Windows paths
@@ -608,7 +769,14 @@ already admitted native agent work intact.
 
 The target checks originating-peer identity and current project grants on
 receipt reads, follows, mutation retries and provenance. A receipt for an
-existing session also requires current access to that session. One peer cannot
+existing session also requires current access to that session. Native
+admission can name a session before it starts or refuses it. Until the target
+accepts the creation, the peer that requested it can read and follow the
+receipt through `dispatching` and `queued`, and a refused creation stays
+readable: its `failed` state and failure explain the refusal even though the
+named session never existed. An `uncertain` creation is readable the same way
+while its named session is listed in no project; once that session exists,
+current access to it is required again. One peer cannot
 read another peer's receipts even if both may view the same project. A peer's
 relationship response exposes only its own creation receipt and no target-local
 initiated relationships. The operator retains the full local view. Foreign
@@ -619,15 +787,18 @@ Before sending a mutation, the source reserves a bounded durable outbound
 record keyed by source server/session, destination server, operation/resource
 and request ID, with a payload hash. Prompts and credentials are excluded.
 A missing response leaves `uncertain`, including after restart. A matching
-retry reaches the target's durable receipt scope; changed payloads conflict.
+retry reaches the target's receipt scope while the target process retains it;
+after a target restart it is admitted there as a new request. Changed payloads
+conflict.
 Even confirmed retries reauthorize at the target, including conflicts before
 revealing a payload mismatch. Message command responses carry the submitted
 `requestedSessionId` separately from canonical target `sessionId`, so a target
 alias remap can recover the original submission without repeating input. Source relationships include
 a separately paged `outbound` collection; its `nextCursor` uses the ordinary
 cursor parameter and the consumer treats that collection independently of
-`initiated`. Ledger and receipt stores each cap at 10,000 records and refuse
-new reservations at capacity without discarding retry identity.
+`initiated`. The outbound ledger caps at 10,000 records and refuses new
+reservations at capacity; the target's receipts follow the per-process
+eviction rule above.
 
 Target receipt creators identify the authenticated immediate server and mark
 any source session as `source-attested`. The source retains its current local
@@ -911,3 +1082,262 @@ Absence means automatic peer sign-in cannot be assumed. It adds no agent-facing
 refresh/owner-grant routes to v0. Legacy fixed-expiry peer routing remains usable
 until its existing deadline when an older target lacks this capability. See
 [automatic peer authentication](peer-access.md#automatic-peer-authentication).
+
+## Launch selection and effective configuration — 2026-11-12
+
+Revision `2026-11-12.1` adds the following discoverable contract. There is no
+hosted web client dependency or change to legacy `/api` semantics. Older peers
+may omit the optional session-detail fields, and must advertise `selection`
+before a caller uses that operation. No existing peer operation grant expands
+to discovery implicitly.
+
+- Every server-addressed route accepts `self` for the receiving access server.
+  Both the launch adapter and peer router resolve it before choosing a target.
+  Replies and receipt scopes retain canonical server ids. A peer requires its
+  explicit discovered id; an unknown id still fails without local fallback.
+- The launch bootstrap uses `/v0/me` alone for identity-only tasks and
+  advertises `self` without a local server-list lookup. Earlier exact bootstrap
+  blocks remain recognizable for transcript presentation.
+- Default `/v0/help` includes a generated operation-id/method/path index with
+  links to focused help and OpenAPI, plus a compact create/send/follow recipe.
+  `operation` is the case-sensitive operation id, not a path alias. The full
+  `/v0/schema` remains available; focused selectors serve exactly one operation.
+- `GET /v0/servers/{serverId}/selection?provider=claude|codex` reads AAR launch
+  choices on demand. The default `routing=aar` reports granted pools and their
+  ids, names, account membership, revision and default policy; enabled account
+  descriptors and their model catalogs; router policies; and tier-selection
+  support. `routing=direct` explicitly reads the configured provider catalog
+  and its available provenance. Model rows preserve reported effort, thinking,
+  fast/auto support and service-tier ids/labels. Omitted controls are unknown,
+  not a promise of support. This query does not allocate or launch inference.
+  Existing provider descriptors and session lists start no catalog discovery.
+- Discovery requires the existing operator principal or an explicitly granted
+  peer `selection` operation. Limited users are refused before discovery. No
+  new identity, credential, administration authority or grant type is added.
+  All results are allow-listed projections: socket paths, authentication data,
+  pin ids, quota payloads and arbitrary upstream fields are excluded.
+  A disconnected/unconfigured catalog yields `available=false`; discovery
+  errors yield `503 selection_unavailable`, never a direct-login fallback.
+  Observations may be stale and launch rechecks eligibility and router grants.
+- Creation additionally accepts `routerPoolId`, `routerAccountId`,
+  `routerPolicy` and the app's explicit Claude connector choice. Policy needs a
+  pool; manual selection needs an account. Explicit selection also needs a
+  model id from that selection's catalog, since the router has no default
+  model; without one the receipt fails with `admission_rejected` and a message
+  saying to name a model. A project whose directory no longer exists on the
+  target is refused the same way, naming the path, since the catalog keeps a
+  project while its transcripts remain. Explicit selection takes precedence
+  over caller inheritance and may deliberately select another provider's
+  routed pool. Without explicit selection, a local routed caller retains its
+  pool/policy or explicit account, with its model when omitted; a provider
+  mismatch is refused. Thinking, tier and permission mode remain explicit
+  request controls, not implicitly inherited. Retry hashing includes all
+  selection fields, and no receipt or API-input semantics change.
+- Single-session detail additionally reports `settings` and `routing`; paged
+  session summaries retain their compact shape. Settings `source` is `live`,
+  `saved` or `unavailable`. Live values use the incumbent owner's last applied
+  effort, excluding a queued next-turn change, requested model, best-known
+  runtime model, thinking, permission mode and tier. The model may still be an
+  alias; it is not claimed as independently provider-confirmed. Saved values
+  come from the durable last-applied launch snapshot, including its revision;
+  they never manufacture a resolved model. With unavailable evidence, nulls
+  mean unknown; otherwise null controls select provider/default behavior.
+  Terminated owners do not override durable settings. Routing is `aar`,
+  `direct` or `unknown`; saved pool/account labels and policy evidence carry
+  their observation time when available. Reading never refreshes AAR. A pin
+  identifies intended routing, not proof that the current turn succeeded.
+
+The documentation eval adds operation discovery and a discover/create/verify
+AAR task. Its grader requires successful HTTP evidence and actual settings
+readback, not an answer that merely repeats the desired settings. The runner
+records response/path bytes and focused/full-schema reads in addition to its
+existing correctness, calls/errors/repeats, duration, docs bytes and usage.
+`compare.ts` refuses incomplete/duplicate or mismatched model/CLI matrices and
+reports paired per-case costs. Success, request/error count and
+fetched documentation bytes have aggregate and per-case nonregression checks; runtime and
+reported tokens remain descriptive, with no statistical latency/cache claim.
+
+### Measured discovery evidence — 2026-11-12
+
+On macOS, Codex CLI 0.167.0 and `gpt-6.1-sol`, medium effort, the existing
+identity/project/pagination/workflow/control cases ran twice each with the
+served-help variant, in fresh environments. Model, CLI, tasks, sample counts
+and grading were held constant. Raw reports remain private local artifacts;
+plan files retain exact documentation and harness hashes.
+
+| Measure (10 trials) | Before | Final |
+| --- | ---: | ---: |
+| Successful tasks | 10 | 10 |
+| HTTP calls | 61 | 54 |
+| HTTP errors | 0 | 0 |
+| Fetched documentation bytes | 111,188 | 72,138 |
+| Total response bytes | 167,273 | 127,881 |
+| Request-path bytes | 3,240 | 2,016 |
+| Shell commands | 59 | 48 |
+| Total elapsed seconds, descriptive only | 218.4 | 220.7 |
+
+Both aggregate and per-case request/error/documentation checks pass. Identity
+uses 2 rather than 3 requests across its two trials; project 10 rather than 12,
+pagination 14 rather than 16, workflow 28 rather than 30, and control remains
+at zero. Default help shrinks from 15,884 to 12,023 bytes. The bootstrap grows
+from 1,032 to 1,215 bytes to eliminate unnecessary local discovery. Full schema
+grows from 149,149 to 163,314 bytes because it now describes more functionality;
+callers can use the indexed focused schema instead. Durations are model/network
+observations, not a machine-latency benchmark: workflow duration increased in
+these two samples, and no latency or unique-context-token improvement is claimed.
+
+Iteration evidence is retained rather than excluded: index-only help passed
+10/10 tasks but increased requests to 70, failing the comparison. Adding the
+workflow recipe yielded 64 calls and one exact-artifact answer-format failure
+(9/10); it still failed acceptance. The final local/identity bootstrap and
+conditional settings-verification guidance produced the passing matrix above.
+The initial new-task harness also exposed a fixture returning saved rather
+than live model evidence and an overly prose-specific operation-id check.
+Those were corrected: the scripted incumbent now reports its accepted model,
+while grading still requires actual HTTP readback and rejects wrong settings.
+New AAR selection and focused-operation tasks subsequently pass 4/4 with no
+HTTP errors; these fixtures do not qualify live AAR accounts or provider APIs.
+
+The final compared help/schema/bootstrap SHA-256 prefixes are respectively
+`948396ae6b51`, `96418c6eb28c`, and `105a22b3da7a`. Reproduce with the runner and
+comparison commands in its README. Normal CI covers deterministic grading,
+redaction/authorization, native launch options, peer/local addressing,
+last-applied-vs-pending effort and preserved historical bootstrap presentation.
+Local Node 24.22.1 workspace tests, lint, formatting and typechecking pass;
+Linux/Windows execution remains CI qualification, with no OS-specific API
+behavior added. The known unrelated jsdom navigation diagnostics remain in
+[their existing gap](../gaps/client-unit-navigation-diagnostics.md).
+
+## Target-owned peer APIs and session control — 2026-11-13
+
+The access server's API revision does not constrain a target's operation table.
+For a peer, read `/v0/servers/{serverId}/help` and `/schema` on that target;
+`?operation={operationId}` selects its focused documentation. Top-level help
+and schema describe the receiving server. The new discovery operation ids are
+`targetHelp` and `targetSchema`; the existing top-level resources remain useful
+for local bootstrap.
+
+Forwarding authenticates the local caller and its immutable launch authority,
+then sends the target-scoped method/path/query, body text, content type and
+retry key through the existing protected peer transport. It does not parse
+operation bodies or validate target response schemas. Target status, selected
+headers and body text survive, including Markdown help, unfamiliar JSON fields
+and errors the access build does not recognize. Server descriptions likewise
+remain target-owned; access-local names and saved host facts remain available
+on the access server's server list. A response's `local` field is the target's
+own observation rather than an access-side rewrite.
+
+Incoming and outgoing operation/project grants remain separate. The source
+attests its outgoing operation ceiling; the target maps its own route to its
+operation id and enforces the intersection. Intermediaries store bounded
+operation-name strings, enabling explicitly granted target-only operations.
+Unknown operations gain no automatic grant. No caller can route onward, reach
+ordinary `/api` or peer administration, choose an arbitrary origin, or supply
+peer credentials/attestation in the public request. Revocation, expiry and
+source launch fencing remain in force.
+
+The peer wrapper is version 2 inside the existing SRP/NaCl exchange. Its version
+is authenticated in the protected server-info proof before submission. Wrapper
+mismatch returns `peer_incompatible`; both alpha endpoints need the initial
+update. No old-format migration, credential copying, automatic connection
+reset or compatibility aliases are added. Recreate affected alpha connections
+and use fresh API fixture state as needed. Browser/native-client login,
+ordinary sessions and provider transcripts keep their existing contracts.
+
+Every v0 mutation uses an `Idempotency-Key` header (8–128 characters from
+letters/digits/`._:-`), replacing the body `requestId`. The receipt's `requestId`
+still reports that key. Creation text is a plain `prompt` string. Follow-up
+input was the `prompt` operation at `POST .../sessions/{id}/prompts` until
+`createInput` replaced it on 2026-11-14.
+Old `message`/`sendMessage` spellings have no aliases. Other launch, selection,
+settings and conversation/follow shapes remain unchanged.
+
+The access server reserves outbound intent before submission, with source,
+target, method/path/query, key and body fingerprint. It learns receipt and
+canonical destination bindings from a bounded `X-YA-Receipt` header rather
+than parsing operation results. Receipt reads/follows can fill a delayed
+creation binding. Admission or a confirmed remote receipt does not prove task
+completion. Current payload/frame/deadline limits and four-second follows
+remain; no streaming or new waiter polling is introduced.
+
+`GET .../sessions/{id}/requests` lists the current pending input with stable id,
+kind, description, tool name/input and `canRespond`. Questions are visible
+with `canRespond:false`. `POST .../requests/{requestId}/response` accepts
+`{response:"approve"|"deny"}` and resolves the native permission request used
+by the UI, recording decisions through the existing optional approval audit
+log. A new command for a resolved/withdrawn request returns
+`409 request_not_pending`; an identical retry returns its original receipt.
+Combined approval/mode changes and question answers are unsupported.
+
+`cancel` and `stop` accept `{}`. All three control mutations require existing
+management authority and their peer operation grants, with session/project
+access rechecked at the target. Authority revoked while the target session is
+being resolved refuses the control before it reaches the provider. They return receipts; inspect receipt
+state, `result` and `failure` to learn the actual control outcome. `cancel`
+uses existing YA interruption and queue behavior and reports
+`{interrupted,supported,aborted}`; it can hard-abort and does not automatically
+resume. `stop` uses verified termination and reports `stopped` plus native
+verification facts, or a recorded failure. Like the UI's Stop, it first pauses
+the session's background recaps until its next user turn. Session metadata stays readable
+after termination even without native transcript content.
+
+Control retries resolve the existing receipt before acquiring an incumbent
+again, so a lost reply cannot make the same command interrupt a later turn or
+stop a resumed process. An interrupted unfinished reservation is uncertain and
+is never automatically repeated. After a YA restart the receipt is gone, and the
+same key would run the control again against the current incumbent. Idle activity, accepted control
+and consumed input do not establish successful completion of a particular
+prompt. Mode/model/effort changes, richer updates and ACP conformance remain
+outside this slice. The [blocking-question gap](../gaps/v0-blocking-questions-need-a-launch-policy.md)
+remains open.
+
+## Queued inputs and compaction — 2026-11-14
+
+Status: implemented as `createInput`, `inputs` and `cancelInput` (revision
+`2026-11-14.2`); the contract is in
+[attributed queued input](#attributed-queued-input-and-consumption).
+
+Maintainer direction: YA's provider-agnostic queue is the main thing YA adds
+over a raw provider, so agents need it through v0. Queueing is required,
+deletion is useful for cleanliness, and human conveniences such as Steer now on
+a parked draft are not needed. A unified compaction wrapper is useful but
+secondary. `direct` delivery stays unexposed. Optimize these slices for agent
+callers. The eventual direction is for v0 to become a cleaner, better-organized
+API that the YA client could also use, but this slice does not design for that
+migration.
+
+### Evidence
+
+On 2026-11-14 a Claude session (Fable 5.2, AAR-routed) was asked to compact
+itself through v0 and continue. With no compact operation, it queued
+`/compact <instructions>` through `prompt`, then started a detached watcher to
+send the continuation once the session settled. The watcher read v0
+`state=idle` 13 seconds into a two-minute compaction and posted early. It
+worked only because Claude's own input queue held the prompt until compaction
+finished. Discovery took about 70 seconds before the compaction itself.
+
+Live Haiku 5.5 probes the same day queued `/compact` and then a follow-up
+during an active turn. YA's regular queue (`deferred: true` on
+`/api/sessions/{id}/messages`), its patient queue, and v0 `prompt` each
+delivered one compaction followed by one correct follow-up. Only the first two
+used explicit queued compaction. v0 `prompt` wrote into the provider's native
+input queue: it bypassed YA's queue entirely, gained no visible queue entry,
+cancellation or failure hold, and never used Codex's native compaction RPC.
+
+### Differences from the proposal
+
+- Removal is `POST .../inputs/{inputId}/cancel`, not `DELETE`, so it shares the
+  POST-plus-key receipt path and the peer envelope, which carries only GET and
+  POST.
+- Per-provider compaction support is on provider descriptors rather than
+  server capabilities, because it differs by harness.
+- `compacting` covers YA-scheduled compaction only; detecting compaction a
+  provider starts from typed text would need Process changes.
+- Paired servers keep follow-up input because trusted-control pairings now
+  cover every current operation, not through a `prompt` alias.
+
+### Remaining decisions
+
+Stopped sessions keep `409 session_not_running` unless a later decision allows
+patient input with explicit resume. Pending text follows peer conversation
+access; a bounded preview was not needed for operator callers.

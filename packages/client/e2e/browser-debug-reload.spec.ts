@@ -9,7 +9,7 @@ const sessionId = "transcript-specimen-001";
 const otherSessionId = "user-turn-presentation-001";
 
 async function dismissOnboardingIfVisible(page: Page) {
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (await skip.isVisible().catch(() => false)) {
     await skip.click();
   }
@@ -29,7 +29,7 @@ async function captureMenu(page: Page, testInfo: TestInfo, name: string) {
 }
 
 async function clickSidebarSession(page: Page, sessionPath: string) {
-  const sidebar = page.locator(".sidebar");
+  const sidebar = page.locator("[data-sidebar]");
   if (!(await sidebar.isVisible().catch(() => false))) {
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await expect(sidebar).toBeVisible();
@@ -95,11 +95,13 @@ for (const viewport of [
       await expect
         .poll(() =>
           page
-            .locator(".message-input-toolbar")
+            .locator("[data-message-input-toolbar]")
             .last()
             .evaluate((toolbar) => {
-              const left = toolbar.querySelector(".message-input-left");
-              const actions = toolbar.querySelector(".message-input-actions");
+              const left = toolbar.querySelector("[data-message-input-left]");
+              const actions = toolbar.querySelector(
+                "[data-message-input-actions]",
+              );
               if (!left || !actions) throw new Error("Missing toolbar groups");
               const right = actions.getBoundingClientRect().left;
               return [...left.children].every((child) => {
@@ -128,7 +130,7 @@ for (const viewport of [
         );
         const controls = await page
           .locator(
-            ".composer-bottom-overflow-inline.composer-bottom-overflow-early",
+            '[data-session-toolbar-control][data-session-toolbar-priority="first"]:not([data-composer-bottom-overflow-menu] *)',
           )
           .evaluateAll((elements) =>
             elements.map((element) => ({
@@ -146,7 +148,7 @@ for (const viewport of [
             .click();
           for (const control of controls) {
             const menuCopy = page.locator(
-              `.composer-bottom-overflow-menu-group [data-session-toolbar-control="${control.key}"]`,
+              `[data-composer-bottom-overflow-menu-group] [data-session-toolbar-control="${control.key}"]`,
             );
             if (control.visible) await expect(menuCopy).toBeHidden();
             else await expect(menuCopy).toBeVisible();

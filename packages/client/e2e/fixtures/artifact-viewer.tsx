@@ -4,6 +4,7 @@ import {
   FileVhostSection,
   type FileVhostService,
 } from "../../src/components/FileVhostSection";
+import { ConfirmDialogHost } from "../../src/components/ui/ConfirmDialog";
 import { Modal } from "../../src/components/ui/Modal";
 import { ArtifactPreview } from "../../src/components/ArtifactPreview";
 import { ResourceContextMenu } from "../../src/components/FileResourceActions";
@@ -11,7 +12,7 @@ import { ArtifactSettings } from "../../src/pages/settings/ArtifactSettings";
 import { useVersion } from "../../src/hooks/useVersion";
 import { I18nProvider } from "../../src/i18n";
 import { LocalFileModal } from "../../src/components/LocalMediaModal";
-import "../../src/styles/index.css";
+import "../../src/styles/purposeGlobals";
 
 function Fixture() {
   useVersion();
@@ -129,6 +130,7 @@ function Fixture() {
 
 createRoot(document.getElementById("root")!).render(
   <I18nProvider>
+    <ConfirmDialogHost />
     <Fixture />
   </I18nProvider>,
 );

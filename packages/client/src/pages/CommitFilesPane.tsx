@@ -1,3 +1,7 @@
+import columnsStyles from "../components/SourceColumnLayout.module.css";
+import detailStyles from "./SourceDetail.module.css";
+import statusStyles from "./SourceStatus.module.css";
+import rowsStyles from "./SourceRows.module.css";
 import type {
   GitCommitDetail,
   GitFileChange,
@@ -17,6 +21,7 @@ import {
 import { ChangesetFileFilter } from "../components/ChangesetFileFilter";
 import { CopyButton } from "../components/CopyButton";
 import { SourceFileOutline } from "../components/SourceFileOutline";
+import { Banner } from "../components/ui/Banner";
 import { Button } from "../components/ui/Button";
 import {
   SourceFilePath,
@@ -42,6 +47,7 @@ import { writeClipboardText } from "../lib/clipboard";
 import { reflowCommitMessage } from "../lib/reflowCommitMessage";
 import type { TranslationFn } from "../i18n";
 import { CommitHistoryParentLink } from "./CommitHistoryParentLink";
+import { SourceCommentCountBadge } from "./SourceCommentCountBadge";
 import styles from "./CommitFilesPane.module.css";
 
 const EMPTY_REVIEW_STATES = new Map<string, ReviewSiteStateSummary[]>();
@@ -207,25 +213,27 @@ export function CommitFilesPane({
     <>
       <div
         className={[
-          "commit-files-column",
+          columnsStyles.commitFilesColumn,
           isWideScreen ? styles.desktopColumn : "",
         ]
           .filter(Boolean)
           .join(" ")}
+        data-source-column="files"
         ref={columnRef}
       >
         {onBack && <CommitHistoryParentLink onClick={onBack} t={t} />}
-        <div className="source-detail-banner">
+        <div className={detailStyles.banner} data-source-detail-banner>
           {revisionNavigation}
-          <span className="source-detail-identity">
+          <span className={detailStyles.identity}>
             <span
-              className="source-detail-subject"
+              className={detailStyles.subject}
+              data-source-detail-subject
               title={detail?.subject ?? selectedCommit?.subject}
             >
               {detail?.subject ?? selectedCommit?.subject ?? "…"}
             </span>
             <span
-              className="source-detail-title"
+              className={detailStyles.title}
               title={
                 selectedCommit
                   ? `${selectedCommit.hash}\n${formatCommitDateTime(
@@ -257,7 +265,7 @@ export function CommitFilesPane({
             }
           >
             <EyeIcon />
-            <span className="source-detail-action-text">
+            <span className={detailStyles.actionText}>
               {t("sourceMarkReadToHere")}
             </span>
           </Button>
@@ -271,7 +279,7 @@ export function CommitFilesPane({
             }
           >
             <EyeIcon crossed />
-            <span className="source-detail-action-text">
+            <span className={detailStyles.actionText}>
               {t("sourceMarkUnreadSinceHere")}
             </span>
           </Button>
@@ -283,9 +291,11 @@ export function CommitFilesPane({
           />
         </div>
         {loading ? (
-          <div className="git-diff-loading">{t("gitStatusLoading")}</div>
+          <div className={statusStyles.diffLoading}>
+            {t("gitStatusLoading")}
+          </div>
         ) : detailError ? (
-          <div className="git-diff-error">{detailError}</div>
+          <Banner tone="error">{detailError}</Banner>
         ) : detail ? (
           <>
             {detail.body && (
@@ -324,7 +334,8 @@ export function CommitFilesPane({
               </div>
             )}
             <SourceFileOutline
-              className="commit-file-list"
+              className={rowsStyles.commitFileList}
+              data-source-file-list
               items={outlineItems}
               scopeKey={`${selectedSha}:${compareToHead ? "to-head" : "commit"}`}
               query={effectiveFileQuery}
@@ -344,16 +355,20 @@ export function CommitFilesPane({
                 return (
                   <li
                     key={file.path}
-                    className={`commit-file-row ${sourceRowMenuSurface}`}
+                    className={`${rowsStyles.commitFileRow} ${sourceRowMenuSurface}`}
+                    data-source-file-row
                   >
                     <SourceFileRowButton
                       path={item.displayPath}
                       type="button"
-                      className={`commit-file-item ${
-                        selectedPath === file.path ? "selected" : ""
+                      className={`${rowsStyles.commitFileItem} ${
+                        selectedPath === file.path ? rowsStyles.selected : ""
                       }`}
                       disabled={isFolder}
                       data-source-list-item
+                      data-source-selected={
+                        selectedPath === file.path || undefined
+                      }
                       data-source-file-item
                       onFocus={() => {
                         if (isWideScreen && !isFolder) onFocusFile(file);
@@ -372,27 +387,20 @@ export function CommitFilesPane({
                       </SourceFilePath>
                       {(file.linesAdded !== null ||
                         file.linesDeleted !== null) && (
-                        <span className="git-line-counts">
+                        <span className={rowsStyles.gitLineCounts}>
                           {file.linesAdded ? (
-                            <span className="git-lines-added">
+                            <span className={rowsStyles.gitLinesAdded}>
                               +{file.linesAdded}
                             </span>
                           ) : null}
                           {file.linesDeleted ? (
-                            <span className="git-lines-deleted">
+                            <span className={rowsStyles.gitLinesDeleted}>
                               −{file.linesDeleted}
                             </span>
                           ) : null}
                         </span>
                       )}
-                      {count > 0 && (
-                        <span
-                          className="source-comment-badge"
-                          title={t("sourceCommentCount", { count })}
-                        >
-                          {count}
-                        </span>
-                      )}
+                      <SourceCommentCountBadge count={count} t={t} />
                       <SourceReviewStateBadges
                         states={reviewStatesByPath.get(file.path) ?? []}
                         t={t}
@@ -411,14 +419,16 @@ export function CommitFilesPane({
               t={t}
             />
             {selectedFiles.length === 0 && (
-              <div className="git-status-empty">
+              <div className={statusStyles.statusEmpty} data-source-empty>
                 {compareToHead
                   ? t("sourceNoChangesToHead")
                   : t("sourceNoFiles")}
               </div>
             )}
             {selectedFiles.length > 0 && filteredFiles.length === 0 && (
-              <div className="git-status-empty">{t("sourceNoMatches")}</div>
+              <div className={statusStyles.statusEmpty} data-source-empty>
+                {t("sourceNoMatches")}
+              </div>
             )}
           </>
         ) : null}

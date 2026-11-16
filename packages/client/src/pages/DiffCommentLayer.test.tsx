@@ -81,7 +81,7 @@ function Harness({
 }) {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   return (
-    <div className="diff-modal-content" ref={setContainer}>
+    <div data-diff-modal-content ref={setContainer}>
       {container ? (
         <DiffCommentController
           projectId="proj1"
@@ -102,7 +102,7 @@ function Harness({
         />
       ) : (
         <div
-          className="highlighted-diff"
+          data-highlighted-diff
           // biome-ignore lint/security/noDangerouslySetInnerHtml: test fixture
           dangerouslySetInnerHTML={{ __html: DIFF_HTML }}
         />
@@ -569,14 +569,14 @@ describe("DiffCommentLayer", () => {
       expect(
         document
           .querySelector('[data-diff-line="2"]')
-          ?.classList.contains("has-review-comment"),
+          ?.hasAttribute("data-has-review-comment"),
       ).toBe(true),
     );
     // A line without a comment is not tinted.
     expect(
       document
         .querySelector('[data-diff-line="0"]')
-        ?.classList.contains("has-review-comment"),
+        ?.hasAttribute("data-has-review-comment"),
     ).toBe(false);
   });
 
@@ -633,13 +633,13 @@ describe("DiffCommentLayer", () => {
       expect(
         document
           .querySelector('[data-diff-line="1"]')
-          ?.classList.contains("has-review-comment"),
+          ?.hasAttribute("data-has-review-comment"),
       ).toBe(true),
     );
     expect(
       document
         .querySelector('[data-diff-line="2"]')
-        ?.classList.contains("has-review-comment"),
+        ?.hasAttribute("data-has-review-comment"),
     ).toBe(false);
   });
 });

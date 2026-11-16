@@ -1,3 +1,4 @@
+import rowsStyles from "./SettingsRows.module.css";
 import {
   useCallback,
   useEffect,
@@ -22,7 +23,9 @@ import {
   instructionBlocksError,
 } from "@yep-anywhere/shared";
 import { api } from "../../api/client";
+import { Banner } from "../../components/ui/Banner";
 import { Button, IconButton } from "../../components/ui/Button";
+import { confirmDialog } from "../../components/ui/ConfirmDialog";
 import { Field, Select, TextInput } from "../../components/ui/Field";
 import { Switch } from "../../components/ui/Switch";
 import { useActingPrincipal } from "../../hooks/useActingPrincipal";
@@ -289,7 +292,15 @@ export function UsersSettings() {
   };
 
   const remove = async (username: string) => {
-    if (!window.confirm(t("usersDeleteConfirm", { username }))) return;
+    if (
+      !(await confirmDialog({
+        title: t("usersDeleteConfirmTitle"),
+        message: t("usersDeleteConfirm", { username }),
+        confirmLabel: t("usersDelete"),
+        tone: "danger",
+      }))
+    )
+      return;
     setBusy(true);
     setError(null);
     try {
@@ -380,13 +391,13 @@ export function UsersSettings() {
               }
             />
           </SettingsItem>
-          <p className="settings-hint">{t("usersTrustWarning")}</p>
+          <p className={rowsStyles.hint}>{t("usersTrustWarning")}</p>
         </details>
       )}
 
-      <div className="settings-group">
+      <div className={rowsStyles.group} data-settings-group>
         {loaded && users.length === 0 && (
-          <p className="settings-hint">{t("usersEmpty")}</p>
+          <p className={rowsStyles.hint}>{t("usersEmpty")}</p>
         )}
         <div
           className={styles.userBar}
@@ -400,7 +411,8 @@ export function UsersSettings() {
             return (
               <Button
                 key={user.username}
-                className={`${styles.userChip} ${user.disabled ? styles.userChipDisabled : ""}`}
+                variant="outline"
+                className={user.disabled ? styles.userChipDisabled : undefined}
                 aria-pressed={selected}
                 title={user.disabled ? t("usersDisabledTitle") : undefined}
                 onClick={() =>
@@ -414,7 +426,7 @@ export function UsersSettings() {
             );
           })}
           <Button
-            className={styles.userChip}
+            variant="outline"
             aria-pressed={selection?.kind === "create"}
             disabled={busy}
             onClick={() =>
@@ -464,7 +476,7 @@ export function UsersSettings() {
         selection === null &&
         !settingsLoading &&
         settings && (
-          <div className="settings-group">
+          <div className={rowsStyles.group} data-settings-group>
             <SharedLimitedUserInstructions
               value={settings.limitedUserInstructions}
               onSave={(limitedUserInstructions) =>
@@ -475,13 +487,13 @@ export function UsersSettings() {
         )}
 
       {supportsBrowserDefaults && selection === null && (
-        <div className="settings-group">
+        <div className={rowsStyles.group} data-settings-group>
           <LimitedUserBrowserDefaults />
         </div>
       )}
 
       {error && selection?.kind !== "create" && (
-        <p className="form-error">{error}</p>
+        <Banner tone="error">{error}</Banner>
       )}
 
       {usage && <UserUsageTable report={usage} />}
@@ -511,7 +523,7 @@ function LimitedUserView({
       title={t("settingsUsersTitle")}
       description={t("usersOwnAccountDescription")}
     >
-      <div className="settings-group">
+      <div className={rowsStyles.group} data-settings-group>
         <dl className={styles.grants}>
           <dt>{t("usersSignedInAs")}</dt>
           <dd>{principal.username}</dd>
@@ -614,7 +626,7 @@ function ProjectAccessList({
   );
 
   if (projects.length === 0) {
-    return <p className="settings-hint">{t("usersNoProjects")}</p>;
+    return <p className={rowsStyles.hint}>{t("usersNoProjects")}</p>;
   }
 
   const shown = expanded
@@ -625,7 +637,7 @@ function ProjectAccessList({
   return (
     <>
       {shown.length === 0 ? (
-        <p className="settings-hint">{t("usersNoProjectAccess")}</p>
+        <p className={rowsStyles.hint}>{t("usersNoProjectAccess")}</p>
       ) : (
         <ul className={styles.projectList}>
           {shown.map((project) => (
@@ -694,7 +706,7 @@ function DirectoryAccessList({
     );
   return (
     <>
-      <p className="settings-hint">{t("usersDirectoriesHint")}</p>
+      <p className={rowsStyles.hint}>{t("usersDirectoriesHint")}</p>
       {grants.length > 0 && (
         <ul className={styles.projectList}>
           {grants.map((grant, index) => (
@@ -796,7 +808,8 @@ function CreateUserForm({
   const [password, setPassword] = useState("");
   return (
     <form
-      className={`settings-group ${styles.editor}`}
+      className={`${rowsStyles.group} ${styles.editor}`}
+      data-settings-group
       onSubmit={(event) => {
         event.preventDefault();
         onCreate(username.trim(), password);
@@ -820,7 +833,7 @@ function CreateUserForm({
           onChange={(event) => setPassword(event.target.value)}
         />
       </Field>
-      {error && <p className="form-error">{error}</p>}
+      {error && <Banner tone="error">{error}</Banner>}
       <div className={styles.editorActions}>
         <Button type="submit" variant="primary" disabled={busy}>
           {t("usersCreateUser")}
@@ -944,7 +957,8 @@ function UserEditor({
 
   return (
     <div
-      className={`settings-group ${styles.editor}`}
+      className={`${rowsStyles.group} ${styles.editor}`}
+      data-settings-group
       onBlur={() => persist(draftRef.current)}
       role="group"
       aria-label={t("usersEditUserTitle", { username: user.username })}
@@ -979,11 +993,7 @@ function UserEditor({
           </Button>
         </div>
       </div>
-      {saveError && (
-        <p role="alert" className="form-error">
-          {saveError}
-        </p>
-      )}
+      {saveError && <Banner tone="error">{saveError}</Banner>}
 
       <details className={styles.account} open={!supportsInstructions}>
         <summary>{t("usersAccountAndAccess")}</summary>
@@ -1011,7 +1021,7 @@ function UserEditor({
                   change({ ...draft, allowNoProjectSessions }, true)
                 }
               />
-              <p id={noProjectHintId} className="settings-hint">
+              <p id={noProjectHintId} className={rowsStyles.hint}>
                 {t("usersAllowNoProjectHint")}
               </p>
             </div>
@@ -1051,7 +1061,7 @@ function UserEditor({
           )}
 
           <p className={styles.subhead}>{t("usersLockHeading")}</p>
-          <p className="settings-hint">{t("usersLockHint")}</p>
+          <p className={rowsStyles.hint}>{t("usersLockHint")}</p>
           <div className={styles.lockRow}>
             <Field label={t("usersLockProvider")}>
               <Select

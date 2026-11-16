@@ -1,3 +1,5 @@
+import rowLayoutStyles from "./SettingsRows.module.css";
+import rowsStyles from "./SettingsRows.module.css";
 import {
   SPEECH_BACKEND_SETUP_CAPABILITY,
   serverHasCapability,
@@ -6,7 +8,8 @@ import {
   type SpeechBackendSetupStatus,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button, ButtonBase } from "../../components/ui/Button";
+import { Banner } from "../../components/ui/Banner";
+import { Button } from "../../components/ui/Button";
 import { Switch } from "../../components/ui/Switch";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useI18n } from "../../i18n";
@@ -195,10 +198,10 @@ export function SpeechBackendSetup() {
         "install",
         "restart",
       ]}
-      className="model-settings-item"
+      className={rowLayoutStyles.modelItem}
     >
       <div className={styles.wrap}>
-        <p className="settings-hint">
+        <p className={rowsStyles.hint}>
           {t("speechBackendSetupModelAdvice")}{" "}
           <a href={ENGLISH_WER_SOURCE} target="_blank" rel="noreferrer">
             {t("speechBackendSetupWerSource")}
@@ -221,9 +224,9 @@ export function SpeechBackendSetup() {
           </a>
         </p>
         {error && (
-          <p className="settings-hint" role="alert">
+          <Banner tone="error" compact>
             {error}
-          </p>
+          </Banner>
         )}
         <div className={styles.catalog}>
           {(status?.catalog ?? []).map((row) => (
@@ -264,7 +267,7 @@ export function SpeechBackendSetup() {
               )}
               <code className={styles.model}>{row.defaultModel}</code>
               {row.id === "ya-whisper" && (
-                <span className="settings-hint">
+                <span className={rowsStyles.hint}>
                   {t("speechBackendSetupWhisperPerformance")}
                 </span>
               )}
@@ -278,33 +281,33 @@ export function SpeechBackendSetup() {
                       disabled={saving || (!row.enabled && !row.advertised)}
                       onCheckedChange={(checked) => void setWhisperGpu(checked)}
                     />
-                    <p className="settings-hint" id={`${row.id}-gpu-help`}>
+                    <p className={rowsStyles.hint} id={`${row.id}-gpu-help`}>
                       {t("speechBackendSetupWhisperGpuHelp")}
                     </p>
                   </div>
                 )}
               {row.defaultModel === "distil-large-v3.5" && (
-                <span className="settings-hint">756M parameters</span>
+                <span className={rowsStyles.hint}>756M parameters</span>
               )}
               {row.id === "ya-nemo" && (
-                <p className="settings-hint">
+                <p className={rowsStyles.hint}>
                   {t("speechBackendSetupStreamingAdvice")}
                 </p>
               )}
               {row.id === "ya-nemo" && (
-                <span className="settings-hint">
+                <span className={rowsStyles.hint}>
                   {t("speechBackendSetupNemoSize")}
                 </span>
               )}
-              <span className="settings-hint">
+              <span className={rowsStyles.hint}>
                 {englishModelWer(row.defaultModel)}
               </span>
               <div className={styles.backendActions}>
                 <Button disabled={running} onClick={() => void install(row.id)}>
                   {t("speechBackendSetupInstall")}
                 </Button>
-                <ButtonBase
-                  className={styles.modelLink}
+                <Button
+                  variant="link"
                   onClick={() =>
                     setModelPage(
                       row.id === "ya-whisper"
@@ -314,7 +317,7 @@ export function SpeechBackendSetup() {
                   }
                 >
                   {t("speechBackendSetupModelAccess")}
-                </ButtonBase>
+                </Button>
               </div>
               <p className={styles.meta}>
                 {row.enabledByEnv
@@ -332,9 +335,14 @@ export function SpeechBackendSetup() {
                   ` · ${t("speechBackendSetupDisableRestart")}`}
               </p>
               {row.disabledReason && (
-                <p className={styles.meta} role="alert">
+                <Banner
+                  tone="warning"
+                  role="none"
+                  compact
+                  className={styles.reason}
+                >
                   {row.disabledReason}
-                </p>
+                </Banner>
               )}
             </section>
           ))}
@@ -396,12 +404,12 @@ export function SpeechBackendSetup() {
             )}
           </Button>
           {status?.liveEnablement && (
-            <p className="settings-hint">
+            <p className={rowsStyles.hint}>
               {t("speechBackendSetupRestartOnlyDisable")}
             </p>
           )}
           {status?.restartAvailable === false && (
-            <p className="settings-hint">
+            <p className={rowsStyles.hint}>
               {t("speechBackendSetupRestartHint")}
             </p>
           )}

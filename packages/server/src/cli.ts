@@ -32,6 +32,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { whichCommand } from "./sdk/which-command.js";
+import {
+  type PasswordOption,
+  REMOTE_ACCESS_PASSWORD,
+  SETUP_AUTH_PASSWORD,
+  takePassword,
+} from "./cli-passwords.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,13 +93,22 @@ SETUP OPTIONS (for headless installation):
   --setup-auth <password>
                         Set up local authentication with the given password
                         (min 6 characters). Exits after setup.
+                        --setup-auth=<password> accepts one beginning with -.
+  --setup-auth-pwfile <path>
+                        As --setup-auth, reading the password from a file
+                        (- for stdin), keeping it out of the process list
+                        and shell history. A trailing newline is dropped.
+                        Bare --setup-auth reads YEP_AUTH_PASSWORD instead.
 
   --setup-remote-access --username <name> --password <pass> [--relay <url>]
                         Set up remote access with SRP authentication.
                         Registers with the relay to verify username availability.
                         Exits with error if username is taken.
                         --username: Relay username (3-32 chars, lowercase alphanumeric + hyphens)
-                        --password: SRP password (min 8 characters)
+                        --password: SRP password (min 8 characters); also
+                        --password=<pass>, --password-file <path|->, or a
+                        bare --password reading YEP_REMOTE_ACCESS_PASSWORD,
+                        as for --setup-auth
                         --relay: Relay URL (default: wss://relay.yepanywhere.com/ws)
 
 ENVIRONMENT VARIABLES:
@@ -102,6 +117,12 @@ ENVIRONMENT VARIABLES:
   YEP_DATA_DIR                  Data directory override
   YEP_PROFILE                   Profile name (creates ~/.yep-anywhere-{profile}/)
   AUTH_DISABLED                 Disable auth (bypass even if enabled in settings)
+  YEP_UPDATE_CHECK              Set false to stop update checks against
+                                updates.yepanywhere.com (default: true)
+  YEP_AUTH_PASSWORD             Password for bare --setup-auth; always removed
+                                from the environment at startup
+  YEP_REMOTE_ACCESS_PASSWORD    Password for a bare --password with
+                                --setup-remote-access; always removed likewise
   HTTPS_SELF_SIGNED             Enable HTTPS with a self-signed certificate
   LOG_LEVEL                     Log level: fatal, error, warn, info, debug, trace
   LOG_PRETTY                    Pretty-print console logs (default: true)
@@ -112,10 +133,6 @@ ENVIRONMENT VARIABLES:
                                 Codex watcher periodic check interval in ms; thread-index hinted, full rescan as fallback (default: 5000 on macOS/Windows, 0 elsewhere)
   SESSION_INDEX_FULL_VALIDATION_MS
                                 Session index full validation interval in ms (default: 30000, 0 = validate every request)
-  SESSION_INDEX_WRITE_LOCK_TIMEOUT_MS
-                                Session index write lock timeout in ms (default: 2000)
-  SESSION_INDEX_WRITE_LOCK_STALE_MS
-                                Session index stale lock threshold in ms (default: 10000)
   SESSION_INDEX_SUMMARY_PARSE_CONCURRENCY
                                 Max concurrent session-summary parses during cold index fills (default: 1)
   CLAUDE_SUMMARY_PARSER_WORKER  Claude summary parser child-process mode:
@@ -155,6 +172,9 @@ EXAMPLES:
 
   # Reset local auth password (headless recovery)
   yepanywhere --setup-auth "mypassword123"
+
+  # Same, without the password in the process list or shell history
+  yepanywhere --setup-auth-pwfile /run/secrets/yep-password
 
   # Emergency auth bypass (temporary)
   yepanywhere --auth-disable
@@ -279,25 +299,31 @@ if (authDisableIndex !== -1) {
   args.splice(authDisableIndex, 1);
 }
 
-// Parse --setup-auth flag
-const setupAuthIndex = args.indexOf("--setup-auth");
-let setupAuthPassword: string | undefined;
-if (setupAuthIndex !== -1) {
-  const passwordValue = args[setupAuthIndex + 1];
-  if (!passwordValue || passwordValue.startsWith("-")) {
-    console.error("Error: --setup-auth requires a password value");
+// Parse both setup passwords. Each always removes its environment variable,
+// so neither reaches the server or its agents.
+function takeCliPassword(option: PasswordOption): string | undefined {
+  const result = takePassword(args, option, process.env, (file) =>
+    fs.readFileSync(file, "utf-8"),
+  );
+  if ("error" in result) {
+    console.error(`Error: ${result.error}`);
     process.exit(1);
   }
-  setupAuthPassword = passwordValue;
-  args.splice(setupAuthIndex, 2);
+  return result.password;
 }
+const setupAuthPassword = takeCliPassword(SETUP_AUTH_PASSWORD);
+const remotePassword = takeCliPassword(REMOTE_ACCESS_PASSWORD);
 
 // Parse --setup-remote-access flag and its options
 const setupRemoteIndex = args.indexOf("--setup-remote-access");
 let setupRemoteAccess = false;
 let remoteUsername: string | undefined;
-let remotePassword: string | undefined;
 let remoteRelay: string | undefined;
+
+if (setupRemoteIndex === -1 && remotePassword !== undefined) {
+  console.error("Error: --password is only used with --setup-remote-access");
+  process.exit(1);
+}
 
 if (setupRemoteIndex !== -1) {
   setupRemoteAccess = true;
@@ -313,18 +339,6 @@ if (setupRemoteIndex !== -1) {
     }
     remoteUsername = usernameValue;
     args.splice(usernameIndex, 2);
-  }
-
-  // Parse --password
-  const passwordIndex = args.indexOf("--password");
-  if (passwordIndex !== -1) {
-    const passwordValue = args[passwordIndex + 1];
-    if (!passwordValue || passwordValue.startsWith("-")) {
-      console.error("Error: --password requires a value");
-      process.exit(1);
-    }
-    remotePassword = passwordValue;
-    args.splice(passwordIndex, 2);
   }
 
   // Parse --relay (optional)
@@ -345,7 +359,9 @@ if (setupRemoteIndex !== -1) {
     process.exit(1);
   }
   if (!remotePassword) {
-    console.error("Error: --setup-remote-access requires --password");
+    console.error(
+      "Error: --setup-remote-access requires --password <pass>, --password-file <path|->, or a bare --password with YEP_REMOTE_ACCESS_PASSWORD set",
+    );
     process.exit(1);
   }
 }

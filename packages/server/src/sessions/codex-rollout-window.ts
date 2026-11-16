@@ -1,3 +1,14 @@
+import type { Stats } from "node:fs";
+import { stat } from "node:fs/promises";
+import {
+  captureTranscriptFence,
+  digestTranscriptFence,
+  isTranscriptPrefix,
+  isTranscriptPrefixOfDigest,
+  readObservedTranscriptRange,
+  type TranscriptAppendFence,
+  type TranscriptFenceDigest,
+} from "./transcript-ingestion.js";
 import type { CodexSessionEntry } from "@yep-anywhere/shared";
 import { parseCodexSessionEntry } from "@yep-anywhere/shared";
 import {
@@ -11,11 +22,43 @@ import {
 
 const READ_CHUNK_BYTES = 1024 * 1024;
 const ESTIMATED_BYTES_PER_COMPACT_BOUNDARY = 2 * 1024 * 1024;
+const MAX_REMEMBERED_ROLLOUTS = 256;
+const MAX_REMEMBERED_BOUNDARIES = 64;
 
 export interface CodexRolloutStats {
   size: number | bigint;
   mtimeMs: number | bigint;
   ctimeMs: number | bigint;
+  /** Without file identity the boundary memo is not used. */
+  dev?: number | bigint;
+  ino?: number | bigint;
+}
+
+/**
+ * Every `compacted` record start in a rollout's settled prefix, remembered so a
+ * later request scans only what was appended. The fence and stat version are
+ * the append cache's evidence that the file has only grown.
+ */
+interface CompactBoundaryMemo {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  fence: TranscriptFenceDigest;
+  /** End of the last newline-terminated line scanned; earlier lines are final. */
+  settledEnd: number;
+  /** Record starts below `settledEnd`, newest first. */
+  settled: number[];
+  /** A valid unterminated final record counted at `size`, if any. */
+  provisional: number[];
+}
+
+interface CompactBoundaryScan {
+  /** Record starts, newest first, at most the requested limit. */
+  starts: number[];
+  reachedFloor: boolean;
+  settledEnd: number;
 }
 
 export interface CodexParsedEntrySnapshot {
@@ -27,6 +70,10 @@ export interface CodexParsedEntrySnapshot {
   maxLineLength: number;
   /** Decoded JSONL bytes the entries were parsed from. */
   sourceBytes: number;
+  nextLeafOrdinal?: number;
+  leafStartOrdinal?: number;
+  committedEntries?: number;
+  appendFence?: TranscriptAppendFence;
 }
 
 interface CodexEntrySnapshot {
@@ -60,6 +107,9 @@ export type ReadExactCodexRolloutRange = (
 ) => Promise<Buffer>;
 
 export class CodexRolloutWindowReader {
+  /** Insertion order is recency: a hit moves its rollout to the end. */
+  private readonly boundaryMemos = new Map<string, CompactBoundaryMemo>();
+
   constructor(private readonly readExactRange: ReadExactCodexRolloutRange) {}
 
   async readEntryRange(
@@ -68,89 +118,21 @@ export class CodexRolloutWindowReader {
     length: number,
     readStartedAt = Date.now(),
     initialPartialLine: Buffer = Buffer.alloc(0),
+    previous?: TranscriptAppendFence,
   ): Promise<CodexParsedEntrySnapshot> {
-    const entries: CodexSessionEntry[] = [];
-    let partialLineChunks =
-      initialPartialLine.length > 0 ? [initialPartialLine] : [];
-    let partialLineBytes = initialPartialLine.length;
-    let partialLineStart = start - initialPartialLine.length;
-    let lineCount = 0;
-    let maxLineLength = 0;
-    let parseMs = 0;
-
-    const parseLine = (lineBytes: Buffer, sourceByteOffset: number): void => {
-      const parseStartedAt = Date.now();
-      const line = lineBytes.toString("utf8");
-      lineCount += 1;
-      maxLineLength = Math.max(maxLineLength, line.length);
-      const trimmed = line.trim();
-      if (trimmed) {
-        const entry = parseCodexSessionEntry(trimmed);
-        if (entry) {
-          entries.push(tagCodexEntrySourceByteOffset(entry, sourceByteOffset));
-        }
-      }
-      parseMs += Date.now() - parseStartedAt;
-    };
-
-    let totalBytesRead = 0;
-    while (totalBytesRead < length) {
-      const bytesToRead = Math.min(READ_CHUNK_BYTES, length - totalBytesRead);
-      const buffer = await this.readExactRange(
-        filePath,
-        start + totalBytesRead,
-        bytesToRead,
-      );
-      totalBytesRead += buffer.length;
-
-      let segmentStart = 0;
-      for (;;) {
-        const newline = buffer.indexOf(0x0a, segmentStart);
-        if (newline < 0) break;
-
-        const segment = buffer.subarray(segmentStart, newline);
-        const lineBytes =
-          partialLineChunks.length === 0
-            ? segment
-            : Buffer.concat(
-                [...partialLineChunks, segment],
-                partialLineBytes + segment.length,
-              );
-        parseLine(lineBytes, partialLineStart);
-        partialLineStart += partialLineBytes + segment.length + 1;
-        partialLineChunks = [];
-        partialLineBytes = 0;
-        segmentStart = newline + 1;
-      }
-
-      if (segmentStart < buffer.length) {
-        const segment = Buffer.from(buffer.subarray(segmentStart));
-        partialLineChunks.push(segment);
-        partialLineBytes += segment.length;
-      }
-    }
-
-    let partialLine =
-      partialLineChunks.length === 0
-        ? Buffer.alloc(0)
-        : Buffer.concat(partialLineChunks, partialLineBytes);
-    if (partialLine.length > 0) {
-      const entryCountBeforeFinalLine = entries.length;
-      parseLine(partialLine, partialLineStart);
-      if (entries.length > entryCountBeforeFinalLine) {
-        partialLine = Buffer.alloc(0);
-      }
-    }
-
-    return {
-      entries,
-      partialLine,
-      readLinesMs: Math.max(0, Date.now() - readStartedAt - parseMs),
-      parseMs,
-      lineCount,
-      maxLineLength,
-      sourceBytes: totalBytesRead,
-    };
+    return readObservedTranscriptRange(
+      this.readExactRange,
+      filePath,
+      start,
+      length,
+      (line, offset) => {
+        const entry = parseCodexSessionEntry(line);
+        return entry ? tagCodexEntrySourceByteOffset(entry, offset) : null;
+      },
+      initialPartialLine,
+      readStartedAt,
+      previous,
+    );
   }
 
   async readCompactTailSnapshot(
@@ -196,16 +178,110 @@ export class CodexRolloutWindowReader {
       return null;
     }
 
-    const startByte = await this.findCompactWindowStart(
+    const starts = await this.findCompactStarts(
       filePath,
-      fileSize,
+      stats,
       compactBoundaries,
     );
-    if (startByte === null || startByte <= 0) {
-      return null;
+    const startByte = starts[compactBoundaries - 1];
+    return startByte === undefined || startByte <= 0 ? null : startByte;
+  }
+
+  /**
+   * Newest-first record starts: at least `limit` when the file has them, else
+   * all of them. Equal to a full backward scan; a remembered settled prefix
+   * replaces rescanning it while the file has only been appended to.
+   */
+  private async findCompactStarts(
+    filePath: string,
+    stats: CodexRolloutStats,
+    limit: number,
+  ): Promise<number[]> {
+    const size = Number(stats.size);
+    const version =
+      stats.dev === undefined || stats.ino === undefined
+        ? null
+        : {
+            dev: Number(stats.dev),
+            ino: Number(stats.ino),
+            size,
+            mtimeMs: Number(stats.mtimeMs),
+            ctimeMs: Number(stats.ctimeMs),
+          };
+    let memo = version ? this.boundaryMemos.get(filePath) : undefined;
+    this.boundaryMemos.delete(filePath);
+    if (memo && version && sameRolloutVersion(memo, version)) {
+      this.rememberBoundaries(filePath, memo);
+      return [...memo.provisional, ...memo.settled];
+    }
+    if (
+      memo &&
+      !(
+        version &&
+        size > memo.size &&
+        (await isTranscriptPrefixOfDigest(
+          this.readExactRange,
+          filePath,
+          memo.fence,
+          version,
+        ))
+      )
+    ) {
+      memo = undefined;
     }
 
-    return startByte;
+    const fence = version
+      ? await captureTranscriptFence(this.readExactRange, filePath, version)
+      : null;
+    const floor = memo?.settledEnd ?? 0;
+    const scan = await this.scanCompactStarts(filePath, floor, size, limit);
+    // The append cache's standard, around the read: both fences still describe
+    // prefixes of the file. A remembered prefix that changed under the scan
+    // voids the merged answer, which is then a fresh full scan's.
+    const after = version ? await stat(filePath).catch(() => null) : null;
+    const holds = (check: (next: Stats) => Promise<boolean>) =>
+      after ? check(after).catch(() => false) : Promise.resolve(false);
+    const read = this.readExactRange;
+    if (
+      memo &&
+      !(await holds((next) =>
+        isTranscriptPrefixOfDigest(read, filePath, memo.fence, next),
+      ))
+    ) {
+      return (await this.scanCompactStarts(filePath, 0, size, limit)).starts;
+    }
+    const starts = [...scan.starts, ...(memo?.settled ?? [])];
+    if (
+      !version ||
+      !fence ||
+      !scan.reachedFloor ||
+      !(await holds((next) => isTranscriptPrefix(read, filePath, fence, next)))
+    ) {
+      // An early answer leaves the validated memo as good as it was.
+      if (memo) this.rememberBoundaries(filePath, memo);
+      return starts;
+    }
+    const settled = [
+      ...scan.starts.filter((start) => start < scan.settledEnd),
+      ...(memo?.settled ?? []),
+    ];
+    if (settled.length <= MAX_REMEMBERED_BOUNDARIES)
+      this.rememberBoundaries(filePath, {
+        ...version,
+        fence: digestTranscriptFence(fence),
+        settledEnd: scan.settledEnd,
+        settled,
+        provisional: scan.starts.filter((start) => start >= scan.settledEnd),
+      });
+    return starts;
+  }
+
+  private rememberBoundaries(filePath: string, memo: CompactBoundaryMemo) {
+    this.boundaryMemos.set(filePath, memo);
+    if (this.boundaryMemos.size > MAX_REMEMBERED_ROLLOUTS) {
+      const oldest = this.boundaryMemos.keys().next().value;
+      if (oldest !== undefined) this.boundaryMemos.delete(oldest);
+    }
   }
 
   async readCompactPageSnapshot(
@@ -258,12 +334,29 @@ export class CodexRolloutWindowReader {
     endByte: number,
     compactBoundaries: number,
   ): Promise<number | null> {
+    const scan = await this.scanCompactStarts(
+      filePath,
+      0,
+      endByte,
+      compactBoundaries,
+    );
+    return scan.starts[compactBoundaries - 1] ?? null;
+  }
+
+  /** Scan `[floor, endByte)` backward in blocks; `floor` starts a line. */
+  private async scanCompactStarts(
+    filePath: string,
+    floor: number,
+    endByte: number,
+    limit: number,
+  ): Promise<CompactBoundaryScan> {
     let position = endByte;
     let rightPartial = Buffer.alloc(0);
-    let found = 0;
+    let settledEnd: number | null = null;
+    const starts: number[] = [];
 
-    while (position > 0) {
-      const start = Math.max(0, position - READ_CHUNK_BYTES);
+    while (position > floor) {
+      const start = Math.max(floor, position - READ_CHUNK_BYTES);
       const block = await this.readExactRange(
         filePath,
         start,
@@ -271,14 +364,17 @@ export class CodexRolloutWindowReader {
       );
       const combined =
         rightPartial.length > 0 ? Buffer.concat([block, rightPartial]) : block;
+      const lastNewline = combined.lastIndexOf(0x0a);
+      if (settledEnd === null && lastNewline >= 0)
+        settledEnd = start + lastNewline + 1;
       const firstNewline = combined.indexOf(0x0a);
-      if (start > 0 && firstNewline < 0) {
+      if (start > floor && firstNewline < 0) {
         rightPartial = Buffer.from(combined);
         position = start;
         continue;
       }
 
-      const completeStart = start === 0 ? 0 : firstNewline + 1;
+      const completeStart = start === floor ? 0 : firstNewline + 1;
       let lineEnd = combined.length;
       while (lineEnd > completeStart) {
         if (combined[lineEnd - 1] === 0x0a) {
@@ -294,9 +390,13 @@ export class CodexRolloutWindowReader {
               type?: unknown;
             };
             if (candidate.type === "compacted") {
-              found += 1;
-              if (found === compactBoundaries) {
-                return start + lineStart;
+              starts.push(start + lineStart);
+              if (starts.length === limit) {
+                return {
+                  starts,
+                  reachedFloor: false,
+                  settledEnd: settledEnd ?? floor,
+                };
               }
             }
           } catch {
@@ -307,12 +407,28 @@ export class CodexRolloutWindowReader {
       }
 
       rightPartial =
-        start > 0
+        start > floor
           ? Buffer.from(combined.subarray(0, firstNewline))
           : Buffer.alloc(0);
       position = start;
     }
 
-    return null;
+    return { starts, reachedFloor: true, settledEnd: settledEnd ?? floor };
   }
+}
+
+function sameRolloutVersion(
+  memo: CompactBoundaryMemo,
+  version: Omit<
+    CompactBoundaryMemo,
+    "fence" | "settledEnd" | "settled" | "provisional"
+  >,
+): boolean {
+  return (
+    memo.dev === version.dev &&
+    memo.ino === version.ino &&
+    memo.size === version.size &&
+    memo.mtimeMs === version.mtimeMs &&
+    memo.ctimeMs === version.ctimeMs
+  );
 }

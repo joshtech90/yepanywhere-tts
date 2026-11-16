@@ -5,7 +5,7 @@
   min-height: min(68vh, 720px);
 }
 
-:global(.file-viewer-fullscreen) .view {
+:global([data-file-viewer-fullscreen]) .view {
   height: calc(100dvh - 50px);
 }
 
@@ -43,7 +43,7 @@
   right: 1.25rem;
   display: flex;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--bg-secondary);
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
@@ -51,5 +51,8 @@
 
 .zoomControls .zoomLevel {
   min-width: 4.5rem;
+}
+
+.zoomValue {
   font-variant-numeric: tabular-nums;
 }

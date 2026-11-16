@@ -45,3 +45,17 @@ boundary. Changing those producers or globally wrapping/suppressing their
 callbacks is outside the bounded scroll-restoration lifetime repair and could
 hide the intent/scroll ordering those cases assert. Audit each publication and
 join it explicitly; retain the scroll and held-selection assertions.
+
+The November 11 delivery-flag verification passed all 7,390 client tests but
+again emitted five unattributed `Not implemented: navigation (except hash
+changes)` diagnostics from `HTMLHyperlinkElementUtils-impl.js`. This change
+touches no client runtime or component tests, and its focused route/browser
+checks emit no such warnings. The fixture attribution remains unresolved;
+globally suppressing navigation diagnostics would hide unrelated link failures.
+
+The 2026-11-15 provider CLI verification pass again observes unattributed jsdom
+`Not implemented: navigation (except hash changes)` diagnostics in the complete
+client unit command. The new installation controls are verified through the
+real browser with no such diagnostics. The summary reporter still does not name
+these existing link fixtures; changing global navigation handling here would
+risk hiding their behavior, so that diagnostic remains in this bounded audit.

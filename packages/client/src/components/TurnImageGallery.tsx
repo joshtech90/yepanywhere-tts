@@ -1,3 +1,4 @@
+import listStyles from "./MessageList.module.css";
 import {
   createContext,
   type CSSProperties,
@@ -32,7 +33,7 @@ import {
   useLocalFileScope,
 } from "./LocalMediaModal";
 import { LocalImageThumbnail } from "./LocalImageThumbnail";
-import { Button, ButtonBase } from "./ui/Button";
+import { Button } from "./ui/Button";
 import styles from "./TurnImageGallery.module.css";
 
 interface TurnImageGalleryNavigation {
@@ -599,7 +600,9 @@ export function AssistantTurnImageGallery({
     <TurnImageGalleryContext.Provider value={navigation}>
       <div
         ref={turnRef}
-        className={`assistant-turn${galleryActive ? " has-turn-image-gallery" : ""}`}
+        className={`${listStyles.assistantTurn}`}
+        data-assistant-turn
+        data-has-turn-image-gallery={galleryActive || undefined}
       >
         {children}
         {galleryActive ? (
@@ -679,7 +682,8 @@ export function AssistantTurnImageGallery({
             </div>
             <div className={styles.footer}>
               {featured ? (
-                <ButtonBase
+                <Button
+                  variant="link"
                   className={styles.caption}
                   onClick={() => jumpToSource(featured)}
                 >
@@ -687,7 +691,7 @@ export function AssistantTurnImageGallery({
                   {featured.basename !== featured.label ? (
                     <small>{featured.basename}</small>
                   ) : null}
-                </ButtonBase>
+                </Button>
               ) : null}
               <span className={styles.count}>
                 {t("turnImageGalleryCount", {

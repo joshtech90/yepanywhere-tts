@@ -1,3 +1,4 @@
+import pageStyles from "../layouts/PageLayout.module.css";
 import type { HostAgentProcessObservation } from "@yep-anywhere/shared";
 import {
   type RefObject,
@@ -14,7 +15,10 @@ import { ClearloopRemainingBadge } from "../components/ClearloopRemainingBadge";
 import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { PageHeader } from "../components/PageHeader";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
+import { Badge, type BadgeTone } from "../components/ui/Badge";
+import { Banner } from "../components/ui/Banner";
 import { Button, ButtonBase } from "../components/ui/Button";
+import { confirmDialog } from "../components/ui/ConfirmDialog";
 import { Popover } from "../components/ui/Popover";
 import { useHostAgentProcesses } from "../hooks/useHostAgentProcesses";
 import { type ProcessInfo, useProcesses } from "../hooks/useProcesses";
@@ -87,24 +91,10 @@ function getStateLabel(state: string, t: (key: never) => string): string {
   }
 }
 
-/**
- * Get CSS class for state badge.
- */
-function getStateBadgeClass(state: string): string | undefined {
-  switch (state) {
-    // "running" never reached a badge: an in-turn card renders
-    // ThinkingIndicator instead, and no badge rule was ever authored for it.
-    case "running":
-      return "";
-    case "waiting-input":
-      return styles.stateInput;
-    case "idle":
-      return styles.stateIdle;
-    case "terminated":
-      return styles.stateTerminated;
-    default:
-      return "";
-  }
+/** Badge tone for a process state. */
+function getStateBadgeTone(state: string): BadgeTone {
+  // "running" never reaches a badge: an in-turn card renders ThinkingIndicator.
+  return state === "waiting-input" ? "warning" : "neutral";
 }
 
 /**
@@ -126,6 +116,8 @@ function getProviderLabel(
     case "gemini":
     case "gemini-acp":
       return "Gemini";
+    case "antigravity":
+      return "Antigravity";
     case "grok":
       return "Grok";
     case "opencode":
@@ -139,29 +131,35 @@ function getProviderLabel(
   }
 }
 
-/**
- * Get CSS class for provider badge.
- */
-function getProviderBadgeClass(
+/** Brand color class for a provider badge; `local` stays neutral. */
+function getProviderBadgeColor(
   provider: string | undefined,
 ): string | undefined {
   switch (provider) {
     case "codex":
-      return styles.providerCodex;
+      return "var(--provider-codex)";
     case "gemini":
     case "gemini-acp":
-      return styles.providerGemini;
+    case "antigravity":
+      return "var(--provider-gemini)";
     case "grok":
-      return styles.providerGrok;
+      return "var(--provider-grok)";
     case "opencode":
-      return styles.providerOpencode;
+      return "var(--provider-opencode)";
     case "pi":
-      return styles.providerPi;
+      return "var(--provider-pi)";
     case "local":
-      return styles.providerLocal;
+      return undefined;
     default:
-      return styles.providerClaude;
+      return "var(--provider-claude)";
   }
+}
+
+function providerPalette(provider: string | undefined) {
+  const color = getProviderBadgeColor(provider);
+  return color
+    ? { color, soft: `color-mix(in srgb, ${color} 16%, transparent)` }
+    : undefined;
 }
 
 interface ProcessCardProps {
@@ -177,15 +175,6 @@ interface KillFeedback {
   tone: "success" | "error";
   message: string;
 }
-
-/** Explicit lookup: the tone set is finite, so no class name is built at runtime. */
-const KILL_FEEDBACK_TONE_CLASS: Record<
-  KillFeedback["tone"],
-  string | undefined
-> = {
-  success: styles.killFeedbackSuccess,
-  error: styles.killFeedbackError,
-};
 
 interface ProcessMetricsProps {
   observation: HostAgentProcessObservation;
@@ -272,9 +261,9 @@ function ProcessMetrics({
 
   return (
     <span
-      // `agent-metrics-wrap` stays for the global ContextUsageIndicator
-      // sibling rule in styles/index.css.
-      className={cx("agent-metrics-wrap", styles.metricsWrap)}
+      // This data boundary preserves ContextUsageIndicator sibling geometry.
+      className={styles.metricsWrap}
+      data-agent-metrics-wrap
       ref={wrapperRef}
     >
       <ButtonBase
@@ -340,28 +329,18 @@ function ProcessCard({
           {process.clearloop !== undefined && (
             <ClearloopRemainingBadge badge={process.clearloop} />
           )}
-          <span
-            className={cx(
-              styles.providerBadge,
-              getProviderBadgeClass(process.provider),
-            )}
-          >
+          <Badge size="small" palette={providerPalette(process.provider)}>
             {getProviderLabel(process.provider, t)}
-          </span>
+          </Badge>
           {process.state === "in-turn" ? (
             <ThinkingIndicator
               variant="pill"
               label={t("agentsRunning" as never)}
             />
           ) : (
-            <span
-              className={cx(
-                styles.stateBadge,
-                getStateBadgeClass(process.state),
-              )}
-            >
+            <Badge size="small" tone={getStateBadgeTone(process.state)}>
               {getStateLabel(process.state, t)}
-            </span>
+            </Badge>
           )}
           {!isTerminated && onKill && (
             <Button
@@ -381,9 +360,8 @@ function ProcessCard({
             </Button>
           )}
         </div>
-        {/* `agent-card-meta` stays for the global ContextUsageIndicator
-            descendant rule in styles/index.css. */}
-        <div className={cx("agent-card-meta", styles.cardMeta)}>
+        {/* ContextUsageIndicator owns descendant geometry under this data boundary. */}
+        <div className={styles.cardMeta} data-agent-card-meta>
           <span className={styles.cardProject}>{process.projectName}</span>
           {process.pid !== undefined && (
             <span className={styles.cardPid}>
@@ -546,21 +524,13 @@ function ExternalProcessCard({
               {title}
             </span>
           )}
-          <span
-            className={cx(
-              styles.providerBadge,
-              getProviderBadgeClass(observation.provider),
-            )}
-          >
+          <Badge size="small" palette={providerPalette(observation.provider)}>
             {provider}
-          </span>
-          <span className={cx(styles.stateBadge, styles.stateExternal)}>
-            {t("agentsOutsideYa" as never)}
-          </span>
+          </Badge>
+          <Badge size="small">{t("agentsOutsideYa" as never)}</Badge>
         </div>
-        {/* `agent-card-meta` stays for the global ContextUsageIndicator
-            descendant rule in styles/index.css. */}
-        <div className={cx("agent-card-meta", styles.cardMeta)}>
+        {/* ContextUsageIndicator owns descendant geometry under this data boundary. */}
+        <div className={styles.cardMeta} data-agent-card-meta>
           <span className={styles.cardPid}>
             {t("agentsPid" as never, { pid: observation.pid })}
           </span>
@@ -599,7 +569,14 @@ export function AgentsPage() {
   const handleKill = useCallback(
     async (process: ProcessInfo) => {
       const label = process.sessionTitle || t("agentsUntitled" as never);
-      if (!window.confirm(t("agentsKillConfirm" as never, { title: label }))) {
+      if (
+        !(await confirmDialog({
+          title: t("agentsKillConfirmTitle"),
+          message: t("agentsKillConfirm" as never, { title: label }),
+          confirmLabel: t("agentsKill"),
+          tone: "danger",
+        }))
+      ) {
         return;
       }
       setKillingIds((prev) => new Set(prev).add(process.id));
@@ -679,26 +656,27 @@ export function AgentsPage() {
     <MainContent isWideScreen={isWideScreen}>
       <PageHeader title={t("agentsTitle" as never)} />
 
-      <main className="page-scroll-container">
-        <div className="page-content-inner">
-          {loading && <p className="loading">{t("agentsLoading" as never)}</p>}
-
-          {error && (
-            <p className="error">
-              {t("agentsError" as never, { message: error.message })}
+      <main
+        className={pageStyles.pageScrollContainer}
+        data-page-scroll-container
+      >
+        <div className={pageStyles.pageContentInner} data-page-content-inner>
+          {loading && (
+            <p className={pageStyles.loading} data-loading>
+              {t("agentsLoading" as never)}
             </p>
           )}
 
+          {error && (
+            <Banner tone="error" className={styles.feedback}>
+              {t("agentsError" as never, { message: error.message })}
+            </Banner>
+          )}
+
           {killFeedback && (
-            <p
-              className={cx(
-                styles.killFeedback,
-                KILL_FEEDBACK_TONE_CLASS[killFeedback.tone],
-              )}
-              role={killFeedback.tone === "error" ? "alert" : "status"}
-            >
+            <Banner tone={killFeedback.tone} className={styles.feedback}>
               {killFeedback.message}
-            </p>
+            </Banner>
           )}
 
           {!loading && !error && (

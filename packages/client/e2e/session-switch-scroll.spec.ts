@@ -10,12 +10,12 @@ const pathB = `/projects/${projectId}/sessions/switch-scroll-b`;
 test.use({ serviceWorkers: "block" });
 
 async function dismissOnboardingIfVisible(page: Page) {
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (await skip.isVisible().catch(() => false)) await skip.click();
 }
 
 function activeViewport(page: Page) {
-  return page.locator(".session-dom-linger-layer.is-active .message-list");
+  return page.locator('[data-session-dom-linger="active"] [data-message-list]');
 }
 
 async function scrollTop(page: Page) {
@@ -43,7 +43,7 @@ async function scrollAwayFromTail(page: Page) {
 }
 
 async function clickSidebarSession(page: Page, sessionPath: string) {
-  const sidebar = page.locator(".sidebar");
+  const sidebar = page.locator("[data-sidebar]");
   if (!(await sidebar.isVisible().catch(() => false))) {
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await expect(sidebar).toBeVisible();
@@ -80,7 +80,7 @@ test("direct session switching keeps each scrolled-away reading position", async
   await expect(
     page.getByRole("main").getByText("Switch b reply 90.").first(),
   ).toBeVisible();
-  await expect(page.locator(".session-dom-linger-layer")).toHaveCount(2);
+  await expect(page.locator("[data-session-dom-linger-layer]")).toHaveCount(2);
   await scrollAwayFromTail(page);
   const topB = await scrollTop(page);
 

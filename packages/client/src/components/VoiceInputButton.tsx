@@ -620,32 +620,12 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     return null;
   }
 
-  // Determine status class for styling
-  const statusClass =
-    status === "error" || error
-      ? "status-error"
-      : status === "reconnecting"
-        ? "status-reconnecting"
-        : status === "finalizing"
-          ? "status-finalizing"
-          : status === "processing"
-            ? "status-processing"
-            : status === "starting"
-              ? "status-starting"
-              : status === "receiving"
-                ? "status-receiving"
-                : status === "listening"
-                  ? "status-listening"
-                  : "";
-
   const button = (
     <button
       type="button"
-      className={`voice-input-button ${styles.button} ${
-        isCaptureStarting ? styles.starting : ""
-      } ${isCapturing ? "listening" : ""} ${
-        inlineWaveform ? styles.inlineWaveform : ""
-      } ${className}`}
+      className={`${styles.voiceInputButton} ${styles.button} ${isCaptureStarting ? styles.starting : ""} ${isCapturing ? styles.listening : ""} ${inlineWaveform ? styles.inlineWaveform : ""} ${className}`}
+      data-listening={isCapturing || undefined}
+      data-voice-input-button
       data-inline-waveform={inlineWaveform || undefined}
       data-speech-method={speechMethod ?? undefined}
       data-speech-phase={speechCapturePhase ?? "idle"}
@@ -687,10 +667,12 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
         aria-hidden="true"
         className={
           isCapturing
-            ? `voice-input-recording ${
-                speechActivityDetected ? "is-speech-active" : ""
-              }`
+            ? `${styles.voiceInputRecording} ${speechActivityDetected ? styles["is-speech-active"] : ""}`
             : undefined
+        }
+        data-voice-input-recording={isCapturing || undefined}
+        data-is-speech-active={
+          (isCapturing && speechActivityDetected) || undefined
         }
       >
         {isCapturing && (
@@ -699,11 +681,11 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
             cy="12"
             r="11.5"
             fill="currentColor"
-            className="voice-input-level-disc"
+            className={styles.voiceInputLevelDisc}
           />
         )}
         <g
-          className={isCapturing ? "voice-input-level-glyph" : undefined}
+          className={isCapturing ? styles.voiceInputLevelGlyph : undefined}
           stroke="currentColor"
           strokeWidth="2"
         >
@@ -725,10 +707,16 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
   ) {
     return (
       <div
-        className={`voice-input-container ${isCapturing ? "listening" : ""} ${statusClass}`}
+        className={`${styles.voiceInputContainer} ${isCapturing ? styles.listening : ""} ${status === "error" || error ? styles.statusError : ""}`}
+        data-listening={isCapturing || undefined}
       >
         {button}
-        <span className="voice-input-status" role="status" aria-live="polite">
+        <span
+          className={styles.voiceInputStatus}
+          data-voice-input-status
+          role="status"
+          aria-live="polite"
+        >
           {statusLabel}
         </span>
       </div>

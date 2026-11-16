@@ -1,4 +1,4 @@
-import { claudeInputMessageIds } from "../sdk/providers/claude-delivery.js";
+import { convertClaudeMessage } from "./claude-message-conversion.js";
 import type {
   ClaudeSessionEntry,
   SessionRewindRecord,
@@ -24,8 +24,6 @@ import {
   createCodexToolCorrelation,
   getCodexResponseItemTurnId,
   getGeminiUserMessageText,
-  getMessageContent,
-  isConversationEntry,
   mcpAppToolCallFromCodexItem,
   normalizeCodexAsyncUserInputQuestions,
 } from "@yep-anywhere/shared";
@@ -46,10 +44,11 @@ import {
   normalizeCodexToolOutputWithContext,
   parseCodexToolArguments,
 } from "../codex/normalization.js";
+import * as instructions from "../codex/instruction-messages.js";
 import {
-  CODEX_CONTENT_FILTER_BLOCK_SUBTYPE,
-  codexContentFilterGuidance,
-} from "../codex/contentFilterBlock.js";
+  isCodexCompactionOutput,
+  codexCompactionOutputHasCheckpoint,
+} from "../codex/compaction-output.js";
 import { formatCodexSubagentActivity } from "../codex/subagentActivity.js";
 import { attachToolResultMediaCandidates } from "../media/inlineImageData.js";
 import { normalizeGeminiTool } from "../sdk/providers/gemini-tools.js";
@@ -280,9 +279,7 @@ function getCodexMessageCacheKey(entries: CodexSessionEntry[]): object {
   return entries;
 }
 
-// Keyed by the reader's cache-stable entries array (claude-transcript-cache):
-// an unchanged transcript skips DAG rebuild + per-message conversion, and
-// eviction of the parsed transcript releases this copy via WeakMap semantics.
+// Complete reads cache by their parse-array identity.
 const claudeMessageCache = new WeakMap<
   ClaudeSessionEntry[],
   {
@@ -296,43 +293,6 @@ const claudeMessageCache = new WeakMap<
 
 function rewindCacheKey(records: readonly SessionRewindRecord[]): string {
   return records.map((record) => record.id).join("\n");
-}
-
-function normalizeClaudeQueueOperationContent(content: unknown): string {
-  if (content === undefined) {
-    return "";
-  }
-
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (!Array.isArray(content)) {
-    return "";
-  }
-
-  return content
-    .map((item) => {
-      if (typeof item === "string") {
-        return item;
-      }
-
-      if (!item || typeof item !== "object") {
-        return "";
-      }
-
-      const type = (item as { type?: unknown }).type;
-      if (type === "text") {
-        const text = (item as { text?: unknown }).text;
-        return typeof text === "string" ? text : "";
-      }
-      if (type === "image") return "[Image]";
-      if (type === "document") return "[Document]";
-      if (type === "tool_result") return "[Tool Result]";
-
-      return "";
-    })
-    .join("\n");
 }
 
 /** Normalize a bounded provider acquisition using the existing presentation rules. */
@@ -365,6 +325,8 @@ export function normalizeSession(
   options: NormalizeSessionOptions = {},
 ): Session {
   const { summary, data } = loaded;
+  if (loaded.projectedMessages)
+    return { ...summary, messages: loaded.projectedMessages };
 
   switch (data.provider) {
     case "claude":
@@ -459,79 +421,6 @@ export function detachSessionMessageProjection(messages: Message[]): Message[] {
 
 // --- Claude Conversion Logic ---
 
-function convertClaudeMessage(
-  raw: ClaudeSessionEntry,
-  _index: number,
-  orphanedToolUses: Set<string>,
-): Message {
-  if (raw.type === "queue-operation" && raw.operation === "enqueue") {
-    const content = normalizeClaudeQueueOperationContent(raw.content).trim();
-    const rawAny = raw as Record<string, unknown>;
-
-    return {
-      ...rawAny,
-      id: `queue-operation-${_index}-${raw.timestamp}`,
-      type: "user",
-      role: "user",
-      content,
-      message: {
-        role: "user",
-        content,
-      },
-      deferred: true,
-      deferredSource: "queue-operation",
-    };
-  }
-
-  // Normalize content blocks - pass through all fields
-  let content: string | ContentBlock[] | undefined;
-  const rawContent = getMessageContent(raw);
-  if (typeof rawContent === "string") {
-    content = rawContent;
-  } else if (Array.isArray(rawContent)) {
-    // Pass through all fields from each content block
-    // Filter out string items (which can appear in user message content)
-    content = rawContent
-      .filter((block) => typeof block !== "string")
-      .map((block) => ({ ...(block as object) })) as ContentBlock[];
-  }
-
-  // Build message by spreading all raw fields, then override with normalized values
-  // Use type assertion since we're converting to a looser Message type
-  const rawAny = raw as Record<string, unknown>;
-  const message: Message = {
-    ...rawAny,
-    inputMessageIds: claudeInputMessageIds(raw),
-    // Include normalized content if message had content
-    ...(isConversationEntry(raw) && {
-      message: {
-        ...(raw.message as Record<string, unknown>),
-        ...(content !== undefined && { content }),
-      },
-    }),
-    // Ensure type is set
-    type: raw.type,
-  };
-
-  // Identify orphaned tool_use IDs in this message's content
-  if (Array.isArray(content)) {
-    const orphanedIds = content
-      .filter(
-        (b): b is ContentBlock & { id: string } =>
-          b.type === "tool_use" &&
-          typeof b.id === "string" &&
-          orphanedToolUses.has(b.id),
-      )
-      .map((b) => b.id);
-
-    if (orphanedIds.length > 0) {
-      message.orphanedToolUseIds = orphanedIds;
-    }
-  }
-
-  return message;
-}
-
 // --- Codex Conversion Logic ---
 
 function convertCodexEntries(
@@ -599,7 +488,7 @@ function convertCodexEntries(
       ) {
         continue;
       }
-      const msg = convertCodexResponseItem(
+      const converted = convertCodexResponseItem(
         entry,
         messageIndex,
         state.toolCallContexts,
@@ -608,7 +497,7 @@ function convertCodexEntries(
         userResponseKind,
         clientUserMessageId,
       );
-      if (msg) {
+      for (const msg of instructions.codexInstructionMessages(converted)) {
         tagCodexMessageSourceByteOffset(msg, entry);
         attachCodexProviderForkTurnId(
           msg,
@@ -703,7 +592,7 @@ function convertCodexEntries(
           state.closedToolResultIds,
           sessionId,
         );
-        const eventMessages = msg ? [msg] : [];
+        const eventMessages = instructions.codexInstructionMessages(msg);
         const taskCompleteError = convertCodexTaskCompleteError(
           entry,
           sessionId,
@@ -1229,32 +1118,6 @@ function codexDurableResponseItemUuid(
   }
 }
 
-function isCodexCompactionOutput(entry: CodexResponseItemEntry): boolean {
-  return (
-    entry.metadata?.compaction_output === true &&
-    entry.payload.type === "message" &&
-    entry.payload.role === "assistant"
-  );
-}
-
-function codexCompactionOutputHasCheckpoint(
-  entries: readonly CodexSessionEntry[],
-  outputIndex: number,
-): boolean {
-  for (let index = outputIndex + 1; index < entries.length; index++) {
-    const entry = entries[index];
-    if (!entry) continue;
-    if (
-      entry.type === "token_usage_record" ||
-      (entry.type === "event_msg" && entry.payload.type === "token_count")
-    ) {
-      continue;
-    }
-    return entry.type === "compacted" && Boolean(entry.payload.message?.trim());
-  }
-  return false;
-}
-
 function convertCodexResponseItem(
   entry: CodexResponseItemEntry,
   index: number,
@@ -1263,7 +1126,7 @@ function convertCodexResponseItem(
   closedToolResultIds: Set<string>,
   userResponseKind?: CodexUserResponseKind,
   clientUserMessageId?: string,
-): Message | null {
+): Message | Message[] | null {
   const payload = entry.payload;
   const positionalUuid = `codex-${codexEntryPosition(entry, index)}-${entry.timestamp}`;
   const uuid = codexDurableResponseItemUuid(
@@ -1287,16 +1150,7 @@ function convertCodexResponseItem(
         };
       }
       if (payload.role === "developer") {
-        const guidance = codexContentFilterGuidance(payload);
-        return guidance === null
-          ? null
-          : {
-              uuid,
-              type: "system",
-              subtype: CODEX_CONTENT_FILTER_BLOCK_SUBTYPE,
-              content: guidance,
-              timestamp: entry.timestamp,
-            };
+        return instructions.developerMessages(payload, uuid, entry.timestamp);
       }
       if (
         userResponseKind === "hidden-provider-context" ||
@@ -1444,11 +1298,7 @@ function convertCodexMessagePayload(
 ): Message {
   const content: ContentBlock[] = [];
 
-  const fullText = payload.content
-    .map((block) =>
-      "text" in block && typeof block.text === "string" ? block.text : "",
-    )
-    .join("");
+  const fullText = instructions.codexMessageText(payload);
   if (fullText.trim()) {
     content.push({
       type: "text",
@@ -2049,7 +1899,7 @@ function convertCodexEventMsg(
       codexUserTurnProvenance: "event-only",
       message: {
         role: "user",
-        content: codexUserMessageEventText(entry),
+        content: codexUserMessageEventText(entry, false),
       },
       timestamp: entry.timestamp,
     };

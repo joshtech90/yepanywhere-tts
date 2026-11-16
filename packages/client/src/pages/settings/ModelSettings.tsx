@@ -1,3 +1,10 @@
+import { composerOptionDotStateClasses } from "../../components/composerStateClasses";
+import recapStyles from "../../components/RecapAfterSecondsControl.module.css";
+import thinkingStyles from "../../components/ThinkingControls.module.css";
+import dotStyles from "../../components/ComposerOptionDot.module.css";
+import optionStyles from "../../components/NewSessionOptionsPanel.module.css";
+import rowLayoutStyles from "./SettingsRows.module.css";
+import rowsStyles from "./SettingsRows.module.css";
 import {
   SERVER_CAPABILITIES,
   serverHasCapability,
@@ -618,9 +625,9 @@ export function ModelSettings() {
         "fork summary",
       ]}
     >
-      <div className="settings-group">
+      <div className={rowsStyles.group} data-settings-group>
         <div
-          className={`settings-session-defaults-panel ${styles.sessionDefaultsPanel}`}
+          className={`${styles.defaultsPanel} ${styles.sessionDefaultsPanel}`}
         >
           <p className={styles.intro}>
             {t("modelSettingsNewSessionDefaultsIntro")}
@@ -671,7 +678,7 @@ export function ModelSettings() {
               ...availableProviders.map((p) => p.displayName),
             ]}
             valueText={selectedProvider?.displayName}
-            className="new-session-provider-section session-default-provider-section settings-item--session-default-block settings-item--wide-control"
+            className={`${optionStyles.newSessionProviderSection} ${styles.sessionDefaultProviderSection} ${rowsStyles.itemWideControl}`}
           >
             <SegmentedControl
               activation="manual"
@@ -685,7 +692,7 @@ export function ModelSettings() {
                 label: provider.displayName,
                 icon: (
                   <span
-                    className={`provider-option-dot provider-${provider.name}`}
+                    className={`${dotStyles["provider-option-dot"]} ${composerOptionDotStateClasses[`provider-${provider.name}`] ?? ""}`}
                   />
                 ),
               }))}
@@ -707,9 +714,12 @@ export function ModelSettings() {
               sessionDefaultCopy.model.title,
             ]}
             valueText={selectedModel ?? undefined}
-            className="new-session-model-section session-default-model-section settings-item--session-default-block settings-item--wide-control"
+            className={`${optionStyles.newSessionModelSection} ${styles.sessionDefaultModelSection} ${rowsStyles.itemWideControl}`}
           >
-            <div className="new-session-model-field">
+            <div
+              className={optionStyles.newSessionModelField}
+              data-new-session-model-field
+            >
               {selectedModels.length > 0 ? (
                 <FilterDropdown
                   label={t("newSessionModelTitle")}
@@ -724,9 +734,7 @@ export function ModelSettings() {
                   fullWidth
                 />
               ) : (
-                <span className="model-settings-empty">
-                  {t("modelSwitchEmpty")}
-                </span>
+                <span className={styles.empty}>{t("modelSwitchEmpty")}</span>
               )}
             </div>
           </SettingsItem>
@@ -738,7 +746,7 @@ export function ModelSettings() {
               description={sessionDefaultCopy.thinking.description}
               keywords={sessionDefaultCopy.thinking.settings?.keywords}
               valueText={`${effectiveThinkingMode} ${effectiveEffortLevel ?? ""}`.trim()}
-              className="new-session-helper-section session-default-thinking-section settings-item--session-default-block settings-item--wide-control"
+              className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection} ${styles.sessionDefaultThinkingSection} ${rowsStyles.itemWideControl}`}
             >
               <ThinkingControlsPanel
                 mode={effectiveThinkingMode}
@@ -760,7 +768,7 @@ export function ModelSettings() {
                 showThinkingControl={false}
                 provider={selectedProvider?.name}
                 t={t}
-                className="thinking-controls-panel--inline session-default-thinking-controls"
+                className={`${thinkingStyles.thinkingControlsPanelInline} ${styles.sessionDefaultThinkingControls}`}
               />
             </SettingsItem>
           )}
@@ -771,7 +779,7 @@ export function ModelSettings() {
               label={sessionDefaultCopy.permission.title}
               keywords={sessionDefaultCopy.permission.settings?.keywords}
               valueText={modeLabels[effectiveDefaultPermissionMode]}
-              className="new-session-mode-section session-default-mode-section settings-item--session-default-block settings-item--wide-control"
+              className={`${optionStyles.newSessionModeSection} ${styles.sessionDefaultModeSection} ${rowsStyles.itemWideControl}`}
             >
               <SegmentedControl
                 activation="manual"
@@ -782,7 +790,10 @@ export function ModelSettings() {
                   label: modeLabels[modeValue],
                   description: modeDescriptions[modeValue],
                   icon: (
-                    <span className={`mode-option-dot mode-${modeValue}`} />
+                    <span
+                      className={`${dotStyles["mode-option-dot"]} ${composerOptionDotStateClasses[`mode-${modeValue}`] ?? ""}`}
+                      data-mode-option-dot
+                    />
                   ),
                 }))}
                 value={effectiveDefaultPermissionMode}
@@ -813,7 +824,7 @@ export function ModelSettings() {
                   ? t("newSessionSandboxLabel")
                   : undefined
               }
-              className="new-session-helper-section session-default-sandbox-section settings-item--session-default-block"
+              className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection} ${styles.sessionDefaultSandboxSection} `}
             >
               <Switch
                 checked={savedDefaults?.sandboxLevel === "project-write"}
@@ -848,7 +859,7 @@ export function ModelSettings() {
                   ? t("newSessionSandboxNetworkFirewallLabel")
                   : undefined
               }
-              className="new-session-helper-section session-default-sandbox-section settings-item--session-default-block"
+              className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection} ${styles.sessionDefaultSandboxSection} `}
             >
               <Switch
                 checked={
@@ -876,7 +887,7 @@ export function ModelSettings() {
               description={sessionDefaultCopy.showThinking.description}
               keywords={sessionDefaultCopy.showThinking.settings?.keywords}
               valueText={String(showThinking)}
-              className="new-session-helper-section session-default-show-thinking-section settings-item--session-default-block settings-item--wide-control"
+              className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection}  ${rowsStyles.itemWideControl}`}
             >
               <ShowThinkingControls
                 value={showThinking}
@@ -896,7 +907,7 @@ export function ModelSettings() {
               valueText={
                 promptSuggestionModeLabels[selectedPromptSuggestionMode]
               }
-              className="new-session-helper-section session-default-suggestions-section settings-item--session-default-block settings-item--wide-control"
+              className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection}  ${rowsStyles.itemWideControl}`}
             >
               <SegmentedControl
                 activation="manual"
@@ -908,7 +919,8 @@ export function ModelSettings() {
                   tooltip: promptSuggestionModeDescriptions[modeValue],
                   icon: (
                     <span
-                      className={`mode-option-dot suggestion-${modeValue}`}
+                      className={`${dotStyles["mode-option-dot"]} ${composerOptionDotStateClasses[`suggestion-${modeValue}`] ?? ""}`}
+                      data-mode-option-dot
                     />
                   ),
                 }))}
@@ -934,7 +946,7 @@ export function ModelSettings() {
             doc="topics/recaps.md#configuration-and-native-capability"
             keywords={sessionDefaultCopy.recap.settings?.keywords}
             valueText={recapModeLabels[selectedRecapMode]}
-            className="new-session-helper-section session-default-recap-section settings-item--session-default-block settings-item--wide-control"
+            className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection} ${styles.sessionDefaultRecapSection} ${rowsStyles.itemWideControl}`}
             after={
               selectedRecapMode !== "off" ? (
                 <RecapAfterSecondsControl
@@ -942,7 +954,7 @@ export function ModelSettings() {
                   disabled={settingsLoading}
                   label={recapAfterSecondsInlineLabels[selectedRecapMode]}
                   mode={selectedRecapMode}
-                  className={`${styles.recapDuration} recap-after-seconds-control--inline`}
+                  className={`${styles.recapDuration} ${recapStyles["recap-after-seconds-control--inline"]}`}
                   onCommit={(seconds) =>
                     updateNewSessionDefaults({ recapAfterSeconds: seconds })
                   }
@@ -962,7 +974,12 @@ export function ModelSettings() {
                   t,
                   selectedRecapAfterSeconds,
                 ),
-                icon: <span className={`mode-option-dot recap-${modeValue}`} />,
+                icon: (
+                  <span
+                    className={`${dotStyles["mode-option-dot"]} ${composerOptionDotStateClasses[`recap-${modeValue}`] ?? ""}`}
+                    data-mode-option-dot
+                  />
+                ),
                 disabled:
                   canConfigureSessionSandbox &&
                   savedDefaults?.sandboxLevel === "project-write" &&
@@ -984,7 +1001,7 @@ export function ModelSettings() {
               doc="topics/side-session-config.md"
               keywords={sessionDefaultCopy.helperModel.settings?.keywords}
               valueText={selectedHelperSideModel}
-              className="new-session-helper-section session-default-helper-model-section settings-item--session-default-block settings-item--wide-control"
+              className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection}  ${rowsStyles.itemWideControl}`}
             >
               <FilterDropdown
                 label={sessionDefaultCopy.helperModel.title}
@@ -1023,7 +1040,7 @@ export function ModelSettings() {
                 ? t("modelSettingsForkSummaryAutoOpenLabel")
                 : undefined
             }
-            className="new-session-helper-section session-default-fork-summary-section settings-item--session-default-block"
+            className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection} ${styles.sessionDefaultForkSummarySection} `}
           >
             <Switch
               checked={forkSummaryAutoOpen}
@@ -1041,7 +1058,7 @@ export function ModelSettings() {
               map={settings?.clientDefaults?.compactAtContextPercent}
               updateSetting={updateSetting}
               disabled={settingsLoading}
-              className="new-session-helper-section session-default-compact-section settings-item--session-default-block settings-item--wide-control"
+              className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection} ${styles.sessionDefaultCompactSection} ${rowsStyles.itemWideControl}`}
             />
           )}
 
@@ -1073,7 +1090,7 @@ export function ModelSettings() {
                     ? t("modelSettingsForceYaCompactionLabel")
                     : undefined
                 }
-                className="new-session-helper-section session-default-force-ya-section settings-item--session-default-block"
+                className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection}  `}
               >
                 <Switch
                   checked={forceYaOrchestratedCompaction}
@@ -1106,9 +1123,9 @@ export function ModelSettings() {
                 "inactivity",
               ]}
               valueText={`${selectedPromptCacheKeepalive.mode} ${selectedPromptCacheKeepalive.inactivityMinutes}m`}
-              className="new-session-helper-section session-default-cache-keepalive-section settings-item--session-default-block settings-item--wide-control"
+              className={`${optionStyles.newSessionHelperSection} ${styles.sessionDefaultHelperSection} ${styles.sessionDefaultCacheKeepaliveSection} ${rowsStyles.itemWideControl}`}
             >
-              <div className="session-default-cache-keepalive-controls">
+              <div className={styles.sessionDefaultCacheKeepaliveControls}>
                 <SegmentedControl
                   activation="manual"
                   variant="cards"
@@ -1120,7 +1137,8 @@ export function ModelSettings() {
                       tooltip: promptCacheKeepaliveModeDescriptions[modeValue],
                       icon: (
                         <span
-                          className={`mode-option-dot keepalive-${modeValue}`}
+                          className={`${dotStyles["mode-option-dot"]} ${modeValue === "off" ? styles.keepaliveOff : styles.keepaliveAuto}`}
+                          data-mode-option-dot
                         />
                       ),
                     }),
@@ -1131,7 +1149,7 @@ export function ModelSettings() {
                   }
                   disabled={settingsLoading}
                 />
-                <label className="prompt-cache-keepalive-cadence">
+                <label className={styles.promptCacheKeepaliveCadence}>
                   <span>{t("promptCacheKeepaliveCadenceLabel")}</span>
                   <TextInput
                     key={`${selectedProvider.name}-${selectedPromptCacheKeepalive.inactivityMinutes}`}
@@ -1176,14 +1194,14 @@ export function ModelSettings() {
         </div>
       </div>
 
-      <div className="settings-group">
-        <div className="new-session-helper-section">
+      <div className={rowsStyles.group} data-settings-group>
+        <div className={optionStyles.newSessionHelperSection}>
           <h3>{t("autoSessionTitleTitle")}</h3>
-          <p className="session-default-section-description">
+          <p className={rowsStyles.sectionDescription}>
             {t("autoSessionTitleDescription")}
           </p>
-          <label className="settings-item">
-            <div className="settings-item-info">
+          <label className={rowsStyles.item}>
+            <div className={rowsStyles.itemInfo}>
               <strong>{t("autoSessionTitleEnabledLabel")}</strong>
             </div>
             <input
@@ -1198,8 +1216,8 @@ export function ModelSettings() {
           </label>
           {autoSessionTitle.enabled && (
             <>
-              <label className="settings-item">
-                <div className="settings-item-info">
+              <label className={rowsStyles.item}>
+                <div className={rowsStyles.itemInfo}>
                   <strong>{t("autoSessionTitleLanguageLabel")}</strong>
                 </div>
                 <select
@@ -1220,13 +1238,12 @@ export function ModelSettings() {
                   <option value="en">English</option>
                 </select>
               </label>
-              <label className="settings-item">
-                <div className="settings-item-info">
+              <label className={rowsStyles.item}>
+                <div className={rowsStyles.itemInfo}>
                   <strong>{t("autoSessionTitleMaxLengthLabel")}</strong>
                 </div>
                 <input
                   type="number"
-                  className="settings-input-small"
                   min={AUTO_SESSION_TITLE_MIN_LENGTH}
                   max={AUTO_SESSION_TITLE_MAX_LENGTH}
                   value={autoTitleLengthDraft ?? autoSessionTitle.maxLength}
@@ -1255,8 +1272,8 @@ export function ModelSettings() {
                   aria-label={t("autoSessionTitleMaxLengthLabel")}
                 />
               </label>
-              <label className="settings-item">
-                <div className="settings-item-info">
+              <label className={rowsStyles.item}>
+                <div className={rowsStyles.itemInfo}>
                   <strong>{t("autoSessionTitleBackfillLabel")}</strong>
                   <p>{t("autoSessionTitleBackfillDescription")}</p>
                 </div>
@@ -1278,14 +1295,14 @@ export function ModelSettings() {
       </div>
 
       {selectedProvider?.name === "claude" && (
-        <div className="settings-group">
+        <div className={rowsStyles.group} data-settings-group>
           <SettingsItem
             label={t("modelSettingsModelTitle")}
             description={t("modelSettingsModelDescription")}
-            className="model-settings-item"
+            className={rowLayoutStyles.modelItem}
           >
             <SegmentedControl
-              className="model-settings-chip-group"
+              className={rowLayoutStyles.modelChipGroup}
               aria-label={t("modelSettingsModelTitle")}
               options={MODEL_OPTIONS.map((opt) => ({
                 value: opt.value,

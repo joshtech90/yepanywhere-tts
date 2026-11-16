@@ -1,3 +1,8 @@
+import {
+  SIDEBAR_SESSION_FEEDS,
+  type SidebarSessionLimits,
+} from "@yep-anywhere/shared/sidebar-snapshot";
+import { retainedSessionQuery } from "../services/retained-session-query.js";
 import { mergeCreationGlobalItems } from "./creation-session-collections.js";
 import type { ProviderChildRelationshipService } from "../sessions/ProviderChildRelationshipService.js";
 import { creationCollectionRows } from "../sessions/session-creation-view.js";
@@ -23,7 +28,7 @@ import { type Principal, PRINCIPAL_VARIABLE } from "../auth/principal.js";
 import { nonHumanUserTurnField } from "../metadata/SessionMetadataService.js";
 import type { RetainedSessionCollectionState } from "@yep-anywhere/shared";
 import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
-import { readRetainedSessionItems } from "./retained-session-collections.js";
+import { compareProjectOptions } from "./retained-session-collections.js";
 import { createSessionContentSearchRoutes } from "./session-content-search.js";
 import type { SessionIndexService } from "../indexes/index.js";
 import type { SessionIndexListOptions } from "../indexes/types.js";
@@ -232,7 +237,7 @@ interface CollectionRequest {
   generation: number;
 }
 
-function accessibleProjectIdsForRequest(c: {
+export function accessibleProjectIdsForRequest(c: {
   get: (key: string) => unknown;
 }): string[] | undefined {
   const principal = c.get(PRINCIPAL_VARIABLE) as Principal | undefined;
@@ -566,6 +571,42 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     return c.json({ stats });
   });
 
+  // A fresh sidebar read shares synchronization across its independent windows.
+  routes.get("/sidebar", async (c) => {
+    if (!deps.retainedCollections)
+      return c.json({ error: "Retained collections unavailable" }, 503);
+    const limits = {} as SidebarSessionLimits;
+    for (const feed of SIDEBAR_SESSION_FEEDS) {
+      const raw = c.req.query(`${feed}Limit`);
+      const limit = raw === undefined ? 50 : Number(raw);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 500)
+        return c.json({ error: "Invalid sidebar window" }, 400);
+      limits[feed] = limit;
+    }
+    const start = performance.now();
+    const { snapshot, timings } = await retainedSessionQuery(
+      deps.retainedCollections,
+      deps,
+    ).sidebar(
+      limits,
+      accessibleProjectIdsForRequest(c),
+      deps.providerChildRelationships,
+    );
+    const serialize = performance.now();
+    const response = c.json(snapshot);
+    response.headers.set(
+      "Server-Timing",
+      [
+        `ya-sidebar-sync;dur=${timings.synchronizeMs.toFixed(2)}`,
+        `ya-sidebar-select;dur=${timings.selectMs.toFixed(2)}`,
+        `ya-sidebar-hydrate;dur=${timings.hydrateMs.toFixed(2)}`,
+        `ya-sidebar-json;dur=${(performance.now() - serialize).toFixed(2)}`,
+        `ya-sidebar-total;dur=${(performance.now() - start).toFixed(2)}`,
+      ].join(", "),
+    );
+    return response;
+  });
+
   // GET /api/sessions - Get all sessions with pagination
   routes.get("/", async (c) => {
     // Parse query params
@@ -582,9 +623,6 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
       MAX_LIMIT,
     );
     const accessibleProjectIds = accessibleProjectIdsForRequest(c);
-    const accessibleProjectIdSet = accessibleProjectIds
-      ? new Set(accessibleProjectIds)
-      : undefined;
 
     // Read before the walk, never after: a change landing mid-walk must leave
     // the client's token behind the current generation, so its next
@@ -592,40 +630,23 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     // post-walk value would certify rows the response does not contain.
     const generation = collectionGeneration.current;
     if (c.req.query("summaryMode") === "retained" && deps.retainedCollections) {
-      const matches = (row: GlobalSessionItem) =>
-        (!accessibleProjectIdSet ||
-          accessibleProjectIdSet.has(row.projectId)) &&
-        matchesGlobalSessionQuery(row, {
-          filterProjectId,
-          searchQuery,
-          includeArchived,
-          starredOnly,
-          categorizedOnly,
-        }) &&
-        isBeforeCursor(row.updatedAt, afterCursor);
-      const retained = await readRetainedSessionItems(
-        deps.retainedCollections,
-        deps,
-        (sessions) => sessions.filter(matches).slice(0, limit),
-      );
-      const accessibleSessions = retained.sessions.filter(
-        (row) =>
-          !accessibleProjectIdSet || accessibleProjectIdSet.has(row.projectId),
-      );
-      const rows = accessibleSessions.filter(matches);
-      return c.json({
-        ...retained,
-        sessions: rows.slice(0, limit),
-        hasMore: rows.length > limit,
-        stats: accessibleProjectIdSet
-          ? statsForSessionItems(accessibleSessions)
-          : retained.stats,
-        projects: retained.projects.filter(
-          (project) =>
-            !accessibleProjectIdSet || accessibleProjectIdSet.has(project.id),
+      return c.json(
+        await retainedSessionQuery(deps.retainedCollections, deps).page(
+          {
+            filterProjectId,
+            searchQuery,
+            afterCursor,
+            includeArchived,
+            starredOnly,
+            categorizedOnly,
+            limit,
+            accessibleProjectIds,
+          },
+          deps.providerChildRelationships,
         ),
-      });
+      );
     }
+
     // A cursor page is not a whole-collection read, so it never short-circuits;
     // the token only means "the collection behind an identical query is
     // unchanged", which is why the client must replay it against the same
@@ -737,7 +758,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           (!accessibleProjectIdSet || accessibleProjectIdSet.has(project.id)),
       )
       .map((p) => ({ id: p.id, name: p.name }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(compareProjectOptions);
 
     // Collect all sessions with enriched data
     let allSessions: GlobalSessionItem[] = [];
@@ -876,7 +897,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
         projectOptionIds.add(item.projectId);
         projectOptions.push({ id: item.projectId, name: item.projectName });
       }
-    projectOptions.sort((a, b) => a.name.localeCompare(b.name));
+    projectOptions.sort(compareProjectOptions);
     // Sort by updatedAt descending (most recent first)
     allSessions.sort(
       (a, b) =>

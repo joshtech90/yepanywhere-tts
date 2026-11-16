@@ -1,8 +1,8 @@
 import { RETIRED_COMPUTER_CONTROL_ERROR } from "../../machine-control/legacy-retirement.js";
 import { delimiter, win32 } from "node:path";
+import { machineControlInstructions } from "@yep-anywhere/shared/machine-control-instructions";
 import {
-  defaultInstallation,
-  verifyInstalledMachineControl,
+  findInstalledMachineControl,
   type InstalledMachineControl,
 } from "../../machine-control/installation.js";
 import { startNativeSudoSession } from "./native-sudo.js";
@@ -20,6 +20,17 @@ export interface MachineControlDependencies {
     publisher: string | undefined,
     platform: NodeJS.Platform,
   ) => Promise<InstalledMachineControl>;
+  /** Whether a path is occupied, to tell a failed install from an absent one. */
+  exists?: (path: string) => Promise<boolean>;
+  /** The operator's setting; defaults to the launch's runtime snapshot. */
+  enabledByDefault?: () => boolean;
+}
+
+let enabledByDefault = () => false;
+
+/** Wired to the runtime snapshot, so a provider worker sees the setting too. */
+export function setMachineControlDefault(getter: () => boolean) {
+  enabledByDefault = getter;
 }
 
 /** Advertisement is launcher context, never an MC grant or OS containment. */
@@ -32,7 +43,11 @@ export async function startMachineControlSession(
   if (options.computerControl) throw new Error(RETIRED_COMPUTER_CONTROL_ERROR);
   const environment = dependencies.environment ?? process.env;
   const platform = dependencies.platform ?? process.platform;
-  const selected = options.machineControl ?? environment.YEP_MC_CONTROL === "1";
+  const seeded = environment.YEP_MC_CONTROL === "1";
+  const defaulted =
+    options.machineControl === undefined &&
+    (dependencies.enabledByDefault ?? enabledByDefault)();
+  const selected = options.machineControl ?? (seeded || defaulted);
   if (
     !selected ||
     !["darwin", "win32", "linux"].includes(platform) ||
@@ -46,20 +61,18 @@ export async function startMachineControlSession(
     (provider === "codex" && options.permissionMode !== "bypassPermissions")
   )
     return start(options);
-  const app =
-    environment.YEP_MC_APP ?? defaultInstallation(platform, environment);
-  const publisher =
-    platform === "darwin"
-      ? environment.YEP_MC_TEAM_ID
-      : environment.YEP_MC_PUBLISHER;
   let installation: InstalledMachineControl;
   try {
-    installation = await (dependencies.verify ?? verifyInstalledMachineControl)(
-      app,
-      publisher,
-      platform as NodeJS.Platform,
+    installation = await findInstalledMachineControl(
+      platform,
+      environment,
+      dependencies.verify,
+      dependencies.exists,
     );
   } catch {
+    // The setting is a standing default, so a missing or unverified install
+    // leaves the launch unadvertised. A choice made for this launch refuses.
+    if (defaulted && !seeded) return start(options);
     throw new Error(
       "Configured Machine Control desktop installation is missing, incompatible, or failed publisher/integrity verification",
     );
@@ -68,20 +81,16 @@ export async function startMachineControlSession(
     platform === "win32"
       ? `& '${installation.command.replaceAll("'", "''")}'`
       : `'${installation.command.replaceAll("'", "'\\''")}'`;
-  const fragment = [
-    "[Installed Machine Control]",
-    `Machine Control ${installation.version} is available on this agent's execution host.`,
-    `For desktop/browser control, first read its workflow with: ${quoted} agent instructions`,
-    `Invoke that exact command path if your shell replaces PATH. The host target is this execution machine.`,
-    "Discovery and these instructions grant no access. Follow MC doctor/claims and native access approval; do not start a second resident, switch to the operator's machine, or automatically retry an uncertain mutation.",
-    "Closing this YA session does not revoke independently granted MC access. Use MC Stop or native grant expiry to revoke it.",
-    "MC owns its access, arming, lifecycle and updates. YA session selection only advertises the command; it does not contain unrelated same-user shell access. Administrator authentication is a separately selected helper.",
-  ].join("\n");
+  const fragment = machineControlInstructions(installation.version, quoted);
   return start({
     ...options,
-    globalInstructions: [options.globalInstructions, fragment]
-      .filter(Boolean)
-      .join("\n\n"),
+    ...(provider === "codex"
+      ? { machineControlInstructions: fragment }
+      : {
+          globalInstructions: [options.globalInstructions, fragment]
+            .filter(Boolean)
+            .join("\n\n"),
+        }),
     agentEnvironment: {
       ...options.agentEnvironment,
       ...(platform === "win32"

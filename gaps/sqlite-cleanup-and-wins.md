@@ -24,14 +24,20 @@ summary migration 25.
 
 ## Easy wins
 
-1. **Session catalog republishes without changes.** Moved to
+1. Fixed 2026-11-09 by plan 189 step 3: a scan that changes nothing
+   writes nothing and advances no generation. **Session catalog
+   republishes without changes.** Moved to
    [session catalog rewrites](session-catalog-rewrites-whole-generation-per-change.md),
    with 2026-11-09 measurements: 7,470 rows and 14.3 MB per generation,
    every 3.8–7.6 s. "Update only the manifest when only source versions
    move" cannot work as written, because file adapters stamp
    `reconciliation:<generation>` as their source version on every
    publication.
-2. **Server log has no rotation.** `logging/logger.ts:112` appends to
+2. Fixed 2026-11-09 by plan 189 step 2: `server.log`, `sdk-raw.jsonl` and
+   `codex-correlation-debug.jsonl` rotate at 100 MiB and keep two archives
+   (`logging/rotating-file-stream.ts`). The Codex scan line already logs
+   only on cache misses (`abd8cd45e`). Original finding:
+   **Server log has no rotation.** `logging/logger.ts:112` appends to
    `{dataDir}/logs/server.log` (8.0 GB here, opt-in via `LOG_TO_FILE`).
    File level was debug; volume is dominated by
    `CODEX_READER: scan complete` (`sessions/codex-reader.ts:2435`, about
@@ -39,7 +45,12 @@ summary migration 25.
    `FILE_WATCHER: rescan complete` (`watcher/FileWatcher.ts:927`). Add
    size-based rotation and demote or sample those two lines. Not a SQLite
    change, but the largest disk cost found.
-3. **Whole-table metadata scans answer point questions.** Replace with SQL:
+3. Fixed 2026-11-09 by plan 189 step 6 (migration 031): recorded providers,
+   the `claude-ollama` checks and both sandbox scans are indexed queries on
+   the new columns (the debug counts scan the narrow columns), with
+   uncommitted sessions answered from memory; the Claude memo is gone. On a copy of this profile the four
+   queries take 1.7 ms together. Original finding:
+   **Whole-table metadata scans answer point questions.** Replace with SQL:
    - `app.ts:732` scans every session for `provider === "claude-ollama"` on
      each `getAllProviders()` call (per request via `routes/providers.ts:93`);
      `server-main.ts:994` repeats it at startup. Use
@@ -55,7 +66,10 @@ summary migration 25.
    - `getRecordedProviders` (`SessionMetadataService.ts:496`) becomes
      `SELECT DISTINCT`.
    - Queries must repeat the indexed expression exactly.
-4. **Summary scopes are rewritten after every load.**
+4. Partly fixed 2026-11-09 by plan 189 step 5: a cold load stores the scope
+   again only when it repaired, upgraded or started it fresh. The
+   whole-scope saves after validation remain. Original finding:
+   **Summary scopes are rewritten after every load.**
    `SessionIndexService.ts:473` calls `summaryStore.save` after each cold
    load, including reloads after eviction (`:382`). That runs
    `BEGIN IMMEDIATE`, rereads and re-stringifies every row
@@ -72,12 +86,10 @@ summary migration 25.
      `test/storage/discovery-sqlite.test.ts:85`). Keep the wire `sqlite`
      field, the shared `SqliteStatus` union and client handling for older
      servers.
-   - `SessionIndexService` (`:242` optional `database`, `:605-628`,
-     `:648-700`) keeps a temp-file/lock-file JSON writer only tests reach;
-     `SESSION_INDEX_WRITE_LOCK_TIMEOUT_MS` / `_STALE_MS`
-     (`config.ts:319-325`, `cli.ts:115-117`) are inert in production. Make
-     the database required and run those tests on an in-memory database.
-     Keep the legacy JSON read for import (item 14).
+   - Fixed 2026-11-09 by plan 189 step 2: `SessionIndexService` requires
+     the database; its JSON writer, write locks, legacy JSON read and the
+     `SESSION_INDEX_WRITE_LOCK_*` settings are gone, and its tests run on a
+     scratch database.
    - Speech-vocabulary legacy adoption (`VocabularyStore.ts:565-689`,
      `legacy-vocabulary-directories.ts`) probes four directories every
      start. Those layouts existed on `main` only 2026-09-09..10 and in no
@@ -115,7 +127,10 @@ Each needs a one-time import like `session_metadata`'s. Keep small, bounded
 or human-edited files as JSON: recents (100), security clients, browser
 profiles, remote sessions, project metadata/queues, settings and secrets.
 
-8. **`notifications.json`** (1,441 entries). `NotificationService.ts:137`,
+8. Fixed 2026-11-10: canonical `session_last_seen` rows replace the JSON/map
+   owner, with one-time atomic adoption and keyed writes; see
+   [cold-state evidence](../docs/research/190-cold-state-sql.md). Historical finding:
+   **`notifications.json`** (1,441 entries). `NotificationService.ts:137`,
    `:208` rewrite the pretty-printed file on every mark-seen; entries are
    never removed on session deletion (`clearSession` only from mark-unread,
    `routes/sessions.ts:9011`). Use `session_last_seen(session_id PK, ...)`,
@@ -132,7 +147,20 @@ profiles, remote sessions, project metadata/queues, settings and secrets.
 
 ## Structural work, in order
 
-11. **Narrow list projection.** Retained All Sessions and Inbox build an item
+11. Query consumer implemented 2026-11-10: retained lists and Inbox now use
+    one derived TEMP SQL index per collection, keyed source changes, grouped
+    unread/count aggregates and page/tier hydration. The retained full walk
+    is removed. See [query ownership](../topics/session-collection-queries.md)
+    and [evidence](../docs/research/190-sql-collection-queries.md). Canonical
+    seen durability and lazy metadata are implemented; native catalog residency
+    and durable restoration of the derived query index remain open.
+    Historical finding: Plan 189 step 7 (2026-11-09) cut the walk's fixed costs (bound
+    identity projections kept per row object, one time parse per row for the
+    sort, cached display titles; retained feeds 86–94 ms to 26–35 ms here) and
+    found this item blocks paging in SQL: every retained response carries
+    whole-population stats that count unread sessions, whose state is in
+    `notifications.json` (item 8). Original finding:
+    **Narrow list projection.** Retained All Sessions and Inbox build an item
     for every catalog row before filtering, sorting and slicing
     (`retained-session-collections.ts:77-190`, from `global-sessions.ts:606`
     and `inbox.ts:351`), calling `getMetadata` several times per row and
@@ -142,7 +170,11 @@ profiles, remote sessions, project metadata/queues, settings and secrets.
     recap time) in the metadata save transaction; serve page-only fields by
     point read and full-prompt search by SQL when `q` is present. This is
     also where a per-project creation-surface rollup lives.
-12. **Load metadata on demand.** Make `getMetadata` read through a bounded
+12. Fixed 2026-11-10: metadata is read on demand through a bounded clean/miss
+    working set; dirty updates/deletion tombstones remain pinned until commit.
+    Feature queries and interrupted-display recovery select owners in SQL.
+    See the cold-state evidence and required-SQLite contract. Historical finding:
+    **Load metadata on demand.** Make `getMetadata` read through a bounded
     cache and drop the startup `SELECT` of every row
     (`SessionMetadataService.ts:340`, `:369`; 2.8 s on the Linux host).
     Prerequisites: items 3 and 11, and SQL replacements for the remaining
@@ -150,12 +182,19 @@ profiles, remote sessions, project metadata/queues, settings and secrets.
     bang-command and cache-miss billing lists (`bang-commands.ts:142`,
     `:379`; `settings.ts:299`). Pin dirty entries until commit (`:1514`,
     `:1540`), distinguish absent from deleted (`:282`, `:1488`, `:1502`),
-    and keep reference-equality callers (`:706`) correct. Consider moving
-    `initialPrompt` to its own column so a cache miss does not parse it.
-13. **Catalog rows in SQLite.** Now owned by
+    and keep reference-equality callers (`:706`) correct. `initialPrompt`
+    has its own column since plan 189 step 6, and item 3's queries are done.
+13. Done 2026-11-09 by plan 189 step 3. **Catalog rows in SQLite.** Now owned by
     [session catalog rewrites](session-catalog-rewrites-whole-generation-per-change.md),
     which gives the table shape and the defects to fix first.
-14. **Delete the one-time import leftovers.**
+14. Fixed 2026-11-09 by plan 189 step 2, with one deviation: the
+    `session-metadata.json` import code stays, because 0.9.2 (the last
+    release before the import) is still a direct upgrade source and the file
+    is not rebuildable. Each leftover file is deleted by a later start that
+    finds its import marker (metadata and public shares); legacy `indexes/*.json` scopes are deleted on start once they
+    parse as summary scopes, and their import code is gone. Original
+    finding:
+    **Delete the one-time import leftovers.**
     - `session-metadata.json` (2.8 MB) is never read after import
       (`SessionMetadataService.ts:331`, guarded by the
       `session_metadata_import` marker).
@@ -190,7 +229,13 @@ The catalog findings (cache budget below the catalog's size, pathless
 invalidation from the issue indexer, double publication) are recorded in
 [session catalog rewrites](session-catalog-rewrites-whole-generation-per-change.md).
 
-15. **Whole-catalog reads answer point questions.**
+15. Still open; cheaper by a constant factor since plan 189 step 7, which
+    keeps each bound row's identity projection: recents takes 1.5 ms (was 27)
+    and a project card 10 ms (was 37), but recents, the project inventory,
+    the issue routes and the session-access catalog still walk every row, and
+    content search and the conversation source scan memory for one row
+    (about 0.1 ms). Original finding:
+    **Whole-catalog reads answer point questions.**
     - Content search reads the full catalog per 128-record batch, and again
       in `isCurrent`, to find one row by linear search
       (`routes/session-content-search.ts:109-111`, `:152-157`).
@@ -206,7 +251,14 @@ invalidation from the issue indexer, double publication) are recorded in
       `:290`).
 
     These should be per-project or SQL point reads.
-16. **Inbox and the sidebar feeds each walk the whole catalog.** Each tab
+16. Retained walks removed 2026-11-10 by item 11's shared SQL query owner.
+    Tabs still poll/refetch; change delivery remains open. Historical finding:
+    each walk costs about a third of what it did after plan 189
+    step 7 (Inbox 85 to 24 ms, each feed 86–94 to 26–35 ms here), and since
+    2026-11-10 one tab's three feeds and Inbox share one walk when they ask
+    within 20 ms ([active session tab cost](active-session-tab-background-cost.md));
+    tabs still do not share. Original finding:
+    **Inbox and the sidebar feeds each walk the whole catalog.** Each tab
     runs three retained sidebar feeds and Inbox. Each walk projects and
     overlays all rows before slicing a page, with no shared result between
     them (`global-sessions.ts:594-628`, `inbox.ts:355-357`). Inbox also
@@ -215,7 +267,10 @@ invalidation from the issue indexer, double publication) are recorded in
     structural fix. Until then, one projected list per combined clock
     (catalog token, identity revision, metadata revision, process and
     notification clocks) could serve all of them.
-17. **Session summaries are kept twice.** The same summaries live in
+17. Still open; plan 189 step 5 deferred the merge (see the plan's step 5
+    decision) and did item 22 instead, and step 7 left the project page on the
+    per-project summary walk (166 ms for this repository's page here). Original finding:
+    **Session summaries are kept twice.** The same summaries live in
     `session_summary_index` (13.1 MB), in `SessionIndexService`'s
     in-memory scope cache (limit 10,000 scopes) and in the catalog (14.3 MB).
     Two freshness mechanisms keep them current: dirty tracking plus a 30 s
@@ -232,7 +287,9 @@ invalidation from the issue indexer, double publication) are recorded in
     `clean()` (`:200`) has no production caller. Persist only hashes that
     match an existing Gemini directory, then purge. A table would fix the
     write cost but keep the junk.
-19. **`public-shares.legacy-backup.json` (2.1 MB) has no cleanup.** The
+19. Fixed 2026-11-09 by plan 189 step 2: a later start or enable that finds
+    the migration marker already complete deletes the backup. Original finding:
+    **`public-shares.legacy-backup.json` (2.1 MB) has no cleanup.** The
     migration completed on 2026-10-02, but the store still probes the file
     (`PublicShareStore.ts:404`, `:413`, `:468`). It would re-migrate from
     it if `migration.json` went missing (`:422-425`). Fold it into item 14.
@@ -281,13 +338,24 @@ key in `WITHOUT ROWID` tables. Rows over about 1 KB overflow, and the
 overflow pages are about half empty: 10.1 MB of 19.7 MB for summaries,
 3.5 MB of 6.5 MB for metadata (`dbstat`).
 
-22. **`session_summary_index` should be a rowid table with `full_title` in
+22. Fixed 2026-11-09 by plan 189 step 5 (migration 030): a rowid table
+    with `full_title` as its last column; every one of the 7,494 summaries
+    here reads back byte-identical, and the table went from 24.7 MB (10.5 MB
+    unused) to 17.5 MB including its key index (2.8 MB unused). Original
+    finding:
+    **`session_summary_index` should be a rowid table with `full_title` in
     a column.** `fullTitle` is 8.57 MB of the 13.15 MB of summary JSON,
     uncapped (max 28,525 characters; the catalog caps at 16,384).
     `read()` parses a whole scope (`SqliteSessionSummaryIndex.ts:51-56`);
     the largest scope is 2.5 MB. Callers look up by scope or
     (scope, session) only, so no new indexes are needed.
-23. **`session_metadata` should be a rowid table with `initial_prompt`
+23. Fixed 2026-11-09 by plan 189 step 6 (migration 031): a rowid table with
+    `initial_prompt` last, `provider`, `working_project_id` and nine more
+    columns, the rest in `extra`; relationship visibility reads the column.
+    Every one of the 4,695 rows here round-trips; 031 takes 68 ms. The 379
+    rows without an identity are still not pruned (no rule yet). Original
+    finding:
+    **`session_metadata` should be a rowid table with `initial_prompt`
     and `working_project_id` columns.**
     - `initialPrompt` is 2.53 MB of 4.19 MB of metadata JSON.
     - `goalCommand` stores 1,103 copies of 15 distinct descriptors
@@ -303,7 +371,11 @@ overflow pages are about half empty: 10.1 MB of 19.7 MB for summaries,
       never pruned.
     - Relationship visibility parses the whole blob for
       `$.workingProjectId` (`authorized-relationship-source.ts:32-37`).
-24. **`issue_index_jobs.source_json` is a whole catalog row.** 6.14 MB for
+24. Fixed 2026-11-09 by plan 189 step 4: jobs keep a `catalog_key`
+    (migration 029), the worker reads the current row, a removed catalog row
+    deletes its jobs; the table went from 8.5 MB to 1.9 MB here. Original
+    finding:
+    **`issue_index_jobs.source_json` is a whole catalog row.** 6.14 MB for
     2,043 jobs, 72% of it titles (`IssueIndexer.ts:188`). Every catalog
     generation loads all of them (`IssueStore.ts:306-320`) and compares
     full JSON strings to detect change (`IssueIndexer.ts:188-198`). Store a
@@ -319,7 +391,10 @@ metadata `initialPrompt` (2.53 MB) and creation payloads (620 KB). Items
 
 **Whole-file stores.**
 
-25. **`indexes/git-untracked/` persists the tracked tree.** The tilefun
+25. Fixed 2026-11-09 by plan 189 step 2: snapshots persist the HEAD sha
+    and an index digest (cache version 2); tilefun's file went from 4.6 MB
+    to 584 bytes. Original finding:
+    **`indexes/git-untracked/` persists the tracked tree.** The tilefun
     file is 4.6 MB with zero untracked files: 33,267 `headPaths` plus the
     same 33,267 `indexPaths`. It is rewritten on HEAD or index changes,
     on the first query after an hour, and when a queried path is due its
@@ -334,7 +409,13 @@ metadata `initialPrompt` (2.53 MB) and creation payloads (620 KB). Items
     router-side cancel for sessions that are gone and a retention rule for
     that check; it is not a plain deletion. Entries hold tokens, so a
     table needs the same 0600 protection.
-27. **`projects/` holds August test fixtures.** By bytes it is 152 MB, of
+27. Fixed 2026-11-09 on the maintainer's profile (a data cleanup, no
+    code): 1,227 fixture `review-comments.json`, 444 `source-review/` trees
+    and 369 `@example.com` palettes were archived to
+    `~/yep-anywhere-cleanup-backup-2026-11-09.tar.gz` and deleted; 47 of
+    1,644 project directories remain (140 MB, real attachments and
+    palettes). Original finding:
+    **`projects/` holds August test fixtures.** By bytes it is 152 MB, of
     which 146 MB is real attachments. But every one of the 1,227
     `review-comments.json` files is a fixture (`src/a.ts`,
     `src/missing.ts`, `src/present.ts` anchors), none changed after
@@ -349,10 +430,17 @@ metadata `initialPrompt` (2.53 MB) and creation payloads (620 KB). Items
 on an active host and go away with a `changed_generation` delta from the
 catalog table:
 
-29. The issue indexer sweep projects identities for all 7,470 rows and
+29. Fixed 2026-11-09 by plan 189 step 4 (sweeps read `changed_gen`
+    changes: 1 ms for 1–2 rows against 118 ms in full). Original finding:
+    The issue indexer sweep projects identities for all 7,470 rows and
     stringifies every recent row on each generation (`app.ts:3704-3739`,
     `IssueIndexer.ts:99-168`).
-30. The project view walks every row each generation
+30. Fixed 2026-11-09 by plan 189 step 4: the project view folds only the
+    projects a change touches, and `projects-changed` names only projects
+    whose facts changed. On this host the all-ids events came from item 31's
+    retained refresh, which now names only changed projects too. Original
+    finding:
+    The project view walks every row each generation
     (`RetainedSessionCollections.ts:234-260`, `catalog-projects.ts:33-80`).
     Its version includes `lastActivity`, so a `projects-changed` carrying
     every project id goes out whenever any session advances, and every
@@ -370,25 +458,22 @@ catalog table:
     walks every row about once a minute per process, behind a 60 s
     correlation cache (`host-process-catalog.ts:40-55`,
     `HostAgentProcessService.ts:18`); `getRecordedProviders` runs about
-    five times per `scanner.getProject` and
-    `getAllMetadata()` copies the whole map per call (add both to item 3);
+    five times per `scanner.getProject` (an indexed query since plan 189
+    step 6) and `getAllMetadata()` copies the whole map per call;
     limited-user grants expand every creation projection per request and
     per event (`app.ts:969-1031`, `:4570-4580`; off here).
 
 **Missing retention.**
 
-33. **Session creation has a lifetime ceiling.** `session_creation_capacity`
-    counts operations up to 10,000 (`SessionCreationStore.ts:189`, `:823`)
-    and nothing decrements it, including deletion; the payload, attempt
-    and attachment budgets beside it are never released either. This host
-    is at 234 since 2026-11-04, about 43 a day, so every YA-created session
-    would be refused from about mid-2027, sooner under automation.
-    [Session identity](../topics/session-identity.md) deliberately counts
-    deleted tombstones, which keep retry identity so a replay cannot
-    launch twice. Any fix is a maintainer decision and needs a tombstone
-    retention policy: for example, evict consumed creations after a replay
-    window and bound the budget by live rows.
-34. Unbounded logs and caches: `logs/sdk-raw.jsonl` (747 MB, opt-in
+33. Fixed 2026-11-09 by [plan 189](../docs/tactical/189-session-catalog-in-sqlite.md)
+    step 1: session creation no longer counts lifetime totals. Per-request,
+    per-attempt and per-operation bounds remain, including 2 GiB of
+    attachments per operation.
+34. Partly fixed 2026-11-09 by plan 189 step 2: `sdk-raw.jsonl` rotates
+    as in item 2; client logs are appended asynchronously, kept 14 days and
+    capped at 32 MiB per device per day. Audit archives, tool-result media,
+    empty staging directories and attachments remain. Original finding:
+    Unbounded logs and caches: `logs/sdk-raw.jsonl` (747 MB, opt-in
     `LOG_SDK_MESSAGES`, about 37 MB/h, no rotation,
     `sdk/messageLogger.ts:28-41`); client logs written with
     `appendFileSync` on the request path (`routes/client-logs.ts:73`,
@@ -424,9 +509,12 @@ though it already has SQLite.
 
 ### Recommended order
 
-1. Decide item 33 before anything else; it is a dated outage.
-2. Cheap deletions and caps with no schema work: items 25, 27, 34, 14 and
-   19. Items 26 and 33 need a retention rule first.
+Planned in [plan 189](../docs/tactical/189-session-catalog-in-sqlite.md).
+
+1. Remove the item 33 ceiling (done, plan 189 step 1).
+2. Cheap deletions and caps with no schema work: items 2, 25, 27, 34, 14,
+   19 and part of 5 (done, plan 189 step 2). Item 26 needs a retention rule
+   first.
 3. The catalog table
    ([session catalog rewrites](session-catalog-rewrites-whole-generation-per-change.md)),
    designed together with items 22–24 so titles and prompts are stored
@@ -451,8 +539,9 @@ though it already has SQLite.
 - `artifacts/` held 48 orphaned staging files from September, including
   32-byte `app-access.key.<uuid>` copies (`VhostAccess.ts:56-64`); sweep
   staging files on load.
-- `peer_api_outbound` and `agent_api_receipts` have no delete path
-  (intentional durable receipts not verified).
+- `peer_api_outbound` has no delete path (intentional durable receipts not
+  verified). `agent_api_receipts` was dropped by migration 39 on 2026-11-16;
+  v0 receipts are now per-process memory.
 - `IssueStore.ts:916-960` aggregates all visible evidence per issue-list
   request with unanchored `LIKE`; experimental and gated, so lower priority.
 

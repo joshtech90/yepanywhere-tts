@@ -282,7 +282,9 @@ async function publicSessionSummaries<T extends SessionListSummary>(
             excluded.add(offset + index);
             return null;
           }
-          if (native && source.provider === "opencode") {
+          // A session bound to another project belongs to that listing; one
+          // misattributed row must not fail the whole discovery batch.
+          if (native) {
             const bound = store.lookupNative(native);
             if (bound && bound.projectId !== summary.projectId) {
               excluded.add(offset + index);
@@ -564,8 +566,9 @@ function buildCandidateGroups(
 
   pushGroup(preferredGroup);
   pushGroup(projectGroup);
-  if (process.env.ENABLED_PROVIDERS?.split(",").includes("antigravity"))
-    pushGroup("antigravity");
+  // Like Grok/pi/OpenCode, the reader's project-path filter over the retained
+  // native catalog is the membership test; it starts no Antigravity process.
+  pushGroup("antigravity");
 
   if (mayHaveCodexSessions(project, catalog)) {
     pushGroup("codex");

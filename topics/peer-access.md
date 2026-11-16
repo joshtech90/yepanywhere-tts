@@ -169,38 +169,107 @@ silently lowered by this work. Owned relay qualification also sets a small
 parser limit at the gateway. It does not establish a lower limit at a public
 relay whose configuration has not been qualified.
 
-The restricted acceptor permits only one bounded v0 HTTP request per connection.
-No subscriptions, uploads, speech, devices, browser capabilities, resume or
-generic app requests. Its authenticated SRP record/generation and encrypted
-HTTP credential must match. The receiver independently checks current grants.
-Source session attribution is considered only after this proof. A lost reply
-preserves uncertain outbound intent; there is no automatic reconnect, retry or
-persistent browser resume secret. Pooling can follow measured need.
+The restricted acceptor permits bounded v0 HTTP requests only. No subscriptions,
+uploads, speech, devices, browser capabilities, resume or generic app requests.
+Its authenticated SRP record/generation and each encrypted HTTP credential must
+match. The receiver independently checks current grants for every request;
+source session/launch attribution and Identity Service authority remain
+request-local. Reusing a channel never reuses another caller's permissions or
+extends access-token or pairing expiry.
+
+### Demand-driven channel reuse
+
+A new source first negotiates with a safe capabilities read carrying the
+initiating request's bearer, fleet authority and source context. This avoids
+placing quick callers behind an initial long follow or mutation. Its first
+encrypted HTTP response advertises `X-YA-Peer-Channel: reuse-v1`. Only after
+verifying that response does a source send subsequent requests with `X-YA-Peer-Channel: reuse-v1` inside their protected headers. Concurrent initial callers
+share setup and wait for this acknowledgement before sending more work. The
+strict legacy SRP hello and server-info proof stay unchanged. Old sources
+terminate after the first reply as before. Targets allow a bounded idle window
+after offering reuse; subsequent requests must explicitly opt in. Old targets
+without the response header remain single-request: new sources give concurrent
+unsent calls their own single-request connections and remember legacy support
+for that transport/credential fingerprint until replacement. Confirmed reuse is
+also remembered, allowing subsequent channels for that fingerprint to tag their
+first request and skip discovery. Failure before that channel's first protected
+reply clears the reuse hint for the next call, so target rollback cannot pin
+future calls to the new mode; the failed call is never automatically resent. Authentication identity/refresh calls remain
+single-request. There is no retry against an alternative protocol after an
+authentication failure.
+
+One source transport shares a pool of up to four channels for its selected
+target, route, credential generation and SRP protocol. A full channel can open
+another on demand, preserving up to 32 concurrent calls to one target.
+Concurrent initial callers share its handshake. Channels open only on demand.
+Sources close after 15 seconds without pending requests, ahead of targets'
+20-second idle timeout. Targets bound channel life to five minutes or
+credential expiry, whichever comes first. Sources stop assigning requests at
+least 12 seconds before the five-minute boundary or credential expiry and drain
+already submitted requests, keeping their own lifetime origin before setup.
+Credential expiry still independently bounds request authority. There are no keepalive pings or
+reconnect loops. Subsequent demand can open a new channel. Source policy
+replacement/removal, target revocation/rotation, route retirement, disablement
+and profile shutdown close the affected channels. Credential/generation
+validity is checked at admission and again before replies. Revoking a warm
+channel can surface `peer_unavailable`; a subsequent fresh handshake cannot
+authenticate the revoked credential. Already accepted native work remains
+accepted.
+
+Up to eight concurrent requests share a reusable channel. Responses correlate
+by request UUID and may finish out of order; encrypted sequence numbers start
+at zero and increase independently in each direction. After initial
+negotiation, a long follow does not serialize quick reads. Cancellation is a
+protected `cancel` frame naming the request UUID: it aborts that request's
+observation, not sibling requests or already admitted native work. Before the
+first acknowledgement, cancellation returns locally and the bounded initial
+request finishes to negotiate support; it cannot send a cancellation frame to
+an unqualified legacy target. A cancelled source slot remains occupied until
+its response/cancellation acknowledgement arrives. Cancellation re-arms a
+separate 12-second acknowledgement grace period, so a request reaching its own
+deadline cannot immediately terminate siblings; only a stuck channel that fails
+to acknowledge within that grace is closed. Unknown cancellation IDs are
+harmless races with completed responses. Duplicate active request IDs,
+malformed frames and replayed sequences close the connection. Capacity refusals
+return per-request `command_capacity`; sources reject excess local work before
+submission. A cancelled handler keeps its socket work slot and profile work
+reservation until the actual handler promise settles, including when it ignores
+cancellation or the socket closes. The profile bounds retained incoming handler
+work to 128. Oversized or backpressured replies use bounded response writers
+that wait for the preceding send to complete while retaining their request
+slot. Each queued writer has a 12-second completion deadline; a peer that stops
+reading cannot pin capacity for the entire channel lifetime. A frame that cannot fit uses a small per-request error reply with
+reserved output headroom. Local send-capacity refusal does not consume a
+sequence number or fail already submitted siblings; unrecoverable socket
+failures remain uncertain. No unbounded request queue is kept.
+
+A lost reply preserves uncertain outbound intent. There is no automatic resend
+of a submitted request, even when a connection dies. Mutations recover through
+their identical durable request key and receipt. Connecting a demonstrably
+unsent request to a legacy peer is admission, not a mutation retry.
 
 Concrete ceilings: 32 channels per profile across direct/relay, including
-unauthenticated sockets; 8 KiB per plaintext handshake message, 384 KiB per
-inbound peer wire frame, 256 KiB per HTTP body and 256 KiB per JSON reply; the complete encrypted frame
-remains below the 384-KiB parser limit in both directions. The earlier two-MiB
-HTTP fixture response limit does not apply to this initial production SRP
-transport. A larger otherwise valid v0 result returns an explicit
-`peer_response_too_large` error and asks the caller to narrow `limit` or
-`maxMessages`; never silently truncate or begin a partial reply. Only JSON encrypted frames are
-admitted; peer gzip/uploads/chunk negotiation are excluded initially. There is
-one in-progress inbound frame, no accumulating promise queue, and at most one
-pending response. Reject extra frames rather than retaining them. Bound outbound
-buffering before sending. Direct and peer relay parsers apply wire limits before
-assembling peer messages, not just after JSON parsing.
+unauthenticated sockets; at most eight idle retained channels across incoming
+and outgoing peers, with oldest idle channels evicted first under pressure; 32
+active outgoing requests and the existing incoming directory/controller limits;
+8 KiB per plaintext handshake message, 384 KiB per inbound peer wire frame, 256
+KiB per HTTP body and 256 KiB per JSON reply. Aggregate socket buffering is
+bounded before sending, with 4 KiB reserved for small error replies. A larger
+otherwise valid v0 result returns `peer_response_too_large` and asks the caller
+to narrow `limit` or `maxMessages`; never silently truncate or begin a partial
+reply. Only JSON encrypted frames are admitted; peer gzip/uploads/chunk
+negotiation remain excluded. Direct and relay parsers apply wire limits before
+assembling peer messages.
 
-A channel has a 10-second handshake and 12-second whole-connection deadline,
-and never outlives credential expiry; timers belong to that channel and clear
-on close. Requests also retain their existing directory and controller limits.
-The profile pre-auth hello budget is 256/minute with burst 32. The peer-specific
-identity budget is 120/minute with burst 32, independent of the browser's 30/minute
-budget; this allows fresh SRP per request and concurrent following. Unknown
-identities still use bounded decoy/limiting machinery. No handshake may select
-an operator credential. Rotation/revocation closes pending and authenticated
-channels of that generation; native work already admitted remains intact.
-
+A channel has a 10-second handshake deadline. Each request retains a separate
+12-second maximum, further bounded by caller and authority expiry. Initial
+connections have a 12-second whole-connection deadline until they offer reuse;
+single-request sources retain their own 12-second connection deadline. Idle, lifetime and
+request timers clear on close. The profile pre-auth hello budget is 256/minute
+with burst 32; the peer-specific identity budget is 120/minute with burst 32,
+independent of the browser's 30/minute budget. Warm requests do not consume
+hello budget. Unknown identities retain bounded decoy/limiting machinery. No
+handshake may select an operator credential.
 Idle profiles create no peer channels or recurring discovery work. An explicitly
 configured peer relay route has one existing RelayClientService waiting-route
 owner and its bounded retry/heartbeat lifecycle, rather than per-session loops.
@@ -465,7 +534,21 @@ alone does not prove revocation. No new SRP purpose or cryptographic protocol
 is introduced. Credential changes and connection teardown fence pending proofs.
 
 A new trusted-control connection includes all current and future projects and
-resource operations. Automatic sign-in is the normal pairing choice, using the
+resource operations. Both ends store an `allOperations` marker, and each
+evaluates it against its own build when it authorizes a request, so operations
+a later release adds reach the pairing without re-pairing and removed ones
+lapse. The target grants the intersection of its build's operations, the
+source's attested list and any delegated authority; a call needs both builds to
+know the operation. Renewal through Server Connections keeps the marker. An
+owner API grant, rotation or outgoing import states a fixed list and clears it;
+a narrower credential that renewal preserves keeps its fixed list. Identity
+Service grants always keep fixed lists. Loading a pre-marker (version 3) store marks a
+manual all-projects record only when its retained audit reaches its creation,
+every issuance of that incoming credential (or every import for that target
+since its last removal, because replacement keeps an outgoing list across
+credential ids) came from Server Connections, and its list still holds every
+operation those control lists have carried since 2026-10-31. Pruned or mixed history stays fixed; re-pair to cover it. Owner
+peer readback reports `allOperations` and the effective list. Automatic sign-in is the normal pairing choice, using the
 90-day inactivity policy below. An explicitly unchecked automatic sign-in choice
 creates a fixed 30-day grant and is recorded on both ends; it never qualifies as
 an inferred legacy default. This permits YA
@@ -529,6 +612,8 @@ owner setup, immediate server identity, credential/generation and operation ID;
 source identity/session assertions are not stronger than source attestation.
 Owner listings paginate server metadata, show recent nonsecret audit and at most
 20 recorded session creations per direction, and link locally created sessions.
+An outgoing creation whose reply never arrived is listed as `uncertain` with
+no session, so work that may exist on the target is not hidden from its owner.
 No password, invitation secret, verifier, owner resume key or prompt body enters
 these projections. Changing human Remote Access credentials keeps independent
 peer credentials; Remote Access links to the incoming-control revocation view.
@@ -611,3 +696,35 @@ peer policy, cleaning up its temporary owner login through the normal lifecycle.
 Saved host details and history remain visible after sign-in expires, with a
 fresh-login action for the outgoing direction. Browser passwords remain blank
 when opening that action.
+
+## Target-owned operation forwarding — 2026-11-13
+
+[HTTP v0](http-api-v0.md#target-owned-peer-apis-and-session-control--2026-11-13)
+owns the version-2 peer wrapper and session-control contract. A peer can expose
+operations and JSON shapes unknown to its access server. The access server
+forwards bounded target-scoped HTTP requests and opaque responses, including
+Markdown documentation, without applying its own operation schemas.
+
+SRP authentication, identity binding, credential refresh, encrypted frames,
+relay registration and one request per channel are retained. The protected
+server-info proof adds wrapper version 2; incompatible wrappers fail before
+mutation submission. Current frame/body/channel sizes and deadlines remain.
+This alpha transition expects coordinated endpoint updates and recreated
+connections when needed, with no automatic grant/state migration.
+
+Grants still name operations and projects. The source attaches its outgoing
+operation ceiling to the existing source session/launch attestation; the target
+maps its own route and intersects that ceiling with current incoming and
+Identity Service authority. Bounded operation strings replace intermediary
+build-local enums. A trusted-control pairing covers each build's current
+operations on both ends ([Server Connections settings](#server-connections-settings));
+every other grant needs new operations by name. Renewing a narrower existing
+fixed-list grant preserves that narrower set. No category
+model, onward routing, owner-administration access or restricted-user role is
+introduced. Unsandboxed session control still has the server-account authority
+stated above.
+
+Opaque responses carry only selected content-type, server-identity and receipt
+headers. Receipt metadata correlates uncertain outbound intent and delayed
+canonical destination bindings without exposing prompt bodies or requiring
+access-side receipt-schema upgrades. This is separate from task completion.

@@ -1,3 +1,4 @@
+import { SelectableCard } from "./ui/SelectableCard";
 import type {
   ProjectQueueItemStatus,
   ProjectQueueItemSummary,
@@ -6,15 +7,16 @@ import { useId } from "react";
 import { useI18n } from "../i18n";
 import { ProviderBadge } from "./ProviderBadge";
 import styles from "./NewSessionProjectQueue.module.css";
-import { ButtonBase } from "./ui/Button";
+import { Badge, type BadgeTone } from "./ui/Badge";
+import { Banner } from "./ui/Banner";
 import { projectQueueRouterLabel } from "../lib/projectQueueRouterLabel";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 
-const STATUS_CLASS: Record<ProjectQueueItemStatus, string | undefined> = {
-  queued: undefined,
-  dispatching: styles.statusDispatching,
-  failed: styles.statusFailed,
+const STATUS_TONE: Record<ProjectQueueItemStatus, BadgeTone> = {
+  queued: "neutral",
+  dispatching: "info",
+  failed: "danger",
 };
 
 function statusLabel(status: ProjectQueueItemStatus, t: Translate): string {
@@ -86,9 +88,9 @@ export function NewSessionProjectQueue({
       </div>
 
       {error && (
-        <p className={styles.error} role="alert">
+        <Banner tone="error" compact>
           {t("projectQueueLoadError", { message: error.message })}
-        </p>
+        </Banner>
       )}
 
       <ul className={styles.list}>
@@ -101,18 +103,21 @@ export function NewSessionProjectQueue({
               className={styles.item}
               data-new-session-project-queue-item-id={item.id}
             >
-              <ButtonBase
+              <SelectableCard
+                variant="accent"
                 className={styles.itemButton}
                 onClick={() => onOpenItem(item.id)}
                 title={title}
               >
                 <span className={styles.itemHeading}>
                   <strong className={styles.itemTitle}>{title}</strong>
-                  <span
-                    className={`${styles.status} ${STATUS_CLASS[item.status] ?? ""}`}
+                  <Badge
+                    size="small"
+                    tone={STATUS_TONE[item.status]}
+                    className={styles.status}
                   >
                     {statusLabel(item.status, t)}
-                  </span>
+                  </Badge>
                 </span>
                 <span className={styles.targetRow}>
                   <span className={styles.target}>{targetLabel(item, t)}</span>
@@ -129,10 +134,12 @@ export function NewSessionProjectQueue({
                     </span>
                   )}
                 </span>
-                {item.lastError && (
-                  <span className={styles.itemError}>{item.lastError}</span>
-                )}
-              </ButtonBase>
+              </SelectableCard>
+              {item.lastError && (
+                <Banner tone="error" compact role="none">
+                  {item.lastError}
+                </Banner>
+              )}
             </li>
           );
         })}

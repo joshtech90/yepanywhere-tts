@@ -1,9 +1,11 @@
+import rowsStyles from "../pages/settings/SettingsRows.module.css";
 import { useNotifyInApp } from "../hooks/useNotifyInApp";
 import {
   PUSH_PERMISSION_REQUEST_TIMED_OUT,
   usePushNotifications,
 } from "../hooks/usePushNotifications";
 import { useI18n } from "../i18n";
+import { Banner } from "./ui/Banner";
 import { Switch } from "./ui/Switch";
 import { SettingsItem } from "../pages/settings/SettingsItem";
 
@@ -53,7 +55,7 @@ export function PushNotificationToggle() {
             <p>{error || t("pushToggleUnsupported")}</p>
             {isDevModeDisabled && (
               <div
-                className="settings-info-box"
+                className={rowsStyles.infoBox}
                 style={{ marginTop: "0.5rem" }}
               >
                 <p>{t("pushToggleThisDeviceOnly")}</p>
@@ -84,7 +86,9 @@ export function PushNotificationToggle() {
         info={
           <>
             <strong>{t("pushToggleTitle")}</strong>
-            <p className="settings-warning">{t("pushToggleBlocked")}</p>
+            <Banner tone="warning" role="none" compact>
+              {t("pushToggleBlocked")}
+            </Banner>
           </>
         }
       />
@@ -102,7 +106,9 @@ export function PushNotificationToggle() {
             <strong>{t("pushToggleTitle")}</strong>
             <p>{t("pushToggleDescription")}</p>
             {displayedError && (
-              <p className="settings-error">{displayedError}</p>
+              <Banner tone="error" compact>
+                {displayedError}
+              </Banner>
             )}
           </>
         }

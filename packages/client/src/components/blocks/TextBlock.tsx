@@ -1,3 +1,4 @@
+import timelineStyles from "../TranscriptTimeline.module.css";
 import {
   memo,
   type MouseEvent,
@@ -52,7 +53,7 @@ import {
   useLocalMediaInlinePreviews,
   useLocalResourceClick,
 } from "../LocalMediaModal";
-import { ButtonBase, IconButton } from "../ui/Button";
+import { IconButton, Button } from "../ui/Button";
 import { renderFixedFontMath } from "../ui/FixedFontMathToggle";
 import { RenderModeGlyph } from "../ui/RenderModeGlyph";
 import { useTurnImageGalleryNavigation } from "../TurnImageGallery";
@@ -93,6 +94,7 @@ const RenderedHtmlIsland = memo(function RenderedHtmlIsland({
   projectId,
   projectPathLinks,
   publicShare,
+  ...attributes
 }: {
   artifact?: import("@yep-anywhere/shared").GlossaryArtifact;
   className?: string;
@@ -129,6 +131,7 @@ const RenderedHtmlIsland = memo(function RenderedHtmlIsland({
   const innerHtml = useInnerHtml(renderedHtml);
   return (
     <div
+      {...attributes}
       className={className}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered or local trusted HTML
       dangerouslySetInnerHTML={innerHtml}
@@ -439,7 +442,8 @@ export const TextBlock = memo(function TextBlock({
       const group = anchor?.closest(".local-media-link-group");
       if (group) {
         host = document.createElement("span");
-        host.className = "turn-image-gallery-inline-action-host";
+        host.className = styles.turnImageGalleryInlineActionHost ?? "";
+        host.setAttribute("data-turn-image-gallery-inline-action-host", "");
         group.append(host);
       }
     }
@@ -450,7 +454,12 @@ export const TextBlock = memo(function TextBlock({
   return (
     <div
       ref={textBlockRef}
-      className={`${styles.root} text-block text-block-assistant timeline-item${isStreaming ? " streaming" : ""}`}
+      className={`${styles.root} ${styles.textBlock} ${styles.textBlockAssistant} ${timelineStyles.timelineItem}${isStreaming ? ` ${styles.streaming}` : ""}`}
+      data-text-block-root
+      data-text-block
+      data-text-block-assistant
+      data-timeline-item
+      data-streaming={isStreaming || undefined}
       data-turn-image-source-id={renderItemId}
     >
       {timelineAction ? (
@@ -469,12 +478,13 @@ export const TextBlock = memo(function TextBlock({
           surfaceRef={textBlockRef}
         />
       ) : null}
-      <div className="text-block-actions">
+      <div className={styles.textBlockActions} data-text-block-actions>
         {canToggleRendered && (
           <IconButton
-            variant="outline"
+            variant="secondary"
             size="dense"
-            className={`text-block-toggle ${showRendered ? "is-rendered" : ""}`}
+            className={styles.textBlockToggle}
+            data-text-block-toggle
             onClick={toggleLocalMode}
             label={showRendered ? "Show source" : "Show rendered"}
             aria-pressed={showRendered}
@@ -483,9 +493,11 @@ export const TextBlock = memo(function TextBlock({
           </IconButton>
         )}
         <IconButton
-          variant="outline"
+          variant={copied ? "success-outline" : "outline"}
           size="dense"
-          className={`text-block-copy ${copied ? "copied" : ""}`}
+          className={`${styles.textBlockCopy}`}
+          data-text-block-copy
+          data-copied={copied || undefined}
           onClick={handleCopy}
           label={copied ? "Copied!" : "Copy markdown"}
         >
@@ -494,7 +506,9 @@ export const TextBlock = memo(function TextBlock({
         <IconButton
           variant="outline"
           size="dense"
-          className={`text-block-speak ${speakState !== "idle" ? "active" : ""}`}
+          className={styles.textBlockSpeak}
+          data-text-block-speak
+          data-speak-active={speakState !== "idle" || undefined}
           onClick={handleSpeak}
           disabled={speakState === "loading"}
           label={speakState === "idle" ? "Vorlesen" : "Stopp"}
@@ -513,7 +527,8 @@ export const TextBlock = memo(function TextBlock({
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation remains on the descendant links/controls */}
       <div
         ref={copySourceRef}
-        className={`text-block-content ${codeFenceRootClass}`}
+        className={`${styles.textBlockContent} ${codeFenceRootClass}`}
+        data-text-block-content
         onClick={handleContentClick}
         onDoubleClick={inlineCode.handleDoubleClick}
         onContextMenu={(event) => {
@@ -529,13 +544,11 @@ export const TextBlock = memo(function TextBlock({
                 : { display: "none" }
             }
           >
-            <div
-              ref={streamingMarkdown.containerRef}
-              className="streaming-blocks"
-            />
+            <div ref={streamingMarkdown.containerRef} data-streaming-blocks />
             <span
               ref={streamingMarkdown.pendingRef}
-              className="streaming-pending"
+              className={styles.streamingPending}
+              data-streaming-pending
             />
           </div>
         )}
@@ -553,14 +566,15 @@ export const TextBlock = memo(function TextBlock({
           ) : showRendered && localMathPreview.changed ? (
             <RenderedHtmlIsland
               artifact={glossaryArtifact}
-              className="text-block-local-rendered"
+              className={styles.textBlockLocalRendered}
+              data-text-block-local-rendered
               html={localMathPreview.html}
               projectId={projectId}
               projectPathLinks={projectPathLinks}
               publicShare={publicShare}
             />
           ) : (
-            <pre className={`${styles.source} text-block-source`}>
+            <pre className={styles.source} data-text-block-source>
               <code>
                 <LinkifiedText
                   text={text}
@@ -571,7 +585,8 @@ export const TextBlock = memo(function TextBlock({
           ))}
         {abortedMidStream && (
           <span
-            className={`${styles.abortedMidStream} text-block-aborted-mid-stream`}
+            className={styles.abortedMidStream}
+            data-text-block-aborted-mid-stream=""
             title={t("textBlockAbortedMidStreamTitle")}
           >
             <span aria-hidden="true">⨯</span>
@@ -581,8 +596,11 @@ export const TextBlock = memo(function TextBlock({
       </div>
       {galleryActionHost
         ? createPortal(
-            <ButtonBase
-              className="turn-image-gallery-inline-action"
+            <Button
+              variant="outline"
+              size="inline"
+              className={styles.turnImageGalleryInlineAction}
+              data-turn-image-gallery-inline-action
               aria-expanded={galleryActive}
               aria-label={t(
                 galleryActive
@@ -606,7 +624,7 @@ export const TextBlock = memo(function TextBlock({
             >
               <span aria-hidden="true">{galleryActive ? "−" : "+"}</span>
               {t("turnImageGalleryShow")}
-            </ButtonBase>,
+            </Button>,
             galleryActionHost,
           )
         : null}
@@ -726,7 +744,7 @@ function SpinnerIcon() {
       strokeWidth="1.8"
       strokeLinecap="round"
       aria-hidden="true"
-      className="text-block-speak-spinner"
+      className={styles.textBlockSpeakSpinner}
     >
       <path d="M8 1.5a6.5 6.5 0 1 1-6.5 6.5" />
     </svg>

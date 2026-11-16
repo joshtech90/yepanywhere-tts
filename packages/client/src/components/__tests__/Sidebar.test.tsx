@@ -12,6 +12,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -466,13 +467,13 @@ describe("Sidebar collapsed toggle", () => {
     renderSidebar();
 
     // Switch Host must share the exact representation of standard nav items
-    // (a `.sidebar-nav-item` with a `.sidebar-nav-text` label) so it inherits
-    // the shared `.sidebar-collapsed .sidebar-nav-text { display: none }` rule
+    // (data-sidebar-nav-item with a data-sidebar-nav-text label) so it inherits
+    // the shared data-sidebar-collapsed icon-only presentation
     // in the mini rail, rather than relying on a bespoke per-item guard. The
     // visual icon-only outcome is a CSS concern, verified at the browser level.
     const switchHost = screen.getByRole("button", { name: "Switch Host" });
-    expect(switchHost.classList.contains("sidebar-nav-item")).toBe(true);
-    const label = switchHost.querySelector(".sidebar-nav-text");
+    expect(switchHost.hasAttribute("data-sidebar-nav-item")).toBe(true);
+    const label = switchHost.querySelector("[data-sidebar-nav-text]");
     expect(label?.textContent).toBe("Switch Host");
   });
 
@@ -714,10 +715,10 @@ describe("Sidebar collapsed toggle", () => {
 
     const projectsLink = screen.getByRole("link", { name: /Projects/i });
     expect(projectsLink.textContent).toContain("3");
-    const badge = projectsLink.querySelector(".sidebar-nav-badge");
-    expect(badge?.classList.contains("sidebar-nav-badge--projectQueue")).toBe(
-      true,
-    );
+    expect(
+      within(projectsLink).getByTestId("sidebar-nav-badge-projectQueue")
+        .textContent,
+    ).toBe("3");
   });
 
   it("links Source Control to the project selected in the sessions filter", () => {
@@ -789,7 +790,7 @@ describe("Sidebar collapsed toggle", () => {
     expect(
       screen
         .getByRole("link", { name: "Source Control" })
-        .classList.contains("active"),
+        .hasAttribute("data-sidebar-active"),
     ).toBe(true);
   });
 
@@ -1188,7 +1189,7 @@ describe("Sidebar collapsed toggle", () => {
 
     const newSessionLink = screen.getByRole("link", { name: /New Session/i });
     const newSessionIcon = newSessionLink.querySelector(
-      ".sidebar-new-session-icon",
+      "[data-sidebar-new-session-icon]",
     );
     expect(newSessionIcon?.getAttribute("width")).toBe("16");
     expect(newSessionIcon?.getAttribute("height")).toBe("16");

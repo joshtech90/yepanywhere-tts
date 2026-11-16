@@ -421,13 +421,17 @@ test("minimizes app details and confirms distinct app and project deletions", as
     await expect(trigger).toBeFocused();
   }
   await inventory.getByRole("button", { name: "Canvas", exact: true }).click();
-  page.once("dialog", (dialog) => dialog.dismiss());
+  const confirm = page.getByRole("alertdialog");
   await inventory
     .getByRole("button", { name: "Delete app", exact: true })
     .click();
+  await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(confirm).toHaveCount(0);
   expect(deletedApps).toEqual([]);
-  page.once("dialog", (dialog) => dialog.accept());
   await inventory
+    .getByRole("button", { name: "Delete app", exact: true })
+    .click();
+  await confirm
     .getByRole("button", { name: "Delete app", exact: true })
     .click();
   await expect(
@@ -436,8 +440,10 @@ test("minimizes app details and confirms distinct app and project deletions", as
   expect(deletedApps).toEqual(["canvas"]);
   expect(deletedProjects).toEqual([]);
   await inventory.getByRole("button", { name: "Probe", exact: true }).click();
-  page.once("dialog", (dialog) => dialog.accept());
   await inventory
+    .getByRole("button", { name: "Delete project", exact: true })
+    .click();
+  await confirm
     .getByRole("button", { name: "Delete project", exact: true })
     .click();
   await expect(
@@ -514,6 +520,14 @@ test("edits mapped source from default sanitized HTML and preserves a stale prev
   await expect(
     dialog.getByText(/line references may now be stale/),
   ).toBeVisible();
+  // Choosing another target with unsaved edits asks above the full-screen
+  // editor (a covered button would fail the click).
+  await textarea.pressSequentially("ZQZQ");
+  await preview.getByText("The original paragraph.").click();
+  const discard = page.getByRole("alertdialog", { name: "Discard changes?" });
+  await discard.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(discard).toHaveCount(0);
+  await expect(textarea).toHaveValue(/ZQZQ/);
   await recordUiCapture(page, "source-editor-desktop", {
     width: 1200,
     height: 600,

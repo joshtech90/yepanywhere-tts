@@ -148,6 +148,13 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   [Fable 5.1
   progress updates](https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1#progress-updates-between-tool-calls-beta)
   and [thinking display](https://platform.claude.com/docs/en/build-with-claude/thinking#progress-updates).
+- Completion-time estimates are not a currently qualified native Claude
+  signal. The [2026-11-10 Fable 5.2 probes](../docs/testing/fable-completion-estimates-2026-11-10.md)
+  obtained estimates in text and, with an explicit custom SDK tool, typed
+  reports. SDK 0.3.322's `thinking_tokens.estimated_tokens` measures generated
+  thinking, not time remaining. Do not derive a completion countdown from
+  that counter or arbitrary progress prose; the reporting-tool proof is not
+  a shipped YA feature or an accuracy qualification.
 - Claude's primary model catalog remains the provider-native, latest-oriented
   experience. Previous concrete versions and custom exact ids appear only
   after a server-persisted, individual opt-in in Providers settings; projected
@@ -349,6 +356,63 @@ updates**. It describes supported recent history, currently the last 30 days,
 rather than promising every historical session or every YA provider. This
 imports chats into ChatGPT and does not establish shared Claude process
 ownership or same-transcript continuation.
+
+## Transcript acquisition and retention
+
+Plain Claude and Codex JSONL share `sessions/transcript-ingestion.ts` for
+chunked reads, UTF-8 byte positions and provisional-line replay. A valid JSON
+record without its newline may be visible, but is not committed: the next
+append reparses that record before extending provider state. A cached append
+carries inode/device, bounded head and accepted-end probes through acquisition;
+replacement, truncation or a changed probe falls back to a fresh read. These
+are append-only source checks, not verification of every historical byte.
+Each load owns and closes its descriptor. Path-specific invalidation retires
+only that path's owner; invalidated callers join/retry the current owner even
+when the obsolete read rejects.
+
+The app profile cache owns either complete decoded entries or an indexed
+selection for a file, with one in-flight source owner. Full and indexed callers
+join acquisition but retry incompatible representations. Summary peeks preserve
+the current representation. There is a 128-file ceiling and 192 MiB budget;
+complete mode charges source bytes, while indexed mode estimates source metadata,
+lightweight projections/task state and provisional payload plus decoded-window
+source bytes. The legacy stats name `retainedSourceBytes` is an estimate in this
+mode, not exact heap accounting. Oversized indexes/windows decline retention
+and preserve the complete-reader fallback.
+
+Bounded detail builds a compact source/compaction index once, dropping historical
+text, thinking, images and ordinary tool output. The existing forest and visible
+selector operate on metadata; compaction positions belong to that selected
+sequence. Selected row references are hydrated and passed through the existing
+converter with global queue positions and turn ordinals. Task state includes the
+omitted visible prefix. Complete source-order metadata also preserves the
+historical nested-harness extractor's block slots and eligibility/launch/result
+facts. This specialized evidence is not a generic raw transcript.
+
+Ordinary unique, timestamp-consistent tip extensions update visible references,
+orphans, task state and compact summary witnesses from appended records. Common
+queue deliveries update a bounded recent suffix. Rewinds, sibling changes,
+historical queue insertion and provisional views can rebuild metadata selection.
+Snapshots capture source generation; selection and hydration validate it and the
+projection generation before publication. Counts are captured before awaits.
+Indexed selections retain full-response pagination totals and existing public
+message IDs/turn numbers. Unsupported structural rows and task results preceding
+their calls use the complete reader.
+
+Summary projections share one result per parse version/request context, including
+current model-window resolution; returned summaries are isolated from caller
+mutation. Indexed summaries retain exact branch counts and the bounded witnesses
+needed by the existing selectors. Add new fields and their witness/parity rules
+together. Summary and renderer branch membership remain distinct.
+
+An unseen transcript still needs one streaming index build. Unchanged sources
+can restore SQL window queries after restart/eviction, as specified below. The
+first changed read restores complete compact SQL metadata, and its active graph
+remains O(history) under the cache budget. Full historical payload is not
+retained. Bounded SQL incremental state and full cold-open/memory qualification
+remain open in plan 190. Complete history and oversized catch-up retain their
+established costs. See [warm-reader evidence](../docs/research/190-claude-source-index.md)
+and [durable-index evidence](../docs/research/190-claude-durable-index.md).
 
 ## Transcript Structure: Forest, Connector Rows, Dead Segments
 
@@ -596,3 +660,67 @@ Suspected contributing areas to check before declaring this fixed:
 - A Claude session that opens with an `isMeta` local-command caveat followed by
   a slash-command wrapper uses the command and arguments as its automatic title,
   including after loading a persisted summary index from an older YA version.
+
+### Durable source facts and incremental writer ownership
+
+The [provider history architecture](provider-history-facts.md) maps this
+implemented index into the proposed shared source-fact/query foundation and
+consumer inventory. The separate [transcript indexer plan](../docs/tactical/192-transcript-indexer.md)
+shares forward acquisition; its runner does not replace this logical-window
+index or gate its use by conversation consumers.
+
+The app owns one Claude transcript cache and SQL writer per YA profile. Detail
+acquisition persists compact source facts, logical positions, task overlays,
+orphan facts, summary witnesses and rewind context in the profile's
+[rebuildable cache database](required-sqlite.md#rebuildable-cache-database).
+It stores no full historical text/media/thinking/tool-output copy. Native
+transcript bytes remain authoritative. No project/provider writes,
+new watcher or background scan is authorized by this index.
+
+After restart or eviction, an unchanged accepted source uses bounded identity/
+head/end validation and indexed logical-window queries. It does not hydrate the
+complete history graph to serve that read. Global IDs, turns, full pagination
+counts, task snapshots, enclosing rewind groups and late queues remain equal to
+a full rebuild. Already acquired historical harness evidence is addressed by
+original parsed row ordinal, within the existing extraction/admission budgets.
+A stale SQL generation cannot publish evidence or a mixed detail response.
+
+Ordinary appends, including the first write after restart, use SQL point facts
+for the winning tip, node/tool ownership, logical positions and pending queues.
+The existing decoder, summary witnesses and task reducer produce a staged delta;
+source facts, affected visible rows, task checkpoints and the accepted header
+commit atomically. A task-related append restores only its semantic task state,
+not historical messages. Task state can itself grow with outstanding tasks; an
+8,388,608-character checkpoint read cap declines this path rather than decoding oversized state.
+
+A valid unterminated row is a noncommitted overlay on the same SQL window
+selector. Only complete prefix lines advance the accepted byte/count fence;
+invalidating a provisional row retracts its overlay. Reacquisition preserves
+valid provisional metadata when rewind context changes without a file write.
+The cache releases the historical graph after accepted complete publication,
+including summary-only acquisition with an existing rewind context.
+
+The incremental guard requires a unique UUID, the current winning parent,
+nondecreasing timestamps and compatible tool ownership. Closed rewind bounds
+must already be known. Recent unambiguous queue delivery can shift at most 256
+visible rows. Branch changes, open/missing rewind bounds, ambiguous/historical
+queue changes and unsupported facts use the original full metadata selector,
+then publish a complete fresh generation and release the graph. This preserves
+branch and task semantics instead of guessing which history to discard.
+
+Replacement projections stage bounded batches under an owned renewable lease;
+accepted generation/revision, source evidence and cache ownership fence
+publication. Cleanup cannot delete an accepted generation or a live peer build.
+Reopening performs at most one bounded expired-stage recovery batch. No provider
+format or public message shape changes. Existing writerless SQL checkpoints
+bootstrap writer facts lazily on their first changed read; migration does no
+startup backfill.
+
+An unseen file still requires a streaming first build, and exceptional metadata
+selection still has history-dependent transient cost. A provisional tail plus a
+context-changing fallback can temporarily retain that graph until complete
+publication. Complete catch-up, source-deletion/disk-retention policy and full-host
+targets remain open. [SQL writer evidence](../docs/research/190-claude-sql-writer.md)
+records the ordinary-write memory and restart measurements; the earlier
+[durable-index evidence](../docs/research/190-claude-durable-index.md) remains a
+historical baseline.

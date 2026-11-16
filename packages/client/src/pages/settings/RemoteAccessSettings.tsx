@@ -1,3 +1,4 @@
+import rowsStyles from "./SettingsRows.module.css";
 import { Link } from "react-router-dom";
 import {
   buildYaClientPublicShareBaseUrl,
@@ -16,7 +17,9 @@ import { useEffect, useId, useState } from "react";
 import type { PublicShareStatusResponse } from "../../api/client";
 import { PublicShareManagerModal } from "../../components/PublicShareManagerModal";
 import { RemoteAccessSetup } from "../../components/RemoteAccessSetup";
+import { Banner } from "../../components/ui/Banner";
 import { Button } from "../../components/ui/Button";
+import { confirmDialog } from "../../components/ui/ConfirmDialog";
 import { TextInput } from "../../components/ui/Field";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { Switch } from "../../components/ui/Switch";
@@ -34,7 +37,6 @@ import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { HideInSettingsSearch } from "./SettingsSearchContext";
 import { SettingsSection } from "./SettingsSection";
-import { AppsSettingsLink } from "./AppsSettings";
 
 const DEFAULT_PUBLIC_SHARE_VIEWER_BASE_URL = buildYaClientPublicShareBaseUrl(
   DEFAULT_YA_CLIENT_BASE_URL,
@@ -87,9 +89,9 @@ function HostIdentitySettings({
     <SettingsItem
       label={t("hostIdentityTitle")}
       description={t("hostIdentityDescription")}
-      className="settings-item--wide-control host-identity-settings"
+      className={rowsStyles.itemWideControl}
     >
-      <div className="host-identity-controls">
+      <div className={styles.controls}>
         <SegmentedControl
           activation="manual"
           variant="cards"
@@ -107,7 +109,7 @@ function HostIdentitySettings({
           disabled={disabled || saving}
         />
         <form
-          className="host-identity-custom"
+          className={styles.custom}
           onSubmit={(event) => {
             event.preventDefault();
             if (normalizedDraft && normalizedDraft !== currentIcon) {
@@ -116,7 +118,7 @@ function HostIdentitySettings({
           }}
         >
           <TextInput
-            className="host-identity-input"
+            className={styles.input}
             value={draft}
             invalid={draftInvalid}
             aria-describedby={draftInvalid ? invalidId : undefined}
@@ -152,12 +154,9 @@ function HostIdentitySettings({
           )}
         </form>
         {draftInvalid && (
-          <p
-            id={invalidId}
-            className="settings-warning host-identity-validation"
-          >
+          <Banner id={invalidId} tone="error" role="none" compact>
             {t("hostIdentityInvalid")}
-          </p>
+          </Banner>
         )}
       </div>
     </SettingsItem>
@@ -239,7 +238,7 @@ function HostAwakeSettings({
   })();
 
   return (
-    <div className="settings-group">
+    <div className={rowsStyles.group} data-settings-group>
       <SettingsItem
         label={t("hostAwakeTitle")}
         description={t("hostAwakeDescription")}
@@ -247,17 +246,15 @@ function HostAwakeSettings({
           <>
             <strong>{t("hostAwakeTitle")}</strong>
             <p>{t("hostAwakeDescription")}</p>
-            <p
-              className={
-                status?.state === "error" || unavailable
-                  ? "settings-warning"
-                  : "settings-hint"
-              }
-            >
-              {statusText}
-            </p>
+            {status?.state === "error" || unavailable ? (
+              <Banner tone="warning" role="none" compact>
+                {statusText}
+              </Banner>
+            ) : (
+              <p className={rowsStyles.hint}>{statusText}</p>
+            )}
             {status?.batteryPercent !== undefined && (
-              <p className="settings-hint">
+              <p className={rowsStyles.hint}>
                 {t("hostAwakeBatteryObserved", {
                   percent: status.batteryPercent,
                   time: status.powerObservedAt
@@ -301,10 +298,10 @@ function HostAwakeSettings({
           <SettingsItem
             label={t("hostAwakeBatteryFloorTitle")}
             description={t("hostAwakeBatteryFloorDescription")}
-            className="settings-item--wide-control"
+            className={rowsStyles.itemWideControl}
           >
             <form
-              className="host-awake-floor-controls"
+              className={styles.hostAwakeFloorControls}
               onSubmit={(event) => {
                 event.preventDefault();
                 if (validFloor) {
@@ -336,9 +333,9 @@ function HostAwakeSettings({
               </Button>
             </form>
             {!validFloor && (
-              <p id={floorInvalidId} className="settings-warning">
+              <Banner id={floorInvalidId} tone="error" role="none" compact>
                 {t("hostAwakeBatteryFloorInvalid")}
-              </p>
+              </Banner>
             )}
           </SettingsItem>
         )}
@@ -402,30 +399,30 @@ export function RemoteAccessSettings() {
 
   const getShareReadinessMessage = (
     status: PublicShareStatusResponse | null,
-  ): { className: string; text: string } | null => {
+  ): { warning: boolean; text: string } | null => {
     if (!status) return null;
     if (!status.configured) {
       return {
-        className: "settings-warning",
+        warning: true,
         text: t("advancedPublicShareRelayMissing"),
       };
     }
     if (!status.remoteAccessEnabled) {
       return {
-        className: "settings-warning",
+        warning: true,
         text: t("advancedPublicShareRemoteAccessDisabled"),
       };
     }
     if (status.relayStatus !== "waiting") {
       return {
-        className: "settings-warning",
+        warning: true,
         text: t("advancedPublicShareRelayTemporarilyUnavailable", {
           status: status.relayStatus ?? "unknown",
         }),
       };
     }
     return {
-      className: "settings-hint",
+      warning: false,
       text: t("advancedPublicShareReady"),
     };
   };
@@ -435,13 +432,17 @@ export function RemoteAccessSettings() {
     if (
       !enabled &&
       publicShareManagementSupported &&
-      !window.confirm(
-        typeof publicShareStatus?.totalValidLinks === "number"
-          ? t("advancedPublicShareDisableConfirm", {
-              count: publicShareStatus.totalValidLinks,
-            })
-          : t("advancedPublicShareDisableConfirmUnknown"),
-      )
+      !(await confirmDialog({
+        title: t("advancedPublicShareDisableConfirmTitle"),
+        message:
+          typeof publicShareStatus?.totalValidLinks === "number"
+            ? t("advancedPublicShareDisableConfirm", {
+                count: publicShareStatus.totalValidLinks,
+              })
+            : t("advancedPublicShareDisableConfirmUnknown"),
+        confirmLabel: t("advancedPublicShareDisableConfirmAction"),
+        tone: "danger",
+      }))
     ) {
       return;
     }
@@ -476,7 +477,7 @@ export function RemoteAccessSettings() {
   // Public read-only share only works once Remote Access (relay) is configured,
   // so its controls live at the top of this tab.
   const publicShareConfig = (
-    <div className="settings-group">
+    <div className={rowsStyles.group} data-settings-group>
       <SettingsItem
         label={t("advancedPublicShareTitle")}
         description={t("advancedPublicShareDescription")}
@@ -487,13 +488,15 @@ export function RemoteAccessSettings() {
             <p>{t("advancedPublicShareDescription")}</p>
             <p>{t("advancedPublicSharePrivacyWarning")}</p>
             <p>{t("advancedPublicShareExistingManagement")}</p>
-            {shareReadinessMessage && (
-              <p className={shareReadinessMessage.className}>
+            {shareReadinessMessage?.warning ? (
+              <Banner tone="warning" role="none" compact>
                 {shareReadinessMessage.text}
-              </p>
-            )}
+              </Banner>
+            ) : shareReadinessMessage ? (
+              <p className={rowsStyles.hint}>{shareReadinessMessage.text}</p>
+            ) : null}
             {publicShareStatus?.relayUrl && (
-              <p className="settings-hint" style={{ wordBreak: "break-all" }}>
+              <p className={rowsStyles.hint} style={{ wordBreak: "break-all" }}>
                 {t("advancedPublicShareRelayEffective", {
                   username: publicShareStatus.relayUsername ?? "",
                   url: publicShareStatus.relayUrl,
@@ -544,7 +547,7 @@ export function RemoteAccessSettings() {
 
   const yaClientInfo = (
     <HideInSettingsSearch>
-      <div className="form-hint">
+      <div>
         <p>
           <strong>{t("advancedYaClientTitle")}</strong>.{" "}
           {t("advancedYaClientDescription")}
@@ -560,9 +563,9 @@ export function RemoteAccessSettings() {
           })}
         </p>
         {publicShareStatus?.yaClientBaseUrlError && (
-          <p className="settings-warning">
+          <Banner tone="error" compact>
             {publicShareStatus.yaClientBaseUrlError}
-          </p>
+          </Banner>
         )}
       </div>
     </HideInSettingsSearch>
@@ -570,7 +573,7 @@ export function RemoteAccessSettings() {
 
   const persistSessionsToggle = (
     <>
-      <div className="settings-group">
+      <div className={rowsStyles.group} data-settings-group>
         <SettingsItem
           label={t("developmentPersistRemoteTitle")}
           doc="topics/mobile-server-pairing.md#current-srp-resume-facts"
@@ -597,7 +600,9 @@ export function RemoteAccessSettings() {
         </SettingsItem>
       </div>
 
-      {error && <p className="settings-warning">{error}</p>}
+      <HideInSettingsSearch>
+        {error && <Banner tone="error">{error}</Banner>}
+      </HideInSettingsSearch>
     </>
   );
 
@@ -608,7 +613,7 @@ export function RemoteAccessSettings() {
     ? getHostById(remoteConnection.currentHostId)
     : null;
   const remoteSessionGroup = remoteConnection && (
-    <div className="settings-group">
+    <div className={rowsStyles.group} data-settings-group>
       <SettingsItem
         id="remote-access-session-host"
         label={t("remoteAccessCurrentHostTitle")}
@@ -618,7 +623,7 @@ export function RemoteAccessSettings() {
           t("remoteAccessDefaultHost")
         }
       >
-        <div className="settings-item-actions">
+        <div className={rowsStyles.itemActions}>
           <Button onClick={handleSwitchHost}>{t("sidebarSwitchHost")}</Button>
         </div>
       </SettingsItem>
@@ -647,10 +652,11 @@ export function RemoteAccessSettings() {
         remoteConnection ? t("remoteAccessConnectedDescription") : undefined
       }
     >
-      <AppsSettingsLink />
       {remoteSessionGroup}
       {hostIdentityItem && (
-        <div className="settings-group">{hostIdentityItem}</div>
+        <div className={rowsStyles.group} data-settings-group>
+          {hostIdentityItem}
+        </div>
       )}
       {hostAwakeConfig}
       {publicShareConfig}
@@ -666,7 +672,7 @@ export function RemoteAccessSettings() {
           label={t("connectionsPairedServers")}
           description={t("connectionsPasswordChangesHint")}
         >
-          <Link className="settings-link" to="/settings/server-connections">
+          <Link className={rowsStyles.link} to="/settings/server-connections">
             {t("settingsServerConnectionsTitle")}
           </Link>
         </SettingsItem>

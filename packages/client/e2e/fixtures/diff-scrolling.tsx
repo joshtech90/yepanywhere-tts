@@ -7,7 +7,8 @@ import { I18nProvider, useI18n } from "../../src/i18n";
 import { GitDiffBody } from "../../src/pages/GitStatusDiffPreview";
 import { SideBySideDiff } from "../../src/pages/SideBySideDiff";
 import { UnifiedDiff } from "../../src/pages/UnifiedDiff";
-import "../../src/styles/index.css";
+import "../../src/styles/purposeGlobals";
+import previewStyles from "../../src/pages/SourcePreviewLayout.module.css";
 
 const long =
   " | the control socket is up; the router records account, model, program and HTTP outcome | ".repeat(
@@ -61,7 +62,8 @@ function Workbench() {
   const { t } = useI18n();
   return (
     <div
-      className="git-diff-preview-body"
+      className={previewStyles.body}
+      data-source-preview-body
       style={{ height: "100dvh", overflowY: "auto" }}
     >
       <GitDiffBody

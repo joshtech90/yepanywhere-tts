@@ -1,3 +1,9 @@
+import mediaStyles from "../../LocalMediaLink.module.css";
+import viewerStyles from "../../FileViewer.module.css";
+import pathStyles from "../../FilePathLink.module.css";
+
+import codeStyles from "../CodeOutput.module.css";
+import markdownStyles from "../../MarkdownPreview.module.css";
 import { toolDisplayContracts } from "./toolDisplayContracts";
 import { defineTool } from "./defineTool";
 import {
@@ -40,7 +46,8 @@ import {
   renderFixedFontRichContent,
 } from "../../ui/FixedFontMathToggle";
 import { InnerHtml } from "../../ui/InnerHtml";
-import { ButtonBase } from "../../ui/Button";
+import { ButtonBase, Button, IconButton } from "../../ui/Button";
+import toggleStyles from "../../ui/FixedFontRenderToggle.module.css";
 import { RenderModeGlyph } from "../../ui/RenderModeGlyph";
 import { SegmentedControl } from "../../ui/SegmentedControl";
 import type {
@@ -84,9 +91,18 @@ function ReadUnchangedResult({ filePath }: { filePath: string }) {
   const meta = useOptionalSessionMetadata();
   const displayPath = makeDisplayPath(filePath, meta?.projectPath);
   return (
-    <div className="read-text-result read-text-inline">
+    <div
+      className={`${styles.readTextResult} ${styles.readTextInline}`}
+      data-read-text-result
+      data-read-text-inline
+    >
       <ReadFilePathSummary displayPath={displayPath} filePath={filePath}>
-        <span className="file-line-count-inline">unchanged</span>
+        <span
+          className={pathStyles.fileLineCountInline}
+          data-file-line-count-inline
+        >
+          unchanged
+        </span>
       </ReadFilePathSummary>
     </div>
   );
@@ -130,9 +146,17 @@ function getReadInputLineRange(input: ReadInput): {
 
 function renderReadMathPanel(html: string) {
   return (
-    <div className="file-viewer-code fixed-font-rendered-panel">
+    <div
+      className={`${viewerStyles.fileViewerCode} ${codeStyles.fixedFontRenderedPanel}`}
+      data-file-viewer-code
+      data-fixed-font-rendered-panel
+    >
       {/* KaTeX output is trusted HTML from local rendering. */}
-      <InnerHtml className="fixed-font-rendered__content" trustedHtml={html} />
+      <InnerHtml
+        className={codeStyles.fixedFontRenderedContent}
+        data-fixed-font-rendered__content
+        trustedHtml={html}
+      />
     </div>
   );
 }
@@ -151,7 +175,7 @@ function ReadFilePathSummary({
   lineNumber?: number;
 }) {
   return (
-    <span className="file-link-inline">
+    <span className={pathStyles.fileLinkLabel} data-file-link-label>
       <SessionFilePathLink
         displayPath={displayPath}
         filePath={filePath}
@@ -196,8 +220,8 @@ function ReadToolUse({ input }: { input: ReadInput }) {
   const displayPath = makeDisplayPath(input.file_path, meta?.projectPath);
   const lineRange = getReadInputLineRange(input);
   return (
-    <div className="read-tool-use">
-      <span className="file-path">
+    <div className={styles.readToolUse} data-read-tool-use>
+      <span className={codeStyles.filePath} data-file-path>
         <SessionFilePathLink
           displayPath={displayPath}
           filePath={input.file_path}
@@ -207,7 +231,8 @@ function ReadToolUse({ input }: { input: ReadInput }) {
       </span>
       {(input.offset !== undefined || input.limit !== undefined) && (
         <span
-          className="read-range"
+          className={styles.readRange}
+          data-read-range
           title={`offset ${input.offset ?? 0}, limit ${input.limit ?? "∞"}`}
         >
           {input.offset !== undefined && ` from line ${input.offset}`}
@@ -270,24 +295,39 @@ function FileModalContent({
 
   const sourceView =
     file.content.length === 0 ? (
-      <div className="file-viewer-empty-content">No content read</div>
+      <div
+        className={viewerStyles.fileViewerEmptyContent}
+        data-file-viewer-empty-content
+      >
+        No content read
+      </div>
     ) : highlightedHtml ? (
-      <div className="file-viewer-code file-viewer-code-highlighted">
+      <div
+        className={`${viewerStyles.fileViewerCode} ${viewerStyles.fileViewerCodeHighlighted}`}
+        data-file-viewer-code
+        data-file-viewer-code-highlighted
+      >
         <ShikiHtml html={highlightedHtml} />
         {highlightedTruncated && (
-          <div className="file-viewer-truncated">
+          <div
+            className={viewerStyles.fileViewerTruncated}
+            data-file-viewer-truncated
+          >
             Content truncated for highlighting (showing first 2000 lines)
           </div>
         )}
       </div>
     ) : (
-      <div className="file-content-with-lines">
-        <div className="line-numbers">
+      <div
+        className={codeStyles.fileContentWithLines}
+        data-file-content-with-lines
+      >
+        <div className={codeStyles.lineNumbers} data-line-numbers>
           {lines.map((_, i) => (
             <div key={`ln-${i + 1}`}>{file.startLine + i}</div>
           ))}
         </div>
-        <pre className="line-content">
+        <pre className={codeStyles.lineContent} data-line-content>
           <code>{file.content}</code>
         </pre>
       </div>
@@ -320,7 +360,10 @@ function FileModalContent({
     );
 
   const toggleButton = hasMarkdownPreview && (
-    <div className="markdown-view-toggle">
+    <div
+      className={markdownStyles.markdownViewToggle}
+      data-markdown-view-toggle
+    >
       <SegmentedControl
         size="small"
         aria-label={t("sourceViewMode")}
@@ -333,21 +376,32 @@ function FileModalContent({
   const showSigma = !hasMarkdownPreview && hasMathToggle;
 
   return (
-    <div className="file-content-modal" ref={quoteSourceRef}>
+    <div
+      className={viewerStyles.fileContentModal}
+      data-file-content-modal
+      ref={quoteSourceRef}
+    >
       {toggleButton}
       {showSigma ? (
-        <div className="fixed-font-render-toggle">
+        <div
+          className={codeStyles.fixedFontRenderToggle}
+          data-fixed-font-render-toggle
+        >
           {content}
-          <ButtonBase
+          <IconButton
+            variant="outline"
+            elevated
+            size="dense"
             ref={mathBtnRef}
-            className={`fixed-font-render-toggle__button ${showMath ? "is-rendered" : ""}`}
+            className={toggleStyles.button}
+            data-fixed-font-toggle=""
             onClick={handleMathToggle}
-            aria-label={mathToggleLabel}
+            label={mathToggleLabel}
             {...mathToggleTooltip}
             aria-pressed={showMath}
           >
             <RenderModeGlyph />
-          </ButtonBase>
+          </IconButton>
         </div>
       ) : (
         content
@@ -378,8 +432,12 @@ function TextFileResult({
   const lineRange = getReadLineRange(file);
 
   return (
-    <div className="read-text-result read-text-inline">
-      <div className="file-range-inline">
+    <div
+      className={`${styles.readTextResult} ${styles.readTextInline}`}
+      data-read-text-result
+      data-read-text-inline
+    >
+      <div className={pathStyles.fileRangeInline} data-file-range-inline>
         <SessionFilePathLink
           displayPath={displayPath}
           filePath={file.filePath}
@@ -388,7 +446,7 @@ function TextFileResult({
         />
       </div>
       {showRange && (
-        <div className="file-range-inline">
+        <div className={pathStyles.fileRangeInline} data-file-range-inline>
           <ReadRangeLink
             filePath={file.filePath}
             lineEnd={lineRange.lineEnd}
@@ -399,8 +457,13 @@ function TextFileResult({
         </div>
       )}
       {!hasReadLines && (
-        <div className="file-range-inline">
-          <span className="file-line-count-inline">0 lines</span>
+        <div className={pathStyles.fileRangeInline} data-file-range-inline>
+          <span
+            className={pathStyles.fileLineCountInline}
+            data-file-line-count-inline
+          >
+            0 lines
+          </span>
           {file.totalLines > 0 && <> of {file.totalLines}</>}
         </div>
       )}
@@ -497,30 +560,32 @@ function ImageFileResult({
   });
 
   return (
-    <div className="read-image-result">
-      <div className="local-media-link-group">
-        <ButtonBase
-          className="local-media-inline-toggle"
+    <div className={styles.readImageResult} data-read-image-result>
+      <div className={mediaStyles.group}>
+        <IconButton
+          variant="outline"
+          elevated
+          size="dense"
           aria-expanded={expanded}
-          aria-label={expanded ? "Collapse image" : "Expand image"}
+          label={expanded ? "Collapse image" : "Expand image"}
           title={expanded ? "Collapse inline preview" : "Expand inline preview"}
           onClick={() => setOverride(!expanded)}
         >
           {expanded ? "-" : "+"}
-        </ButtonBase>
+        </IconButton>
         {filePath && displayPath ? (
-          <span className="file-range-inline">
+          <span className={pathStyles.fileRangeInline} data-file-range-inline>
             <SessionFilePathLink
               displayPath={displayPath}
               filePath={filePath}
             />
           </span>
         ) : (
-          <span className="local-media-type">image</span>
+          <span className={mediaStyles.type}>image</span>
         )}
       </div>
       {(hasDimensions || sizeKB > 0) && (
-        <div className="image-info">
+        <div className={styles.imageInfo} data-image-info>
           {hasDimensions && (
             <>
               {dimensions.originalWidth}x{dimensions.originalHeight}
@@ -544,7 +609,8 @@ function ImageFileResult({
             onContextMenu={imageActions.handleContextMenu}
           >
             <img
-              className="read-image"
+              className={styles.readImage}
+              data-read-image
               src={previewUrl}
               alt="File content"
               width={dimensions?.displayWidth}
@@ -552,7 +618,10 @@ function ImageFileResult({
             />
           </ButtonBase>
         ) : (
-          <span className="file-line-count-inline">
+          <span
+            className={pathStyles.fileLineCountInline}
+            data-file-line-count-inline
+          >
             {previewError
               ? t("inlineImageUnavailable")
               : t("inlineImageLoading")}
@@ -610,15 +679,23 @@ function PdfFileResult({
 
   if (filePath && displayPath) {
     return (
-      <div className="read-pdf-result">
+      <div className={styles.readPdfResult} data-read-pdf-result>
         <ReadFilePathSummary displayPath={displayPath} filePath={filePath}>
           {sizeKB > 0 && (
-            <span className="file-line-count-inline">
+            <span
+              className={pathStyles.fileLineCountInline}
+              data-file-line-count-inline
+            >
               ({sizeKB}
               {"\u202f"}kb)
             </span>
           )}
-          <span className="file-line-count-inline">PDF</span>
+          <span
+            className={pathStyles.fileLineCountInline}
+            data-file-line-count-inline
+          >
+            PDF
+          </span>
         </ReadFilePathSummary>
       </div>
     );
@@ -627,27 +704,39 @@ function PdfFileResult({
   const base64 = file.base64;
   if (!base64) {
     return (
-      <div className="read-pdf-result">
-        <span className="file-line-count-inline">PDF</span>
+      <div className={styles.readPdfResult} data-read-pdf-result>
+        <span
+          className={pathStyles.fileLineCountInline}
+          data-file-line-count-inline
+        >
+          PDF
+        </span>
       </div>
     );
   }
 
   return (
-    <div className="read-pdf-result">
-      <ButtonBase
-        className="file-link-button"
+    <div className={styles.readPdfResult} data-read-pdf-result>
+      <Button
+        variant="outline"
+        size="small"
+        textFlow="wrap"
+        mono
+        className={pathStyles.fileLinkButton}
+        data-file-link-button
         onClick={() => openPdfInNewTab(base64)}
       >
-        {fileName}
+        {fileName}{" "}
         {sizeKB > 0 && (
-          <span className="file-line-count">
+          <span className={pathStyles.fileLineCount} data-file-line-count>
             ({sizeKB}
             {"\u202f"}kb)
           </span>
         )}
-        <span className="file-line-count">Open PDF</span>
-      </ButtonBase>
+        <span className={pathStyles.fileLineCount} data-file-line-count>
+          Open PDF
+        </span>
+      </Button>
     </div>
   );
 }
@@ -685,7 +774,7 @@ function ReadToolResult({
 
   if (!result?.file) {
     return (
-      <div className="read-error">
+      <div className={styles.readError} data-read-error>
         {showValidationWarning && validationErrors && (
           <SchemaWarning toolName="Read" errors={validationErrors} />
         )}
@@ -814,7 +903,12 @@ function ReadInteractiveSummary({
   if (result.type === "pdf") {
     return (
       <ReadFilePathSummary displayPath={displayPath} filePath={input.file_path}>
-        <span className="file-line-count-inline">(PDF)</span>
+        <span
+          className={pathStyles.fileLineCountInline}
+          data-file-line-count-inline
+        >
+          (PDF)
+        </span>
         {showValidationWarning && validationErrors && (
           <SchemaWarning toolName="Read" errors={validationErrors} />
         )}
@@ -825,7 +919,12 @@ function ReadInteractiveSummary({
   if (result.type === "image") {
     return (
       <ReadFilePathSummary displayPath={displayPath} filePath={input.file_path}>
-        <span className="file-line-count-inline">(image)</span>
+        <span
+          className={pathStyles.fileLineCountInline}
+          data-file-line-count-inline
+        >
+          (image)
+        </span>
         {showValidationWarning && validationErrors && (
           <SchemaWarning toolName="Read" errors={validationErrors} />
         )}
@@ -836,7 +935,12 @@ function ReadInteractiveSummary({
   if (!isCompleteTextFile(result.file)) {
     return (
       <ReadFilePathSummary displayPath={displayPath} filePath={input.file_path}>
-        <span className="file-line-count-inline">unchanged</span>
+        <span
+          className={pathStyles.fileLineCountInline}
+          data-file-line-count-inline
+        >
+          unchanged
+        </span>
         {showValidationWarning && validationErrors && (
           <SchemaWarning toolName="Read" errors={validationErrors} />
         )}
@@ -849,7 +953,12 @@ function ReadInteractiveSummary({
   if (file.numLines <= 0) {
     return (
       <ReadFilePathSummary displayPath={displayPath} filePath={file.filePath}>
-        <span className="file-line-count-inline">0 lines</span>
+        <span
+          className={pathStyles.fileLineCountInline}
+          data-file-line-count-inline
+        >
+          0 lines
+        </span>
         {showValidationWarning && validationErrors && (
           <SchemaWarning toolName="Read" errors={validationErrors} />
         )}
@@ -863,7 +972,10 @@ function ReadInteractiveSummary({
       filePath={file.filePath}
       {...getReadLineRange(file)}
     >
-      <span className="file-line-count-inline">
+      <span
+        className={pathStyles.fileLineCountInline}
+        data-file-line-count-inline
+      >
         <ReadRangeLink
           filePath={file.filePath}
           text={`${file.numLines} lines`}
@@ -890,7 +1002,7 @@ export const readRenderer = defineTool(toolDisplayContracts.Read, {
 
   renderFailure(failure) {
     return (
-      <div className="read-error">
+      <div className={styles.readError} data-read-error>
         {failure.content || "Failed to read file"}
       </div>
     );

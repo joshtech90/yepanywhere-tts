@@ -30,7 +30,7 @@ for (const hosted of [false, true])
         `${origin}/new-session?projectId=${owned.projectId}&provider=pi&model=owned%2Ffixture`,
       );
       await page
-        .locator("textarea.new-session-form-textarea")
+        .locator("textarea[data-new-session-form-textarea]")
         .pressSequentially("OWNED_PI_CREATION_INPUT");
       const accepted = page.waitForResponse(
         (r) =>
@@ -85,7 +85,7 @@ for (const hosted of [false, true])
         page.getByText("OWNED_PI_CONTINUED_REPLY", { exact: true }).first(),
       ).toBeVisible();
       await expect(page).toHaveURL(
-        `${origin}/projects/${owned.projectId}/sessions/${native}?yaSessionId=${receipt.sessionId}`,
+        `${origin}/projects/${owned.projectId}/sessions/pi/${native}`,
       );
       await expect(
         page.getByText("OWNED_PI_CREATION_REPLY", { exact: true }).first(),

@@ -7,7 +7,7 @@ const projectId = Buffer.from(mockProjectPath).toString("base64url");
 const sessionId = "transcript-specimen-001";
 
 async function dismissOnboardingIfVisible(page: Page) {
-  const skip = page.locator(".onboarding-skip-all");
+  const skip = page.getByRole("button", { name: "Skip all", exact: true });
   if (
     await skip
       .waitFor({ state: "visible", timeout: 750 })
@@ -30,8 +30,8 @@ test("search result and transcript clicks keep their own actions", async ({
   await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
   await dismissOnboardingIfVisible(page);
 
-  const transcript = page.locator(".session-messages");
-  const list = transcript.locator(".message-list");
+  const transcript = page.locator("[data-session-messages]");
+  const list = transcript.locator("[data-message-list]");
   await expect(
     list.locator('[data-render-id="specimen-assistant-2"]'),
   ).toBeVisible({
@@ -41,7 +41,7 @@ test("search result and transcript clicks keep their own actions", async ({
     timeout: 10000,
   });
   await page.addStyleTag({
-    content: ".message-list > [data-render-id] { min-height: 360px; }",
+    content: "[data-message-list] > [data-render-id] { min-height: 360px; }",
   });
 
   await page.keyboard.press("Control+s");
@@ -62,8 +62,9 @@ test("search result and transcript clicks keep their own actions", async ({
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const scrollport =
-          document.querySelector<HTMLElement>(".session-messages");
+        const scrollport = document.querySelector<HTMLElement>(
+          "[data-session-messages]",
+        );
         const row = document.querySelector<HTMLElement>(
           '[data-render-id="specimen-assistant-2"]',
         );

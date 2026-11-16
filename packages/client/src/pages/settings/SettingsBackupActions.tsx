@@ -4,7 +4,9 @@ import {
 } from "@yep-anywhere/shared";
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { Banner } from "../../components/ui/Banner";
 import { Button } from "../../components/ui/Button";
+import { confirmDialog } from "../../components/ui/ConfirmDialog";
 import { useI18n } from "../../i18n";
 import {
   applyBrowserSettingsBackup,
@@ -59,8 +61,16 @@ export function SettingsBackupActions() {
     }
   };
 
-  const handleLoad = () => {
-    if (!backup || !window.confirm(t("settingsBackupLoadConfirm"))) return;
+  const handleLoad = async () => {
+    if (
+      !backup ||
+      !(await confirmDialog({
+        title: t("settingsBackupLoadConfirmTitle"),
+        message: t("settingsBackupLoadConfirm"),
+        confirmLabel: t("settingsBackupLoad"),
+      }))
+    )
+      return;
     setOperation("loading");
     setError(null);
     try {
@@ -73,7 +83,7 @@ export function SettingsBackupActions() {
   };
 
   const status = error
-    ? error
+    ? null
     : operation === "fetching"
       ? t("settingsBackupChecking")
       : backup
@@ -104,12 +114,15 @@ export function SettingsBackupActions() {
             : t("settingsBackupLoad")}
         </Button>
       </div>
-      <span
-        className={`${styles.status} ${error ? styles.error : ""}`}
-        role={error ? "alert" : "status"}
-      >
+      {/* Always mounted, so a result after a failed try is announced. */}
+      <span className={styles.status} role="status">
         {status}
       </span>
+      {error && (
+        <Banner tone="error" compact>
+          {error}
+        </Banner>
+      )}
     </section>
   );
 }

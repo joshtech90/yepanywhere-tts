@@ -14,13 +14,7 @@
 import type { ComponentType } from "react";
 
 /** Lower layers never depend on higher ones; see topics/ui-design.md. */
-export const DESIGN_LAYERS = [
-  "token",
-  "control",
-  "pattern",
-  "scene",
-  "census",
-] as const;
+export const DESIGN_LAYERS = ["token", "control", "pattern", "scene"] as const;
 export type DesignLayer = (typeof DESIGN_LAYERS)[number];
 
 export const DESIGN_THEMES = ["verydark", "dark", "light"] as const;
@@ -28,7 +22,7 @@ export type DesignTheme = (typeof DESIGN_THEMES)[number];
 
 export interface SpecimenParameters {
   layer: DesignLayer;
-  /** One sentence shown above the states. */
+  /** Plain introduction shown above the states. */
   description?: string;
   /**
    * Content width in the grid and isolated views. `content` (default) shrinks

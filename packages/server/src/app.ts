@@ -1,5 +1,9 @@
+import { appProviderRuntime } from "./sdk/app-provider-runtime.js";
+import { ownedApiSessions } from "./core-api/owned-sessions.js";
+import type { ProviderObservationCallbacks } from "./watcher/ProviderSessionWatcherRegistry.js";
+import { createClaudeTranscriptCache } from "./sessions/claude-transcript-cache.js";
+import { createSessionReaderAdmission } from "./sessions/session-reader-admission.js";
 import {
-  agentApiCallerLaunch,
   effectiveGlobalInstructions,
   reviewLaunchDefaults,
 } from "./sessions/derived-launch-sources.js";
@@ -27,8 +31,8 @@ import { API_OWNER_VARIABLE } from "./core-api/contracts.js";
 import { ApiReceiptStore } from "./core-api/receipt-store.js";
 import { profileSessionRelationships } from "./sessions/SessionRelationshipWriter.js";
 import { reconcileSessionRelationships } from "./sessions/session-relationship-reconciliation.js";
-import { SessionCommands } from "./core-api/session-commands.js";
-import { nativeSessionCommandOwner } from "./core-api/native-session-commands.js";
+import type { SessionCommands } from "./core-api/session-commands.js";
+import { createProductionApiCommands } from "./core-api/production-commands.js";
 import type { MiddlewareHandler, Context } from "hono";
 import {
   createConversationRead,
@@ -44,23 +48,23 @@ import { readServerIdentity } from "./core-api/server-identity.js";
 import { productionApiSources } from "./core-api/production-sources.js";
 import { createV0Routes } from "./routes/v0/index.js";
 import { PRINCIPAL_VARIABLE, SUPERUSER } from "./auth/principal.js";
-import { AgentAuthRouter } from "./services/AgentAuthRouter.js";
 import { readClaudeAiLogin } from "./sdk/providers/claude-executable.js";
-import { createAgentAuthRouterRoutes } from "./routes/agent-auth-router.js";
+import { mountAgentAuthRouterRoutes } from "./routes/agent-auth-router.js";
 import { DraftStore } from "./drafts/DraftStore.js";
 import { createDraftRoutes } from "./routes/drafts.js";
 import { ConversationSubscriptions } from "./experimental/conversation-subscriptions.js";
 import { setStandingPermissionModeSource } from "./supervisor/standingPermissionMode.js";
 import { retireLegacyComputerControl } from "./machine-control/legacy-retirement.js";
 import {
-  createMachineControlRoutes,
-  supportsInstalledMachineControl,
+  machineControlEnabled,
+  mountMachineControl,
 } from "./routes/machine-control.js";
-import { createConversationSource } from "./experimental/conversation-source.js";
+import { createProviderConversationSource } from "./experimental/provider-conversation-source.js";
 import { createExperimentalConversationRoutes } from "./routes/experimental-conversation.js";
 import { IssueStore } from "./services/issues/IssueStore.js";
 import { IssueContentRefresher } from "./services/issues/content.js";
 import { IssueIndexer } from "./services/issues/IssueIndexer.js";
+import { issueCatalogSource } from "./services/issues/issue-catalog-source.js";
 import { createIssueRoutes } from "./routes/issues.js";
 import { IssueCredentials } from "./services/issues/credentials.js";
 import { IssueConfirmer } from "./services/issues/confirm.js";
@@ -172,7 +176,7 @@ import type {
   SessionDiscoveryIndexRegistry,
   SessionIndexService,
 } from "./indexes/index.js";
-import { createLruMap, refreshLruMap } from "./lib/lruCollections.js";
+import { createLruMap } from "./lib/lruCollections.js";
 import type {
   ProjectMetadataService,
   SessionMetadataService,
@@ -277,7 +281,7 @@ import {
   catalogNativeSessionId,
   RetainedSessionCollections,
 } from "./services/RetainedSessionCollections.js";
-import { collectionCatalogAdapters } from "./sessions/catalog-adapters/collection-catalog-adapters.js";
+import { createCollectionCatalogAdapters } from "./sessions/catalog-adapters/collection-catalog-adapters.js";
 import { readClaudeCatalogHead } from "./sessions/claude-summary.js";
 import { readCodexRolloutMetadata } from "./sessions/codex-discovery.js";
 import {
@@ -334,7 +338,8 @@ import { agentSelfEnabled } from "./sdk/providers/agent-self.js";
 import { createSessionsRoutes } from "./routes/sessions.js";
 import { createSessionWakeRoutes } from "./routes/session-wake.js";
 import { createSettingsRoutes } from "./routes/settings.js";
-import { streamNewSessionBootstrap } from "./routes/new-session-bootstrap.js";
+import { createNewSessionBootstrapRead } from "./routes/new-session-bootstrap.js";
+import { readAuthenticatedJson } from "./routes/authenticated-json-read.js";
 import { createSharingRoutes } from "./routes/sharing.js";
 import { createSupervisorQueueRoutes } from "./routes/supervisor-queue.js";
 import { createToolResultMediaRoutes } from "./routes/tool-result-media.js";
@@ -360,13 +365,9 @@ import { createSecurityClientRoutes } from "./routes/security-clients.js";
 import { createNativePushRoutes } from "./routes/native-push.js";
 import type { NativePushService } from "./push/NativePushService.js";
 import { DiscoverySqliteService } from "./storage/discovery-sqlite.js";
-import {
-  createVersionRoutes,
-  type VersionRouteOptions,
-} from "./routes/version.js";
+import type { VersionRouteOptions } from "./routes/version.js";
 import { createProviderHostRoutes } from "./routes/provider-host.js";
 import {
-  configureProviderRuntime,
   getAllProviders,
   getProvider,
   isProviderRuntimeHostAvailable,
@@ -417,6 +418,10 @@ import type {
   SessionQueuePersistenceService,
 } from "./services/SessionQueuePersistenceService.js";
 import { SafeRestartService } from "./services/SafeRestartService.js";
+import type { QueueRestartHandoff } from "./services/QueueRestartHandoff.js";
+import { safeRestartQueueCallbacks } from "./services/safeRestartQueueCallbacks.js";
+import { serverAdmissionMiddleware } from "./server-restart-control.js";
+import { serverAgentApiAdmission } from "./server-agent-api-admission.js";
 import type { SharingService } from "./services/SharingService.js";
 import type { SpeechBackendRegistry } from "./services/voice/registry.js";
 import { VocabularyStore } from "./services/voice/VocabularyStore.js";
@@ -461,7 +466,8 @@ import {
 } from "./watcher/index.js";
 import { LifecycleWebhookService } from "./webhooks/LifecycleWebhookService.js";
 
-export interface AppOptions {
+export interface AppOptions extends ProviderObservationCallbacks {
+  queueRestartHandoff?: QueueRestartHandoff;
   /** False for self-contained hosts with no external provider sessions. */
   externalSessionsEnabled?: boolean;
   /** Owned update-service lookup for embedded applications and test fixtures. */
@@ -481,13 +487,6 @@ export interface AppOptions {
   defaultPermissionMode?: PermissionMode;
   /** EventBus for file change events */
   eventBus?: EventBus;
-  /** Provider observer startup handover; internal, independent of wire events. */
-  subscribeProviderObservationReady?: (
-    listener: (family: ProviderCatalogFamily) => void,
-  ) => () => void;
-  subscribeNativeProviderFileChanges?: (
-    listener: (event: import("./watcher/EventBus.js").FileChangeEvent) => void,
-  ) => () => void;
   /** WebSocket upgrader from @hono/node-server (optional) */
   upgradeWebSocket?: UploadDeps["upgradeWebSocket"];
   /** NotificationService for tracking session read state */
@@ -657,7 +656,7 @@ export interface AppResult {
   supervisor: Supervisor;
   /** Project scanner for debug API access */
   scanner: ProjectScanner;
-  /** Session reader factory for debug API access */
+  claudeTranscripts: ReturnType<typeof createClaudeTranscriptCache>;
   readerFactory: (
     project: Project,
     native?: NativeSessionRef,
@@ -734,7 +733,7 @@ export function createApp(options: AppOptions): AppResult {
     options.serverSettingsService?.getSetting("newSessionDefaults")
       ?.permissionMode;
   setStandingPermissionModeSource(getStandingPermissionMode);
-  configureProviderRuntime({
+  appProviderRuntime.configure(options, {
     codexCliPath: options.codexCliPath,
     getClaudeAdditionalModels: () =>
       options.serverSettingsService?.getSetting("claudeAdditionalModels"),
@@ -746,9 +745,8 @@ export function createApp(options: AppOptions): AppResult {
             "ollamaUseFullSystemPrompt",
           ),
       ) ||
-      Object.values(
-        options.sessionMetadataService?.getAllMetadata() ?? {},
-      ).some((metadata) => metadata.provider === "claude-ollama"),
+      options.sessionMetadataService?.hasRecordedProvider("claude-ollama") ===
+        true,
     getProviderRuntimeSnapshot: () => ({
       steeringModes: options.serverSettingsService?.getSetting("steeringModes"),
       codexCliPath: options.codexCliPath,
@@ -795,6 +793,7 @@ export function createApp(options: AppOptions): AppResult {
       grokBuildUseXaiApiKey: options.serverSettingsService?.getSetting(
         "grokBuildUseXaiApiKey",
       ),
+      machineControlEnabled: machineControlEnabled(options),
     }),
   });
   const codexSessionsDir = options.codexSessionsDir ?? CODEX_SESSIONS_DIR;
@@ -803,6 +802,7 @@ export function createApp(options: AppOptions): AppResult {
   const piSessionsDir = options.piSessionsDir ?? PI_SESSIONS_DIR;
 
   const app = new Hono<{ Bindings: HttpBindings }>();
+  app.use("*", serverAdmissionMiddleware);
   app.use("*", async (c, next) => {
     const host = c.req.header("Host") ?? new URL(c.req.url).host;
     const dispatched = artifactServer
@@ -1109,8 +1109,7 @@ export function createApp(options: AppOptions): AppResult {
   // Mount /api routers only after the security and auth middleware above:
   // Hono runs only the middleware registered before a route, so an earlier
   // mount answers without them (test/auth/api-auth-boundary.test.ts).
-  if (supportsInstalledMachineControl())
-    app.route("/api", createMachineControlRoutes());
+  const machineControlMounted = mountMachineControl(app, options);
   const templateSources = new TemplateSourceService(effectiveDataDir);
   const templateCreations = new TemplateCreationService(
     effectiveDataDir,
@@ -1239,36 +1238,14 @@ export function createApp(options: AppOptions): AppResult {
   const geminiScanner = new GeminiSessionScanner({
     sessionsDir: geminiSessionsDir,
   });
-  const projectScanCachePath = options.dataDir
-    ? join(options.dataDir, "indexes", "project-scanner-cache.json")
-    : undefined;
   // Sandboxed Claude sessions write their transcripts under the project's
   // private provider root (topics/session-sandboxing.md); every reader and
   // list of a project must include those directories.
-  // Every project lookup asks, so the scan over all session metadata runs
-  // once per metadata revision.
-  let sandboxSessionDirsMemo:
-    | {
-        revision: number;
-        byProject: ReadonlyMap<string, readonly string[]>;
-      }
-    | undefined;
-  const claudeSandboxSessionDirs = (): ReadonlyMap<
-    string,
-    readonly string[]
-  > => {
-    const revision = options.sessionMetadataService?.getRevision() ?? 0;
-    if (sandboxSessionDirsMemo?.revision === revision)
-      return sandboxSessionDirsMemo.byProject;
-    const byProject = scanClaudeSandboxSessionDirs();
-    sandboxSessionDirsMemo = { revision, byProject };
-    return byProject;
-  };
-  const scanClaudeSandboxSessionDirs = (): Map<string, string[]> => {
+  // Every project lookup asks; an indexed query finds those sessions.
+  const claudeSandboxSessionDirs = (): Map<string, string[]> => {
     const byProject = new Map<string, string[]>();
-    for (const metadata of Object.values(
-      options.sessionMetadataService?.getAllMetadata() ?? {},
-    )) {
+    for (const metadata of options.sessionMetadataService?.getProjectWriteSandboxSessions() ??
+      []) {
       if (
         !metadata.provider ||
         !isClaudeProviderName(metadata.provider) ||
@@ -1315,6 +1292,8 @@ export function createApp(options: AppOptions): AppResult {
       read: (refresh) =>
         retainedCollections?.readProjects(refresh) ??
         Promise.resolve({ projects: [], complete: false, version: "starting" }),
+      invalidate: () => retainedCollections?.invalidate(),
+      peekProject: (id) => retainedCollections?.peekProject(id),
       peek: () =>
         retainedCollections?.peekProjects() ?? {
           projects: [],
@@ -1325,9 +1304,11 @@ export function createApp(options: AppOptions): AppResult {
     getSandboxSessionDirs: claudeSandboxSessionDirs,
     projectsDir: options.projectsDir,
     codexScanner,
+    codexSessionsDir,
     geminiScanner,
     geminiSessionsDir,
-    projectScanCachePath,
+    getProviderObservationEpoch: options.getProviderObservationEpoch,
+    projectFactsDatabase: discoverySqlite.getDatabase(),
     projectMetadataService: options.projectMetadataService,
     eventBus: options.eventBus,
     cacheTtlMs: options.projectScanCacheTtlMs,
@@ -1626,7 +1607,7 @@ export function createApp(options: AppOptions): AppResult {
           eventBus: options.eventBus,
         })
       : null;
-  /** Least recently used first; bounded by `maxReaderCacheSize`. */
+  /** Least recently used first; admission is capped at 500 readers. */
   const readerCache = createLruMap<string, ISessionReader>();
   const sessionReadLifetime = new AbortController();
   const relationshipRead = options.sessionMetadataService
@@ -1720,7 +1701,9 @@ export function createApp(options: AppOptions): AppResult {
   const projectFileCompletion = new ProjectFileCompletion(effectiveDataDir, {
     eventBus: options.eventBus,
   });
-  const maxReaderCacheSize = 500;
+  const claudeTranscripts = createClaudeTranscriptCache(
+    discoverySqlite.getCacheDatabase(),
+  );
   const closeReader = async (
     key: string,
     reader: ISessionReader,
@@ -1821,9 +1804,9 @@ export function createApp(options: AppOptions): AppResult {
             type: "session-metadata-changed",
             sessionId,
             creation,
-            nativeSessionId:
-              options.sessionMetadataService!.identities.resolveYa(sessionId)
-                ?.native?.id,
+            ...options.sessionMetadataService!.identities.viewerFields(
+              sessionId,
+            ),
             timestamp: creation.updatedAt,
           }),
       )
@@ -1893,8 +1876,10 @@ export function createApp(options: AppOptions): AppResult {
       externalTracker?.dispose();
       await options.peerAccess?.close();
       apiCommands?.close();
+      await apiCommands?.idle();
       apiReceipts?.close();
       await supervisor.stopBackgroundTasks();
+      await agentAuthRouter.close();
       await rendezCompose?.close();
       await rendezDraftDelivery?.close();
       await rendezWatch?.close();
@@ -1916,8 +1901,9 @@ export function createApp(options: AppOptions): AppResult {
       await vocabularyLearning?.close();
       if (draftCleanup) clearInterval(draftCleanup);
       draftStore?.close();
-      if (ownsDiscoverySqlite) discoverySqlite.close();
       await retainedCollections?.dispose();
+      await claudeTranscripts.close();
+      if (ownsDiscoverySqlite) discoverySqlite.close();
       await projectQueueScheduler?.dispose();
       artifactPreviews.close();
       await artifactServer.close();
@@ -1934,34 +1920,11 @@ export function createApp(options: AppOptions): AppResult {
     return sessionReadersDisposal;
   };
 
-  const getOrCreateReader = <T extends ISessionReader>(
-    key: string,
-    factory: () => T,
-  ): T => {
-    const cached = readerCache.get(key);
-    if (cached) {
-      refreshLruMap(readerCache, key, cached);
-      return cached as T;
-    }
-
-    const reader = factory();
-    readerCache.set(key, reader);
-
-    while (readerCache.size > maxReaderCacheSize) {
-      const oldestKey = readerCache.keys().next().value;
-      if (!oldestKey) break;
-      const oldestReader = readerCache.get(oldestKey);
-      readerCache.delete(oldestKey);
-      if (oldestReader) void closeReader(oldestKey, oldestReader);
-    }
-
-    return reader;
-  };
-
-  /**
-   * Create a session reader appropriate for the project's provider.
-   * Routes call this with the project to get the right reader.
-   */
+  const getOrCreateReader = createSessionReaderAdmission(
+    readerCache,
+    500,
+    closeReader,
+  );
   const readerFactory = (
     project: Project,
     native?: NativeSessionRef,
@@ -1978,6 +1941,7 @@ export function createApp(options: AppOptions): AppResult {
             () =>
               new ClaudeSessionReader({
                 sessionDir: native.storageScope,
+                transcriptCache: claudeTranscripts,
                 summaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
                 getContextWindow: mis
                   ? (model, provider) => mis.getContextWindow(model, provider)
@@ -2073,8 +2037,9 @@ export function createApp(options: AppOptions): AppResult {
       case "codex": {
         const sandboxSessionRoots = [
           ...new Map(
-            Object.values(
-              options.sessionMetadataService?.getAllMetadata() ?? {},
+            (
+              options.sessionMetadataService?.getProjectWriteSandboxSessions() ??
+              []
             ).flatMap((metadata) => {
               if (
                 metadata.provider !== "codex" ||
@@ -2162,8 +2127,6 @@ export function createApp(options: AppOptions): AppResult {
       case "claude-gateway":
       case "claude-ollama": {
         const mis = options.modelInfoService;
-        // A project from the scanner already lists these among its merged
-        // directories; one built elsewhere from an id may not.
         const sandboxSessionDirs = (
           claudeSandboxSessionDirs().get(project.id) ?? []
         ).filter((dir) => !project.mergedSessionDirs?.includes(dir));
@@ -2180,6 +2143,7 @@ export function createApp(options: AppOptions): AppResult {
           () =>
             new ClaudeSessionReader({
               sessionDir: project.sessionDir,
+              transcriptCache: claudeTranscripts,
               additionalDirs: allAdditionalDirs,
               summaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
               getContextWindow: mis
@@ -2521,28 +2485,28 @@ export function createApp(options: AppOptions): AppResult {
         projectMetadataForNames.getProjectDisplayName(projectPath)
     : getProjectName;
 
-  const agentAuthRouter = new AgentAuthRouter(
+  const agentAuthRouter = mountAgentAuthRouterRoutes(
+    app,
     effectiveDataDir,
     options.sessionMetadataService,
     readClaudeAiLogin,
-  );
-  app.route(
-    "/api",
-    createAgentAuthRouterRoutes(agentAuthRouter, () => supervisor),
+    () => supervisor,
   );
 
-  const readAgentApi: ApiReadPort = async (operation, caller, input) => {
-    if (
-      !agentApiController ||
-      options.serverSettingsService?.getSetting("agentApiEnabled") !== true
-    )
-      throw new CoreApiError(
-        "controller_unavailable",
-        "Agent API catalog access is unavailable",
-        503,
-      );
-    return agentApiController.read(operation, caller, input);
-  };
+  const readAgentApi: ApiReadPort = serverAgentApiAdmission(
+    async (operation, caller, input) => {
+      if (
+        !agentApiController ||
+        options.serverSettingsService?.getSetting("agentApiEnabled") !== true
+      )
+        throw new CoreApiError(
+          "controller_unavailable",
+          "Agent API catalog access is unavailable",
+          503,
+        );
+      return agentApiController.read(operation, caller, input);
+    },
+  );
   supervisor = new Supervisor({
     creationAttachments: options.sessionMetadataService
       ? new CreationAttachments(
@@ -3109,6 +3073,10 @@ export function createApp(options: AppOptions): AppResult {
         const metadata = options.sessionMetadataService?.getMetadata(sessionId);
         if (!metadata) return undefined;
         return {
+          permissions: options.queueRestartHandoff?.permissionRulesForSession(
+            sessionId,
+            supervisor.getProcessForSession(sessionId),
+          ),
           sandboxLevel: metadata.sandboxLevel,
           sandboxNetworkFirewall: metadata.sandboxNetworkFirewall,
           sandboxStateKey: metadata.sandboxStateKey,
@@ -3131,6 +3099,10 @@ export function createApp(options: AppOptions): AppResult {
     });
   }
 
+  options.queueRestartHandoff?.setProjectQueueDrain(() =>
+    projectQueueScheduler?.dispose(),
+  );
+
   const isManualReloadMode =
     process.env.NO_BACKEND_RELOAD === "true" ||
     process.env.NO_FRONTEND_RELOAD === "true";
@@ -3143,31 +3115,19 @@ export function createApp(options: AppOptions): AppResult {
           getPreservedWork: () =>
             getPreservedRestartWork(options.sessionQueuePersistenceService),
           preparePreservedWork: async () => {
+            options.queueRestartHandoff?.rememberPatientQueues(
+              supervisor.getAllProcesses(),
+            );
             await supervisor.preserveRestartablePatientQueuesForRestart();
           },
+          cancelPreservedWork: () =>
+            options.queueRestartHandoff?.forgetPreservedPatients(),
           restart: () =>
             triggerServerRestart({
               notificationService: options.notificationService,
               beforeRestart: disposeSessionReaders,
             }),
-          pauseProjectQueueDispatch: async () => {
-            const service = options.projectQueueService;
-            if (!service || service.listAll().length === 0) return false;
-            if (service.isDispatchPaused()) return false;
-            await service.pauseDispatch("restart");
-            return true;
-          },
-          resumeProjectQueueDispatch: async () => {
-            const service = options.projectQueueService;
-            if (!service) return;
-            const dispatchState = service.getDispatchState();
-            if (
-              dispatchState.status === "paused" &&
-              dispatchState.reason === "restart"
-            ) {
-              await service.resumeDispatch();
-            }
-          },
+          ...safeRestartQueueCallbacks(options),
         })
       : undefined;
 
@@ -3222,9 +3182,10 @@ export function createApp(options: AppOptions): AppResult {
   // Version check (outside /api for easy access)
   app.route(
     "/api/version",
-    createVersionRoutes({
+    appProviderRuntime.versionRoutes({
       getLatestVersion: options.getLatestVersion,
-      installedMachineControlAvailable: supportsInstalledMachineControl(),
+      collectionQueryUpdatesAvailable: !!options.eventBus,
+      installedMachineControlAvailable: machineControlMounted,
       agentSessionViewAvailable: agentSelfEnabled(),
       peerConnectionsAvailable: !!options.peerAccess,
       agentApiAvailable: ["darwin", "linux", "win32"].includes(
@@ -3393,9 +3354,8 @@ export function createApp(options: AppOptions): AppResult {
           !options.sessionMetadataService?.creations?.listProjections().length
         )
           return [];
-        const published = await retainedCollections?.readPublishedRows();
         const rows = await projectCatalogIdentities(
-          published?.rows ?? [],
+          (await retainedCollections?.readPublishedRows())?.rows ?? [],
           options.sessionMetadataService,
           sessionReadLifetime.signal,
         );
@@ -3666,6 +3626,7 @@ export function createApp(options: AppOptions): AppResult {
   // Inbox routes (cross-project session aggregation)
   retainedCollections = new RetainedSessionCollections({
     dataDir: effectiveDataDir,
+    database: discoverySqlite.getDatabase(),
     eventBus: options.eventBus,
     projectStores: nativeStores,
     nativeSessionId: catalogNativeSessionId(
@@ -3681,48 +3642,36 @@ export function createApp(options: AppOptions): AppResult {
             ?.activeAfterMs,
         )
       ),
-    adapters: (rows, signal, changedPaths, sources) =>
-      collectionCatalogAdapters(
-        {
-          scanner,
-          readerFactory,
-          codexScanner,
-          codexSessionsDir,
-          codexReaderFactory,
-          geminiScanner,
-          geminiSessionsDir,
-          geminiReaderFactory,
-          grokSessionsDir,
-          grokReaderFactory,
-          piSessionsDir,
-          piReaderFactory,
-          sessionIndexService: options.sessionIndexService,
-          getCatalogFamilies,
-          antigravitySessionsDir: options.antigravitySessionsDir,
-        },
-        rows,
-        signal,
-        changedPaths,
-        sources,
-      ),
+    adapters: createCollectionCatalogAdapters({
+      scanner,
+      readerFactory,
+      codexScanner,
+      codexSessionsDir,
+      codexReaderFactory,
+      geminiScanner,
+      geminiSessionsDir,
+      geminiReaderFactory,
+      grokSessionsDir,
+      grokReaderFactory,
+      piSessionsDir,
+      piReaderFactory,
+      sessionIndexService: options.sessionIndexService,
+      getCatalogFamilies,
+      antigravitySessionsDir: options.antigravitySessionsDir,
+    }),
   });
-  const conversationCatalog = retainedCollections;
   conversationSubscriptions = new ConversationSubscriptions(
-    createConversationSource({
-      resolveRolloutPath: (row, nativeId) =>
-        row.nativeStorageScope
-          ? codexReaderFactory(
-              row.projectPath,
-              row.nativeStorageScope,
-            ).getSessionFilePath(parseNativeSessionId(nativeId))
-          : Promise.resolve(null),
+    createProviderConversationSource({
+      readerFactory,
+      metadata: options.sessionMetadataService,
+      sessionIndexService: options.sessionIndexService,
       resolve: async (sessionId, signal) => {
         signal?.throwIfAborted();
         const identity = isYaSessionId(sessionId)
           ? options.sessionMetadataService?.identities.resolveYa(sessionId)
           : undefined;
         if (identity && !identity.native) return undefined;
-        const { rows } = await conversationCatalog.read();
+        const { rows } = await retainedCollections.read();
         signal?.throwIfAborted();
         if (identity?.native) {
           const native = identity.native;
@@ -3848,13 +3797,11 @@ export function createApp(options: AppOptions): AppResult {
     const indexer = new IssueIndexer(issueStore, {
       settings: issueSettings,
       confirm: () => confirmer.schedule(),
-      candidates: async function* () {
-        yield* await projectCatalogIdentities(
-          (await catalog.read()).rows,
-          options.sessionMetadataService,
-          sessionReadLifetime.signal,
-        );
-      },
+      ...issueCatalogSource(
+        catalog,
+        options.sessionMetadataService,
+        sessionReadLifetime.signal,
+      ),
       projectForSession: (id) =>
         options.sessionMetadataService?.getMetadata(id)?.workingProjectId,
       read: async (row, readOptions) => {
@@ -3956,12 +3903,13 @@ export function createApp(options: AppOptions): AppResult {
     const keyterms = new VocabularyKeyterms(store, effectiveDataDir);
     const learning = new VocabularyLearning(
       store,
-      (cutoff) =>
+      (cutoff, scan) =>
         vocabularySessions(
           catalog,
           scanner,
           sessionProviderResolutionDeps(),
           cutoff,
+          scan,
         ),
       { reference: () => keyterms.reference() },
     );
@@ -3993,6 +3941,7 @@ export function createApp(options: AppOptions): AppResult {
       scanner,
       readerFactory,
       supervisor,
+      externalTracker,
       notificationService: options.notificationService,
       sessionIndexService: options.sessionIndexService,
       sessionMetadataService: options.sessionMetadataService,
@@ -4017,24 +3966,11 @@ export function createApp(options: AppOptions): AppResult {
     discoverySqlite.getDatabase(),
     sessionRelationships,
   );
-  apiCommands = new SessionCommands(
+  apiCommands = createProductionApiCommands(
     publicServerId,
     apiReceipts,
-    nativeSessionCommandOwner({
-      supervisor,
-      creations: options.sessionMetadataService?.creations,
-      callerLaunch: agentApiCallerLaunch(options, supervisor),
-      globalInstructions: () =>
-        effectiveGlobalInstructions(options.serverSettingsService),
-    }),
-    () =>
-      options.serverSettingsService?.getSetting("agentApiManagementEnabled") ===
-      true,
-    (error) =>
-      getLogger().error(
-        { error },
-        "Agent API command outcome persistence failed",
-      ),
+    options,
+    supervisor,
   );
   const coreSources: CoreApiSources = {
     relationships: relationshipRead,
@@ -4046,6 +3982,8 @@ export function createApp(options: AppOptions): AppResult {
       ),
     commands: apiCommands,
     ...productionApiSources({
+      supervisor,
+      agentAuthRouter,
       scanner,
       sessions: retainedCollections,
       metadata: options.sessionMetadataService,
@@ -4060,27 +3998,8 @@ export function createApp(options: AppOptions): AppResult {
           ? providers.filter((p) => options.enabledProviders!.includes(p.name))
           : providers;
       },
-      sessionState: (id) =>
-        supervisor.getProcessForSession(id)?.state.type ?? "not-running",
       ownedSessions: () =>
-        supervisor
-          .getAllProcesses()
-          .filter((process) => !process.isTerminated)
-          .map((process) => {
-            const info = process.getInfo();
-            const metadata = options.sessionMetadataService?.getMetadata(
-              process.sessionId,
-            );
-            return {
-              id: process.sessionId,
-              projectId: metadata?.workingProjectId ?? process.projectId,
-              provider: process.provider,
-              title: metadata?.customTitle ?? info.sessionTitle,
-              createdByUser: metadata?.createdByUser,
-              updatedAt: info.startedAt,
-              state: process.state.type,
-            };
-          }),
+        ownedApiSessions(supervisor, options.sessionMetadataService),
       hiddenProjects: (username) => projectAppStore.hiddenProjectIds(username),
     }),
     conversation: createConversationRead(conversationSubscriptions),
@@ -4419,19 +4338,7 @@ export function createApp(options: AppOptions): AppResult {
       "/api/settings",
       createSettingsRoutes({
         serverSettingsService: options.serverSettingsService,
-        newSessionBootstrap: (context) =>
-          streamNewSessionBootstrap(context, async (path, signal) => {
-            const headers = new Headers(context.req.raw.headers);
-            headers.delete("Accept-Encoding");
-            headers.delete("Content-Length");
-            headers.delete("If-None-Match");
-            headers.delete("If-Modified-Since");
-            headers.set("Accept", "application/json");
-            return app.fetch(
-              new Request(new URL(path, context.req.url), { headers, signal }),
-              context.env,
-            );
-          }),
+        newSessionBootstrap: createNewSessionBootstrapRead(app),
         projectStoragePolicy,
         hostAwakeService: options.hostAwakeService,
         sessionMetadataService: options.sessionMetadataService,
@@ -4659,11 +4566,13 @@ export function createApp(options: AppOptions): AppResult {
     );
   }
 
-  // Activity routes (file watching)
   if (options.eventBus) {
     app.route(
       "/api/activity",
       createActivityRoutes({
+        signal: sessionReadLifetime.signal,
+        readJson: (context, path, signal) =>
+          readAuthenticatedJson(app, context, path, signal),
         eventBus: options.eventBus,
         connectedBrowsers: options.connectedBrowsers,
         browserProfileService: options.browserProfileService,
@@ -4708,6 +4617,7 @@ export function createApp(options: AppOptions): AppResult {
     supervisor,
     scanner,
     readerFactory,
+    claudeTranscripts,
     disposeSessionReaders,
     stopNotifications,
     glossaryIndexService,

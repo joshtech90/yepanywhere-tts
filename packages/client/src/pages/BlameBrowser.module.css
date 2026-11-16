@@ -1,3 +1,14 @@
+.fileList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fileList > [data-source-file-row] {
+  content-visibility: auto;
+  contain-intrinsic-size: 34px;
+}
+
 .inventory {
   min-width: 0;
 }
@@ -14,26 +25,8 @@
 
 .sectionToggle {
   display: inline-flex;
-  min-height: 28px;
   align-items: center;
   gap: 5px;
-  padding: 3px 8px;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-}
-
-.sectionToggle:hover,
-.sectionToggle:focus-visible {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.activeSectionToggle {
-  color: var(--text-primary);
-  background: var(--bg-selected);
-  border-color: var(--border-color);
 }
 
 .truncated {
@@ -42,7 +35,7 @@
   gap: 5px;
   margin: 8px;
   color: var(--text-muted);
-  font-size: 0.75rem;
+  font-size: var(--font-size-sm);
 }
 
 .detail {
@@ -53,11 +46,11 @@
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 
-.detail > :global(.file-viewer),
-.detail > :global(.blame-view) {
+.detail > :global([data-file-viewer]),
+.detail > [data-source-blame-view] {
   min-height: 0;
   flex: 1;
   border: 0;

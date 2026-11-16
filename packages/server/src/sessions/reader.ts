@@ -1,3 +1,7 @@
+import { DurableClaudeSourceIndex } from "./claude-durable-index.js";
+import { ClaudeProjectionChangedError } from "./claude-source-index.js";
+import { TranscriptAppendMismatchError } from "./transcript-ingestion.js";
+import { projectClaudeSummary } from "./claude-summary-projection.js";
 import {
   readIssueTextBatch,
   type IssueReadOptions,
@@ -28,6 +32,7 @@ import type {
   GetSessionSummaryOptions,
   ISessionReader,
   LoadedSession,
+  RewindBoundRead,
 } from "./types.js";
 import { sortProviderChildSessions } from "./types.js";
 
@@ -38,21 +43,17 @@ import {
   type ClaudeSessionEntry,
   getMessageContent,
   isConversationEntry,
-  isSyntheticNoResponseTurn,
 } from "@yep-anywhere/shared";
-import {
-  assistantContentParts,
-  formatAgentExcerpt,
-  systemAwaySummaryExcerpt,
-} from "./agent-excerpt.js";
+import { readClaudeLatestAgentExcerpt } from "./latest-agent-excerpt.js";
+import { readClaudeTailRewindBound } from "./claude-rewind-bound.js";
 import { collectVisibleClaudeEntries } from "./claude-messages.js";
 import {
-  buildSummaryFromState,
   lastAgentExcerptFromState,
   readClaudeSessionSummary,
 } from "./claude-summary.js";
 import {
   type ClaudeTranscriptSnapshot,
+  type ClaudeTranscriptCache,
   claudeTranscriptCache,
 } from "./claude-transcript-cache.js";
 import { SummaryParserClient } from "./summary-parser-worker-client.js";
@@ -63,6 +64,7 @@ import type {
 
 export interface ClaudeSessionReaderOptions {
   sessionDir: string;
+  transcriptCache?: ClaudeTranscriptCache;
   /** Additional session dirs from cross-machine merged projects */
   additionalDirs?: string[];
   /** Optional context window resolver (from ModelInfoService) */
@@ -127,6 +129,7 @@ interface AgentMeta {
  */
 export class ClaudeSessionReader implements ISessionReader {
   private retired = false;
+  private readonly transcriptCache: ClaudeTranscriptCache;
   private retirementListeners = new Set<() => void>();
   private allSessionDirs: string[];
   private resolveContextWindow: (
@@ -137,6 +140,7 @@ export class ClaudeSessionReader implements ISessionReader {
   private summaryParserClient?: SummaryParserClient;
 
   constructor(options: ClaudeSessionReaderOptions) {
+    this.transcriptCache = options.transcriptCache ?? claudeTranscriptCache;
     this.allSessionDirs = [
       options.sessionDir,
       ...(options.additionalDirs ?? []),
@@ -223,7 +227,7 @@ export class ClaudeSessionReader implements ISessionReader {
     options?: GetSessionSummaryOptions,
   ): SessionSummary | null {
     if (snapshot.summaryState.metrics.parsedEntries === 0) return null;
-    return buildSummaryFromState(snapshot.summaryState, {
+    return projectClaudeSummary(snapshot.summaryState, {
       filePath,
       stats: snapshot.stats,
       sessionId,
@@ -245,7 +249,7 @@ export class ClaudeSessionReader implements ISessionReader {
     try {
       // A warm transcript cache entry (detail-loaded session) revalidates
       // incrementally; summary-only callers never populate the cache.
-      const cached = await claudeTranscriptCache.peek(filePath);
+      const cached = await this.transcriptCache.peek(filePath);
       if (cached) {
         return this.summaryFromSnapshot(
           cached,
@@ -351,9 +355,96 @@ export class ClaudeSessionReader implements ISessionReader {
     const filePath = await this.findSessionFile(sessionId);
     if (!filePath) return null;
 
+    if (_options?.tailCompactions && _options.tailCompactions > 0) {
+      const indexed = await this.transcriptCache.loadIndexed(
+        filePath,
+        _options.rewindRecords ?? [],
+      );
+      if (indexed?.sourceIndex) {
+        let projected: Awaited<
+          ReturnType<NonNullable<typeof indexed.sourceIndex>["window"]>
+        >;
+        try {
+          projected = await indexed.sourceIndex.window(filePath, {
+            compactions: _options.tailCompactions,
+            generation: indexed.sourceGeneration!,
+            afterMessageId,
+            beforeMessageId: _options.beforeMessageId,
+            rewindRecords: _options.rewindRecords,
+            maxBytes: this.transcriptCache.budgetBytes(),
+            fence: indexed.appendFence,
+          });
+        } catch (error) {
+          if (error instanceof ClaudeProjectionChangedError) {
+            if (indexed.sourceIndex instanceof DurableClaudeSourceIndex)
+              this.transcriptCache.invalidateIndexed(
+                filePath,
+                indexed.sourceIndex,
+              );
+            return this.getSession(
+              sessionId,
+              projectId,
+              afterMessageId,
+              _options,
+            );
+          }
+          if (!(error instanceof TranscriptAppendMismatchError)) throw error;
+          this.transcriptCache.invalidateIndexed(filePath, indexed.sourceIndex);
+          return this.getSession(
+            sessionId,
+            projectId,
+            afterMessageId,
+            _options,
+          );
+        }
+        await this.transcriptCache.accountIndexedWindow(
+          filePath,
+          indexed.sourceIndex,
+        );
+        if (projected) {
+          const summary = this.summaryFromSnapshot(
+            indexed,
+            filePath,
+            sessionId,
+            projectId,
+          );
+          if (!summary) return null;
+          return {
+            summary,
+            transcriptSnapshotUpdatedAt: indexed.stats.mtime.toISOString(),
+            projectedMessages: projected.messages,
+            projectionTotals: projected.totals,
+            ...(indexed.sourceIndex instanceof DurableClaudeSourceIndex
+              ? { harnessHistorySource: indexed.sourceIndex.historyEvidence }
+              : { harnessHistoryRows: new WeakRef(indexed.entries) }),
+            committedEntries: indexed.committedEntries,
+            transcriptSourceVersion: {
+              id: JSON.stringify([indexed.stats.dev, indexed.stats.ino]),
+              size: indexed.stats.size,
+              mtime: indexed.stats.mtimeMs,
+              ctime: indexed.stats.ctimeMs,
+            },
+            ...(!afterMessageId
+              ? {
+                  readWindow: {
+                    kind: "indexed-selection" as const,
+                    omittedPrefix: projected.omitted,
+                    before: !!_options.beforeMessageId,
+                  },
+                }
+              : {}),
+            data: {
+              provider: summary.provider as ClaudeProviderName,
+              session: { messages: projected.entries },
+            },
+          };
+        }
+      }
+    }
+
     // One cached parse serves both the summary and the message list; the
     // previous shape read and parsed the full file twice per request.
-    const snapshot = await claudeTranscriptCache.load(filePath);
+    const snapshot = await this.transcriptCache.load(filePath);
     if (!snapshot) return null;
 
     const summary = this.summaryFromSnapshot(
@@ -371,7 +462,7 @@ export class ClaudeSessionReader implements ISessionReader {
     // But typically they do.
     let finalMessages = rawMessages;
     let committedEntries = snapshot.committedEntries;
-    if (afterMessageId) {
+    if (afterMessageId && !_options?.tailCompactions) {
       const afterIndex = rawMessages.findIndex(
         (m) => "uuid" in m && m.uuid === afterMessageId,
       );
@@ -760,56 +851,30 @@ export class ClaudeSessionReader implements ISessionReader {
 
   /**
    * Fast, on-demand recompute of the hover-card excerpt for a non-running
-   * session: read the file and scan raw lines from the end, parsing only until
-   * an assistant turn qualifies — skipping the full parse + DAG build the
-   * summary path does. Approximates the active branch (a post-rewind dead
-   * branch could win), which is acceptable for a preview. Used to refresh a
-   * stale preview on focus/hover. See topics/session-hovercard-recent-activity.md.
+   * session: scan raw lines backward from the end within a byte budget,
+   * skipping the full parse + DAG build the summary path does. Approximates
+   * the active branch (a post-rewind dead branch could win), which is
+   * acceptable for a preview. Used to refresh a stale preview on focus/hover.
+   * See topics/session-hovercard-recent-activity.md.
    */
   async getLastAgentExcerpt(sessionId: string): Promise<string | undefined> {
     const filePath = await this.findSessionFile(sessionId);
     if (!filePath) return undefined;
     // A warm transcript avoids re-reading the file and yields the same
     // active-branch excerpt the summary path computes.
-    const cached = await claudeTranscriptCache.peek(filePath);
+    const cached = await this.transcriptCache.peek(filePath);
     if (cached && cached.summaryState.metrics.parsedEntries > 0) {
       const excerpt = lastAgentExcerptFromState(cached.summaryState);
       if (excerpt) return excerpt;
     }
-    let content: string;
-    try {
-      content = await readFile(filePath, "utf-8");
-    } catch {
-      return undefined;
-    }
-    const lines = content.split("\n");
-    let trailingTool: string | undefined;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i]?.trim();
-      if (!line) continue;
-      let entry: {
-        type?: string;
-        subtype?: string;
-        content?: unknown;
-        message?: { content?: unknown; model?: unknown };
-      };
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const awaySummary = systemAwaySummaryExcerpt(entry);
-      if (awaySummary) return awaySummary;
-      if (entry.type !== "assistant") continue;
-      // No model produced this text, so quoting it would attribute a reply to
-      // the agent that it never gave.
-      if (isSyntheticNoResponseTurn(entry)) continue;
-      const { text, toolName } = assistantContentParts(entry.message?.content);
-      const excerpt = formatAgentExcerpt(text);
-      if (excerpt) return excerpt;
-      if (!trailingTool && toolName) trailingTool = toolName;
-    }
-    return trailingTool ? `⚙ ${trailingTool}` : undefined;
+    return readClaudeLatestAgentExcerpt(filePath);
+  }
+
+  /** Bounded rewind-bound read; see `sessions/claude-rewind-bound.ts`. */
+  async readRewindBound(sessionId: string): Promise<RewindBoundRead> {
+    // The same lookup `getSession` uses, so both read one file.
+    const filePath = await this.findSessionFile(sessionId);
+    return filePath ? readClaudeTailRewindBound(filePath) : "absent";
   }
 
   /**

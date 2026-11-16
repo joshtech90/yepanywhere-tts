@@ -8,6 +8,7 @@ import {
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import { readCollectionsOverRest } from "./support/managed-routes.js";
 import { recordUiCapture } from "./support/ui-capture.js";
 
 const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
@@ -40,6 +41,7 @@ test("right-click queues the draft as a new session in another project", async (
     );
   });
   // Exercise the chooser with a realistic large project/model catalog.
+  await readCollectionsOverRest(page);
   await page.route(
     (url) => url.pathname === "/api/projects",
     async (route) => {
@@ -267,18 +269,18 @@ test("right-click queues the draft as a new session in another project", async (
     page.getByText("destination-note.txt", { exact: true }).first(),
   ).toBeVisible();
   await composer.fill("Start immediately");
-  await page.locator(".send-button-with-help").click({ button: "right" });
+  await page.locator("[data-send-button-with-help]").click({ button: "right" });
   await expect(dialog).toBeVisible();
   await dialog
     .getByRole("button", { name: "Exit new session mode (Esc)" })
     .click();
   await expect(dialog).toBeHidden();
   await expect(composer).toHaveValue("Start immediately");
-  await page.locator(".send-button-with-help").click({ button: "right" });
+  await page.locator("[data-send-button-with-help]").click({ button: "right" });
   await composer.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(composer).toHaveValue("Start immediately");
-  await page.locator(".send-button-with-help").click({ button: "right" });
+  await page.locator("[data-send-button-with-help]").click({ button: "right" });
   await dialog
     .getByRole("combobox", { name: "Project" })
     .selectOption(otherProjectId);

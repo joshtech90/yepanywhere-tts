@@ -1,3 +1,4 @@
+import btwStyles from "./BtwSessionAppearance.module.css";
 import { useMemo, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { GlobalSessionItem } from "../api/client";
@@ -17,19 +18,16 @@ import { useI18n } from "../i18n";
 import { ProviderBadge } from "./ProviderBadge";
 import { SessionTitleDetails } from "./SessionTitleDetails";
 import { ThinkingIndicator } from "./ThinkingIndicator";
+import { Badge } from "./ui/Badge";
 import { Popover } from "./ui/Popover";
 import styles from "./RecentSessionsDropdown.module.css";
 
 const MAX_RECENT_SESSIONS = 10;
 
-/**
- * Literal class names kept on `/btw` aside rows and badges purely so the two
- * global rules in `index.css` that SessionListItem shares still match. They
- * carry no styling of their own; everything else is module-owned.
- */
-const BTW_ROW_INTEROP_CLASSES = "recent-session-item btw-aside-session";
-const BTW_TITLE_INTEROP_CLASS = "recent-session-title";
-const BTW_BADGE_INTEROP_CLASSES = "recent-sessions-badge btw";
+/** Shared /btw appearance, scoped by its owning CSS Module. */
+const BTW_ROW_INTEROP_CLASSES = `${btwStyles.recentSessionItem} ${btwStyles.btwAsideSession}`;
+const BTW_TITLE_INTEROP_CLASS = btwStyles.recentSessionTitle;
+const BTW_BADGE_INTEROP_CLASSES = `${btwStyles.recentSessionsBadge} ${btwStyles.btw}`;
 
 function classNames(...values: (string | false | null | undefined)[]): string {
   return values.filter(Boolean).join(" ");
@@ -99,12 +97,14 @@ function StatusIndicator({ session }: { session: GlobalSessionItem }) {
   if (session.pendingInputType) {
     const label = session.pendingInputType === "tool-approval" ? "Appr" : "Q";
     return (
-      <span className={`${styles.badge} ${styles.needsInput}`}>{label}</span>
+      <Badge tone="info" size="small">
+        {label}
+      </Badge>
     );
   }
 
   if (session.ownership.owner === "external") {
-    return <span className={`${styles.badge} ${styles.external}`}>Ext</span>;
+    return <Badge size="small">Ext</Badge>;
   }
 
   return null;
@@ -184,6 +184,7 @@ export function RecentSessionsDropdown({
             return (
               <Link
                 key={session.id}
+                data-btw-aside-session={isBtwAside || undefined}
                 to={`${basePath}/projects/${session.projectId}/sessions/${session.id}`}
                 className={classNames(
                   styles.item,
@@ -239,7 +240,7 @@ export function RecentSessionsDropdown({
                     {isBtwAside && (
                       // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
                       <span
-                        className={`${styles.badge} ${BTW_BADGE_INTEROP_CLASSES}`}
+                        className={`${styles.btwBadge} ${BTW_BADGE_INTEROP_CLASSES}`}
                         title={
                           parentHref
                             ? "Open parent session with this /btw aside visible"

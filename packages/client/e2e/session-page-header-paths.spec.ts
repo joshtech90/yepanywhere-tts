@@ -1,8 +1,13 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures.js";
 import {
+  readCollectionsOverRest,
+  routeWithDrain,
+} from "./support/managed-routes.js";
+import {
   json,
   liveUpdate,
+  streamResponses,
   openSessionPage,
   projectId,
   sessionId,
@@ -31,7 +36,7 @@ const refused = (route: Parameters<typeof json>[0]) =>
 
 async function menuItem(page: Page, name: string) {
   await page
-    .locator(".session-header")
+    .locator("[data-session-header]")
     .getByRole("button", { name: "Session options" })
     .click();
   await page.getByRole("menuitem", { name, exact: true }).click();
@@ -43,7 +48,7 @@ test("Archive and Unarchive send the flag, toast and show the badge", async ({
 }) => {
   const session = await openSessionPage(page, baseURL, { owner: "none" });
   await session.answer("PUT", metadataPath, saved);
-  const badge = session.header.locator(".archived-badge");
+  const badge = session.header.getByTestId("session-archived-badge");
   await expect(badge).toHaveCount(0);
 
   await menuItem(page, "Archive");
@@ -68,7 +73,9 @@ test("a failed archive says so and shows no badge", async ({
   await menuItem(page, "Archive");
   await expect.poll(session.requests).toEqual([`PUT ${metadataPath}`]);
   await expect(session.toast("Failed to update archive status")).toBeVisible();
-  await expect(session.header.locator(".archived-badge")).toHaveCount(0);
+  await expect(
+    session.header.getByTestId("session-archived-badge"),
+  ).toHaveCount(0);
 });
 
 test("Star sends the flag, toasts and marks the title; a failure says so", async ({
@@ -188,7 +195,11 @@ test("the breadcrumb's move menu lists other projects and moves the session", as
   page,
   baseURL,
 }) => {
-  await page.route(
+  await readCollectionsOverRest(page);
+  // The move refetches projects as the test ends; drained, teardown cannot
+  // force-continue this fetch-then-fulfill and fail it as already handled.
+  await routeWithDrain(
+    page,
     (url) => url.pathname === "/api/projects",
     async (route) => {
       if (route.request().method() !== "GET") return route.fallback();
@@ -250,7 +261,7 @@ test("the breadcrumb's move menu lists other projects and moves the session", as
           transcriptProjectId: projectId,
         }),
   );
-  const breadcrumb = session.header.locator(".project-breadcrumb");
+  const breadcrumb = session.header.locator("[data-project-breadcrumb]");
   await expect(breadcrumb).toHaveAttribute(
     "href",
     `/sessions?project=${projectId}`,
@@ -308,7 +319,7 @@ test("the model badge opens the Model tab, a right click and Session info the In
   baseURL,
 }) => {
   const session = await openSessionPage(page, baseURL, { owner: "self" });
-  const badge = session.header.locator(".provider-badge-button");
+  const badge = session.header.locator("[data-provider-badge-button]");
   const dialog = page.getByRole("dialog");
   const tab = (name: string) => dialog.getByRole("tab", { name, exact: true });
 
@@ -411,8 +422,10 @@ test("the title and chevron toggle recent sessions, and the session menu closes 
   baseURL,
 }) => {
   const session = await openSessionPage(page, baseURL, { owner: "none" });
-  const title = session.header.locator(".session-title-recent-trigger");
-  const chevron = session.header.locator(".session-title-chevron-trigger");
+  const title = session.header.locator("[data-session-title-recent-trigger]");
+  const chevron = session.header.locator(
+    "[data-session-title-chevron-trigger]",
+  );
   const dropdown = page.getByRole("dialog", { name: "Recent sessions" });
 
   await expect(dropdown).toHaveCount(0);
@@ -460,7 +473,7 @@ test.describe("at phone width", () => {
     });
     await opener.click();
     await expect(
-      page.locator(".sidebar.open, .sidebar-overlay"),
+      page.locator("[data-sidebar].open, [data-sidebar-overlay]"),
     ).not.toHaveCount(0);
   });
 });
@@ -471,6 +484,7 @@ test("keys typed into the retitle field each show within 100 ms during live upda
   page,
   baseURL,
 }) => {
+  await streamResponses(page);
   const session = await openSessionPage(page, baseURL, { owner: "self" });
   const retitlePath = `/projects/${projectId}/sessions/${sessionId}/retitle`;
   await session.answer("POST", retitlePath, (route) =>
@@ -478,14 +492,16 @@ test("keys typed into the retitle field each show within 100 ms during live upda
   );
   await session.answer("PUT", metadataPath, saved);
   await menuItem(page, "Generate Title (uses tokens)");
-  const field = session.header.locator("input.session-title-input");
+  const field = session.header.locator("input[data-session-title-input]");
   await expect(field).toBeEditable();
   await field.fill("");
   await typeEachKeyWithin100ms(field, "parser notes", (typed) =>
     session.emit("message", liveUpdate(typed.length)),
   );
   await expect(
-    page.locator(".message-list").getByText("Live update 11.", { exact: true }),
+    page
+      .locator("[data-message-list]")
+      .getByText("Live update 11.", { exact: true }),
   ).toBeVisible();
   await field.press("Control+Enter");
   await expect
@@ -494,7 +510,7 @@ test("keys typed into the retitle field each show within 100 ms during live upda
   expect(session.calls[1]?.body).toEqual({ title: "parser notes" });
 });
 
-test("a routed session's account chip menu reaches the Info tab", async ({
+test("a routed session's account chip opens the Account tab", async ({
   page,
   baseURL,
 }) => {
@@ -515,14 +531,8 @@ test("a routed session's account chip menu reaches the Info tab", async ({
     name: /Pin account/,
   });
   await expect(chip).toHaveText("Pin pool · Pin account");
-  // With account switching advertised, the chip opens the account menu;
-  // Session info stays its last item.
   await chip.click();
-  await page
-    .getByRole("menu", { name: "Session account" })
-    .getByRole("menuitem", { name: "Session info", exact: true })
-    .click();
   await expect(
-    page.getByRole("dialog").getByRole("tab", { name: "Session Info" }),
+    page.getByRole("dialog").getByRole("tab", { name: "Account", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
 });

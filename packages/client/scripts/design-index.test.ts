@@ -44,9 +44,18 @@ describe("design index", () => {
 
   it("indexes every checked-in specimen", async () => {
     const index = await loadDesignIndex();
-    expect(index.specimens.map((specimen) => specimen.id)).toEqual(
-      expect.arrayContaining(["tokens", "census-buttons"]),
-    );
+    expect(index.specimens.map((specimen) => specimen.id)).toContain("tokens");
+    expect(
+      index.specimens.some((specimen) => specimen.id.startsWith("census-")),
+    ).toBe(false);
+    expect(index.pages).toEqual([
+      {
+        id: "audit",
+        title: "Design audit",
+        file: "design/audit/AuditPage.tsx",
+        href: "design.html#/audit",
+      },
+    ]);
   });
 });
 

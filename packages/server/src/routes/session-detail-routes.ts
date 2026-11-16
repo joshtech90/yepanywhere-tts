@@ -9,6 +9,7 @@ import {
   type SessionEffectiveModelSettings,
   type UrlProjectId,
   isUrlProjectId,
+  nativeViewerFields,
   withKnownGoal,
 } from "@yep-anywhere/shared";
 import { isRealUserTurn } from "@yep-anywhere/shared/transcript/messageProjection";
@@ -361,6 +362,7 @@ export function registerSessionDetailRoute(
         sessionId,
         requestProjectId: projectId,
         identityLookup: { kind: "stored", identity },
+        folderOptional: true,
         metadata: deps.sessionMetadataService?.getMetadata(sessionId),
         scanner: reuseProjectSnapshot
           ? snapshotReusingScanner(deps.scanner)
@@ -434,7 +436,9 @@ export function registerSessionDetailRoute(
       const loaded = await source.reader.getSession(
         legacy.nativeSessionId,
         projectId,
-        afterMessageId,
+        isClaudeSdkProviderName(source.provider) && !options?.tailCompactions
+          ? undefined
+          : afterMessageId,
         summaryHint ? { ...options, summaryHint } : options,
       );
       if (loaded) {
@@ -577,13 +581,11 @@ export function registerSessionDetailRoute(
       ...localCommandMessages,
     ]);
     const providerAfterMessageId = overlayCursor ? undefined : afterMessageId;
-    const primaryReaderAfterMessageId =
-      isClaudeSdkProviderName(project.provider) ||
-      isClaudeSdkProviderName(metadataProvider)
-        ? undefined
-        : providerAfterMessageId;
+    const rewindRecords =
+      deps.sessionMetadataService?.getRewindRecords?.(sessionId);
 
     const loadOptions = {
+      ...(rewindRecords?.length ? { rewindRecords } : {}),
       // Only include orphaned tool info if:
       // 1. We previously owned this session (not external)
       // 2. No active process (tools aren't potentially in progress)
@@ -595,7 +597,7 @@ export function registerSessionDetailRoute(
         : {}),
       ...(!fullHistory &&
       ((!afterMessageId && effectiveTailCompactions !== undefined) ||
-        primaryReaderAfterMessageId)
+        providerAfterMessageId)
         ? {
             tailCompactions:
               effectiveTailCompactions ??
@@ -613,7 +615,7 @@ export function registerSessionDetailRoute(
       sessionId,
       transcriptProjectId,
       metadataProvider ?? process?.provider,
-      primaryReaderAfterMessageId,
+      providerAfterMessageId,
       loadOptions,
       routing.identityLookup,
       true,
@@ -653,19 +655,23 @@ export function registerSessionDetailRoute(
         sessionId,
         transcriptProjectId,
         metadataProvider ?? process?.provider,
-        primaryReaderAfterMessageId,
+        providerAfterMessageId,
         loadOptions,
         fresh.identityLookup,
       ));
     }
 
     const readEndMs = performance.now();
+    const indexedHistoryRows =
+      loadedSession?.harnessHistorySource ??
+      loadedSession?.harnessHistoryRows?.deref();
     if (
       !publicShare &&
       loadedSession &&
       loadedSession.committedEntries !== undefined &&
       loadedSession.transcriptSourceVersion !== undefined &&
-      !loadedSession.readWindow &&
+      (indexedHistoryRows ||
+        (!loadedSession.readWindow && !loadedSession.projectedMessages)) &&
       resolvedIdentity &&
       (loadedSession.data.provider === "claude" ||
         loadedSession.data.provider === "claude-gateway" ||
@@ -677,7 +683,7 @@ export function registerSessionDetailRoute(
           provider: resolvedIdentity.provider,
           projectPath: transcriptProject.path,
         },
-        loadedSession.data.session.messages,
+        indexedHistoryRows ?? loadedSession.data.session.messages,
         loadedSession.committedEntries,
         loadedSession.transcriptSourceVersion,
       );
@@ -694,7 +700,11 @@ export function registerSessionDetailRoute(
     }
     const normalizedMessageCount = session?.messages.length ?? 0;
     const normalizeEndMs = performance.now();
-    if (session && isClaudeSdkProviderName(session.provider)) {
+    if (
+      session &&
+      isClaudeSdkProviderName(session.provider) &&
+      !loadedSession?.projectedMessages
+    ) {
       session = {
         ...session,
         messages: projectTaskListSnapshots(session.messages),
@@ -870,7 +880,7 @@ export function registerSessionDetailRoute(
             sandboxLevel: metadata?.sandboxLevel,
             sandboxNetworkFirewall: metadata?.sandboxNetworkFirewall,
             initialPrompt: metadata?.initialPrompt,
-            nativeSessionId: storedIdentityFor(sessionId)?.native?.id,
+            ...nativeViewerFields(storedIdentityFor(sessionId)?.native),
             wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
             promptSuggestionMode: metadata?.promptSuggestionMode,
             recapAfterSeconds: metadata?.recapAfterSeconds,
@@ -951,7 +961,9 @@ export function registerSessionDetailRoute(
     // Skip initial-window slicing for incremental forward fetches. A provider-
     // bounded older page already ends before its requested cursor.
     const providerBoundedOlderPage =
-      loadedSession.readWindow?.kind === "compact-page";
+      loadedSession.readWindow?.kind === "compact-page" ||
+      (loadedSession.readWindow?.kind === "indexed-selection" &&
+        loadedSession.readWindow.before);
     let paginationInfo: PaginationInfo | undefined;
     if (
       !afterMessageId &&
@@ -1007,13 +1019,15 @@ export function registerSessionDetailRoute(
         truncatedBeforeMessageId: sourceCursor,
       };
     }
+    // A provider window that omitted older history must surface that as an
+    // older-page cursor, or the client would treat this page as the start of
+    // history. The converse is legitimate: a turn selector may narrow a
+    // complete provider read and report older messages it trimmed itself.
     if (
-      loadedSession.readWindow &&
+      loadedSession.readWindow?.omittedPrefix &&
       !incrementalAnchorFound &&
-      (paginationInfo?.hasOlderMessages !==
-        loadedSession.readWindow.omittedPrefix ||
-        (loadedSession.readWindow.omittedPrefix &&
-          paginationInfo.truncatedBeforeMessageId === undefined))
+      (!paginationInfo?.hasOlderMessages ||
+        paginationInfo.truncatedBeforeMessageId === undefined)
     ) {
       throw new Error(
         "Provider compact-window read did not preserve its older-history boundary",
@@ -1030,6 +1044,17 @@ export function registerSessionDetailRoute(
       );
       session = { ...session, messages: sliced.messages };
       paginationInfo = sliced.pagination;
+    }
+    if (paginationInfo && loadedSession.projectionTotals) {
+      const totals = loadedSession.projectionTotals;
+      paginationInfo = {
+        ...paginationInfo,
+        totalMessageCount: totals.messages,
+        totalCompactions: totals.compactions,
+        ...(paginationInfo.totalUserTurns !== undefined
+          ? { totalUserTurns: totals.userTurns }
+          : {}),
+      };
     }
     const sliceEndMs = performance.now();
 
@@ -1319,7 +1344,7 @@ export function registerSessionDetailRoute(
         sandboxLevel: metadata?.sandboxLevel,
         sandboxNetworkFirewall: metadata?.sandboxNetworkFirewall,
         initialPrompt: metadata?.initialPrompt ?? session.fullTitle,
-        nativeSessionId: storedIdentityFor(sessionId)?.native?.id,
+        ...nativeViewerFields(storedIdentityFor(sessionId)?.native),
         wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
         promptSuggestionMode: metadata?.promptSuggestionMode,
         recapAfterSeconds: metadata?.recapAfterSeconds,

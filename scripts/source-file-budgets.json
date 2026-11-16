@@ -1,58 +1,52 @@
 {
   "$comment": "Line budgets for production source files over the threshold fixed in scripts/check-source-file-budgets.mjs. Owned by topics/typescript-module-boundary-refactor.md#growth-guard. Lower with `pnpm source:budgets --record`; never raise without maintainer approval and a raise record.",
-  "updated": "2026-11-09",
+  "updated": "2026-11-15",
   "files": {
     "packages/client/src/api/client.ts": {
       "maxLines": 1913
     },
     "packages/client/src/components/blocks/ToolCallRow.tsx": {
-      "maxLines": 1953
+      "maxLines": 1693
     },
     "packages/client/src/components/FileViewer.tsx": {
-      "maxLines": 2709
+      "maxLines": 2462
     },
     "packages/client/src/components/LocalMediaModal.tsx": {
-      "maxLines": 1901
+      "maxLines": 1899
     },
     "packages/client/src/components/MessageInput.tsx": {
-      "maxLines": 3185
+      "maxLines": 3176
     },
     "packages/client/src/components/MessageInputToolbar.tsx": {
-      "maxLines": 3802
+      "maxLines": 3776
     },
     "packages/client/src/components/MessageList.tsx": {
-      "maxLines": 5701,
+      "maxLines": 5542,
       "raise": {
         "from": 5702,
         "reason": "Removing the export-star renderSelectors barrel splits its one import into per-module imports from the owning sessionDetail concern modules. Maintainer-approved 2026-11-06."
       }
     },
     "packages/client/src/components/NewSessionForm.tsx": {
-      "maxLines": 2689
-    },
-    "packages/client/src/components/renderers/tools/EditRenderer.tsx": {
-      "maxLines": 1813
-    },
-    "packages/client/src/components/RenderItemComponent.tsx": {
-      "maxLines": 1723
+      "maxLines": 2686
     },
     "packages/client/src/components/Sidebar.tsx": {
-      "maxLines": 1624
+      "maxLines": 1590
     },
     "packages/client/src/components/UserTurnNavigator.tsx": {
       "maxLines": 1562
     },
     "packages/client/src/hooks/useSession.ts": {
-      "maxLines": 2808
+      "maxLines": 2803
     },
     "packages/client/src/hooks/useSessionMessages.ts": {
-      "maxLines": 1805
+      "maxLines": 1769
     },
     "packages/client/src/lib/clientSummaryState.ts": {
-      "maxLines": 2222
+      "maxLines": 2198
     },
     "packages/client/src/lib/connection/RelayProtocol.ts": {
-      "maxLines": 1621
+      "maxLines": 1620
     },
     "packages/client/src/lib/connection/SecureConnection.ts": {
       "maxLines": 2095
@@ -64,34 +58,28 @@
       "maxLines": 1940
     },
     "packages/client/src/pages/GitStatusDiffPreview.tsx": {
-      "maxLines": 1683
+      "maxLines": 1642
     },
     "packages/client/src/pages/SessionPage.tsx": {
-      "maxLines": 3620
+      "maxLines": 3601
     },
     "packages/client/src/pages/settings/AppearanceSettings.tsx": {
-      "maxLines": 1823
-    },
-    "packages/client/src/pages/WorkingTreeBrowser.tsx": {
-      "maxLines": 1548
+      "maxLines": 1807
     },
     "packages/server/src/app.ts": {
-      "maxLines": 4615
+      "maxLines": 4525
     },
     "packages/server/src/augments/safe-markdown.ts": {
-      "maxLines": 1951
+      "maxLines": 1948
     },
     "packages/server/src/indexes/SessionIndexService.ts": {
-      "maxLines": 2448
-    },
-    "packages/server/src/metadata/SessionMetadataService.ts": {
-      "maxLines": 1550
+      "maxLines": 2396
     },
     "packages/server/src/projects/projectWorktreeSubscriptionManager.ts": {
       "maxLines": 1741
     },
     "packages/server/src/projects/scanner.ts": {
-      "maxLines": 1629
+      "maxLines": 1564
     },
     "packages/server/src/review/ReviewCommentService.ts": {
       "maxLines": 1665
@@ -100,16 +88,16 @@
       "maxLines": 1891
     },
     "packages/server/src/routes/sessions.ts": {
-      "maxLines": 5264
+      "maxLines": 5188
     },
     "packages/server/src/routes/ws-relay-handlers.ts": {
       "maxLines": 3066
     },
     "packages/server/src/sdk/providers/claude.ts": {
-      "maxLines": 2469
+      "maxLines": 2455
     },
     "packages/server/src/sdk/providers/codex-oss.ts": {
-      "maxLines": 1615
+      "maxLines": 1579
     },
     "packages/server/src/sdk/providers/grok-acp.ts": {
       "maxLines": 1854
@@ -124,10 +112,10 @@
       "maxLines": 2066
     },
     "packages/server/src/sdk/providers/provider-session-owner.ts": {
-      "maxLines": 1532
+      "maxLines": 1528
     },
     "packages/server/src/server-main.ts": {
-      "maxLines": 1824
+      "maxLines": 1753
     },
     "packages/server/src/services/ProjectQueueService.ts": {
       "maxLines": 1532
@@ -139,22 +127,19 @@
       "maxLines": 1588
     },
     "packages/server/src/sessions/codex-reader.ts": {
-      "maxLines": 4002
+      "maxLines": 3761
     },
     "packages/server/src/sessions/normalization.ts": {
-      "maxLines": 2451
+      "maxLines": 2301
     },
     "packages/server/src/sessions/opencode-reader.ts": {
       "maxLines": 1877
     },
     "packages/server/src/supervisor/Process.ts": {
-      "maxLines": 6582
+      "maxLines": 6566
     },
     "packages/server/src/supervisor/Supervisor.ts": {
       "maxLines": 6953
-    },
-    "packages/shared/src/app-types.ts": {
-      "maxLines": 1504
     },
     "packages/shared/src/index.ts": {
       "maxLines": 1918,

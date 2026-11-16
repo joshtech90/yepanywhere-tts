@@ -1,45 +1,29 @@
-import { useEffect, useState } from "react";
-import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import optionStyles from "./NewSessionOptionsPanel.module.css";
 import { useI18n } from "../i18n";
 import { FilterDropdown } from "./FilterDropdown";
 import styles from "./MachineControlSessionSelection.module.css";
 
+/** Per-session choice; the form owns readiness and the server default. */
 export function MachineControlSessionSelection({
-  eligible,
+  available,
   selected,
   onChange,
   disabled = false,
   showCaption = false,
 }: {
-  eligible: boolean;
+  available: boolean;
   selected: boolean;
   onChange: (value: boolean) => void;
   disabled?: boolean;
   showCaption?: boolean;
 }) {
-  const { transport } = useCurrentSourceRuntime();
   const { t } = useI18n();
-  const [available, setAvailable] = useState(false);
-  useEffect(() => {
-    let disposed = false;
-    setAvailable(false);
-    onChange(false);
-    if (eligible)
-      void transport
-        .fetch<{ available: boolean }>("/machine-control")
-        .then((status) => {
-          if (!disposed) setAvailable(status.available === true);
-        })
-        .catch(() => {
-          /* Optional readiness remains unavailable. */
-        });
-    return () => {
-      disposed = true;
-    };
-  }, [transport, eligible, onChange]);
-  if (!eligible || !available) return null;
+  if (!available) return null;
   return (
-    <div className={`new-session-helper-section ${styles.section}`}>
+    <div
+      className={`${optionStyles.newSessionHelperSection} ${styles.section}`}
+      data-new-session-helper-section
+    >
       <h3>{t("newSessionMachineControlTitle")}</h3>
       <FilterDropdown<"off" | "on">
         label={t("newSessionMachineControlTitle")}

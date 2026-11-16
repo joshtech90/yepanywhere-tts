@@ -7,6 +7,7 @@ import {
   type SourceContextMenuAction,
   useSourceContextMenu,
 } from "./SourceContextMenu";
+import { Badge } from "./ui/Badge";
 import { ButtonBase } from "./ui/Button";
 import styles from "./ClearloopRemainingBadge.module.css";
 
@@ -54,17 +55,28 @@ export function ClearloopRemainingBadge({
       prompt: badge.prompt,
     },
   );
-  const className = `${styles.badge}${badge.patient ? ` ${styles.patient}` : ""}`;
 
   if (!controls) {
     return (
       <span
-        className={className}
+        className={styles.label}
         role="img"
         aria-label={contract}
         title={contract}
       >
-        {badge.remaining}
+        <Badge
+          tone="accent"
+          emphasis="solid"
+          shape="count"
+          size="small"
+          palette={
+            badge.patient
+              ? { color: "var(--project-queue-action-bg)" }
+              : undefined
+          }
+        >
+          {badge.remaining}
+        </Badge>
       </span>
     );
   }
@@ -87,7 +99,7 @@ export function ClearloopRemainingBadge({
   return (
     <>
       <ButtonBase
-        className={`${className} ${styles.cancelable}`}
+        className={`${styles.badge} ${badge.patient ? styles.patientButton : ""} ${styles.cancelable}`}
         aria-label={label}
         title={label}
         {...targetProps}

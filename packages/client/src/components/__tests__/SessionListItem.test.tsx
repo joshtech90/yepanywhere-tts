@@ -20,7 +20,13 @@ import { I18nProvider } from "../../i18n";
 import { activityBus } from "../../lib/activityBus";
 import { UI_KEYS } from "../../lib/storageKeys";
 import "../../../test/pointerEventShim";
-import styles from "../SessionListItem.module.css";
+import * as turnHook from "../../hooks/useNonHumanUserTurn";
+import {
+  LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+  reportGlobalSessionsCollectionSnapshot,
+  resetClientSummaryStoreForTests,
+} from "../../lib/clientSummaryStore";
+import { toUrlProjectId } from "@yep-anywhere/shared";
 import { SessionListItem } from "../SessionListItem";
 
 const mockWindowOpen = vi.fn();
@@ -79,6 +85,71 @@ describe("SessionListItem links", () => {
     };
   }
 
+  it("skips fresh equal DTOs and row clocks while changed values and callbacks remain live", async () => {
+    resetClientSummaryStoreForTests();
+    const observe = vi.spyOn(turnHook, "useNonHumanUserTurn");
+    const first = vi.fn(),
+      second = vi.fn();
+    const content = (
+      onNavigate = first,
+      owner: "none" | "external" = "none",
+    ) => (
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Build logs"
+              mode="compact"
+              status={{ owner }}
+              sidebarCategoryNames={["Review"]}
+              onNavigate={onNavigate}
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>
+    );
+    try {
+      const view = render(content());
+      await act(async () => {});
+      const before = observe.mock.calls.length;
+      act(() =>
+        reportGlobalSessionsCollectionSnapshot(
+          LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+          {
+            query: { scope: "global-sessions" },
+            sessions: [
+              {
+                id: "session-1",
+                projectId: toUrlProjectId("/fixture"),
+                projectName: "Fixture",
+                title: "Build logs",
+                fullTitle: "Build logs",
+                updatedAt: new Date().toISOString(),
+                ownership: { owner: "none" },
+                provider: "claude",
+                activity: "idle",
+                messageCount: 1,
+              },
+            ],
+            hasMore: false,
+          },
+        ),
+      );
+      view.rerender(content());
+      expect(observe).toHaveBeenCalledTimes(before);
+      view.rerender(content(second, "external"));
+      expect(observe.mock.calls.length).toBeGreaterThan(before);
+      fireEvent.click(screen.getByRole("link", { name: /Build logs/ }));
+      expect(second).toHaveBeenCalledOnce();
+      expect(first).not.toHaveBeenCalled();
+    } finally {
+      observe.mockRestore();
+      resetClientSummaryStoreForTests();
+    }
+  });
+
   it("shows creation age only when the creation timestamp is known", () => {
     const updatedAt = new Date(Date.now() - 60 * 60_000).toISOString();
     const knownCreation = new Date(Date.now() - 2 * 86_400_000).toISOString();
@@ -99,13 +170,17 @@ describe("SessionListItem links", () => {
       </I18nProvider>
     );
     const view = render(renderCard());
-    expect(view.container.querySelector(".session-list-item__age")).toBeNull();
+    expect(
+      view.container.querySelector("[data-session-list-item__age]"),
+    ).toBeNull();
 
     view.rerender(renderCard(knownCreation));
     expect(screen.getByText("Created 2d ago")).toBeTruthy();
 
     view.rerender(renderCard(new Date(0).toISOString()));
-    expect(view.container.querySelector(".session-list-item__age")).toBeNull();
+    expect(
+      view.container.querySelector("[data-session-list-item__age]"),
+    ).toBeNull();
   });
 
   it("opens the session in a new window on middle click", () => {
@@ -420,7 +495,7 @@ describe("SessionListItem links", () => {
 
     const link = screen.getByRole("link", { name: /Custom title/ });
     const title = link.querySelector<HTMLElement>(
-      ".session-list-item__title-text",
+      "[data-session-list-item__title-text]",
     );
     expect(title).toBeTruthy();
     expect(link.getAttribute("title")).toBeNull();
@@ -694,7 +769,7 @@ describe("SessionListItem links", () => {
     expect(refreshSpy).not.toHaveBeenCalled();
 
     const title = item?.querySelector<HTMLElement>(
-      ".session-list-item__title-text",
+      "[data-session-list-item__title-text]",
     );
     expect(title).toBeTruthy();
     let scrollWidth = 100;
@@ -1226,79 +1301,6 @@ describe("SessionListItem links", () => {
     );
   });
 
-  it("shows number-only child counts with read and unread emphasis", () => {
-    render(
-      <I18nProvider>
-        <MemoryRouter>
-          <ul>
-            <SessionListItem
-              sessionId="session-parent"
-              projectId="project-1"
-              projectName="yepanywhere"
-              showProjectName
-              title="Parent session"
-              provider="claude"
-              mode="compact"
-              providerChildren={[
-                {
-                  id: "child-native-1",
-                  parentSessionId: "session-parent",
-                  title: "First delegated task",
-                  updatedAt: "2026-07-19T12:00:00.000Z",
-                },
-                {
-                  id: "child-native-2",
-                  parentSessionId: "session-parent",
-                  title: "Second delegated task",
-                  updatedAt: "2026-07-19T12:01:00.000Z",
-                },
-              ]}
-            />
-            <SessionListItem
-              sessionId="session-unread"
-              projectId="project-1"
-              projectName="another-project"
-              showProjectName
-              hasUnread
-              title="Unread parent session"
-              provider="claude"
-              mode="compact"
-              providerChildren={[
-                {
-                  id: "child-native-3",
-                  parentSessionId: "session-unread",
-                  title: "New delegated task",
-                  updatedAt: "2026-07-19T12:02:00.000Z",
-                },
-              ]}
-            />
-          </ul>
-        </MemoryRouter>
-      </I18nProvider>,
-    );
-
-    const readBadge = screen.getByRole("img", {
-      name: "2 provider subagents",
-    });
-    const unreadBadge = screen.getByRole("img", {
-      name: "1 provider subagent",
-    });
-
-    expect(readBadge.textContent).toBe("2");
-    expect(readBadge.className).not.toContain(
-      styles.providerChildrenBadgeUnread,
-    );
-    expect(readBadge.getAttribute("title")).toBe(
-      "2 provider subagents\nFirst delegated task\nSecond delegated task",
-    );
-    expect(unreadBadge.textContent).toBe("1");
-    expect(unreadBadge.className).toContain(styles.providerChildrenBadgeUnread);
-    expect(unreadBadge.getAttribute("title")).toBe(
-      "1 provider subagent\nNew delegated task",
-    );
-    expect(screen.getByText("yepanywhere")).toBeTruthy();
-  });
-
   it("discloses compact provider children without opening the parent", () => {
     const onNavigate = vi.fn();
     render(
@@ -1472,18 +1474,11 @@ describe("SessionListItem links", () => {
     });
 
     expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
-    // The project name opens the same session as the title, but sits beside
-    // the title area rather than inside it: the hover ... overlay fills the
-    // right edge of that area and would otherwise cover the name and the
-    // status letter next to it.
+    // The project name is its own link to the same session as the title, so
+    // it stays a click target wherever the hover ... overlay leaves it bare.
     const projectLink = project.closest("a");
     expect(projectLink?.getAttribute("href")).toBe(
       sessionLink.getAttribute("href"),
     );
-    const overlayHost = document.querySelector(
-      ".session-list-item__menu",
-    )?.parentElement;
-    expect(overlayHost).not.toBeNull();
-    expect(overlayHost?.contains(project)).toBe(false);
   });
 });

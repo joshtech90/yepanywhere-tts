@@ -1,3 +1,4 @@
+import chromeSessionHeaderStyles from "./SessionHeader.module.css";
 import { projectDisplayName } from "@yep-anywhere/shared";
 import { useNavigate } from "react-router-dom";
 import { useProjects } from "../hooks/useProjects";
@@ -55,21 +56,25 @@ export function ProjectSelector({
 
   // Don't show selector if only one project
   if (!loading && projects.length <= 1) {
-    return <span className="session-title">{displayName}</span>;
+    return (
+      <span
+        className={`${chromeSessionHeaderStyles["session-title"]}`}
+        data-session-title
+      >
+        {displayName}
+      </span>
+    );
   }
 
   return (
-    // `project-selector-container`, `project-selector-button`, and
-    // `project-selector-text` stay literal: the `.source-header-identity`
-    // rules in styles/index.css reach in by those names to constrain and
-    // truncate the identity row, and a focused style test asserts them.
-    <div className={`project-selector-container ${styles.container}`}>
+    <div className={styles.container} data-project-selector>
       <ButtonBase
         {...menu.triggerProps}
-        className={`project-selector-button ${styles.button}`}
+        className={styles.button}
+        data-project-selector-button
         title={t("projectSelectorChangeProject")}
       >
-        <span className={`project-selector-text ${styles.text}`}>
+        <span className={styles.text} data-project-selector-text>
           {displayName}
         </span>
         <svg

@@ -1,8 +1,5 @@
 # Yep Anywhere Agent Instructions
 
-If `AGENTS.local.md` exists, read it before acting. Its machine-local
-instructions take precedence over this file.
-
 Core contributors are two different people; do not conflate them when
 attributing history:
 
@@ -78,7 +75,11 @@ node scripts/check-no-agent-attribution.mjs --range HEAD~50..HEAD --any
 
 For existing and new UI features, verify real sequential typing under the
 feature's expected data volume and concurrent updates. Dropped user keystrokes
-are never acceptable; each keystroke must appear within 100 ms. Whole-field
-replacement tests do not establish this. Keep input acknowledgement independent
-of navigation, filtering, scans, and result rendering; add a regression check
-when changing those paths.
+are never acceptable; the responsiveness target is each keystroke appearing
+within 100 ms on a controlled host. Shared CI may use a documented ceiling
+derived from CI history while recording 100 ms target misses separately;
+character retention, focus and input identity remain mandatory. See
+[sequential typing latency](topics/ui-testing.md#sequential-typing-latency).
+Whole-field replacement tests do not establish this. Keep input acknowledgement
+independent of navigation, filtering, scans, and result rendering; add a
+regression check when changing those paths.

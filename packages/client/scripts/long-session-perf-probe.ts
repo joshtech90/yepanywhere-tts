@@ -735,10 +735,10 @@ async function installPageProbe(page: Page): Promise<void> {
 
         const rowSnapshot = () => ({
           nodes: document.getElementsByTagName("*").length,
-          messageRows: document.querySelectorAll(".message-render-row").length,
-          turnGroups: document.querySelectorAll(".turn-group").length,
-          toolRows: document.querySelectorAll(".tool-row").length,
-          loadOlderButtons: document.querySelectorAll(".load-older-button").length,
+          messageRows: document.querySelectorAll("[data-message-render-row]").length,
+          turnGroups: document.querySelectorAll("[data-turn-group]").length,
+          toolRows: document.querySelectorAll("[data-tool-row]").length,
+          loadOlderButtons: document.querySelectorAll("[data-load-older-messages]").length,
         });
 
         const noteDomMutation = () => {
@@ -883,9 +883,9 @@ async function getPageStats(page: Page): Promise<PageStats> {
           : null,
         dom: {
           nodes: document.getElementsByTagName("*").length,
-          messageRows: document.querySelectorAll(".message-render-row").length,
-          turnGroups: document.querySelectorAll(".turn-group").length,
-          toolRows: document.querySelectorAll(".tool-row").length,
+          messageRows: document.querySelectorAll("[data-message-render-row]").length,
+          turnGroups: document.querySelectorAll("[data-turn-group]").length,
+          toolRows: document.querySelectorAll("[data-tool-row]").length,
           streamingBlocks: document.querySelectorAll(".streaming-block").length,
           searchPreviewLabels: document.querySelectorAll(
             ".user-turn-preview-label",
@@ -1322,7 +1322,7 @@ async function clickLoadOlderMessages(
   waitAfterClickMs: number,
 ): Promise<void> {
   for (let clickIndex = 0; clickIndex < clicks; clickIndex += 1) {
-    const button = page.locator(".load-older-button").first();
+    const button = page.locator("[data-load-older-messages]").first();
     const visible = await button.isVisible().catch(() => false);
     if (!visible) {
       console.log(`loadOlder=${clickIndex} unavailable`);
@@ -1394,7 +1394,7 @@ async function main(): Promise<void> {
 
   try {
     await page.goto(config.url, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector(".message-list", { timeout: 30_000 });
+    await page.waitForSelector("[data-message-list]", { timeout: 30_000 });
     await page.waitForTimeout(2_000);
     if (config.loadOlderClicks > 0) {
       await clickLoadOlderMessages(

@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -206,10 +207,10 @@ describe("EditRenderer collapsed preview fallback", () => {
     );
 
     expect(screen.queryByText("Computing diff...")).toBeNull();
-    expect(container.querySelector(".diff-removed")?.textContent).toBe(
+    expect(container.querySelector("[data-diff-removed]")?.textContent).toBe(
       "-const x = 1;",
     );
-    expect(container.querySelector(".diff-added")?.textContent).toBe(
+    expect(container.querySelector("[data-diff-added]")?.textContent).toBe(
       "+const x = 2;",
     );
   });
@@ -243,13 +244,27 @@ describe("EditRenderer collapsed preview fallback", () => {
       </div>,
     );
 
-    const badge = container.querySelector<HTMLElement>(".edit-preview-more");
+    const badge = container.querySelector<HTMLElement>(
+      "[data-edit-preview-more]",
+    );
     const fadedPreview = container.querySelector<HTMLElement>(
-      ".diff-view-container",
+      "[data-diff-view-container]",
     );
     expect(badge?.textContent).toBe("+4");
     expect(badge?.getAttribute("data-tooltip")).toBe(
-      "...\n+line 5\n+line 6\n+line 7\n+line 8\n+line 9\n+line 10\n+line 11\n+line 12\n+line 13\n+line 14\n+line 15\n+line 16",
+      `...
++line 5
++line 6
++line 7
++line 8
++line 9
++line 10
++line 11
++line 12
++line 13
++line 14
++line 15
++line 16`,
     );
     expect(fadedPreview?.getAttribute("data-tooltip")).toBe(
       badge?.getAttribute("data-tooltip"),
@@ -288,7 +303,9 @@ describe("EditRenderer collapsed preview fallback", () => {
       </div>,
     );
 
-    const badge = container.querySelector<HTMLElement>(".edit-preview-more");
+    const badge = container.querySelector<HTMLElement>(
+      "[data-edit-preview-more]",
+    );
     expect(badge?.getAttribute("title")).toMatch(/^\.\.\.\n\+line 2/);
     expect(badge?.getAttribute("data-tooltip")).toBeNull();
   });
@@ -317,12 +334,12 @@ describe("EditRenderer collapsed preview fallback", () => {
       </div>,
     );
 
-    expect(container.querySelector(".edit-preview-more")).toBeNull();
+    expect(container.querySelector("[data-edit-preview-more]")).toBeNull();
     const preview = container.querySelector<HTMLElement>(
-      ".diff-view-container",
+      "[data-diff-view-container]",
     );
     expect(preview).toBeTruthy();
-    expect(preview?.classList).not.toContain("truncated");
+    expect(preview?.hasAttribute("data-truncated")).toBe(false);
     Object.defineProperties(preview, {
       clientWidth: { configurable: true, value: 300 },
       clientHeight: { configurable: true, value: 20 },
@@ -536,11 +553,11 @@ describe("EditRenderer collapsed preview fallback", () => {
       </div>,
     );
 
-    expect(container.querySelector(".diff-added")?.textContent).toBe(
+    expect(container.querySelector("[data-diff-added]")?.textContent).toBe(
       "+const label = `dev`;",
     );
     expect(
-      container.querySelector(".fixed-font-rendered__content code"),
+      container.querySelector("[data-fixed-font-rendered__content] code"),
     ).toBeNull();
     expect(screen.queryByRole("button", { name: "Show source" })).toBeNull();
   });
@@ -641,8 +658,8 @@ describe("EditRenderer collapsed preview fallback", () => {
           lines: ["-const x = 1;", "+const x = 2;"],
         },
       ],
-      _diffHtml:
-        '<pre class="shiki"><code class="language-ts"><span class="line line-deleted"><span class="diff-prefix">-</span><span style="color:var(--shiki-token-keyword)">const</span> x = 1;</span>\n<span class="line line-inserted"><span class="diff-prefix">+</span><span style="color:var(--shiki-token-keyword)">const</span> x = 2;</span></code></pre>',
+      _diffHtml: `<pre class="shiki"><code class="language-ts"><span class="line line-deleted"><span class="diff-prefix">-</span><span style="color:var(--shiki-token-keyword)">const</span> x = 1;</span>
+<span class="line line-inserted"><span class="diff-prefix">+</span><span style="color:var(--shiki-token-keyword)">const</span> x = 2;</span></code></pre>`,
     };
 
     const { container } = render(
@@ -658,9 +675,9 @@ describe("EditRenderer collapsed preview fallback", () => {
 
     expect(screen.queryByText("Computing diff...")).toBeNull();
     expect(
-      container.querySelector(".highlighted-diff .line-inserted"),
+      container.querySelector("[data-highlighted-diff] .line-inserted"),
     ).toBeTruthy();
-    expect(container.querySelector(".diff-gutter-aligned")).toBeTruthy();
+    expect(container.querySelector("[data-diff-gutter-aligned]")).toBeTruthy();
     expect(screen.getAllByText(/const/)).toHaveLength(2);
   });
 
@@ -840,7 +857,6 @@ describe("EditRenderer collapsed preview fallback", () => {
           projectId="project-1"
           projectPath="/repo"
           sessionId="session-1"
-          sessionTitle="Fix polling"
           provider="codex"
           model="gpt-5.4"
           thinking={{ type: "adaptive", display: "summarized" }}
@@ -1099,10 +1115,10 @@ describe("EditRenderer collapsed preview fallback", () => {
     expect(screen.getByText("+1")).toBeDefined();
     fireEvent.click(screen.getByRole("button", { name: "Show full diff" }));
 
-    const modal = document.body.querySelector(".modal");
+    const modal = document.body.querySelector("[data-modal-frame]");
     expect(modal?.textContent).toContain("Recent MT Adapter Progress");
     const titleLink = modal?.querySelector(
-      ".modal-title a.file-path-link",
+      "[data-modal-title] a[data-file-path-link]",
     ) as HTMLAnchorElement | null;
     expect(titleLink?.textContent).toContain("progress-2026-05-18.md");
     expect(titleLink?.getAttribute("href")).toBe(
@@ -1115,17 +1131,17 @@ describe("EditRenderer collapsed preview fallback", () => {
       "/projects/project-1/file?path=research%2Fprogress-2026-05-18.md&line=1&lineEnd=13",
     );
     const copyPath = screen.getByRole("button", { name: "Copy path" });
-    expect(copyPath.closest(".modal-header-actions")).not.toBeNull();
-    expect(modal?.querySelector(".file-path-copy")).toBeNull();
-    const modalToggle = modal?.querySelector(
-      ".fixed-font-render-toggle__button",
-    );
+    expect(copyPath.closest("[data-modal-header-actions]")).not.toBeNull();
+    expect(modal?.querySelector("[data-file-path-copy]")).toBeNull();
+    const modalToggle = within(modal as HTMLElement).getByRole("button", {
+      name: "Show source",
+    });
     expect(modalToggle).toBeTruthy();
 
     fireEvent.click(modalToggle as Element);
-    expect(modal?.querySelector(".line-hunk")?.textContent).toContain(
-      "@@ -1,0 +1,13 @@",
-    );
+    expect(
+      modal?.querySelector("[data-diff-hunk-header], .line-hunk")?.textContent,
+    ).toContain("@@ -1,0 +1,13 @@");
     expect(container.textContent).toContain("Recent MT Adapter Progress");
   });
 
@@ -1150,7 +1166,9 @@ describe("EditRenderer collapsed preview fallback", () => {
         )}
       </>,
     );
-    const preview = container.querySelector<HTMLElement>(".diff-tap-target");
+    const preview = container.querySelector<HTMLElement>(
+      "[data-diff-tap-target]",
+    );
     const term = document.createElement("span");
     term.dataset.glossaryTerm = "true";
     term.dataset.tooltip = "oracle — Best published system.";
@@ -1164,7 +1182,7 @@ describe("EditRenderer collapsed preview fallback", () => {
     expect(screen.getByRole("tooltip").textContent).toBe(
       "oracle — Best published system.",
     );
-    expect(document.body.querySelector(".modal")).toBeNull();
+    expect(document.body.querySelector("[data-modal-frame]")).toBeNull();
   });
 
   it("counts only hidden rendered diff lines in the +N badge", () => {
@@ -1227,7 +1245,8 @@ describe("EditRenderer collapsed preview fallback", () => {
       </SessionMetadataProvider>,
     );
 
-    const selectedText = document.querySelector<HTMLElement>(".diff-added");
+    const selectedText =
+      document.querySelector<HTMLElement>("[data-diff-added]");
     const textNode = selectedText?.lastChild;
     if (!selectedText || !textNode) {
       throw new Error("Expected selectable diff text");
@@ -1240,7 +1259,7 @@ describe("EditRenderer collapsed preview fallback", () => {
     fireEvent.click(selectedText);
 
     await waitFor(() => {
-      const modal = document.body.querySelector(".modal");
+      const modal = document.body.querySelector("[data-modal-frame]");
       const selection = document.getSelection();
       expect(modal).not.toBeNull();
       expect(selection?.toString()).toBe("selected replacement");
@@ -1281,8 +1300,11 @@ describe("EditRenderer collapsed preview fallback", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Show source" }));
-    const selectedText = document.querySelector<HTMLElement>(".diff-added");
-    const prefixText = selectedText?.querySelector(".diff-prefix")?.firstChild;
+    const selectedText =
+      document.querySelector<HTMLElement>("[data-diff-added]");
+    const prefixText = selectedText?.querySelector(
+      "[data-diff-prefix], .diff-prefix",
+    )?.firstChild;
     const contentText = selectedText?.lastChild;
     if (!selectedText || !prefixText || !contentText) {
       throw new Error("Expected selectable source diff text");
@@ -1296,13 +1318,13 @@ describe("EditRenderer collapsed preview fallback", () => {
     fireEvent.click(selectedText);
 
     await waitFor(() => {
-      const modal = document.body.querySelector(".modal");
+      const modal = document.body.querySelector("[data-modal-frame]");
       const selection = document.getSelection();
       expect(modal).not.toBeNull();
       expect(
-        modal?.querySelector(
-          '.fixed-font-render-toggle__button[aria-label="Show rendered view"]',
-        ),
+        within(modal as HTMLElement).getByRole("button", {
+          name: "Show rendered view",
+        }),
       ).not.toBeNull();
       expect(selection?.toString()).toBe("+#");
       expect(
@@ -1376,7 +1398,9 @@ describe("EditRenderer collapsed preview fallback", () => {
     const toggle = await screen.findByRole("button", {
       name: "Show full context",
     });
-    const scrollRoot = document.querySelector<HTMLElement>(".modal-content");
+    const scrollRoot = document.querySelector<HTMLElement>(
+      "[data-modal-content]",
+    );
     if (!scrollRoot) throw new Error("Expected modal scroll root");
     scrollRoot.scrollTop = 40;
     const rectSpy = vi
@@ -1470,8 +1494,8 @@ describe("EditRenderer collapsed preview fallback", () => {
       expect(screen.getByText("unrelated")).toBeDefined();
     });
     expect(mocks.expandDiffContext).not.toHaveBeenCalled();
-    const modal = document.body.querySelector(".modal");
-    expect(modal?.querySelector(".diff-added")).toBeNull();
+    const modal = document.body.querySelector("[data-modal-frame]");
+    expect(modal?.querySelector("[data-diff-added]")).toBeNull();
     expect(modal?.textContent).not.toContain("+new");
   });
 });

@@ -209,11 +209,15 @@ test("hunks and long-line runs scroll independently without adding vertical scro
   for (const character of "Review long lines while the view refreshes") {
     typed += character;
     await page.keyboard.type(character);
+    // Samples land two frames after each key; the default 100 ms first poll
+    // interval made this loop cost ~200 ms per character and exhaust the
+    // test timeout on slow CI runners.
     await expect
       .poll(
         async () =>
           JSON.parse((await comment.getAttribute("data-samples")) ?? "[]")
             .length,
+        { intervals: [16] },
       )
       .toBe(typed.length);
     const samples = JSON.parse(
@@ -241,10 +245,12 @@ test("sticky hunk controls clear the real file toolbar", async ({ page }) => {
   await page.goto(`${url}?workbench`);
   const hunk = page.locator("[data-diff-hunk]").nth(1);
   await expect(hunk).toHaveAttribute("data-diff-scroll-mode", "runs");
-  await page.locator(".git-diff-preview-body").evaluate((element) => {
+  await page.locator("[data-source-preview-body]").evaluate((element) => {
     element.scrollTop = 240;
   });
-  const toolbar = await page.locator(".git-diff-pane-toolbar").boundingBox();
+  const toolbar = await page
+    .locator("[data-source-diff-toolbar]")
+    .boundingBox();
   const header = await hunk.locator("[data-diff-hunk-header]").boundingBox();
   expect(toolbar).not.toBeNull();
   expect(header?.y).toBeGreaterThanOrEqual(toolbar!.y + toolbar!.height - 1);

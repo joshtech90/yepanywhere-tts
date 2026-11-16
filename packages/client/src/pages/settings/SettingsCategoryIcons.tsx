@@ -1,3 +1,4 @@
+import iconsStyles from "./SettingsCategoryIcons.module.css";
 import { IssueIcon } from "../../components/IssueIcon";
 import type { ReactNode } from "react";
 import { useSettingsIconStyle } from "../../hooks/useSettingsIconStyle";
@@ -60,6 +61,7 @@ export const settingsCategoryEmojiIcons: Record<string, string> = {
   speech: "🎙️",
   environment: "⚙️",
   about: "ℹ️",
+  "machine-control": "🖥️",
   emulator: "🤖",
   development: "🛠️",
 };
@@ -298,6 +300,15 @@ export const settingsCategoryIcons: Record<string, ReactNode> = {
     </Icon>
   ),
 
+  "machine-control": (
+    <Icon>
+      {/* Display on a stand, with a pointer on screen */}
+      <rect x="2" y="4" width="20" height="13" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+      <path d="M10 8l5 3-2 .7-.8 2z" fill="currentColor" />
+    </Icon>
+  ),
+
   emulator: (
     <Icon>
       {/* Robot head */}
@@ -323,7 +334,39 @@ export const settingsCategoryIcons: Record<string, ReactNode> = {
   ),
 };
 
-export function SettingsCategoryIcon({ id }: { id: string }) {
+const CATEGORY_CLASSES: Record<string, string | undefined> = {
+  appearance: iconsStyles.iconAppearance,
+  toolbar: iconsStyles.iconToolbar,
+  model: iconsStyles.iconModel,
+  "message-delivery": iconsStyles.iconMessageDelivery,
+  "agent-context": iconsStyles.iconAgentContext,
+  notifications: iconsStyles.iconNotifications,
+  webhooks: iconsStyles.iconWebhooks,
+  devices: iconsStyles.iconDevices,
+  "local-access": iconsStyles.iconLocalAccess,
+  remote: iconsStyles.iconRemote,
+  providers: iconsStyles.iconProviders,
+  speech: iconsStyles.iconSpeech,
+  environment: iconsStyles.iconEnvironment,
+  about: iconsStyles.iconAbout,
+  "machine-control": iconsStyles.iconMachineControl,
+  emulator: iconsStyles.iconEmulator,
+  development: iconsStyles.iconDevelopment,
+};
+
+export const settingsIconStyleClasses = {
+  flat: iconsStyles.iconFlat,
+  "flat-white": iconsStyles.iconFlatWhite,
+  emoji: iconsStyles.iconEmoji,
+};
+
+export function SettingsCategoryIcon({
+  id,
+  active = false,
+}: {
+  id: string;
+  active?: boolean;
+}) {
   const { settingsIconStyle } = useSettingsIconStyle();
   const icon =
     settingsIconStyle === "emoji"
@@ -331,9 +374,10 @@ export function SettingsCategoryIcon({ id }: { id: string }) {
       : settingsCategoryIcons[id];
   if (!icon) return null;
   const className = [
-    "settings-category-icon",
-    `settings-category-icon-${id}`,
-    `settings-category-icon-${settingsIconStyle}`,
+    iconsStyles.icon,
+    active ? iconsStyles.active : "",
+    CATEGORY_CLASSES[id] ?? "",
+    settingsIconStyleClasses[settingsIconStyle],
   ].join(" ");
   return (
     <span className={className} aria-hidden="true">

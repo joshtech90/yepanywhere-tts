@@ -339,6 +339,7 @@ and props stable.
 | 2.48 | Done 2026-11-09 | Shared composer draft attachments, session page | Replace the session page's attachment state, hydration, uploads and remove with one shared hook ([plan 188](188-shared-composer-draft-attachments.md) slice 1). | Not move-only: under plan 188. New `hooks/useComposerDraftAttachments.ts` owns the list, in-flight uploads, the staging batch, the saved-draft write and hydration, cancel and remove, the preview revoke and the navigation guard; `useSessionComposerAttachments.ts` is deleted and `useSessionAttachmentUploads.ts` keeps only the page's upload settings and the incoming share. Behavior changes are plan 188 items 6, 7, 10, 12 to 16, 18, 26, 28 and 29; the visible one is that hydration waits for the server's capabilities, so a missing file under draft sync keeps its chip with one notice instead of being dropped. Budget `SessionPage.tsx` 3,621 -> 3,620; the hook is 568 lines. Tier 2, plus plan 187's and 188's pins. |
 | 2.49 | Done 2026-11-09 | Shared composer draft attachments, New Session | Put New Session's attachments on the shared hook ([plan 188](188-shared-composer-draft-attachments.md) slice 2). | Not move-only: under plan 188. `NewSessionForm.tsx` drops its inline copy (the saved-draft write, batch, hydration, sibling-tab listener, uploads, remove, materializing and the guard) and draws the hook's finished attachments and in-flight uploads. The `PendingFile` union and `lib/newSessionAttachments.ts` are deleted; `newSessionStart.ts` reads the hook's list and upload promises, counting uploads as files. The audio memo uploads on commit. Behavior changes are plan 188 items 2, 3, 5, 6, 8 to 10, 16 to 18, 23 and 25 to 27. Budget `NewSessionForm.tsx` 3,120 -> 2,689. Tier 2, plus plan 188's pins and the New Session browser specs. |
 | 2.50 | Done 2026-11-09 | Shared composer draft attachments, Project Queue editor | Put the Project Queue inline editor's attachments on the shared hook ([plan 188](188-shared-composer-draft-attachments.md) slice 3). | Not move-only: under plan 188. `ProjectQueueAttachmentEditor.tsx` (386 -> 262 lines) passes no saved draft, its item's files read once, an owned-files rule (only files added here are deleted), and its inline error. It keeps its save and its close-time delete. `uploadComposerAttachmentFile`, whose direct-upload branch no caller used, is deleted. The editor's only behavior change is plan 188 item 10 (a finished image is cached for its preview). Tier 2, then Tier 3 once at the plan's tip. |
+| 2.51 | Implemented 2026-11-10 under [plan 191](191-css-ownership-and-leak-closure.md), step 2 | Follow and tool-header copy controls | Extract `MessageFollowButton` and `ToolHeaderCopyButton` from frozen render hubs before adding shared elevation and keyboard activation ownership. | Presentation seams only; follow receives the existing click handler and output state, while copy retains its local clipboard feedback. Deliberate look/key changes belong to plan 191. Budgets: `MessageList.tsx` 5,701 → 5,676; `ToolCallRow.tsx` 1,927 → 1,859. Workspace checks and focused browser coverage, including native Tab/Enter and typing during updates. |
 
 ## Phase 3: Existing Architecture-Aligned Migrations
 
@@ -424,6 +425,7 @@ extracting pure protocol/model/normalization modules with strong fixtures.
 | 4.11 | Done 2026-11-09 | Claude executable and login resolution | Move the Claude Code executable lookup (SDK native package, configured or PATH command, Windows Claude Desktop copies) and the claude.ai login command and status read from `claude.ts` into `claude-executable.ts`. | 323 lines. Module functions with no provider state; `claude.ts` 3,114 -> 2,805. Importers outside `claude.ts` import the new module directly (no re-export). Move-only, Tier 1 plus the Claude provider tests, `pnpm test:providers` and `pnpm test:e2e:sdk`, which run the real lookup. |
 | 4.12 | Done 2026-11-09 | Claude model and slash-command catalog | Move the launch-model aliases, SDK model and slash-command mapping, family merge and the remote slash-command filter from `claude.ts` into `claude-model-catalog.ts`, mirroring `codex-model-catalog.ts`. | 367 lines. Pure functions; the provider's model cache, its TTL, the probe and catalog status stay. `claude.ts` 2,805 -> 2,469. Move-only, Tier 1 plus the Claude provider tests, `pnpm test:providers` and `pnpm test:e2e:sdk`. |
 | 4.13 | Not started | Claude helper sessions and session object | Move the recap, fork-summary and prompt-cache keepalive helper queries behind a provider host, then give the live Claude session its own object, as plan 186 did for Codex. | Write a plan doc first. `ClaudeGatewayProvider` and `ClaudeOllamaProvider` override protected hooks (`getEnv`, `getSettings`, `getDisallowedTools`, `getSystemPrompt`, `sessionEnvironment`, `normalizeSupportedModels`), so moved code must reach them through the provider at call time, with a Gateway test per slice. Tier 3. |
+| 4.14 | Done 2026-11-11 | Provider instruction assembly and interpretation | Move Claude session system-prompt assembly to `claude-system-prompt.ts` and Codex developer-message/text interpretation to `codex/instruction-messages.ts`, preparing native Agent API bootstrap routing. | Move-only prerequisite. Claude reaches subclass `getSystemPrompt` through an explicit callback; sandbox and content-filter behavior stay unchanged. `claude.ts` 2,469 -> 2,455; `sessions/normalization.ts` 2,451 -> 2,438. Tier 1/2, Claude/Codex provider and native tests, Gateway/Ollama native cases and the two native browser cases. Full browser Tier 3 is replaced by the owned native browser/live-history checks because no React or transport boundary moves. |
 
 ## Phase 5: Load-Bearing Supervisor And Process Files
 
@@ -484,6 +486,15 @@ Follow-ups recorded:
 ```
 
 ## Landing Notes
+
+### Router control boundary — prepare hosted pairing (2026-11-15)
+
+Moved socket validation, request transport and router errors verbatim from
+`AgentAuthRouter.ts` to `services/agent-auth-router-control.ts`. The existing
+service exports remain its public facade. No signature or behavior changes.
+Tier 1: shared build, server typecheck, router integration tests, exact-file
+lint and diff review. Root checks follow with the hosted integration slice.
+
 
 ### Slice 4.12 — Claude model and slash-command catalog (Landed 2026-11-09, this commit)
 
@@ -5164,3 +5175,151 @@ parameter conversion. Plan 163 records Tier 1/2 and SDK timer-tripwire evidence.
 Client E2E is unnecessary for this slice: no route registration, UI or wire
 contract changes; unchanged route tests exercise both HTTP callers. Cleanup
 of refused/thrown dispatch is a separate behavior fix, outside the move.
+
+
+### Session metadata refresh boundary — 2026-11-10
+
+Move the existing creation/child metadata merge and child comparison from
+`useSessionMessages` to `lib/sessionDetail/sessionMetadataRefresh.ts`, passing
+the previous and incoming snapshots explicitly. This slice preserves behavior;
+the router startup-display correction follows separately. Lower the hook's
+source budget to retain the freed space.
+
+The move passed all 67 cache-hook tests before behavior changes. Final focused
+hook, route and startup browser checks cover the following correction. Use that
+bounded browser case in place of the full browser suite: this slice changes no
+rendering, transcript, transport or lifecycle behavior. Workspace-wide checks
+retain the concurrent-edit limitations reported with the correction.
+
+### Metadata legacy import and display recovery — 2026-11-10
+
+Plan 190 preparation extracts `importLegacyMetadata` into
+`metadata/legacy-session-metadata.ts` and the interrupted-display map into
+`metadata/interrupted-display-recovery.ts`. The legacy private method's file,
+connection, row codec and prepared statements become explicit parameters;
+the display callback takes its existing object array. Logic, log/error text,
+ordering, persistence and public facades are unchanged. The legacy helper
+uses the codec's accepted input type and has no service back-import.
+
+This move-only checkpoint reduces `SessionMetadataService.ts` from 1,533 to
+1,464 lines and retires its budget entry. An isolated exact checkpoint passes
+shared build, server tsc, lint and 85 existing metadata tests (1.3 seconds).
+Tier 2 checks run for the full work session. No UI, provider/transport,
+timer or route-registration boundary changes, so focused metadata and public
+route checks replace browser/SDK tripwires for this slice. The later behavior
+commit changes cold-state ownership and startup statement lifetimes separately;
+[plan 190 evidence](../research/190-cold-state-sql.md) records its checks/review.
+
+### Plan 190: Codex bounded catch-up decision boundary (2026-11-10)
+
+Moved `readIncrementalSnapshot` body verbatim from `sessions/codex-reader.ts`
+to `sessions/codex-incremental-snapshot.ts`. The module-private dependencies
+(cached source, entry reads, window reader) are explicit parameters; the reader
+facade/method and ordering remain unchanged. No behavior, public response or
+provider schema change. This frees the frozen reader for the separately reviewed
+shared ingestion work in plan 190. Tier 1: server typecheck and all 56 Codex
+reader tests pass (two platform skips). Tier 2 checks recorded in the cycle log.
+
+### Plan 190: Claude message conversion boundary (2026-11-10)
+
+Moved `convertClaudeMessage` and its private queue-content helper verbatim from
+`sessions/normalization.ts` to `sessions/claude-message-conversion.ts`. The
+normalizer imports the converter; no public facade, output, ordering or runtime
+policy changes. This lets the separate bounded Claude reader reuse the exact
+conversion rules with full-projection row positions, without reselecting a
+partial forest. Sol 6.1 high/bypass review verified the original bodies.
+The frozen normalizer shrinks from 2,451 to 2,339 lines. Focused normalization
+and broader checks are recorded with the bounded-reader implementation evidence.
+
+### Plan 190 preparation — reader cache admission
+
+2026-11-10: move the existing `getOrCreateReader` closure from `app.ts`
+into `sessions/session-reader-admission.ts`, with the LRU map, 500-reader
+limit and retirement callback explicit. Lookup, recency, insertion, eviction
+and asynchronous retirement are unchanged. No route, public facade or timing
+policy changes. Exact body comparison and Sol 6.1 high/bypass static review
+confirm preservation. Shared build, root lint/types and focused app/native
+allocation/standalone tests pass; full-suite qualifications are recorded in
+the durable Claude index research and plan 190 log. This is a Tier 2 seam;
+no route registration, auth, transport or browser boundary moves. App budget
+4,590 → 4,573; subsequent wiring stays within that ratchet.
+
+### Authenticated bootstrap JSON dispatch — 2026-11-11
+
+Plan 190 preparation: move the existing New Session bootstrap's internal JSON
+read closure to `routes/authenticated-json-read.ts`. Its captured app and request
+context become explicit parameters; headers, URL, signal, environment and fetch
+semantics are unchanged. This gives collection updates the same authenticated
+read boundary without growing the frozen composition root. No route contract
+changes in this move. Focused bootstrap tests and TypeScript checks qualify it.
+
+### Claude project directory decoder — 2026-11-11
+
+Plan 190 preparation: move `getProjectDirInfo`'s body and its private type/batch
+constant to `projects/claude-project-discovery.ts`. The scanner retains its
+method facade for existing callers and tripwires. No captured instance state,
+format/selection/error behavior or filesystem ordering changes. This isolates
+native directory decoding before the SQL project-facts ownership work and
+shrinks the frozen scanner; the budget is ratcheted in the same commit.
+
+### Agent API owned-session catalog seam — 2026-11-12
+
+Moved the active-owner projection from `app.ts` to
+`core-api/owned-sessions.ts` without changing its mapping or filters. The
+metadata service is an explicit parameter in place of the captured app
+options. This bounded prerequisite makes room for the authorized v0
+configuration/discovery wiring; it does not advance the deferred general
+composition-root campaign. Existing core-api app/catalog checks qualify the
+seam.
+
+### Agent API production composition and controller projections — 2026-11-13
+
+A move-only prerequisite for plan 192 isolates the existing command construction
+from `app.ts` into `core-api/production-commands.ts`, with options/supervisor
+passed explicitly. The native owner, dynamic settings/context callbacks and
+persistence-error log retain their order and behavior. The trusted provider
+controller's existing input projection and response validation move into
+`agent-api/controller-protocol.ts`; `provider-session-owner.ts` keeps the call
+wiring. No route, credential, operation or response shape changes in this slice.
+The subsequent API implementation extends those domain modules separately.
+
+Tier 1: shared build, server typecheck, API/host integration tests, exact-file
+lint/format and whitespace checks. Tier 2: root lint/typecheck/tests; native
+creation/replacement additionally passes the four Claude/Codex app combinations.
+Source budgets lower for both hubs. These are dependency-parameter conversions
+and relocations, with no mutable state or back-import into either hub.
+
+### Retained provider reattachment — 2026-11-14
+
+Move the existing startup reattachment loop from `server-main.ts` to
+`server-provider-reattach.ts` before adding orderly queue recovery. The only
+signature change makes the captured Supervisor and session metadata service
+explicit parameters. Inventory failure handling, launch settings, ordering and
+logs are unchanged. Tier 1/2 checks cover this move; existing provider-host and
+portable wrapper tests substitute for SDK E2E because no adapter or transport
+behavior changes.
+
+### Codex compaction-output classification — 2026-11-14
+
+Move `isCodexCompactionOutput` and `codexCompactionOutputHasCheckpoint`
+verbatim from `sessions/normalization.ts` into `codex/compaction-output.ts`,
+with only exports/imports added. This isolates the existing checkpoint
+classification before adding launch-instruction disclosures to the frozen
+normalizer. No dependencies, signatures or behavior change.
+
+Tier 1: shared build, server typecheck, focused Codex normalization/reader
+tests, exact-file lint and diff checks. Tier 2 follows with the instruction
+visibility repair in the same work session.
+
+## 2026-11-15 — Codex OSS user-message text extraction
+
+Moved the pure user-message text reader from the frozen `codex-oss.ts` into
+`codex-oss-user-text.ts` before wiring the shared CLI installation owner. The
+function body is unchanged; the class calls the named function. The move-only
+slice lowers the hub budget from 1,615 to 1,580 lines. Its subsequent installation
+wiring remains within that lower budget.
+
+Tier 1 verification: shared build, server TypeScript checking, focused Codex,
+Codex OSS and runtime-snapshot checks, exact-file Biome lint and staged diff
+review. The combined work also passes full workspace tests (7,561 server cases,
+97 existing skips). No scheduling or provider protocol moves occur in this slice.

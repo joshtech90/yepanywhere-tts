@@ -1,3 +1,4 @@
+import toolbarStyles from "../components/MessageInputToolbar.module.css";
 import type { RefObject } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type {
@@ -139,10 +140,14 @@ export function getComposerToolbarOverflowLayoutSignature(
 export function useMeasuredComposerOverflow({
   layoutKey,
   hasControls,
+  priority,
+  pinOnlyMicrophone,
   refs,
 }: {
   layoutKey: string;
   hasControls: boolean;
+  priority: Record<SessionToolbarVisibilityKey, ToolbarNarrowingPriority>;
+  pinOnlyMicrophone: boolean;
   refs?: MessageInputToolbarLayoutRefs;
 }): {
   tier: ComposerOverflowTier;
@@ -190,10 +195,11 @@ export function useMeasuredComposerOverflow({
     const measure = () => {
       frameId = null;
       const left =
-        refs?.left?.current ?? toolbar.querySelector(".message-input-left");
+        refs?.left?.current ??
+        toolbar.querySelector("[data-message-input-left]");
       const actions =
         refs?.actions?.current ??
-        toolbar.querySelector(".message-input-actions");
+        toolbar.querySelector("[data-message-input-actions]");
       if (!(left instanceof HTMLElement) || !(actions instanceof HTMLElement)) {
         return;
       }
@@ -207,10 +213,10 @@ export function useMeasuredComposerOverflow({
       const actionsWidth = getControlListWidth(actions);
       const status =
         refs?.status?.current ??
-        toolbar.querySelector(":scope > .composer-status-ages");
+        toolbar.querySelector(":scope > [data-composer-status-ages]");
       const statusWidth =
         status instanceof HTMLElement ? getVisibleControlWidth(status) : 0;
-      const overflow = toolbar.querySelector(".composer-bottom-overflow");
+      const overflow = toolbar.querySelector("[data-composer-bottom-overflow]");
       const overflowWidth =
         overflow instanceof HTMLElement ? getVisibleControlWidth(overflow) : 0;
       const fileViewerSlot = toolbar.querySelector(
@@ -240,7 +246,7 @@ export function useMeasuredComposerOverflow({
       }
       const candidates = Array.from(
         toolbar.querySelectorAll<HTMLElement>(
-          ".composer-bottom-overflow-inline",
+          `.${toolbarStyles.composerBottomOverflowInline}`,
         ),
       )
         .map((element) => {
@@ -250,10 +256,15 @@ export function useMeasuredComposerOverflow({
                 "[data-session-toolbar-control]",
               );
           const key = marker?.dataset.sessionToolbarControl;
-          const priority = COMPOSER_OVERFLOW_TIERS.findIndex((level) =>
-            element.classList.contains(`composer-bottom-overflow-${level}`),
-          );
-          return { element, key, priority };
+          const configured = key
+            ? priority[key as SessionToolbarVisibilityKey]
+            : "pin";
+          const effective =
+            pinOnlyMicrophone && key !== "microphone" && configured === "pin"
+              ? "last"
+              : configured;
+          const tier = { first: 1, mid: 2, last: 3, pin: -1 }[effective];
+          return { element, key, priority: tier };
         })
         .filter(
           (item): item is typeof item & { key: SessionToolbarVisibilityKey } =>
@@ -316,6 +327,8 @@ export function useMeasuredComposerOverflow({
     hiddenControls,
     layoutKey,
     hasControls,
+    priority,
+    pinOnlyMicrophone,
     refs?.actions,
     refs?.left,
     refs?.status,

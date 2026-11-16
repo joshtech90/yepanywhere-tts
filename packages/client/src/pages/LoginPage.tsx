@@ -1,3 +1,4 @@
+import styles from "./LoginLayout.module.css";
 /**
  * LoginPage - Login form for cookie-based auth.
  *
@@ -7,6 +8,7 @@
 
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { Banner } from "../components/ui/Banner";
 import { Button } from "../components/ui/Button";
 import { Field, TextInput } from "../components/ui/Field";
 import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
@@ -88,25 +90,25 @@ export function LoginPage() {
 
   if (isLoading) {
     return (
-      <div className="login-page">
-        <div className="login-container">
-          <div className="login-loading">{t("loginLoading")}</div>
+      <div className={styles.page}>
+        <div className={styles.container}>
+          <div className={styles.loading}>{t("loginLoading")}</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="login-page">
-      <div className="login-container">
-        <div className="login-logo">
-          <YepAnywhereLogo />
+    <div className={styles.page}>
+      <div className={styles.container}>
+        <div className={styles.logo}>
+          <YepAnywhereLogo variant="login" />
         </div>
-        <p className="login-subtitle">
+        <p className={styles.subtitle}>
           {isSetupMode ? t("loginSetupSubtitle") : t("loginSubtitle")}
         </p>
 
-        <form onSubmit={handleSubmit} className="login-form">
+        <form onSubmit={handleSubmit} className={styles.form}>
           {/* A named login is a limited user; blank is the owner, exactly as
               before limited users existed. The field exists only while the
               feature is on (topics/limited-users.md). */}
@@ -149,7 +151,7 @@ export function LoginPage() {
             </Field>
           )}
 
-          {error && <div className="login-error">{error}</div>}
+          {error && <Banner tone="error">{error}</Banner>}
 
           <Button variant="primary" type="submit" disabled={isSubmitting}>
             {isSubmitting
@@ -160,11 +162,9 @@ export function LoginPage() {
           </Button>
         </form>
 
-        {isSetupMode && <p className="login-hint">{t("loginSetupHint")}</p>}
+        {isSetupMode && <p className={styles.hint}>{t("loginSetupHint")}</p>}
 
-        {!isSetupMode && (
-          <p className="login-recovery-hint">{t("loginRecoveryHint")}</p>
-        )}
+        {!isSetupMode && <p>{t("loginRecoveryHint")}</p>}
       </div>
     </div>
   );

@@ -29,8 +29,9 @@ durable nonblocking path below; plan 176 tracks the remaining adapters.
 
 Meanwhile, durable relationships already have several owners:
 
-- `ApiReceiptStore.relationships` reads SQLite creation and initiated-command
-  receipts. The v0 route already answers who initiated an API operation.
+- `ApiReceiptStore.relationships` reads the current server process's creation
+  and initiated-command receipts, which are not persisted. The v0 route answers
+  who initiated an API operation in this process.
 - Common creation admission saves intent, source, ownership and copy context
   before native effects. `CreationCopySnapshot.kind` distinguishes fork/clone.
 - Metadata distinguishes `/btw` parenting from `forkedFromSessionId`.
@@ -191,8 +192,10 @@ session references produce no graph fact and do not block unrelated metadata.
 V0 materializes `created_session` when its trusted receipt has a known
 destination, including common admission's exact server-owned receipt/input
 correlation before the later receipt callback. The admission and graph commit
-together; subsequent receipt/graph updates also share their source transaction.
-Notifications follow commit. Operator calls without a source session and sends
+together. Receipts are process memory rather than SQL rows, so a later receipt
+update commits its creator fact first and changes the receipt only after that
+commit; a failed graph write leaves the receipt unchanged. The creator fact
+outlives the receipt across restart. Notifications follow commit. Operator calls without a source session and sends
 to existing sessions retain receipts without acquiring creator edges. Incoming
 peer evidence preserves its source-attested trust and both server namespaces;
 source-side intent gains a graph destination only after a correlated confirmed
@@ -208,7 +211,12 @@ Each batch reads current source fields and commits its durable checkpoint in
 the same synchronous transaction. New writes already participate in their
 owner transaction, so a frozen per-table key frontier does not miss concurrent
 admissions. Interruption resumes the saved frontier on restart; completion
-ends the job. Only relationship fields are selected, excluding prompts,
+ends the job. Reconciliation only adds or refreshes facts from rows it reads; a
+missing source row retracts nothing. Its former receipts phase read the table
+migration 39 dropped and is now empty, so creator facts recorded from those
+receipts stay. A profile whose reconciliation had not finished that phase
+before it reached migration 39, such as one upgrading directly from before
+migration 26, gains no creator facts for those old receipts. Only relationship fields are selected, excluding prompts,
 credential ids, peer proof payloads and native file paths. Historical local API
 aliases resolve through the existing receipt owner, never against a peer's
 session namespace. Required database connection ownership shares one lazy SQL
@@ -240,6 +248,15 @@ Truncation, replacement, rewind and deleted metadata trigger producer-specific
 reconciliation; they must not erase unrelated v0 or YA-created edges. Preserve
 source history when the producer's evidence supports it, and never interpret a
 failed read as an authoritative empty set.
+
+Indexed Claude detail supplies the same historical harness extractor with a
+complete-source metadata projection in original parsed-row/content-block order.
+It retains the eligibility flags, recognized scoped launch commands and result
+success/error facts the extractor uses, excluding unrelated payload. Committed
+row count, source identity/version and native copy witnesses remain required.
+This prevents a bounded visible selection from silently suppressing historical
+acquisition; it grants no new admission or authority. See the
+[Claude reader contract](claude.md#transcript-acquisition-and-retention).
 
 ## Provider acquisition
 
@@ -341,6 +358,18 @@ structural parent and provider-observed evidence, and preserve unknown versus
 accepted empty. This grants neither access to another top-level session nor
 access to creator receipts. Other adapters must supply their own existing
 policy; endpoint access alone never authorizes receipt/proof visibility.
+
+Navigation now batches this same provider-child policy over selected parents.
+The store owns four lazy bulk statements: outgoing and incoming pages, evidence,
+and checkpoints. Requests keep no durable result maps; 64 parents share an
+outgoing read, each with its own 32-edge limit. Incoming ambiguity remains a
+two-edge lookahead, evidence stays at the first 20 ordered active rows before
+trust filtering, and checkpoints distinguish accepted-empty from unknown.
+Legacy single-resource page/evidence shapes are also lazy (five fixed shapes),
+so using the batch path does not allocate unused legacy reads. Disposal finalizes
+only allocated statements and rejects later preparation, including via a held
+bulk-reader reference. No statement ceiling is raised. See the
+[navigation outcome](../docs/research/190-bounded-navigation-projection.md).
 
 Batch scan progress is private control data, not a public pagination contract.
 Its cursor may advance over withheld rows, so neither it nor a raw count or
@@ -684,3 +713,11 @@ Hold discovery blocked and prove that the initial transcript still arrives;
 then publish children and verify stable rows/scroll and sequential typing
 within the existing 100 ms acknowledgement requirement. Linux/macOS/Windows
 qualification and released-client/native-mobile compatibility remain explicit.
+
+SQL-restored Claude detail exposes already acquired compact historical evidence
+as original-row-ordinal lookups, with a source length and accepted generation
+check. Historical extraction retains its record/block/command budgets and
+native/copy/admission/version fences. The service holds the source weakly, and
+checks that it is current before staging and before committing a historical
+turn. Source retirement never substitutes a partial visible window for full
+historical evidence or authorizes a native transcript rescan.

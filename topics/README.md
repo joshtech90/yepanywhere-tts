@@ -31,6 +31,10 @@
   over direct and Remote Access connections, confirmation before a change cuts
   off its own caller, and runtime listener changes)
 - Security trust boundaries
+- [Deliberate departures from standard web practice](web-practice-exceptions.md)
+  (register of loosened browser-hardening defaults and declined platform
+  recommendations, each with its need, compensating control and owner;
+  Chromium-first support stance)
 - Active content security (confirmed same-origin HTML execution, scriptless
   file viewing, and isolated origins for agent-built applications)
 - [File source editing](file-source-editing.md) (conditional saves and HTML
@@ -51,6 +55,9 @@
   and live managed-session preservation opt-in)
 - [Required SQLite storage](required-sqlite.md) (Node/Bun adapters,
   startup policy, migrations, and source-server readiness)
+- [Provider history facts and queries](provider-history-facts.md) (history
+  reads cost in proportion to the answer, upkeep in proportion to change;
+  reader inventory, where derived facts live, delivery order)
 - OpenCode backend capability and rendering parity
 - [ACP integration and sharing](acp.md) (current YA/T3 comparison and proposed
   transport/session composition; native Copilot and generic registry boundaries)
@@ -101,6 +108,8 @@
 - Client global store (coarse normalized sessions/projects/project queues/inbox summary cache, not transcript state)
 - [React state patterns](react-state-patterns.md) (effect and store publication,
   convergence, snapshot identity, subscription scope, and lifecycle ownership)
+- [Code comments](comments.md) (quality guidance, required retention and warning
+  explanations, cleanup direction, and pstack review workflow)
 - Session summary fidelity (bounded list projections, complete-index isolation,
   and partial-observation nondowngrade rules)
 - Client source runtime topology (per-YA-server runtime boundary above summary/query/session-detail stores)

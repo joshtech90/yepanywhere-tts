@@ -23,36 +23,38 @@ describe("ToolbarControlPreview", () => {
   it("renders the Project Queue specimen without the primary send button", () => {
     const { container } = renderControl("projectQueue");
 
-    expect(container.querySelector(".project-queue-button")).toBeTruthy();
+    expect(container.querySelector("[data-project-queue-button]")).toBeTruthy();
     expect(
-      container.querySelector(".project-queue-new-session-button"),
+      container.querySelector("[data-project-queue-new-session-button]"),
     ).toBeNull();
-    expect(container.querySelector(".send-button-with-help")).toBeNull();
+    expect(container.querySelector("[data-send-button-with-help]")).toBeNull();
   });
 
   it("renders the new-session Project Queue shortcut as its own specimen", () => {
     const { container } = renderControl("projectQueueNewSessionShortcut");
 
     expect(
-      container.querySelector(".project-queue-new-session-button"),
+      container.querySelector("[data-project-queue-new-session-button]"),
     ).toBeTruthy();
     expect(container.textContent).toContain("+");
-    expect(container.querySelector(".send-button-with-help")).toBeNull();
+    expect(container.querySelector("[data-send-button-with-help]")).toBeNull();
   });
 
   it("renders the Now specimen without the primary send button", () => {
     const { container } = renderControl("steerNow");
 
-    expect(container.querySelector(".steer-now-toggle")).toBeTruthy();
-    expect(container.querySelector(".send-button-with-help")).toBeNull();
+    expect(container.querySelector("[data-steer-now-toggle]")).toBeTruthy();
+    expect(container.querySelector("[data-send-button-with-help]")).toBeNull();
   });
 
   it("renders the Conversation view specimen as active", () => {
     const { container } = renderControl("conversationView");
 
-    const button = container.querySelector(".conversation-view-toolbar-button");
+    const button = container.querySelector(
+      "[data-conversation-view-toolbar-button]",
+    );
     expect(button).toBeTruthy();
-    expect(button?.classList.contains("active")).toBe(true);
+    expect(button?.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("shows a static waveform and its default button opacity", () => {
@@ -73,11 +75,11 @@ describe("ToolbarControlPreview", () => {
     const { container } = renderControl("waveform");
 
     expect(
-      container.querySelector(".composer-speech-waveform canvas"),
+      container.querySelector("[data-composer-speech-waveform] canvas"),
     ).toBeTruthy();
     expect(
       container
-        .querySelector(".message-input-toolbar")
+        .querySelector("[data-message-input-toolbar]")
         ?.getAttribute("data-waveform-button-background-opacity"),
     ).toBe("70");
   });

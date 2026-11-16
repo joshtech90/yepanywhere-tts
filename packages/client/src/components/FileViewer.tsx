@@ -1,8 +1,23 @@
+import { fileViewerFrameClassName } from "./fileViewerFrame";
+import {
+  annotateHighlightedHtmlLines,
+  getFileViewerTargetScrollTop,
+} from "./fileViewerLineHighlights";
+import {
+  FileViewerSelectionActions,
+  RefreshIcon,
+  RawSourceIcon,
+  CopyIcon,
+  CheckIcon,
+  PlusCircleIcon,
+  CommentIcon,
+  DownloadIcon,
+  FullscreenIcon,
+  ExitFullscreenIcon,
+} from "./FileViewerActions";
 import {
   fromUrlProjectId,
   isUrlProjectId,
-  PUBLIC_FILE_SHARES_CAPABILITY,
-  serverHasCapability,
   type FileContentResponse,
   type FolderListingResponse,
   type GitFileDiffMode,
@@ -35,13 +50,10 @@ import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useSessionViewerComment } from "../contexts/SessionViewerCommentContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useFileVersionControl } from "../hooks/useFileVersionControl";
-import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
 import { useQuoteReplyButtonMode } from "../hooks/useQuoteReplyButtonMode";
-import { useSelectionActions } from "../hooks/useMessageListSelectionQuote";
 import { useRegisterQuoteableTextSource } from "../hooks/useQuoteableTextSource";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useSessionFileComments } from "../hooks/useSessionFileComments";
-import { useVersion } from "../hooks/useVersion";
 import { useViewerFind } from "../hooks/useViewerFind";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
@@ -102,8 +114,8 @@ import {
 } from "./FileDiffViewLinks";
 import { FileRevisionLink } from "./FileRevisionLink";
 import { FileViewerPathBreadcrumbs } from "./FileViewerPathBreadcrumbs";
+import { PublicFileShareButton } from "./PublicFileShareButton";
 import { PublicFileShareModal } from "./PublicFileShareModal";
-import { useFileVhostService } from "../hooks/useFileVhostService";
 import {
   FilePathContextMenu,
   type FileViewPresentation,
@@ -133,7 +145,6 @@ import {
   FileViewerEmbeddedMedia,
   getEmbeddedMediaKind,
 } from "./FileViewerEmbeddedMedia";
-
 export interface FileViewerSource {
   loadFile: (
     projectId: string,
@@ -297,19 +308,6 @@ function getProjectPath(projectId: string): string | null {
   }
 }
 
-function getHighlightRange(
-  lineNumber?: number,
-  lineEnd?: number,
-): { end: number; start: number } | null {
-  if (lineNumber === undefined) {
-    return null;
-  }
-  return {
-    end: Math.max(lineNumber, lineEnd ?? lineNumber),
-    start: lineNumber,
-  };
-}
-
 function getContentStartLine(fileData: FileContentResponse | null): number {
   return fileData?.contentStartLine ?? 1;
 }
@@ -370,7 +368,7 @@ function markdownSelectionAfterBlock(
 ): number | undefined {
   const blocks = Array.from(
     preview.querySelectorAll<HTMLElement>(
-      ".markdown-rendered > :not([data-review-comment-inline-host])",
+      "[data-markdown-rendered] > :not([data-review-comment-inline-host])",
     ),
   );
   let lastIntersecting: number | undefined;
@@ -411,7 +409,7 @@ function MarkdownInlineCommentHost({
     host.dataset.reviewCommentInlineHost = "";
     const mount = () => {
       const blocks = preview.querySelectorAll<HTMLElement>(
-        ".markdown-rendered > :not([data-review-comment-inline-host])",
+        "[data-markdown-rendered] > :not([data-review-comment-inline-host])",
       );
       const block = blocks.item(afterBlock);
       if (block && block.nextElementSibling !== host) block.after(host);
@@ -511,38 +509,6 @@ function SessionFileCommentEditor({
   );
 }
 
-function annotateHighlightedHtmlLines(
-  html: string | undefined,
-  contentStartLine: number,
-  lineNumber?: number,
-  lineEnd?: number,
-): string | undefined {
-  if (!html) {
-    return html;
-  }
-  const range = getHighlightRange(lineNumber, lineEnd);
-  const singleLine = range?.start === range?.end;
-  let currentLine = 0;
-  return html.replace(/<span class="([^"]*)">/g, (match, className: string) => {
-    if (!className.split(/\s+/).includes("line")) {
-      return match;
-    }
-    currentLine += 1;
-    const actualLine = contentStartLine + currentLine - 1;
-    const inRange =
-      range !== null && actualLine >= range.start && actualLine <= range.end;
-    const classes = [
-      className,
-      singleLine && inRange ? "highlighted-line" : "",
-      actualLine === range?.start ? "highlighted-line-start" : "",
-      actualLine === range?.end ? "highlighted-line-end" : "",
-    ]
-      .filter(Boolean)
-      .join(" ");
-    return `<span class="${classes}" data-line="${actualLine}">`;
-  });
-}
-
 const DEFAULT_FILE_VIEWER_SOURCE: FileViewerSource = {
   loadFile: (projectId, filePath, highlight, lineNumber, lineEnd, viewMode) =>
     api.getFile(projectId, filePath, highlight, lineNumber, lineEnd, viewMode),
@@ -585,31 +551,6 @@ function versionedRawFileUrl(
   if (metadata.modifiedAt === undefined) return url;
   const separator = url.includes("?") ? "&" : "?";
   return `${url}${separator}v=${metadata.modifiedAt}-${metadata.size}`;
-}
-
-function getTargetTopWithinContainer(
-  container: HTMLElement,
-  target: HTMLElement,
-): number {
-  const containerRect = container.getBoundingClientRect();
-  const targetRect = target.getBoundingClientRect();
-  return targetRect.top - containerRect.top + container.scrollTop;
-}
-
-function getFileViewerTargetScrollTop(
-  container: HTMLElement,
-  target: HTMLElement,
-): number {
-  if (container.scrollHeight <= container.clientHeight) {
-    return 0;
-  }
-  const targetTop = getTargetTopWithinContainer(container, target);
-  const leadIn = container.clientHeight * 0.1;
-  const maxScrollTop = Math.max(
-    0,
-    container.scrollHeight - container.clientHeight,
-  );
-  return Math.max(0, Math.min(maxScrollTop, targetTop - leadIn));
 }
 
 /**
@@ -1440,7 +1381,7 @@ export const FileViewer = memo(function FileViewer({
     const highlightedLine =
       highlightedLineRef ??
       fileViewerBodyRef.current?.querySelector<HTMLElement>(
-        ".highlighted-line-start, .markdown-preview-span-start",
+        "[data-highlighted-line-start], .markdown-preview-span-start",
       );
     const viewerBody = fileViewerBodyRef.current;
     if (highlightedLine && viewerBody) {
@@ -1698,8 +1639,11 @@ export const FileViewer = memo(function FileViewer({
     (diffActive && fileVersionControl.loading && !activeDiffFile)
   ) {
     return (
-      <div className="file-viewer">
-        <div className="file-viewer-loading">
+      <div className={viewerStyles.fileViewer} data-file-viewer>
+        <div
+          className={viewerStyles.fileViewerLoading}
+          data-file-viewer-loading
+        >
           {t("fileViewerLoading" as never, { name: fileName })}
         </div>
       </div>
@@ -1771,14 +1715,17 @@ export const FileViewer = memo(function FileViewer({
           />
         </div>
       ) : (
-        <div className="file-viewer-loading">
+        <div
+          className={viewerStyles.fileViewerLoading}
+          data-file-viewer-loading
+        >
           {t("fileViewerLoading" as never, { name: fileName })}
         </div>
       );
     }
     if (error || !fileData || !metadata) {
       return (
-        <div className="file-viewer-error">
+        <div className={viewerStyles.fileViewerError} data-file-viewer-error>
           {error || t("fileViewerNotFound" as never)}
         </div>
       );
@@ -1790,10 +1737,11 @@ export const FileViewer = memo(function FileViewer({
         directMediaUrl ?? (source.fetchRawFileBlob ? rawObjectUrl : rawFileUrl);
       const imageLinkUrl = imageOpenUrl ?? imageUrl;
       return (
-        <div className="file-viewer-image">
+        <div className={viewerStyles.fileViewerImage} data-file-viewer-image>
           {imageUrl && imageLinkUrl ? (
             <a
-              className="file-viewer-image-link"
+              className={viewerStyles.fileViewerImageLink}
+              data-file-viewer-image-link
               href={imageLinkUrl}
               target="_blank"
               rel="noopener noreferrer"
@@ -1804,7 +1752,10 @@ export const FileViewer = memo(function FileViewer({
               <img src={imageUrl} alt={fileName} />
             </a>
           ) : (
-            <div className="file-viewer-loading">
+            <div
+              className={viewerStyles.fileViewerLoading}
+              data-file-viewer-loading
+            >
               {t("fileViewerLoading" as never, { name: fileName })}
             </div>
           )}
@@ -1827,7 +1778,10 @@ export const FileViewer = memo(function FileViewer({
           pdfjsAvailable={sameOriginUrls}
         />
       ) : (
-        <div className="file-viewer-loading">
+        <div
+          className={viewerStyles.fileViewerLoading}
+          data-file-viewer-loading
+        >
           {t("fileViewerLoading" as never, { name: fileName })}
         </div>
       );
@@ -1890,7 +1844,9 @@ export const FileViewer = memo(function FileViewer({
         );
         return (
           <div
-            className="file-viewer-code file-viewer-code-highlighted"
+            className={`${viewerStyles.fileViewerCode} ${viewerStyles.fileViewerCodeHighlighted}`}
+            data-file-viewer-code
+            data-file-viewer-code-highlighted
             data-language={fileData.highlightedLanguage ?? language}
             style={sourceStyle}
           >
@@ -1908,12 +1864,20 @@ export const FileViewer = memo(function FileViewer({
               highlightedPart(highlightedHtml, fileData.content)
             )}
             {fileData.highlightedTruncated && (
-              <div className="file-viewer-truncated">
+              <div
+                className={viewerStyles.fileViewerTruncated}
+                data-file-viewer-truncated
+              >
                 {t("fileViewerHighlightTruncated" as never)}
               </div>
             )}
             {contentWindowLabel && (
-              <div className="file-viewer-truncated">{contentWindowLabel}</div>
+              <div
+                className={viewerStyles.fileViewerTruncated}
+                data-file-viewer-truncated
+              >
+                {contentWindowLabel}
+              </div>
             )}
           </div>
         );
@@ -1936,14 +1900,20 @@ export const FileViewer = memo(function FileViewer({
       const renderPlainLines = (startIndex: number, endIndex: number) => {
         const visibleLines = lines.slice(startIndex, endIndex);
         return visibleLines.length > 0 ? (
-          <div className="code-highlighter-plain">
-            <div className="code-line-numbers">
+          <div
+            className={viewerStyles.codeHighlighterPlain}
+            data-code-highlighter-plain
+          >
+            <div
+              className={viewerStyles.codeLineNumbers}
+              data-code-line-numbers
+            >
               {visibleLines.map((_, index) => {
                 const num = contentStartLine + startIndex + index;
                 return <div key={`ln-${num}`}>{num}</div>;
               })}
             </div>
-            <pre className="code-content">
+            <pre className={viewerStyles.codeContent} data-code-content>
               <code>
                 {visibleLines.map((line, index) => {
                   const num = contentStartLine + startIndex + index;
@@ -1952,9 +1922,13 @@ export const FileViewer = memo(function FileViewer({
                     num >= highlightStart &&
                     num <= highlightEnd;
                   const classes = [
-                    singleLineHighlight && inRange ? "highlighted-line" : "",
-                    num === highlightStart ? "highlighted-line-start" : "",
-                    num === highlightEnd ? "highlighted-line-end" : "",
+                    singleLineHighlight && inRange
+                      ? viewerStyles.highlightedLine
+                      : "",
+                    num === highlightStart
+                      ? viewerStyles.highlightedLineStart
+                      : "",
+                    num === highlightEnd ? viewerStyles.highlightedLineEnd : "",
                   ]
                     .filter(Boolean)
                     .join(" ");
@@ -1969,6 +1943,15 @@ export const FileViewer = memo(function FileViewer({
                       }
                       className={classes || undefined}
                       data-line={num}
+                      data-highlighted-line={
+                        (singleLineHighlight && inRange) || undefined
+                      }
+                      data-highlighted-line-start={
+                        num === highlightStart || undefined
+                      }
+                      data-highlighted-line-end={
+                        num === highlightEnd || undefined
+                      }
                     >
                       {line || " "}
                     </div>
@@ -1989,7 +1972,8 @@ export const FileViewer = memo(function FileViewer({
 
       return (
         <div
-          className="file-viewer-code"
+          className={viewerStyles.fileViewerCode}
+          data-file-viewer-code
           data-language={language}
           style={sourceStyle}
         >
@@ -2002,10 +1986,18 @@ export const FileViewer = memo(function FileViewer({
           ) : lines.length > 0 ? (
             renderPlainLines(0, lines.length)
           ) : (
-            <div className="file-viewer-empty-content">No content read</div>
+            <div
+              className={viewerStyles.fileViewerEmptyContent}
+              data-file-viewer-empty-content
+            >
+              No content read
+            </div>
           )}
           {lines.length < contentLines.length && (
-            <div className="file-viewer-truncated">
+            <div
+              className={viewerStyles.fileViewerTruncated}
+              data-file-viewer-truncated
+            >
               {t("fileViewerPlainTruncated" as never, {
                 count: lines.length,
                 total: contentLines.length,
@@ -2013,7 +2005,12 @@ export const FileViewer = memo(function FileViewer({
             </div>
           )}
           {contentWindowLabel && (
-            <div className="file-viewer-truncated">{contentWindowLabel}</div>
+            <div
+              className={viewerStyles.fileViewerTruncated}
+              data-file-viewer-truncated
+            >
+              {contentWindowLabel}
+            </div>
           )}
         </div>
       );
@@ -2024,7 +2021,7 @@ export const FileViewer = memo(function FileViewer({
 
   // Binary files, or media this browser cannot decode
   const binaryCard = (
-    <div className="file-viewer-binary">
+    <div className={viewerStyles.fileViewerBinary} data-file-viewer-binary>
       <p>{t("fileViewerBinary" as never)}</p>
       <p>
         <strong>{t("fileViewerType" as never)}</strong> {metadata?.mimeType}
@@ -2061,7 +2058,8 @@ export const FileViewer = memo(function FileViewer({
   const header = (
     <div
       ref={setFileHeaderElement}
-      className={`file-viewer-header ${viewerStyles.header}`}
+      className={`${viewerStyles.fileViewerHeader} ${viewerStyles.header}`}
+      data-file-viewer-header
       data-window-actions-top={windowActionsOnTop || undefined}
     >
       <span className={viewerStyles.measurement} aria-hidden="true">
@@ -2086,10 +2084,11 @@ export const FileViewer = memo(function FileViewer({
             </IconButton>
           )}
         </div>
-        <div className={`file-viewer-info ${viewerStyles.info}`}>
+        <div className={viewerStyles.info}>
           {/* biome-ignore lint/a11y/noStaticElementInteractions: right-click on the name or a separator opens the file action menu; folder segments own their own clicks and menus */}
           <span
-            className={`file-viewer-path ${viewerStyles.path}`}
+            className={viewerStyles.path}
+            data-file-viewer-path=""
             title={filePath}
             onContextMenu={handlePathContextMenu}
           >
@@ -2120,7 +2119,7 @@ export const FileViewer = memo(function FileViewer({
                 uncommittedLabel={t("fileRevisionUncommitted" as never)}
               />
             )}
-            <span className="file-viewer-meta">
+            <span className={viewerStyles.fileViewerMeta} data-file-viewer-meta>
               {metadata ? formatFileSize(metadata.size) : ""}
               {!diffActive && metadata?.isText && content !== undefined && (
                 <>
@@ -2141,7 +2140,7 @@ export const FileViewer = memo(function FileViewer({
         </div>
         {windowActionsOnTop && windowActions}
       </div>
-      <div className={`file-viewer-actions ${viewerStyles.actions}`}>
+      <div className={viewerStyles.actions} data-file-viewer-actions="">
         <ViewerFindField find={find} />
         {publicShareContext === null && (
           <FileDiffViewLinks
@@ -2196,10 +2195,8 @@ export const FileViewer = memo(function FileViewer({
           <IconButton
             label={t("fileViewerReload" as never)}
             tooltip={reloadTooltip}
-            className={
-              freshness?.state === "stale"
-                ? viewerStyles.reloadStale
-                : undefined
+            variant={
+              freshness?.state === "stale" ? "attention-outline" : "ghost"
             }
             onMouseEnter={checkFreshness}
             onFocus={checkFreshness}
@@ -2225,11 +2222,7 @@ export const FileViewer = memo(function FileViewer({
         {!diffActive && content !== undefined && (
           <IconButton
             onClick={handleCopy}
-            label={
-              copied
-                ? t("fileViewerCopied" as never)
-                : t("fileViewerCopyContent" as never)
-            }
+            label={copied ? t("fileViewerCopied") : t("fileViewerCopyContent")}
           >
             {copied ? <CheckIcon /> : <CopyIcon />}
           </IconButton>
@@ -2239,6 +2232,7 @@ export const FileViewer = memo(function FileViewer({
           !diffActive && (
             <PublicFileShareButton
               projectId={projectId}
+              filePath={filePath}
               onOpen={setFileShareAnchor}
             />
           )}
@@ -2296,18 +2290,16 @@ export const FileViewer = memo(function FileViewer({
     </div>
   );
 
-  const viewerClass = [
-    "file-viewer",
-    viewerStyles.viewer,
-    standalone && "file-viewer-standalone",
-    fullscreen && "file-viewer-fullscreen",
-    effectiveViewMode === "range" && "file-viewer-compact",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const viewerClass = fileViewerFrameClassName(standalone, fullscreen);
 
   return (
-    <div className={viewerClass} onBlurCapture={handleViewerBlur}>
+    <div
+      className={viewerClass}
+      data-file-viewer
+      data-file-viewer-standalone={standalone || undefined}
+      data-file-viewer-fullscreen={fullscreen || undefined}
+      onBlurCapture={handleViewerBlur}
+    >
       {header}
       {fileShareAnchor && (
         <PublicFileShareModal
@@ -2382,11 +2374,12 @@ export const FileViewer = memo(function FileViewer({
       {loadedIsImage ? imageActions.contextMenuElement : null}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: delegated source-line clicks complement keyboard text-selection comments; the focusable body retains native keyboard scrolling */}
       <div
-        className={`file-viewer-body ${viewerStyles.body} ${
+        className={`${viewerStyles.fileViewerBody} ${viewerStyles.body} ${
           quoteTextBlock && showPreview && hasMarkdownPreview
             ? viewerStyles.quoteReplySurface
             : ""
         }`}
+        data-file-viewer-body
         ref={setBodyElement}
         tabIndex={-1}
         {...(commentMode ? { [SESSION_FILE_COMMENT_MODE_ATTR]: "true" } : {})}
@@ -2467,243 +2460,3 @@ export const FileViewer = memo(function FileViewer({
     </div>
   );
 });
-
-function FileViewerSelectionActions({
-  containerRef,
-  onStartNewSessionFromSelection,
-}: {
-  containerRef: RefObject<HTMLDivElement | null>;
-  onStartNewSessionFromSelection?: (prefill: string) => void;
-}) {
-  const { floatingSelectionActions, selectionContextMenu } =
-    useSelectionActions({
-      containerRef,
-      inert: false,
-      onStartNewSessionFromSelection,
-      quoteClearSignal: 0,
-      isInteractiveTarget: (target) =>
-        target instanceof Element &&
-        target.closest(
-          "button, input, textarea, select, a[href], [contenteditable='true']",
-        ) !== null,
-    });
-
-  return (
-    <>
-      {floatingSelectionActions}
-      {selectionContextMenu}
-    </>
-  );
-}
-
-// Icons
-function RefreshIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
-      <path d="M13.5 2.5v3.2h-3.2" />
-    </svg>
-  );
-}
-
-function RawSourceIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M5.5 4 2 8l3.5 4M10.5 4 14 8l-3.5 4M9.5 2.5l-3 11" />
-    </svg>
-  );
-}
-
-function CopyIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="5" y="5" width="9" height="9" rx="1.5" />
-      <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H3.5A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5" />
-    </svg>
-  );
-}
-
-function PublicFileShareButton({
-  onOpen,
-  projectId,
-}: {
-  onOpen: (anchor: DOMRect) => void;
-  projectId: string;
-}) {
-  const { t } = useI18n();
-  const { version } = useVersion();
-  const { status } = usePublicShareStatus();
-  const fileVhost = useFileVhostService(projectId);
-  if (
-    !fileVhost &&
-    (status?.canCreate !== true ||
-      !serverHasCapability(version, PUBLIC_FILE_SHARES_CAPABILITY))
-  ) {
-    return null;
-  }
-  return (
-    <IconButton
-      onClick={(event) => onOpen(event.currentTarget.getBoundingClientRect())}
-      label={t("fileViewerSharePublicly")}
-    >
-      <PublicLinkIcon />
-    </IconButton>
-  );
-}
-
-function PublicLinkIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m8 12 4-4M6.5 14.5l-1 1a2.8 2.8 0 0 1-4-4l3-3a2.8 2.8 0 0 1 4 0M13.5 5.5l1-1a2.8 2.8 0 1 1 4 4l-3 3a2.8 2.8 0 0 1-4 0" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M3 8.5L6.5 12L13 4" />
-    </svg>
-  );
-}
-
-function PlusCircleIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="8" cy="8" r="6" />
-      <path d="M8 5v6M5 8h6" />
-    </svg>
-  );
-}
-
-function CommentIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M3 3.5h10v7H7l-3.5 2.5v-2.5H3z" />
-    </svg>
-  );
-}
-
-function DownloadIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M8 2v9M4 8l4 4 4-4M2 14h12" />
-    </svg>
-  );
-}
-
-function FullscreenIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M2 5V2h3M11 2h3v3M14 11v3h-3M5 14H2v-3" />
-    </svg>
-  );
-}
-
-function ExitFullscreenIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M5 2v3H2M14 5h-3V2M11 14v-3h3M2 11h3v3" />
-    </svg>
-  );
-}

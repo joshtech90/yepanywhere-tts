@@ -1,3 +1,5 @@
+import styles from "./LoginLayout.module.css";
+import { SelectableCard } from "../components/ui/SelectableCard";
 /**
  * RemoteLoginModePage - Mode selection for remote client login.
  *
@@ -7,7 +9,7 @@
  */
 
 import { useNavigate } from "react-router-dom";
-import { ButtonBase } from "../components/ui/Button";
+import { Spinner } from "../components/ui/Spinner";
 import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
 import { useRemoteConnection } from "../contexts/RemoteConnectionContext";
 import { useI18n } from "../i18n";
@@ -20,14 +22,14 @@ export function RemoteLoginModePage() {
   // If auto-resume is in progress, show a loading screen
   if (isAutoResuming) {
     return (
-      <div className="login-page">
-        <div className="login-container">
-          <div className="login-logo">
-            <YepAnywhereLogo />
+      <div className={styles.page}>
+        <div className={styles.container}>
+          <div className={styles.logo}>
+            <YepAnywhereLogo variant="login" />
           </div>
-          <p className="login-subtitle">Reconnecting...</p>
-          <div className="login-loading" data-testid="auto-resume-loading">
-            <div className="login-spinner" />
+          <p className={styles.subtitle}>Reconnecting...</p>
+          <div className={styles.loading} data-testid="auto-resume-loading">
+            <Spinner size="large" />
           </div>
         </div>
       </div>
@@ -35,42 +37,43 @@ export function RemoteLoginModePage() {
   }
 
   return (
-    <div className="login-page">
-      <div className="login-container">
-        <div className="login-logo">
-          <YepAnywhereLogo />
+    <div className={styles.page}>
+      <div className={styles.container}>
+        <div className={styles.logo}>
+          <YepAnywhereLogo variant="login" />
         </div>
-        <p className="login-subtitle">{t("hostPickerHowToConnect")}</p>
+        <p className={styles.subtitle}>{t("hostPickerHowToConnect")}</p>
 
-        <div className="login-mode-options">
-          <ButtonBase
-            className="login-mode-option"
+        <div className={styles.modeOptions}>
+          <SelectableCard
+            className={styles.modeOption}
             onClick={() => navigate("/relay")}
             data-testid="relay-mode-button"
           >
-            <span className="login-mode-option-title">
+            <span className={styles.modeOptionTitle}>
               {t("hostPickerRelayTitle")}
             </span>
-            <span className="login-mode-option-desc">
+            <span className={styles.modeOptionDesc}>
               {t("hostPickerRelayDescription")}
             </span>
-          </ButtonBase>
+          </SelectableCard>
 
-          <ButtonBase
-            className="login-mode-option login-mode-option-secondary"
+          <SelectableCard
+            className={styles.modeOption}
+            variant="quiet"
             onClick={() => navigate("/direct")}
             data-testid="direct-mode-button"
           >
-            <span className="login-mode-option-title">
+            <span className={styles.modeOptionTitle}>
               {t("hostPickerDirectTitle")}
             </span>
-            <span className="login-mode-option-desc">
+            <span className={styles.modeOptionDesc}>
               {t("hostPickerDirectDescription")}
             </span>
-          </ButtonBase>
+          </SelectableCard>
         </div>
 
-        <p className="login-hint">{t("hostPickerEmptyHint")}</p>
+        <p className={styles.hint}>{t("hostPickerEmptyHint")}</p>
       </div>
     </div>
   );

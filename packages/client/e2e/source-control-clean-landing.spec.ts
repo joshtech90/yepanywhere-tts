@@ -241,7 +241,7 @@ test("clean Changes landing and latest-commit preference stay distinct", async (
   await expect(
     page.getByText("Seed source control fixture", { exact: true }).first(),
   ).toBeVisible();
-  const workingTreeRow = page.locator(".commit-list-working-tree");
+  const workingTreeRow = page.locator("[data-source-working-tree-revision]");
   await expect(
     workingTreeRow.getByText("Clean", { exact: true }),
   ).toBeVisible();
@@ -335,7 +335,9 @@ test("unfocused cold load keeps the static workbench mounted", async ({
   await openSourceControl(page, baseURL);
 
   await expect(page.getByTestId("working-tree-browser")).toBeVisible();
-  await expect(page.locator(".page-content-inner > .loading")).toHaveCount(0);
+  await expect(
+    page.locator("[data-page-content-inner] > [data-loading]"),
+  ).toHaveCount(0);
   await expect(page.getByText("Loading...", { exact: true })).toBeVisible();
   await expect(page.getByText("No matches.", { exact: true })).toHaveCount(0);
   await capture(page, "source-control-unfocused-load-desktop-1000x600.png");
@@ -586,11 +588,13 @@ test("reviews collapsed commit files with bracket navigation", async ({
   const message = page.getByRole("button", {
     name: /^Add grouped browser fixture/,
   });
-  const selectedRevision = page.locator(".commit-list-item.selected");
+  const selectedRevision = page.locator(
+    "[data-source-revision-item][data-source-selected]",
+  );
   await page.reload();
   await expect(selectedRevision).toBeVisible();
   await expect(selectedRevision).toBeFocused();
-  const pageScroller = page.locator(".page-scroll-container");
+  const pageScroller = page.locator("[data-page-scroll-container]");
   const pageScrollTop = await pageScroller.evaluate(
     (element) => element.scrollTop,
   );
@@ -602,7 +606,7 @@ test("reviews collapsed commit files with bracket navigation", async ({
     pageScrollTop,
   );
   await expect(selectedRevision).toBeInViewport();
-  await expect(page.locator(".git-diff-preview-pane")).toBeInViewport();
+  await expect(page.locator("[data-source-preview-pane]")).toBeInViewport();
   await expect(message).toBeInViewport();
   await expect
     .poll(() =>
@@ -620,7 +624,7 @@ test("reviews collapsed commit files with bracket navigation", async ({
     pageScrollTop,
   );
   await expect(selectedRevision).toBeInViewport();
-  await expect(page.locator(".git-diff-preview-pane")).toBeInViewport();
+  await expect(page.locator("[data-source-preview-pane]")).toBeInViewport();
 
   await expect(message).toBeVisible();
 
@@ -646,7 +650,7 @@ test("reviews collapsed commit files with bracket navigation", async ({
 
   await message.click();
   await expect(
-    page.locator(".git-diff-preview-body:has(.commit-message-view)"),
+    page.locator("[data-source-preview-body]:has([data-source-commit-view])"),
   ).toBeVisible();
   await expect(
     page.getByRole("button", {
@@ -672,7 +676,7 @@ test("reviews collapsed commit files with bracket navigation", async ({
     paths.map((path) => path.getAttribute("data-source-path") ?? ""),
   );
 
-  const diffBody = page.locator(".git-diff-preview-body");
+  const diffBody = page.locator("[data-source-preview-body]");
   await expect
     .poll(() =>
       diffBody.evaluate(

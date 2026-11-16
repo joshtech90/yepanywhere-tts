@@ -50,20 +50,6 @@ explicit exclusion ledger checked against static environment reads. Without
 one, new debug and development variables can silently miss the pane. graehl
 added the Environment pane in `038b0e1c` (2026-06-19).
 
-## Local Access transaction boundary
-
-Local Access keeps network rebinding, authentication, and allowed hosts behind
-Apply Changes, unlike ordinary immediate Settings plus Undo. File-viewer paths
-now save immediately with pane-level Undo. A bind or authentication change may
-need validation and redirect, while allowed hosts already support runtime
-updates. The listening port is launch-owned and therefore read-only in this
-form.
-
-Decide whether to split network/auth into an explicit transactional form and
-make ordinary server settings immediate, or document a category-level
-transaction exception. Kyle added the configurable file-viewer sources in
-`9de67900` (2026-06-17).
-
 ## Bypass-mode audit coverage
 
 Approval audit logging now accurately describes explicit approve/deny events,
@@ -111,7 +97,7 @@ the system prompt on both paths. Codex, Codex OSS, and the legacy Gemini adapter
 prefix it only for a new provider session, while Pi, OpenCode, Grok ACP, and
 Gemini ACP prefix the first new user message even after resume.
 
-For adapters without a system-prompt extension, the fragment is not a separate
+For adapters currently using the user-prefix path, the fragment is not a separate
 hidden turn: it is prepended to the provider-facing first user message. YA's
 optimistic live echo retains the original text and deduplicates the adapter
 echo, but no stripping contract guarantees that provider-persisted transcript
@@ -124,5 +110,10 @@ The current provider and compaction evidence is maintained in
 Kyle introduced the default-off setting and current provider composition in
 `77d8f697` (2026-06-13); graehl added the always-visible fragment preview and
 expanded placement copy in `9e35d054` (2026-08-11).
+
+The separate Agent API bootstrap now uses native instruction context; its
+[placement contract](../../topics/agent-context-injection.md#http-v0-bootstrap-placement)
+records native evidence and resume caveats. This does not change the general
+Agent Context setting described above.
 
 Found 2026-08-11 while reviewing Settings clarity with graehl.

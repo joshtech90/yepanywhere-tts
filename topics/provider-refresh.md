@@ -284,7 +284,25 @@ possible ([provider-version-support](provider-version-support.md)).
 Recheck, 2026-11-04: installed Codex is still `0.166.0`, npm `latest`, and
 `pnpm codex:protocol:check` reports no drift. Nothing to refresh.
 
-Current source refresh, 2026-11-06 (0.167.0, generated types only):
+Current source refresh, 2026-11-14 (0.169.0, generated types only):
+
+- The installed CLI already reports `0.169.0`, npm's latest stable release.
+  The reference checkout is `rust-v0.169.0` (`d32063f96c`); compatibility
+  markers and the native test dependency advance from `0.167.0`.
+- The generated subset adds answer-moderation metadata for Chat history,
+  an attached-thread parent id, assistant completion token telemetry,
+  MCP resource request metadata, per-turn environment replacement and
+  file-id audio tool results. YA does not consume these new fields.
+  `inferenceHookDenied` uses YA's existing terminal error fallback;
+  it is not a transient capacity failure to retry.
+- A no-turn `model/list` returns nine models, with `gpt-6.1-sol` the
+  default at low effort. The regenerated protocol passes its drift check.
+- Server and test-helper type checks pass. The combined Claude/Codex/OSS
+  native run passes 34 cases, with two unrelated cases skipped. The
+  provider suite passes 824 tests through the normal isolated-home runner.
+  No paid model turn ran; qualification was on Linux.
+
+Previous source refresh, 2026-11-06 (0.167.0, generated types only):
 
 - Installed Codex is `codex-cli 0.167.0`, npm `latest`; the official
   `rust-v0.167.0` tag resolves to `086ccc833`. `expectedVersion`,
@@ -1390,7 +1408,69 @@ Previous-model registry review:
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
 
-Current source refresh, 2026-11-06 (Claude Code 2.1.319 / SDK 0.3.319):
+Current source refresh, 2026-11-14 (Claude Code 2.1.325 / SDK 0.3.325):
+
+- The SDK and its native packages advance from `0.3.322` to `0.3.325`.
+  The standalone CLI already reports `2.1.325`; compatibility markers
+  advance with the bundled executable.
+- SDK additions include session archive/unarchive, managed-model matching,
+  plugin reload refusal while busy, machine-policy read status, and
+  structured invalid-config diagnostics. Existing YA calls still typecheck.
+  The tool declarations add optional document image/page metadata and
+  incremental skill edits. No adapter change is required by these additions.
+- No-turn SDK handshakes before and after the upgrade return identical
+  model metadata and command names. Server/test-helper type checks,
+  the provider suite and the combined native scenarios pass as recorded
+  in the Codex entry above. No paid model turn ran.
+- Existing provider-host workers must restart to load the updated SDK.
+  The refresh does not restart the shared server or its active sessions.
+
+Previous source refresh, 2026-11-10 (Claude Code 2.1.322 / SDK 0.3.322):
+
+- The SDK and native packages advance from 0.3.321 to 0.3.322; the
+  bundled executable and the standalone install both report Claude Code
+  2.1.322. Compatibility markers advance together. The declaration delta
+  is one doc comment (a saved fast-mode setting is ignored on Vertex).
+- The catalog now spells the current Fable as the `fable` alias itself
+  ("Fable 5.2", description "For your toughest challenges"), with Fable
+  5.1 demoted to a concrete `claude-fable-5-1` row; 0.3.319 listed a
+  concrete `claude-fable-5-2` row ahead of a `fable` alias still named
+  Fable 5.1. `default` and `fable` gain `supportsFastMode: true`. A
+  no-turn handshake returns 14 model rows and 55 commands for both
+  0.3.319 and 0.3.322.
+- The description no longer carries the version, so `mergeClaudeModels`
+  keeping the fallback name "Fable" hid it entirely. The folded `fable`
+  row now keeps the live name ("Fable 5.2"), matching Opus and Sonnet.
+- `model-prices.ts` gains exact `claude-fable-5-2` and `claude-mythos-5-2`
+  rows ($8 input, $40 output, $10 5-minute write, $0.20 cache hit, read
+  from the pricing page 2026-11-10), closing the prefix match to Fable 5
+  noted below.
+- Server type checking, the server provider suites and the shared tests
+  pass. No assistant turn ran. Existing provider-host workers must
+  restart to adopt the update.
+
+Previous source refresh, 2026-11-09 (Claude Code 2.1.321 / SDK 0.3.321):
+
+- The SDK advances from 0.3.319 to 0.3.321; the bundled executable reports
+  Claude Code 2.1.321. Compatibility markers advance together.
+- The declaration delta is additive and unused by YA: an optional
+  `CronDeleteOutput.endedLoopWakeup` and documentation edits.
+- The YA-visible change is the `fable` alias: under 2.1.319 a session
+  launched with `--model fable` reported `claude-fable-5-1`, under 2.1.321 it
+  reports `claude-fable-5-2`. Both versions already list
+  `claude-fable-5-2` first among Fable rows ("From gateway"), so on 0.3.319
+  `mergeClaudeModels` folded 5.2's metadata into a `fable` row that launched
+  5.1; the upgrade makes the row and the launch agree.
+- One user-approved live turn (`--model fable`, effort low, about $0.03) was
+  served by `claude-fable-5-2`.
+- `model-prices.ts` has no exact `claude-fable-5-2` row; it prefix-matches
+  the vendored `claude-fable-5` entry (cache read $1/MTok, versus $0.25 for
+  5.1). Add an exact row once 5.2 pricing is published.
+- Server type checking, the Claude provider suite and the Claude native
+  scenarios (67 passed, 4 skipped) pass. Existing provider-host workers must
+  restart to adopt the update.
+
+Previous source refresh, 2026-11-06 (Claude Code 2.1.319 / SDK 0.3.319):
 
 - The SDK and matching native packages advance from 0.3.318 to 0.3.319;
   the bundled Linux executable and the standalone install both report
@@ -2478,9 +2558,9 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.318` | `0.3.318` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.325` | `0.3.325` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `1.9.0` | Active ACP client dependency for Grok/Gemini |
 
-Claude SDK observed 2026-11-04; ACP SDK observed 2026-10-16.
+Claude SDK observed 2026-11-14; ACP SDK observed 2026-10-16.
 
 Treat both rows as provider-refresh inputs.

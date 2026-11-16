@@ -315,8 +315,18 @@ binary contract; it adds no client dependency, capability, or protocol version.
 ## Request Semantics When Not Ready
 
 Streamed GET requests preserve caller headers, including content negotiation.
-The finite New Session startup bundle uses the existing encrypted response
-stream, independently delivering ready parts. Ordinary live event subscriptions
+The finite New Session startup bundle and the bounded collection NDJSON route
+use the existing encrypted response stream. Collection bodies may remain quiet
+while the connection is healthy; finite file bodies retain their progress
+deadline. Source-local `streamedResponses` capability identifies a usable live
+response path, independently of server feature support. Plain multiplex
+WebSocket, localhost HTTP and finite-only native bridges retain collection REST
+fallback. Localhost collection reads must finish: an endless HTTP/1 response
+per tab can occupy every browser connection slot for that origin, blocking
+session lists, new tabs and unrelated requests. Finite file/bootstrap response
+bodies remain supported. Secure/relay response streams use their multiplexed
+connection and do not consume an HTTP slot per tab.
+Ordinary live event subscriptions
 remain on their subscription protocol. Cancelling a response or closing the
 connection interrupts a pending body read as well as a sender waiting for byte
 acknowledgements, so a quiet producer cannot retain a closed tab's stream.
@@ -387,6 +397,14 @@ and resume-failure behavior. The ownership wiring remains:
   here.
 
 ## Recovery after a temporary outage
+
+A relay route retains its already-confirmed host's page through a temporary
+outage. Switching to a different relay host shows the connection startup shell
+until that destination's first connection succeeds. The previous host's
+connected state must never commit the destination's page or briefly expose an
+editor that will disappear when the new handshake starts. This changes no
+principal, credential, grant or server protocol.
+
 
 A retained source remains `reconnecting` after its ten-attempt rapid retry
 budget is exhausted. Budget exhaustion is not an authentication verdict and
@@ -678,6 +696,9 @@ into deliberately): per-source auth-required signaling replacing the global
   (present with an active count while uploads run; no long-lived bookkeeping).
 - `capabilities.sameOriginUrls = true`; `device` present via the stream
   WebSocket.
+- `capabilities.streamedResponses = false` for live collection acquisition.
+  Lists use finite retained SQL reads and existing WebSocket invalidations.
+  Multiple tabs must remain able to load lists and issue ordinary HTTP requests.
 
 At most one localhost source can exist per app: same-origin fetch is pinned to
 `window.location`. This asymmetry is by construction — multi-source means one

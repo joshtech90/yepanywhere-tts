@@ -15,6 +15,7 @@ import {
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { PrebootComposerRetirement } from "./components/PrebootComposerRetirement";
 import { RouteModule, routeModule } from "./components/RouteModule";
+import { ConfirmDialogHost } from "./components/ui/ConfirmDialog";
 import { TooltipLayer } from "./components/ui/TooltipLayer";
 import { initializeFontSize } from "./hooks/useFontSize";
 import { initializeSidebarSpacing } from "./hooks/useSidebarSpacing";
@@ -28,7 +29,7 @@ import { I18nProvider, useI18n } from "./i18n";
 import { installFontDiagnostics } from "./lib/diagnostics/fontDiagnostics";
 import { installModifierChordTracking } from "./lib/modifierChords";
 import { preloadableComponent } from "./lib/preloadableComponent";
-import "./styles/index.css";
+import "./styles/purposeGlobals";
 
 const App = preloadableComponent(async () => ({
   default: (await import("./App")).App,
@@ -55,6 +56,11 @@ const NavigationLayout = preloadableComponent(async () => ({
 const SessionDomLingerRouteMarker = lazy(() =>
   import("./layouts").then(({ SessionDomLingerRouteMarker }) => ({
     default: SessionDomLingerRouteMarker,
+  })),
+);
+const NativeSessionPathRoute = lazy(() =>
+  import("./layouts").then(({ NativeSessionPathRoute }) => ({
+    default: NativeSessionPathRoute,
   })),
 );
 const ActivityPage = lazy(() =>
@@ -313,6 +319,7 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
         <BrowserRouter basename={basename}>
           <PrebootComposerRetirement />
           <I18nProvider>
+            <ConfirmDialogHost />
             <RouteModule>
               <LocalAppShell>
                 <Routes>
@@ -432,6 +439,10 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                     <Route
                       path="/projects/:projectId/sessions/:sessionId"
                       element={routeModule(<SessionDomLingerRouteMarker />)}
+                    />
+                    <Route
+                      path="/projects/:projectId/sessions/:nativeFamily/:nativeId"
+                      element={routeModule(<NativeSessionPathRoute />)}
                     />
                     <Route
                       path="/projects/:projectId/sessions/:sessionId/agents/:agentId"

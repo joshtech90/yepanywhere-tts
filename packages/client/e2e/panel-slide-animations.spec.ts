@@ -14,7 +14,7 @@ test("Appearance slide animations apply immediately and persist for App toggles"
     name: "Slide animations",
     exact: true,
   });
-  const sidebar = page.locator(".sidebar-desktop");
+  const sidebar = page.locator("[data-sidebar-desktop]");
   await expect(animationToggle).toBeChecked();
   await expect(sidebar).toHaveCSS("transition-duration", "0.2s");
   await animationToggle.locator("..").click();
@@ -32,8 +32,11 @@ test("Appearance slide animations apply immediately and persist for App toggles"
   await recordUiCapture(page, "slide-animations-phone");
   await page.goto("/sessions");
   await page.getByRole("button", { name: "Open sidebar", exact: true }).click();
-  await expect(page.locator(".sidebar")).toHaveCSS("animation-duration", "0s");
-  await expect(page.locator(".sidebar-overlay")).toHaveCSS(
+  await expect(page.locator("[data-sidebar]")).toHaveCSS(
+    "animation-duration",
+    "0s",
+  );
+  await expect(page.locator("[data-sidebar-overlay]")).toHaveCSS(
     "animation-duration",
     "0s",
   );
@@ -105,15 +108,15 @@ test("Appearance slide animations apply immediately and persist for App toggles"
   const app = page.getByRole("button", { name: "App", exact: true });
   const pane = page.getByRole("complementary", { name: "Session pane" });
   await expect(app).toBeVisible();
-  await expect(sidebar).not.toHaveClass(/sidebar-collapsed/);
+  await expect(sidebar).not.toHaveAttribute("data-sidebar-collapsed", "true");
   await app.click();
   await expect(pane).toBeVisible();
   await expect(pane).toHaveCSS("transition-duration", "0s, 0s");
-  await expect(sidebar).toHaveClass(/sidebar-collapsed/);
+  await expect(sidebar).toHaveAttribute("data-sidebar-collapsed", "true");
   await expect(sidebar).toHaveCSS("transition-duration", "0s");
   await app.click();
   await expect(pane).toHaveCount(0);
-  await expect(sidebar).not.toHaveClass(/sidebar-collapsed/);
+  await expect(sidebar).not.toHaveAttribute("data-sidebar-collapsed", "true");
   await expect(sidebar).toHaveCSS("transition-duration", "0s");
 
   await page.goto("/settings/appearance");
@@ -142,11 +145,11 @@ for (const animations of [false, true]) {
     await expect(link).toBeVisible();
     await link.click();
     const pane = page.getByRole("complementary", { name: "Session pane" });
-    const viewer = pane.locator(".file-viewer");
+    const viewer = pane.locator("[data-file-viewer]");
     await expect(
       viewer.getByText("Test Project", { exact: true }),
     ).toBeVisible();
-    await expect(page.locator(".file-viewer-modal")).toHaveCount(0);
+    await expect(page.locator("[data-file-viewer-modal]")).toHaveCount(0);
     await expect(pane).toHaveCSS(
       "transition-duration",
       animations ? "0.2s, 0s" : "0s, 0s",
@@ -160,7 +163,7 @@ for (const animations of [false, true]) {
       })
       .toBeGreaterThan(280);
     const [workspaceBounds, sessionBounds, paneBounds] = await Promise.all([
-      page.locator(".main-content-constrained").boundingBox(),
+      page.locator("[data-main-content-constrained]").boundingBox(),
       page.locator('[class*="sessionColumn"]').boundingBox(),
       pane.boundingBox(),
     ]);
@@ -174,7 +177,7 @@ for (const animations of [false, true]) {
     );
     await recordUiCapture(page, `file-pane-desktop-${animations}`);
 
-    const body = viewer.locator(".file-viewer-body");
+    const body = viewer.locator("[data-file-viewer-body]");
     await body.evaluate((element) => {
       element.scrollTop = 30;
     });
@@ -192,7 +195,7 @@ for (const animations of [false, true]) {
     if (!animations) {
       const immediate = await page.evaluate(async () => {
         const button = document.querySelector<HTMLButtonElement>(
-          '.file-viewer button[aria-label="Close"]',
+          '[data-file-viewer] button[aria-label="Close"]',
         );
         if (!button) throw new Error("Missing close action");
         let frameRan = false;
@@ -209,7 +212,7 @@ for (const animations of [false, true]) {
           frameRan,
           hidden: root.getAttribute("aria-hidden"),
           transitions: root.getAnimations().length,
-          viewerPresent: !!root.querySelector(".file-viewer"),
+          viewerPresent: !!root.querySelector("[data-file-viewer]"),
           track: getComputedStyle(root.parentElement!)
             .gridTemplateColumns.split(" ")
             .at(-1),
@@ -245,7 +248,7 @@ for (const animations of [false, true]) {
     expect(centering.x).toBeLessThan(0.6);
     expect(centering.y).toBeLessThan(0.6);
     await close.click();
-    await expect(page.locator(".file-viewer")).toHaveCount(0);
+    await expect(page.locator("[data-file-viewer]")).toHaveCount(0);
   });
 }
 
@@ -270,18 +273,18 @@ test("nested files stay in the right pane and Back preserves the parent", async 
     await expect(
       pane.getByRole("heading", { name: "Parent file" }),
     ).toBeVisible();
-    const parent = await pane.locator(".file-viewer").elementHandle();
+    const parent = await pane.locator("[data-file-viewer]").elementHandle();
     await pane.getByRole("link", { name: "Open child" }).click();
     await expect(
       pane.getByText("Hello from test file!", { exact: true }),
     ).toBeVisible();
-    await expect(pane.locator(".file-viewer")).toHaveCount(2);
-    await expect(page.locator(".file-viewer-modal")).toHaveCount(0);
+    await expect(pane.locator("[data-file-viewer]")).toHaveCount(2);
+    await expect(page.locator("[data-file-viewer-modal]")).toHaveCount(0);
     await pane
       .getByRole("button", { name: "Back", exact: true })
       .last()
       .click();
-    await expect(pane.locator(".file-viewer")).toHaveCount(1);
+    await expect(pane.locator("[data-file-viewer]")).toHaveCount(1);
     expect(await parent?.evaluate((element) => element.isConnected)).toBe(true);
     await expect(
       pane.getByRole("heading", { name: "Parent file" }),

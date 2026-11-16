@@ -1,5 +1,17 @@
+import { DROP_AGENT_API_RECEIPTS_SCHEMA } from "./migrations/039-drop-agent-api-receipts.js";
+import { CLAUDE_TRANSCRIPT_TO_CACHE_SCHEMA } from "./migrations/038-claude-transcript-to-cache.js";
+import { PROJECT_DISCOVERY_FACTS_SCHEMA } from "./migrations/037-project-discovery-facts.js";
+import { CLAUDE_WRITER_STATE_SCHEMA } from "./migrations/036-claude-writer-state.js";
+import { CLAUDE_TRANSCRIPT_SOURCE_SCHEMA } from "./migrations/035-claude-transcript-source.js";
+import { SESSION_QUERY_CHECKPOINT_SCHEMA } from "./migrations/034-session-query-checkpoint.js";
+import { CATALOG_QUERY_OWNERSHIP_SCHEMA } from "./migrations/033-catalog-query-ownership.js";
+import { SESSION_COLD_STATE_SCHEMA } from "./migrations/032-session-cold-state.js";
 import { SESSION_RELATIONSHIPS_SCHEMA } from "./migrations/026-session-relationships.js";
 import { RELATIONSHIP_PENDING_SCHEMA } from "./migrations/027-relationship-pending.js";
+import { SESSION_CATALOG_SCHEMA } from "./migrations/028-session-catalog.js";
+import { ISSUE_JOB_CATALOG_KEY_SCHEMA } from "./migrations/029-issue-job-catalog-key.js";
+import { SESSION_SUMMARY_FULL_TITLE_SCHEMA } from "./migrations/030-session-summary-full-title.js";
+import { SESSION_METADATA_COLUMNS_SCHEMA } from "./migrations/031-session-metadata-columns.js";
 import { ANTIGRAVITY_NATIVE_ALLOCATIONS_SCHEMA } from "./migrations/024-antigravity-native-allocations.js";
 import { SESSION_SUMMARY_INDEX_SCHEMA } from "./migrations/025-session-summary-index.js";
 import { CREATION_INPUT_EXPECTATION_SCHEMA } from "./migrations/023-creation-input-expectation.js";
@@ -22,6 +34,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { SqliteStatus } from "@yep-anywhere/shared";
 import { networkFilesystemName } from "../lib/filesystemKind.js";
+import { openCacheDatabase } from "./cache-sqlite.js";
 import {
   SPEECH_VOCABULARY_SCHEMA,
   SPEECH_VOCABULARY_SET_SCHEMA,
@@ -74,6 +87,18 @@ export const DISCOVERY_MIGRATIONS: readonly DiscoveryMigration[] = [
   { version: 25, sql: SESSION_SUMMARY_INDEX_SCHEMA },
   { version: 26, sql: SESSION_RELATIONSHIPS_SCHEMA },
   { version: 27, sql: RELATIONSHIP_PENDING_SCHEMA },
+  { version: 28, sql: SESSION_CATALOG_SCHEMA },
+  { version: 29, sql: ISSUE_JOB_CATALOG_KEY_SCHEMA },
+  { version: 30, sql: SESSION_SUMMARY_FULL_TITLE_SCHEMA },
+  { version: 31, sql: SESSION_METADATA_COLUMNS_SCHEMA },
+  { version: 32, sql: SESSION_COLD_STATE_SCHEMA },
+  { version: 33, sql: CATALOG_QUERY_OWNERSHIP_SCHEMA },
+  { version: 34, sql: SESSION_QUERY_CHECKPOINT_SCHEMA },
+  { version: 35, sql: CLAUDE_TRANSCRIPT_SOURCE_SCHEMA },
+  { version: 36, sql: CLAUDE_WRITER_STATE_SCHEMA },
+  { version: 37, sql: PROJECT_DISCOVERY_FACTS_SCHEMA },
+  { version: 38, sql: CLAUDE_TRANSCRIPT_TO_CACHE_SCHEMA },
+  { version: 39, sql: DROP_AGENT_API_RECEIPTS_SCHEMA },
 ];
 
 /** Construct fixtures with the actual historical schema, never a parallel SQL copy. */
@@ -191,6 +216,13 @@ export function openDiscoveryDatabase(options: {
     database = driver.open(path);
     // A short, bounded wait also applies while obtaining the migration lock.
     database.exec("PRAGMA busy_timeout = 250");
+    // In rollback-journal mode a transaction larger than the page cache
+    // spills pages mid-transaction, which needs the exclusive lock. While an
+    // outside reader holds a shared lock, each spill waits out the busy
+    // timeout and the transaction carries on, so it blocks the event loop
+    // for as long as the reader stays. Without spilling, it fails at COMMIT
+    // within the busy timeout instead, at the cost of holding its pages.
+    database.exec("PRAGMA cache_spill = OFF");
     database.exec("PRAGMA foreign_keys = ON");
     migrateDiscoveryDatabase(database);
     return database;
@@ -211,13 +243,26 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The required database connection for one server, owned below the YA data dir. */
+/**
+ * The SQLite connections for one server, owned below the YA data dir: the
+ * required database and the rebuildable cache beside it.
+ */
 export class DiscoverySqliteService {
   private database: SqliteDatabase | undefined;
+  private cache: SqliteDatabase | undefined;
 
-  /** Throws {@link DiscoveryStorageError} when the database cannot be opened. */
+  /** Throws {@link DiscoveryStorageError} when either database cannot be opened. */
   constructor(options: Parameters<typeof openDiscoveryDatabase>[0]) {
     this.database = openDiscoveryDatabase(options);
+    try {
+      this.cache = openCacheDatabase({
+        dataDir: options.dataDir,
+        loadDriver: options.loadDriver,
+      });
+    } catch (error) {
+      this.close();
+      throw new DiscoveryStorageError(errorMessage(error), { cause: error });
+    }
   }
 
   getStatus(): SqliteStatus {
@@ -229,13 +274,22 @@ export class DiscoverySqliteService {
     return this.database;
   }
 
+  /** Rebuildable facts only (`cache-sqlite.ts`); durable state never goes here. */
+  getCacheDatabase(): SqliteDatabase {
+    if (!this.cache) throw new Error("Cache database is closed");
+    return this.cache;
+  }
+
   close(): void {
-    const database = this.database;
+    const databases = [this.database, this.cache];
     this.database = undefined;
-    try {
-      database?.close();
-    } catch (error) {
-      console.warn("[DiscoverySqlite] Close failed:", error);
+    this.cache = undefined;
+    for (const database of databases) {
+      try {
+        database?.close();
+      } catch (error) {
+        console.warn("[DiscoverySqlite] Close failed:", error);
+      }
     }
   }
 }

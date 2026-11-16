@@ -1,12 +1,117 @@
-:global(.modal):has(:global(.session-share-modal).manager) {
-  max-width: min(860px, calc(100dvw - 32px));
-  width: min(860px, calc(100dvw - 32px));
+.sessionShareReadonlyNote {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
 }
 
-.manager {
-  box-sizing: border-box;
-  gap: 14px;
-  width: 100%;
+.sessionShareActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.sessionShareAction {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.sessionShareAction:disabled {
+  cursor: not-allowed;
+}
+
+.sessionShareOptionTitle {
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.sessionShareOptionDescription {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.35;
+}
+
+.sessionShareViewerCount {
+  align-self: flex-start;
+}
+
+.sessionShareManagement {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sessionShareManagementHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.sessionShareGlobalControls {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.sessionShareViewerList {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.sessionShareViewerRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.sessionShareViewerRow:last-child {
+  border-bottom: none;
+}
+
+.sessionShareViewerMain {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sessionShareViewerToken {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.sessionShareViewerMeta,
+.sessionShareViewerState {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.sessionShareViewerMeta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionShareViewerActions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+@media (width <= 600px) {
+  .sessionShareActions {
+    grid-template-columns: 1fr;
+  }
 }
 
 .managerLayout {
@@ -34,7 +139,7 @@
 }
 
 .filterGroup {
-  font-size: 0.78rem;
+  font-size: var(--font-size-sm);
 }
 
 .filterGroup > span {
@@ -44,16 +149,10 @@
 
 .filterButton {
   align-items: center;
-  background: var(--bg-code);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--text-primary);
   cursor: pointer;
   display: flex;
   gap: 7px;
-  min-height: 30px;
   min-width: 0;
-  padding: 3px 6px;
   text-align: left;
 }
 
@@ -84,14 +183,6 @@
   align-self: stretch;
 }
 
-.addButton svg,
-.freezeTypeButton svg,
-.revokeTypeButton svg {
-  display: block;
-  height: 16px;
-  width: 16px;
-}
-
 /* Scope options stack in the first column on the parent's rows (subgrid),
    so each revoke button sits beside its option. */
 .scopeGroup {
@@ -115,46 +206,10 @@
   grid-column: 2;
 }
 
-.freezeConfirmationBanner,
-.revokeConfirmationBanner {
-  align-items: center;
-  border-radius: 7px;
-  box-shadow:
-    inset 0 1px rgba(255, 255, 255, 0.2),
-    0 1px 3px rgba(0, 0, 0, 0.28);
-  color: #fff;
-  display: flex;
-  font-size: 0.72rem;
-  line-height: 1.25;
-  padding: 7px;
-  text-align: left;
-  width: 100%;
-}
-
-.revokeConfirmationBanner {
-  background: color-mix(in srgb, var(--error-color) 82%, #320d12);
-  border: 1px solid color-mix(in srgb, var(--error-color) 78%, #fff);
-}
-
-.freezeConfirmationBanner {
-  background: color-mix(in srgb, var(--attention-color) 72%, #1e293b);
-  border: 1px solid color-mix(in srgb, var(--attention-color) 70%, #fff);
-}
-
-.filterButton:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-
-.filterButtonActive {
-  background: color-mix(in srgb, var(--app-yep-green) 14%, var(--bg-code));
-  border-color: var(--app-yep-green);
-  font-weight: 600;
-}
-
 .filterIcon {
   align-items: center;
   background: #273449;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.28),
     0 1px 3px rgba(0, 0, 0, 0.26);
@@ -173,7 +228,7 @@
   width: 17px;
 }
 
-.filterButtonActive .filterIcon,
+.filterButton[aria-pressed="true"] .filterIcon,
 .scopeOptions [aria-checked="true"] .filterIcon {
   background: color-mix(in srgb, var(--app-yep-green) 68%, #111827);
   box-shadow:
@@ -193,19 +248,9 @@
 
 .filterButton:disabled {
   cursor: not-allowed;
-  opacity: 0.5;
 }
 
 @media (width <= 600px) {
-  :global(.modal):has(:global(.session-share-modal).manager) {
-    max-width: calc(100dvw - 16px);
-    width: calc(100dvw - 16px);
-  }
-
-  .manager {
-    min-width: 0;
-  }
-
   .managerLayout {
     gap: 10px;
     grid-template-columns: minmax(0, 1fr);
@@ -219,9 +264,7 @@
   }
 
   .filterButton {
-    font-size: 0.72rem;
     gap: 5px;
-    padding: 3px;
   }
 
   .filterIcon {

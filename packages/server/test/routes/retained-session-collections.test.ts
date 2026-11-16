@@ -1,5 +1,7 @@
+import { seedRetainedCollection } from "../utils/retained-query-fixture.js";
 import {
   appendFile,
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
@@ -24,7 +26,11 @@ import { SessionMetadataService } from "../../src/metadata/SessionMetadataServic
 import { ProviderChildRelationshipService } from "../../src/sessions/ProviderChildRelationshipService.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { ProjectMetadataService } from "../../src/metadata/ProjectMetadataService.js";
-import { SessionCatalogService } from "../../src/services/SessionCatalogService.js";
+import { openTestCatalog } from "../utils/session-catalog.js";
+import {
+  closeTestDiscoveryDatabases,
+  openTestDiscoveryDatabase,
+} from "../utils/session-metadata-database.js";
 import {
   catalogNativeSessionId,
   RetainedSessionCollections,
@@ -45,7 +51,10 @@ import type {
 import { ProjectScanner } from "../../src/projects/scanner.js";
 import { ClaudeSessionReader } from "../../src/sessions/reader.js";
 import { EventBus } from "../../src/watcher/EventBus.js";
-import { collectionCatalogAdapters } from "../../src/sessions/catalog-adapters/collection-catalog-adapters.js";
+import {
+  collectionCatalogAdapters,
+  createCollectionCatalogAdapters,
+} from "../../src/sessions/catalog-adapters/collection-catalog-adapters.js";
 import { CodexSessionReader } from "../../src/sessions/codex-reader.js";
 import {
   catalogFileVersion,
@@ -69,6 +78,7 @@ let unblock = () => {};
 afterEach(async () => {
   unblock();
   await collections?.dispose();
+  closeTestDiscoveryDatabases();
   if (dataDir) await rm(dataDir, { recursive: true });
   vi.restoreAllMocks();
 });
@@ -95,7 +105,7 @@ it("serves a durable generation through collection routes while one shared refre
     storeKey: "store",
     scan: async () => ({ sourceVersion: "v1", rows: [row] }),
   };
-  const seed = new SessionCatalogService({ dataDir });
+  const seed = openTestCatalog(dataDir);
   await seed.initialize();
   const seeded = await seed.reconcile([adapter]);
   seed.stop();
@@ -112,6 +122,7 @@ it("serves a durable generation through collection routes while one shared refre
   bus.subscribe((event) => events.push(event.type));
   collections = new RetainedSessionCollections({
     dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
     eventBus: bus,
     adapters: async () => {
       starts++;
@@ -257,28 +268,23 @@ it("publishes native heads before questions and refreshes only a modified sessio
   });
   collections = new RetainedSessionCollections({
     dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
     eventBus: bus,
     shouldReadQuestions: (row) => row.sessionId === ids[0],
-    adapters: (rows, signal, paths) =>
-      collectionCatalogAdapters(
-        {
-          scanner,
-          readerFactory: () => {
-            throw new Error("Unexpected Claude reader");
-          },
-          codexSessionsDir: dataDir,
-          codexReaderFactory: () => reader,
-          geminiScanner: {
-            getHashToCwd: async () => {
-              throw new Error("Unexpected Gemini lookup");
-            },
-          },
-          getCatalogFamilies: () => ["codex"],
+    adapters: createCollectionCatalogAdapters({
+      scanner,
+      readerFactory: () => {
+        throw new Error("Unexpected Claude reader");
+      },
+      codexSessionsDir: dataDir,
+      codexReaderFactory: () => reader,
+      geminiScanner: {
+        getHashToCwd: async () => {
+          throw new Error("Unexpected Gemini lookup");
         },
-        rows,
-        signal,
-        paths,
-      ),
+      },
+      getCatalogFamilies: () => ["codex"],
+    }),
   });
   await collections.refresh();
   const base = await publications[0]!;
@@ -357,28 +363,24 @@ it("keeps a retained row's whole title searchable and truncates for display", as
   const long = `${"Context before ".repeat(30)}quasarneedle ${"context after ".repeat(30)}`;
   dataDir = await mkdtemp(join(tmpdir(), "retained-title-"));
   const projectPath = join(dataDir, "project");
-  const service = {
-    read: async () => ({
-      rows: [
-        {
-          catalogFamily: "claude" as const,
-          storeKey: "store",
-          sessionId: "session",
-          ...catalogProjectIdentity(projectPath),
-          projectId: catalogProjectIdentity(projectPath).projectId,
-          updatedAt: "2026-09-08T00:00:00.000Z",
-          title: long,
-          fidelity: "head" as const,
-          sourceVersion: "v1",
-          location: {
-            kind: "file" as const,
-            path: join(projectPath, "session.jsonl"),
-          },
-        } satisfies SessionCatalogRow,
-      ],
-      catalog: {},
-    }),
-  } as unknown as RetainedSessionCollections;
+  const service = await seedRetainedCollection(dataDir, [
+    {
+      catalogFamily: "claude" as const,
+      storeKey: "store",
+      sessionId: "session",
+      ...catalogProjectIdentity(projectPath),
+      projectId: catalogProjectIdentity(projectPath).projectId,
+      updatedAt: "2026-09-08T00:00:00.000Z",
+      title: long,
+      fidelity: "head" as const,
+      sourceVersion: "v1",
+      location: {
+        kind: "file" as const,
+        path: join(projectPath, "session.jsonl"),
+      },
+    } satisfies SessionCatalogRow,
+  ]);
+  collections = service;
 
   const { sessions } = await readRetainedSessionItems(
     service,
@@ -401,27 +403,23 @@ it("names retained rows and the project filter by the project's current chosen n
   await projectMetadata.setProjectNameOverride(identity.projectId, "YA");
   // A row stored before the rename still carries the directory name, and an
   // unchanged file is never read again to replace it.
-  const service = {
-    read: async () => ({
-      rows: [
-        {
-          catalogFamily: "claude" as const,
-          storeKey: "store",
-          sessionId: "session",
-          ...identity,
-          projectName: "yepanywhere",
-          updatedAt: "2026-09-08T00:00:00.000Z",
-          fidelity: "head" as const,
-          sourceVersion: "v1",
-          location: {
-            kind: "file" as const,
-            path: join(projectPath, "session.jsonl"),
-          },
-        } satisfies SessionCatalogRow,
-      ],
-      catalog: {},
-    }),
-  } as unknown as RetainedSessionCollections;
+  const service = await seedRetainedCollection(dataDir, [
+    {
+      catalogFamily: "claude" as const,
+      storeKey: "store",
+      sessionId: "session",
+      ...identity,
+      projectName: "yepanywhere",
+      updatedAt: "2026-09-08T00:00:00.000Z",
+      fidelity: "head" as const,
+      sourceVersion: "v1",
+      location: {
+        kind: "file" as const,
+        path: join(projectPath, "session.jsonl"),
+      },
+    } satisfies SessionCatalogRow,
+  ]);
+  collections = service;
   const deps = {
     projectDisplayName: (path: string) =>
       projectMetadata.getProjectDisplayName(path),
@@ -571,27 +569,22 @@ it("keeps a reaped Claude session at its content time, not its shutdown mtime", 
   const bus = new EventBus();
   collections = new RetainedSessionCollections({
     dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
     eventBus: bus,
-    adapters: (rows, signal, paths) =>
-      collectionCatalogAdapters(
-        {
-          scanner,
-          readerFactory: () => reader,
-          codexSessionsDir: join(dataDir, "unused-codex"),
-          codexReaderFactory: () => {
-            throw new Error("Unexpected Codex reader");
-          },
-          geminiScanner: {
-            getHashToCwd: async () => {
-              throw new Error("Unexpected Gemini lookup");
-            },
-          },
-          getCatalogFamilies: () => ["claude"],
+    adapters: createCollectionCatalogAdapters({
+      scanner,
+      readerFactory: () => reader,
+      codexSessionsDir: join(dataDir, "unused-codex"),
+      codexReaderFactory: () => {
+        throw new Error("Unexpected Codex reader");
+      },
+      geminiScanner: {
+        getHashToCwd: async () => {
+          throw new Error("Unexpected Gemini lookup");
         },
-        rows,
-        signal,
-        paths,
-      ),
+      },
+      getCatalogFamilies: () => ["claude"],
+    }),
   });
   await collections.refresh();
   const row = (await collections.read()).rows.find(
@@ -670,30 +663,25 @@ it("adds a new Claude session in a known store without rediscovering providers",
   const bus = new EventBus();
   collections = new RetainedSessionCollections({
     dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
     eventBus: bus,
     createdSessionGraceMs: 0,
     // Native ids with no YA identity, as the session index reports them.
     nativeSessionId: catalogNativeSessionId({ resolveYa: () => undefined }),
-    adapters: (rows, signal, paths) =>
-      collectionCatalogAdapters(
-        {
-          scanner,
-          readerFactory: () => reader,
-          codexSessionsDir: join(dataDir, "unused-codex"),
-          codexReaderFactory: () => {
-            throw new Error("Unexpected Codex reader");
-          },
-          geminiScanner: {
-            getHashToCwd: async () => {
-              throw new Error("Unexpected Gemini lookup");
-            },
-          },
-          getCatalogFamilies: () => ["claude"],
+    adapters: createCollectionCatalogAdapters({
+      scanner,
+      readerFactory: () => reader,
+      codexSessionsDir: join(dataDir, "unused-codex"),
+      codexReaderFactory: () => {
+        throw new Error("Unexpected Codex reader");
+      },
+      geminiScanner: {
+        getHashToCwd: async () => {
+          throw new Error("Unexpected Gemini lookup");
         },
-        rows,
-        signal,
-        paths,
-      ),
+      },
+      getCatalogFamilies: () => ["claude"],
+    }),
   });
   await collections.refresh();
   expect(discovery).toHaveBeenCalledTimes(1);
@@ -799,6 +787,7 @@ it("rescans only the store of an unwatched session that reports activity", async
   const bus = new EventBus();
   collections = new RetainedSessionCollections({
     dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
     eventBus: bus,
     adapters: async (_rows, _signal, paths) => {
       requests.push(paths && [...paths]);
@@ -863,7 +852,10 @@ it("rescans a native store and rereads a known file from one changed set", async
   );
   expect(discovery).not.toHaveBeenCalled();
   expect(
-    adapters.map((adapter) => [adapter.catalogFamily, adapter.storeKey]),
+    (Array.isArray(adapters) ? adapters : adapters.adapters).map((adapter) => [
+      adapter.catalogFamily,
+      adapter.storeKey,
+    ]),
   ).toContainEqual(["grok", grokSessionsDir]);
 });
 
@@ -917,7 +909,7 @@ it("reads a row an older build stored for an unchanged file once more", async ()
     sourceVersion: catalogFileVersion(await stat(file)),
     location: { kind: "file", path: file },
   };
-  const seed = new SessionCatalogService({ dataDir });
+  const seed = openTestCatalog(dataDir);
   await seed.initialize();
   await seed.reconcile([
     {
@@ -934,27 +926,22 @@ it("reads a row an older build stored for an unchanged file once more", async ()
   const headReads = vi.spyOn(reader, "getSessionListSummary");
   collections = new RetainedSessionCollections({
     dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
     eventBus: new EventBus(),
-    adapters: (rows, signal, paths) =>
-      collectionCatalogAdapters(
-        {
-          scanner,
-          readerFactory: () => {
-            throw new Error("Unexpected Claude reader");
-          },
-          codexSessionsDir: dataDir,
-          codexReaderFactory: () => reader,
-          geminiScanner: {
-            getHashToCwd: async () => {
-              throw new Error("Unexpected Gemini lookup");
-            },
-          },
-          getCatalogFamilies: () => ["codex"],
+    adapters: createCollectionCatalogAdapters({
+      scanner,
+      readerFactory: () => {
+        throw new Error("Unexpected Claude reader");
+      },
+      codexSessionsDir: dataDir,
+      codexReaderFactory: () => reader,
+      geminiScanner: {
+        getHashToCwd: async () => {
+          throw new Error("Unexpected Gemini lookup");
         },
-        rows,
-        signal,
-        paths,
-      ),
+      },
+      getCatalogFamilies: () => ["codex"],
+    }),
   });
   await collections.refresh();
   const reread = (await collections.read()).rows.find(
@@ -975,7 +962,7 @@ it("reads a row an older build stored for an unchanged file once more", async ()
   ).toBe(long);
 });
 
-it("rebuilds at once after an ordinary read finds its shard unreadable", async () => {
+it("rebuilds on an ordinary read after a restart finds stored rows unreadable", async () => {
   dataDir = await mkdtemp(join(tmpdir(), "retained-reset-"));
   const projectPath = join(dataDir, "project");
   const rows: SessionCatalogRow[] = Array.from({ length: 3 }, (_, index) => ({
@@ -1000,6 +987,7 @@ it("rebuilds at once after an ordinary read finds its shard unreadable", async (
   );
   const writer = new RetainedSessionCollections({
     dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
     eventBus: new EventBus(),
     adapters,
   });
@@ -1009,35 +997,35 @@ it("rebuilds at once after an ordinary read finds its shard unreadable", async (
   adapters.mockClear();
 
   // The publishing process keeps its rows in memory, so the damage is met by
-  // a restarted one. No session file changes after this: only the reset
-  // itself can ask for the rebuild.
-  const generations = join(dataDir, "session-catalog", "generations");
-  const [generation] = await readdir(generations);
-  const [shard] = await readdir(join(generations, generation!));
-  await writeFile(join(generations, generation!, shard!), "{ torn", "utf-8");
+  // a restarted one, which ends the lineage. No session file changes after
+  // this: only the restart's own discovery can rebuild.
+  const database = openTestDiscoveryDatabase(dataDir);
+  database.exec(
+    "UPDATE session_catalog SET async_questions = '{ torn' WHERE native_id = 'saved-1'",
+  );
   collections = new RetainedSessionCollections({
     dataDir,
+    database,
     eventBus: new EventBus(),
     adapters,
   });
-  await expect(
-    collections.readPublishedProjectRows(toUrlProjectId(projectPath)),
-  ).rejects.toThrow("Invalid session catalog row");
+  expect(
+    await collections.readPublishedProjectRows(toUrlProjectId(projectPath)),
+  ).toEqual([]);
   const version = collections.getVersion();
+  expect(version).toMatch(/:0$/);
   // Optional process enrichment cannot turn catalogue corruption into native
   // discovery. Advance the actual 300ms scheduling boundary without wall time.
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    await expect(collections.readPublishedRows()).rejects.toThrow(
-      "Invalid session catalog row",
-    );
+    expect((await collections.readPublishedRows()).rows).toEqual([]);
     await vi.advanceTimersByTimeAsync(301);
     expect(adapters).not.toHaveBeenCalled();
     expect(collections.getVersion()).toBe(version);
   } finally {
     vi.useRealTimers();
   }
-  // A normal consumer still owns lineage reset and native reconstruction.
+  // A normal consumer owns native reconstruction.
   expect((await collections.read()).rows).toEqual([]);
 
   await vi.waitFor(() => expect(adapters).toHaveBeenCalled(), {
@@ -1047,6 +1035,34 @@ it("rebuilds at once after an ordinary read finds its shard unreadable", async (
   await collections.refresh();
   expect((await collections.read()).rows).toHaveLength(rows.length);
 }, 20_000);
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "retries a start that failed on the legacy catalog files",
+  async () => {
+    dataDir = await mkdtemp(join(tmpdir(), "retained-start-retry-"));
+    const catalogDir = join(dataDir, "session-catalog");
+    await mkdir(catalogDir, { recursive: true });
+    const manifest = join(catalogDir, "manifest.json");
+    await writeFile(manifest, "{}");
+    await chmod(manifest, 0o000);
+    collections = new RetainedSessionCollections({
+      dataDir,
+      database: openTestDiscoveryDatabase(dataDir),
+      adapters: async () => [],
+    });
+    try {
+      await expect(collections.read()).rejects.toThrow(/EACCES/);
+      expect(await readdir(dataDir)).toContain("session-catalog");
+    } finally {
+      await chmod(manifest, 0o644);
+    }
+    // An unparseable manifest proves damage: a fresh lineage, folder gone.
+    const result = await collections.read();
+    expect(result.rows).toEqual([]);
+    expect(result.catalog.catalogGeneration).toBe(0);
+    expect(await readdir(dataDir)).not.toContain("session-catalog");
+  },
+);
 
 it("keeps the last accepted rows on failure and stops publication after disposal", async () => {
   dataDir = await mkdtemp(join(tmpdir(), "retained-failure-"));
@@ -1075,6 +1091,7 @@ it("keeps the last accepted rows on failure and stops publication after disposal
   const emitted = vi.spyOn(bus, "emit");
   collections = new RetainedSessionCollections({
     dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
     eventBus: bus,
     adapters,
   });
@@ -1115,6 +1132,44 @@ it("keeps the last accepted rows on failure and stops publication after disposal
   expect(emitted).not.toHaveBeenCalled();
 });
 
+it.each([
+  ["no native store exists", []],
+  [
+    "its native stores hold no session",
+    [
+      {
+        catalogFamily: "claude",
+        storeKey: "store",
+        scan: async () => ({ sourceVersion: "v1", rows: [] }),
+      },
+    ],
+  ],
+] satisfies [string, NativeSessionCatalogAdapter[]][])(
+  "reports a discovered catalog complete when %s",
+  async (_name, discovered) => {
+    dataDir = await mkdtemp(join(tmpdir(), "retained-empty-"));
+    const adapters = vi.fn(async () => discovered);
+    collections = new RetainedSessionCollections({
+      dataDir,
+      database: openTestDiscoveryDatabase(dataDir),
+      adapters,
+    });
+    expect((await collections.read()).catalog.complete).toBe(false);
+    await collections.refresh();
+    expect(await collections.read()).toMatchObject({
+      rows: [],
+      catalog: { complete: true, refreshing: false },
+    });
+    // A later failed refresh keeps the established catalog and reports why.
+    adapters.mockRejectedValueOnce(new Error("Provider unavailable"));
+    collections.invalidate();
+    await collections.refresh();
+    expect((await collections.read()).catalog).toMatchObject({
+      complete: true,
+      refreshError: "Provider unavailable",
+    });
+  },
+);
 it("joins durable scoped children into retained global rows after SQL reopen while native refresh is blocked", async () => {
   dataDir = await realpath(
     await mkdtemp(join(tmpdir(), "retained-child-sql-")),
@@ -1323,7 +1378,7 @@ it("joins durable scoped children into retained global rows after SQL reopen whi
         rows: rows.filter((r) => r.storeKey === storeKey),
       }),
     }));
-    const seed = new SessionCatalogService({ dataDir });
+    const seed = openTestCatalog(dataDir);
     await seed.initialize();
     const seeded = await seed.reconcile(adapters);
     seed.stop();
@@ -1336,6 +1391,7 @@ it("joins durable scoped children into retained global rows after SQL reopen whi
     });
     collections = new RetainedSessionCollections({
       dataDir,
+      database: openTestDiscoveryDatabase(dataDir),
       eventBus: bus,
       adapters: async () => {
         entered();
@@ -1403,15 +1459,14 @@ it("joins durable scoped children into retained global rows after SQL reopen whi
       first.catalog?.catalogGeneration,
     );
     expect(next).not.toHaveProperty("unchanged");
-    const accepted = vi.spyOn(index, "accepted");
+    const accepted = vi.spyOn(index, "acceptedMany");
     const page: GlobalSessionsResponse = await (
       await routes.request("/?summaryMode=retained&limit=1&q=public-a")
     ).json();
     expect(page.sessions.map((s) => s.id)).toEqual(["public-a"]);
-    expect(accepted).toHaveBeenCalledExactlyOnceWith(
-      parents[0]!.native,
-      "public-a",
-    );
+    expect(accepted).toHaveBeenCalledExactlyOnceWith([
+      { native: parents[0]!.native, sessionId: "public-a" },
+    ]);
     accepted.mockClear();
     const filtered: GlobalSessionsResponse = await (
       await routes.request(
@@ -1420,7 +1475,9 @@ it("joins durable scoped children into retained global rows after SQL reopen whi
     ).json();
     expect(filtered.sessions.some((r) => r.id === "public-b")).toBe(false);
     expect(
-      accepted.mock.calls.some(([native]) => native.storageScope === scopeB),
+      accepted.mock.calls
+        .flatMap(([parents]) => parents)
+        .some(({ native }) => native.storageScope === scopeB),
     ).toBe(false);
     expect(scan).not.toHaveBeenCalled();
     expect(reader).not.toHaveBeenCalled();
@@ -1503,6 +1560,7 @@ it("keeps a session's creation time while an agent is appending to it", async ()
   const bus = new EventBus();
   collections = new RetainedSessionCollections({
     dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
     eventBus: bus,
     adapters: (rows, signal, paths) =>
       collectionCatalogAdapters(
@@ -1611,6 +1669,7 @@ it("takes a creation time from the index for a session first seen mid-run", asyn
   } as unknown as ISessionIndexService;
   collections = new RetainedSessionCollections({
     dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
     eventBus: new EventBus(),
     adapters: (rows, signal, paths) =>
       collectionCatalogAdapters(
@@ -1636,4 +1695,44 @@ it("takes a creation time from the index for a session first seen mid-run", asyn
   });
   await collections.refresh();
   expect((await collections.read()).rows[0]?.createdAt).toBe(createdAt);
+});
+
+it("keeps complete previous input for unmarked legacy adapter factories", async () => {
+  dataDir = await mkdtemp(join(tmpdir(), "retained-legacy-factory-"));
+  const row = (id: string): SessionCatalogRow => ({
+    catalogFamily: "claude",
+    storeKey: dataDir,
+    sessionId: id,
+    ...catalogProjectIdentity("/project"),
+    updatedAt: "2026-11-10T00:00:00Z",
+    fidelity: "head",
+    sourceVersion: "v1",
+    location: { kind: "file", path: join(dataDir, `${id}.jsonl`) },
+  });
+  const seed = openTestCatalog(dataDir);
+  await seed.initialize();
+  const adapter = (rows: readonly Readonly<SessionCatalogRow>[]) => ({
+    catalogFamily: "claude" as const,
+    storeKey: dataDir,
+    scan: async () => ({ sourceVersion: "fixture", rows }),
+  });
+  await seed.reconcile([adapter([row("a"), row("b")])]);
+  seed.stop();
+  const factory = vi.fn(
+    async (rows: readonly Readonly<SessionCatalogRow>[]) => [adapter(rows)],
+  );
+  collections = new RetainedSessionCollections({
+    dataDir,
+    database: openTestDiscoveryDatabase(dataDir),
+    adapters: factory,
+  });
+  await collections.refresh();
+  factory.mockClear();
+  collections.invalidate(join(dataDir, "a.jsonl"));
+  await collections.refresh();
+  expect(factory.mock.calls[0]![0].map((row) => row.sessionId)).toEqual([
+    "a",
+    "b",
+  ]);
+  expect((await collections.read()).rows).toHaveLength(2);
 });

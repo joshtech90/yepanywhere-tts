@@ -1,3 +1,4 @@
+import pageStyles from "../layouts/PageLayout.module.css";
 import type {
   PermissionMode,
   ProviderName,
@@ -12,6 +13,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { PageHeader } from "../components/PageHeader";
+import { Banner } from "../components/ui/Banner";
 import { Button } from "../components/ui/Button";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { useVersion } from "../hooks/useVersion";
@@ -242,11 +244,14 @@ export function NewSessionPage() {
     return (
       <MainContent isWideScreen={isWideScreen}>
         <PageHeader title={t("newSessionTitle")} />
-        <main className="page-scroll-container">
-          <div className="page-content-inner">
-            <div className="error">
+        <main
+          className={pageStyles.pageScrollContainer}
+          data-page-scroll-container
+        >
+          <div className={pageStyles.pageContentInner} data-page-content-inner>
+            <Banner tone="error">
               {t("newSessionErrorPrefix")} {renderError.message}
-            </div>
+            </Banner>
           </div>
         </main>
       </MainContent>
@@ -257,9 +262,14 @@ export function NewSessionPage() {
     <MainContent isWideScreen={isWideScreen}>
       <PageHeader title={t("newSessionTitle")} actions={projectAppButton} />
 
-      <main className={`page-scroll-container ${styles.workspace}`}>
+      <main
+        className={`${pageStyles.pageScrollContainer} ${styles.workspace}`}
+        data-page-scroll-container
+      >
         <div
-          className={`page-content-inner new-session-page-shell ${styles.formColumn}`}
+          className={`${pageStyles.pageContentInner} ${styles.formColumn}`}
+          data-new-session-page-shell
+          data-page-content-inner
           hidden={appOpen && !isWideScreen}
         >
           <NewSessionForm

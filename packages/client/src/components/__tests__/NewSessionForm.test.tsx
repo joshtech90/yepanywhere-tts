@@ -41,6 +41,7 @@ import {
   WebSocketCloseError,
 } from "../../lib/connection/types";
 import { NewSessionForm } from "../NewSessionForm";
+import draftStyles from "../SpeechDraftField.module.css";
 
 const {
   mockNavigate,
@@ -1585,7 +1586,7 @@ describe("NewSessionForm", () => {
       />,
     );
     const composer = document.querySelector<HTMLTextAreaElement>(
-      "textarea.new-session-form-textarea",
+      "textarea[data-new-session-form-textarea]",
     );
     if (!composer) throw new Error("expected the new-session composer");
     expect(document.activeElement).toBe(composer);
@@ -1624,7 +1625,7 @@ describe("NewSessionForm", () => {
       />,
     );
     const composer = document.querySelector<HTMLTextAreaElement>(
-      "textarea.new-session-form-textarea",
+      "textarea[data-new-session-form-textarea]",
     );
     if (!composer) throw new Error("expected the new-session composer");
     fireEvent.change(composer, { target: { value: "and also this" } });
@@ -3784,7 +3785,7 @@ describe("NewSessionForm", () => {
       name: "newSessionAttachFiles",
     });
     const auxiliaryToolbar = expandButton.closest(
-      ".new-session-form-toolbar-left",
+      "[data-new-session-form-toolbar-left]",
     );
     expect(attachButton.compareDocumentPosition(expandButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
@@ -4021,7 +4022,9 @@ describe("NewSessionForm", () => {
         />,
       );
       fireEvent.click(
-        container.querySelector(".new-session-project-summary") as HTMLElement,
+        container.querySelector(
+          "[data-new-session-project-summary]",
+        ) as HTMLElement,
       );
       expect(
         screen.queryByRole("button", { name: /newSessionProjectDetached/i }) !==
@@ -4087,7 +4090,7 @@ describe("NewSessionForm", () => {
     );
 
     const projectSlot = container.querySelector(
-      ".new-session-project-slot",
+      "[data-new-session-project-slot]",
     ) as HTMLElement;
     let queue = projectSlot.querySelector(
       '[data-new-session-project-queue="true"]',
@@ -4097,11 +4100,13 @@ describe("NewSessionForm", () => {
     expect(within(queue).queryByText("Beta queued session")).toBeNull();
 
     fireEvent.click(
-      projectSlot.querySelector(".new-session-project-summary") as HTMLElement,
+      projectSlot.querySelector(
+        "[data-new-session-project-summary]",
+      ) as HTMLElement,
     );
     const betaOption = Array.from(
       projectSlot.querySelectorAll<HTMLElement>(
-        ".new-session-project-suggestions .new-session-project-option",
+        "[data-new-session-project-suggestions] [data-new-session-project-option]",
       ),
     ).find((option) => option.textContent?.includes("Beta"));
     if (!betaOption) throw new Error("missing Beta project option");
@@ -4139,13 +4144,15 @@ describe("NewSessionForm", () => {
     expect(projectInput.value).toBe("/tmp/alpha");
 
     fireEvent.click(
-      container.querySelector(".new-session-project-summary") as HTMLElement,
+      container.querySelector(
+        "[data-new-session-project-summary]",
+      ) as HTMLElement,
     );
 
     const shortcutNames = () =>
       Array.from(
         container.querySelectorAll(
-          ".new-session-project-suggestions .new-session-project-option-name",
+          "[data-new-session-project-suggestions] [data-new-session-project-option-name]",
         ),
         (element) => element.textContent,
       );
@@ -4157,10 +4164,10 @@ describe("NewSessionForm", () => {
     ]);
 
     const projectOptions = container.querySelectorAll(
-      ".new-session-project-suggestions .new-session-project-option",
+      "[data-new-session-project-suggestions] [data-new-session-project-option]",
     );
-    expect(projectOptions[0]?.className).not.toContain("selected");
-    expect(projectOptions[1]?.className).toContain("selected");
+    expect(projectOptions[0]?.hasAttribute("data-selected")).toBe(false);
+    expect(projectOptions[1]?.hasAttribute("data-selected")).toBe(true);
 
     fireEvent.change(projectInput, { target: { value: "Beta" } });
 
@@ -4177,7 +4184,9 @@ describe("NewSessionForm", () => {
     );
 
     fireEvent.click(
-      container.querySelector(".new-session-project-summary") as HTMLElement,
+      container.querySelector(
+        "[data-new-session-project-summary]",
+      ) as HTMLElement,
     );
 
     expect(
@@ -4203,7 +4212,9 @@ describe("NewSessionForm", () => {
     ) as HTMLInputElement;
 
     fireEvent.click(
-      container.querySelector(".new-session-project-summary") as HTMLElement,
+      container.querySelector(
+        "[data-new-session-project-summary]",
+      ) as HTMLElement,
     );
     fireEvent.pointerDown(projectInput);
     fireEvent.focus(projectInput);
@@ -4324,7 +4335,7 @@ describe("NewSessionForm", () => {
     await waitFor(() => expect(document.activeElement).toBe(entry));
     fireEvent.change(entry, { target: { value: "~/math" } });
     expect(
-      container.querySelector(".new-session-project-summary-title")
+      container.querySelector("[data-new-session-project-summary-title]")
         ?.textContent,
     ).toBe("math");
     fireEvent.click(
@@ -4372,7 +4383,7 @@ describe("NewSessionForm", () => {
     ).toBeDefined();
     fireEvent.click(
       container.querySelector(
-        ".new-session-project-summary",
+        "[data-new-session-project-summary]",
       ) as HTMLButtonElement,
     );
     fireEvent.click(screen.getByRole("button", { name: /Beta/ }));
@@ -4401,7 +4412,7 @@ describe("NewSessionForm", () => {
       />,
     );
     const title = () =>
-      container.querySelector(".new-session-project-summary-title")
+      container.querySelector("[data-new-session-project-summary-title]")
         ?.textContent;
     expect(title()).toBe("Alpha");
     fireEvent.change(
@@ -4465,7 +4476,7 @@ describe("NewSessionForm", () => {
 
     const shortcutNames = Array.from(
       container.querySelectorAll(
-        ".new-session-project-suggestions .new-session-project-option-name",
+        "[data-new-session-project-suggestions] [data-new-session-project-option-name]",
       ),
       (element) => element.textContent,
     );
@@ -4507,7 +4518,7 @@ describe("NewSessionForm", () => {
     });
 
     const primaryHeadings = Array.from(
-      container.querySelectorAll(".new-session-provider-slot h3"),
+      container.querySelectorAll("[data-new-session-provider-slot] h3"),
       (element) => element.textContent,
     );
     expect(primaryHeadings.indexOf("newSessionModelTitle")).toBeGreaterThan(
@@ -4563,7 +4574,7 @@ describe("NewSessionForm", () => {
     expect(screen.getByText("showThinkingHint")).toBeDefined();
     const suggestionSection = screen
       .getByText("newSessionPromptSuggestionsTitle")
-      .closest(".new-session-helper-section");
+      .closest("[data-new-session-helper-section]");
     expect(suggestionSection?.lastElementChild?.textContent).toBe(
       "promptSuggestionModeOffDescription",
     );
@@ -4669,7 +4680,9 @@ describe("NewSessionForm", () => {
       "recapModeSideSession",
     );
     expect(screen.queryByText(tailedDescription)).toBeNull();
-    const recapSection = tailedButton.closest(".new-session-helper-section");
+    const recapSection = tailedButton.closest(
+      "[data-new-session-helper-section]",
+    );
     expect(recapSection?.getAttribute("title")).toBe(tailedDescription);
 
     fireEvent.click(
@@ -5477,11 +5490,11 @@ describe("NewSessionForm", () => {
       voicePropsState.current?.onPendingSpeechChange?.("transcribing");
     });
     await waitFor(() => {
-      expect(document.querySelector(".speech-draft-mirror")).toBeNull();
+      expect(document.querySelector("[data-speech-draft-mirror]")).toBeNull();
     });
     expect(
-      document.querySelector(".speech-draft-field")?.classList,
-    ).not.toContain("has-interim");
+      document.querySelector("[data-speech-draft-field]")?.classList,
+    ).not.toContain(draftStyles.hasInterim);
     expect(document.activeElement).toBe(textarea);
 
     expect(textarea.disabled).toBe(false);
@@ -5537,20 +5550,20 @@ describe("NewSessionForm", () => {
       voicePropsState.current?.onPendingSpeechChange?.("listening");
     });
     await waitFor(() =>
-      expect(document.querySelector(".speech-draft-mirror")).toBeNull(),
+      expect(document.querySelector("[data-speech-draft-mirror]")).toBeNull(),
     );
 
     act(() => {
       voicePropsState.current?.onInterimTranscript?.("live words");
     });
     const interim = await waitFor(() => {
-      const el = document.querySelector(".speech-interim-inline");
+      const el = document.querySelector("[data-speech-interim-inline]");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(interim.nextElementSibling?.classList).toContain(
-      "speech-interim-caret",
-    );
+    expect(
+      interim.nextElementSibling?.hasAttribute("data-speech-interim-caret"),
+    ).toBe(true);
   });
 
   it("hides a stored YA-routed Grok batch method from the method list", () => {
@@ -6123,6 +6136,58 @@ describe("NewSessionForm", () => {
         expect.objectContaining({ machineControl: true }),
       );
       expect(mockCreateProjectQueueItem).not.toHaveBeenCalled();
+    });
+
+    it("follows the server's machine control default and withholds Queue only for a differing choice", async () => {
+      showProjectQueue();
+      versionState.version = {
+        capabilities: [PROJECT_QUEUE_CAPABILITY, "installed-machine-control"],
+      };
+      mockConnectionFetch.mockImplementation(async (path: string) =>
+        path === "/machine-control" ? { available: true, enabled: true } : {},
+      );
+      renderForm();
+      typeDraft("default on");
+      const queueButton = () =>
+        screen.getByRole("button", {
+          name: "toolbarProjectQueueLabel",
+        }) as HTMLButtonElement;
+      // On without opening the options, and a queued session starts the same
+      // way, so Queue stays available.
+      await waitFor(() => expect(queueButton().disabled).toBe(false));
+      openAdvancedOptions();
+      expect(selectedDropdownValue("newSessionMachineControlTitle")).toBe("on");
+
+      fireEvent.click(
+        dropdownOption("newSessionMachineControlTitle", "showThinkingOff"),
+      );
+      expect(queueButton().disabled).toBe(true);
+      expect(queueButton().getAttribute("title")).toBe(
+        "machineControlImmediateLaunchOnly",
+      );
+      fireEvent.click(startButton());
+      await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+      expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({ machineControl: false }),
+      );
+    });
+
+    it("leaves machine control to the server until readiness is known", async () => {
+      versionState.version = {
+        capabilities: [PROJECT_QUEUE_CAPABILITY, "installed-machine-control"],
+      };
+      mockConnectionFetch.mockImplementation((path: string) =>
+        path === "/machine-control"
+          ? new Promise(() => {})
+          : Promise.resolve({}),
+      );
+      renderForm();
+      typeDraft("before readiness");
+      fireEvent.click(startButton());
+      await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+      expect(mockStartSession.mock.calls[0]?.[2]).not.toHaveProperty(
+        "machineControl",
+      );
     });
 
     it("records a started prompt in composer history but not a queued one", async () => {

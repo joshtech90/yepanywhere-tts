@@ -30,7 +30,7 @@ const forked = (newSessionId: string, forkKind: string) => ({
 
 async function openForkMenu(page: Page, turnText: string) {
   const row = page
-    .locator(".message-list [data-render-id]")
+    .locator("[data-message-list] [data-render-id]")
     .filter({ hasText: turnText });
   await row.hover();
   await row.getByRole("button", { name: /^Fork from this turn/ }).click();
@@ -188,7 +188,9 @@ test("Fork with summary posts the instructions, shows progress, and cancels from
   await expect(session.toast("Forking in the background…")).toBeVisible();
   await expect(session.composer).toHaveValue("");
   await expect(page.getByText("Fork after selected turn")).toHaveCount(0);
-  const progress = page.locator(".fork-summary-display-object-generating");
+  const progress = page.locator(
+    "[data-fork-summary-display-object-generating]",
+  );
   await expect(progress).toContainText("Forking…");
 
   await progress.getByRole("button", { name: "Cancel" }).click();
@@ -249,7 +251,7 @@ test("a staged attachment refuses Fork with summary before the fork composer ope
     messages: twoTurns,
   });
   await page
-    .locator(".message-input-wrapper input[type=file]")
+    .locator("[data-message-input-wrapper] input[type=file]")
     .first()
     .setInputFiles({
       name: "pin-notes.txt",
@@ -268,7 +270,7 @@ test("a staged attachment refuses Fork with summary before the fork composer ope
 
 /** Reveals the turn rail at the transcript's right edge and opens a notch's menu. */
 async function openTurnNotchMenu(page: Page, preview: string) {
-  const box = await page.locator(".session-messages").boundingBox();
+  const box = await page.locator("[data-session-messages]").boundingBox();
   if (!box) throw new Error("Transcript scroll area is not laid out");
   await page.mouse.move(box.x + box.width - 6, box.y + box.height / 2);
   // The turn's "load from here" dot sits over its notch and opens the same
@@ -335,7 +337,7 @@ test("Handoff from a turn notch opens New Session prefilled from that turn on", 
       url.searchParams.get("projectId") === projectId &&
       url.searchParams.get("provider") === "claude",
   );
-  const composer = page.locator("textarea.new-session-form-textarea");
+  const composer = page.locator("textarea[data-new-session-form-textarea]");
   await expect(composer).toBeVisible();
   const prefill = await composer.inputValue();
   expect(prefill).toContain("You are taking over for a stopped session.");
@@ -397,10 +399,14 @@ test("toggling auto-open on a started fork summary opens the fork when ready, an
   });
   await startForkAfterSummary(page);
   await session.composer.press("Enter");
-  const progress = page.locator(".fork-summary-display-object-generating");
+  const progress = page.locator(
+    "[data-fork-summary-display-object-generating]",
+  );
+  // click(), not check(): the mocked reply makes the fork ready, which removes
+  // this row, and check() then cannot re-read the box and times out.
   await progress
     .getByRole("checkbox", { name: "Open in new tab when ready" })
-    .check();
+    .click();
 
   await expect
     .poll(session.requests)
@@ -460,7 +466,7 @@ test("the fork shortcut with instructions starts the summary fork after the firs
   await expect(page.getByText("Fork after selected turn")).toHaveCount(0);
   await expect(session.composer).toHaveValue("");
   await expect(
-    page.locator(".fork-summary-display-object-generating"),
+    page.locator("[data-fork-summary-display-object-generating]"),
   ).toBeVisible();
 });
 
@@ -538,6 +544,8 @@ test("/fork N forks after turn N and is recalled like a sent command", async ({
   // Accepted commands lead the recall drawer, ahead of the turns.
   await session.composer.press("Control+ArrowUp");
   await expect(
-    page.locator(".composer-recall-menu .slash-command-item").first(),
+    page
+      .locator("[data-composer-recall-menu] [data-slash-command-item]")
+      .first(),
   ).toContainText("/fork 2");
 });

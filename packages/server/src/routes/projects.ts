@@ -1,3 +1,4 @@
+import { projectQueueCounts } from "./project-queue-counts.js";
 import type { ProviderChildRelationshipService } from "../sessions/ProviderChildRelationshipService.js";
 import {
   mergeCreationProjectCards,
@@ -12,7 +13,6 @@ import {
   normalizeProjectName,
   toUrlProjectId,
   type ProjectCaption,
-  type ProjectQueueItemSummary,
   type UrlProjectId,
 } from "@yep-anywhere/shared";
 import { type Context, Hono } from "hono";
@@ -32,6 +32,8 @@ import {
 } from "./project-creation.js";
 import type { LimitedUsersService } from "../auth/LimitedUsersService.js";
 import { principalFor } from "../auth/limitedLaunchPolicy.js";
+import { limitedProjectPolicy } from "../auth/limitedProjectPolicy.js";
+import { launchProject } from "../projects/launch-project.js";
 import type { CodexSessionScanner } from "../projects/codex-scanner.js";
 import type { GeminiSessionScanner } from "../projects/gemini-scanner.js";
 import {
@@ -99,7 +101,10 @@ export interface ProjectsDeps {
   projectMetadataService?: ProjectMetadataService;
   projectAppStore?: ProjectAppStore;
   /** Grants a limited user the project they just created. */
-  limitedUsersService?: Pick<LimitedUsersService, "grantNewSessionProject">;
+  limitedUsersService?: Pick<
+    LimitedUsersService,
+    "grantNewSessionProject" | "list"
+  >;
   eventBus?: EventBus;
   projectQueueService?: Pick<ProjectQueueService, "listAll" | "listProject">;
   sessionIndexService?: SessionIndexService;
@@ -181,10 +186,6 @@ function processBlocksProjectQueue(process: Process): boolean {
   );
 }
 
-function isVisibleProjectQueueItem(item: ProjectQueueItemSummary): boolean {
-  return item.status === "queued" || item.status === "failed";
-}
-
 function projectIdsShareIdentity(left: string, right: string): boolean {
   if (left === right) return true;
   try {
@@ -220,20 +221,6 @@ function getActivityCountsForProject(
     }
   }
   return total;
-}
-
-function getProjectQueueCountForProject(
-  projectQueueService: ProjectsDeps["projectQueueService"],
-  projectId: string,
-): number {
-  if (!projectQueueService) return 0;
-  return projectQueueService
-    .listAll()
-    .filter(
-      (item) =>
-        isVisibleProjectQueueItem(item) &&
-        projectIdsShareIdentity(item.projectId, projectId),
-    ).length;
 }
 
 /**
@@ -507,6 +494,9 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     const codeNameByProjectId = await codeNamesForProjects(rawProjects);
     const captionByProjectId = await captionsForProjects(rawProjects);
 
+    const queueCount = projectQueueCounts(
+      deps.projectQueueService?.listAll() ?? [],
+    );
     // Enrich projects with active counts (all keyed by UrlProjectId now)
     const nativeProjects = rawProjects.map((project) => {
       const counts = getActivityCountsForProject(activityCounts, project.id);
@@ -517,10 +507,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
         activeOwnedCount: counts.activeOwnedCount,
         activeExternalCount: counts.activeExternalCount,
         projectQueueBlockingCount: counts.projectQueueBlockingCount,
-        projectQueueCount: getProjectQueueCountForProject(
-          deps.projectQueueService,
-          project.id,
-        ),
+        projectQueueCount: queueCount(project.id),
       };
     });
 
@@ -602,7 +589,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     const counts = getActivityCountsForProject(activityCounts, project.id);
     const codeNameByProjectId = await codeNamesForProjects([project]);
     const projectQueueCount = deps.projectQueueService
-      ? getProjectQueueCountForProject(deps.projectQueueService, project.id)
+      ? projectQueueCounts(deps.projectQueueService.listAll())(project.id)
       : 0;
 
     const cards = mergeCreationProjectCards(
@@ -748,8 +735,22 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       );
     }
 
-    // Create projectId and try to get/create the project
-    const projectId = toUrlProjectId(normalizedPath);
+    // A link is a way to reach a folder, not a project, so the folder it
+    // names is what gets registered (topics/project-paths.md). A limited
+    // user's project keeps the path their access names.
+    const { projectPath, projectId } = owner
+      ? {
+          projectPath: normalizedPath,
+          projectId: toUrlProjectId(normalizedPath),
+        }
+      : await launchProject(
+          normalizedPath,
+          undefined,
+          limitedProjectPolicy(
+            deps.limitedUsersService,
+            deps.projectMetadataService,
+          ),
+        );
     let project = await deps.scanner.getOrCreateProject(projectId);
 
     if (!project) {
@@ -767,7 +768,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       const registered = deps.projectMetadataService.getMetadata(projectId);
       if (
         owner &&
-        (deps.projectMetadataService.isHiddenProjectPath(normalizedPath) ||
+        (deps.projectMetadataService.isHiddenProjectPath(projectPath) ||
           (registered && registered.ownerUsername !== owner.username))
       ) {
         return c.json(
@@ -780,14 +781,11 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       }
       await deps.projectMetadataService.addProject(
         projectId,
-        normalizedPath,
+        projectPath,
         owner?.username,
       );
       // A name equal to the path's own is no override at all.
-      if (
-        chosenName !== null &&
-        chosenName !== getProjectName(normalizedPath)
-      ) {
+      if (chosenName !== null && chosenName !== getProjectName(projectPath)) {
         await deps.projectMetadataService.setProjectNameOverride(
           project.id,
           chosenName,

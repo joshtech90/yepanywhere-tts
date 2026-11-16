@@ -1,3 +1,4 @@
+import bashStyles from "./BashRenderer.module.css";
 import { useCallback, useState } from "react";
 import { IconButton } from "../../ui/Button";
 
@@ -121,7 +122,7 @@ function CheckIcon() {
 
 /**
  * Hover-reveal clipboard button for one section of tool output.
- * Emits the `bash-section-copy` class: the shared copy-button style all
+ * Owns the `data-bash-section-copy` boundary: the copy-button style all
  * output sections use (the name predates non-Bash consumers).
  */
 export function OutputCopyButton({
@@ -150,9 +151,11 @@ export function OutputCopyButton({
 
   return (
     <IconButton
-      variant="outline"
+      variant={copied ? "success-outline" : "outline"}
       size="dense"
-      className={`bash-section-copy ${copied ? "copied" : ""}`}
+      className={bashStyles.bashSectionCopy}
+      data-copied={copied || undefined}
+      data-bash-section-copy
       onClick={handleCopy}
       disabled={!text}
       label={copied ? "Copied" : label}

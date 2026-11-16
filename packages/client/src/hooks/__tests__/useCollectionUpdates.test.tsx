@@ -1,0 +1,869 @@
+import { act, cleanup, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { encodeCapabilityIds, SERVER_CAPABILITIES } from "@yep-anywhere/shared";
+import {
+  collectionView,
+  diffCollectionView,
+  type CollectionUpdate,
+} from "@yep-anywhere/shared/collection-updates";
+import { useCollectionUpdates } from "../useCollectionUpdates";
+import { FakeSourceTransport } from "../../lib/transport/FakeSourceTransport";
+import {
+  createSourceRuntimeRegistry,
+  type YaSourceRuntime,
+} from "../../lib/sourceRuntime";
+import {
+  collectionQueryIsLive,
+  collectionQueryCoverage,
+  expandCollectionUpdates,
+  retainCollectionUpdates,
+  pauseCollectionUpdates,
+} from "../../lib/collectionUpdates";
+import {
+  ensureClientQuery,
+  getClientQueryState,
+  resetClientQueryControllerForTests,
+} from "../../lib/clientQueryController";
+import {
+  getQueryRevalidationMetrics,
+  resetQueryRevalidationForTests,
+  retainQueryRevalidation,
+} from "../../lib/clientQueryRevalidation";
+
+import { asClientSummarySourceKey } from "../../lib/clientSummarySourceKey";
+
+const version = vi.hoisted(() => ({
+  current: { current: "0.12.0" } as Record<string, unknown> | null,
+}));
+vi.mock("../useVersion", () => ({
+  useRetainedVersionInfo: () => version.current,
+}));
+interface Request {
+  path: string;
+  signal: AbortSignal;
+  send(frame: CollectionUpdate, split?: boolean): void;
+  sendMany(frames: CollectionUpdate[]): void;
+}
+const registries: Array<() => void> = [];
+function fixture(rawSourceKey: string) {
+  const sourceKey = asClientSummarySourceKey(rawSourceKey);
+  const requests: Request[] = [];
+  const transport = new FakeSourceTransport({
+    fetchResponse: async (path, init) => {
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const body = new ReadableStream<Uint8Array>({
+        start: (c) => {
+          controller = c;
+        },
+      });
+      const signal = init!.signal!;
+      signal.addEventListener(
+        "abort",
+        () => {
+          try {
+            controller.close();
+          } catch {}
+        },
+        { once: true },
+      );
+      requests.push({
+        path,
+        signal,
+        sendMany: (frames) =>
+          controller.enqueue(
+            new TextEncoder().encode(
+              frames.map((frame) => JSON.stringify(frame) + "\n").join(""),
+            ),
+          ),
+        send: (frame, split) => {
+          const bytes = new TextEncoder().encode(JSON.stringify(frame) + "\n");
+          if (split) {
+            controller.enqueue(bytes.slice(0, bytes.length - 3));
+            controller.enqueue(bytes.slice(bytes.length - 3));
+          } else controller.enqueue(bytes);
+        },
+      });
+      return new Response(body, {
+        headers: { "Content-Type": "application/x-ndjson" },
+      });
+    },
+  });
+  const registry = createSourceRuntimeRegistry();
+  registries.push(() => registry.disposeSource(sourceKey));
+  registry.registerSourceTransport(sourceKey, {
+    kind: "custom",
+    createTransport: () => transport,
+  });
+  return {
+    runtime: registry.getOrCreateSourceRuntime(sourceKey),
+    requests,
+    transport,
+  };
+}
+const key = "shared-query";
+const path = "/sessions?limit=100";
+const document = (title: string) =>
+  collectionView({ sessions: [{ id: "same", title }], hasMore: false });
+const initial = (title: string, query = path, revision = 1) =>
+  diffCollectionView(query, revision, undefined, document(title))!;
+const flush = async (assertion: () => void) => {
+  await act(async () => {
+    await vi.waitFor(assertion, { interval: 5 });
+  });
+};
+function useObserve(
+  runtime: YaSourceRuntime,
+  publish: (body: Record<string, unknown>) => void,
+  fallback = () => {},
+  rows = 100,
+  catalogPresentation?: "loading",
+) {
+  useCollectionUpdates({
+    runtime,
+    key,
+    path,
+    rows,
+    catalogPresentation,
+    enabled: true,
+    applySnapshot: publish,
+    fallback,
+  });
+}
+beforeEach(() => {
+  version.current = { current: "0.12.0" };
+});
+afterEach(() => {
+  cleanup();
+  registries.splice(0).forEach((dispose) => {
+    dispose();
+  });
+  resetClientQueryControllerForTests();
+  resetQueryRevalidationForTests();
+});
+
+it("shares a query stream, fences a late REST response, and cancels queued whole-list revalidation", async () => {
+  const { runtime, requests } = fixture("stream-one");
+  const accepted: unknown[] = [];
+  let oldResolve!: (body: unknown) => void;
+  const old = ensureClientQuery({
+    sourceKey: runtime.sourceKey,
+    key,
+    fetcher: () =>
+      new Promise((resolve) => {
+        oldResolve = resolve;
+      }),
+    applySnapshot: (body) => {
+      accepted.push(body);
+    },
+  });
+  const first = renderHook(() =>
+    useObserve(runtime, (body) => {
+      accepted.push(body);
+    }),
+  );
+  const second = renderHook(() =>
+    useObserve(runtime, (body) => {
+      accepted.push(body);
+    }),
+  );
+  await flush(() => expect(requests).toHaveLength(1));
+  const run = vi.fn();
+  const revalidation = retainQueryRevalidation({
+    sourceKey: runtime.sourceKey,
+    key,
+    subscriber: { events: ["session-catalog-updated"], debounceMs: 500, run },
+  });
+  revalidation.schedule();
+  expect(getQueryRevalidationMetrics().armedTimers).toBe(1);
+  requests[0]!.send(initial("héllo 😺"), true);
+  await flush(() => expect(accepted).toHaveLength(1));
+  expect(collectionQueryIsLive(runtime, key)).toBe(true);
+  expect(getQueryRevalidationMetrics().armedTimers).toBe(0);
+  oldResolve({ sessions: [{ id: "old" }] });
+  await old;
+  expect(accepted).toHaveLength(1);
+  requests[0]!.send(
+    diffCollectionView(path, 2, document("héllo 😺"), document("changed"))!,
+  );
+  await flush(() => expect(accepted).toHaveLength(2));
+  expect(accepted[1]).toEqual({
+    sessions: [{ id: "same", title: "changed" }],
+    hasMore: false,
+  });
+  first.unmount();
+  expect(requests[0]!.signal.aborted).toBe(false);
+  second.unmount();
+  await flush(() => expect(requests[0]!.signal.aborted).toBe(true));
+  expect(collectionQueryIsLive(runtime, key)).toBe(false);
+  revalidation.release();
+});
+
+it("keeps ordinary REST ownership when the transport cannot stream responses", async () => {
+  const { runtime, requests, transport } = fixture("no-streamed-responses");
+  Object.assign(transport.capabilities, { streamedResponses: false });
+  renderHook(() => useObserve(runtime, () => {}));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(requests).toHaveLength(0);
+});
+
+it("cancels a response that arrives after its final consumer departed", async () => {
+  const { runtime, transport } = fixture("late-stream-response");
+  let resolve!: (response: Response) => void;
+  const cancelled = vi.fn();
+  const published = vi.fn(async () => {});
+  const fetch = vi.fn(
+    () =>
+      new Promise<Response>((r) => {
+        resolve = r;
+      }),
+  );
+  transport.fetchResponse = fetch;
+  const release = retainCollectionUpdates(runtime, key, {
+    path,
+    rows: 100,
+    publish: published,
+    fallback: () => {},
+  });
+  await flush(() => expect(fetch).toHaveBeenCalledOnce());
+  release();
+  await act(async () => {
+    await Promise.resolve();
+  });
+  resolve(
+    new Response(new ReadableStream({ cancel: cancelled }), {
+      headers: { "Content-Type": "application/x-ndjson" },
+    }),
+  );
+  await flush(() => expect(cancelled).toHaveBeenCalledOnce());
+  expect(published).not.toHaveBeenCalled();
+});
+
+it.each([false, true])(
+  "backs off incomplete initial coverage (partial=%s) without starving REST fallback",
+  async (partial) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const releases: Array<() => void> = [];
+    try {
+      const { runtime, transport } = fixture(`incomplete-stream-${partial}`);
+      const fallbackKey = partial ? "missing-query" : key;
+      const fetch = vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start: (c) => {
+                if (partial)
+                  c.enqueue(
+                    new TextEncoder().encode(
+                      JSON.stringify(initial("first query only")) + "\n",
+                    ),
+                  );
+                c.close();
+              },
+            }),
+            { headers: { "Content-Type": "application/x-ndjson" } },
+          ),
+      );
+      transport.fetchResponse = fetch;
+      const run = vi.fn();
+      const revalidation = retainQueryRevalidation({
+        sourceKey: runtime.sourceKey,
+        key: fallbackKey,
+        subscriber: { events: [], debounceMs: 500, run },
+      });
+      releases.push(revalidation.release);
+      releases.push(
+        retainCollectionUpdates(runtime, key, {
+          path,
+          rows: 100,
+          publish: async () => {},
+          fallback: () => {
+            if (!partial) revalidation.schedule();
+          },
+        }),
+      );
+      if (partial)
+        releases.push(
+          retainCollectionUpdates(runtime, fallbackKey, {
+            path: "/sessions?limit=20",
+            rows: 20,
+            publish: async () => {},
+            fallback: () => revalidation.schedule(),
+          }),
+        );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_420);
+      });
+      expect(fetch.mock.calls.length).toBeLessThanOrEqual(3);
+      expect(run).toHaveBeenCalled();
+    } finally {
+      for (const release of releases.reverse()) release();
+      await act(async () => {
+        await Promise.resolve();
+      });
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("fences an old stream around REST pagination and widens shared coverage before resuming", async () => {
+  const { runtime, requests } = fixture("stream-pagination");
+  const accepted: unknown[] = [];
+  renderHook(() =>
+    useObserve(runtime, (body) => {
+      accepted.push(body);
+    }),
+  );
+  await flush(() => expect(requests).toHaveLength(1));
+  requests[0]!.send(initial("first"));
+  await flush(() => expect(accepted).toHaveLength(1));
+  const resume = pauseCollectionUpdates(runtime, key);
+  requests[0]!.send(
+    diffCollectionView(path, 2, document("first"), document("obsolete"))!,
+  );
+  resume(200);
+  await flush(() => expect(requests).toHaveLength(2));
+  const queries = JSON.parse(
+    new URL(requests[1]!.path, "http://source").searchParams.get("queries")!,
+  );
+  expect(queries).toEqual(["/sessions?limit=200"]);
+  expect(accepted).toHaveLength(1);
+  requests[1]!.send(initial("fresh page", "/sessions?limit=200"));
+  await flush(() => expect(accepted).toHaveLength(2));
+  const release = pauseCollectionUpdates(runtime, key);
+  release(600);
+  await flush(() => expect(requests[1]!.signal.aborted).toBe(true));
+  expect(collectionQueryIsLive(runtime, key)).toBe(false);
+});
+
+it("keeps colliding sources separate and recovers a missed delta with a new authoritative snapshot", async () => {
+  const a = fixture("stream-a"),
+    b = fixture("stream-b");
+  const receivedA: unknown[] = [],
+    receivedB: unknown[] = [];
+  const fallback = vi.fn();
+  renderHook(() =>
+    useObserve(
+      a.runtime,
+      (body) => {
+        receivedA.push(body);
+      },
+      fallback,
+    ),
+  );
+  renderHook(() =>
+    useObserve(b.runtime, (body) => {
+      receivedB.push(body);
+    }),
+  );
+  await flush(() => {
+    expect(a.requests).toHaveLength(1);
+    expect(b.requests).toHaveLength(1);
+  });
+  a.requests[0]!.send(initial("host A"));
+  b.requests[0]!.send(initial("host B"));
+  await flush(() => {
+    expect(receivedA).toHaveLength(1);
+    expect(receivedB).toHaveLength(1);
+  });
+  a.requests[0]!.send({ ...initial("missing"), base: 8, revision: 9 });
+  await flush(() => expect(fallback).toHaveBeenCalledTimes(1));
+  expect(a.requests[0]!.signal.aborted).toBe(true);
+  await flush(() => expect(a.requests).toHaveLength(2));
+  a.requests[1]!.send(initial("host A recovered", path, 12));
+  await flush(() => expect(receivedA).toHaveLength(2));
+  expect(receivedB).toEqual([
+    { sessions: [{ id: "same", title: "host B" }], hasMore: false },
+  ]);
+  a.transport.emitVisibilityRestored();
+  await flush(() => expect(a.requests).toHaveLength(3));
+  expect(b.requests).toHaveLength(1);
+});
+
+it.each([
+  null,
+  { current: "0.11.0" },
+  { current: "0.12.0", deniedCapabilityBits: encodeCapabilityIds([156]) },
+])(
+  "keeps the existing reader without issuing an unsupported stream request: %j",
+  async (value) => {
+    version.current = value;
+    const { runtime, requests } = fixture("stream-unsupported");
+    renderHook(() => useObserve(runtime, () => {}));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(requests).toHaveLength(0);
+  },
+);
+
+it("parses valid coalesced lines whose combined transport chunk exceeds the per-frame bound", async () => {
+  const { runtime, requests } = fixture("stream-coalesced");
+  const accepted: Record<string, unknown>[] = [];
+  const fallback = vi.fn();
+  renderHook(() =>
+    useObserve(
+      runtime,
+      (body) => {
+        accepted.push(body);
+      },
+      fallback,
+    ),
+  );
+  await flush(() => expect(requests).toHaveLength(1));
+  const first = collectionView({
+    sessions: [{ id: "same", title: "first" }],
+    padding: "x".repeat(1_100_000),
+  });
+  const next = collectionView({
+    sessions: [{ id: "same", title: "last" }],
+    padding: "y".repeat(1_100_000),
+  });
+  requests[0]!.sendMany([
+    diffCollectionView(path, 1, undefined, first)!,
+    diffCollectionView(path, 2, first, next)!,
+  ]);
+  await flush(() =>
+    expect((accepted.at(-1)?.padding as string | undefined)?.slice(0, 3)).toBe(
+      "yyy",
+    ),
+  );
+  expect(fallback).not.toHaveBeenCalled();
+  expect(collectionQueryIsLive(runtime, key)).toBe(true);
+});
+
+it("keeps an expanded query attached with another view retained and preserves failed expansion coverage", async () => {
+  const { runtime, requests } = fixture("stream-expansion");
+  const accepted: unknown[] = [];
+  const fallback = vi.fn();
+  const inbox = retainCollectionUpdates(runtime, "inbox", {
+    path: "/inbox",
+    rows: 0,
+    publish: async () => {},
+    fallback: () => {},
+  });
+  const hook = renderHook(
+    ({ rows }) =>
+      useObserve(
+        runtime,
+        (body) => {
+          accepted.push(body);
+        },
+        fallback,
+        rows,
+      ),
+    { initialProps: { rows: 100 } },
+  );
+  await flush(() => expect(requests).toHaveLength(1));
+  requests[0]!.send(initial("first"));
+  await flush(() => expect(accepted).toHaveLength(1));
+  expect(expandCollectionUpdates(runtime, key, 200)).toBe(true);
+  await flush(() => expect(requests).toHaveLength(2));
+  requests[1]!.send(initial("second", "/sessions?limit=200"));
+  await flush(() => expect(accepted).toHaveLength(2));
+  hook.rerender({ rows: 200 });
+  await act(async () => {});
+  expect(requests).toHaveLength(2);
+  requests[1]!.send(
+    diffCollectionView(
+      "/sessions?limit=200",
+      2,
+      document("second"),
+      document("third"),
+    )!,
+  );
+  await flush(() => expect(accepted).toHaveLength(3));
+  expect(expandCollectionUpdates(runtime, key, 300)).toBe(true);
+  expect(collectionQueryCoverage(runtime, key)).toBe(300);
+  await flush(() => expect(requests).toHaveLength(3));
+  requests[2]!.send({
+    ...initial("missed", "/sessions?limit=300"),
+    base: 8,
+    revision: 9,
+  });
+  await flush(() => expect(fallback).toHaveBeenCalled());
+  expect(collectionQueryCoverage(runtime, key)).toBe(300);
+  hook.unmount();
+  inbox();
+});
+
+it("does not broaden session-update support to withdrawn project query support", async () => {
+  version.current = {
+    current: "0.12.0",
+    deniedCapabilityBits: encodeCapabilityIds([157]),
+  };
+  const { runtime, requests } = fixture("project-capability-withdrawal");
+  renderHook(() =>
+    useCollectionUpdates({
+      runtime,
+      key: "projects",
+      path: "/projects?summaryMode=retained",
+      enabled: true,
+      capability: SERVER_CAPABILITIES.projectCollectionUpdates.name,
+      applySnapshot: () => {},
+      fallback: () => {},
+    }),
+  );
+  renderHook(() => useObserve(runtime, () => {}));
+  await flush(() => expect(requests).toHaveLength(1));
+  const queries = JSON.parse(
+    new URL(requests[0]!.path, "http://source").searchParams.get("queries")!,
+  );
+  expect(queries).toEqual([path]);
+});
+
+it("does not restart supported streams when a legacy-only query performs a REST read", async () => {
+  const { runtime, requests } = fixture("legacy-query-pause");
+  renderHook(() => useObserve(runtime, () => {}));
+  await flush(() => expect(requests).toHaveLength(1));
+  requests[0]!.send(initial("supported"));
+  await flush(() => expect(collectionQueryIsLive(runtime, key)).toBe(true));
+  const resume = pauseCollectionUpdates(runtime, "unsupported-project-query");
+  await act(async () => {});
+  expect(requests[0]!.signal.aborted).toBe(false);
+  resume();
+  await act(async () => {});
+  expect(requests).toHaveLength(1);
+});
+
+it("negotiates metadata fields explicitly and returns to legacy after capability withdrawal", async () => {
+  version.current = {
+    current: "0.12.0",
+    capabilityBits: encodeCapabilityIds([
+      SERVER_CAPABILITIES.collectionQueryUpdates.id,
+      SERVER_CAPABILITIES.collectionMetadataFields.id,
+    ]),
+  };
+  const { runtime, requests } = fixture("metadata-fields");
+  const accepted: Record<string, unknown>[] = [];
+  const hook = renderHook(() =>
+    useObserve(runtime, (body) => {
+      accepted.push(body);
+    }),
+  );
+  await flush(() => expect(requests).toHaveLength(1));
+  expect(requests[0]!.path).toContain("metadata=fields");
+  const first = collectionView({
+    sessions: [{ id: "same" }],
+    projects: [{ id: "p" }],
+    catalog: { generation: 1 },
+    nextTransitionAt: 10,
+  });
+  const second = collectionView({
+    sessions: [{ id: "same" }],
+    projects: [{ id: "p" }],
+    catalog: { generation: 2 },
+  });
+  requests[0]!.send(diffCollectionView(path, 1, undefined, first, true)!);
+  await flush(() => expect(accepted).toHaveLength(1));
+  requests[0]!.send(diffCollectionView(path, 2, first, second, true)!);
+  await flush(() => expect(accepted).toHaveLength(2));
+  expect(accepted[1]).toEqual({
+    sessions: [{ id: "same" }],
+    projects: [{ id: "p" }],
+    catalog: { generation: 2 },
+  });
+  expect(accepted[1]!.projects).toBe(accepted[0]!.projects);
+  version.current = { current: "0.12.0" };
+  hook.rerender();
+  await flush(() => expect(requests).toHaveLength(2));
+  expect(requests[0]!.signal.aborted).toBe(true);
+  expect(requests[1]!.path).not.toContain("metadata=fields");
+  requests[1]!.send(diffCollectionView(path, 3, undefined, first)!);
+  await flush(() => expect(accepted).toHaveLength(3));
+  expect(accepted[2]!.nextTransitionAt).toBe(10);
+});
+
+it.each([false, true])(
+  "advances bookkeeping without display writes and preserves burst, REST and recovery fences (fields %s)",
+  async (fields) => {
+    const { runtime, requests } = fixture(`display-${fields}`);
+    version.current = {
+      current: "0.12.0",
+      capabilityBits: encodeCapabilityIds(
+        fields ? [SERVER_CAPABILITIES.collectionMetadataFields.id] : [],
+      ),
+    };
+    const accepted: Record<string, unknown>[] = [];
+    renderHook(() =>
+      useObserve(runtime, (body) => {
+        accepted.push(body);
+      }),
+    );
+    await flush(() => expect(requests).toHaveLength(1));
+    const body = (
+      generation: number,
+      title = "first",
+      extra: Record<string, unknown> = {},
+    ) =>
+      collectionView({
+        sessions: [{ id: "same", title }],
+        hasMore: false,
+        projects: [{ id: "p" }],
+        catalog: {
+          catalogEpoch: "epoch",
+          catalogGeneration: generation,
+          complete: true,
+          refreshing: false,
+        },
+        ...extra,
+      });
+    let view = body(1);
+    let revision = 1;
+    requests[0]!.send(
+      diffCollectionView(path, revision, undefined, view, fields)!,
+    );
+    await flush(() => expect(accepted).toHaveLength(1));
+    let oldResolve!: (value: unknown) => void;
+    const old = ensureClientQuery({
+      sourceKey: runtime.sourceKey,
+      key,
+      force: true,
+      fetcher: () =>
+        new Promise((resolve) => {
+          oldResolve = resolve;
+        }),
+      applySnapshot: () => {
+        throw Error("late REST must not publish");
+      },
+    });
+    const next = body(2);
+    requests[0]!.send(
+      diffCollectionView(path, ++revision, view, next, fields)!,
+    );
+    view = next;
+    await flush(() =>
+      expect(getClientQueryState(runtime.sourceKey, key)?.stale).toBe(false),
+    );
+    oldResolve({ sessions: [] });
+    expect(await old).toEqual({ status: "obsolete" });
+    expect(accepted).toHaveLength(1);
+    const fetcher = vi.fn();
+    expect(
+      await ensureClientQuery({
+        sourceKey: runtime.sourceKey,
+        key,
+        coverage: { minRows: 100 },
+        fetcher,
+      }),
+    ).toEqual({ status: "covered" });
+    expect(fetcher).not.toHaveBeenCalled();
+    // A row frame can be superseded by the following bookkeeping frame before
+    // its async query publication settles. The newest complete body must win.
+    const row = body(3, "changed"),
+      token = body(4, "changed");
+    requests[0]!.sendMany([
+      diffCollectionView(path, ++revision, view, row, fields)!,
+      diffCollectionView(path, ++revision, row, token, fields)!,
+    ]);
+    view = token;
+    await flush(() => expect(accepted).toHaveLength(2));
+    expect(accepted[1]).toMatchObject({
+      sessions: [{ title: "changed" }],
+      catalog: { catalogGeneration: 4 },
+    });
+    const catalogEdit =
+      (patch: Record<string, unknown>) => (meta: Record<string, unknown>) => ({
+        ...meta,
+        catalog: { ...(meta.catalog as object), ...patch },
+      });
+    // Each step changes only its named field, independently of the counter.
+    const edits: ((
+      meta: Record<string, unknown>,
+    ) => Record<string, unknown>)[] = [
+      catalogEdit({ refreshing: true }),
+      catalogEdit({ refreshError: "failed" }),
+      (meta) => {
+        const { refreshError: _, ...catalog } = meta.catalog as Record<
+          string,
+          unknown
+        >;
+        return { ...meta, catalog };
+      },
+      catalogEdit({ complete: false }),
+      (meta) => ({ ...meta, nextTransitionAt: 20 }),
+      (meta) => ({ ...meta, nextTransitionAt: 30 }),
+      (meta) => {
+        const { nextTransitionAt: _, ...rest } = meta;
+        return rest;
+      },
+      (meta) => ({ ...meta, future: { value: "new" } }),
+      (meta) => {
+        const { future: _, ...rest } = meta;
+        return rest;
+      },
+      catalogEdit({ catalogEpoch: "new-epoch" }),
+      catalogEdit({ catalogGeneration: 1 }),
+      catalogEdit({ futureField: "new" }),
+    ];
+    for (const edit of edits) {
+      const next = collectionView({
+        ...edit(view.meta),
+        sessions: [{ id: "same", title: "changed" }],
+      });
+      requests[0]!.send(
+        diffCollectionView(path, ++revision, view, next, fields)!,
+      );
+      view = next;
+      const count = accepted.length;
+      await flush(() => expect(accepted).toHaveLength(count + 1));
+    }
+    // A fresh authoritative replacement must heal local edits even if identical.
+    const count = accepted.length;
+    requests[0]!.send(
+      diffCollectionView(path, ++revision, undefined, view, fields)!,
+    );
+    await flush(() => expect(accepted).toHaveLength(count + 1));
+    const gap = diffCollectionView(
+      path,
+      revision + 2,
+      view,
+      body(100),
+      fields,
+    )!;
+    requests[0]!.send(gap);
+    await flush(() => expect(collectionQueryIsLive(runtime, key)).toBe(false));
+  },
+);
+
+it("selects initial loading/error presentation while a completed catalog refreshes, and heals when a raw consumer takes over", async () => {
+  const { runtime, requests } = fixture("loading-presentation");
+  const accepted: Record<string, unknown>[] = [];
+  const hook = renderHook(
+    ({ mode }: { mode?: "loading" }) =>
+      useObserve(
+        runtime,
+        (body) => {
+          accepted.push(body);
+        },
+        undefined,
+        100,
+        mode,
+      ),
+    { initialProps: { mode: "loading" as "loading" | undefined } },
+  );
+  await flush(() => expect(requests).toHaveLength(1));
+  let view = collectionView({
+    sessions: [],
+    catalog: {
+      catalogEpoch: "epoch",
+      catalogGeneration: 0,
+      complete: false,
+      refreshing: true,
+    },
+  });
+  let revision = 1;
+  const clock = vi.spyOn(Date, "now");
+  let now = Date.now();
+  try {
+    const send = async (
+      next: typeof view,
+      publications: number,
+      reset = false,
+      request = 0,
+    ) => {
+      now += 1000;
+      clock.mockReturnValue(now);
+      requests[request]!.send(
+        diffCollectionView(path, revision++, reset ? undefined : view, next)!,
+      );
+      view = next;
+      await flush(() =>
+        expect(
+          getClientQueryState(runtime.sourceKey, key)?.requestStartedAt,
+        ).toBe(now),
+      );
+      expect(accepted).toHaveLength(publications);
+    };
+    await send(view, 1, true);
+    await send(
+      collectionView({
+        sessions: [],
+        catalog: { ...(view.meta.catalog as object), refreshing: false },
+      }),
+      2,
+    );
+    await send(
+      collectionView({
+        sessions: [],
+        catalog: { ...(view.meta.catalog as object), refreshError: "failed" },
+      }),
+      3,
+    );
+    await send(
+      collectionView({
+        sessions: [],
+        catalog: {
+          catalogEpoch: "epoch",
+          catalogGeneration: 1,
+          complete: true,
+          refreshing: false,
+        },
+      }),
+      4,
+    );
+    await send(
+      collectionView({
+        sessions: [],
+        catalog: {
+          ...(view.meta.catalog as object),
+          catalogGeneration: 2,
+          refreshing: true,
+        },
+      }),
+      4,
+    );
+    await send(
+      collectionView({
+        sessions: [],
+        catalog: {
+          ...(view.meta.catalog as object),
+          catalogGeneration: 3,
+          refreshing: false,
+        },
+      }),
+      4,
+    );
+    // A simultaneous raw-status reader widens the shared presentation.
+    const raw = renderHook(() => useObserve(runtime, () => {}));
+    await flush(() => expect(requests).toHaveLength(2));
+    expect(requests[0]!.signal.aborted).toBe(true);
+    await send(view, 5, true, 1);
+    await send(
+      collectionView({
+        sessions: [],
+        catalog: { ...(view.meta.catalog as object), refreshing: true },
+      }),
+      6,
+      false,
+      1,
+    );
+    raw.unmount();
+    await flush(() => expect(requests).toHaveLength(3));
+    await send(view, 7, true, 2);
+    await send(
+      collectionView({
+        sessions: [],
+        catalog: { ...(view.meta.catalog as object), refreshing: false },
+      }),
+      7,
+      false,
+      2,
+    );
+    hook.rerender({ mode: undefined });
+    await flush(() => expect(requests).toHaveLength(4));
+    await send(view, 8, true, 3);
+    await send(
+      collectionView({
+        sessions: [],
+        catalog: { ...(view.meta.catalog as object), refreshing: true },
+      }),
+      9,
+      false,
+      3,
+    );
+  } finally {
+    clock.mockRestore();
+  }
+});

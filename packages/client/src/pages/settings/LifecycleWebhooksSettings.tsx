@@ -1,4 +1,6 @@
+import rowsStyles from "./SettingsRows.module.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Banner } from "../../components/ui/Banner";
 import { Button } from "../../components/ui/Button";
 import { Checkbox } from "../../components/ui/Checkbox";
 import { TextInput } from "../../components/ui/Field";
@@ -133,14 +135,14 @@ export function LifecycleWebhooksSettings() {
         t("lifecycleWebhooksDryRunDescription"),
       ]}
     >
-      <div className="settings-group">
+      <div className={rowsStyles.group} data-settings-group>
         <SettingsItem
           as="label"
           label={t("lifecycleWebhooksEnableTitle")}
           description={t("lifecycleWebhooksEnableDescription")}
           layout="custom"
         >
-          <div className="settings-item-info">
+          <div className={rowsStyles.itemInfo} data-settings-info>
             <strong>{t("lifecycleWebhooksEnableTitle")}</strong>
             <p>{t("lifecycleWebhooksEnableDescription")}</p>
           </div>
@@ -163,7 +165,7 @@ export function LifecycleWebhooksSettings() {
             style: { flexDirection: "column", alignItems: "stretch" },
           }}
         >
-          <div className="settings-item-info">
+          <div className={rowsStyles.itemInfo} data-settings-info>
             <strong>{t("lifecycleWebhooksUrlTitle")}</strong>
             <p>{t("lifecycleWebhooksUrlDescription")}</p>
           </div>
@@ -193,7 +195,7 @@ export function LifecycleWebhooksSettings() {
             style: { flexDirection: "column", alignItems: "stretch" },
           }}
         >
-          <div className="settings-item-info">
+          <div className={rowsStyles.itemInfo} data-settings-info>
             <strong>{t("lifecycleWebhooksTokenTitle")}</strong>
             <p>{t("lifecycleWebhooksTokenDescription")}</p>
           </div>
@@ -221,7 +223,7 @@ export function LifecycleWebhooksSettings() {
           description={t("lifecycleWebhooksDryRunDescription")}
           layout="custom"
         >
-          <div className="settings-item-info">
+          <div className={rowsStyles.itemInfo} data-settings-info>
             <strong>{t("lifecycleWebhooksDryRunTitle")}</strong>
             <p>{t("lifecycleWebhooksDryRunDescription")}</p>
           </div>
@@ -237,7 +239,7 @@ export function LifecycleWebhooksSettings() {
         </SettingsItem>
 
         <div
-          className="settings-item"
+          className={rowsStyles.item}
           style={{ justifyContent: "flex-end", gap: "var(--space-2)" }}
         >
           <Button
@@ -250,7 +252,7 @@ export function LifecycleWebhooksSettings() {
         </div>
 
         {(saveError || error) && (
-          <p className="settings-warning">{saveError || error}</p>
+          <Banner tone="error">{saveError || error}</Banner>
         )}
       </div>
     </SettingsSection>

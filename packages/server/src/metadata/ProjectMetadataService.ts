@@ -93,11 +93,20 @@ export interface ProjectMetadataServiceOptions {
 
 export class ProjectMetadataService {
   private state: ProjectMetadataState;
+  private discoveryRevision = 0;
+  /** The owned registry has passed a no-op reconciliation since its last mutation. */
+  private codeNamesReconciled = false;
   private dataDir: string;
   private filePath: string;
   /** One identity per hidden project; invalidated when hidden membership changes. */
   private hiddenProjectIdentities?: Set<string>;
-  private save = createCoalescingSaver(() => this.doSave()).save;
+  /** One entry per registered/hidden owned project; reset on any state write/reload. */
+  private projectOwnersByIdentity?: Map<string, string>;
+  private writeState = createCoalescingSaver(() => this.doSave()).save;
+  private save = () => {
+    this.projectOwnersByIdentity = undefined;
+    return this.writeState();
+  };
 
   constructor(options: ProjectMetadataServiceOptions = {}) {
     this.dataDir =
@@ -120,7 +129,10 @@ export class ProjectMetadataService {
    * Creates the data directory and file if they don't exist.
    */
   async initialize(): Promise<void> {
+    this.discoveryRevision++;
+    this.codeNamesReconciled = false;
     this.hiddenProjectIdentities = undefined;
+    this.projectOwnersByIdentity = undefined;
     console.log(`[ProjectMetadataService] Initializing from: ${this.filePath}`);
     try {
       // Ensure data directory exists
@@ -259,15 +271,33 @@ export class ProjectMetadataService {
     projects: readonly { id: string; name: string }[],
   ): Promise<ProjectCodeNameUpdate> {
     this.state.projectCodeNames ??= {};
+    if (this.codeNamesReconciled) {
+      const assignments = projects.map((project) => {
+        const record =
+          this.state.projectCodeNames![this.canonicalProjectId(project.id)];
+        return record?.projectName === project.name
+          ? { projectId: project.id, codeName: record.codeName }
+          : undefined;
+      });
+      if (
+        assignments.every(
+          (assignment): assignment is NonNullable<typeof assignment> =>
+            assignment !== undefined,
+        )
+      )
+        return { assignments, changedProjectIds: [] };
+    }
+    this.codeNamesReconciled = false;
     const update = reconcileProjectCodeNames(
       this.state.projectCodeNames,
       projects,
       (projectId) => this.canonicalProjectId(projectId),
     );
+    this.codeNamesReconciled = !update.stateChanged;
     if (update.stateChanged) await this.save();
     return {
-      assignments: update.assignments,
-      changedProjectIds: update.changedProjectIds,
+      assignments: [...update.assignments],
+      changedProjectIds: [...update.changedProjectIds],
     };
   }
 
@@ -276,6 +306,7 @@ export class ProjectMetadataService {
     requestedCodeName: string,
     projects: readonly { id: string; name: string }[],
   ): Promise<ProjectCodeNameUpdate> {
+    this.codeNamesReconciled = false;
     this.state.projectCodeNames ??= {};
     const update = setProjectCodeNameInRegistry(
       this.state.projectCodeNames,
@@ -302,6 +333,8 @@ export class ProjectMetadataService {
     projectPath: string,
     ownerUsername?: string,
   ): Promise<void> {
+    this.codeNamesReconciled = false;
+    this.discoveryRevision++;
     const canonicalPath = canonicalizeProjectPath(projectPath);
     const canonicalProjectId = encodeProjectId(canonicalPath);
     const owner = ownerUsername ?? this.getProjectOwner(canonicalPath);
@@ -332,30 +365,32 @@ export class ProjectMetadataService {
     const targetIdentity = getProjectIdentityKey(
       canonicalizeProjectPath(projectPath),
     );
-    for (const metadata of [
-      ...Object.values(this.state.projects),
-      ...Object.values(this.state.hiddenProjects ?? {}),
-    ]) {
-      if (
-        metadata.ownerUsername &&
-        getProjectIdentityKey(metadata.path) === targetIdentity
-      ) {
-        return metadata.ownerUsername;
+    if (!this.projectOwnersByIdentity) {
+      this.projectOwnersByIdentity = new Map();
+      for (const metadata of [
+        ...Object.values(this.state.projects),
+        ...Object.values(this.state.hiddenProjects ?? {}),
+      ]) {
+        const key = getProjectIdentityKey(metadata.path);
+        if (metadata.ownerUsername && !this.projectOwnersByIdentity.has(key))
+          this.projectOwnersByIdentity.set(key, metadata.ownerUsername);
       }
     }
-    return undefined;
+    return this.projectOwnersByIdentity.get(targetIdentity);
   }
 
   /**
    * Remove a project from the added list.
    */
   async removeProject(projectId: string): Promise<void> {
+    this.codeNamesReconciled = false;
     const canonicalProjectId = this.canonicalProjectId(projectId);
     const hadCodeName = Boolean(
       this.state.projectCodeNames?.[canonicalProjectId],
     );
     delete this.state.projectCodeNames?.[canonicalProjectId];
     if (this.state.projects[projectId]) {
+      this.discoveryRevision++;
       const { [projectId]: _, ...rest } = this.state.projects;
       this.state.projects = rest;
       await this.save();
@@ -369,6 +404,8 @@ export class ProjectMetadataService {
    */
   async hideProject(projectId: string, projectPath: string): Promise<void> {
     this.hiddenProjectIdentities = undefined;
+    this.codeNamesReconciled = false;
+    this.discoveryRevision++;
     const canonicalPath = canonicalizeProjectPath(projectPath);
     const canonicalProjectId = encodeProjectId(canonicalPath);
     const owner = this.getProjectOwner(canonicalPath);
@@ -433,6 +470,10 @@ export class ProjectMetadataService {
   /**
    * Get the file path for testing purposes.
    */
+  getDiscoveryRevision(): number {
+    return this.discoveryRevision;
+  }
+
   getFilePath(): string {
     return this.filePath;
   }

@@ -100,7 +100,7 @@ for (const hosted of [false, true])
       await page.goto(
         `${origin}/new-session?projectId=${projectId}&provider=codex&model=gpt-6.1-sol`,
       );
-      const composer = page.locator("textarea.new-session-form-textarea");
+      const composer = page.locator("textarea[data-new-session-form-textarea]");
       await composer.waitFor();
       await composer.pressSequentially("OWNED_CODEX_CREATION");
       const accepted = page.waitForResponse(
@@ -184,15 +184,18 @@ for (const hosted of [false, true])
         ),
       ).toHaveLength(1);
       await expect(page).toHaveURL(
-        `${origin}/projects/${projectId}/sessions/${nativeId}?yaSessionId=${receipt.sessionId}`,
+        `${origin}/projects/${projectId}/sessions/codex/${nativeId}`,
       );
       expect(nativeUrls.length).toBeGreaterThan(0);
       for (const value of nativeUrls) {
+        // Only the viewer address and its one lookup name the native id;
+        // every session resource request uses the YA id.
         const url = new URL(value);
-        expect(url.pathname).toBe(
-          `/projects/${projectId}/sessions/${nativeId}`,
-        );
-        expect(url.searchParams.get("yaSessionId")).toBe(receipt.sessionId);
+        expect([
+          `/projects/${projectId}/sessions/codex/${nativeId}`,
+          `/api/projects/${projectId}/native-sessions/codex/${nativeId}`,
+        ]).toContain(url.pathname);
+        expect(url.search).toBe("");
       }
       expect(errors).toEqual([]);
     } catch (error) {

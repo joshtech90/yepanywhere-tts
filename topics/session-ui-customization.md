@@ -305,14 +305,40 @@ expanded. The [pre-boot composer](early-typing-handoff.md#pre-boot-composer)
 reserves the same sidebar space so adopting early typing does not require
 hiding navigation; `?sidebar=expanded` still wins.
 
+## Session Info Prompt and Account Tabs
+
+Session Info uses the transcript's condensed user-prompt bubble for the title;
+[reading the full title](session-retitle.md#reading-the-full-title) owns its
+expansion, attachment and copy behavior. Expanding it is local to the open pane
+and does not change the conversation.
+
+The model pill opens the Model, Account and Session Info dialog on desktop and
+phone. When the server supports Agent Auth Router for Claude or Codex, Account
+is available at either width. The wide header's account chip opens Account
+directly; it has no separate dropdown. The Account pane is the sole existing
+session account-switching surface, with the existing capability, owner and
+session eligibility restrictions. Closing or switching tabs preserves drafts.
+
+## Session List Subagents
+
+Compact session rows with subagents show an expander without a visible count
+badge. Its tooltip retains the count and child names; expanding reveals the
+child sessions. The parent's unread state does not add emphasis to the expander.
+
 ## Session List Menu Visibility
 
 Session row menus remain hidden at rest on both desktop and touch screens.
-Desktop hover reveals only the hovered row's menu. Touch devices reveal the
-menu for the focused row; keyboard focus and an open menu keep its trigger
-visible. Touch hover emulation must not reveal menus across the list or require
-a second tap to open a session. These rules apply to compact sidebar rows and
-session cards alike.
+Desktop hover reveals only the hovered row's menu. On touch devices a long
+press on a row opens its menu without also opening the session; tapping a row,
+including its right edge, opens the session. Mouse clicks and right-clicks are
+unchanged. Keyboard focus and an open menu keep the trigger visible. A hidden
+trigger takes no taps. Touch hover emulation must not reveal menus across the list or
+require a second tap to open a session. These rules apply to compact sidebar
+rows and session cards alike.
+
+The revealed trigger is a solid raised chip at the row's right edge, at the
+same position on every row, with a darker state while hovered or open. The
+fade behind it ends in the row's own background, hovered or not.
 
 ## Mockup Requirements
 

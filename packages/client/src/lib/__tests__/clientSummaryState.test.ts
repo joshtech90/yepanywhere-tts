@@ -2619,7 +2619,7 @@ describe("clientSummaryState", () => {
   });
 });
 
-it("keeps inbox provider phases from the latest complete inbox snapshot only", () => {
+it("accepts healthy partial inbox rows while preserving omitted rows and optional live details", () => {
   const held = {
     phase: "background" as const,
     work: [
@@ -2643,15 +2643,39 @@ it("keeps inbox provider phases from the latest complete inbox snapshot only", (
     state: ReturnType<typeof createEmptyClientSummaryState>,
   ) => selectInboxResponse(state).active.map((item) => item.providerPhase);
 
+  const modelConfig: NonNullable<InboxItem["modelConfig"]> = {
+    provider: "codex",
+    model: "gpt-6.1-sol",
+    thinking: { type: "enabled" },
+    effort: "high",
+  };
+  const activeModels = (
+    state: ReturnType<typeof createEmptyClientSummaryState>,
+  ) => selectInboxResponse(state).active.map((item) => item.modelConfig);
+
+  const coldPartial = applyInboxCollectionSnapshot(
+    createEmptyClientSummaryState(),
+    inbox([inboxItem("healthy-cold", { activity: "in-turn" })], false),
+    50,
+  );
+  expect(
+    selectInboxResponse(coldPartial).active.map((item) => item.sessionId),
+  ).toEqual(["healthy-cold"]);
+
   let state = applyInboxCollectionSnapshot(
     createEmptyClientSummaryState(),
     inbox([
-      inboxItem("held", { activity: "in-turn", providerPhase: held }),
+      inboxItem("held", {
+        activity: "in-turn",
+        providerPhase: held,
+        modelConfig,
+      }),
       inboxItem("plain", { activity: "in-turn" }),
     ]),
     100,
   );
   expect(activePhases(state)).toEqual([held, undefined]);
+  expect(activeModels(state)).toEqual([modelConfig, undefined]);
 
   // A global sessions snapshot of the same rows never carries the phase and
   // must not clear it.
@@ -2665,14 +2689,25 @@ it("keeps inbox provider phases from the latest complete inbox snapshot only", (
     150,
   );
   expect(activePhases(state)).toEqual([held, undefined]);
+  expect(activeModels(state)).toEqual([modelConfig, undefined]);
 
-  // A partial catalog keeps the last complete tiers and their phases.
+  // Incomplete results must still admit newly observed healthy sessions.
   state = applyInboxCollectionSnapshot(
     state,
-    inbox([inboxItem("held", { activity: "in-turn" })], false),
+    inbox(
+      [
+        inboxItem("held", { activity: "in-turn" }),
+        inboxItem("new-healthy", { activity: "in-turn" }),
+      ],
+      false,
+    ),
     200,
   );
-  expect(activePhases(state)).toEqual([held, undefined]);
+  expect(
+    selectInboxResponse(state).active.map((item) => item.sessionId),
+  ).toEqual(["held", "new-healthy", "plain"]);
+  expect(activePhases(state)).toEqual([held, undefined, undefined]);
+  expect(activeModels(state)).toEqual([modelConfig, undefined, undefined]);
 
   state = applyInboxCollectionSnapshot(
     state,
@@ -2680,4 +2715,69 @@ it("keeps inbox provider phases from the latest complete inbox snapshot only", (
     300,
   );
   expect(activePhases(state)).toEqual([undefined]);
+  expect(activeModels(state)).toEqual([undefined]);
+});
+
+it("bounds Inbox fallback rows during a persistent incomplete catalogue", () => {
+  let state = createEmptyClientSummaryState();
+  for (let index = 0; index < 30; index++)
+    state = applyInboxCollectionSnapshot(
+      state,
+      {
+        catalog: {
+          catalogEpoch: "partial",
+          catalogGeneration: 1,
+          complete: false,
+          refreshing: false,
+        },
+        needsAttention: [],
+        active: [inboxItem(`healthy-${index}`)],
+        recentActivity: [],
+        unread8h: [],
+        unread24h: [],
+      },
+      index,
+    );
+  expect(selectInboxResponse(state).active).toHaveLength(20);
+  expect(selectInboxResponse(state).active[0]?.sessionId).toBe("healthy-29");
+  expect(state.inbox.rowDetails?.size).toBe(20);
+});
+
+it("publishes project display-only changes and clears omitted fields without activity changes", () => {
+  let state = createEmptyClientSummaryState();
+  const base = project("display", {
+    codeName: "one",
+    caption: { text: "old caption", source: "override" },
+    ownerUsername: "owner",
+    projectQueueCount: 1,
+  });
+  state = applyProjectsCollectionSnapshot(state, { projects: [base] }, NOW);
+  let version = NOW;
+  for (const update of [
+    { ...base, caption: { text: "new caption", source: "override" as const } },
+    { ...base, codeName: "two" },
+    { ...base, ownerUsername: "another" },
+    { ...base, projectQueueCount: 2 },
+    project("display"),
+  ]) {
+    const old = selectProjectCollectionRecord(state, "display");
+    state = applyProjectsCollectionSnapshot(
+      state,
+      { projects: [update] },
+      ++version,
+    );
+    const current = selectProjectCollectionRecord(state, "display")!;
+    expect(current).not.toBe(old);
+    expect(current.caption).toEqual(update.caption);
+    expect(current.codeName).toBe(update.codeName);
+    expect(current.ownerUsername).toBe(update.ownerUsername);
+    expect(current.projectQueueCount).toBe(update.projectQueueCount);
+    expect(current.lastActivity).toBe(base.lastActivity);
+    const unchanged = applyProjectsCollectionSnapshot(
+      state,
+      { projects: [update] },
+      version,
+    );
+    expect(selectProjectCollectionRecord(unchanged, "display")).toBe(current);
+  }
 });

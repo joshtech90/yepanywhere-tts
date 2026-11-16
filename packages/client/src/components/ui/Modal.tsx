@@ -1,8 +1,10 @@
+import styles from "./Modal.module.css";
 import {
   type CSSProperties,
   type ReactNode,
   type RefObject,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -11,7 +13,7 @@ import { createPortal } from "react-dom";
 import { useI18n } from "../../i18n";
 import { QUOTE_SELECTION_ROOT_ATTRIBUTES } from "../../lib/markdownSelectionCopy";
 import { programmaticFocus } from "../../lib/programmaticFocus";
-import { ButtonBase } from "./Button";
+import { IconButton } from "./Button";
 import { computePopoverPosition } from "./Popover";
 
 const ANCHORED_MODAL_MARGIN_PX = 8;
@@ -63,6 +65,88 @@ interface ModalProps {
   closeOnBackGesture?: boolean;
   /** Close only the topmost opted-in modal when Backspace is not editing text. */
   closeOnBackspace?: boolean;
+  /**
+   * Below the scrolling content, outside it: Dialog's action row. A form's
+   * submit button there names its form with the `form` attribute.
+   */
+  footer?: ReactNode;
+  /** `alertdialog` for a confirmation that interrupts (ConfirmDialog). */
+  role?: "dialog" | "alertdialog";
+  /** Id of the element describing the dialog (Dialog's description). */
+  describedBy?: string;
+  /** Size and placement classes on the dialog box and overlay (Dialog). */
+  className?: string;
+  overlayClassName?: string;
+}
+
+const TABBABLE =
+  'a[href],area[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),iframe,summary,[contenteditable]:not([contenteditable="false"]),[tabindex]';
+
+function tabbablesIn(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(TABBABLE)].filter(
+    (element) =>
+      element.tabIndex >= 0 &&
+      !element.closest("[inert],[hidden]") &&
+      (typeof element.checkVisibility !== "function" ||
+        element.checkVisibility()),
+  );
+}
+
+/** Open, unminimized modal boxes, the topmost last. */
+const openModalBoxes: HTMLElement[] = [];
+
+/**
+ * Tab while focus is on nothing (the focused control was removed or
+ * disabled) or outside every modal box goes back into the topmost box,
+ * rather than into the page behind it. Focus inside another modal surface
+ * (the source editor, a goal panel) is that surface's own.
+ */
+function handleStrayTab(event: KeyboardEvent) {
+  if (event.key !== "Tab" || event.defaultPrevented) return;
+  const top = openModalBoxes.at(-1);
+  const active = document.activeElement;
+  if (!top || (active && top.contains(active))) return;
+  if (active && active !== document.body && active.closest("[aria-modal]"))
+    return;
+  const stops = tabbablesIn(top);
+  const target = event.shiftKey ? stops.at(-1) : stops[0];
+  if (!target) return;
+  event.preventDefault();
+  target.focus();
+}
+
+function trackModalBox(box: HTMLElement): () => void {
+  if (openModalBoxes.length === 0)
+    document.addEventListener("keydown", handleStrayTab);
+  openModalBoxes.push(box);
+  return () => {
+    const index = openModalBoxes.lastIndexOf(box);
+    if (index >= 0) openModalBoxes.splice(index, 1);
+    if (openModalBoxes.length === 0)
+      document.removeEventListener("keydown", handleStrayTab);
+  };
+}
+
+/**
+ * Keep Tab inside the dialog: from its last tabbable stop to its first and
+ * back. Keys from a nested dialog (portaled elsewhere, bubbling through
+ * React) are that dialog's own.
+ */
+function containTab(event: React.KeyboardEvent, root: HTMLElement | null) {
+  if (event.key !== "Tab" || event.defaultPrevented || !root) return;
+  if (!(event.target instanceof Node) || !root.contains(event.target)) return;
+  const stops = tabbablesIn(root);
+  const first = stops[0];
+  const last = stops.at(-1);
+  if (!first || !last) return;
+  const active = document.activeElement;
+  if (event.shiftKey && (active === first || !root.contains(active))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (active === last || !root.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function isEditableBackspaceTarget(target: EventTarget | null): boolean {
@@ -315,6 +399,8 @@ export function ModalChrome({
   onClose,
   closeButtonRef,
   contentRef,
+  titleId,
+  footer,
   children,
 }: {
   title: ReactNode;
@@ -327,14 +413,21 @@ export function ModalChrome({
   onClose: () => void;
   closeButtonRef?: RefObject<HTMLButtonElement | null>;
   contentRef?: RefObject<HTMLDivElement | null>;
+  titleId?: string;
+  footer?: ReactNode;
   children: ReactNode;
 }) {
   const { t } = useI18n();
-  const titleElement = <span className="modal-title">{title}</span>;
+  const titleElement = (
+    <span className={styles.modalTitle} data-modal-title id={titleId}>
+      {title}
+    </span>
+  );
   return (
     <>
       <div
-        className={`modal-header${headerClassName ? ` ${headerClassName}` : ""}`}
+        className={`${styles.modalHeader}${headerClassName ? ` ${headerClassName}` : ""}`}
+        data-modal-header
       >
         {identityClassName ? (
           <span className={identityClassName}>{titleElement}</span>
@@ -342,52 +435,47 @@ export function ModalChrome({
           titleElement
         )}
         <span
-          className={`modal-header-actions${
-            headerActionsClassName ? ` ${headerActionsClassName}` : ""
-          }`}
-          style={
-            headerActionsClassName
-              ? undefined
-              : {
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.375rem",
-                  marginLeft: "auto",
-                  flexShrink: 0,
-                }
-          }
+          className={headerActionsClassName || styles.modalHeaderActions}
+          data-modal-header-actions
         >
           {actions}
           {onMinimize && (
-            <ButtonBase
-              className="modal-close"
+            <IconButton
+              variant="ghost"
+              size="small"
+              className={styles.modalClose}
+              data-modal-close
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 onMinimize();
               }}
-              aria-label={t("modalMinimize")}
+              label={t("modalMinimize")}
             >
               −
-            </ButtonBase>
+            </IconButton>
           )}
-          <ButtonBase
+          <IconButton
+            variant="ghost"
+            size="small"
             ref={closeButtonRef}
-            className="modal-close"
+            className={styles.modalClose}
+            data-modal-close
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
               onClose();
             }}
-            aria-label={t("modalClose")}
+            label={t("modalClose")}
           >
             ×
-          </ButtonBase>
+          </IconButton>
         </span>
       </div>
-      <div className="modal-content" ref={contentRef}>
+      <div className={styles.modalContent} data-modal-content ref={contentRef}>
         {children}
       </div>
+      {footer}
     </>
   );
 }
@@ -396,6 +484,13 @@ export function ModalChrome({
  * Reusable modal component with overlay, header, and scrollable content area.
  * Renders via portal to avoid event bubbling issues.
  * Closes on Escape key or clicking the overlay.
+ *
+ * It stays a portaled `div` rather than a `<dialog>` in the top layer: the
+ * tooltip layer, hover cards and selection actions portal into the body,
+ * and a modal `<dialog>` would draw over them and make them inert. Instead
+ * the box keeps Tab inside itself, is named by its title, and returns focus
+ * to the element that opened it when it closes. Forms and confirmations use
+ * Dialog (title, description, body, footer) on top of it.
  */
 export function Modal({
   title,
@@ -413,9 +508,21 @@ export function Modal({
   closeOnBackspace,
   contentRef,
   variant,
+  footer,
+  role = "dialog",
+  describedBy,
+  className,
+  overlayClassName,
 }: ModalProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  // Taken while rendering the opening commit, before an autofocused field
+  // inside the box moves focus.
+  const [openerAtRender] = useState(() =>
+    typeof document === "undefined" ? null : document.activeElement,
+  );
+  const openerRef = useRef(openerAtRender);
   const overlayPointerStartedOnOverlayRef = useRef(false);
   useModalBackGesture(onClose, Boolean(closeOnBackGesture && !minimized));
   useModalBackspace(onClose, Boolean(closeOnBackspace && !minimized));
@@ -431,7 +538,35 @@ export function Modal({
   // by itself while the user is in an embedded app leaves its focus alone.
   useEffect(() => {
     if (minimized) return;
+    // A menu item that opened the dialog unmounts with its menu, whose
+    // focus return has run by now: the menu's trigger is the opener.
+    const active = document.activeElement;
+    if (
+      !openerRef.current?.isConnected &&
+      active &&
+      !modalRef.current?.contains(active)
+    )
+      openerRef.current = active;
+    const opener = openerRef.current;
+    const untrack = modalRef.current
+      ? trackModalBox(modalRef.current)
+      : undefined;
     programmaticFocus(initialFocusRef?.current ?? closeButtonRef.current);
+    return () => {
+      untrack?.();
+      // Back to the opener, unless focus already moved somewhere on purpose
+      // (it is on the body once the focused box is gone or hidden).
+      const active = document.activeElement;
+      if (
+        opener instanceof HTMLElement &&
+        opener !== document.body &&
+        opener.isConnected &&
+        (!active ||
+          active === document.body ||
+          modalRef.current?.contains(active))
+      )
+        programmaticFocus(opener, { preventScroll: true });
+    };
   }, [minimized, initialFocusRef]);
 
   useLayoutEffect(() => {
@@ -515,9 +650,17 @@ export function Modal({
 
   const modalContent = (
     <div
-      className={`modal-overlay${isAnchored ? " modal-overlay--anchored" : ""}${
-        variant ? ` modal-overlay--${variant}` : ""
-      }`}
+      className={[
+        styles.modalOverlay,
+        isAnchored && styles.modalOverlayAnchored,
+        variant === "image-viewer" && styles.modalOverlayImageViewer,
+        overlayClassName,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      data-modal-overlay
+      data-modal-overlay-anchored={isAnchored || undefined}
+      data-modal-overlay-image-viewer={variant === "image-viewer" || undefined}
       aria-hidden={minimized || undefined}
       style={minimized ? { display: "none" } : undefined}
       onClick={handleOverlayClick}
@@ -527,17 +670,28 @@ export function Modal({
         e.stopPropagation();
       }}
     >
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: click only stops propagation, keyboard handled globally */}
+      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: the role is dialog or alertdialog, both modal */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: the dialog box keeps Tab inside itself */}
       <div
         ref={modalRef}
-        className={`modal${isAnchored ? " modal--anchored" : ""}${
-          variant ? ` modal--${variant}` : ""
-        }`}
+        className={[
+          styles.modal,
+          isAnchored && styles.modalAnchored,
+          variant === "image-viewer" && styles.modalImageViewer,
+          className,
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        data-modal-frame
+        data-modal-anchored={isAnchored || undefined}
+        data-modal-image-viewer={variant === "image-viewer" || undefined}
         {...QUOTE_SELECTION_ROOT_ATTRIBUTES}
-        role="dialog"
+        role={role === "alertdialog" ? "alertdialog" : "dialog"}
         aria-modal="true"
-        aria-label={typeof title === "string" ? title : undefined}
+        aria-labelledby={titleId}
+        aria-describedby={describedBy}
         onClick={handleModalClick}
+        onKeyDown={(event) => containTab(event, modalRef.current)}
         style={
           isAnchored ? (anchorStyle ?? { visibility: "hidden" }) : undefined
         }
@@ -551,6 +705,8 @@ export function Modal({
           onClose={onClose}
           closeButtonRef={closeButtonRef}
           contentRef={contentRef}
+          titleId={titleId}
+          footer={footer}
         >
           {children}
         </ModalChrome>

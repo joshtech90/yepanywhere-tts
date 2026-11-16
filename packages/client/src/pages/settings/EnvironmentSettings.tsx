@@ -1,5 +1,8 @@
+import rowsStyles from "./SettingsRows.module.css";
 import { useEffect, useMemo, useState } from "react";
 import { api, type EnvSettingEntry } from "../../api/client";
+import { Badge } from "../../components/ui/Badge";
+import { Banner } from "../../components/ui/Banner";
 import { Select } from "../../components/ui/Field";
 import { useI18n } from "../../i18n";
 import styles from "./EnvironmentSettings.module.css";
@@ -71,9 +74,7 @@ export function EnvironmentSettings() {
       }}
     >
       <HideInSettingsSearch>
-        {error && (
-          <p className="settings-warning">{t("environmentLoadError")}</p>
-        )}
+        {error && <Banner tone="error">{t("environmentLoadError")}</Banner>}
         {!error && entries === null && <p>{t("environmentLoading")}</p>}
 
         {!error && entries && (
@@ -98,11 +99,15 @@ export function EnvironmentSettings() {
         )}
 
         {!error && entries && !showAll && groups.length === 0 && (
-          <p className="settings-empty">{t("environmentEmptySet")}</p>
+          <p className={rowsStyles.empty}>{t("environmentEmptySet")}</p>
         )}
       </HideInSettingsSearch>
       {groups.map((group) => (
-        <div key={group.group} className={`settings-group ${styles.group}`}>
+        <div
+          key={group.group}
+          className={`${rowsStyles.group} ${styles.group}`}
+          data-settings-group
+        >
           <HideInSettingsSearch>
             <h3 className={styles.groupTitle}>{group.group}</h3>
           </HideInSettingsSearch>
@@ -130,11 +135,7 @@ function EnvVarRow({ entry }: { entry: EnvSettingEntry }) {
     >
       <div className={styles.head}>
         <code className={styles.name}>{entry.name}</code>
-        {entry.secret && (
-          <span className={styles.secretBadge}>
-            {t("environmentSecretBadge")}
-          </span>
-        )}
+        {entry.secret && <Badge>{t("environmentSecretBadge")}</Badge>}
         <EnvVarValue entry={entry} />
       </div>
       <p className={styles.description}>{entry.description}</p>

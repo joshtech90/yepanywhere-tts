@@ -23,6 +23,7 @@ import {
 } from "./provider-runtime-host.js";
 // Types
 import type { AgentProvider, ProviderName } from "./types.js";
+import { setMachineControlDefault } from "./machine-control.js";
 import { withInstructionRestoration } from "./instruction-restoration.js";
 export type {
   AgentProvider,
@@ -124,6 +125,8 @@ export interface ProviderRuntimeConfig {
 }
 
 export interface ProviderRuntimeSnapshot {
+  cliInstallationDataDir?: string;
+  cliInstallations?: import("@yep-anywhere/shared/provider-cli-installations").CliInstallationSelections;
   steeringModes?: import("@yep-anywhere/shared").SteeringModeSettings;
   codexCliPath?: string;
   codexPlanToolMode?: CodexPlanToolMode;
@@ -147,6 +150,8 @@ export interface ProviderRuntimeSnapshot {
   ollamaUseFullSystemPrompt?: boolean;
   ambientXaiApiKey?: string;
   grokBuildUseXaiApiKey?: boolean;
+  /** The operator's default advertisement of installed Machine Control. */
+  machineControlEnabled?: boolean;
 }
 
 let isClaudeOllamaVisible = () => false;
@@ -191,6 +196,9 @@ export function configureProviderRuntime(config: ProviderRuntimeConfig): void {
     () => getProviderRuntimeSnapshot().mcpAppViews === true,
   );
   codexProvider.setSubagentMaxDepthGetter(getSubagentMaxDepth);
+  setMachineControlDefault(
+    () => getProviderRuntimeSnapshot().machineControlEnabled === true,
+  );
 }
 
 function hostedProvider(rawProvider: AgentProvider): AgentProvider {
@@ -292,9 +300,7 @@ export function getAllProviders(): AgentProvider[] {
     codexOSSProvider,
     geminiAliasProvider,
     geminiACPProvider,
-    ...(process.env.ENABLED_PROVIDERS?.split(",").includes("antigravity")
-      ? [antigravityProvider]
-      : []),
+    antigravityProvider,
     grokACPProvider, // Phase 1: additive only (see grok-acp.ts header + topics/grok.md)
     opencodeProvider,
     piProvider,

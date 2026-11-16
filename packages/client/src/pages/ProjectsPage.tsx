@@ -1,3 +1,5 @@
+import pageStyles from "../layouts/PageLayout.module.css";
+import collectionStyles from "../components/CollectionLayout.module.css";
 import {
   projectDisplayName,
   PROJECT_CAPTIONS_CAPABILITY,
@@ -22,7 +24,9 @@ import { PageHeader } from "../components/PageHeader";
 import { ProjectCard } from "../components/ProjectCard";
 import { ProjectQueueSection } from "../components/ProjectQueueSection";
 import { ProjectSessionDefaultsModal } from "../components/ProjectSessionDefaultsModal";
+import { Banner } from "../components/ui/Banner";
 import { Button } from "../components/ui/Button";
+import { confirmDialog, promptDialog } from "../components/ui/ConfirmDialog";
 import { useActingPrincipal } from "../hooks/useActingPrincipal";
 import { useProjectCodeNamePreferences } from "../hooks/useProjectCodeNamePreferences";
 import { useProjectQueues } from "../hooks/useProjectQueues";
@@ -159,7 +163,13 @@ export function ProjectsPage() {
       // creates the directory as a Git repository with one empty commit,
       // but only after the user says so.
       if ((err as { status?: number }).status === 404) {
-        if (confirm(t("projectsCreateConfirm", { path }))) {
+        if (
+          await confirmDialog({
+            title: t("projectsCreateConfirmTitle"),
+            message: t("projectsCreateConfirm", { path }),
+            confirmLabel: t("projectsCreateConfirmAction"),
+          })
+        ) {
           try {
             const { project } = await api.addProject(path, {
               create: true,
@@ -200,11 +210,16 @@ export function ProjectsPage() {
         project.ownerUsername !== principal.username);
 
   const handleCopyProject = async (project: Project) => {
-    const name = prompt(t("projectCopyPrompt"), `${project.name}-copy`);
-    if (!name?.trim()) return;
+    const name = await promptDialog({
+      title: t("projectCopyDialogTitle"),
+      label: t("projectCopyPrompt"),
+      defaultValue: `${project.name}-copy`,
+      confirmLabel: t("projectCopyLabel"),
+    });
+    if (!name) return;
     setDeleteError(null);
     try {
-      const { path } = await projectAccessApi.copy(project.id, name.trim());
+      const { path } = await projectAccessApi.copy(project.id, name);
       const { project: copy } = await api.addProject(path);
       await refetch();
       navigate(
@@ -219,14 +234,19 @@ export function ProjectsPage() {
 
   const handleDeleteProject = async (project: Project) => {
     if (
-      !confirm(
-        t(
+      !(await confirmDialog({
+        title: t("projectsDeleteConfirmTitle"),
+        message: t(
           personalRemoval
             ? "projectsRemoveFromMyProjectsConfirm"
             : "projectsDeleteConfirm",
           { name: projectDisplayName(project) },
         ),
-      )
+        confirmLabel: t(
+          personalRemoval ? "projectsRemoveFromMyProjects" : "projectsDelete",
+        ),
+        tone: "danger",
+      }))
     ) {
       return;
     }
@@ -353,27 +373,34 @@ export function ProjectsPage() {
     <MainContent isWideScreen={isWideScreen}>
       <PageHeader title={t("pageTitleProjects")} />
 
-      <main className="page-scroll-container">
-        <div className="page-content-inner">
+      <main
+        className={pageStyles.pageScrollContainer}
+        data-page-scroll-container
+      >
+        <div className={pageStyles.pageContentInner} data-page-content-inner>
           {loading && projects.length === 0 && (
             <div role="status">{t("projectsLoading")}</div>
           )}
           {error && (
-            <div className={styles.loadError} role="status">
-              <span>
-                {t("projectsErrorPrefix")} {error.message}
-              </span>
-              <Button
-                variant="ghost"
-                size="small"
-                onClick={() => void refetch()}
-              >
-                {t("hostOfflineRetry")}
-              </Button>
-            </div>
+            <Banner
+              tone="error"
+              role="status"
+              className={styles.loadError}
+              actions={
+                <Button
+                  variant="ghost"
+                  size="small"
+                  onClick={() => void refetch()}
+                >
+                  {t("hostOfflineRetry")}
+                </Button>
+              }
+            >
+              {t("projectsErrorPrefix")} {error.message}
+            </Banner>
           )}
           {/* Toolbar with Add Project button */}
-          <div className="inbox-toolbar">
+          <div className={collectionStyles.inboxToolbar} data-inbox-toolbar>
             {!showAddForm ? (
               <Button onClick={() => setShowAddForm(true)}>
                 <svg
@@ -420,7 +447,7 @@ export function ProjectsPage() {
                   />
                 )}
                 {templateError && !addProjectTyped && (
-                  <p role="alert">{templateError}</p>
+                  <Banner tone="error">{templateError}</Banner>
                 )}
                 {templateChoices?.enabled && (
                   <div hidden={addProjectTyped && !templateProjectBusy}>
@@ -455,7 +482,7 @@ export function ProjectsPage() {
               </div>
             )}
           </div>
-          {deleteError && <div className={formStyles.error}>{deleteError}</div>}
+          {deleteError && <Banner tone="error">{deleteError}</Banner>}
 
           {
             <ProjectQueueSection
@@ -488,7 +515,7 @@ export function ProjectsPage() {
           {isEmpty ? (
             !loading &&
             !error && (
-              <div className="inbox-empty">
+              <div className={collectionStyles.inboxEmpty} data-inbox-empty>
                 <svg
                   width="48"
                   height="48"
@@ -507,7 +534,7 @@ export function ProjectsPage() {
               </div>
             )
           ) : (
-            <ul className="project-list-cards">
+            <ul className={styles.projectListCards} data-project-list-cards>
               {sortedProjects.map((project) => (
                 <ProjectCard
                   appEnabled={serverHasCapability(

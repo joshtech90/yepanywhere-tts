@@ -1,3 +1,4 @@
+import pageStyles from "../layouts/PageLayout.module.css";
 import {
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
@@ -9,6 +10,8 @@ import { api } from "../api/client";
 import { EmulatorNavButtons } from "../components/EmulatorNavButtons";
 import { EmulatorStream } from "../components/EmulatorStream";
 import { PageHeader } from "../components/PageHeader";
+import { Badge } from "../components/ui/Badge";
+import { Banner } from "../components/ui/Banner";
 import { Button } from "../components/ui/Button";
 import { useEmulatorSettings } from "../hooks/useEmulatorSettings";
 import { useEmulatorStream } from "../hooks/useEmulatorStream";
@@ -89,11 +92,12 @@ function EmulatorListItem({
     <div className={styles.item} data-testid="device-row">
       <div className={styles.itemInfo}>
         <span className={styles.itemName}>{deviceLabel(device)}</span>
-        <span
-          className={`${styles.itemStatus} ${device.state === "stopped" ? styles.stopped : styles.running}`}
+        <Badge
+          size="small"
+          tone={device.state === "stopped" ? "neutral" : "accent"}
         >
           {device.state}
-        </span>
+        </Badge>
       </div>
       <div className={styles.itemActions}>
         {canConnect && (
@@ -320,7 +324,9 @@ function StreamView({
       )}
 
       {immersiveKeyboardError && (
-        <div className={styles.error}>{immersiveKeyboardError}</div>
+        <Banner tone="error" className={styles.error}>
+          {immersiveKeyboardError}
+        </Banner>
       )}
 
       {latestProfileEvent && (
@@ -355,7 +361,11 @@ function StreamView({
         </div>
       )}
 
-      {error && <div className={styles.error}>{error}</div>}
+      {error && (
+        <Banner tone="error" className={styles.error}>
+          {error}
+        </Banner>
+      )}
 
       {connectionState === "connecting" && (
         <div className={styles.connecting}>Connecting...</div>
@@ -423,7 +433,11 @@ export function BridgeRuntimePrompt({
           t("emulatorBridgeDownloadRequired")
         )}
       </p>
-      {error && <div className={styles.error}>{error}</div>}
+      {error && (
+        <Banner tone="error" className={styles.error}>
+          {error}
+        </Banner>
+      )}
       <Button variant="primary" onClick={handleDownload} disabled={downloading}>
         {downloading
           ? mode === "update"
@@ -477,8 +491,11 @@ export function EmulatorPage() {
   return (
     <MainContent isWideScreen={isWideScreen}>
       <PageHeader title="Devices" />
-      <main className="page-scroll-container">
-        <div className="page-content-inner">
+      <main
+        className={pageStyles.pageScrollContainer}
+        data-page-scroll-container
+      >
+        <div className={pageStyles.pageContentInner} data-page-content-inner>
           {bridgeRuntimeMode ? (
             <BridgeRuntimePrompt
               mode={bridgeRuntimeMode}
@@ -489,7 +506,11 @@ export function EmulatorPage() {
           ) : (
             <>
               {loading && <div className={styles.loading}>Loading...</div>}
-              {error && <div className={styles.error}>{error}</div>}
+              {error && (
+                <Banner tone="error" className={styles.error}>
+                  {error}
+                </Banner>
+              )}
               {!loading && emulators.length === 0 && (
                 <div className={styles.empty}>{t("emulatorPageNoDevices")}</div>
               )}
