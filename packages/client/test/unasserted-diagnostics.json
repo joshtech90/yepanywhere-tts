@@ -1,6 +1,6 @@
 {
   "$comment": "Client unit test files that emit an unasserted React or jsdom diagnostic, checked by packages/client/test/unassertedDiagnostics.ts. Owned by docs/development/code-quality.md#zero-warning-commits. Seeded from four measured full-suite runs on 2026-11-16. Remove a kind once its file stops emitting it (the suite fails until you do); a new entry or kind needs maintainer approval.",
-  "updated": "2026-11-17",
+  "updated": "2026-11-16",
   "files": {
     "packages/client/src/components/__tests__/ArtifactPreview.test.tsx": {
       "diagnostics": ["act"],
@@ -69,38 +69,6 @@
     "packages/client/src/pages/settings/__tests__/UsersSettings.test.tsx": {
       "diagnostics": ["act"],
       "note": "Expanding granted projects."
-    },
-    "packages/client/src/cockpit/CockpitCatalog.test.tsx": {
-      "diagnostics": ["act"],
-      "note": "Fork-Cockpit (feat/tts-vorlesen): bestehende act-Warnungen, beim Upstream-Merge 2026-11-17 erfasst."
-    },
-    "packages/client/src/cockpit/CockpitComposer.test.tsx": {
-      "diagnostics": ["act"],
-      "note": "Fork-Cockpit (feat/tts-vorlesen): bestehende act-Warnungen, beim Upstream-Merge 2026-11-17 erfasst."
-    },
-    "packages/client/src/cockpit/CockpitNewSession.test.tsx": {
-      "diagnostics": ["act"],
-      "note": "Fork-Cockpit (feat/tts-vorlesen): bestehende act-Warnungen, beim Upstream-Merge 2026-11-17 erfasst."
-    },
-    "packages/client/src/cockpit/CockpitPage.test.tsx": {
-      "diagnostics": ["act"],
-      "note": "Fork-Cockpit (feat/tts-vorlesen): bestehende act-Warnungen, beim Upstream-Merge 2026-11-17 erfasst."
-    },
-    "packages/client/src/cockpit/CockpitProjectFavorites.test.tsx": {
-      "diagnostics": ["act"],
-      "note": "Fork-Cockpit (feat/tts-vorlesen): bestehende act-Warnungen, beim Upstream-Merge 2026-11-17 erfasst."
-    },
-    "packages/client/src/cockpit/CockpitQuickActions.test.tsx": {
-      "diagnostics": ["act"],
-      "note": "Fork-Cockpit (feat/tts-vorlesen): bestehende act-Warnungen, beim Upstream-Merge 2026-11-17 erfasst."
-    },
-    "packages/client/src/cockpit/CockpitReadAloudButton.test.tsx": {
-      "diagnostics": ["act"],
-      "note": "Fork-Cockpit (feat/tts-vorlesen): bestehende act-Warnungen, beim Upstream-Merge 2026-11-17 erfasst."
-    },
-    "packages/client/src/cockpit/CockpitSessionMenu.test.tsx": {
-      "diagnostics": ["act"],
-      "note": "Fork-Cockpit (feat/tts-vorlesen): bestehende act-Warnungen, beim Upstream-Merge 2026-11-17 erfasst."
     }
   }
 }

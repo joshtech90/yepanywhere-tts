@@ -1,3 +1,4 @@
+import "./testActWarnings";
 import {
   cleanup,
   fireEvent,
