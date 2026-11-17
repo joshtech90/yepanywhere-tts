@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { createCodexCreationFixture } from "./support/codex-creation-fixture.js";
 import { presentUiCaptures, recordUiCapture } from "./support/ui-capture.js";
+import { startTypingDiagnostics } from "./support/typing-diagnostics.js";
 
 /**
  * The YA session the page shows. A `/sessions/codex/<native id>` address
@@ -49,95 +50,157 @@ async function fixture(browser: Browser) {
   };
 }
 
-test("limited New Session accepts prompt and staged files together before unavailable sandbox startup", async ({
-  browser,
-}) => {
-  const f = await fixture(browser);
-  try {
-    expect(
-      (
-        await fetch(`${f.owned.server.baseUrl}/api/settings`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Yep-Anywhere": "true",
-          },
-          body: JSON.stringify({ limitedUsersEnabled: true }),
-        })
-      ).status,
-    ).toBe(200);
-    expect(
-      (
-        await f.owned.request("/users", {
-          username: "alice",
-          password: "owned-creation-password",
-          newSessionProjects: [f.projectId],
-          lock: { provider: "codex", model: "gpt-6.1-sol" },
-        })
-      ).status,
-    ).toBe(201);
-    const page = await f.context.newPage();
-    expect(
-      (
-        await page.request.post(`${f.origin}/api/users/switch`, {
-          data: { username: "alice" },
-          headers: { "X-Yep-Anywhere": "true" },
-        })
-      ).status(),
-    ).toBe(200);
-    const paths: string[] = [];
-    page.on("request", (r) => {
-      if (r.method() === "POST") paths.push(new URL(r.url()).pathname);
-    });
-    await page.goto(`${f.origin}/new-session?projectId=${f.projectId}`);
-    const input = page.locator("textarea[data-new-session-form-textarea]");
-    await input.pressSequentially("OWNED_LIMITED_CREATION");
-    await page.locator('input[type="file"]').setInputFiles({
-      name: "limited.txt",
-      mimeType: "text/plain",
-      buffer: Buffer.from("owned account file"),
-    });
-    const accepted = page.waitForResponse(
-      (r) =>
-        r.request().method() === "POST" &&
-        new URL(r.url()).pathname.endsWith("/session-creations"),
-    );
-    await page
-      .getByRole("button", { name: "Start session", exact: true })
-      .click();
-    const response = await accepted;
-    expect(response.status(), await response.text()).toBe(202);
-    const receipt = await response.json();
-    const body = response.request().postDataJSON();
-    expect(body.message).toBe("OWNED_LIMITED_CREATION");
-    expect(body.stagedAttachments).toHaveLength(1);
-    expect(body.sandboxLevel).toBe("project-write");
-    await expect(page).toHaveURL(new RegExp(`/sessions/${receipt.sessionId}$`));
-    expect(
-      paths.filter((p) => /\/sessions(?:\/create|\/[^/]+\/messages)?$/.test(p)),
-    ).toEqual([]);
-    const detail = await (
-      await page.request.get(
-        `${f.origin}/api/projects/${f.projectId}/sessions/${receipt.sessionId}`,
-      )
-    ).json();
-    expect(detail.session).toMatchObject({
-      initialPrompt: "OWNED_LIMITED_CREATION",
-    });
-    expect(
-      (
+for (const width of [1000, 375])
+  test(`limited New Session retains typing through initial account binding at ${width}px`, async ({
+    browser,
+  }) => {
+    const f = await fixture(browser);
+    let releasePrincipal: () => void = () => {};
+    try {
+      expect(
+        (
+          await fetch(`${f.owned.server.baseUrl}/api/settings`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Yep-Anywhere": "true",
+            },
+            body: JSON.stringify({ limitedUsersEnabled: true }),
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await f.owned.request("/users", {
+            username: "alice",
+            password: "owned-creation-password",
+            newSessionProjects: [f.projectId],
+            lock: { provider: "codex", model: "gpt-6.1-sol" },
+          })
+        ).status,
+      ).toBe(201);
+      const page = await f.context.newPage();
+      await page.setViewportSize({ width, height: width === 1000 ? 600 : 812 });
+      const principalReady = new Promise<void>((resolve) => {
+        releasePrincipal = resolve;
+      });
+      await page.route("**/api/users/me", async (route) => {
+        await principalReady;
+        await route.continue();
+      });
+      expect(
+        (
+          await page.request.post(`${f.origin}/api/users/switch`, {
+            data: { username: "alice" },
+            headers: { "X-Yep-Anywhere": "true" },
+          })
+        ).status(),
+      ).toBe(200);
+      const paths: string[] = [];
+      page.on("request", (r) => {
+        if (r.method() === "POST") paths.push(new URL(r.url()).pathname);
+      });
+      await page.goto(`${f.origin}/new-session?projectId=${f.projectId}`);
+      const input = page.locator("textarea[data-new-session-form-textarea]");
+      await input.click();
+      await startTypingDiagnostics(input);
+      const originalInput = await input.elementHandle();
+      let expected = "";
+      for (const character of "OWNED_LIMITED_CREATION") {
+        if (expected.length === 9) releasePrincipal();
+        expected += character;
+        await page.keyboard.type(character);
+        await input.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
+            ),
+        );
+        await expect(input).toHaveValue(expected);
+        await expect(input).toBeFocused();
+      }
+      releasePrincipal();
+      expect(
+        await input.evaluate(
+          (element, original) => element === original,
+          originalInput,
+        ),
+      ).toBe(true);
+      const samples = await input.evaluate(
+        (element) =>
+          (
+            element as HTMLTextAreaElement & {
+              typingDiagnostics: {
+                keys: Array<{ secondFrameMs: number; retained: boolean }>;
+              };
+            }
+          ).typingDiagnostics.keys,
+      );
+      expect(samples).toHaveLength(expected.length);
+      expect(
+        samples.every(
+          (sample) => sample.retained && sample.secondFrameMs < 100,
+        ),
+      ).toBe(true);
+      console.log(
+        `Initial account typing ${width}px: ${Math.max(...samples.map((sample) => sample.secondFrameMs)).toFixed(1)}ms maximum`,
+      );
+      await page.locator('input[type="file"]').setInputFiles({
+        name: "limited.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("owned account file"),
+      });
+      await expect(input).toHaveValue("OWNED_LIMITED_CREATION");
+      await recordUiCapture(page, `initial-account-typing-${width}`);
+      const accepted = page.waitForResponse(
+        (r) =>
+          r.request().method() === "POST" &&
+          new URL(r.url()).pathname.endsWith("/session-creations"),
+      );
+      await page
+        .getByRole("button", { name: "Start session", exact: true })
+        .click();
+      const response = await accepted;
+      expect(response.status(), await response.text()).toBe(202);
+      const receipt = await response.json();
+      const body = response.request().postDataJSON();
+      expect(body.message).toBe("OWNED_LIMITED_CREATION");
+      expect(body.stagedAttachments).toHaveLength(1);
+      expect(body.sandboxLevel).toBe("project-write");
+      await expect(page).toHaveURL(
+        new RegExp(`/sessions/${receipt.sessionId}$`),
+      );
+      expect(
+        paths.filter((p) =>
+          /\/sessions(?:\/create|\/[^/]+\/messages)?$/.test(p),
+        ),
+      ).toEqual([]);
+      const detail = await (
         await page.request.get(
-          `${f.origin}/api/session-creations/${body.requestId}`,
+          `${f.origin}/api/projects/${f.projectId}/sessions/${receipt.sessionId}`,
         )
-      ).status(),
-    ).toBe(200);
-    expect(
-      (await f.owned.request(`/session-creations/${body.requestId}`)).status,
-    ).toBe(404);
-  } finally {
-    await f.dispose();
-  }
-});
+      ).json();
+      expect(detail.session).toMatchObject({
+        initialPrompt: "OWNED_LIMITED_CREATION",
+      });
+      expect(
+        (
+          await page.request.get(
+            `${f.origin}/api/session-creations/${body.requestId}`,
+          )
+        ).status(),
+      ).toBe(200);
+      expect(
+        (await f.owned.request(`/session-creations/${body.requestId}`)).status,
+      ).toBe(404);
+    } finally {
+      releasePrincipal();
+      await f.context.unrouteAll({ behavior: "wait" });
+      await f.dispose();
+    }
+  });
 
 test("Session-page Start now uses one acceptance and keeps newer typing while its reply is held", async ({
   browser,
@@ -731,6 +794,233 @@ test("background lost acknowledgement reloads into explicit recovery without dup
     );
     expect(posts).toBe(1);
   } finally {
+    await f.dispose();
+  }
+});
+
+const creationPosts = (page: Page, outage: () => boolean) => {
+  const posted: Array<{ message: string; stagedAttachments?: unknown[] }> = [];
+  return {
+    posted,
+    // An outage aborts before the server sees the request: it never arrived.
+    ready: page.route("**/session-creations", async (route) => {
+      if (outage()) return route.abort("failed");
+      posted.push(route.request().postDataJSON());
+      await route.continue();
+    }),
+  };
+};
+
+for (const width of [1000, 375])
+  test(`never-arrived New Session request offers Start fresh and sends corrected input once at ${width}px`, async ({
+    browser,
+  }) => {
+    const f = await fixture(browser);
+    let down = true;
+    try {
+      await f.owned.releaseAck();
+      await f.owned.releaseReply();
+      const page = await f.context.newPage();
+      await page.setViewportSize({ width, height: width === 1000 ? 600 : 812 });
+      const { posted, ready } = creationPosts(page, () => down);
+      await ready;
+      const formUrl = `${f.origin}/new-session?projectId=${f.projectId}&provider=codex&model=gpt-6.1-sol`;
+      await page.goto(formUrl);
+      const input = page.locator("textarea[data-new-session-form-textarea]");
+      const start = page.getByRole("button", {
+        name: "Start session",
+        exact: true,
+      });
+      const check = page.getByRole("button", {
+        name: "Check saved session",
+        exact: true,
+      });
+      const fresh = page.getByRole("button", {
+        name: "Start fresh",
+        exact: true,
+      });
+      await input.pressSequentially("Push to remote");
+      await start.click();
+      await expect(check).toBeVisible();
+      await expect(fresh).toBeVisible();
+      await expect(input).toHaveValue("Push to remote");
+
+      // The server is reachable again, but the saved request outlives the
+      // outage, a reload, and a check that finds nothing.
+      down = false;
+      await page.reload();
+      await expect(input).toHaveValue("Push to remote");
+      await check.click();
+      await expect(page.getByText(/no record of that request/)).toBeVisible();
+
+      // Corrected input is typed with real keys while a sibling tab churns
+      // the storage the notice observes.
+      const sibling = await f.context.newPage();
+      await sibling.goto(`${f.origin}/settings`);
+      await input.click();
+      await input.press("End");
+      await startTypingDiagnostics(input);
+      let expected = "Push to remote";
+      for (const character of " on origin") {
+        expected += character;
+        await sibling.evaluate(
+          (value) => localStorage.setItem("owned-sibling-churn", value),
+          expected,
+        );
+        await page.keyboard.type(character);
+        await input.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
+            ),
+        );
+        await expect(input).toHaveValue(expected);
+        await expect(input).toBeFocused();
+      }
+      const samples = await input.evaluate(
+        (element) =>
+          (
+            element as HTMLTextAreaElement & {
+              typingDiagnostics: {
+                keys: Array<{ secondFrameMs: number; retained: boolean }>;
+              };
+            }
+          ).typingDiagnostics.keys,
+      );
+      expect(samples).toHaveLength(" on origin".length);
+      expect(
+        samples.every(
+          (sample) => sample.retained && sample.secondFrameMs < 100,
+        ),
+      ).toBe(true);
+      console.log(
+        `Unconfirmed creation typing ${width}px: ${Math.max(...samples.map((sample) => sample.secondFrameMs)).toFixed(1)}ms maximum`,
+      );
+
+      // Different input is refused without sending while the earlier request
+      // is unresolved, and the way out is on the form.
+      await start.click();
+      await expect(
+        page.getByText(/earlier request is still unconfirmed/).first(),
+      ).toBeVisible();
+      expect(posted).toHaveLength(0);
+      await expect(page.getByText(/no record of that request/)).toBeVisible();
+      await fresh.evaluate((node) =>
+        node.closest('[role="status"]')?.scrollIntoView({ block: "start" }),
+      );
+      await recordUiCapture(page, `creation-start-fresh-${width}`);
+      await fresh.click();
+      await expect(check).toHaveCount(0);
+      await expect(input).toHaveValue(expected);
+      await expect(input).toBeFocused();
+
+      const accepted = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname.endsWith("/session-creations"),
+      );
+      await start.click();
+      const receipt = await (await accepted).json();
+      await expect.poll(() => viewedSessionId(page)).toBe(receipt.sessionId);
+      expect(posted.map((body) => body.message)).toEqual([expected]);
+      // The sibling tab's form is released too, without a reload.
+      await sibling.goto(formUrl);
+      await expect(
+        sibling.locator("textarea[data-new-session-form-textarea]"),
+      ).toHaveValue("");
+      await expect(
+        sibling.getByRole("button", { name: "Start fresh", exact: true }),
+      ).toHaveCount(0);
+      await expect
+        .poll(
+          async () =>
+            (await f.owned.requests()).filter(
+              (request) => request.method === "thread/start",
+            ).length,
+        )
+        .toBe(1);
+    } finally {
+      await f.context.unrouteAll({ behavior: "wait" });
+      await f.dispose();
+    }
+  });
+
+test("never-arrived Session-page Start offers Start fresh and sends corrected input and files once", async ({
+  browser,
+}) => {
+  const f = await originComposer(browser);
+  let down = true;
+  try {
+    const { posted, ready } = creationPosts(f.page, () => down);
+    await ready;
+    const open = f.page.getByRole("button", {
+      name: "Open saved session",
+      exact: true,
+    });
+    const fresh = f.page.getByRole("button", {
+      name: "Start fresh",
+      exact: true,
+    });
+    const file = f.page.getByRole("button", {
+      name: "Remove request.txt",
+      exact: true,
+    });
+    const startNow = async () => {
+      await f.page
+        .locator("button[data-project-queue-new-session-button]")
+        .click({ button: "right" });
+      await f.page
+        .getByRole("button", { name: "Start new session now", exact: true })
+        .click();
+    };
+    await f.start();
+    await expect(open).toBeVisible();
+    await expect(fresh).toBeVisible();
+    down = false;
+    await f.page.reload();
+    await expect(f.input).toHaveValue("OWNED_PAGE_REQUEST");
+    await open.click();
+    await expect(f.page.getByText(/no record of that request/)).toBeVisible();
+    await f.input.click();
+    await f.input.press("End");
+    await f.input.pressSequentially(" corrected");
+    await startNow();
+    await expect(
+      f.page.getByText(/earlier request is still unconfirmed/).first(),
+    ).toBeVisible();
+    expect(posted).toHaveLength(0);
+    for (const [name, viewport] of [
+      ["desktop", { width: 1000, height: 600 }],
+      ["phone", { width: 375, height: 812 }],
+    ] as const) {
+      await f.page.setViewportSize(viewport);
+      await recordUiCapture(f.page, `session-page-start-fresh-${name}`);
+    }
+    await f.page.setViewportSize({ width: 1000, height: 600 });
+    await fresh.click();
+    await expect(open).toHaveCount(0);
+    await expect(f.input).toHaveValue("OWNED_PAGE_REQUEST corrected");
+    await expect(file).toBeVisible();
+
+    const accepted = f.page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname.endsWith("/session-creations"),
+    );
+    await startNow();
+    const receipt = await (await accepted).json();
+    await expect.poll(() => viewedSessionId(f.page)).toBe(receipt.sessionId);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.message).toBe("OWNED_PAGE_REQUEST corrected");
+    expect(posted[0]!.stagedAttachments).toHaveLength(1);
+    await f.page.goto(f.path);
+    await expect(f.input).toBeEditable();
+    await expect(f.input).toHaveValue("");
+    await expect(fresh).toHaveCount(0);
+  } finally {
+    await f.context.unrouteAll({ behavior: "wait" });
     await f.dispose();
   }
 });
