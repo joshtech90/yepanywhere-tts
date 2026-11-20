@@ -101,7 +101,7 @@ for LOGDATEI in "$HOME/Projects/yepanywhere/.memory/yep-launchd.out.log" "$HOME/
   fi
 done
 
-exec env ENABLED_PROVIDERS=claude,codex PORT="$PORT" NODE_ENV=production HOST=0.0.0.0 \
+exec env ENABLED_PROVIDERS=claude,codex,antigravity PORT="$PORT" NODE_ENV=production HOST=0.0.0.0 \
   CLI_HOST_OVERRIDE=true \
   TLS_CERT_PATH="$TLS_CERT" TLS_KEY_PATH="$TLS_KEY" \
   "$NODE_BIN" packages/server/dist/index.js
