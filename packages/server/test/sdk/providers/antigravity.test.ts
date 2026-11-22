@@ -72,6 +72,17 @@ readline.createInterface({input:process.stdin}).on('line', line => {
    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Waiting'}});
    return;
   }
+  if(m.params.prompt[0].text === 'background') {
+   update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Working'}});
+   reply(m.id,{stopReason:'end_turn'});
+   setTimeout(() => {
+    update({sessionUpdate:'tool_call',toolCallId:'bg-1',title:'Background command',kind:'execute',status:'in_progress'});
+    update({sessionUpdate:'tool_call_update',toolCallId:'bg-1',status:'completed',rawOutput:'BG_OK'});
+    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Finished later'}});
+    update({sessionUpdate:'usage_update',used:200,size:1048576});
+   }, 60);
+   return;
+  }
   update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Hello '}});
   update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'world'}});
   return reply(m.id,{stopReason:'end_turn'});
@@ -521,6 +532,101 @@ describe("Antigravity native process boundary", () => {
         await other.close();
       } finally {
         await reader.close();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "delivers post-end_turn background updates through live stream, reader history, and next turn",
+    async () => {
+      vi.stubEnv("ENABLED_PROVIDERS", "antigravity");
+      const metadata = createTestSessionMetadataService(
+        join(directory, "data"),
+      );
+      await metadata.initialize();
+      const app = createApp({
+        provider: new AntigravityProvider(),
+        dataDir: join(directory, "data"),
+        sessionMetadataService: metadata,
+        eventBus: new EventBus(),
+        authDisabled: true,
+        enabledProviders: ["antigravity"],
+      });
+      let active: ReturnType<typeof app.supervisor.getProcessForSession>;
+      const projectId = toUrlProjectId(directory);
+      try {
+        const response = await app.app.request(
+          `/api/projects/${projectId}/session-creations`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Yep-Anywhere": "true",
+            },
+            body: JSON.stringify({
+              requestId: "bg-wakeup",
+              message: "background",
+              provider: "antigravity",
+              mode: "default",
+            }),
+          },
+        );
+        expect(response.status).toBe(202);
+        const receipt = await response.json();
+        await vi.waitFor(
+          () => {
+            active = app.supervisor.getProcessForSession(receipt.sessionId);
+            expect(active?.state.type).toBe("idle");
+            const committed = (active?.getMessageHistory() ?? []).filter(
+              (m) => m.type === "assistant" && !m._isStreaming,
+            );
+            expect(JSON.stringify(committed)).toContain("Finished later");
+          },
+          { timeout: 5_000 },
+        );
+        const history = active?.getMessageHistory() ?? [];
+        expect(JSON.stringify(history)).toContain("Working");
+        expect(JSON.stringify(history)).toContain("BG_OK");
+        const finishedMsg = history.find(
+          (m) =>
+            m.type === "assistant" &&
+            !m._isStreaming &&
+            m.message?.content === "Finished later",
+        );
+        expect(finishedMsg).toBeDefined();
+
+        // Detail endpoint must also expose the post-end_turn wakeup reply.
+        const detail = await (
+          await app.app.request(
+            `/api/projects/${projectId}/sessions/${receipt.sessionId}`,
+            { headers: { "X-Yep-Anywhere": "true" } },
+          )
+        ).json();
+        expect(JSON.stringify(detail.messages)).toContain("Finished later");
+
+        // Follow-up user turn after a post-end_turn wakeup still works normally.
+        const nextTurn = await app.app.request(
+          `/api/sessions/${receipt.sessionId}/messages`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Yep-Anywhere": "true",
+            },
+            body: JSON.stringify({ message: "hello" }),
+          },
+        );
+        expect(nextTurn.status).toBe(200);
+        await vi.waitFor(() => {
+          expect(active?.state.type).toBe("idle");
+          expect(JSON.stringify(active?.getMessageHistory())).toContain(
+            "Hello world",
+          );
+        });
+      } finally {
+        await active?.abort();
+        app.stopNotifications();
+        await app.disposeSessionReaders();
       }
     },
   );

@@ -377,93 +377,247 @@ export class AntigravityProvider implements AgentProvider {
       };
       for (const message of replay?.messages ?? [])
         yield { ...message, isReplay: true };
-      for await (const message of input) {
-        if (signal.aborted) break;
-        const uuid = message.uuid || randomUUID();
-        const content = message.message.content;
-        const text =
-          typeof content === "string"
-            ? content
-            : content
-                .map((block) => {
-                  if (block.type !== "text")
-                    throw new Error(
-                      "The experimental Antigravity provider accepts text and file references only",
-                    );
-                  return block.text;
-                })
-                .join("\n");
-        const prompt = [{ type: "text", text }];
-        const echo: SDKMessage = {
-          type: "user",
-          uuid,
-          session_id: id,
-          timestamp: new Date().toISOString(),
-          message: { role: "user", content: text },
-        };
-        owner.record(echo);
-        yield echo;
-        const transcript = new AntigravityTranscript(id, `${id}:${uuid}`, true);
-        const updates: SDKMessage[] = [];
-        let wake: (() => void) | undefined;
-        let done = false;
-        const publish = (converted: SDKMessage) => {
-          if (
-            converted.type === "assistant" &&
-            converted.message &&
-            resolvedModel
-          )
-            converted.message.model = resolvedModel;
-          // Detail reads see committed content; only the stream is partial.
-          const { _isStreaming: _partial, ...committed } = converted;
-          owner!.record(committed);
-          if (updates.at(-1)?.uuid === converted.uuid)
-            updates[updates.length - 1] = converted;
-          else updates.push(converted);
-        };
-        runtime.onUpdate = (update, updateSessionId) => {
-          if (updateSessionId !== id) return;
-          // agy 1.5+ echoes the prompt back; YA already published `echo`.
-          if (update.sessionUpdate === "user_message_chunk") return;
-          for (const converted of transcript.accept(update)) publish(converted);
-          wake?.();
-          wake = undefined;
-        };
-        const request = runtime.call<{ usage?: unknown; stopReason?: string }>(
-          "session/prompt",
-          { sessionId: id, prompt },
-          0,
+      let wakeSeq = 0;
+      let activeTranscript: AntigravityTranscript | undefined;
+      let wakeup:
+        | {
+            transcript: AntigravityTranscript;
+            openTools: Set<string>;
+            sawText: boolean;
+            yielded: boolean;
+            settleReady: boolean;
+            timer?: ReturnType<typeof setTimeout>;
+          }
+        | undefined;
+      const updates: SDKMessage[] = [];
+      let wake: (() => void) | undefined;
+      const notify = () => {
+        wake?.();
+        wake = undefined;
+      };
+      const waitForWake = () =>
+        new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      const publish = (converted: SDKMessage) => {
+        if (
+          converted.type === "assistant" &&
+          converted.message &&
+          resolvedModel
+        )
+          converted.message.model = resolvedModel;
+        // Detail reads see committed content; only the stream is partial.
+        const { _isStreaming: _partial, ...committed } = converted;
+        owner!.record(committed);
+        if (updates.at(-1)?.uuid === converted.uuid)
+          updates[updates.length - 1] = converted;
+        else updates.push(converted);
+      };
+      const clearWakeupTimer = () => {
+        if (wakeup?.timer) {
+          clearTimeout(wakeup.timer);
+          wakeup.timer = undefined;
+        }
+      };
+      const trackWakeupUpdate = (
+        state: NonNullable<typeof wakeup>,
+        update: Parameters<AntigravityTranscript["accept"]>[0],
+      ) => {
+        if (update.sessionUpdate === "tool_call" && update.toolCallId) {
+          if (update.status !== "completed" && update.status !== "failed")
+            state.openTools.add(update.toolCallId);
+          state.sawText = false;
+        } else if (
+          update.sessionUpdate === "tool_call_update" &&
+          update.toolCallId &&
+          (update.status === "completed" || update.status === "failed")
+        ) {
+          state.openTools.delete(update.toolCallId);
+        } else if (update.sessionUpdate === "agent_thought_chunk") {
+          state.sawText = false;
+        } else if (update.sessionUpdate === "agent_message_chunk") {
+          state.sawText = true;
+        }
+        clearWakeupTimer();
+        // Wait briefly after final text+usage so multi-chunk wakeups settle into
+        // one turn without hanging Process in-turn if agy stops silently.
+        const delayMs =
+          update.sessionUpdate === "usage_update" &&
+          state.sawText &&
+          state.openTools.size === 0
+            ? 400
+            : state.sawText && state.openTools.size === 0
+              ? 1_500
+              : 30_000;
+        state.timer = setTimeout(() => {
+          if (wakeup === state) {
+            state.timer = undefined;
+            state.settleReady = true;
+            notify();
+          }
+        }, delayMs);
+      };
+      const finishWakeup = () => {
+        if (!wakeup) return { committed: [] as SDKMessage[], yielded: false };
+        const state = wakeup;
+        clearWakeupTimer();
+        wakeup = undefined;
+        const last = state.transcript.close();
+        if (last) publish(last);
+        const committed = updates.splice(0, updates.length);
+        const yielded = state.yielded || committed.length > 0;
+        return { committed, yielded };
+      };
+
+      runtime.onUpdate = (update, updateSessionId) => {
+        if (signal.aborted || updateSessionId !== id) return;
+        // agy 1.5+ echoes the prompt back; YA already published `echo`.
+        if (update.sessionUpdate === "user_message_chunk") return;
+        if (activeTranscript) {
+          for (const converted of activeTranscript.accept(update))
+            publish(converted);
+          notify();
+          return;
+        }
+        if (!wakeup) {
+          const transcript = new AntigravityTranscript(
+            id,
+            `${id}:wake-${++wakeSeq}`,
+            true,
+          );
+          const converted = transcript.accept(update);
+          // Ignore trailing metadata-only updates (usage/title/commands) between turns.
+          if (converted.length === 0) return;
+          wakeup = {
+            transcript,
+            openTools: new Set(),
+            sawText: false,
+            yielded: false,
+            settleReady: false,
+          };
+          for (const message of converted) publish(message);
+          trackWakeupUpdate(wakeup, update);
+          notify();
+          return;
+        }
+        for (const converted of wakeup.transcript.accept(update))
+          publish(converted);
+        trackWakeupUpdate(wakeup, update);
+        notify();
+      };
+
+      type InputItem = IteratorResult<
+        Awaited<ReturnType<typeof input.next>> extends IteratorResult<infer T>
+          ? T
+          : never
+      >;
+      let pendingInput: InputItem | undefined;
+      const watchNextInput = () => {
+        pendingInput = undefined;
+        void input.next().then(
+          (result) => {
+            pendingInput = result;
+            notify();
+          },
+          () => {
+            pendingInput = { done: true, value: undefined };
+            notify();
+          },
         );
-        // Observe rejection immediately, including while yielding streamed output.
-        let failure: unknown;
-        void request
-          .catch((error) => {
-            failure = error;
-          })
-          .finally(() => {
-            done = true;
-            wake?.();
-            wake = undefined;
-          });
-        while (!done || updates.length) {
+      };
+      watchNextInput();
+
+      try {
+        while (!signal.aborted) {
           if (updates.length) {
-            yield updates.shift()!;
+            const nextUpdate = updates.shift()!;
+            if (wakeup) wakeup.yielded = true;
+            yield nextUpdate;
             continue;
           }
-          await new Promise<void>((resolve) => {
-            wake = resolve;
-          });
+          if (wakeup?.settleReady) {
+            const { committed, yielded } = finishWakeup();
+            for (const item of committed) yield item;
+            if (yielded) yield { type: "result", session_id: id };
+            continue;
+          }
+          if (!pendingInput) {
+            await waitForWake();
+            continue;
+          }
+          if (wakeup) {
+            const { committed, yielded } = finishWakeup();
+            for (const item of committed) yield item;
+            if (yielded && !signal.aborted)
+              yield { type: "result", session_id: id };
+          }
+          if (pendingInput.done) break;
+
+          const message = pendingInput.value;
+          watchNextInput();
+          if (signal.aborted) break;
+          const uuid = message.uuid || randomUUID();
+          const content = message.message.content;
+          const text =
+            typeof content === "string"
+              ? content
+              : content
+                  .map((block) => {
+                    if (block.type !== "text")
+                      throw new Error(
+                        "The experimental Antigravity provider accepts text and file references only",
+                      );
+                    return block.text;
+                  })
+                  .join("\n");
+          const prompt = [{ type: "text", text }];
+          const echo: SDKMessage = {
+            type: "user",
+            uuid,
+            session_id: id,
+            timestamp: new Date().toISOString(),
+            message: { role: "user", content: text },
+          };
+          owner.record(echo);
+          yield echo;
+          activeTranscript = new AntigravityTranscript(id, `${id}:${uuid}`, true);
+          let done = false;
+          const request = runtime.call<{ usage?: unknown; stopReason?: string }>(
+            "session/prompt",
+            { sessionId: id, prompt },
+            0,
+          );
+          // Observe rejection immediately, including while yielding streamed output.
+          let failure: unknown;
+          void request
+            .catch((error) => {
+              failure = error;
+            })
+            .finally(() => {
+              done = true;
+              notify();
+            });
+          while (!done || updates.length) {
+            if (updates.length) {
+              yield updates.shift()!;
+              continue;
+            }
+            await waitForWake();
+          }
+          const last = activeTranscript.close();
+          activeTranscript = undefined;
+          if (last) {
+            publish(last);
+            while (updates.length) yield updates.shift()!;
+          }
+          if (failure) throw failure;
+          const response = await request;
+          if (!signal.aborted && response.stopReason === "end_turn")
+            options.onNativeInputConsumed?.(id, uuid);
+          yield { type: "result", session_id: id, usage: response.usage };
         }
-        const last = transcript.close();
-        if (last) {
-          publish(last);
-          yield updates.shift()!;
-        }
-        if (failure) throw failure;
-        const response = await request;
-        if (!signal.aborted && response.stopReason === "end_turn")
-          options.onNativeInputConsumed?.(id, uuid);
-        yield { type: "result", session_id: id, usage: response.usage };
+      } finally {
+        clearWakeupTimer();
         runtime.onUpdate = undefined;
       }
     } catch (error) {
