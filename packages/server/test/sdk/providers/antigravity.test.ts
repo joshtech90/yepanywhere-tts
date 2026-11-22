@@ -38,6 +38,9 @@ const id = '${nativeId}';
 const root = path.join(process.env.GEMINI_HOME, 'antigravity-acp', 'conversations');
 const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
 const reply = (id, result) => send({jsonrpc:'2.0', id, result});
+const trace = event => {
+ if (process.env.AGY_TRACE_LOG) fs.appendFileSync(process.env.AGY_TRACE_LOG, event+'\\n');
+};
 const update = value => send({jsonrpc:'2.0',method:'session/update',params:{sessionId:id,update:value}});
 let prompt;
 readline.createInterface({input:process.stdin}).on('line', line => {
@@ -60,6 +63,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  if(m.method === 'session/list') return reply(m.id,{sessions:[{sessionId:id,title:'Original question'}]});
  if(m.method === 'session/prompt') {
   prompt=m.id;
+  trace('prompt:'+m.params.prompt[0].text);
   // agy 1.5+ echoes the submitted prompt during the live turn.
   update({sessionUpdate:'user_message_chunk',content:{type:'text',text:m.params.prompt[0].text}});
   update({sessionUpdate:'usage_update',used:123,size:1048576});
@@ -77,11 +81,13 @@ readline.createInterface({input:process.stdin}).on('line', line => {
    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Working'}});
    reply(m.id,{stopReason:'end_turn'});
    setTimeout(() => {
+    trace('update:tool_call_update');
     update({sessionUpdate:'tool_call_update',toolCallId:'bg-1',status:'completed',rawOutput:'BG_OK'});
     setTimeout(() => {
+     trace('update:Finished later');
      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Finished later'}});
      update({sessionUpdate:'usage_update',used:200,size:1048576});
-    }, 60);
+    }, 150);
    }, 60);
    return;
   }
@@ -541,6 +547,8 @@ describe("Antigravity native process boundary", () => {
   it.skipIf(process.platform === "win32")(
     "delivers post-end_turn background updates through live stream, reader history, and next turn",
     async () => {
+      const traceLog = join(directory, "trace.log");
+      vi.stubEnv("AGY_TRACE_LOG", traceLog);
       vi.stubEnv("ENABLED_PROVIDERS", "antigravity");
       const metadata = createTestSessionMetadataService(
         join(directory, "data"),
@@ -576,13 +584,35 @@ describe("Antigravity native process boundary", () => {
         expect(response.status).toBe(202);
         const receipt = await response.json();
         // Wait for the wakeup tool_result before sending a follow-up user message,
-        // verifying that user input sent mid-wakeup waits until the wakeup settles.
+        // verifying that user input sent mid-wakeup waits in MessageQueue until
+        // the wakeup settles.
         await vi.waitFor(() => {
           active = app.supervisor.getProcessForSession(receipt.sessionId);
           expect(JSON.stringify(active?.getMessageHistory() ?? [])).toContain(
             "BG_OK",
           );
         });
+        const cancelledMidWakeup = await app.app.request(
+          `/api/sessions/${receipt.sessionId}/messages`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Yep-Anywhere": "true",
+            },
+            body: JSON.stringify({
+              message: "cancel-mid-wakeup",
+              tempId: "temp-wake-cancel",
+            }),
+          },
+        );
+        expect(cancelledMidWakeup.status).toBe(200);
+        expect(active?.queueDepth).toBe(1);
+        expect(active?.cancelUnconfirmedSteerMessage("temp-wake-cancel")).toBe(
+          true,
+        );
+        expect(active?.queueDepth).toBe(0);
+
         const queuedMidWakeup = await app.app.request(
           `/api/sessions/${receipt.sessionId}/messages`,
           {
@@ -606,6 +636,12 @@ describe("Antigravity native process boundary", () => {
           },
           { timeout: 5_000 },
         );
+        expect((await readFile(traceLog, "utf8")).trim().split("\n")).toEqual([
+          "prompt:background",
+          "update:tool_call_update",
+          "update:Finished later",
+          "prompt:hello",
+        ]);
         const history = active?.getMessageHistory() ?? [];
         const workingIndex = history.findIndex(
           (m) => m.type === "assistant" && m.message?.content === "Working",

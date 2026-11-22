@@ -281,8 +281,18 @@ export class AntigravityProvider implements AgentProvider {
   ): AsyncIterableIterator<SDKMessage> {
     const input = queue[Symbol.asyncIterator]();
     let owner: ReturnType<typeof ownAntigravitySession> | undefined;
+    let wake: (() => void) | undefined;
+    const notify = () => {
+      wake?.();
+      wake = undefined;
+    };
+    const waitForWake = () =>
+      new Promise<void>((resolve) => {
+        wake = resolve;
+      });
     const stop = () => {
       void input.return?.();
+      notify();
     };
     signal.addEventListener("abort", stop, { once: true });
     try {
@@ -308,20 +318,10 @@ export class AntigravityProvider implements AgentProvider {
         ...command.args,
         ...(skipPermissions ? ["--dangerously-skip-permissions"] : []),
       ]);
-      let wake: (() => void) | undefined;
-      const notify = () => {
-        wake?.();
-        wake = undefined;
-      };
-      const waitForWake = () =>
-        new Promise<void>((resolve) => {
-          wake = resolve;
-        });
       let runtimeClosed = false;
       const stopWithClose = () => {
         runtimeClosed = true;
         stop();
-        notify();
       };
       void runtime.closed.then(stopWithClose);
       const replay = options.resumeSessionId
@@ -392,6 +392,7 @@ export class AntigravityProvider implements AgentProvider {
       };
       for (const message of replay?.messages ?? [])
         yield { ...message, isReplay: true };
+      const WAKEUP_USER_HOLD_MAX_MS = 10_000;
       let wakeSeq = 0;
       let activeTranscript: AntigravityTranscript | undefined;
       let updateFailure: unknown;
@@ -403,6 +404,7 @@ export class AntigravityProvider implements AgentProvider {
             yielded: boolean;
             settleReady: boolean;
             timer?: ReturnType<typeof setTimeout>;
+            holdTimer?: ReturnType<typeof setTimeout>;
           }
         | undefined;
       const updates: SDKMessage[] = [];
@@ -425,6 +427,20 @@ export class AntigravityProvider implements AgentProvider {
           clearTimeout(wakeup.timer);
           wakeup.timer = undefined;
         }
+        if (wakeup?.holdTimer) {
+          clearTimeout(wakeup.holdTimer);
+          wakeup.holdTimer = undefined;
+        }
+      };
+      const ensureWakeupHoldCap = (state: NonNullable<typeof wakeup>) => {
+        if (state.holdTimer || state.settleReady || queue.depth === 0) return;
+        state.holdTimer = setTimeout(() => {
+          if (wakeup === state) {
+            state.holdTimer = undefined;
+            state.settleReady = true;
+            notify();
+          }
+        }, WAKEUP_USER_HOLD_MAX_MS);
       };
       const trackWakeupUpdate = (
         state: NonNullable<typeof wakeup>,
@@ -445,7 +461,10 @@ export class AntigravityProvider implements AgentProvider {
         } else if (update.sessionUpdate === "agent_message_chunk") {
           state.sawText = true;
         }
-        clearWakeupTimer();
+        if (state.timer) {
+          clearTimeout(state.timer);
+          state.timer = undefined;
+        }
         // Wait briefly after final text+usage so multi-chunk wakeups settle into
         // one turn. The 30s safety cap after tool activity prevents Process from
         // staying stuck in-turn if agy stops silently; later updates cleanly open
@@ -465,6 +484,7 @@ export class AntigravityProvider implements AgentProvider {
             notify();
           }
         }, delayMs);
+        ensureWakeupHoldCap(state);
       };
       const finishWakeup = () => {
         if (!wakeup) return { committed: [] as SDKMessage[], yielded: false };
@@ -479,7 +499,7 @@ export class AntigravityProvider implements AgentProvider {
       };
 
       runtime.onUpdate = (update, updateSessionId) => {
-        if (signal.aborted || updateSessionId !== id) return;
+        if (signal.aborted || updateSessionId !== id || updateFailure) return;
         // agy 1.5+ echoes the prompt back; YA already published `echo`.
         if (update.sessionUpdate === "user_message_chunk") return;
         try {
@@ -521,26 +541,15 @@ export class AntigravityProvider implements AgentProvider {
         }
       };
 
-      type InputItem = IteratorResult<
-        Awaited<ReturnType<typeof input.next>> extends IteratorResult<infer T>
-          ? T
-          : never
-      >;
-      let pendingInput: InputItem | undefined;
-      const watchNextInput = () => {
-        pendingInput = undefined;
-        void input.next().then(
-          (result) => {
-            pendingInput = result;
-            notify();
-          },
-          () => {
-            pendingInput = { done: true, value: undefined };
-            notify();
-          },
-        );
-      };
-      watchNextInput();
+      const unsubscribeDepth = queue.subscribeDepth((depth) => {
+        if (depth > 0) {
+          if (wakeup) ensureWakeupHoldCap(wakeup);
+          notify();
+        } else if (wakeup?.holdTimer) {
+          clearTimeout(wakeup.holdTimer);
+          wakeup.holdTimer = undefined;
+        }
+      });
 
       try {
         while (!signal.aborted) {
@@ -566,29 +575,23 @@ export class AntigravityProvider implements AgentProvider {
             }
             break;
           }
-          if (!pendingInput) {
+          if (wakeup) {
+            // Leave newly queued user input in MessageQueue until the active
+            // wakeup settles (bounded by holdTimer) so it stays cancellable,
+            // retains accurate consumption tracking, and does not trigger a
+            // concurrent prompt mid-wakeup.
+            ensureWakeupHoldCap(wakeup);
             await waitForWake();
             continue;
           }
-          if (pendingInput.done) {
-            if (wakeup) {
-              const { committed, yielded } = finishWakeup();
-              for (const item of committed) yield item;
-              if (yielded && !signal.aborted)
-                yield { type: "result", session_id: id };
-            }
-            break;
-          }
-          if (wakeup) {
-            // Hold newly queued user input until the active wakeup settles so
-            // agy does not receive a concurrent prompt mid-wakeup.
+          if (queue.depth === 0) {
             await waitForWake();
             continue;
           }
 
-          const message = pendingInput.value;
-          pendingInput = undefined;
-          if (signal.aborted) break;
+          const next = await input.next();
+          if (next.done || signal.aborted) break;
+          const message = next.value;
           const uuid = message.uuid || randomUUID();
           const content = message.message.content;
           const text =
@@ -643,21 +646,18 @@ export class AntigravityProvider implements AgentProvider {
           }
           if (updateFailure) throw updateFailure;
           const last = activeTranscript.close();
+          if (last) publish(last);
+          const turnTail = updates.splice(0, updates.length);
           activeTranscript = undefined;
-          if (last) {
-            publish(last);
-            while (updates.length) yield updates.shift()!;
-          }
+          for (const tailMessage of turnTail) yield tailMessage;
           if (failure) throw failure;
           const response = await request;
           if (!signal.aborted && response.stopReason === "end_turn")
             options.onNativeInputConsumed?.(id, uuid);
           yield { type: "result", session_id: id, usage: response.usage };
-          // Only pull the next queued message once the active turn finished so
-          // mid-turn queued inputs remain cancellable/drainable in MessageQueue.
-          watchNextInput();
         }
       } finally {
+        unsubscribeDepth();
         clearWakeupTimer();
         runtime.onUpdate = undefined;
       }
