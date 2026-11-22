@@ -580,13 +580,16 @@ export class AntigravityProvider implements AgentProvider {
           };
           owner.record(echo);
           yield echo;
-          activeTranscript = new AntigravityTranscript(id, `${id}:${uuid}`, true);
-          let done = false;
-          const request = runtime.call<{ usage?: unknown; stopReason?: string }>(
-            "session/prompt",
-            { sessionId: id, prompt },
-            0,
+          activeTranscript = new AntigravityTranscript(
+            id,
+            `${id}:${uuid}`,
+            true,
           );
+          let done = false;
+          const request = runtime.call<{
+            usage?: unknown;
+            stopReason?: string;
+          }>("session/prompt", { sessionId: id, prompt }, 0);
           // Observe rejection immediately, including while yielding streamed output.
           let failure: unknown;
           void request
