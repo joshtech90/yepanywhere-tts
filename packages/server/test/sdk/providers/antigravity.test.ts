@@ -73,13 +73,15 @@ readline.createInterface({input:process.stdin}).on('line', line => {
    return;
   }
   if(m.params.prompt[0].text === 'background') {
+   update({sessionUpdate:'tool_call',toolCallId:'bg-1',title:'Background command',kind:'execute',status:'in_progress'});
    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Working'}});
    reply(m.id,{stopReason:'end_turn'});
    setTimeout(() => {
-    update({sessionUpdate:'tool_call',toolCallId:'bg-1',title:'Background command',kind:'execute',status:'in_progress'});
     update({sessionUpdate:'tool_call_update',toolCallId:'bg-1',status:'completed',rawOutput:'BG_OK'});
-    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Finished later'}});
-    update({sessionUpdate:'usage_update',used:200,size:1048576});
+    setTimeout(() => {
+     update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Finished later'}});
+     update({sessionUpdate:'usage_update',used:200,size:1048576});
+    }, 60);
    }, 60);
    return;
   }
@@ -573,39 +575,15 @@ describe("Antigravity native process boundary", () => {
         );
         expect(response.status).toBe(202);
         const receipt = await response.json();
-        await vi.waitFor(
-          () => {
-            active = app.supervisor.getProcessForSession(receipt.sessionId);
-            expect(active?.state.type).toBe("idle");
-            const committed = (active?.getMessageHistory() ?? []).filter(
-              (m) => m.type === "assistant" && !m._isStreaming,
-            );
-            expect(JSON.stringify(committed)).toContain("Finished later");
-          },
-          { timeout: 5_000 },
-        );
-        const history = active?.getMessageHistory() ?? [];
-        expect(JSON.stringify(history)).toContain("Working");
-        expect(JSON.stringify(history)).toContain("BG_OK");
-        const finishedMsg = history.find(
-          (m) =>
-            m.type === "assistant" &&
-            !m._isStreaming &&
-            m.message?.content === "Finished later",
-        );
-        expect(finishedMsg).toBeDefined();
-
-        // Detail endpoint must also expose the post-end_turn wakeup reply.
-        const detail = await (
-          await app.app.request(
-            `/api/projects/${projectId}/sessions/${receipt.sessionId}`,
-            { headers: { "X-Yep-Anywhere": "true" } },
-          )
-        ).json();
-        expect(JSON.stringify(detail.messages)).toContain("Finished later");
-
-        // Follow-up user turn after a post-end_turn wakeup still works normally.
-        const nextTurn = await app.app.request(
+        // Wait for the wakeup tool_result before sending a follow-up user message,
+        // verifying that user input sent mid-wakeup waits until the wakeup settles.
+        await vi.waitFor(() => {
+          active = app.supervisor.getProcessForSession(receipt.sessionId);
+          expect(JSON.stringify(active?.getMessageHistory() ?? [])).toContain(
+            "BG_OK",
+          );
+        });
+        const queuedMidWakeup = await app.app.request(
           `/api/sessions/${receipt.sessionId}/messages`,
           {
             method: "POST",
@@ -616,17 +594,123 @@ describe("Antigravity native process boundary", () => {
             body: JSON.stringify({ message: "hello" }),
           },
         );
-        expect(nextTurn.status).toBe(200);
-        await vi.waitFor(() => {
-          expect(active?.state.type).toBe("idle");
-          expect(JSON.stringify(active?.getMessageHistory())).toContain(
-            "Hello world",
-          );
-        });
+        expect(queuedMidWakeup.status).toBe(200);
+        await vi.waitFor(
+          () => {
+            expect(active?.state.type).toBe("idle");
+            const committed = (active?.getMessageHistory() ?? []).filter(
+              (m) => m.type === "assistant" && !m._isStreaming,
+            );
+            expect(JSON.stringify(committed)).toContain("Finished later");
+            expect(JSON.stringify(committed)).toContain("Hello world");
+          },
+          { timeout: 5_000 },
+        );
+        const history = active?.getMessageHistory() ?? [];
+        const workingIndex = history.findIndex(
+          (m) => m.type === "assistant" && m.message?.content === "Working",
+        );
+        const finishedIndex = history.findIndex(
+          (m) =>
+            m.type === "assistant" &&
+            !m._isStreaming &&
+            m.message?.content === "Finished later",
+        );
+        const helloIndex = history.findIndex(
+          (m) =>
+            m.type === "assistant" &&
+            !m._isStreaming &&
+            m.message?.content === "Hello world",
+        );
+        expect(workingIndex).toBeGreaterThanOrEqual(0);
+        expect(finishedIndex).toBeGreaterThan(workingIndex);
+        expect(helloIndex).toBeGreaterThan(finishedIndex);
+
+        // Detail endpoint must also expose the post-end_turn wakeup reply.
+        const detail = await (
+          await app.app.request(
+            `/api/projects/${projectId}/sessions/${receipt.sessionId}`,
+            { headers: { "X-Yep-Anywhere": "true" } },
+          )
+        ).json();
+        expect(JSON.stringify(detail.messages)).toContain("Finished later");
       } finally {
         await active?.abort();
         app.stopNotifications();
         await app.disposeSessionReaders();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps queued messages in MessageQueue while an active prompt is still running",
+    async () => {
+      let releaseApproval!: () => void;
+      let markApprovalRequested!: () => void;
+      const requested = new Promise<void>((resolve) => {
+        markApprovalRequested = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        releaseApproval = resolve;
+      });
+      const consumed: Array<{
+        sessionId: string;
+        uuid: string;
+      }> = [];
+      const session = await new AntigravityProvider().startSession({
+        cwd: directory,
+        initialMessage: { text: "approval", uuid: "input-1" },
+        onNativeInputConsumed: (sessionId, uuid) =>
+          consumed.push({ sessionId, uuid }),
+        onToolApproval: async () => {
+          markApprovalRequested();
+          await gate;
+          return { behavior: "allow" };
+        },
+      });
+      try {
+        const iterator = session.iterator;
+        const collected: SDKMessage[] = [];
+        const pump = (async () => {
+          for await (const message of iterator) {
+            collected.push(message);
+            if (
+              message.type === "result" &&
+              collected.filter((m) => m.type === "result").length === 2
+            ) {
+              break;
+            }
+          }
+        })();
+
+        await requested;
+        session.queue.push({
+          text: "cancel-me",
+          uuid: "input-2",
+          tempId: "temp-2",
+        });
+        expect(session.queue.depth).toBe(1);
+        expect(consumed).toHaveLength(0);
+        expect(session.queue.removeByTempId("temp-2")).toHaveLength(1);
+        expect(session.queue.depth).toBe(0);
+
+        session.queue.push({
+          text: "hello",
+          uuid: "input-3",
+          tempId: "temp-3",
+        });
+        expect(session.queue.depth).toBe(1);
+        expect(consumed).toHaveLength(0);
+
+        releaseApproval();
+        await pump;
+        expect(consumed.map((entry) => entry.uuid)).toEqual([
+          "input-1",
+          "input-3",
+        ]);
+        expect(JSON.stringify(collected)).toContain("Hello world");
+      } finally {
+        await session.abort();
       }
     },
   );
