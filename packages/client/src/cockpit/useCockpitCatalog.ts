@@ -23,6 +23,9 @@ export interface CockpitCatalogData {
   organization: CockpitOrganizationController;
 }
 
+/** The server's page maximum; nobody pins more sessions than this. */
+const STARRED_SESSIONS_LIMIT = 500;
+
 function connectionKind(
   shellKind: CockpitShellState["kind"],
 ): "online" | "offline" | "error" {
@@ -46,14 +49,26 @@ export function useCockpitCatalog(
     limit: 100,
     includeStats: false,
   });
+  // Pinned sessions stay pinned however old they are, so they need their own
+  // feed: the recent page above holds only the newest sessions, and a pin last
+  // touched before that window silently dropped out of the sidebar.
+  const starredFeed = useGlobalSessionsFeed({
+    starred: true,
+    limit: STARRED_SESSIONS_LIMIT,
+    includeStats: false,
+  });
   const sessions = useSessionCollectionQueryRecords(sessionsFeed.query);
-  const starredSessions = useMemo(
-    () =>
-      sessions.filter(
-        (session) => session.isStarred === true && session.isArchived !== true,
-      ),
-    [sessions],
-  );
+  const starredRecords = useSessionCollectionQueryRecords(starredFeed.query);
+  const starredSessions = useMemo(() => {
+    // Both feeds read the same entity store, so one id is one record.
+    const byId = new Map<string, (typeof sessions)[number]>();
+    for (const session of [...starredRecords, ...sessions]) {
+      byId.set(session.id, session);
+    }
+    return [...byId.values()].filter(
+      (session) => session.isStarred === true && session.isArchived !== true,
+    );
+  }, [sessions, starredRecords]);
   const ordered = useSidebarSessionOrder(sessions, starredSessions);
   const orderedSessions = useMemo(
     () => [...ordered.starred, ...ordered.recent, ...ordered.older],
@@ -94,7 +109,7 @@ export function useCockpitCatalog(
 
   return {
     catalog,
-    error: projectsFeed.error ?? sessionsFeed.error,
+    error: projectsFeed.error ?? sessionsFeed.error ?? starredFeed.error,
     loading: projectsFeed.loading || sessionsFeed.loading,
     hasMore: sessionsFeed.hasMore,
     loadMore: sessionsFeed.loadMore,
