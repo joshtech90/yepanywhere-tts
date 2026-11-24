@@ -10,7 +10,8 @@
 # - Symbole und Farben: "AI Worker/hosts/cockpit-icons/<rechner>/zeichen.svg"
 # - Firebase-Client: "Smartzone OS/cockpit-apps/yep-cockpit-google-services.json"
 #   (Projekt smartzone-cockpit-push); fehlt sie, baut die App ohne Push
-# - Signatur: Smartzone-Release-Schluessel aus "Smartzone OS/cockpit-apps/signing"
+# - Signatur: eigener Schluessel (CN=joshtech90) aus ~/.yepcockpit-signing,
+#   gesichert im privaten Repo claude-memory (projects-container/android-signierung)
 set -euo pipefail
 
 HIER=${0:A:h}
@@ -19,7 +20,8 @@ SZ="$HOME/Projects/Smartzone OS/cockpit-apps"
 ROLLEN="$AIW/hosts/rollen.json"
 SYMBOLE="$AIW/hosts/cockpit-icons"
 FIREBASE="$SZ/yep-cockpit-google-services.json"
-SIGNATUR="$SZ/signing/signing.properties"
+SIGNATUR_ORDNER="$HOME/.yepcockpit-signing"
+SIGNATUR="$SIGNATUR_ORDNER/signing.properties"
 GENERIERT="$HIER/app/src/generiert/res"
 PAKET=de.joscha.yepcockpit
 
@@ -128,7 +130,7 @@ PY
 ARGS=("${(@f)EIGENSCHAFTEN}")
 ARGS+=("-PyepVersionCode=$(date +%y%m%d%H)" "-PyepVersionName=1.0.$(date +%Y%m%d.%H%M)")
 if [[ -f $SIGNATUR ]]; then
-  ARGS+=("-PyepSignatur=$SIGNATUR" "-PyepSignaturBasis=$SZ")
+  ARGS+=("-PyepSignatur=$SIGNATUR" "-PyepSignaturBasis=$SIGNATUR_ORDNER")
 fi
 
 cd "$HIER"

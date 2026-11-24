@@ -48,7 +48,7 @@ Dieses Repo ist öffentlich. `build.sh` holt beim Bauen:
   (nach `app/src/generiert/`, nicht eingecheckt),
 - den Firebase-Client aus `Smartzone OS/cockpit-apps/yep-cockpit-google-services.json`
   (fehlt er, baut die App ohne Push),
-- die Signatur aus `Smartzone OS/cockpit-apps/signing/` (Smartzone-Release-Schlüssel).
+- die Signatur aus `~/.yepcockpit-signing/` (eigener Schlüssel `CN=joshtech90`, Sicherung im privaten Repo `claude-memory`).
 
 ## Diagnose
 
