@@ -68,6 +68,16 @@ export interface CoreApiSources {
   projects(
     signal?: AbortSignal,
   ): Promise<{ items: ApiProject[]; catalog?: CatalogState }>;
+  /**
+   * One session without visiting the population. `undefined` leaves the
+   * answer, including why a session is absent, to `sessions`.
+   */
+  session?(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<
+    { session: ApiSession; backingStore: ApiBackingStore } | undefined
+  >;
   sessions(
     signal?: AbortSignal,
   ): Promise<{ items: ApiSession[]; catalog?: CatalogState }>;
@@ -387,7 +397,7 @@ export class CoreApi {
         if (!parsed.success)
           throw new CoreApiError(
             "invalid_request",
-            "Choose provider=claude|codex and routing=aar|direct; inspect the selection schema",
+            "Choose provider=claude|codex|antigravity and routing=aar|direct; inspect the selection schema",
             400,
           );
         if (!this.sources.selection)
@@ -432,11 +442,7 @@ export class CoreApi {
         };
       }
       case "requests": {
-        await this.read("session", caller, {
-          ...input,
-          query: undefined,
-          http: undefined,
-        });
+        await this.readReadySession(caller, input);
         return (
           this.sources.commands?.requests(input.sessionId!) ?? { items: [] }
         );
@@ -448,11 +454,7 @@ export class CoreApi {
             "Queued input access requires operator authority",
             403,
           );
-        await this.read("session", caller, {
-          ...input,
-          query: undefined,
-          http: undefined,
-        });
+        await this.readReadySession(caller, input);
         const items =
           this.sources.commands?.inputs(
             input.sessionId!,
@@ -475,11 +477,7 @@ export class CoreApi {
             "Invalid session control body",
             400,
           );
-        const session = (await this.read("session", caller, {
-          ...input,
-          query: undefined,
-          http: undefined,
-        })) as ApiSession;
+        const session = await this.readReadySession(caller, input);
         // The lookup is asynchronous; recheck authority that may have been
         // revoked while it ran, as creation and prompts do.
         input.signal?.throwIfAborted();
@@ -579,13 +577,7 @@ export class CoreApi {
           await this.assertReceipt(caller, replay, input.signal);
           return replay;
         }
-        const session = sessionSchema.parse(
-          await this.read("session", caller, {
-            ...input,
-            query: undefined,
-            http: undefined,
-          }),
-        );
+        const session = await this.readReadySession(caller, input);
         input.signal?.throwIfAborted();
         assertPeerOperation(caller, operation);
         return commands.input(
@@ -664,11 +656,7 @@ export class CoreApi {
             "Provenance access requires operator authority",
             403,
           );
-        await this.read("session", caller, {
-          ...input,
-          query: undefined,
-          http: undefined,
-        });
+        await this.readReadySession(caller, input);
         if (caller.kind === "peer") {
           const creation = this.sources.commands?.store.relationships(
             input.sessionId!,
@@ -725,11 +713,7 @@ export class CoreApi {
             "Invalid follow cursor or window",
             400,
           );
-        await this.read("session", caller, {
-          ...input,
-          query: undefined,
-          http: undefined,
-        });
+        await this.readReadySession(caller, input);
         if (!this.sources.followConversation)
           throw new CoreApiError(
             "conversation_unavailable",
@@ -755,11 +739,7 @@ export class CoreApi {
             "Invalid conversation window",
             400,
           );
-        await this.read("session", caller, {
-          ...input,
-          query: undefined,
-          http: undefined,
-        });
+        await this.readReadySession(caller, input);
         if (!this.sources.conversation)
           throw new CoreApiError(
             "conversation_unavailable",
@@ -779,6 +759,36 @@ export class CoreApi {
       }
       case "sessions":
       case "session": {
+        const allowed = (s: ApiSession) =>
+          (visible(s.projectId) ||
+            (caller.kind === "limited" &&
+              s.createdByUser === caller.username)) &&
+          (!query.data.projectId || query.data.projectId === s.projectId);
+        const detail = (item: ApiSession, backingStore?: ApiBackingStore) => {
+          const inspection = this.sources.sessionInspection?.(item.id);
+          return {
+            ...item,
+            ...(inspection ? sessionInspectionSchema.parse(inspection) : {}),
+            ...(backingStore
+              ? {
+                  backingStore: backingStoreSchema.parse({
+                    ...backingStore,
+                    serverId: this.serverId,
+                  }),
+                }
+              : {}),
+          };
+        };
+        if (operation === "session" && input.sessionId) {
+          const launching = this.launchingSession(caller, input.sessionId);
+          if (launching) return launching;
+          const found = await this.sources.session?.(
+            input.sessionId,
+            input.signal,
+          );
+          if (found && allowed(found.session))
+            return detail(found.session, found.backingStore);
+        }
         const result = await this.sources.sessions(input.signal);
         const projectsById = new Map<string, string>();
         const ambiguous = new Set<string>();
@@ -794,12 +804,7 @@ export class CoreApi {
             : undefined;
         const items = result.items.filter(
           (s) =>
-            !ambiguous.has(s.id) &&
-            (visible(s.projectId) ||
-              (caller.kind === "limited" &&
-                s.createdByUser === caller.username)) &&
-            !hidden?.has(s.projectId) &&
-            (!query.data.projectId || query.data.projectId === s.projectId),
+            !ambiguous.has(s.id) && allowed(s) && !hidden?.has(s.projectId),
         );
         if (operation === "session") {
           const item = items.find((s) => s.id === input.sessionId);
@@ -815,23 +820,10 @@ export class CoreApi {
               "Session not found",
               404,
             );
-          const inspection = this.sources.sessionInspection?.(item.id);
-          const backingStore = await this.sources.backingStore?.(
+          return detail(
             item,
-            input.signal,
+            await this.sources.backingStore?.(item, input.signal),
           );
-          return {
-            ...item,
-            ...(inspection ? sessionInspectionSchema.parse(inspection) : {}),
-            ...(backingStore
-              ? {
-                  backingStore: backingStoreSchema.parse({
-                    ...backingStore,
-                    serverId: this.serverId,
-                  }),
-                }
-              : {}),
-          };
         }
         const unique = [
           ...new Map(items.map((item) => [item.id, item])).values(),
@@ -844,6 +836,43 @@ export class CoreApi {
         return { ...this.page(unique, query.data), catalog: result.catalog };
       }
     }
+  }
+
+  private launchingSession(
+    caller: ApiPrincipal,
+    id: string,
+  ): ApiSession | undefined {
+    if (caller.kind === "limited") return;
+    const launch = this.sources.commands?.store.launchingSession(id);
+    if (!launch || !this.receiptVisible(caller, launch.receipt)) return;
+    return {
+      id,
+      projectId: launch.receipt.projectId,
+      provider: launch.provider,
+      title: null,
+      updatedAt: launch.receipt.updatedAt,
+      state: "launching",
+    };
+  }
+
+  private async readReadySession(
+    caller: ApiPrincipal,
+    input: NonNullable<Parameters<CoreApi["read"]>[2]>,
+  ): Promise<ApiSession> {
+    const session = sessionSchema.parse(
+      await this.read("session", caller, {
+        ...input,
+        query: undefined,
+        http: undefined,
+      }),
+    );
+    if (session.state === "launching")
+      throw new CoreApiError(
+        "session_not_ready",
+        "Session is launching. Follow the creation receipt for updates.",
+        409,
+      );
+    return session;
   }
 
   private receiptVisible(caller: ApiPrincipal, receipt: ApiReceipt) {

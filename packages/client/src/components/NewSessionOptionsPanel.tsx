@@ -115,6 +115,7 @@ export function NewSessionOptionsPanel({
     routerClaudeAiConnectors,
     routerDiscovery,
     routerModelList,
+    routerRestorePending,
     routerSelection,
     routerThinking,
     sandboxLevel,
@@ -1062,7 +1063,13 @@ export function NewSessionOptionsPanel({
         ) &&
           !launchLock.limited &&
           effectiveSandboxLevel === "none" &&
-          (selectedProvider === "claude" || selectedProvider === "codex") && (
+          (selectedProvider === "claude" ||
+            selectedProvider === "codex" ||
+            (selectedProvider === "antigravity" &&
+              serverHasCapability(
+                versionInfo,
+                SERVER_CAPABILITIES.agentAuthRouterAntigravity.name,
+              ))) && (
             <RouterPoolSelector
               provider={selectedProvider}
               model={selectedModel}
@@ -1070,6 +1077,7 @@ export function NewSessionOptionsPanel({
               serviceTier={effectiveServiceTier}
               data={routerDiscovery.data}
               busy={routerDiscovery.busy}
+              restorePending={routerRestorePending}
               error={routerDiscovery.error}
               retry={() => void routerDiscovery.reload()}
               sourceKey={clientSummarySourceKey}

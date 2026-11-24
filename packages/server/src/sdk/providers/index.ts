@@ -56,25 +56,7 @@ export {
 } from "./codex.js";
 
 import { antigravityProvider } from "./antigravity.js";
-// Gemini ACP provider (uses gemini CLI with --experimental-acp)
-import { geminiACPProvider } from "./gemini-acp.js";
-export {
-  GeminiACPProvider,
-  geminiACPProvider,
-  type GeminiACPProviderConfig,
-} from "./gemini-acp.js";
-
-// Keep saved/configured `gemini` selections discoverable through the same ACP
-// adapter used for launch. This alias owns no separate transport or state.
-const geminiAliasProvider = new Proxy(geminiACPProvider, {
-  get(target, property) {
-    if (property === "name") return "gemini";
-    if (property === "displayName") return "Gemini";
-    const value = Reflect.get(target, property, target) as unknown;
-    return typeof value === "function" ? value.bind(target) : value;
-  },
-});
-
+import { hostedAntigravityOwnerLink } from "./antigravity-owners.js";
 // Grok Build ACP provider (uses `grok agent stdio`)
 // Phase 1 isolated addition per topics/grok.md. Gated by ENABLED_PROVIDERS=grok.
 import { grokACPProvider } from "./grok-acp.js";
@@ -152,6 +134,8 @@ export interface ProviderRuntimeSnapshot {
   grokBuildUseXaiApiKey?: boolean;
   /** The operator's default advertisement of installed Machine Control. */
   machineControlEnabled?: boolean;
+  /** Dedicated profile directory for AAR-routed Antigravity sessions. */
+  antigravityRoutedHomeDir?: string;
 }
 
 let isClaudeOllamaVisible = () => false;
@@ -235,10 +219,18 @@ function hostedProvider(rawProvider: AgentProvider): AgentProvider {
           options: Parameters<AgentProvider["startSession"]>[0],
         ) => {
           await assertAndroidWorkspaceAvailable(options.cwd);
+          // Readers here join a hosted Antigravity owner with the log; a
+          // resumed conversation is held from before its worker starts.
+          const hostedNativeOwner =
+            target.name === "antigravity"
+              ? hostedAntigravityOwnerLink()
+              : undefined;
+          hostedNativeOwner?.expect(options.nativeResumeSource?.native);
           return startHostedProviderSession(
             target.name,
             {
               ...options,
+              ...(hostedNativeOwner ? { hostedNativeOwner } : {}),
               launchModel: target.resolveLaunchModel?.(options.model),
               // The worker holds no catalog, so the endpoint is decided here,
               // from the one this process reads for the model picker.
@@ -252,7 +244,11 @@ function hostedProvider(rawProvider: AgentProvider): AgentProvider {
                 : {}),
             },
             getProviderRuntimeSnapshot(),
-          );
+          ).catch((error: unknown) => {
+            // Never attached: the host reaps the worker at its deadline.
+            hostedNativeOwner?.end("unattached");
+            throw error;
+          });
         };
       }
       const value = Reflect.get(target, property, target) as unknown;
@@ -266,7 +262,7 @@ function hostedProvider(rawProvider: AgentProvider): AgentProvider {
 export { isProviderRuntimeHostAvailable };
 
 function runtimeProvider(rawProvider: AgentProvider): AgentProvider {
-  if (rawProvider.name === "antigravity" || !isProviderRuntimeHostAvailable())
+  if (!isProviderRuntimeHostAvailable())
     return new Proxy(rawProvider, {
       get(target, property) {
         if (property === "runtimeOwner") return "local";
@@ -298,8 +294,6 @@ export function getAllProviders(): AgentProvider[] {
     ...(isClaudeOllamaVisible() ? [claudeOllamaProvider] : []),
     codexProvider,
     codexOSSProvider,
-    geminiAliasProvider,
-    geminiACPProvider,
     antigravityProvider,
     grokACPProvider, // Phase 1: additive only (see grok-acp.ts header + topics/grok.md)
     opencodeProvider,
@@ -309,9 +303,6 @@ export function getAllProviders(): AgentProvider[] {
 
 /**
  * Get a provider by name.
- *
- * Both Gemini names select the retained ACP adapter. Discovery keeps the old
- * name as an alias, without a separate stream-JSON execution path.
  *
  * "grok" added (additive, isolated). When ENABLED_PROVIDERS does not include "grok",
  * getProvider("grok") is never reached from normal flows.
@@ -328,10 +319,6 @@ export function getRawProvider(name: ProviderName): AgentProvider | null {
       return codexProvider;
     case "codex-oss":
       return codexOSSProvider;
-    case "gemini":
-    case "gemini-acp":
-      // Both map to ACP provider - "gemini" is legacy name for backward compatibility
-      return geminiACPProvider;
     case "antigravity":
       return antigravityProvider;
     case "grok":

@@ -5,6 +5,7 @@ import {
   fixturePeerGrant,
 } from "../../src/peer-api/directory.js";
 import { Hono } from "hono";
+import { EMPTY_LIMITED_USER_GRANTS } from "@yep-anywhere/shared";
 import { createV0Routes } from "../../src/routes/v0/index.js";
 import { request } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -19,7 +20,10 @@ import {
   type SessionCommandOwner,
 } from "../../src/core-api/session-commands.js";
 import { CoreApi, type CoreApiSources } from "../../src/core-api/service.js";
+import type { ApiSession } from "../../src/core-api/contracts.js";
+import type { PeerPrincipal } from "../../src/core-api/peer-policy.js";
 import { createSessionRequest } from "../../src/core-api/command-contracts.js";
+import { ClaudeExecutableUnavailable } from "../../src/supervisor/provider-launch-admission.js";
 import { SUPERUSER } from "../../src/auth/principal.js";
 import {
   createAgentApiRuntime,
@@ -42,7 +46,7 @@ function fixture(
   const store = new ApiReceiptStore(database);
   let enabled = false;
   const commands = new SessionCommands("A", store, owner, () => enabled);
-  const sessions = [
+  const sessions: ApiSession[] = [
     {
       id: "parent",
       projectId: "p",
@@ -130,6 +134,38 @@ function http(
   );
 }
 
+it("reports a missing Claude executable as a known failure after saving the session", async () => {
+  const f = fixture({
+    async start(
+      _project,
+      _request,
+      _receipt,
+      _settled,
+      _failed,
+      _consumed,
+      admitted,
+    ) {
+      admitted?.("saved");
+      throw new ClaudeExecutableUnavailable();
+    },
+  });
+  try {
+    f.enable();
+    const { id } = f.commands.create(project, { ...body, provider: "claude" });
+    await f.commands.idle();
+    expect(await f.commands.receipt(id)).toMatchObject({
+      state: "failed",
+      sessionId: "saved",
+      failure: {
+        code: "claude-executable-unavailable",
+        message: expect.stringContaining("reload the Yep Anywhere server"),
+      },
+    });
+  } finally {
+    f.close();
+  }
+});
+
 it.skipIf(process.platform === "win32")(
   "keeps existing grants read-only, attributes native admission, and deduplicates concurrent HTTP retries",
   async () => {
@@ -180,9 +216,10 @@ it.skipIf(process.platform === "win32")(
         read.environment.AGENT_YA_V0_AUTHORIZATION!,
       );
       expect(access.body.operations).not.toContain("createSession");
+      const direct = { ...body, routing: "direct" };
       const [first, retry] = await Promise.all([
-        http(runtime, path, token, body),
-        http(runtime, path, token, body),
+        http(runtime, path, token, direct),
+        http(runtime, path, token, direct),
       ]);
       expect(first.status).toBe(202);
       expect(retry.status).toBe(202);
@@ -195,9 +232,24 @@ it.skipIf(process.platform === "win32")(
         principal: { kind: "superuser" },
       });
       expect(
-        (await http(runtime, path, token, { ...body, prompt: "different" }))
+        (await http(runtime, path, token, { ...direct, prompt: "different" }))
           .status,
       ).toBe(409);
+      expect(await http(runtime, path, token, body)).toMatchObject({
+        status: 409,
+        body: { error: { code: "request_id_conflict" } },
+      });
+      expect(
+        await http(runtime, path, token, {
+          ...direct,
+          requestId: "direct-with-pool",
+          routerPoolId: "pool",
+          model: "routed-model",
+        }),
+      ).toMatchObject({
+        status: 400,
+        body: { error: { code: "invalid_request" } },
+      });
       expect(
         (
           await http(runtime, path, token, {
@@ -288,6 +340,148 @@ it.skipIf(process.platform === "win32")(
     }
   },
 );
+
+it("serves reserved session ids during dispatch and queueing with the creation's access scope", async () => {
+  let queued!: () => void;
+  const waitForQueue = new Promise<void>((resolve) => (queued = resolve));
+  let settle!: (sessionId: string) => void;
+  let fail!: () => void;
+  const f = fixture({
+    async start(
+      _project,
+      request,
+      _receipt,
+      settled,
+      failed,
+      _consumed,
+      admitted,
+    ) {
+      if (request.requestId === "review-fail") {
+        admitted?.("refused-child");
+        fail = failed;
+        return { queueId: "refused-queue" };
+      }
+      admitted?.("child");
+      settle = settled;
+      await waitForQueue;
+      return { queueId: "native-queue" };
+    },
+  });
+  f.enable();
+  const peer: PeerPrincipal = {
+    kind: "peer",
+    serverId: "origin",
+    credentialId: "fixture-credential",
+    projects: [project.id],
+    operations: ["session", "createSession"],
+    sourceSessionId: null,
+    sourceLaunchId: null,
+    signal: new AbortController().signal,
+    assertActive() {},
+  };
+  const app = new Hono<{ Variables: { yaPrincipal: typeof SUPERUSER } }>();
+  app.use("*", async (c, next) => {
+    c.set("yaPrincipal", SUPERUSER);
+    await next();
+  });
+  app.route("/v0", createV0Routes(f.core));
+  const path = "/v0/servers/self/sessions/child";
+  const lookup = { sessionId: "child" };
+  try {
+    const receipt = (await f.core.call("createSession", peer, { body })) as {
+      id: string;
+    };
+    expect(f.store.get(receipt.id)).toMatchObject({
+      sessionId: "child",
+      state: "dispatching",
+    });
+    const starting = await app.request(path);
+    expect(starting.status).toBe(200);
+    expect(await starting.json()).toEqual({
+      id: "child",
+      projectId: project.id,
+      provider: "codex",
+      title: null,
+      updatedAt: f.store.get(receipt.id)?.updatedAt,
+      state: "launching",
+    });
+    await expect(f.core.call("session", peer, lookup)).resolves.toMatchObject({
+      state: "launching",
+    });
+    for (const caller of [
+      { ...peer, serverId: "other" },
+      { ...peer, projects: [] },
+      {
+        kind: "limited" as const,
+        username: "reader",
+        grants: { ...EMPTY_LIMITED_USER_GRANTS, viewProjects: [project.id] },
+        locked: true,
+        switched: false,
+        via: "direct" as const,
+      },
+    ]) {
+      await expect(
+        f.core.call("session", caller, lookup),
+      ).rejects.toMatchObject({
+        status: 404,
+        code: "session_not_found",
+      });
+    }
+    const listed = await app.request("/v0/servers/self/sessions");
+    expect(await listed.json()).toMatchObject({
+      items: [{ id: "parent" }],
+    });
+    for (const suffix of ["/conversation", "/conversation/follow"]) {
+      const response = await app.request(path + suffix);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: { code: "session_not_ready" },
+      });
+    }
+    expect((await app.request(path.replace("child", "missing"))).status).toBe(
+      404,
+    );
+    queued();
+    await f.commands.idle();
+    expect(f.store.get(receipt.id)?.state).toBe("queued");
+    expect(await (await app.request(path)).json()).toMatchObject({
+      state: "launching",
+    });
+
+    f.sessions.push({
+      id: "child",
+      projectId: project.id,
+      provider: "codex",
+      title: "Ready",
+      updatedAt: "",
+      state: "idle",
+    });
+    expect(await (await app.request(path)).json()).toMatchObject({
+      state: "launching",
+    });
+    settle("child");
+    expect(f.store.get(receipt.id)?.state).toBe("accepted");
+    expect(await (await app.request(path)).json()).toMatchObject({
+      id: "child",
+      title: "Ready",
+      state: "idle",
+    });
+    expect(f.store.launchingSession("child")).toBeUndefined();
+
+    await f.core.call("createSession", peer, {
+      body: { ...body, requestId: "review-fail" },
+    });
+    await f.commands.idle();
+    const refused = path.replace("child", "refused-child");
+    expect((await app.request(refused)).status).toBe(200);
+    fail();
+    expect((await app.request(refused)).status).toBe(404);
+  } finally {
+    queued();
+    await f.commands.idle();
+    f.close();
+  }
+});
 
 it("keeps request identity for the process only and resolves historical session aliases", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ya-receipts-"));

@@ -332,6 +332,25 @@ no alternate authentication or provider transcript store is introduced.
   turn idle or ended rather than working or awaiting input. A record arriving
   while reads are refused is itself treated as dropped. The refusal is not
   permanent for the lifetime of the lease.
+- An Antigravity owner's live rows carry IDs its brain log does not use.
+  While an owner lives, the reader serves the log only through that
+  owner's boundary and the owner's rows after it
+  ([live memory](antigravity.md#live-memory)), so a durable snapshot and
+  the owner's live rows never hold the same step under two IDs, whichever
+  owner (or none) it was read under. When the owner moves rows past its
+  soft budget into the log (or its cap evicts them), the source drops a
+  live row only on the owner's evidence that it recorded the row and let
+  it go (its ID is among the owner's last 10,000 retired IDs), never by
+  time, at every message and at every durable read, including rows that
+  arrived while that read was pending; and at a read taken after a row's
+  process went, a row the read lacks. Each row carries a small token for
+  its process, not the process. A queued echo the owner has not recorded
+  stays. An owner attaching or departing forces the
+  next durable read even while one is working, so a fallback owner's
+  replay (whose `isReplay` rows the source never keeps) and a departed
+  owner's turns take the reader's IDs at once. A read that a departure
+  invalidated is not published (the subscription reads again). Claude and
+  Codex keep their ID-based reconciliation.
 - A newly created exact managed Claude/Codex session can precede its retained
   catalog row. Its bounded replay is available with incomplete coverage and
   unknown earlier history. Re-resolve on later reads/catalog invalidations and

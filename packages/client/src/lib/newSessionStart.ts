@@ -370,10 +370,16 @@ export async function startNewSession(
     propagateFailure,
     routedSourceKey: routerSelection ? routerSelection.sourceKey : null,
     sourceKey: clientSummarySourceKey,
-    routerCapable: serverHasCapability(
-      versionInfo,
-      SERVER_CAPABILITIES.agentAuthRouter.name,
-    ),
+    routerCapable:
+      serverHasCapability(
+        versionInfo,
+        SERVER_CAPABILITIES.agentAuthRouter.name,
+      ) &&
+      (selectedProvider !== "antigravity" ||
+        serverHasCapability(
+          versionInfo,
+          SERVER_CAPABILITIES.agentAuthRouterAntigravity.name,
+        )),
     launchLimited: launchLock.limited,
     effectiveSandboxLevel,
     hasLaunch: Boolean(launch),
@@ -451,11 +457,13 @@ export async function startNewSession(
 
     const sessionMode = effectivePermissionMode;
 
-    // Get model and thinking settings
-    const thinking = toThinkingOption(
-      effectiveThinkingMode,
-      effectiveEffortLevel,
-    );
+    // Get model and thinking settings. Antigravity has no disabled thinking
+    // mode; "off" only means thinking controls are hidden for this model/server
+    // (e.g. saved legacy effort-suffixed ID or fixed-effort model), so omit it.
+    const thinking =
+      selectedProvider === "antigravity" && effectiveThinkingMode === "off"
+        ? undefined
+        : toThinkingOption(effectiveThinkingMode, effectiveEffortLevel);
     const effectiveRecapMode = resolveRecapMode(
       selectedProviderInfo,
       selectedRecapMode,
@@ -477,10 +485,16 @@ export async function startNewSession(
       routed: routerSelection,
       routedModel,
       selectedModel,
-      routerCapable: serverHasCapability(
-        versionInfo,
-        SERVER_CAPABILITIES.agentAuthRouter.name,
-      ),
+      routerCapable:
+        serverHasCapability(
+          versionInfo,
+          SERVER_CAPABILITIES.agentAuthRouter.name,
+        ) &&
+        (selectedProvider !== "antigravity" ||
+          serverHasCapability(
+            versionInfo,
+            SERVER_CAPABILITIES.agentAuthRouterAntigravity.name,
+          )),
       routerAccountId,
       routerPolicy,
       routerClaudeAiConnectors,
@@ -765,10 +779,16 @@ export async function queueNewSessionForProject(
   const refusal = projectQueueRefusalBeforeDefer({
     routedSourceKey: routerSelection ? routerSelection.sourceKey : null,
     sourceKey: clientSummarySourceKey,
-    routerCapable: serverHasCapability(
-      versionInfo,
-      SERVER_CAPABILITIES.agentAuthRouter.name,
-    ),
+    routerCapable:
+      serverHasCapability(
+        versionInfo,
+        SERVER_CAPABILITIES.agentAuthRouter.name,
+      ) &&
+      (selectedProvider !== "antigravity" ||
+        serverHasCapability(
+          versionInfo,
+          SERVER_CAPABILITIES.agentAuthRouterAntigravity.name,
+        )),
     queueRouterCapable: serverHasCapability(
       versionInfo,
       SERVER_CAPABILITIES.projectQueueRouterSelection.name,

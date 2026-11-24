@@ -253,7 +253,8 @@ jobs:
       # behind a workspace one until the workspace was repaired.
       # Standalone npm manifests are outside the pnpm workspace. Include dev
       # dependencies: the sharing worker's Wrangler/Miniflare edge is dev-only.
-      - run: npm audit --package-lock-only
+      - name: Audit website dependencies
+        run: node ../scripts/audit-site-dependencies.mjs
         if: ${{ !cancelled() }}
         working-directory: site
       - name: Verify sharing worker frozen install
@@ -328,6 +329,16 @@ jobs:
           cache: "pnpm"
       - run: pnpm install
       - run: pnpm --filter @yep-anywhere/shared build
+      - name: Install the pinned Antigravity test runtime
+        run: pnpm test:providers:install antigravity
+      - name: Verify Antigravity through the app and v0 API
+        env:
+          YEP_NATIVE_APP_TESTS: "1"
+        run: pnpm --filter @yep-anywhere/server test test/native-app/app-antigravity-v0.test.ts
+      - name: Verify native provider memory admission
+        env:
+          YEP_NATIVE_APP_TESTS: "1"
+        run: pnpm --filter @yep-anywhere/server test test/native-app/app-memory-admission.test.ts
       - run: pnpm -F @yep-anywhere/client exec playwright install chromium
       - run: pnpm test
 
@@ -442,6 +453,9 @@ jobs:
           E2E_WORKERS: ${{ inputs.e2e_workers || '2' }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ runner.temp }}/e2e-report.json
         run: pnpm test:e2e --reporter=list,github,json --max-failures=5 --workers="$E2E_WORKERS" --test-list "$RUNNER_TEMP/e2e-shard-files.txt"
+      - name: Summarize first-attempt browser results
+        if: ${{ !cancelled() }}
+        run: node scripts/e2e-shard-summary.mjs "$RUNNER_TEMP/e2e-report.json" "${{ matrix.shard }}/${{ inputs.e2e_shards || '4' }}"
       # `node scripts/e2e-shard-plan.mjs record <reports...>` refreshes the
       # plan's durations from a green run's reports.
       - name: Preserve shard timing report

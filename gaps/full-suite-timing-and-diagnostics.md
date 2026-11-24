@@ -253,3 +253,28 @@ also repeats deliberate queue/provider/clearloop fault diagnostics. Those
 fixtures span separate identity, queue and teardown contracts; globally muting
 them would obscure real negative-path failures. New native controls explicitly
 assert no provider/model errors. No global logger suppression was added.
+
+2026-11-20: the four-provider refresh exposed two verification problems.
+The native qualification wrapper passes `npm_execpath` to Node as a
+JavaScript file. The host's pnpm version manager can put an ELF executable
+there, which fails before Vitest starts. The same launcher also timed out
+starting the memory-admission fixture with both old and new Claude SDKs.
+With the published pnpm 10.34.7 JavaScript launcher on PATH, that fixture
+passed and the direct `pnpm test:providers` path qualified all four providers
+using scripted model responses.
+
+The workspace run with the pinned launcher still hit two 20-second guards
+in `packages/server/test/sessions/session-identity-consumers.test.ts` and
+one 5-second guard in `packages/server/test/sessions/session-identity-helpers.test.ts`.
+Both files and the native memory-admission fixture passed a focused rerun
+with one worker (11 tests). The timeout logs do not identify a stalled
+phase. No guards changed.
+
+2026-11-21: the `session-identity-consumers` stall was the OpenCode reader
+spawning the host's real `opencode export <id>` for every cross-provider
+lookup miss, about 0.6s each, so hosts with OpenCode installed ran each case
+in ~16s against the 20s guard. The reader now skips export for ids that are
+not `ses_*`; the case takes under 1s. The `session-identity-helpers` 5-second
+guard was not re-examined.
+
+Contributing-model: gpt-6.2-sol

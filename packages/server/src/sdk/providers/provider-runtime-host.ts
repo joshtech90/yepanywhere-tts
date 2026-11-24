@@ -15,17 +15,19 @@ import { createConnection, type Socket } from "node:net";
 import { getLogger } from "../../logging/logger.js";
 import { getModuleEnv, harvestYaModuleEnv } from "../../yaModuleEnv.js";
 import { setProviderHostDegraded } from "./provider-host-status.js";
-import {
-  normalizeProviderWorkItems,
-  nativeSessionFamily,
-} from "@yep-anywhere/shared";
+import { nativeSessionFamily } from "@yep-anywhere/shared";
 import type {
   PermissionMode,
   ThinkingConfig,
   EffortLevel,
   ImagePreparationProfile,
 } from "@yep-anywhere/shared";
-import { apiInputIds, type AgentMessageQueue } from "../messageQueue.js";
+import { HostedMessageQueue } from "./hosted-message-queue.js";
+import { HostedNativeOwnerSync } from "./hosted-native-owner.js";
+import {
+  reviveActivity,
+  reviveRetention,
+} from "./hosted-provider-snapshots.js";
 import type {
   ProviderActivitySnapshot,
   ProviderRetentionSnapshot,
@@ -55,13 +57,13 @@ import {
   sameBoundRuntimeIdentity,
   type BoundRuntimeIdentity,
 } from "./bound-runtime-identity.mjs";
+import { providerHostRequestError } from "./provider-memory-budget.mjs";
 
 const HOST_REQUEST_TIMEOUT_MS = 15_000;
 const WORKER_RPC_TIMEOUT_MS = 30_000;
 const HOST_PROTOCOL_VERSION = 3;
 const WORKER_PROTOCOL_VERSION = 1;
-// The host's default attach deadline is 30 seconds. Keep launch routing pinned
-// until that owner has either been reclaimed or reaped.
+// Keep launch routing pinned beyond the host's 30-second attach deadline.
 const RUNTIME_OWNER_LOSS_GRACE_MS = 31_000;
 
 interface HostResponse<T> {
@@ -72,6 +74,10 @@ interface HostResponse<T> {
 }
 
 interface WorkerCapabilities {
+  retentionReadReconciles?: boolean;
+  queueHold?: boolean;
+  consumerIdle?: boolean;
+  steerConsumptionReported?: boolean;
   agentApi?: boolean;
   peerAgentApi?: boolean;
   publishAgentSelfSelection?: boolean;
@@ -506,7 +512,7 @@ function requestHost<T>(
           return;
         }
         if (!response.ok) {
-          finish(() => reject(new Error(response.error ?? `${op} failed`)));
+          finish(() => reject(providerHostRequestError(response, op)));
           return;
         }
         finish(() => resolve(response.result as T));
@@ -823,6 +829,8 @@ function cloneableOptions(
     onPermissionModeApplied: _onPermissionModeApplied,
     shouldEmitLiveDeltas: _shouldEmitLiveDeltas,
     onProviderRetentionChange: _onProviderRetentionChange,
+    observeAntigravitySummaries: _observeAntigravitySummaries,
+    hostedNativeOwner: _hostedNativeOwner,
     sessionSandbox: _sessionSandbox,
     instructionReadHistory: _instructionReadHistory,
     getSessionChildEnv,
@@ -1048,97 +1056,6 @@ export async function startHostedProviderSession(
   return await HostedAgentSession.connect(runtime, options, hydrateHistory);
 }
 
-class HostedMessageQueue implements AgentMessageQueue {
-  private pending: UserMessage[] = [];
-  private remoteDepth: number;
-  private yieldedListeners = new Set<(messages: UserMessage[]) => void>();
-  private readonly apiInputs = new Set<string>();
-
-  constructor(
-    initialDepth: number,
-    private readonly send: (message: unknown) => void,
-    private readonly rpc: <T>(method: string, args?: unknown[]) => Promise<T>,
-    private readonly assertAdmission?: () => void,
-  ) {
-    this.remoteDepth = initialDepth;
-  }
-
-  push(message: UserMessage): number {
-    this.trackSteer(message);
-    this.remoteDepth = Math.max(this.remoteDepth, this.pending.length);
-    this.send({ type: "queuePush", message });
-    return this.remoteDepth;
-  }
-
-  trackSteer(message: UserMessage): void {
-    this.assertAdmission?.();
-    this.pending.push(message);
-  }
-
-  drain(): UserMessage[] {
-    const drained = this.pending.splice(0);
-    this.remoteDepth = 0;
-    void this.rpc<UserMessage[]>("drainQueue").catch(() => {});
-    return drained;
-  }
-
-  async drainAsync(): Promise<UserMessage[]> {
-    const remote = await this.rpc<UserMessage[]>("drainQueue");
-    this.pending = [];
-    this.remoteDepth = 0;
-    return remote;
-  }
-
-  removeByTempId(tempId: string): UserMessage[] {
-    const removed = this.pending.filter(
-      (message) =>
-        message.tempId === tempId || message.tempIds?.includes(tempId) === true,
-    );
-    this.pending = this.pending.filter((message) => !removed.includes(message));
-    this.send({ type: "removeQueued", tempId });
-    return removed;
-  }
-
-  updateDepth(depth: number): void {
-    this.remoteDepth = Math.max(0, depth);
-  }
-
-  removeAccepted(uuids: string[]): void {
-    const removed = new Set(uuids);
-    this.pending = this.pending.filter(
-      (message) => !message.uuid || !removed.has(message.uuid),
-    );
-  }
-
-  notifyYielded(uuids: string[]): void {
-    const yielded = new Set(uuids);
-    const messages = this.pending.filter(
-      (message) => message.uuid && yielded.has(message.uuid),
-    );
-    if (messages.length === 0) return;
-    for (const message of messages) {
-      for (const id of apiInputIds(message)) {
-        this.apiInputs.add(id);
-        while (this.apiInputs.size > 512)
-          this.apiInputs.delete(this.apiInputs.values().next().value!);
-      }
-    }
-    for (const listener of this.yieldedListeners) listener(messages);
-  }
-
-  hasYieldedApiInput(id: string) {
-    return this.apiInputs.has(id);
-  }
-  subscribeYielded(listener: (messages: UserMessage[]) => void): () => void {
-    this.yieldedListeners.add(listener);
-    return () => this.yieldedListeners.delete(listener);
-  }
-
-  get depth(): number {
-    return this.remoteDepth;
-  }
-}
-
 class HostedAgentSession {
   private socket: Socket;
   private eventQueue: Array<{ sequence: number; message: SDKMessage }> = [];
@@ -1175,6 +1092,7 @@ class HostedAgentSession {
     | import("@yep-anywhere/shared").ProviderSteeringState
     | undefined;
   readonly queue: HostedMessageQueue;
+  private readonly nativeOwner: HostedNativeOwnerSync;
 
   private constructor(
     private readonly runtime: HostedProviderRuntimeInfo,
@@ -1189,6 +1107,13 @@ class HostedAgentSession {
       (message) => this.send(message),
       <T>(method: string, args?: unknown[]) => this.rpc<T>(method, args),
       options.assertResumeAdmission,
+      runtime.worker.capabilities,
+    );
+    this.nativeOwner = new HostedNativeOwnerSync(
+      options,
+      (method, args) => this.rpc(method, args),
+      (message) => this.send(message),
+      () => this.done || this.detaching || this.socket.destroyed,
     );
   }
 
@@ -1346,6 +1271,7 @@ class HostedAgentSession {
         } else {
           this.providerAlive = false;
           forgetRuntimeAfterOwnerLoss(this.runtime.runtimeId);
+          if (!this.detaching) this.nativeOwner.end("exited");
           this.fail(
             new Error(
               `Provider worker process exited or connection failed: ${error.message}`,
@@ -1360,6 +1286,7 @@ class HostedAgentSession {
         if (!this.done && !this.detaching) {
           this.providerAlive = false;
           forgetRuntimeAfterOwnerLoss(this.runtime.runtimeId);
+          this.nativeOwner.end("exited");
           this.fail(
             new Error("Provider worker process exited or connection closed"),
           );
@@ -1388,6 +1315,7 @@ class HostedAgentSession {
       this.pendingAppliedPermissionMode =
         message.appliedPermissionMode as PermissionMode;
     }
+    this.nativeOwner.observe(message.nativeOwner);
     // Every provider reports init as its first event, so an owner that has
     // already acknowledged an event will never replay init to this
     // controller. Workers predating the explicit field fall back to the
@@ -1462,6 +1390,9 @@ class HostedAgentSession {
           );
         }
         return;
+      case "nativeOwner":
+        this.nativeOwner.observe(message.value);
+        return;
       case "providerRetention":
         this.providerRetention = reviveRetention(
           message.value as ProviderRetentionSnapshot,
@@ -1489,12 +1420,14 @@ class HostedAgentSession {
       case "complete":
         this.providerAlive = false;
         forgetRuntime(this.runtime.runtimeId);
+        this.nativeOwner.end("exited");
         this.done = true;
         this.finishIterator();
         return;
       case "failed":
         this.providerAlive = false;
         forgetRuntime(this.runtime.runtimeId);
+        this.nativeOwner.end("exited");
         this.fail(
           new Error(
             `Provider worker process exited: ${String(
@@ -1668,6 +1601,7 @@ class HostedAgentSession {
 
   private async detach(): Promise<void> {
     this.detaching = true;
+    this.nativeOwner.end("detached");
     this.cancelApprovals();
     await requestHost("release", {
       runtimeId: this.runtime.runtimeId,
@@ -1797,6 +1731,8 @@ class HostedAgentSession {
   private activateCallbacks(): void {
     if (this.callbacksActive) return;
     this.callbacksActive = true;
+    // A Process that starts idle reports no idle edge the worker waits for.
+    if (!this.activeProviderTurn) this.queue.onConsumerIdle();
     if (this.pendingAppliedPermissionMode) {
       this.options.onPermissionModeApplied?.(this.pendingAppliedPermissionMode);
     }
@@ -1812,6 +1748,7 @@ class HostedAgentSession {
       await requestHost("terminate", { runtimeId: this.runtime.runtimeId });
     } finally {
       forgetRuntime(this.runtime.runtimeId);
+      this.nativeOwner.end("exited");
       this.cancelApprovals();
       this.providerAlive = false;
       this.done = true;
@@ -1885,7 +1822,14 @@ class HostedAgentSession {
         ? { getProviderActivity: () => this.providerActivity }
         : {}),
       ...(capabilities.getProviderRetention
-        ? { getProviderRetention: () => this.providerRetention }
+        ? {
+            getProviderRetention: () => {
+              this.nativeOwner.readRetention(
+                capabilities.retentionReadReconciles,
+              );
+              return this.providerRetention;
+            },
+          }
         : {}),
       ...(this.runtime.lifecycleCapabilities?.viewerPresence
         ? {
@@ -1953,6 +1897,7 @@ class HostedAgentSession {
             steer: async (message) => {
               if (capabilities.steerUsesMessageQueue)
                 this.queue.trackSteer(message);
+              else this.queue.awaitNativeSteer(message);
               try {
                 const steered = await this.rpc<boolean>("steer", [message]);
                 if (!steered && message.uuid)
@@ -2033,32 +1978,6 @@ class HostedAgentSession {
         : {}),
     };
   }
-}
-
-function reviveActivity(
-  value: ProviderActivitySnapshot | undefined,
-): ProviderActivitySnapshot {
-  return {
-    lastRawProviderEventAt: value?.lastRawProviderEventAt
-      ? new Date(value.lastRawProviderEventAt)
-      : null,
-    lastRawProviderEventSource: value?.lastRawProviderEventSource ?? null,
-  };
-}
-
-function reviveRetention(
-  value: ProviderRetentionSnapshot | undefined,
-): ProviderRetentionSnapshot {
-  return {
-    retained: value?.retained ?? false,
-    reasons: value?.reasons ?? [],
-    backgroundTaskCount: value?.backgroundTaskCount,
-    sessionCronCount: value?.sessionCronCount,
-    liveTaskCount: value?.liveTaskCount,
-    lastUpdatedAt: value?.lastUpdatedAt ? new Date(value.lastUpdatedAt) : null,
-    backgroundWork: normalizeProviderWorkItems(value?.backgroundWork),
-    foregroundWaits: normalizeProviderWorkItems(value?.foregroundWaits),
-  };
 }
 
 export function providerRuntimeErrorMessage(error: unknown): string {

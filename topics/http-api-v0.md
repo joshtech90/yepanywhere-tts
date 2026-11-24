@@ -43,7 +43,7 @@ direction/type filters; no stable release contains that intermediate contract.
 Callers needing those filters against arbitrary source builds must validate
 returned predicates/directions or consult the generated query schema.
 
-- `/v0` returns public server id, current revision `2026-11-13.1`, unstable status and
+- `/v0` returns the public server id, API revision, unstable status and
   discovery links. The documentation slice adds Markdown
   help at `/v0/help`, links help/me/schema from discovery, and generates field
   descriptions, operation semantics and example requests alongside OpenAPI.
@@ -79,6 +79,14 @@ returned predicates/directions or consult the generated query schema.
   across concurrent catalog changes, not snapshots. Response item count is
   bounded by page size, while filtering/sorting still visits the retained
   projection and the existing catalog owner governs acquisition cost. No new polling or discovery service is created by this API.
+- Session detail and every session-scoped read or command find an established
+  session through the catalog's native-id index, without reading the session
+  population. An id the index cannot establish (missing, inaccessible,
+  ambiguous across projects, or disputed by its live owner) takes the complete
+  catalog read, which alone decides `404 session_not_found` versus
+  `503 catalog_not_ready`. Both paths return the same answer; the
+  [remaining population reads](../gaps/v0-session-lists-and-misses-read-the-whole-catalog.md)
+  are the session list and those misses.
 - Successful route responses are non-cacheable. V0 errors contain
   `{error: {code, message}}`; existing host/auth/limited-user middleware may
   reject earlier with its existing JSON/text errors. Private exception text is
@@ -152,8 +160,8 @@ A session created by a session routed through the
 [Agent Auth Router](agent-auth-router.md) runs on the caller's pool (a fresh
 pick with the caller's policy) or explicit account (a new pin), with the
 caller's model when the request names none; another provider is refused with
-`admission_rejected` and the reason. It never falls back to the owner's
-direct login (plan 183).
+`admission_rejected` unless the request explicitly chooses that provider's pool,
+account, or Direct login. See [launch selection](#launch-selection-and-effective-configuration--2026-11-12).
 Scheduling remains valuable separate work under [Yacron](yacron.md), using the
 same supported session operations when implemented.
 
@@ -289,12 +297,13 @@ independent scanner, permanent poll loop or per-token transcript read. A request
 that cannot obtain its first publication within four seconds releases demand
 and returns unavailable, within the private controller bridge's deadline.
 Final-consumer removal cancels source work and releases watches/viewers.
-An exact managed Claude/Codex owner may precede retained catalog materialization:
-its summary and bounded replay are immediately usable, with incomplete history
-coverage. A later catalog row reconciles normal durable history. Unsupported
+An exact managed Claude, Codex or Antigravity owner may precede retained catalog
+materialization. Its summary and bounded replay are immediately usable, with
+incomplete history coverage. A later catalog row reconciles normal durable history. Unsupported
 owners and mismatched/ambiguous identities never supply guessed history.
-Production acquisition reuses the app's native Claude/Codex readers, normalizes
-branch/lineage evidence, then selects a byte/record-bounded normalized window.
+Production acquisition reuses the app's native Claude, Codex and Antigravity
+readers, normalizes branch/lineage evidence, then selects a byte/record-bounded
+normalized window.
 This fixes the experimental reader's retained-input refusal for long sessions;
 it does not promise bounded disk I/O for every history. Reader fallbacks, SQL
 index consolidation and cancellation propagation are deferred in the
@@ -399,7 +408,14 @@ its own capability rather than broadening `agent-api-management`.
 and strict JSON with `projectId`, `provider` and exact initial `prompt`. Optional model,
 thinking/effort, permission mode and service tier map to incumbent native
 launch controls. Permission mode defaults to `default`; bypass must be explicit.
-Only configured local Claude/Codex providers and catalog projects are qualified.
+Configured local Claude, Codex and Antigravity can be started in catalog
+projects. Antigravity uses direct native model IDs from
+`selection?provider=antigravity&routing=direct` along with optional `thinking`
+selection on `agy` 1.5+ (`off` maps to the model's lowest offered thinking
+level; legacy effort-suffixed model IDs also remain accepted). Agent Auth Router
+selections, plan mode and service tier are rejected for Antigravity creation.
+The creation receipt reports launch failure when the installed runtime or
+selected model does not offer the requested thinking level.
 Blank creation, remote executors, worktree/cloning policy, managed delegation,
 terminal execution and provider upgrades are outside this slice. Global agent
 context and native launch ownership/admission remain shared with existing YA
@@ -420,12 +436,33 @@ replay, provider restart or fallback routing.
 `GET /v0/servers/{serverId}/receipts/{receiptId}` observes `dispatching`,
 `queued`, `accepted`, `failed` or `uncertain`. These describe admission evidence,
 not successful response completion. Native capacity rejection is recorded as a
-known failure. An exception after reservation or a queued startup failure is uncertain; never
+known failure. [Provider memory admission](provider-memory-admission.md)
+reports a verified pre-spawn refusal as `failed` with
+`failure.code: "capacity_unavailable"`. A Claude executable that is missing or
+cannot run is also a known pre-spawn failure with
+`failure.code: "claude-executable-unavailable"` and recovery guidance. An
+installed provider that refuses before starting with a stated reason, such as
+an [Antigravity runtime below its floor](antigravity.md#supported-runtime),
+is a known pre-spawn failure with `failure.code: "startup-unavailable"` and
+that reason as its message.
+An exception after reservation or a queued startup failure without a verified
+refusal is uncertain. Never
 generate a new retry key merely to escape that uncertainty. Unique live-owner API-input
 admission/consumption evidence can reconcile a target binding without launching
 again. Inherited transcript UUIDs and optimistic user echoes are not admission
 proof. Missing, evicted or ambiguous evidence remains uncertain. Cancellation
 after reservation cannot assert that a provider was never launched.
+
+Revision `2026-11-17.2` makes a reserved YA id readable during startup. While
+the creation receipt is `dispatching` or `queued`, single-session detail
+returns 200 with `state: "launching"`. The response has the reserved id,
+project, provider and receipt update time, with a null title. Ordinary detail
+provides settings, routing and backing store once available. Local operators
+and the originating peer with current session and project grants can read the
+launch status. Session collections use the ordinary catalog. Subresources that
+require ordinary detail return `409 session_not_ready` while detail reports
+`launching`. Follow the creation receipt for admission and the conversation
+for the actual reply.
 
 Receipts and their retry identity last for the server process only. They are
 held in memory, separately from native transcripts and existing client creation
@@ -488,7 +525,11 @@ accepts strict JSON `{type:"prompt",text,delivery?}` or
 `{type:"compact",instructions?,delivery?}` and an `Idempotency-Key` header.
 It uses the same explicit management opt-in, trusted origin and process-lifetime
 scoped retry rules as creation. `text` is nonblank exact text, at most 100,000
-characters; slash text is not translated. Only the incumbent active native
+characters. YA does not translate slash text: it applies no YA command
+emulation and reaches the provider unchanged. Claude Code itself runs a leading
+native command such as `/compact`; Codex receives it as plain text. A prompt
+`/compact` is not YA queued compaction, so its receipt reports no compaction
+outcome and YA holds no later input for it. Only the incumbent active native
 owner can accept a new input; otherwise return `409 session_not_running`.
 There is no implicit resume, interruption, mode/model change or provider
 restart. An authorized identical retry resolves the original receipt before
@@ -508,7 +549,9 @@ native input queue is not exposed (no `direct` delivery):
   after it. An idle session receives deferred and steer input at once.
 - `type:"compact"` is [explicit queued compaction](queued-messages.md#explicit-queued-compaction),
   never parsed from text. Claude receives `/compact <instructions>`; Codex uses
-  its native compaction RPC and ignores instructions. Later input waits until
+  its native compaction RPC and ignores instructions. Its `deferred` or
+  `patient` boundary is the same as a prompt's: deferred compaction does not
+  wait for background tasks. Later input waits until
   compaction succeeds; a failure holds it until the compaction is cancelled.
   A session that cannot queue compaction returns
   `409 compaction_unsupported` before any receipt exists. Provider descriptors
@@ -634,16 +677,16 @@ this is not native Windows or complete packaged-provider qualification.
 
 **Agent API discovery** in Settings → Local Access is independently configurable
 and default-off. Enabling it gives new eligible local, unrestricted Claude-family
-and Codex bypass-permissions launches a private connection, a launch credential
-and the exact previewable instruction exported by
+and bypass-permissions Codex or Antigravity CLI launches a private connection,
+a launch credential and the exact previewable instruction exported by
 `packages/shared/src/agent-api-bootstrap.ts`. Restricted and remote-executor
 launches receive none. This is the existing v0 read catalog, not a grant to future
 writes or legacy `/api/*`. Turning it off revokes current access; turning it on
 again applies to new launches. Old servers omit the control through the separate
 `agent-api-bootstrap` capability (introduced in the 0.11.1 line).
 
-The bootstrap enters native Claude system context or Codex developer context;
-it never prefixes the submitted user request. Its stable text tells the agent
+The bootstrap enters native Claude or Antigravity system context, or Codex
+developer context. The submitted user request remains exact. The bootstrap tells the agent
 to discover current grants from `/v0/me`. Codex history can expose the exact
 fragment through a collapsed informational disclosure. See
 [placement and resume behavior](agent-context-injection.md#http-v0-bootstrap-placement).
@@ -1128,11 +1171,20 @@ to discovery implicitly.
   target is refused the same way, naming the path, since the catalog keeps a
   project while its transcripts remain. Explicit selection takes precedence
   over caller inheritance and may deliberately select another provider's
-  routed pool. Without explicit selection, a local routed caller retains its
-  pool/policy or explicit account, with its model when omitted; a provider
-  mismatch is refused. Thinking, tier and permission mode remain explicit
-  request controls, not implicitly inherited. Retry hashing includes all
-  selection fields, and no receipt or API-input semantics change.
+  routed pool or account. Without explicit selection, a local routed caller
+  retains its pool/policy or explicit account on the same provider, with its
+  model when omitted. A provider mismatch fails with `admission_rejected` and
+  tells the caller how to choose routing for the requested provider. Launches
+  without a local router binding use Direct when no routing is specified. V0
+  creation ignores the UI's last-used pool. Thinking, tier and permission mode
+  remain explicit request controls. Retry hashing includes all selection fields.
+- Since revision `2026-11-23.1`, the create body accepts `routing: "direct"`.
+  It starts the requested provider using the target server's direct login for
+  either the same or a different provider. If `model` is omitted or `"default"`,
+  the provider chooses its default model. Combining Direct with any router
+  field returns `400 invalid_request`. A failed pool launch remains a failed
+  receipt. Callers can discover Direct creation in the target's `createSession`
+  schema and verify `routing.mode: "direct"` in established session detail.
 - Single-session detail additionally reports `settings` and `routing`; paged
   session summaries retain their compact shape. Settings `source` is `live`,
   `saved` or `unavailable`. Live values use the incumbent owner's last applied
@@ -1296,6 +1348,20 @@ remains open.
 Status: implemented as `createInput`, `inputs` and `cancelInput` (revision
 `2026-11-14.2`); the contract is in
 [attributed queued input](#attributed-queued-input-and-consumption).
+
+Revision `2026-11-17.1` gives deferred compaction a prompt's deferred
+boundary. Before it, Claude compaction also waited for retained background
+work, so an agent holding a background wait could not compact itself. The help
+also corrects slash-text wording: Claude Code runs a leading native command
+from prompt text.
+
+Revision `2026-11-20.1` adds direct Antigravity selection and creation.
+Its native reader backs conversation reads and follows. An active Antigravity
+CLI turn accepts `delivery: "steer"`. Sessions that advertise `/compact`
+accept `type: "compact"`. A compact receipt reaches `compacted` only after the
+native command and its newly written checkpoint are observed. Background
+work appears as `background` in session state. No new access grant is required
+and callers can discover the provider and request shape on the target server.
 
 Maintainer direction: YA's provider-agnostic queue is the main thing YA adds
 over a raw provider, so agents need it through v0. Queueing is required,

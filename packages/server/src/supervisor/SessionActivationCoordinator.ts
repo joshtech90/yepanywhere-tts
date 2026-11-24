@@ -1,6 +1,7 @@
 import {
   DEFAULT_RECAP_AFTER_SECONDS,
   HELPER_SIDE_MODEL_CHEAPEST,
+  isYaSessionId,
   type EffortLevel,
   type PermissionRules,
   type PromptSuggestionMode,
@@ -17,7 +18,9 @@ import type {
 } from "../metadata/index.js";
 import { getSessionSandboxSettingsError } from "../session-sandbox.js";
 import type { RecoveredSessionLaunchSettings } from "../sessions/types.js";
+import { assertProviderExecutable } from "../sdk/providers/retired-provider.js";
 import { resolveInheritedForkModel } from "../sdk/providers/types.js";
+import { splitAntigravityLegacyModel } from "../sdk/providers/antigravity-models.js";
 import type { PermissionMode } from "../sdk/types.js";
 import type { Process } from "./Process.js";
 import { persistedSandboxFromProcess } from "./sessionSandboxMetadata.js";
@@ -124,7 +127,13 @@ interface ProcessModelConfiguration {
   serviceTierChanged: boolean;
   thinkingChanged: boolean;
   effortChanged: boolean;
-  dynamicChange: "model" | "thinking" | "effort" | "serviceTier" | null;
+  dynamicChange:
+    | "model"
+    | "model-and-effort"
+    | "thinking"
+    | "effort"
+    | "serviceTier"
+    | null;
 }
 
 interface PendingProcessLaunchSettings {
@@ -144,9 +153,15 @@ interface SessionCoordinationState {
   stoppingSettlement: StoppingProcessSettlement | null;
 }
 
+export type ReadSessionProvider = (
+  sessionId: string,
+  projectId: UrlProjectId,
+) => Promise<{ provider?: ProviderName } | null>;
+
 export interface SessionActivationCoordinatorOptions {
   defaultPermissionMode: PermissionMode;
   sessionMetadataService?: SessionMetadataService;
+  readSessionProvider?: ReadSessionProvider;
   recoverSessionLaunchSettings?: (
     sessionId: string,
     projectId: UrlProjectId,
@@ -328,6 +343,27 @@ export class SessionActivationCoordinator {
     modelSettings?: ModelSettings,
   ): Promise<{ permissionMode: PermissionMode; modelSettings: ModelSettings }> {
     const metadata = this.options.sessionMetadataService;
+    const storedProvider = metadata?.getProvider?.(sessionId);
+    const binding = isYaSessionId(sessionId)
+      ? metadata?.identities?.resolveYa(sessionId)
+      : undefined;
+    assertProviderExecutable(
+      storedProvider,
+      binding?.provider,
+      modelSettings?.providerName,
+    );
+    if (
+      !storedProvider &&
+      !binding &&
+      !modelSettings?.providerName &&
+      this.options.readSessionProvider
+    ) {
+      const summary = await this.options.readSessionProvider(
+        sessionId,
+        projectId,
+      );
+      assertProviderExecutable(summary?.provider);
+    }
     const durable = metadata?.getEffectiveLaunchSettings(sessionId);
     const explicitRequestedModel =
       modelSettings?.requestedModel ?? modelSettings?.model;
@@ -342,8 +378,7 @@ export class SessionActivationCoordinator {
         modelSettings?.thinking === undefined);
     let recovered: RecoveredSessionLaunchSettings | undefined;
     if (needsRecovery && this.options.recoverSessionLaunchSettings) {
-      const provider =
-        modelSettings?.providerName ?? metadata?.getProvider?.(sessionId);
+      const provider = modelSettings?.providerName ?? storedProvider;
       try {
         recovered =
           (await this.options.recoverSessionLaunchSettings(
@@ -736,14 +771,65 @@ export class SessionActivationCoordinator {
       ) {
         return null;
       }
+      let effectiveUpdates = updates;
+      let antigravityModels:
+        | Awaited<ReturnType<Process["supportedModels"]>>
+        | undefined;
+      if (current.provider === "antigravity") {
+        antigravityModels = await current.supportedModels();
+        if (Object.hasOwn(updates, "model") && updates.model) {
+          const split = splitAntigravityLegacyModel(
+            updates.model,
+            antigravityModels,
+          );
+          if (split?.embeddedEffort) {
+            const hasExplicitThinking =
+              Object.hasOwn(updates, "thinking") ||
+              Object.hasOwn(updates, "effort");
+            effectiveUpdates = {
+              ...updates,
+              model: split.modelId,
+              requestedModel: split.modelId,
+              ...(!hasExplicitThinking ? { effort: split.embeddedEffort } : {}),
+            };
+          }
+        }
+      }
       const configuration = this.resolveProcessModelConfiguration(
         current,
-        updates,
+        effectiveUpdates,
       );
       const changes = this.modelConfigurationChanges(configuration);
-      if (changes.length === 0) {
+      if (changes.length === 0 && configuration.dynamicChange === null) {
         await this.flushPendingProcessLaunchSettings(current);
         return current;
+      }
+
+      if (
+        current.provider === "antigravity" &&
+        configuration.nextEffort !== undefined &&
+        antigravityModels?.length
+      ) {
+        const targetId =
+          configuration.nextModel ??
+          (configuration.nextRequestedModel === "default"
+            ? "default"
+            : (current.resolvedModel ?? "default"));
+        const targetInfo = antigravityModels.find(
+          (candidate) => candidate.id === targetId,
+        );
+        if (
+          targetInfo &&
+          (targetInfo.supportsEffort === false ||
+            (targetInfo.supportedEffortLevels?.length &&
+              !targetInfo.supportedEffortLevels.includes(
+                configuration.nextEffort,
+              )))
+        ) {
+          throw new Error(
+            `Thinking level "${configuration.nextEffort}" is not offered for model "${targetInfo.name}"`,
+          );
+        }
       }
 
       await this.options.validateSessionSettings?.(
@@ -772,7 +858,11 @@ export class SessionActivationCoordinator {
         current,
         current.projectPath,
         current.permissionMode,
-        this.restartSettingsForProcess(current, configuration, updates),
+        this.restartSettingsForProcess(
+          current,
+          configuration,
+          effectiveUpdates,
+        ),
       );
     });
   }
@@ -811,21 +901,38 @@ export class SessionActivationCoordinator {
       nextRequestedModel !== currentRequestedModel;
     const serviceTierChanged =
       hasServiceTierUpdate && nextServiceTier !== process.serviceTier;
+    const normalizedAntigravityThinking =
+      process.provider === "antigravity" &&
+      process.thinking === undefined &&
+      nextThinking?.type === "adaptive";
     const thinkingChanged =
       hasThinkingUpdate &&
-      !thinkingConfigsEqual(process.thinking, nextThinking);
+      !thinkingConfigsEqual(process.thinking, nextThinking) &&
+      !normalizedAntigravityThinking;
     const effortChanged =
       hasEffortUpdate && nextEffort !== process.appliedEffort;
 
     let dynamicChange: ProcessModelConfiguration["dynamicChange"] = null;
+    const canSwitchModelNow =
+      process.supportsSetModel &&
+      (process.getProviderRuntimeStatus()?.kind !== "retrying" ||
+        process.supportsInterrupt);
     if (
+      process.provider === "antigravity" &&
+      (modelChanged ||
+        (process.configurationHeld && (hasModelUpdate || hasEffortUpdate))) &&
+      !serviceTierChanged &&
+      !thinkingChanged &&
+      canSwitchModelNow &&
+      process.supportsEffortChange
+    ) {
+      dynamicChange = "model-and-effort";
+    } else if (
       modelChanged &&
       !serviceTierChanged &&
       !thinkingChanged &&
       !effortChanged &&
-      process.supportsSetModel &&
-      (process.getProviderRuntimeStatus()?.kind !== "retrying" ||
-        process.supportsInterrupt)
+      canSwitchModelNow
     ) {
       dynamicChange = "model";
     } else if (
@@ -884,12 +991,36 @@ export class SessionActivationCoordinator {
     process: Process,
     configuration: ProcessModelConfiguration,
   ): Promise<boolean> {
+    const syncNormalizedAntigravityThinking = () => {
+      if (
+        process.provider === "antigravity" &&
+        process.thinking === undefined &&
+        configuration.nextThinking?.type === "adaptive"
+      ) {
+        // Preserve appliedEffort so a queued mid-turn effort is never written
+        // into persisted applied state before the provider accepts it.
+        process.updateThinkingConfig(
+          configuration.nextThinking,
+          process.appliedEffort,
+        );
+      }
+    };
     switch (configuration.dynamicChange) {
-      case "model":
-        return process.setModel(
+      case "model": {
+        const changed = await process.setModel(
           configuration.nextModel,
           configuration.nextRequestedModel,
         );
+        if (changed) syncNormalizedAntigravityThinking();
+        return changed;
+      }
+      case "model-and-effort":
+        return process.setModelAndEffort({
+          model: configuration.nextModel,
+          requestedModel: configuration.nextRequestedModel,
+          thinking: configuration.nextThinking,
+          effort: configuration.nextEffort,
+        });
       case "thinking": {
         const tokens =
           configuration.nextThinking?.type === "disabled" ? undefined : 1;
@@ -902,8 +1033,11 @@ export class SessionActivationCoordinator {
         }
         return changed;
       }
-      case "effort":
-        return process.setEffort(configuration.nextEffort);
+      case "effort": {
+        const changed = await process.setEffort(configuration.nextEffort);
+        if (changed) syncNormalizedAntigravityThinking();
+        return changed;
+      }
       case "serviceTier":
         return process.setServiceTier(configuration.nextServiceTier);
       case null:
@@ -1073,7 +1207,7 @@ export class SessionActivationCoordinator {
     }
 
     const modelChanges = this.modelConfigurationChanges(configuration);
-    if (modelChanges.length > 0) {
+    if (modelChanges.length > 0 || configuration.dynamicChange !== null) {
       const changed = await this.applyDynamicModelConfiguration(
         process,
         configuration,

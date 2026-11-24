@@ -1,6 +1,6 @@
 {
   "$comment": "Line budgets for production source files over the threshold fixed in scripts/check-source-file-budgets.mjs. Owned by topics/typescript-module-boundary-refactor.md#growth-guard. Lower with `pnpm source:budgets --record`; never raise without maintainer approval and a raise record.",
-  "updated": "2026-11-16",
+  "updated": "2026-11-23",
   "files": {
     "packages/client/src/api/client.ts": {
       "maxLines": 1913
@@ -21,7 +21,7 @@
       "maxLines": 3776
     },
     "packages/client/src/components/MessageList.tsx": {
-      "maxLines": 5542,
+      "maxLines": 5537,
       "raise": {
         "from": 5702,
         "reason": "Removing the export-star renderSelectors barrel splits its one import into per-module imports from the owning sessionDetail concern modules. Maintainer-approved 2026-11-06."
@@ -61,13 +61,13 @@
       "maxLines": 1642
     },
     "packages/client/src/pages/SessionPage.tsx": {
-      "maxLines": 3601
+      "maxLines": 3600
     },
     "packages/client/src/pages/settings/AppearanceSettings.tsx": {
       "maxLines": 1807
     },
     "packages/server/src/app.ts": {
-      "maxLines": 4525
+      "maxLines": 4393
     },
     "packages/server/src/augments/safe-markdown.ts": {
       "maxLines": 1948
@@ -100,7 +100,7 @@
       "maxLines": 1579
     },
     "packages/server/src/sdk/providers/grok-acp.ts": {
-      "maxLines": 1854
+      "maxLines": 1853
     },
     "packages/server/src/sdk/providers/opencode.ts": {
       "maxLines": 1965
@@ -109,13 +109,10 @@
       "maxLines": 1520
     },
     "packages/server/src/sdk/providers/provider-runtime-host.ts": {
-      "maxLines": 2066
-    },
-    "packages/server/src/sdk/providers/provider-session-owner.ts": {
-      "maxLines": 1528
+      "maxLines": 1985
     },
     "packages/server/src/server-main.ts": {
-      "maxLines": 1753
+      "maxLines": 1749
     },
     "packages/server/src/services/ProjectQueueService.ts": {
       "maxLines": 1532
@@ -127,7 +124,7 @@
       "maxLines": 1588
     },
     "packages/server/src/sessions/codex-reader.ts": {
-      "maxLines": 3761
+      "maxLines": 3720
     },
     "packages/server/src/sessions/normalization.ts": {
       "maxLines": 2301
@@ -136,10 +133,10 @@
       "maxLines": 1877
     },
     "packages/server/src/supervisor/Process.ts": {
-      "maxLines": 6566
+      "maxLines": 6555
     },
     "packages/server/src/supervisor/Supervisor.ts": {
-      "maxLines": 6953
+      "maxLines": 6882
     },
     "packages/shared/src/index.ts": {
       "maxLines": 1918,

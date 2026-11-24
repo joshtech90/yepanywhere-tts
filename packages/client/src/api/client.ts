@@ -403,7 +403,7 @@ export const api = {
     fetchJSON<{
       accounts: {
         id: string;
-        provider: "claude" | "codex";
+        provider: "claude" | "codex" | "antigravity";
         enabled: boolean;
         directAccountAccess?: boolean;
         renewal: string;

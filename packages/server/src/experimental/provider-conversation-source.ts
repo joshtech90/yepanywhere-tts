@@ -10,6 +10,7 @@ import type { SessionReaderFactory } from "../sessions/types.js";
 import { normalizeSession } from "../sessions/normalization.js";
 import type { Message } from "@yep-anywhere/shared/transcript/message";
 import { selectConversationWindow } from "../sessions/conversation-window.js";
+import { antigravityRowRetired } from "../sdk/providers/antigravity-owners.js";
 import {
   MAX_PROJECTION_INPUT_BYTES,
   MAX_PROJECTION_RECORDS,
@@ -32,11 +33,24 @@ export function createProviderConversationSource(
 ) {
   return createConversationSource({
     ...deps,
+    retired(row, message) {
+      if (
+        row.catalogFamily !== "antigravity" ||
+        !row.nativeStorageScope ||
+        typeof message.uuid !== "string"
+      )
+        return false;
+      return antigravityRowRetired(
+        row.nativeStorageScope,
+        row.nativeSessionId ?? row.sessionId,
+        message.uuid,
+      );
+    },
     async readWindow(row, compactions, signal) {
       signal.throwIfAborted();
       if (
         row.location.kind !== "file" ||
-        !["claude", "codex"].includes(row.catalogFamily)
+        !["claude", "codex", "antigravity"].includes(row.catalogFamily)
       )
         throw new Error("Unsupported conversation source");
       const nativeId = row.nativeSessionId ?? row.sessionId;
@@ -110,6 +124,18 @@ export function createProviderConversationSource(
           signal,
         },
       );
+      // A provider page cut by bytes left earlier records of the requested
+      // scope unread: that is a byte limit, not the compaction scope.
+      const byteCut =
+        loaded.readWindow?.kind === "log-page" &&
+        loaded.readWindow.omittedPrefix &&
+        loaded.readWindow.cut === "bytes";
+      // Antigravity reports history it could not read (an unreadable log
+      // under a live owner's resume point) as an incomplete transcript:
+      // whether earlier history exists is then unknown.
+      const unread =
+        row.catalogFamily === "antigravity" &&
+        loaded.transcriptComplete === false;
       return {
         sessionId: row.sessionId,
         activity: "unknown",
@@ -117,9 +143,26 @@ export function createProviderConversationSource(
         ...window,
         sourceCoverage: {
           ...window.sourceCoverage,
-          earlierOutsideScope: loaded.readWindow?.omittedPrefix
-            ? "yes"
-            : window.sourceCoverage.earlierOutsideScope,
+          complete: byteCut
+            ? false
+            : (loaded.transcriptComplete ?? window.sourceCoverage.complete),
+          earlierOutsideScope:
+            byteCut || unread
+              ? "unknown"
+              : loaded.readWindow?.omittedPrefix
+                ? "yes"
+                : window.sourceCoverage.earlierOutsideScope,
+          ...(byteCut
+            ? {
+                earlierInScope: true,
+                limitedBy: [
+                  ...new Set([
+                    ...(window.sourceCoverage.limitedBy ?? []),
+                    "bytes" as const,
+                  ]),
+                ],
+              }
+            : {}),
         },
       };
     },

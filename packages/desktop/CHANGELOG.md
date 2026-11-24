@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-23
+
+### Added
+- Bundle Yep Anywhere 0.14.0, with Antigravity model and thinking controls,
+  native subagent links, and optional per-session Agent Auth Router pools.
+- Allow users on the published 0.13.x Latest builds to switch to Stable and
+  install this update.
+
+### Changed
+- Require Antigravity CLI `agy` 1.5.13 or newer. Read its conversation history
+  from the native log and run live Antigravity sessions in the Provider Host.
+- Keep saved Gemini CLI and Gemini ACP conversations readable after retiring
+  execution. Let active Gemini turns finish before upgrading.
+- Refresh compatibility for Codex, Claude Code, Pi, and Grok.
+
+### Fixed
+- Preserve Unicode in Codex streams and history, and keep provider message
+  order in the session timeline.
+- Retry cleanup when Windows briefly locks files from the Codex startup check.
+- Serve reserved Project App addresses immediately.
+
+## [0.12.2] - 2026-11-19
+
+### Fixed
+- Retry temporary-file cleanup when Windows briefly locks the Codex startup
+  check's files, so the desktop app can start the session.
+
 ## [0.12.1] - 2026-11-16
 
 ### Added

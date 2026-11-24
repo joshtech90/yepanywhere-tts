@@ -24,13 +24,15 @@ export interface ConversationSourceDependencies {
   ): Promise<
     (Readonly<SessionCatalogRow> & { nativeSessionId?: string }) | undefined
   >;
-  getProcess(
-    sessionId: string,
-  ):
+  getProcess(sessionId: string):
     | (Pick<
         Process,
         "state" | "subscribe" | "registerViewer" | "getMessageHistory"
-      > & { provider?: string; sessionId?: string })
+      > & {
+        provider?: string;
+        sessionId?: string;
+        isRetainingProviderWork?: Process["isRetainingProviderWork"];
+      })
     | undefined;
   eventBus?: EventBus;
   watch?(row: Readonly<SessionCatalogRow>, invalidate: () => void): () => void;
@@ -40,6 +42,15 @@ export interface ConversationSourceDependencies {
     compactions: number,
     signal: AbortSignal,
   ): Promise<ConversationInput>;
+  /**
+   * Whether the conversation's live owner recorded this row and then let
+   * it leave its memory (an Antigravity owner's move or cap): the durable
+   * read serves it, or will, under another ID.
+   */
+  retired?(
+    row: Readonly<SessionCatalogRow> & { nativeSessionId?: string },
+    message: { uuid?: unknown },
+  ): boolean;
   resolveRolloutPath?: (
     row: Readonly<SessionCatalogRow>,
     id: string,
@@ -50,6 +61,10 @@ export interface ConversationSourceDependencies {
 export function createConversationSource(
   deps: ConversationSourceDependencies,
 ): OpenConversationSource {
+  const supports = (family?: string) =>
+    family === "claude" ||
+    family === "codex" ||
+    (family === "antigravity" && !!deps.readWindow);
   return async (sessionId, invalidate, signal, compactions = 2) => {
     let row:
       | (Readonly<SessionCatalogRow> & { nativeSessionId?: string })
@@ -67,7 +82,20 @@ export function createConversationSource(
     let liveBytes = 0;
     const liveLimits = new Set<"bytes" | "records">();
     let liveOmittedPrefix = false;
-    const live = new Map<string, { message: Message; bytes: number }>();
+    const live = new Map<
+      string,
+      { message: Message; bytes: number; owner: number }
+    >();
+    // An Antigravity owner's rows use live IDs, and the log serves the same
+    // steps under step IDs once they leave the owner's memory (plan 195 step
+    // 6) or once the owner exits. The source drops a row the owner recorded
+    // and then retired, and, at a read taken after the row's process went,
+    // a row the read lacks: the view is what the reader shows. Each row
+    // carries its process's token, never the process. An owner leaving
+    // forces that read even in turn (its turns are the log's now); one
+    // attaching joins its rows after the log the baseline already holds.
+    let ownerChanged = false;
+    let ownerToken = 0;
     const drop = () => {
       failed = true;
       dirty = true;
@@ -79,6 +107,13 @@ export function createConversationSource(
       // Finalized provider records and YA's identity-preserving user echoes are
       // usable now. Raw token frames need a separate block assembler.
       if (raw.type === "stream_event" || raw._isStreaming === true) return;
+      // A retired row is served from the log.
+      if (
+        process?.provider === "antigravity" &&
+        row !== undefined &&
+        deps.retired?.(row, raw)
+      )
+        return;
       if (!["assistant", "user", "error", "system"].includes(String(raw.type)))
         return;
       let message = markSubagent(
@@ -130,15 +165,21 @@ export function createConversationSource(
         return;
       }
       liveBytes = nextBytes;
-      live.set(id, { message: structuredClone(message), bytes });
+      live.set(id, {
+        message: structuredClone(message),
+        bytes,
+        owner: ownerToken,
+      });
       invalidate();
     };
     const attachProcess = () => {
       const next = deps.getProcess(sessionId);
       if (next === process) return;
+      if (process?.provider === "antigravity") ownerChanged = true;
       releaseProcess?.();
       releaseProcess = undefined;
       process = next;
+      ownerToken++;
       dirty = true;
       durableRevision++;
       if (!next) return;
@@ -148,8 +189,15 @@ export function createConversationSource(
         if (event.type === "message")
           add(event.message as Record<string, unknown>);
         else if (
+          event.type === "liveness-update" &&
+          next.provider === "antigravity"
+        )
+          invalidate();
+        else if (
           ["state-change", "complete", "terminated"].includes(event.type)
         ) {
+          if (event.type === "terminated" && next.provider === "antigravity")
+            ownerChanged = true;
           dirty = true;
           durableRevision++;
           invalidate();
@@ -224,7 +272,7 @@ export function createConversationSource(
             if (
               !process ||
               process.sessionId !== sessionId ||
-              !["claude", "codex"].includes(process.provider ?? "")
+              !supports(process.provider)
             )
               throw new Error("Conversation source not found");
           } else {
@@ -235,15 +283,16 @@ export function createConversationSource(
         }
         if (
           row &&
-          (row.location.kind !== "file" ||
-            !["claude", "codex"].includes(row.catalogFamily))
+          (row.location.kind !== "file" || !supports(row.catalogFamily))
         )
           throw new Error("Unsupported conversation source");
         if (
-          row &&
-          row.location.kind === "file" &&
-          (!baseline || (dirty && process?.state.type !== "in-turn"))
+          row?.location.kind === "file" &&
+          (!baseline ||
+            ownerChanged ||
+            (dirty && process?.state.type !== "in-turn"))
         ) {
+          ownerChanged = false;
           const liveAtReadStart = new Map(live);
           const observedRevision = durableRevision;
           const settledAtReadStart =
@@ -263,12 +312,32 @@ export function createConversationSource(
               });
           readSignal.throwIfAborted();
           signal.throwIfAborted();
+          // An Antigravity owner that attached during the read wrote nothing
+          // the read can hold beyond its boundary; its rows join from here.
+          if (row.catalogFamily === "antigravity") attachProcess();
           baseline = { ...result, sessionId };
           if (settledAtReadStart && observedRevision === durableRevision) {
             liveLimits.clear();
             liveOmittedPrefix = false;
           }
           dirty = observedRevision !== durableRevision;
+          if (row.catalogFamily === "antigravity") {
+            // Committed against the split this read returned: a row the
+            // owner moved out of memory, even one that arrived during the
+            // read, is the read's log row now; a departed process's row the
+            // read lacks is history the log holds.
+            const read = new Set(result.messages.map(getMessageId));
+            for (const [id, entry] of live)
+              if (
+                deps.retired?.(row, entry.message) ||
+                (entry === liveAtReadStart.get(id) &&
+                  !read.has(id) &&
+                  entry.owner !== ownerToken)
+              ) {
+                liveBytes -= entry.bytes;
+                live.delete(id);
+              }
+          }
           for (const message of result.messages) {
             const id = getMessageId(message);
             const previous = live.get(id);
@@ -323,6 +392,10 @@ export function createConversationSource(
         ];
         const state = process?.state;
         const waiting = state?.type === "waiting-input";
+        const background =
+          state?.type === "idle" &&
+          process?.provider === "antigravity" &&
+          process.isRetainingProviderWork?.();
         const window = deps.readWindow
           ? selectConversationWindow(messages, {
               tailCompactions: compactions,
@@ -335,7 +408,7 @@ export function createConversationSource(
           ...durable,
           messages: window?.messages ?? messages,
           activity:
-            state?.type === "in-turn"
+            state?.type === "in-turn" || background
               ? "working"
               : waiting
                 ? "waiting"

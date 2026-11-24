@@ -1,0 +1,1384 @@
+# Antigravity native storage
+
+Topic: antigravity-native-storage
+
+Status: observations, recorded 2026-11-22. This describes what `agy` writes to
+disk for a conversation, which of those files YA reads, and which of them T3
+Code reads. Google documents none of it. The [provider contract](antigravity.md)
+owns YA's behavior; this document owns the description of the files.
+
+## Evidence and limits
+
+Everything below was observed on one macOS arm64 host with `agy` 1.5.14, in
+that host's `antigravity-cli` store (fifteen conversations). Counts come from the
+[saved long-session repro](native-provider-testing.md#checking-an-antigravity-upgrade-candidate):
+1,272 steps, a 41 MiB conversation database and three completed compactions.
+One long session and a handful of short ones are not a format specification.
+Recheck this document when qualifying a new `agy`.
+
+[Plan 195 step 2](#measurements--plan-195-step-2) added measurements with real
+`agy` 1.5.13 and 1.5.14 against a scripted model, on owned profiles, and a
+read-only census of the same host's store. Those numbers come from one macOS
+arm64 host too.
+
+Nothing here was learned by decoding protobuf. Statements about protobuf
+content are taken from T3's source and marked as such.
+
+## The layers
+
+The store root is `antigravity-cli` under the `--gemini-dir` YA passes to
+`agy acp`, else under `~/.gemini`. YA no longer reads the standalone runtime's
+`antigravity-acp` store or its `<id>.meta` files.
+
+| Path under the store root | Format | Holds |
+| --- | --- | --- |
+| `conversations/<id>.db`, with `-wal` and `-shm` | SQLite, protobuf blobs | The conversation itself: one row per step. |
+| `conversation_summaries.db`, with sidecars | SQLite, plain columns | An index across conversations: title, workspace, lineage, activity. |
+| `annotations/<id>.pbtxt` | Text protobuf | A title was the only field observed. |
+| `brain/<id>/.system_generated/logs/` | JSON Lines | A text log of the conversation's steps. |
+| `brain/<id>/.system_generated/steps/<n>/output.txt` | Text | The rendered result of step `n`, for some steps. |
+| `brain/<id>/.system_generated/messages/` | JSON, one file each | The conversation's inbox, with `read.json` receipts. |
+| `brain/<id>/.system_generated/subagents/<childId>.json` | JSON | One record per child the conversation launched. |
+| `brain/<id>/.system_generated/tasks/task-<n>.log` | Text | Output of a background shell task. |
+| `brain/<id>/scratch/`, `brain/<id>/.user_uploaded/` | Files | The agent's working files and user uploads. |
+| `presence/<id>.lock` | Empty file | Unknown. See [open questions](#open-questions). |
+
+Not examined: `implicit/`, `daemon/`, `persistent_terminals/`, `cache/`,
+`jetski_state.pbtxt` and `jetbox_summaries_proto.pb`.
+
+### Conversation database
+
+`conversations/<id>.db` is the only complete record of a conversation, and by
+inference the one `agy` continues from. In every snapshot taken around an
+ACP `session/load` or `session/resume` of a stopped conversation, this
+database's content and the brain log matched their state before launch.
+While `agy` ran, an empty WAL and a shared-memory file sat beside the
+database, and `agy` wrote store-wide files (see
+[what load and resume write](#what-load-and-resume-write)). Snapshots show
+the files at those moments, not that nothing was written between them. A
+second `agy` resuming and prompting a conversation a live owner holds does
+write it ([writers](#writers--plan-195-step-7)); since plan 195 step 8 YA
+never runs a load at all.
+Its tables:
+
+```text
+steps(idx, step_type, status, has_subtrajectory, metadata, error_details,
+      permissions, task_details, render_info, step_payload, step_format)
+trajectory_meta, trajectory_metadata_blob, gen_metadata, executor_metadata,
+parent_references, battle_mode_infos
+```
+
+`idx`, `step_type`, `status` and `step_format` are integers. The content
+columns are blobs. T3 decodes `step_payload` as protobuf from the runtime's
+`exa.cortex_pb` package, using field numbers it hard-codes.
+
+A conversation that was created and never prompted has a database with zero
+steps and no log.
+
+### Summaries index
+
+`conversation_summaries.db` has one `conversation_summaries` row per
+conversation with ordinary columns, including `title`, `workspace_uris`,
+`step_count`, `status`, `parent_conversation_id`, `agent_name`,
+`nesting_depth`, `not_fully_idle`, `killed`, `last_modified_time` and
+`last_user_input_step_index`. A `raw_summary` blob sits beside them.
+
+The same file holds a `conversation_parents` table and a full-text index,
+`conversations_fts`, whose rows carry `chunk_first_step`, `chunk_last_step`,
+`user_step_byte_offsets` and `agent_step_byte_offsets`. The index was not
+queried; what its byte offsets address is unknown.
+
+### Brain log
+
+`logs/transcript_full.jsonl` and `logs/transcript.jsonl` hold one JSON object
+per step. The two files have the same records. `transcript.jsonl` shortens
+long fields, lists them in `truncated_fields` and leaves a
+`<truncated N bytes>` marker in the text; `transcript_full.jsonl` does not.
+On the saved session they are 5.2 MB and 3.0 MB, and 311 of 1,271 records
+are shortened.
+
+Every record has `step_index`, `type`, `source`, `status` and `created_at`.
+
+| `type` | `source` | Other fields | Records | `step_type` in the database |
+| --- | --- | --- | ---: | ---: |
+| `USER_INPUT` | `USER_EXPLICIT` | `content` | 9 | 14 |
+| `PLANNER_RESPONSE` | `MODEL` | `model`, token counts, and any of `content`, `thinking`, `tool_calls` | 348 | 15 |
+| `GENERIC` | `MODEL` | `content`, sometimes `error` | 778 | 132 |
+| `SYSTEM_MESSAGE` | `SYSTEM` | `content` | 133 | 101 |
+| `CHECKPOINT` | `SYSTEM` | `content`, token counts | 3 | 23 |
+| `ERROR_MESSAGE` | `SYSTEM` | `error`, sometimes `content` | 0 | 17 |
+
+The `step_type` column is inferred from equal counts and matching positions,
+not from decoding. The probes confirmed the pairing step by step on owned
+conversations, including `ERROR_MESSAGE` and 17.
+
+- **Order.** `step_index` equals the database `idx` and strictly increases
+  through the file. It is not contiguous: the log can skip a step.
+- **Coverage.** The database has 1,272 steps and the log has 1,271 records.
+  The missing step, 1144, is an `ERROR_MESSAGE` (17) that sits where a turn
+  stopped, an hour before the user's next "Continue". In the
+  [census](#step_index-gaps-and-undo), every step the log omitted was either
+  an interrupted step (database `status` 6) or an `ERROR_MESSAGE`.
+- **Tools.** A `tool_calls` entry is `{name, args}` with no call ID, and the
+  ACP tool call ID does not name the step either (see
+  [tool call IDs](#tool-call-ids)). A `PLANNER_RESPONSE` with *k* calls and
+  the `GENERIC` records after it form a *group*. In the saved session all 297
+  groups (778 calls) were complete: *k* results, one per call, at the steps
+  right after the planner record. Not every group is complete; see
+  [reading a tool group](#reading-a-tool-group).
+  Argument values are strings, integers and booleans.
+- **Results.** A finished result is rendered text that starts with
+  `Created At:` and `Completed At:` lines; its `status` is `DONE` or `ERROR`.
+  The 55 `RUNNING` records are launches of background tasks. They have a
+  `Created At:` line and "Tool is running as a background task with task id:
+  `<conversation>/task-<n>`", and no `Completed At:` line. In the probe's
+  background launch, the `RUNNING` record's bytes were unchanged after the
+  task ended (checked once, after the run). When the task ends, `agy` appends a `SYSTEM_MESSAGE` whose
+  text is a `[Message]` naming that task id with "finished with result:" (or
+  "was canceled with result:"), then the wake's `PLANNER_RESPONSE`.
+- **Compaction.** A `CHECKPOINT` record carries the summary the model resumes
+  from. Records from before all three checkpoints are still in the file.
+- **Children.** A child's log starts with a `SYSTEM_MESSAGE` at step 0. The
+  parent's `invoke_subagent` result names the child's ID and gives the path
+  of the child's `transcript.jsonl` as `logAbsoluteUri`. `agy` tells its own
+  agents to read that file.
+- **Chunks.** `logs/chunks/transcript_full/` and `logs/chunks/transcript/`
+  hold numbered files of 102,400 bytes. Concatenated in order they equal the
+  log byte for byte. The split is by bytes and falls inside records.
+
+The same record keys appear on a conversation created 2026-11-03 and on those
+created with 1.5.14. Only first records were compared across versions.
+
+#### Reading a tool group
+
+The census reads groups by step index. On this host, every one of the 497
+complete groups had its *k* results at exactly steps P+1..P+k after its
+planner record at step P. The one group that is cut short is in `918445a8`:
+step 555 has ten `edit_file` calls, its eight results are at P+1..P+8
+(556–563), P+9 and P+10 (564, 565) are database-only `GENERIC` steps with
+`status` 6, and the next record, the next turn's `USER_INPUT`, is at P+11.
+The census found no other shape: no result outside its group's steps, no
+other record inside them, and no group with more results than calls. The
+two real-`agy` builds of 7,261 steps (see
+[resume on a large compacted conversation](#resume-on-a-large-compacted-conversation))
+had 980 complete groups each, every one at exactly P+1..P+4, and no other
+shape.
+
+In the probe, `agy` ran a response's calls one after another. Given a
+one-second command and then a file read, it started the read only when the
+command had ended. Each result appeared at P+1+*i* for call *i*, and each
+result's text named its own call (the command's echoed marker, the file's
+content). The positions observed here are consistent with result steps
+being allocated in call order. Whether a missing step inside a group (not
+at its end) occurs is not known: none was seen.
+
+Rule for a reader that projects groups:
+
+- A planner record at step P with *k* calls owns steps P+1..P+*k*. A
+  `GENERIC` record at step P+1+*i* is call *i*'s result, *i* counting the
+  calls from zero in `tool_calls` order. Arrival order alone is not used.
+- A step in P+1..P+*k* with no record, once a non-`GENERIC` record after
+  P+*k* has arrived, is that call's interrupted result. Show the call as
+  interrupted with no output, neither pending nor failed with invented text.
+  This was observed only for the last calls of a group.
+- Anything else makes the group unknown, and the reader treats the log as
+  unknown (since plan 195 step 8 it shows a row saying so; it once fell
+  back to ACP replay): a `GENERIC` record whose step no group owns
+  (outside every range, or more results than calls), or a non-`GENERIC`
+  record inside P+1..P+*k*.
+- A group still open at the end of the file is in progress while the
+  conversation has a live owner (results are appended as tools finish), and
+  its missing steps are interrupted results once the conversation is
+  stopped. No stopped log here ended inside a group.
+
+The database can confirm an interrupted result (`step_type` 132,
+`status` 6), but the rule needs only the log.
+
+A reader that reads part of the log, such as one page, applies the rule
+with records from outside its part:
+
+- A part that starts with `GENERIC` records must first read backward to the
+  last record before it that is not `GENERIC`. Only that record can own
+  them; until it is found, no result in the part may be called orphaned.
+- A part that ends inside a group must read forward until a record past
+  P+*k* arrives or the log ends, because a call's interrupted state is known
+  only then.
+
+The forward read is at most *k* + 1 records and the backward read at most
+*k*.
+
+### What the log has and lacks against ACP replay
+
+| | Brain log | ACP `session/load` replay |
+| --- | --- | --- |
+| Supported interface | No | Yes |
+| Read without side effects | Yes | No: it starts `agy`, which writes store-wide files |
+| Cost of the latest page | The tail of a file | The whole conversation |
+| Compaction boundaries | `CHECKPOINT` records | Omitted |
+| System messages and `ERROR_MESSAGE` records | Yes | Omitted when logged; see [step 3](#projection--plan-195-step-3) |
+| Per-step time, model, token counts | Yes | Not compared |
+| Tool name | `agy`'s (`read_file`) | ACP's title (`File notes.txt`, the command line) |
+| Tool call ID, ACP kind, locations | No | Yes; the ID is random |
+| Tool results | Rendered text | Each call once, as a `tool_call` with its final status; edits and commands carry `rawOutput`, file reads none; no `tool_call_update` |
+| A step only in the database | Absent | Replayed |
+| A step still in progress | Absent until it ends | Not measured |
+
+## Measurements — plan 195 step 2
+
+Recorded 2026-11-22 on one macOS arm64 host. The probe runs real `agy`
+against the scripted GenAI model on an owned profile and drives ACP
+directly. Run it from `packages/server`:
+
+```bash
+pnpm exec tsx --conditions source ../../scripts/perf-repro/antigravity-native-probe.mjs measure [--agy <path>]
+pnpm exec tsx --conditions source ../../scripts/perf-repro/antigravity-native-probe.mjs resume-large [--agy <path>] --turns 1005 --compact-every 40 --file-kb 16
+pnpm exec tsx --conditions source ../../scripts/perf-repro/antigravity-native-probe.mjs coverage [--store <antigravity-cli>]
+```
+
+Each figure below comes from two `measure` runs and two `resume-large` runs
+on each of `agy` 1.5.13 (the pin) and 1.5.14, unless a version or run is
+named. A few runs on one host show what happened, not a distribution.
+
+### How far a record trails its ACP event
+
+The probe polls both logs every millisecond and keeps each record's bytes.
+It pairs a record with the event it reports by identity: the prompt text
+for `USER_INPUT`, a scripted marker for model output and checkpoints, and,
+for a tool result, the ACP tool call whose input equals the record's call
+arguments. The delays are differences between first observations, so they
+include the poll interval and ACP dispatch to the probe. They are not
+`agy`'s write latency.
+
+On both versions a record appeared once, when its step had ended. While a
+model response streams, or a foreground tool runs, ACP has reported it and
+the log has nothing. A response held for 400 ms appeared 403–411 ms after
+its first chunk. A two-second foreground command's result appeared 3–4 ms
+after ACP reported it complete. After the step ends:
+
+| Record | Paired with | Observed delay |
+| --- | --- | --- |
+| `USER_INPUT` | `session/prompt` sent | 8–36 ms, before the first model request |
+| `PLANNER_RESPONSE` | The scripted response's end | 1–10 ms |
+| `PLANNER_RESPONSE` with calls | ACP's first `tool_call` for those calls | Seen 0–6 ms *before* it |
+| `GENERIC` | The same call ID reported completed | 1–4 ms; in an earlier 1.5.14 run, 2 ms before it |
+| `GENERIC` `RUNNING` | The call's launch | 513–517 ms, about 1 s before ACP reported the task complete |
+| `SYSTEM_MESSAGE`, task end | The background call reported completed | 29–34 ms |
+| `SYSTEM_MESSAGE`, reminder | Its turn's `USER_INPUT` record | 3–4 ms |
+| `CHECKPOINT` | The summary response's end | 1 ms, before the continuation request |
+| `PLANNER_RESPONSE`, cancelled | `session/cancel` sent | 9–11 ms |
+| `ERROR_MESSAGE` | `session/cancel` sent | 14–15 ms |
+
+Also observed:
+
+- A record and its response's last ACP chunk arrived within a few
+  milliseconds of each other, in either order. In these runs the record came
+  1–6 ms after the last chunk; in the reviewer's 1.5.14 run, the final
+  reply's record was seen 2 ms before its last chunk. When text was followed
+  by a tool call 400 ms later, the last text chunk preceded the record by
+  about 400 ms.
+
+- `transcript.jsonl` gained each record within 2.5 ms of
+  `transcript_full.jsonl`, joined by `step_index`.
+- After the run, each record's bytes in both logs, including the `RUNNING`
+  record after its wake, matched the bytes first observed. Earlier
+  in-between states were not checked.
+- A cancelled response keeps its partial text: 1.5.13 logs it `DONE`, 1.5.14
+  logs it `ERROR` with `error: "context canceled by user"`.
+- When the owner is stopped mid-response the way YA stops it (SIGTERM to the
+  process group), 1.5.13 logs the partial response `DONE`, and the next model
+  request includes it. 1.5.14 leaves that step in the database with
+  `status` 6 and writes no record, and the next request omits it.
+
+### What load and resume write
+
+Each leg restores an identical copy of the stopped store, then snapshots the
+size, modification time and SHA-256 of every file under it before launch,
+after `initialize`, after the reopen's stream has been quiet for 500 ms, and
+after `agy` exits. No prompt is sent in that leg; a separate leg on another
+fresh copy checks the next model request. These legs ran on both versions,
+for `session/load` and `session/resume`, on the short `measure`
+conversation of 28–34 steps (two implementer runs) and on the 7,261-step
+one (two implementer runs and one reviewer run):
+
+| Between | Changes |
+| --- | --- |
+| Before launch → after `initialize` | A new `log/acp-server-<time>-<pid>.log`. |
+| After `initialize` → after the reopen | Beside the conversation database, a 0-byte WAL and a 32 KiB shared-memory file appear. Beside `conversation_summaries.db`, a WAL and a 32 KiB shared-memory file appear; the WAL was 16,512 bytes in most legs, 20,632 bytes in every 1.5.14 leg at 7,261 steps in the second implementer run and in the reviewer's, and 8,272 bytes in one reviewer leg on the short conversation. An empty `crashes/crash_<pid>_<uuid>.log` appears. `cache/onboarding.json` and `jetbox_summaries_proto.pb` get new modification times, and in some legs the latter got new content. |
+| After the reopen → after exit | Every sidecar and the crash log are gone. `conversation_summaries.db` keeps its size (20,480 bytes) and gets a new modification time. Its **content changed** in every 1.5.14 leg at 7,261 steps in the second implementer run and in the reviewer's run. It stayed the same in the 1.5.13 legs, the short-conversation legs and the first implementer run's 1.5.14 legs at 7,261 steps. |
+| Before launch → after exit | The conversation database's content, the brain log, its chunks and every other `brain/<id>/` file match. |
+
+Matching snapshots show the files matched at those four moments. They do not
+show that nothing was written in between. Whether the summaries index's
+content changes varies between runs of the same version on the same
+conversation. A watcher or cache that keys on the summaries index must
+therefore expect a cold load or resume of any conversation to change it:
+its modification time always, its WAL while `agy` runs, and sometimes its
+content. YA's provider-root watcher observes that index and its WAL, so a
+cold read produces a change notification. Starting a load because the index
+changed would repeat. A cache for one conversation should not key on the
+index. It also cannot assume the conversation database has no sidecars,
+because `agy` creates them while the conversation is open.
+
+### Resume on a large compacted conversation
+
+Real `agy` built a conversation of 1,005 turns on each version, twice.
+Each turn read four 16 KiB files and replied, and every 40th turn compacted. Each
+build had 7,261 steps, 25 checkpoints, a 62.2 MB full log and an 18.7 MB
+short log; the database was 143.0 MB on 1.5.13 and 142.5 MB on 1.5.14. A
+build took 391–405 s: the first turn took about 21 ms, the median 429–441 ms.
+At that rate real `agy` cannot reach the 500 MB scale target, so the
+[generator](#scale-target-generator) builds that file from record shapes.
+
+| 7,261 steps, two runs each | `session/resume` 1.5.13 | 1.5.14 | `session/load` 1.5.13 | 1.5.14 |
+| --- | ---: | ---: | ---: | ---: |
+| Response | 35–37 ms | 33–37 ms | 226–227 ms | 224–235 ms |
+| Last update | 129–135 ms | 124–132 ms | 298–300 ms | 295–312 ms |
+| Updates streamed | 2 | 2 | 3,529 | 3,528 |
+| Update JSON length (characters, without JSON-RPC framing) | 2.4 K | 2.4 K | 1.38 M | 1.38 M |
+| `agy` group RSS peak (idle 126–128 MB) | 295–307 MB | 295–306 MB | 341–362 MB | 331–364 MB |
+
+Resume's two updates were the command list and session info. In each case
+the next model request was 354 KB, and its conversation `contents` held the
+newest reply and the latest summary marker, and neither the previous
+summary's marker nor the first turn's prompt. Load and resume requests
+differed by 2 bytes. The memory figures are `agy`'s own, sampled every
+25 ms, not YA's.
+
+On the short `measure` conversation, after load or resume, and in the live owner's
+request right after compaction, the `contents` held the summary, the
+earlier user prompts and the newest reply, but not earlier assistant
+replies.
+
+### Tool call IDs
+
+Every ACP `toolCallId` observed was a version-4 UUID, on both versions. In
+the second run on each version there were seven calls in `agy`'s default
+mode, four of which asked permission (`write_file` and `run_command`; the
+permission request carried the same ID), and one call under
+`--dangerously-skip-permissions`. None had the form
+`<sessionId>:<plannerStep>`. A live tool call can be tied to its log record
+only through its arguments or its position in the group.
+
+`agy` sends `session/request_permission` with a string JSON-RPC ID (four in
+each second run). YA's transport accepts it since plan 195 step 2b; see
+[vanilla execution](antigravity.md#vanilla-execution).
+
+### `step_index`, gaps and undo
+
+In the probe runs `step_index` strictly increased across a cancel, a
+background wake, a compaction, `session/resume` and an owner stopped
+mid-response, and always equalled the database `idx`. It is not contiguous.
+
+The census streams each log once, keeping step indexes and counts, and reads
+a private copy of the database's plain columns. Only records that end in a
+newline count. A conversation is reported inconclusive when its database,
+WAL or log changes while it is read (including during a read that fails),
+or when its log ends in an unterminated record; a read that fails on files
+that did not change is that conversation's error. On this host's store it
+read 15 databases: 12 with a log and three never prompted. None was
+inconclusive or an error. All 12 logs strictly increase. Eight database
+steps have no record:
+
+| `step_type` | `status` | Steps | Reproduced |
+| ---: | ---: | ---: | --- |
+| 15 (`PLANNER_RESPONSE`) | 6 | 4 | Yes: a 1.5.14 owner stopped mid-response |
+| 132 (`GENERIC`) | 6 | 2 | No; they are the two missing results of the cut-short group in `918445a8` |
+| 17 (`ERROR_MESSAGE`) | 3 | 2 | No: a cancel's `ERROR_MESSAGE` was logged on both versions |
+
+By step index the census found 497 complete tool groups, one group missing
+its last two results (see [reading a tool group](#reading-a-tool-group)), no
+group with a missing step elsewhere, no unknown group, and no group open at
+the end of a log. The saved repro's unlogged step is one
+of the two `ERROR_MESSAGE` steps. Why those two were not logged is unknown.
+
+`agy` 1.5.13 and 1.5.14 advertise no undo or rewind command over ACP, and YA
+offers no rewind for Antigravity, so a conversation YA owns is never undone.
+For one rewound by another program, a reader treats a `step_index` that
+does not increase as an unknown log, as for any unexpected record.
+
+### Live session retention
+
+[`native-live-retention.test.ts`](../packages/server/test/native-provider/native-live-retention.test.ts)
+runs 600 turns of the same work on each provider: a short prompt and a
+4 KiB reply. It samples YA's heap after a full GC at turns 1, 150, 300, 450
+and 600. Before each sample it empties three things: the Process replay
+window (time-bounded and common to every provider), the fixture's event log
+and the scripted model's request log. It reads the heap before copying
+Antigravity's projection to count it, so the copy is not charged. Growth is
+taken from the warm sample at turn 150 to turn 600. These runs used Node
+24.22.1 on this host. Codex 0.171.0 ran three times and Antigravity 1.5.13
+twice:
+
+| Turns 150 → 600 | Heap samples after GC | Sampled growth | Antigravity projection |
+| --- | --- | ---: | --- |
+| Codex, three runs | 76.1 → 73.6 MB, every run | −2.5 MB | None |
+| Antigravity, two runs | 73.1 → 76.2 MB, every run | +3.1 MB | 301 → 1,201 messages; 695,480 → 2,775,380 bytes of JSON |
+
+The heap figures are point samples, each one heap reading after GC on one
+host. Codex's samples moved within 73.1–76.3 MB with no upward trend; its
+largest swing between samples was 3 MB. Antigravity's heap rose at every
+sample. The reviewer's separate 600-turn run on the same Node sampled
++0.405 MB for Codex and +2.797 MB for Antigravity from turn 150 to turn 600.
+
+The projection count is exact and repeated: it grew by exactly 4,622 bytes
+of JSON per turn, from the same 301 to the same 1,201 messages, in all three
+Antigravity runs. At that rate it would reach the 8 MiB cap after about
+1,800 such turns, and the session would then be stopped mid-turn. The
+controlled-peer test "today: a live session that passes 8 MiB across turns
+is torn down mid-turn" recorded that until plan 195 step 6 flipped it
+([live memory](#live-memory--plan-195-step-6)).
+
+The bar for
+[step 6](../docs/tactical/195-antigravity-native-history.md#6--bound-live-session-memory)
+on this harness:
+
+- **Primary: a fixed projection bound.** The projection's message count and
+  serialized bytes at turn 600 do not exceed a bound fixed independently of
+  turn count. This is exact, so one run decides it. Today both grow linearly.
+- **Secondary: heap samples.** In each of at least two runs, the turn-600
+  sample is no more than 1 MB above the turn-150 sample, as in every Codex
+  sample above. Antigravity's samples are +2.8 to +3.1 MB today. A heap
+  sample alone, or one run, is not evidence.
+
+### Scale target generator
+
+[`antigravity-scale-log.ts`](../packages/server/test/utils/antigravity-scale-log.ts)
+writes a conversation of any size, and
+`scripts/perf-repro/antigravity-scale-log.mjs --out <dir> --verify` runs it
+from `packages/server` with `pnpm exec tsx --conditions source`. It copies
+the observed record shapes: key order, complete tool groups at the steps
+after their planner record, `ERROR` results, background launches without a
+completion line followed by their `[Message]` wake and its reply,
+reminders, checkpoints, the shortened log's markers, and planner steps the
+log skips. The text is filler. The file always ends on a complete group.
+Two options add groups with database-only (`status` 6) results:
+
+- `--interrupted-group-every <steps>`: the last results are missing and the
+  next record is the next turn's `USER_INPUT`, as in `918445a8`. A step is
+  reserved for that `USER_INPUT`, so such a group never ends the file.
+- `--interior-gap-group-every <steps>`: one result that is not the last is
+  missing, and another group follows. This shape was not observed; it
+  exercises readers that pair by step index.
+
+`--verify` checks that `step_index` strictly increases and that the result
+at P+1+*i* is the only thing at that step, for every group. A group may lack
+results only where one was requested, its missing steps must be exactly the
+requested ones, and its next record must be the shape's (`USER_INPUT`, or a
+planner record with calls). Nothing may end the file inside a group.
+
+Its database holds only the plain step columns, so real `agy` cannot load
+it. With `--interrupted-group-every 30000 --interior-gap-group-every 40000`,
+the default target took 1.1 s to write on this host: 99,990 records, a
+500.1 MB full log, a 336 MB short log, 49 checkpoints, 1,198 wakes, three
+skipped planner steps, three groups missing their last results and two
+missing an interior result. `--verify` passed. The census of it took 0.9 s
+at a 144 MB peak resident size and classified those five as three groups missing a
+suffix and two with a gap, beside 23,481 complete groups.
+
+## Projection — plan 195 step 3
+
+[`antigravity-log-projection.ts`](../packages/server/src/sessions/antigravity-log-projection.ts)
+turns `transcript_full.jsonl` records into the messages the Antigravity
+reader returns. Since [step 4](#serving-cold-history--plan-195-step-4) it
+serves cold history.
+
+### What each record becomes
+
+| Record | Messages, by ID |
+| --- | --- |
+| `USER_INPUT` | `<id>:step-<n>`: user text, the `<USER_REQUEST>` block's content without the newlines that wrap it. Literal tags inside the text are kept. The `<ADDITIONAL_METADATA>` and `<USER_SETTINGS_CHANGE>` blocks after it are dropped, as ACP replay drops them. |
+| `PLANNER_RESPONSE` | `<id>:step-<n>:thinking`, then `<id>:step-<n>:text`, each present only when non-empty, both with the record's `model`. Then call *i*'s `tool_use`, ID `<id>:step-<n>:tool-<i>`, in message `<tool id>:call`, under `agy`'s tool name and its `args` as input; `invoke_subagent` becomes `spawn_agent` with the input YA already normalizes for it. An `error` field adds an `error` message `<id>:step-<n>:error`, unless the next record that is not a `GENERIC` is an `ERROR_MESSAGE`, which reports the same failure (a 1.5.14 cancel); a window ending at the planner reads that record to decide. |
+| `GENERIC` | `<tool id>:result`: a `tool_result` for its call, with the record's `content` after its leading `Created At:` and `Completed At:` lines with `agy`'s RFC 3339 timestamps (step 4; often two pairs; other text starting with those words stays), and `is_error` for status `ERROR`. A `RUNNING` launch is a normal result. |
+| Missing result step | No message. The call's `tool_use` message carries `orphanedToolUseIds` with its ID, which clients show as an incomplete call whose result is unavailable. |
+| `SYSTEM_MESSAGE` | An inbox delivery, whose text inside `<SYSTEM_MESSAGE>` begins `[Message] ` (a task's wake, a notice): `<id>:step-<n>`, an `informational` system message labelled "System message" with that text as its detail. Any other system message, such as the reminder that accompanies most user turns, adds no message (step 4). |
+| `CHECKPOINT` | `<id>:step-<n>`: a `compact_boundary` with the record's content as `compactSummaryText`, as Codex readers mark compaction. |
+| `ERROR_MESSAGE` | `<id>:step-<n>`: an `error` message with the record's `error`. |
+
+Every message has the record's `created_at` as its timestamp and the
+conversation ID as `session_id`. IDs depend only on step indexes, which
+skip steps, so a page has the same IDs however it was reached. They differ
+from today's cold IDs, which count replayed messages and use ACP's random
+tool call IDs.
+
+The log is **unknown** on:
+
+- a complete line that is not valid UTF-8, is not JSON, or is empty. An
+  unterminated final line is an append in progress, not a record, even
+  when it ends inside a character;
+- a `step_index` that does not increase;
+- a type, source, status, field or field type outside the table in
+  [brain log](#brain-log): an explicit `null` is not an absent field
+  (`tool_calls: null` is unknown), and `truncated_fields` is unknown, so
+  the shortened log is never projected;
+- a wrapper outside the observed forms. A `USER_INPUT` is
+  `<USER_REQUEST>\n…\n</USER_REQUEST>` followed by at most an
+  `<ADDITIONAL_METADATA>` block and then a `<USER_SETTINGS_CHANGE>` block.
+  A `SYSTEM_MESSAGE` is the fixed "The following is a <SYSTEM_MESSAGE> not
+  actually sent by the user…" preamble, then `<SYSTEM_MESSAGE>\n…\n</SYSTEM_MESSAGE>`
+  ending the content. All 39 user inputs and 202 system messages in this
+  host's 12 logs, and those of the native case on both versions, have
+  these forms. A prompt `agy` clipped is accepted only in the
+  [measured clipped form](#clipped-prompts);
+- any tool-group shape the [group rule](#reading-a-tool-group) calls unknown.
+
+No record content can make the projection throw: fields are read as own
+keys with their types checked first, and diagnostics coerce no value. Its
+entry points are also total: if the projection itself throws, the result
+is unknown with the thrown `error` attached, which the unit tests require
+to be absent.
+
+A group the log ends inside is in progress when the caller says the owner is
+live, and its missing results are interrupted otherwise.
+
+### Clipped prompts
+
+`agy` does not log a long prompt whole. Measured 2026-11-23 on 1.5.13 and
+1.5.14 with
+[`antigravity-long-input-probe.mjs`](../scripts/perf-repro/antigravity-long-input-probe.mjs)
+(run from `packages/server` like the turn-end probe; reports in
+`/tmp/ya-step6/r3/long-*.json`), the same on both versions:
+
+- The cut is in **UTF-8 bytes** of the whole wrapped content (request,
+  metadata and settings blocks together), not characters: `agy` keeps the
+  first 192,000 bytes, at a character boundary (191,999 for a request of
+  three-byte characters), and never splits a character or a surrogate
+  pair. 190,000 ASCII characters (190,130 bytes wrapped) were logged whole;
+  192,000 were clipped.
+- It then appends `\n<truncated N bytes>\n\nNOTE: The output was truncated
+  because it was too long. Use a more targeted query or a smaller range to
+  get the information you need.`, where N is the number of bytes dropped:
+  the kept bytes plus N equal the wrapped content's size in every case.
+- No closing `</USER_REQUEST>` and no metadata survive a cut inside the
+  request. A cut inside the closing marker keeps its first bytes
+  (`\n</US`); a cut inside the metadata keeps the whole request and a
+  partial `<ADDITIONAL_METADATA>` block.
+- The record stays one valid JSON line with the usual keys
+  (`step_index`, `source`, `type`, `status`, `created_at`, `content`), so
+  the line is about 192,300 bytes.
+- Pasted lines, two-, three- and four-byte characters and a prompt
+  starting with an `@a.txt` file reference were clipped the same way: the
+  reference is not expanded in the logged content, so it counts as
+  ordinary text. ACP prompts YA sends carry one text block, so there is no
+  other wrapper section to clip.
+
+The projection accepts exactly this: content ending in that notice with
+any N, whose kept part is 191,997 to 192,000 bytes and begins
+`<USER_REQUEST>\n`. A cut inside the request (or its closing marker,
+whose partial bytes are dropped) becomes the user prompt's kept text with
+YA's notice. The longest trailer measured after a close was 387
+characters (metadata and settings blocks, the first prompt of a session),
+so a close is taken for the request's own only when it is the last one and
+at most 512 characters precede the notice after it, reading as whole
+trailer blocks then one partial block; the request is then whole. Any
+other close is pasted text (step 6 review round 4 found pastes quoting
+`</USER_REQUEST>` that made the record unknown, or lost text silently), and
+the whole kept text after the opening marker is the prompt, with the
+notice. Any other length, notice or opening stays unknown. The step 6 review (round
+3) found that before this, such a record made the whole log unknown.
+
+### Windows
+
+A window is a run of records the caller projects. Records outside it are
+observed: they update the group state and checks, and produce no messages.
+A caller that parses lines itself, for the window, for `observe` or for
+the context read backward, must treat a line with `invalidUtf8` as an
+unknown log before parsing it: `parseAntigravityLogRecord(line.text)`
+cannot tell a real U+FFFD from a replaced byte. `addLine` does this.
+Following the [group rule for parts](#reading-a-tool-group), a window that
+does not start the file observes the records from the last non-`GENERIC`
+record before it, and a window that ends inside a group it projected
+observes the following records until the group resolves. With that context,
+the windows of a log together produce exactly the whole log's messages; a
+test checks this at every record boundary of a generated log with both
+interrupted-group shapes.
+
+What the reader must add, because a window's messages are rendered on their
+own ([step 4](#serving-cold-history--plan-195-step-4) does each):
+
+- **A call and its result must load together.** The shared client
+  projection drops a `tool_result` whose `tool_use` is not in the loaded
+  messages, so a page that starts with `GENERIC` records shows nothing for
+  them. Keep a group in one page, or carry the pairing context on the
+  existing wire.
+- **Anchors map to records.** A `:result` ID names its planner step P and
+  call *i*; its record is at step P+1+*i*. Other IDs name their record's
+  step.
+- **Context is bounded.** The look back is at most *k* records when the
+  window starts with a `GENERIC`, and *k*+1 when it starts right after a
+  group's *k* results, since the rule reads back to the planner whatever
+  the first record is. Step 4 starts every page at a record that is not a
+  `GENERIC`; such a page's messages do not depend on what precedes it, so
+  it reads no context (and does not check what it does not read). A short
+  read is never the end of the log: it must not turn a missing result into
+  an interrupted one.
+- **Checks cover only observed records.** A window sees only its own
+  records and its context, so a rewind elsewhere in the file, such as a
+  later step 1 after step 100, is not detected by a window that never
+  reads it.
+- **Child links need verification.** An `invoke_subagent` result is the
+  raw text naming the child's `conversationId`. The cold renderer needs a
+  verified `agent_id`, so the reader must apply its existing
+  lineage-checked enrichment.
+
+Memory for one window is its messages plus what the
+[log window](#serving-cold-history--plan-195-step-4) holds.
+
+### Comparison with ACP replay
+
+The census
+(`scripts/perf-repro/antigravity-log-census.mjs census`, run from
+`packages/server` with `pnpm exec tsx --conditions source`) stages each
+conversation into an owned profile as independent regular files: its
+database with its WAL and its brain directory, and once the summaries
+index with its WAL. Staging refuses any link in those parts of the
+source, and the census refuses to start `agy` while anything in the
+profile resolves outside it, so no `session/load` can open a source file.
+The source's database, WAL and log identities (device, inode, size,
+modification time) are compared before and after each copy. A copy that
+changed is retried twice and then reported inconclusive. That includes a
+file that vanished or was renamed between the check and the copy, such as
+a WAL a SQLite checkpoint removed; a failed or changed copy is discarded
+before a retry. A conversation whose database or full log is gone when an
+attempt starts, or whose full log is not in the staged copy, is reported
+inconclusive and the census continues. An error on an unchanged source,
+such as a refused link, stops the census. For each
+conversation it projects the copy's log and replays the copy through `agy
+acp` `session/load` into YA's ACP normalization, observing for 500 ms after
+the load. It counts the replay's raw tool frames, recognizing a subagent's updates
+by the ID its call announced, then compares the projection and the replayed messages after removing the expected differences that
+[`antigravity-projection-compare.ts`](../packages/server/test/utils/antigravity-projection-compare.ts)
+lists: IDs, tool names (ACP titles), the projection's results, system
+messages, checkpoints, errors, timestamps and models, and replay's habit of
+joining consecutive user inputs (with nothing between) or the text or
+thinking of consecutive steps (with "\n\n") into one message. Its
+alignment has a work budget of 25 million table cells after the equal
+prefix and suffix; a larger middle is reported as "not compared". It
+reports classes and steps, not content.
+
+On 2026-11-22, with `agy` 1.5.13 and separately 1.5.14 replaying this
+host's store (12 logs, written by 1.5.13 and 1.5.14) on Node 24.22.1, no
+conversation was inconclusive and every log projected as known: 2,105
+records and 8,037,744 bytes, each log read once in full, in 0.03 s. Both
+binaries gave the same results. What remained:
+
+| Class | Where | Cause |
+| --- | --- | --- |
+| Thinking and calls only in the projection, and text joined differently around them | `466c3170`, steps 0–299 (66 thinking blocks, 189 calls) | Replay sent those steps' user and assistant text but not their thinking or calls. In the database exactly those steps have `status` 5, where every other finished step has 3 (or 7 for a failed result). What status 5 means is unknown; it is not a checkpoint, the first of which is at step 378. |
+| Text, thinking or user input only in replay, and the joins around them | Five conversations, six steps | Steps only in the database. Four are planner steps stopped mid-response (`status` 6, three of them the same scheduling probe's last reply), which replay sends with their partial text. Two are unlogged `ERROR_MESSAGE` steps, which replay sends as assistant text starting "⚠ Individual quota reached". |
+
+Nothing else differed: user text, assistant text, thinking, the order of
+calls and every call's input matched.
+
+Cold replay reported each ordinary call once, as a `tool_call` with its
+final status: 1,093 calls, 19 of them `failed`. 705 carried `rawOutput`
+(475 edits and 230 commands); file reads carried none. There were no
+ordinary `tool_call_update` frames, including in the 500 ms after each
+load response. YA's cold transcript makes a `tool_result` only from a
+`tool_call_update` or a subagent's call, so it held no ordinary
+`tool_result` row. Cold history today shows every ordinary call without its
+result, although replay sends the output of edits and commands. The
+comparison removes results by design, so these counts, not the comparison,
+establish it.
+
+YA's own replay check rejected four of the twelve replays ("saved replay
+tail did not arrive"), so YA could not open those conversations cold before
+[step 4](#serving-cold-history--plan-195-step-4), which opens them from the log:
+three whose replay joins a database-only reply to the log's last text, and
+one whose last text is a `USER_INPUT`, which the check compares with its
+whole wrapped content. Step 8 removed the replay and the check with it
+([the replay fallback](#the-replay-fallback--plan-195-step-8)). The census
+reports were taken with YA's cold transcript and the check; the census now
+replays through the live normalization, with no check.
+
+[`native-antigravity-log-projection.test.ts`](../packages/server/test/native-provider/native-antigravity-log-projection.test.ts)
+runs real `agy` with the scripted model through thinking, text, one call,
+two calls in one response, a background command and its wake, a cancel, a
+compaction and a last turn. After the owner stops, it requires the
+projection and the reader's ACP replay to have no mismatch after the
+expected differences, and checks what only the projection has: each call's
+result under its step's ID, the `RUNNING` launch, the wake, the cancel's
+error and the checkpoint's summary. It passes on 1.5.13 and 1.5.14. The
+cancel logged as described in [how far a record
+trails](#how-far-a-record-trails-its-acp-event): on 1.5.13 the partial text
+`DONE` and an `ERROR_MESSAGE` "The stream was interrupted. Please continue
+the task you were working on."; on 1.5.14 the partial text `ERROR` with
+`error: "context canceled by user"` and an `ERROR_MESSAGE` "API error
+(attempt 1): context canceled by user", so the projection shows two errors.
+Replay showed the partial text on both versions and neither error.
+
+### Throughput
+
+`antigravity-log-census.mjs project <log> --repeat 3` streams one log
+through the projection. On the 500,072,946-byte generated target (99,990
+records, `--interrupted-group-every 30000 --interior-gap-group-every 40000`)
+it took 0.54–0.58 s per run on this host with Node 25.8.2: 174,000–186,000
+records and 869–930 MB per second, producing 158,641 messages. The process
+peaked at 1.3 GB resident because a whole-log projection holds every
+message; a page holds only its own. After review round 1 added the UTF-8
+and wrapper checks, three runs on Node 24.22.1 took 0.61–0.63 s
+(158,000–163,000 records and 792–814 MB per second, the same 158,641
+messages) and peaked at 1.9 GB resident. The reviewer's run of 1,935 windows of
+at most 256 KiB over the same log produced the same counts at 162 MB peak
+resident.
+
+## Serving cold history — plan 195 step 4
+
+[`antigravity-log-window.ts`](../packages/server/src/sessions/antigravity-log-window.ts)
+reads one window of `transcript_full.jsonl` for the reader, through
+[`antigravity-log-source.ts`](../packages/server/src/sessions/antigravity-log-source.ts);
+the [provider contract](antigravity.md#cold-history-from-the-log) owns what
+users see. A window:
+
+- **Latest page.** Finds lines backward from the last newline (an
+  unterminated tail is not a record) until the requested checkpoint, the
+  file's start, or 4 MiB of lines. Once a record that is not a `GENERIC`
+  has been found, a line that would not fit is not even found: its search
+  stops at the page's remaining bytes, and the page starts at that record.
+  Until then (a trailing tool group) lines are found whatever their size.
+  A page that shows nothing extends to the one before it.
+- **No context.** A page starts at a record that is not a `GENERIC`, so its
+  messages do not depend on earlier records and nothing older is read for
+  it (and nothing older is checked). An older page observes the records
+  after its cursor that resolve a planner's calls or error.
+- **Lines, then bodies.** Finding a line keeps its offsets and, for a line
+  up to 64 KiB, its bytes while a page's worth is held. Every decision
+  (page extent, tool group size) uses offsets and 512-byte heads; a body
+  is read when the page shows it and released once decoded. A request
+  counts the bytes it holds; the unit tests assert the peak.
+- **Line memo.** A line whose start (after a newline or at offset 0) and
+  newline are both known is remembered as a line. A range a search found
+  free of newlines, such as from a bisection probe's midpoint, is
+  remembered only as that, to skip rereading it, never as a line.
+- **Cursor.** Finds a message's record by halving the byte range on the
+  `{"step_index":N,` prefix every observed record begins with (a record
+  without it is unknown), then reading forward below 256 KiB. The older
+  page includes the cursor's own record and is cut before the cursor
+  message, so every ID form ends a page exactly, including a `:result` and
+  a later part of a planner record.
+- **Record limit.** A line over 16 MiB is never parsed or held. Its first
+  512 bytes must begin `{"step_index":N,"source":…,"type":…,"status":…`
+  with a source and status the type allows; anything else is unknown. A
+  short `"error"` and `"created_at"` follow in the observed order; an error
+  too long for the head (a native `GENERIC:ERROR` had 458 bytes) leaves
+  both out, and the placeholder then has no error text or time. The
+  [provider contract](antigravity.md#cold-history-from-the-log) says what
+  each type becomes. In a tool group whose results together exceed 16 MiB,
+  results over 64 KiB are placeholders built from their validated heads
+  (a result within the record limit whose head is not in the observed form
+  is decoded for it). Both rules depend only on line sizes and build in one
+  place (`antigravityPlaceholderRecord`). The only scans are newline
+  searches and fixed-size heads, so no work grows faster than a line's
+  length.
+- **The whole-file helper.** `projectAntigravityLog`, used by the census
+  script and as the tests' oracle, is not the complete window: it holds
+  each line whole and applies only the record limit, not the group rule. It
+  gives the same message IDs, and a group over 16 MiB shows its results in
+  full there.
+- **Blank lines.** An empty line, at the file's start or anywhere, makes
+  the log unknown.
+- **Reminders.** A system message whose head already shows a reminder is
+  not decoded: it is never shown.
+- **Identity.** Opening the file, taking the
+  [append-only fence](claude.md#transcript-acquisition-and-retention)
+  the Claude and Codex readers use (device, inode, size, and the first and
+  last KiB) and reading are one attempt. A file whose identity changed, that
+  shrank, vanished, was swapped between opening and the path check, or
+  whose probes differ, during any of those, is read again from scratch, up
+  to three attempts, then unknown. A path that leaves the store is unknown
+  at once. Appends during a read are fine: the window ends at the size it
+  opened.
+- **Missing.** No file, an empty file or no complete record.
+- **What a request costs.** No fixed byte budget: size alone never makes a
+  log unknown, because a whole-history replay is the wrong answer to a
+  large record. A request reads its page, the search probes and any record
+  it must cross, a line over the limit once to find its bounds and then
+  only its head. Bytes are counted as they arrive, across attempts. Held
+  at once: found line bytes up to about a page (4 MiB of lines up to
+  64 KiB), one body being decoded (at most 16 MiB), and a read block of at
+  most 1 MiB. Chunks of a line are joined once, when its newline is found.
+
+Measured 2026-11-22 on one macOS arm64 host, Node 24.22.1, on the generated
+500 MB target (499,976,470 bytes, 99,990 records, 49 checkpoints,
+`--interrupted-group-every 30000 --interior-gap-group-every 40000`), with two
+checkpoints requested, after review round 2 (bytes held is the most line
+bytes the request held at once):
+
+| Window | Bytes read | Bytes held | Messages | Time |
+| --- | ---: | ---: | ---: | ---: |
+| Latest page | 5,444,096 | 4,203,597 | 1,247 | 11 ms |
+| The page before it | 5,722,420 | 4,005,849 | 1,293 | 11 ms |
+| The next older page | 5,679,751 | 4,059,525 | 1,337 | 9 ms |
+| Catch-up from the newest message | 675,419 | 14,338 | 7 | 1 ms |
+| A cursor its record lacks (a miss) | 5,391,461 | 4,063,658 | 0 | 10 ms |
+| The whole log (a complete read) | 500,046,102 | 60,906 | 156,614 | 750 ms |
+
+A page reads about its 4 MiB plus one read block (up to 1 MiB); a cursor
+adds about 30 probes of a few kilobytes each. The unit test asserts the
+first three rows' bounds on this target. Other measurements and unit
+cases, each a few records around a large one:
+
+- The reviewer's group: 26 results of 15 MiB, an interrupted last call and
+  a short latest reply. Latest read 5,443,584 bytes and held 131 bytes;
+  Load older crossed the group (412,583,821 bytes, 128 ms) holding at most
+  1,094 bytes and showed the planner with 26 placeholders. The unit case
+  uses 1 MiB results with a short subagent result, which keeps its child
+  link.
+- A 12 MiB reply before a short final reply: the final reply's page, then
+  the 12 MiB reply in full from Load older's cursor, which read under
+  28 MiB (the search crossed the line once, showing it read it again).
+- A 24 MiB reply: a cursor in the short reply before it pages normally; the
+  24 MiB reply is a placeholder.
+- A 34 MiB reply: `beforeMessageId` on the reply after it returns the
+  placeholder, and an `after` read crossing it is known.
+- A 17 MiB reply of escaped newlines: paged in milliseconds (the earlier
+  JSON scanner took 71 s).
+- 400 hidden reminders of 90 KiB (35 MiB) after a prompt: the latest page
+  is the prompt, reading under 40 MiB, each byte about once.
+- The reviewer's retry case (a 33 MiB record, the head changed after every
+  attempt): 16,330,752 bytes over three attempts and an 82 MiB resident
+  peak (208 MB and 162 MiB in round 1); unchanged, 5,443,584 bytes.
+
+All 12 logs in this host's store read as known. Paging backward with two
+checkpoints a page gave exactly each whole-log projection, including the
+four conversations YA's replay check refused (`0e5ebad0`, `15572d7f`,
+`e6f567af`, `940db741`), which now open from the log. A latest page there
+read 4.8 KB to 2.2 MB.
+
+The real-`agy` [native case](../packages/server/test/native-provider/native-antigravity-log-projection.test.ts)
+views its stopped conversation (latest page, older page, hover excerpt,
+child mappings and a full read) and checks that no `agy` starts and that
+every file in the store keeps its size, modification time and SHA-256, with
+one exception: YA's read-only open of the summaries index creates the empty
+`-wal` and the `-shm` that SQLite needs when `agy` has removed them. That
+predates step 4 and every listing does it
+([gap](../gaps/antigravity-summaries-read-creates-sqlite-sidecars.md)).
+
+### Write order and refresh
+
+YA's watcher observes each conversation's database and WAL and the
+summaries index, not the brain log, while cold history now comes from the
+log. A scratch native run (real `agy` 1.5.13 and 1.5.14, the scripted
+model, one tool call then a reply, file stats sampled every 1 ms; not
+committed) is one workload per version, so it shows sampled timing, not
+write order for every turn. On 1.5.13 the last log change (127.3 ms)
+came 0.1 ms after the last foreground WAL change, and the next database
+change was at stop, about 1.5 s later. On 1.5.14 the first log change
+(110.3 ms) came 4.1 ms before the next WAL change. In both samples the log
+was complete before a refresh that the watcher's 200 ms debounce would run
+after a nearby WAL event. On stop, `agy` wrote the database (393,216 →
+425,984 bytes), emptied and removed the WAL, and wrote the summaries index.
+The samples do not show that a browser received the refresh, and an
+earlier observation of a stale page on a shared server is still
+unexplained. Since plan 195 step 7 an open page's focused watch follows the
+log itself, so a log append with no database write refreshes it too; on
+macOS the root watcher sees another process's WAL writes only when it
+closes the file ([writers](#writers--plan-195-step-7)).
+
+## Resuming from the log — plan 195 step 5
+
+Resume reads the log's latest page (back to two checkpoints or 4 MiB, as a
+viewer's first read). When it is known, YA calls `session/resume`, then
+reads the latest page again and records its last complete record, step and
+byte end, as the owner's resume point (the first read's when the second
+is not known). Windows for that owner pass the resume point: the window
+ends at its byte offset, and the record just before that offset, which
+must end in a newline, must carry that `step_index`, or the log is
+unknown. Records `agy` appends after it (the resumed owner's own turns)
+are not read for that owner's view.
+
+Observed with real `agy` 1.5.13 and 1.5.14 and the scripted model (the
+cold-resume and model-selection cases in
+[`native-lifecycle.test.ts`](../packages/server/test/native-provider/native-lifecycle.test.ts)):
+`session/resume` answered with the configuration options a load returns,
+so the selected model and effort were applied as before; the next model
+request held the prior turns and the tool result; no `session/load` was
+sent; and while the resumed owner lived, a complete read showed the turn
+before the resume point and the resumed prompt and reply once each. The
+step 2 measurements of `session/resume` (no history streamed, the log and
+database unchanged, the summaries index's time changed) still apply; a
+resume therefore still produces a summaries-index change notification.
+
+The resume point records the boundary record's step, the offsets where
+its line starts and ends, and the file's device and inode. A window with a
+resume point checks, at those fixed offsets: the device and inode, that the
+file is at least as long as the end, that the byte before the end and the
+byte before the start are newlines, and that the line begins with the same
+bytes it began with when the point was taken (at most 40; since plan 195
+step 6, so a record in a parseable but noncanonical encoding, accepted when
+the point was taken, is checked by its own bytes rather than refused for
+lacking the canonical `{"step_index":<step>,` prefix). That costs the same whatever
+the record's size: in review, a live-row catch-up behind a 3.2 MB final
+record read 3,435,560 bytes before this check was bounded; the unit test
+now bounds it to the title's fixed 256 KiB read of the file's start plus a
+few KiB. The append fence for that read probes the file's first KiB and the
+KiB ending at the resume point, so the window reads no byte after the
+offset (it only stats the file's size) and a change after the offset never
+makes it unknown. In review, a 96 MiB unterminated record appended after
+the resume point raised a latest page from 7,528 to 100,670,824 bytes read
+before the window stopped looking for the file's physical end; it now
+costs the same with or without it. A same-width in-place edit of an earlier
+record is not detected, nor is a same-inode rewrite that keeps the
+boundary line's first bytes and offsets (the step 5 review replaced one
+record with two of the same total length): general in-place rewrite
+detection belongs to plan 195 step 7.
+
+**Never-prompted conversations.** The step 5 review measured an empty
+conversation (created, never prompted, no log) on 1.5.13 and 1.5.14, two
+samples per version: `session/load` took 136–140 ms and `session/resume`
+33–48 ms, neither streaming history. After either, the summaries index
+row had `step_count = 0` and the sentinel `last_modified_time`; a prompted
+fixture had `step_count = 2`. Plan 195 step 8 confirmed it on both
+versions and uses it: a conversation with no log and a `step_count` of 0
+was never prompted ([the replay fallback](#the-replay-fallback--plan-195-step-8)).
+
+## Live memory — plan 195 step 6
+
+A live owner keeps a bounded recent window of rows and, past a soft
+budget, moves its boundary to a proven split point; the
+[provider contract](antigravity.md#live-memory) states the rules. When
+`agy` writes a turn's records was measured 2026-11-23 with
+[`antigravity-turn-end-probe.mjs`](../scripts/perf-repro/antigravity-turn-end-probe.mjs)
+(run from `packages/server`, same profile and scripted model as the step 2
+probe):
+
+```bash
+pnpm exec tsx --conditions source ../../scripts/perf-repro/antigravity-turn-end-probe.mjs [--agy <path>] [--out <report.json>]
+```
+
+Two runs each on `agy` 1.5.13 (the pin) and 1.5.14, Node 24.22.1, one macOS
+arm64 host. The delay is from the turn's end (the prompt's result, or for
+a detached reply its last ACP update) to the first observation of its last
+record, polling every millisecond; negative means before.
+
+| Turn | Records it wrote | Last record |
+| --- | --- | ---: |
+| Plain reply | `USER_INPUT`, `PLANNER_RESPONSE` | −1 to 0 ms |
+| Three calls in two responses, then a reply | `USER_INPUT`, planner, two results, planner, result, planner | −8 to −4 ms |
+| A second prompt sent while the reply streamed (steer) | `USER_INPUT`, planner, `USER_INPUT` (the steer), planner | −2 to −1 ms |
+| Stop (`session/cancel`) while the reply streamed | `USER_INPUT`, reminder, planner, `ERROR_MESSAGE` | −7 to −4 ms |
+| `/compact keep the probe markers` | `USER_INPUT` (`/compact keep the probe markers`), `CHECKPOINT`, planner | −1 ms |
+| A background command, then a reply | `USER_INPUT`, planner, result, planner | −4 to −3 ms |
+| That command's wake | the task-end `SYSTEM_MESSAGE` +515 to +527 ms after the previous result; the wake's planner +6 to +11 ms after its last ACP update | — |
+| A detached `invoke_subagent` | the parent's records by −1 ms; its wake on the child's report (two `SYSTEM_MESSAGE`s, a planner) +12 to +18 ms after the result | — |
+
+So, on both versions:
+
+- Every record of a foreground turn was in the log by its prompt's result,
+  including a steered, stopped, tool-heavy or compacting one. Records after
+  a result belong to new steps (a wake, a child's report), each with its
+  own records.
+- Each prompt, each steer and each `/compact` left exactly one
+  `USER_INPUT`, in the order sent, whose request text is the text sent.
+- A stopped turn here logged its partial reply and an `ERROR_MESSAGE`. A
+  1.5.14 owner stopped by ending its process logs nothing for the reply in
+  progress ([step 2](#how-far-a-record-trails-its-acp-event)), but then the
+  owner is gone.
+
+Every foreground turn here ended with a planner with no calls, or, when
+stopped, an `ERROR_MESSAGE`: the records the split proof accepts as ending
+a turn.
+
+**Wakes and prompt order (review round 2).** The probe also records each
+ACP update and each record with its time. Run twice on each version on
+2026-11-23, it added a wake interrupted by a prompt (`MIDWAKE`: a prompt
+sent after the background command's wake streamed its first chunk). In all
+four runs:
+
+| Wake | Last record before its first ACP output |
+| --- | --- |
+| A background command's | the task-end `SYSTEM_MESSAGE`, about 1.5 s earlier |
+| The same, interrupted by a prompt | the task-end `SYSTEM_MESSAGE`, about 1.5 s earlier; the wake's planner was logged before the prompt's `USER_INPUT` |
+| A detached subagent's report | an inbox `SYSTEM_MESSAGE` (three runs) or a tool result (one 1.5.13 run), 4 to 10 ms earlier |
+
+None of them is a record that ends a turn, so a prompt sent while a wake
+is in flight is never a split: the record ending at the size taken when
+it was sent is the wake's non-terminal record, or the wake's own records
+land between that size and the prompt's input. No probe produced a
+scheduled wake of another kind.
+
+No run saw a `user_message_chunk`, or any other update tied to a prompt,
+after a live `session/prompt`: the first updates after a prompt were
+command or usage updates, the prompt's own output, or (for the
+interrupted wake) the wake's remaining chunk `MW_TAIL`, which arrived
+after the prompt was sent. So the owner cannot tell from ACP where a
+prompt's output starts, and the split proof's residual (output for a
+record at or before the split that arrives after the prompt) stands as
+the [provider contract](antigravity.md#live-memory) states.
+
+**The assumption.** The proof rests on one ordering: a turn's
+`USER_INPUT` record is written before that turn's ACP result is sent.
+Every turn of the probes on both versions logged its input first (the
+input lands at the prompt's start, its records by the result); none was
+ever observed the other way. If it reversed, P's stat could sample an
+older terminal record with the previous turn's input as the head at Z,
+and a move could retire a reply whose record lands after Z.
+
+**The proof.** At each turn's first prompt P, sent only while the owner is
+idle, the owner takes one synchronous `statSync` of `transcript_full.jsonl`
+(its size Z, device and inode) right before sending it, on the path it
+resolved once, asynchronously, when it opened (for a new session, on its
+first turn's output). When the window is over its
+soft budget and P is old enough, `antigravitySplitCheck`
+([`antigravity-live-advance.ts`](../packages/server/src/sdk/providers/antigravity-live-advance.ts))
+opens the log and reads the head at Z (512 bytes, a `USER_INPUT`) and the
+record ending at Z, each of its bytes once, in chunks back from Z that it
+keeps, the last one clamped to the 16 MiB record limit and its two
+newlines (a longer record fails the candidate), which must parse as the
+window parses it and end a turn. The
+round 2 version found the record's start and then read its body again
+(33 MB of reads for a 15.9 MiB record, review round 3). These reads show the two records around Z; they do not show
+that the input at Z is P's. Then it reads the span it would retire through
+the log window reader, a page at a time back from Z to the old boundary,
+and drops the candidate at the first unknown page or at an older-page
+cursor that does not resolve; a closed owner opens no further page. As a
+description, not a cap: the window reader reads each page, looks up each
+cursor by halving and may read the record ending at Z again, and a failed
+candidate's reads are not reused (review round 4 counted 16.67 MB in the
+terminal search and about 33.68 MB in the pages for a 15.9 MiB record). Its result is the new boundary, with
+the record's offsets and first bytes. Nothing is cached between checks. The design of step 6's first
+version moved at every result, and its second proved splits with an
+incremental scan of the log, expectations matched by prompt text, a read
+awaited before a prompt and a timer; review round 2 showed that scan
+could move rows on stale or unreadable evidence, delay a send, rearm after
+teardown and still miss the ACP side of a wake, and the stat proof
+replaced it.
+
+### Retention after step 6
+
+The [step 2 harness](#live-session-retention), rerun 2026-11-23 on `agy`
+1.5.13 and Node 24.22.1, 600 turns of a 4 KiB reply, twice, with the soft
+budget lowered to 128 KiB or 40 rows and candidates usable at once (a test
+option), after review round 2's stat proof. The 40 rows bind first, so the
+window moves about every 19 turns. The projection's rows and bytes are
+asserted after every turn against the budget plus two turns, and the heap
+is sampled right after each move, a comparable point of each sawtooth
+cycle:
+
+| | Run 1 | Run 2 |
+| --- | ---: | ---: |
+| Moves | 31 | 31 |
+| Peak projection | 40 rows, 92,441 bytes | 40 rows, 92,441 bytes |
+| Heap right after the move at turn 154 → turn 591 | 73.85 → 74.78 MB | 73.83 → 74.73 MB |
+| Largest growth between consecutive cycles | +0.177 MB | +0.174 MB |
+| Heap samples, turn 150 → 600 | 74.02 → 74.88 MB (+0.867 MB) | 74.02 → 74.82 MB (+0.794 MB) |
+
+The projection is bounded by the budget whatever the turn count (step 2
+grew it 4,622 bytes a turn), and no cycle grew the heap by more than
+0.18 MB. Across the 23 cycles from turn 154 the heap still rose about 0.89
+to 0.94 MB, roughly 2 KB a turn, outside the projection (which the
+harness asserts); every version of this step showed the same slope. The
+round 2 reviewer's heap snapshots attribute it mainly to V8 code and
+compilation structures and some harness bookkeeping, not session rows.
+Codex's step 2 samples moved within 3 MB with no trend. With the
+production limits a candidate is used only 35 seconds after its prompt,
+so the window can exceed the 2 MiB budget by what arrives in that time,
+or indefinitely when no candidate proves; the 8 MiB cap bounds the stored
+rows, apart from the one block still streaming.
+
+## Writers — plan 195 step 7
+
+What each writer changes, and when, measured 2026-11-23 with
+[`antigravity-writer-probe.mjs`](../scripts/perf-repro/antigravity-writer-probe.mjs)
+(run from `packages/server`, same profile and scripted model as the step 2
+probe; one run each on `agy` 1.5.13 and 1.5.14, Node 24.22.1, macOS arm64,
+polling each file's size, modification time and inode every millisecond):
+
+```bash
+pnpm exec tsx --conditions source ../../scripts/perf-repro/antigravity-writer-probe.mjs [--agy <path>] [--out <report.json>]
+```
+
+The two versions changed the same files at the same points:
+
+| Phase | The conversation's files | Elsewhere |
+| --- | --- | --- |
+| A turn (plain, tools, steer, Stop, `/compact`, a wake) | Each log append is followed within about 2 ms by its WAL growing (to hundreds of KB to MB) | The summaries index's WAL about 0.4 to 1 s after the turn |
+| Idle, after a turn (still running) | About 30.9 s after the last write, an idle close: the database checkpointed (modified, no new step), the WAL and shared memory deleted, for every conversation the process holds; the next turn creates them again. Nothing else in 200 s of idle (1.5.13) or 50 s (1.5.14): no log change, no non-empty WAL | The summaries index's WAL at about 0.9 s; at the idle close the index modified and its sidecars deleted |
+| A background task's wake, after the turn | The task-end record and its WAL write about 0.5 s after the turn's result, before any ACP output | — |
+| Close (`agy` exiting, as Stop of the owner, idle teardown and reload do) | The database checkpointed (modified), the WAL and shared memory deleted, all within 3 ms of the close starting and before the process exited | The summaries index modified, its sidecars deleted |
+| After exit, 5 s | Nothing | Nothing |
+| `session/resume` or `session/load`, no prompt, then close | A 0-byte WAL and the shared memory created (1.5.14 creates and deletes them twice), deleted at close; the database unchanged | The summaries index's WAL created and written, then the index modified at close |
+| A turn in another conversation | Nothing | That conversation's files and the summaries index |
+| Another `agy` resumes a conversation one owner holds and takes turns | The same WAL grows for both; both turns succeed | — |
+
+So a write to one conversation shows in its own database (written at a
+checkpoint, which every writer's close makes) and its WAL growing past
+empty. A 0-byte WAL and the shared memory come from any SQLite open,
+`agy`'s resume and load included, and the summaries index changes for
+every conversation's writer, so neither identifies one conversation's
+writer. Every turn's log append came with a WAL write, so for `agy` the
+database and WAL are enough evidence of a writer; another program that
+appends to the log alone is seen only by the log's own observation.
+
+**Two processes on one conversation.** Both `agy` processes accept turns,
+and each numbers steps from its own counter: the log held steps 21 to 23
+from the second process, then 21 to 23 again from the first (both
+versions). A log whose `step_index` does not increase is unknown to YA's
+reader from that record on, so its pages there show the row that says so
+once no owner holds the conversation (the replay that stood in for it
+refused this log; see [the replay fallback](#the-replay-fallback--plan-195-step-8)),
+and a live owner's split check cannot read a span across it.
+
+**The idle close (review round 1).** The idle row was first measured over
+3 to 6 s only. Rerun with `--idle 200000` on 1.5.13 and `--idle 50000` on
+1.5.14 (2026-11-23, `/tmp/ya-step7/idle-*.json`), an `agy` that stays up
+after a turn checkpoints each conversation database it holds and deletes
+its sidecars about 30.9 s after its last write (30.03 s after its last ACP
+frame in the round 1 review's probe), then writes nothing more while idle.
+A checkpoint moves WAL pages into the database and adds no record, so
+while YA's owner holds a conversation a database change is not evidence of
+another writer.
+
+**What the watcher sees, by platform.** On macOS, Node's `fs.watch` (the
+provider-root watcher, recursive or not) reported writes into a file
+another process holds open only when that process closed it: a test writer
+appending to a held file every 500 ms for 4 s produced one event, at close.
+In the native cases an outside `agy`'s WAL growth during a turn produced its
+event 5.7 s later in one run and none within 20 s in others, while its
+checkpoint at its idle close or exit produced one at once.
+Linux's inotify reports each write. So YA observes another writer of a
+conversation that is not open in a client when it writes (Linux), or at
+its idle close about 30 s after its last write, or its exit (macOS); an
+open conversation's log is polled by its focused watch on every platform.
+The delays are measurements on one host, not a guarantee.
+
+**How long YA's own writes last.** Every write of a closing owner finished
+before its process exited, a wake's last record came within about 20 ms
+of its last ACP update (step 6), and an idle owner's last write is its
+idle close at about 30 s. YA takes every change while its owner holds the
+conversation as the owner's, and a change after it let go by the file's
+modification time against the release, not by when the watcher reported
+it ([provider contract](antigravity.md#another-writer)).
+
+## The replay fallback — plan 195 step 8
+
+Until step 8, a log YA could not read (missing, or unknown) was replaced by
+ACP `session/load` replay of the whole conversation, for viewing and for
+resuming. Step 8 counted when it fired and what it gave, then removed it;
+the [provider contract](antigravity.md#history-ya-cannot-show) owns what
+users see now. Measured 2026-11-23 on one macOS arm64 host, Node 24.22.1,
+with real `agy` 1.5.13 and 1.5.14 and the scripted model on owned profiles
+(scratch probes, not committed), and with the controlled ACP peer. The
+maintainer's real store was not opened again; its numbers are the step 3
+census's.
+
+**When it fired.**
+
+| Cause | Step 3 census (15 conversations, 12 logs) | Native selection, per version | Ordinary use with one writer |
+| --- | ---: | ---: | --- |
+| Never prompted (no log) | 3 of the 15 conversations it read (their `step_count` not read; it was measured only on generated stores) | 0 | A conversation created and left empty, by another client or a first prompt that never reached `agy`; YA's own creation always prompts |
+| Log deleted or unreadable | 0 | 0 | Never seen; YA deletes nothing and every prompted conversation in every run had a log |
+| A record shape the projection does not know | 0 (on both binaries) | 0 | Never seen on 1.5.13 or 1.5.14; a later `agy` that changes the format would make every conversation it writes unknown |
+| Duplicate step indexes (two `agy` processes) | 0 | 0 | Not designed for (plan 195 decisions); measured in step 7 |
+| A clipped prompt | 0 | 0 | Not a cause since step 6 |
+
+An unterminated final line is not a cause: the log stays known. The native
+count instrumented the replay's two entry points (viewing and resuming)
+during the whole upgrade selection (72 passed, 3 skipped, on each
+version): on real `agy` it fired once per version, in the projection case's
+deliberate replay oracle; it never fired for a resume. The controlled-peer
+cases reached it 14 times per version (9 views, 5 resumes), every one in a
+case built to reach it.
+
+**What it gave, and how often it failed.** A never-prompted conversation
+replayed nothing (an empty `session/load` took 200–217 ms here, 136–143 ms
+in step 5, against 33–48 ms for `session/resume`). A short prompted
+conversation with its log deleted, or with one unknown record, replayed
+whole in 206–229 ms. Every other shape real `agy` produced was refused by
+the replay's own check that it reached the log's last text, after its
+10-second deadline:
+
+| Conversation (log made unknown by one unexpected field, unless named) | 1.5.13 | 1.5.14 |
+| --- | --- | --- |
+| Two `agy` processes took turns (log `0 1 2 3 4 2 3`, unknown as written) | refused, 10,210 ms | refused, 10,212 ms |
+| A turn ended on a model HTTP 400 (log: the prompt only) | refused, 10,207 ms | refused, 10,237 ms |
+| A reply cut off by killing `agy` (log: the prompt only) | refused, 10,226 ms | refused, 10,224 ms |
+| The same two, log known | the log page, 1–3 ms, no `agy` | the same |
+
+The controlled peer refused the census's two shapes the same way (a prompt
+last: 10,336 ms; a database-only reply after the last text: 10,060 ms) and
+served a matching tail in 52 ms. So the fallback failed on 4 of the 12 real
+conversations in the census, and on every unreadable log real `agy` wrote
+in these runs.
+
+**`step_count`.** The summaries index counted 0 steps for the conversation
+created and never prompted, and 2 for each one-turn conversation,
+including the two whose log holds only the prompt (the HTTP 400 and the
+killed reply: the database holds a step the log lacks), and 4 for the
+two-writer conversation, on both versions. YA reads it to tell a
+never-prompted conversation from one whose log is gone.
+
+**What the fallback cost to keep.** Runtime code that existed only for
+it: the replay loader and its saved-tail check (`antigravity-replay.ts`,
+85 lines; the tail reader in `antigravity-subagent-links.ts`, 58), the
+reader's replay path with its cold-read cache, shared admissions and
+runtime launch (about 400 of `antigravity-reader.ts`'s 491 removed lines),
+`historyRead` owners, start claims and their rechecks in the owner registry
+(about 100 lines), the fallback branch of resume with its retained, capped
+replay and the transcript's replay mode with its 8 MiB / 10,000-message
+limit and error (about 150 lines across `antigravity.ts`,
+`antigravity-resume.ts` and `antigravity-transcript.ts`), the boundaryless
+owner in the join and the live window, the v0 source's replacement when a
+fallback owner attached, and `isReplay` plumbing: 1,165 runtime lines were removed with it and 430
+added (the notice, the resume of a log YA cannot read, `step_count`), and
+about 950 test lines were removed. To keep it in step 9, the Provider Host would have had to publish
+every starting and open owner to the backend synchronously enough for the
+reader's recheck right before `session/load`, keep a fallback owner's
+whole-history projection and replay stream in the host, and still bound
+`agy` launches by readers across processes.
+
+**Decision: delete.** By the rule the plan set: no cause is common in
+ordinary use with one writer (0 of 12 logs, 0 native resumes); every
+conversation the fallback could resume resumes without it, with
+`session/resume` (below); and what the user sees instead is one row that
+says the history cannot be shown and why.
+
+**Resuming without a readable log** (native case in
+`native-antigravity-live-memory.test.ts`, both versions). With the log
+deleted, `session/resume` answered, the selected model and effort were
+applied, and the next model request held the earlier turn: `agy` keeps the
+context in its database. `agy` then wrote a new log numbered from its own
+counter: its first record was step 2 (`USER_INPUT`, then a
+`SYSTEM_MESSAGE` at 3), and with the window's limits lowered the owner
+moved its boundary into it as usual. With one unknown record, the same,
+except that no split was proven and the cap bounded the rows. A
+never-prompted conversation resumed with no earlier context and its first
+log record at step 0. No `session/load` was sent.
+
+## In the Provider Host — plan 195 step 9
+
+Observed while moving the owner into a Provider Host worker, on `agy`
+1.5.13 and 1.5.14 with the scripted model (macOS arm64, the app cases in
+`app-antigravity-hosted-reload.test.ts`):
+
+- `agy` depends on nothing in YA's backend. With the backend killed and
+  the wrapper held, `agy` kept streaming a turn, ran a scheduled task's wake
+  to its end and logged both; the worker buffered the output and the
+  replacement backend received it in order.
+- The worker's `agy` runs in the worker's own process group (the host
+  reports no separate provider process group for it), so the host's
+  teardown of the worker reaps it; after idle reap neither process is left.
+- After the worker was reaped and the conversation resumed with
+  `session/resume`, the next model request carried a system message after
+  the user's prompt: "[Notice] All your subagents and background tasks have
+  been stopped due to server restart. ...". `agy` adds it on resume; YA
+  sends nothing of the kind.
+
+## Runtime identity
+
+ACP `initialize` reports `agentInfo.version` equal to `agy --version`:
+`1.5.13` from the pinned Linux arm64 build and `1.5.14` on macOS arm64, both
+observed 2026-11-22. YA's [version floor](antigravity.md#supported-runtime)
+reads it. Both versions also advertise `loadSession` and the session
+capabilities `resume`, `close`, `load` and `list`. The same 1.5.13 build, on
+Ubuntu 24.04 with no `nobody` group,
+answered `initialize` and `session/new` and created its conversation database;
+that group was a requirement of the standalone 1.4.5 bootstrap only.
+
+## What YA reads today
+
+YA opens native files read-only, resolves them against the physical store
+root, and refuses a symlink that leaves it. It decodes no protobuf.
+
+| Reader | File | Purpose |
+| --- | --- | --- |
+| [Catalog adapter and metadata](../packages/server/src/sessions/antigravity-metadata.ts) | `conversations/<id>.db` and `-wal` file facts | Discovery and source versions. The database is never opened. |
+| [Summaries reader](../packages/server/src/sessions/antigravity-summaries.ts) | `conversation_summaries.db` | Project binding from the workspace, title, lineage and child settlement from bounded columns, and `step_count`, whose 0 marks a conversation with no log as never prompted. A conversation with no workspace row is not listed. |
+| [Log window](../packages/server/src/sessions/antigravity-log-window.ts) | `transcript_full.jsonl` | Cold history: pages, catch-up, children's and complete reads ([step 4](#serving-cold-history--plan-195-step-4)). |
+| `readAntigravityResumePoint` (log window) | `transcript_full.jsonl` | A resume's resume point: the latest page's last record when the page reads as known; for an unknown log, its last complete line when that line's head reads ([step 5](#resuming-from-the-log--plan-195-step-5), [step 8](#the-replay-fallback--plan-195-step-8)). |
+| [Split check](../packages/server/src/sdk/providers/antigravity-live-advance.ts) | `transcript_full.jsonl` | A live owner's stat at a prompt and, when it needs a move, bounded reads at that offset and the retired span's pages that prove a split point ([step 6](#live-memory--plan-195-step-6)). |
+| [Writer evidence](../packages/server/src/sessions/antigravity-writer-evidence.ts) | `conversations/<id>.db` and `-wal` file facts from the watcher; `transcript_full.jsonl` size and time from an open page's focused watch | Whether another program wrote a conversation ([step 7](#writers--plan-195-step-7)). Never opens the database or reads the log's content. |
+| Split check, at idle points | `transcript_full.jsonl` | One asynchronous stat at each turn's result or command's end, compared with the stat at the next turn's first prompt: growth with nothing of the owner's own running is another writer ([step 7](#writers--plan-195-step-7)). |
+| `readAntigravityTurnBoundary`, `readAntigravityTranscriptPosition` | `transcript.jsonl` | The step and file position before a prompt. |
+| `readAntigravitySubagentLaunches`, `readAntigravityTurnSubagentLaunches` | `transcript.jsonl` | Pairing `invoke_subagent` calls with child IDs. |
+| [Compaction check](../packages/server/src/sdk/providers/antigravity-compaction.ts) | `transcript.jsonl` | A new completed `CHECKPOINT` confirms `/compact`. |
+| [Log projection](../packages/server/src/sessions/antigravity-log-projection.ts) | `transcript_full.jsonl`, from the log window | Messages from records ([step 3](#projection--plan-195-step-3)). |
+
+The other named log readers are in
+[`antigravity-subagent-links.ts`](../packages/server/src/sessions/antigravity-subagent-links.ts)
+and each read is bounded to 4 MiB. The projection reads nothing itself.
+Cold history, root and child, comes from the log. A live session, new or
+resumed from the log, is the log through its owner's boundary and the
+owner's recent rows after it. Nothing replays history through ACP: a
+missing or unknown log is a row saying so
+([history YA cannot show](antigravity.md#history-ya-cannot-show)).
+[Provider history facts](provider-history-facts.md#consumers) lists
+these readers among YA's history consumers.
+
+## What T3 Code reads
+
+From T3 `main` at [`122d3bf853`][t3-revision], in one file,
+[`AntigravityChildWork.ts`][t3-child-work]. T3 runs `agy acp` with a managed
+profile and reads that profile's `antigravity-acp` store. This review did not
+establish where T3's main conversation history comes from.
+
+| T3 reads | How | For |
+| --- | --- | --- |
+| `transcript.jsonl` | A tail of at most 256 KiB, parsed with a schema of `step_index`, `type`, `status`, `content`, `error` and `tool_calls` | A child's steps in the subagent view. |
+| `transcript.jsonl` | The last record only | A pending wake: a trailing `SYSTEM_MESSAGE` with no reply after it. |
+| `messages/*.json` and `read.json` | Whole files, at most 256 | An unread high-priority inbox message, also a pending wake. |
+| `subagents/<childId>.json` and the child's inbox | Whole files | Matching a detached child to the tool call that launched it. |
+| `conversations/<id>.db` | Read-only SQLite, with a hand-written protobuf field reader | Matching an `invoke_subagent` record to its planner tool call. |
+
+T3 therefore depends on the JSON files as YA does, and goes further by
+decoding the database. Its constants (payload fields 20 for a planner response
+and 143 for `invoke_subagent`, tool calls in field 7, and step type 127) are
+tied to one runtime's protobuf schema.
+
+Two statements in T3's source differ from or extend what YA has checked:
+
+- T3 notes that an auto-approved tool call's ACP ID is
+  `<sessionId>:<plannerStep>`, and a permission prompt's ID is random. With
+  `agy` 1.5.13 and 1.5.14 in YA's launch mode, every ID was random,
+  auto-approved or not ([tool call IDs](#tool-call-ids)).
+- T3 treats each tool argument value as JSON text. In YA's store the values
+  were mixed JSON types.
+
+[t3-revision]: https://github.com/pingdotgg/t3code/commit/122d3bf853da716652d5066b54d05d7654c46e36
+[t3-child-work]: https://github.com/pingdotgg/t3code/blob/122d3bf853da716652d5066b54d05d7654c46e36/apps/server/src/provider/acp/AntigravityChildWork.ts
+
+## Depending on these files
+
+The log is undocumented and a later `agy` can change it or stop writing it.
+A log already on disk does not change when `agy` is upgraded, so the exposure
+is a new shape for new records, not the loss of old conversations.
+
+The existing readers follow these constraints, and a new reader should too:
+
+- Read-only, bounded, and anchored to the physical store.
+- A record that does not parse as expected yields "unknown", never a guess.
+  [Provider history facts](provider-history-facts.md#how-to-fix-a-reader)
+  owns that rule.
+- What the log cannot answer is said, not guessed: since plan 195 step 8
+  there is no ACP replay to fall back to, so a new `agy` that changes the
+  log's shape shows the row that says its history cannot be shown, for
+  every conversation it writes, until YA reads the new shape. The
+  [upgrade checks](native-provider-testing.md#checking-an-antigravity-upgrade-candidate)
+  compare the projection with what `agy` replays, and catch that change
+  before a version is qualified.
+- No protobuf decoding. The [provider contract](antigravity.md#identity-and-history)
+  rules it out, and field numbers would tie YA to one runtime's schema.
+
+## Open questions
+
+- How real `agy` behaves past the 62 MB log it built here. Its median turn
+  was about 440 ms, so the 500 MB target is generated.
+- Whether `agy` ever leaves a missing result step inside a group rather
+  than at its end. None was seen.
+- What `agy` writes between the snapshot moments of a load or resume.
+- Why two `ERROR_MESSAGE` steps on this host were not logged, when a cancel's
+  is.
+- Whether a `session/load` beside a live owner writes the conversation's
+  files (YA sends none since plan 195 step 8). A second `agy` resuming and
+  prompting beside one does write them, with colliding step indexes
+  ([writers](#writers--plan-195-step-7)).
+- What `presence/<id>.lock` means. The one file observed was empty and
+  dated 2026-11-03, although conversations had run since.
+- What the full-text index's step byte offsets address.
+- What database `status` 5 means, and why ACP replay omits the thinking and
+  calls of those steps but keeps their text.
+
+These mattered to
+[plan 195](../docs/tactical/195-antigravity-native-history.md), which asked
+whether the log could serve a bounded, read-only view of a root
+conversation; since its last step every read of one does, with the owner
+in the backend or in a Provider Host worker.

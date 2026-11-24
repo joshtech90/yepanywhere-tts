@@ -148,7 +148,11 @@ describe.each(providers)("real native provider: %s", (provider) => {
     const persisted = JSON.stringify(await f.history());
     expect(persisted).toContain("QUEUE_ALPHA");
     expect(persisted).toContain("QUEUE_BRAVO");
-    expect(persisted.includes("OWNED_TOOL_CONTENT")).toBe(true);
+    // agy 1.5 omits read output from ACP replay; the model request above
+    // verifies actual tool bytes and replay verifies the tool's location.
+    expect(persisted).toContain(
+      provider === "antigravity" ? "notes.txt" : "OWNED_TOOL_CONTENT",
+    );
     await f.close();
     expect(f.model.failures).toEqual([]);
     expect(f.errors).toEqual([]);
@@ -177,13 +181,45 @@ describe.each(providers)("real native provider: %s", (provider) => {
       expect(f.diagnostics).toEqual([]);
     });
 
+  if (provider === "antigravity")
+    it("retains a scheduled wake and publishes its later reply on the same owner", async () => {
+      const f = await nativeFixture(provider);
+      fixtures.push(f);
+      (await f.model.next()).tool("schedule", {
+        DurationSeconds: 2,
+        Prompt: "OWNED_SCHEDULE_WAKE",
+      });
+      const acknowledgement = await f.model.next();
+      acknowledgement.finish("OWNED_SCHEDULE_WAITING");
+      await f.output("OWNED_SCHEDULE_WAITING");
+      await f.idle();
+      expect(f.proc.getProviderRetentionSnapshot()).toMatchObject({
+        retained: true,
+        backgroundWork: [{ kind: "cron", providerType: "schedule" }],
+      });
+      const wake = await f.model.next();
+      expect(JSON.stringify(wake.body)).toContain("OWNED_SCHEDULE_WAKE");
+      wake.finish("OWNED_SCHEDULE_DONE");
+      await f.output("OWNED_SCHEDULE_DONE");
+      expect(f.proc.state.type).toBe("idle");
+      expect(f.proc.getProviderRetentionSnapshot().retained).toBe(false);
+      await f.close();
+      expect(f.model.failures).toEqual([]);
+      expect(f.errors).toEqual([]);
+    });
+
   if (
-    ["claude", "codex", "claude-gateway", "claude-ollama", "grok"].includes(
-      provider,
-    )
+    [
+      "claude",
+      "codex",
+      "claude-gateway",
+      "claude-ollama",
+      "grok",
+      "antigravity",
+    ].includes(provider)
   )
     it.each(
-      provider === "grok"
+      provider === "grok" || provider === "antigravity"
         ? (["gentle"] as const)
         : (["gentle", "immediate"] as const),
     )(
@@ -233,11 +269,21 @@ describe.each(providers)("real native provider: %s", (provider) => {
           original.finish("_ORIGINAL_DONE");
         } else await original.cancelled;
         const correction = await f.model.next();
+        if (provider === "antigravity") {
+          expect(f.proc.state.type).toBe("in-turn");
+          expect(
+            f.events.filter((event) => event.type === "result"),
+          ).toHaveLength(0);
+        }
         expect(JSON.stringify(correction.body)).toContain("NATIVE_CORRECTION");
         correction.finish("CORRECTION_DONE");
         await f.output("CORRECTION_DONE");
         await f.idle();
         expect(f.model.requests).toHaveLength(2);
+        if (provider === "antigravity")
+          expect(
+            f.events.filter((event) => event.type === "result"),
+          ).toHaveLength(1);
         expect(JSON.stringify(f.events)).toContain("CORRECTION_DONE");
         await f.stop();
         expect(

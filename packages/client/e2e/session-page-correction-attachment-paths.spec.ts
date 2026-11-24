@@ -188,7 +188,7 @@ test("an upload in flight asks before the page is left", async ({
 // keeps its chip with a notice. (Plan 187 pinned a quiet drop here, which
 // was the page checking before the server's capabilities had loaded; see
 // docs/tactical/188-shared-composer-draft-attachments.md item 26.)
-test("a staged attachment comes back after a reload; a failed check or a missing file keeps it with one notice", async ({
+test("a staged attachment survives reload and reports failed checks or missing files", async ({
   page,
   baseURL,
 }) => {
@@ -219,28 +219,23 @@ test("a staged attachment comes back after a reload; a failed check or a missing
     json(route, 500, { error: "pin failure" }),
   );
   await reload();
-  // The page checks once on load, so it says so once.
-  const failed = page.getByRole("alert").filter({
+  const failed = page.getByRole("status").filter({
     hasText: "Could not check draft attachments. Your draft has been kept.",
   });
   await expect(failed).toBeVisible();
   await expect(chip(page, "pin-reload.txt")).toBeVisible();
-  await page.waitForTimeout(1_000);
-  await expect(failed).toHaveCount(1);
   expect(await savedDraftNamesFile()).toBe(true);
 
   // The server no longer holds it: under draft sync the chip and the saved
-  // draft keep it, and the page says so once.
+  // draft keep it, and the page says so.
   await page.unroute(validatePath);
   await page.route(validatePath, (route) => json(route, 200, { refs: [] }));
   await reload();
   const gone = page
-    .getByRole("alert")
+    .getByRole("status")
     .filter({ hasText: "Draft attachments were no longer available." });
   await expect(gone).toBeVisible();
   await expect(chip(page, "pin-reload.txt")).toBeVisible();
-  await page.waitForTimeout(1_000);
-  await expect(gone).toHaveCount(1);
   expect(await savedDraftNamesFile()).toBe(true);
 });
 

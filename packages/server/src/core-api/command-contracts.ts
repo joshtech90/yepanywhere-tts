@@ -1,5 +1,6 @@
 import { relationshipGraphPageSchema } from "./relationship-graph-contracts.js";
 import { z } from "zod";
+import { selectableProvider } from "./selection-contracts.js";
 
 export const requestIdSchema = z
   .string()
@@ -19,11 +20,9 @@ export const createSessionRequest = z
       .describe(
         "Existing authorized project id from this server's projects collection. The server owns its path.",
       ),
-    provider: z
-      .enum(["claude", "codex"])
-      .describe(
-        "Configured native harness. Other providers, remote executors and blank-session creation are not qualified in this slice.",
-      ),
+    provider: selectableProvider.describe(
+      "Configured native harness. Other providers, remote executors and blank-session creation are not qualified in this slice.",
+    ),
     prompt: z
       .string()
       .min(1)
@@ -38,7 +37,7 @@ export const createSessionRequest = z
       .max(256)
       .optional()
       .describe(
-        "Native/YA model selector; omitted or default uses the harness default. Required with routerPoolId or routerAccountId: name a model id from that selection's catalog. No installation or protocol upgrade is performed.",
+        "Omit to use the direct provider default or the inherited router binding's model. With routerPoolId or routerAccountId, supply a model id from that selection's catalog.",
       ),
     thinking: z
       .enum([
@@ -64,6 +63,12 @@ export const createSessionRequest = z
       .default("default")
       .describe("Native permission mode, explicit bypass only when requested."),
     serviceTier: z.string().min(1).max(128).optional(),
+    routing: z
+      .literal("direct")
+      .optional()
+      .describe(
+        "Use the requested provider's direct login on the target server and skip caller routing inheritance. Cannot be combined with routerPoolId, routerAccountId, routerPolicy or routerClaudeAiConnectors.",
+      ),
     routerPoolId: z
       .string()
       .min(1)
@@ -90,8 +95,23 @@ export const createSessionRequest = z
   })
   .strict()
   .refine(
+    (body) =>
+      body.routing !== "direct" ||
+      (body.routerPoolId === undefined &&
+        body.routerAccountId === undefined &&
+        body.routerPolicy === undefined &&
+        body.routerClaudeAiConnectors === undefined),
+    "Direct routing cannot be combined with router fields",
+  )
+  .refine(
     (body) => !body.routerPolicy || !!body.routerPoolId,
     "routerPolicy requires routerPoolId",
+  )
+  .refine(
+    (body) =>
+      body.provider !== "antigravity" ||
+      (body.serviceTier === undefined && body.permissionMode !== "plan"),
+    "Antigravity uses native model IDs without service tiers, with /plan as a session command",
   )
   .refine(
     (body) => body.routerPolicy !== "manual" || !!body.routerAccountId,
@@ -113,7 +133,7 @@ const promptInput = z
       .max(100000)
       .refine((value) => value.trim().length > 0)
       .describe(
-        "Exact input text for the incumbent session. Slash text is not translated; queue compaction with type=compact.",
+        "Exact input text for the incumbent session, delivered unchanged without YA command emulation. Claude Code runs a leading native slash command itself; Codex receives it as text. Queue compaction with type=compact so its receipt reports the outcome and later input waits for it.",
       ),
     delivery: z
       .enum(["deferred", "patient", "steer"])
@@ -133,13 +153,13 @@ const compactInput = z
       .refine((value) => value.trim().length > 0)
       .optional()
       .describe(
-        "Optional focus instructions. Claude receives them after /compact; Codex's native compaction ignores them.",
+        "Optional focus instructions. Claude and Antigravity receive them after /compact; Codex's native compaction ignores them.",
       ),
     delivery: z
       .enum(["deferred", "patient"])
       .default("deferred")
       .describe(
-        "When compaction starts: deferred at the next turn boundary, patient after verified idle. Later input waits until compaction succeeds; a failure holds it visibly until the compaction is cancelled.",
+        "When compaction starts, as for a prompt: deferred at the next turn boundary even while background tasks run, patient after verified idle. Later input waits until compaction succeeds; a failure holds it visibly until the compaction is cancelled.",
       ),
   })
   .strict();

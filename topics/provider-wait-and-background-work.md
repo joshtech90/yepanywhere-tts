@@ -85,6 +85,22 @@ came from, plus `command`, `startedAt`, `until`, `schedule`, `recurring` or
   once with `thread/backgroundTerminals/list`; an item that ends while that
   request is in flight is not resurrected. A replaced app-server process
   clears the record, because its terminals died with it.
+- Antigravity CLI 1.5.x records the root session's ACP execution, schedule, and
+  `invoke_subagent` events. Active shell commands and spawned subagents move
+  from foreground waits to background work when the prompt settles. Scheduled
+  wakes are background work from their start. Terminal tool events remove shell
+  and schedule items; subagent items clear when `conversation_summaries.db`
+  reports the child settled (idle or killed), reconciled at turn settlement,
+  passive updates, retention queries, and changes from the shared provider
+  root watcher. A detached completion can wake the root after its last
+  work item clears. YA retains the owner through that handoff and through
+  the unsolicited ACP output. It requires a root summary newer than the
+  wake boundary with native status idle and `not_fully_idle = 0` before
+  clearing detached-reply retention. Missing or older summary evidence
+  leaves the wake unsettled. The DB and WAL observation also covers a
+  quiet reply ending without further text. Liveness queries can recover a
+  missed notification with a point read. The native root check requires
+  the summaries observer and a compatible summary schema.
 - The Info tab of the session model panel (`ProcessInfoBody`) lists both,
   under **Waiting on** and **Background work**, from the live session
   stream; a liveness update is published on every change.
@@ -101,6 +117,11 @@ came from, plus `command`, `startedAt`, `until`, `schedule`, `recurring` or
   they do not retain the session or defer idle reaping, and reaping ends
   them. A future setting may change that; until then it is deliberate.
   (Decided 2026-10-15.)
+- Antigravity retains its owner while observed non-daemon background work is
+  active or the resulting root reply is unsettled. Daemons are visible in the
+  work list without retaining the owner.
+  The v0 session state reports `background` for a retained idle Antigravity
+  owner, and its compact conversation reports `working`.
 - A provider snapshot change that does not flip `retained` refreshes
   liveness only. It must not restart the idle grace, emit row activity or
   rerun idle-boundary work (done finalization, threshold compaction,

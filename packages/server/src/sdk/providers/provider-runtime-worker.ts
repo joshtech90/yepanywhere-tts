@@ -165,14 +165,7 @@ async function main(): Promise<void> {
       if (!provider)
         throw new Error(`Unknown provider ${request.providerName}`);
       const sandboxOptions = providerOptions.sessionSandboxOptions;
-      if (
-        sandboxOptions &&
-        sandboxOptions.provider !== request.providerName &&
-        !(
-          sandboxOptions.provider === "gemini" &&
-          request.providerName === "gemini-acp"
-        )
-      ) {
+      if (sandboxOptions && sandboxOptions.provider !== request.providerName) {
         throw new Error(
           "Provider worker sandbox request has the wrong provider",
         );
@@ -184,6 +177,7 @@ async function main(): Promise<void> {
         const namespace = await provider.getNewSessionNamespace?.(
           providerOptions.cwd,
           sessionSandbox,
+          { routed: Boolean(providerOptions.routerLaunch) },
         );
         if (
           !namespace ||
@@ -239,6 +233,13 @@ async function main(): Promise<void> {
             : undefined,
           onToolApproval: hooks.onToolApproval,
           onAgentApiRead: hooks.onAgentApiRead,
+          nativeOwnerHost: hooks.nativeOwnerHost,
+          markOutputDelivery: hooks.markOutputDelivery,
+          // The backend observes the store's summaries index and tells this
+          // worker; on every attach it tells once more, for changes made
+          // while no backend was attached.
+          observeAntigravitySummaries: (_scope, listener) =>
+            hooks.observeNativeStore(listener),
           shouldEmitLiveDeltas: hooks.shouldEmitLiveDeltas,
           onPermissionModeApplied: (mode: PermissionMode) =>
             hooks.onPermissionModeApplied(mode),

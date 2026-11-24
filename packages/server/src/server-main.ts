@@ -89,6 +89,7 @@ import { ProjectWorktreeSubscriptionManager } from "./projects/projectWorktreeSu
 import { projectPathCacheDiagnostics } from "./projects/projectPathIndex.js";
 import { GROK_SESSIONS_DIR } from "./projects/paths.js";
 import { OPENCODE_DB_PATH } from "./sessions/opencode-reader.js";
+import { antigravitySessionWatcherSpec } from "./sessions/antigravity-summaries.js";
 import { openCodeRelationshipWatcherSpec } from "./sessions/opencode-child-source.js";
 import { ProjectStoragePolicy } from "./projects/projectStoragePolicy.js";
 import { PushService, getOrCreateVapidKeys } from "./push/index.js";
@@ -256,7 +257,7 @@ let queueRestartForShutdown: QueueRestartHandoff | undefined;
  * clients release their socket claim while their wrapper-lifetime host keeps
  * the runtime alive for the next generation.
  */
-async function gracefulShutdown(signal: string): Promise<void> {
+async function gracefulShutdown(signal: string, source = signal) {
   if (isShuttingDown) {
     console.log(`[Shutdown] Already shutting down, ignoring ${signal}`);
     return;
@@ -268,7 +269,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   // locally or detached to the Linux host. Cleanup is not new task activity.
   stopNotificationsForShutdown?.();
 
-  console.log(`[Shutdown] Received ${signal}, cleaning up...`);
+  console.log(`[Shutdown] Received ${source}, cleaning up...`);
 
   // An admitted provider package mutation (npm install -g) must not be
   // interrupted mid-replacement: hold reload/shutdown on a bounded drain.
@@ -391,8 +392,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
   process.exit(0);
 }
 
-setServerRestartHandler(() => {
-  void gracefulShutdown("restart");
+setServerRestartHandler((kind) => {
+  void gracefulShutdown(kind, kind === "SIGHUP" ? "safe reload" : kind);
 });
 
 // Register shutdown handlers early
@@ -473,12 +474,7 @@ const providerSessionWatchers = new ProviderSessionWatcherRegistry({
   activationDelayMs: PROVIDER_WATCH_ACTIVATION_DELAY_MS,
   activationYieldMs: PROVIDER_WATCH_ACTIVATION_YIELD_MS,
   specs: [
-    {
-      family: "antigravity",
-      provider: "antigravity",
-      watchDir: antigravitySessionsDir(),
-      debounceMs: 200,
-    },
+    antigravitySessionWatcherSpec(antigravitySessionsDir(), config.dataDir),
     {
       family: "claude",
       watchDir: config.claudeSessionsDir,

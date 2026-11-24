@@ -84,22 +84,11 @@ export const providers = [
     ],
   },
   {
-    id: "gemini",
-    name: "Gemini CLI",
-    status: "experimental",
-    summary:
-      "Launch or read Gemini CLI sessions through its experimental ACP integration.",
-    notes:
-      "Streaming and tool rendering are available; approvals, steering, and history behavior vary by mode.",
-    runtimeIds: ["gemini", "gemini-acp"],
-    sourceRefs: ["packages/server/src/sdk/providers/gemini-acp.ts"],
-  },
-  {
     id: "antigravity",
     name: "Antigravity",
     status: "experimental",
     summary:
-      "Start and resume Antigravity sessions through its opt-in Agent Client Protocol integration.",
+      "Start and resume Antigravity sessions through agy acp, available by default when the agy CLI is installed.",
     notes:
       "Text, file references, approvals, streaming, and native history are supported; macOS is live-qualified, Linux remains unqualified, and Windows is unavailable.",
     runtimeIds: ["antigravity"],

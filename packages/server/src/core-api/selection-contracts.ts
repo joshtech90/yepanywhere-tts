@@ -1,10 +1,10 @@
 import { z } from "zod";
 
+export const selectableProvider = z.enum(["claude", "codex", "antigravity"]);
+
 export const selectionQuery = z
   .object({
-    provider: z
-      .enum(["claude", "codex"])
-      .describe("Configured launch harness."),
+    provider: selectableProvider.describe("Configured launch harness."),
     routing: z
       .enum(["direct", "aar"])
       .default("aar")
@@ -47,7 +47,7 @@ export const selectionModelSchema = z.object({
     .optional(),
 });
 export const selectionSchema = z.object({
-  provider: z.enum(["claude", "codex"]),
+  provider: selectableProvider,
   routing: z.enum(["direct", "aar"]),
   available: z
     .boolean()
@@ -67,7 +67,7 @@ export const selectionSchema = z.object({
       z.object({
         id: z.string(),
         name: z.string(),
-        provider: z.enum(["claude", "codex"]),
+        provider: selectableProvider,
         accountIds: z.array(z.string()),
         policy: z.string(),
         revision: z.number(),
@@ -79,7 +79,7 @@ export const selectionSchema = z.object({
       z.object({
         id: z.string(),
         displayName: z.string().optional(),
-        provider: z.enum(["claude", "codex"]),
+        provider: selectableProvider,
         enabled: z.boolean(),
         directAccountAccess: z.boolean().optional(),
         freshness: z.enum(["fresh", "stale", "unknown"]),

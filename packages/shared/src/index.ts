@@ -37,6 +37,8 @@ export {
   MANAGED_ARTIFACT_READ_IDLE_MS,
   ARTIFACT_TAB_PROTOCOL,
   isArtifactTabRequest,
+  SERVED_APP_FRAME_ALLOW,
+  SERVED_APP_SANDBOX,
 } from "./artifact-viewer.js";
 export type {
   RecentSessionsResponse,
@@ -1297,15 +1299,13 @@ export {
   isConversationMessage,
   isAppMessage,
   isAppSession,
-  // Context window utilities
   DEFAULT_CONTEXT_WINDOW,
   CODEX_DEFAULT_CONTEXT_WINDOW,
   CODEX_GPT56_CONTEXT_WINDOW,
   CODEX_GPT6_CONTEXT_WINDOW,
+  CODEX_SOL_500K_CONTEXT_WINDOW,
   getModelContextWindow,
 } from "./app-types.js";
-
-// Session utilities
 export {
   SessionView,
   getSessionDisplayTitle,

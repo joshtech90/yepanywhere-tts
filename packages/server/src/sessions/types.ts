@@ -109,6 +109,12 @@ export interface GetSessionOptions {
   tailCompactions?: number;
   /** Bound an older-page read to source content before this normalized id. */
   beforeMessageId?: string;
+  /**
+   * A catch-up from an ID the provider does not know (a durable overlay's).
+   * A provider that pages its own log may read only its latest window,
+   * bounded by this many compactions; others read as without it.
+   */
+  boundedCatchUp?: number;
   /** Fresh indexed metadata that permits a provider to skip its historical prefix. */
   summaryHint?: SessionSummary;
   /**
@@ -157,6 +163,8 @@ export interface LoadedSession {
     readonly import("@yep-anywhere/shared").ClaudeSessionEntry[]
   >;
   summary: SessionSummary;
+  /** False when the reader could return history but could not verify its tail. */
+  transcriptComplete?: false;
   /** Source timestamp captured with the transcript rows in this snapshot. */
   transcriptSnapshotUpdatedAt: string;
   /** Private reader evidence; count of newline-committed rows in data. */
@@ -168,6 +176,13 @@ export interface LoadedSession {
     mtime: number;
     ctime?: number;
   };
+  /**
+   * For an `afterMessageId` read: `missed` makes the route answer with a
+   * replacement window even though the read holds the cursor's row, because
+   * the client may hold rows after it under other IDs (an Antigravity owner
+   * moved those rows from its memory to the brain log).
+   */
+  afterAnchor?: "missed";
   /** Provider read window used to avoid retaining known-hidden source bytes. */
   readWindow?:
     | {
@@ -175,6 +190,17 @@ export interface LoadedSession {
         kind: "indexed-selection";
         omittedPrefix: boolean;
         before: boolean;
+      }
+    | {
+        /**
+         * A page of a log whose message IDs locate their records, so its
+         * first message's ID is the cursor for the page before it.
+         */
+        kind: "log-page";
+        omittedPrefix: boolean;
+        before: boolean;
+        /** What ended the page: its compaction scope, or its byte budget. */
+        cut?: "compactions" | "bytes";
       }
     | {
         kind: "compact-tail";

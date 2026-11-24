@@ -1,3 +1,5 @@
+import { resolveProviderLaunchModel } from "./providerLaunchModel.js";
+import { assertProviderExecutable } from "../sdk/providers/retired-provider.js";
 import type { HarnessRelationshipObserver } from "../sessions/NestedHarnessRelationshipService.js";
 import { assertClaudeCopyRoot, cloneClaudeSession } from "../sessions/fork.js";
 import type { AuthorizeSessionCreation } from "../sessions/session-creation-authority.js";
@@ -5,11 +7,24 @@ import type {
   CreationAttachments,
   CreationAttachmentSource,
 } from "../sessions/creation-attachments.js";
+import { observeAntigravitySummaries } from "../sessions/antigravity-summary-observation.js";
+import {
+  countInterruptibleRestartWorkers,
+  processHasActiveWork,
+} from "./restart-work.js";
 import {
   type AgentAuthRouter,
   RouterRefusedBeforeProvider,
   RouterUnavailable,
 } from "../services/AgentAuthRouter.js";
+import { ProviderMemoryCapacityError } from "../sdk/providers/provider-memory-budget.mjs";
+import {
+  assertSavedProviderLaunch,
+  assertSavedProviderReady,
+  resolveSavedCreationNamespace,
+  recordKnownProviderRefusal,
+  reserveLocalMemory,
+} from "./provider-launch-admission.js";
 import { randomUUID } from "node:crypto";
 import { resolveStandingPermissionMode } from "./standingPermissionMode.js";
 import {
@@ -155,6 +170,7 @@ import {
 } from "./SessionDoneCoordinator.js";
 import {
   type ModelSettings,
+  type ReadSessionProvider,
   SessionActivationCoordinator,
   type SessionReactivationOptions,
   canApplyThinkingConfigDynamically,
@@ -453,7 +469,7 @@ export interface SessionLaunchOptions {
    */
   onStarted?: SessionStartedCallback;
   /** One-shot callback when a deferred launch cannot start. */
-  onFailed?: (reason: string) => void | Promise<void>;
+  onFailed?: (reason: string, error?: unknown) => void | Promise<void>;
   /** One-shot callback when transient provider startup should be retried. */
   onRetryableFailure?: (reason: string) => void | Promise<void>;
   /** Classify provider startup rejection as retryable for a durable caller. */
@@ -563,6 +579,7 @@ export interface SupervisorOptions {
   onProcessInventoryChanged?: () => void;
   /** Callback to fetch session summary for initial metadata reconciliation */
   onSessionSummary?: OnSessionSummaryCallback;
+  readSessionSummaryForResume?: ReadSessionProvider;
   /** Best-effort transcript recovery for sessions without a launch snapshot. */
   recoverSessionLaunchSettings?: RecoverSessionLaunchSettingsCallback;
   /** Resolve native I/O once; settings, routing and lineage keep the public id. */
@@ -906,6 +923,7 @@ export class Supervisor {
         ) ?? Promise.resolve(),
       sessionMetadataService: this.sessionMetadataService,
       recoverSessionLaunchSettings: this.recoverSessionLaunchSettings,
+      readSessionProvider: options.readSessionSummaryForResume,
       getProcess: (processId) => this.getProcess(processId),
       getProcessForSession: (sessionId) => this.getProcessForSession(sessionId),
       unregisterProcess: (process) => this.unregisterProcess(process),
@@ -990,12 +1008,9 @@ export class Supervisor {
   }
 
   /**
-   * An existing session's launch with its settled sandbox applied. A
-   * persisted project-write sandbox binds every later process for the
-   * session (topics/session-sandboxing.md § Session Lifetime), so wake,
-   * wake, deferred-message and restart relaunches keep it whether or
-   * not their caller restated it. A request to weaken it is refused; only a
-   * new session may choose a weaker boundary.
+   * A persisted project-write sandbox binds every later launch, including
+   * wake, deferred messages and restarts that omit sandbox settings.
+   * Only a new session may choose a weaker boundary (topics/session-sandboxing.md).
    */
   private withSettledSandbox(
     sessionId: string,
@@ -1003,6 +1018,7 @@ export class Supervisor {
     modelSettings: ModelSettings | undefined,
   ): { projectPath: string; modelSettings: ModelSettings | undefined } {
     const settled = this.sessionMetadataService?.getMetadata(sessionId);
+    assertProviderExecutable(settled?.provider, modelSettings?.providerName);
     if (settled?.executor || modelSettings?.executor) {
       throw new Error(
         "SSH executors have been removed; this session cannot run locally",
@@ -1034,38 +1050,12 @@ export class Supervisor {
   }
 
   private resolveProvider(modelSettings?: ModelSettings): AgentProvider | null {
-    if (modelSettings?.executor) {
+    if (modelSettings?.executor)
       throw new Error("SSH executors have been removed");
-    }
-    const providerName = modelSettings?.providerName;
-
-    if (!providerName) {
-      return this.provider;
-    }
-    if (this.provider?.name === providerName) {
-      return this.provider;
-    }
+    const providerName = modelSettings?.providerName ?? this.provider?.name;
+    if (!providerName) return null;
+    if (this.provider?.name === providerName) return this.provider;
     return this.providerDiscoveryEnabled ? getProvider(providerName) : null;
-  }
-
-  private async assertAuthoritativeNewSessionModel(
-    provider: AgentProvider,
-    modelSettings?: ModelSettings,
-  ): Promise<void> {
-    if (provider.name !== "claude-gateway") return;
-
-    const requestedModel = modelSettings?.model;
-    if (!requestedModel || requestedModel === "default") {
-      throw new Error(
-        "Claude Gateway requires a model from its current catalog",
-      );
-    }
-    const models = await provider.getAvailableModels();
-    if (!models.some((model) => model.id === requestedModel)) {
-      throw new Error(
-        `Claude Gateway no longer advertises model ${JSON.stringify(requestedModel)}`,
-      );
-    }
   }
 
   private resolvePromptSuggestionMode(
@@ -1355,6 +1345,7 @@ export class Supervisor {
       if (!request?.launch || !saved.initialInputId)
         throw new Error("Saved creation lacks launch/input identity");
       const launch = request.launch;
+      assertProviderExecutable(request.provider);
       // Runtime and namespace are frozen intent; current authority stays live.
       if (
         !this.resolveProvider({ providerName: request.provider })
@@ -1380,33 +1371,23 @@ export class Supervisor {
         effort: request.settings.effort ?? undefined,
       };
       const provider = this.resolveProvider(modelSettings);
-      if (!provider?.getNewSessionNamespace)
-        throw new Error("Provider has no durable namespace contract");
-      if (
-        request.attachments?.files.some((file) => file.inlineImage) &&
-        !provider.supportsInlineImages
-      )
-        throw new Error(
-          "This provider does not accept inline images; use uploaded file references instead",
-        );
-      if ((provider.runtimeOwner ?? "local") !== (hosted ? "host" : "local"))
-        throw new Error(
-          "Saved creation cannot switch its selected runtime owner",
-        );
+      assertSavedProviderLaunch(
+        provider,
+        hosted,
+        Boolean(request.attachments?.files.some((file) => file.inlineImage)),
+      );
       if (hosted)
         await assertHostedCreationSupport(request.provider, {
           sandbox: launch.sandboxLevel === "project-write",
         });
-      const auth = await provider.getAuthStatus();
-      store.assertCurrent(fence);
-      if (
-        !auth.installed ||
-        (!(launch.routerAccountId || launch.routerPoolId) &&
-          (!auth.authenticated || auth.enabled === false))
-      ) {
-        store.failBeforeEffects(fence, "startup-unavailable");
-        throw new Error("Provider startup is unavailable");
-      }
+      const routed = Boolean(launch.routerAccountId || launch.routerPoolId);
+      assertSavedProviderReady(
+        store,
+        fence,
+        provider.name,
+        await provider.getAuthStatus(),
+        routed,
+      );
       const sessionSandbox = await prepareSessionSandbox(
         this.newSessionSandboxOptions(
           provider.name,
@@ -1415,9 +1396,11 @@ export class Supervisor {
           undefined,
         ),
       );
-      const namespace = await provider.getNewSessionNamespace(
+      const namespace = await resolveSavedCreationNamespace(
+        provider,
         request.projectPath,
         sessionSandbox,
+        routed,
       );
       await authorize(store.assertCurrent(fence));
       const attachments = request.attachments
@@ -1537,26 +1520,7 @@ export class Supervisor {
               : "launch-refused",
           );
         else if (
-          error instanceof RouterRefusedBeforeProvider &&
-          current.attempt.state === "dispatching"
-        ) {
-          store.failBeforeProvider(
-            currentFence,
-            error.loginRequired ? "router-login-required" : "router-refused",
-            error.message,
-          );
-          getLogger().warn(
-            {
-              event: "agent_auth_router_refused",
-              sessionId: current.sessionId,
-              routerStatus: error.status,
-              code: error.code,
-              loginRequired: error.loginRequired,
-              error: error.message,
-            },
-            "Agent Auth Router refused a new session before provider start",
-          );
-        } else if (
+          !recordKnownProviderRefusal(store, currentFence, current, error) &&
           ["dispatching", "bound"].includes(current.attempt.state) &&
           current.attempt.delivery !== "consumed" &&
           !(current.request?.intent && current.attempt.state === "bound")
@@ -1568,6 +1532,7 @@ export class Supervisor {
       throw error;
     } finally {
       this.pendingCreationStarts--;
+      this.emitWorkerActivity();
       // Reuse the incumbent queue after an admission slot settles. A microtask
       // avoids recursive draining when many saved requests fail preflight.
       queueMicrotask(() => {
@@ -1628,6 +1593,7 @@ export class Supervisor {
     this.assertSessionSandboxSettings(modelSettings);
     const projectId = launchOptions?.projectId ?? encodeProjectId(projectPath);
     const provider = this.resolveProvider(modelSettings);
+    assertProviderExecutable(modelSettings?.providerName, provider?.name);
 
     // Every native new-session launch shares admission; capability bits only
     // describe the narrower workflows supported by older clients.
@@ -1982,7 +1948,7 @@ export class Supervisor {
     try {
       return await start;
     } catch (error) {
-      if (required) {
+      if (required && !(error instanceof ProviderMemoryCapacityError)) {
         throw new RetryableSessionLaunchError(error);
       }
       throw error;
@@ -2663,10 +2629,6 @@ export class Supervisor {
     }
   }
 
-  /**
-   * Create a session using the provider interface without an initial message.
-   * The session is created and waits for a message to be queued.
-   */
   /** Compatibility adapter for message-less activation; one provider start engine. */
   private createProviderSession(
     projectPath: string,
@@ -2702,6 +2664,7 @@ export class Supervisor {
     const identities = this.sessionMetadataService?.identities;
     const stored = identities?.resolveYa(sessionId);
     if (!stored) return undefined;
+    assertProviderExecutable(stored.provider);
     if (!stored.native) throw new Error("Session has no native continuation");
     const savedCreation =
       this.sessionMetadataService?.creations?.getForSession(sessionId);
@@ -2768,9 +2731,6 @@ export class Supervisor {
     return { source, identity, sessionId, retainedRuntimeOnly: false as const };
   }
 
-  /**
-   * Start a session using the provider interface with full features.
-   */
   private async startProviderSession(
     projectPath: string,
     projectId: UrlProjectId,
@@ -2807,12 +2767,11 @@ export class Supervisor {
         "This provider does not support one-turn effort modifiers",
       );
     }
-    if (!resumeSessionId) {
-      await this.assertAuthoritativeNewSessionModel(
-        activeProvider,
-        modelSettings,
-      );
-    }
+    modelSettings = await resolveProviderLaunchModel(
+      activeProvider,
+      modelSettings,
+      Boolean(resumeSessionId),
+    );
 
     const resume = managedLaunch?.runtime
       ? undefined
@@ -2823,7 +2782,6 @@ export class Supervisor {
         );
     const managedIdentity = managedLaunch?.identity ?? resume?.identity;
 
-    // We need to reference process in the callback before it's assigned
     const processHolder: { process: Process | null } = { process: null };
 
     // Use provided mode or fall back to default
@@ -2919,7 +2877,9 @@ export class Supervisor {
           : error;
       });
     let startedProviderAbort: (() => void | Promise<void>) | undefined;
+    let releaseMemory: (() => void) | undefined;
     try {
+      releaseMemory = await reserveLocalMemory(this.processes, activeProvider);
       const agentApiEpoch = this.agentApiEpoch;
       const peerApiEpoch = this.peerApiEpoch;
       const instructions = await this.instructionLaunchOptions(
@@ -2995,6 +2955,12 @@ export class Supervisor {
           processHolder.process?.setAppliedPermissionMode(mode),
         onProviderRetentionChange: () =>
           this.handleProviderRetentionChanged(processHolder),
+        ...(activeProvider.name === "antigravity" && {
+          observeAntigravitySummaries: observeAntigravitySummaries.bind(
+            null,
+            this.eventBus,
+          ),
+        }),
         onToolApproval: async (toolName, input, opts) => {
           if (!processHolder.process) {
             return { behavior: "deny", message: "Process not ready" };
@@ -3183,6 +3149,8 @@ export class Supervisor {
         await this.agentAuthRouter?.cancel(tempSessionId).catch(() => {});
       }
       throw error;
+    } finally {
+      releaseMemory?.();
     }
   }
 
@@ -3452,47 +3420,14 @@ export class Supervisor {
         }
       }
 
-      const resolved =
-        await this.activationCoordinator.resolveColdLaunchSettings(
-          projectId,
-          sessionId,
-          permissionMode,
-          modelSettings,
-        );
-      const provider = this.resolveProvider(resolved.modelSettings);
-      const resumeMode = resolved.modelSettings.resumeMode ?? "full";
-
-      let process: Process;
-
-      if (!provider) throw new Error("Requested provider is not available");
-
-      const managed = await this.hostedSavedLaunch(sessionId);
-      if (managed && resumeMode !== "full")
-        throw new Error("Saved hosted creation requires retained-owner resume");
-      if (resumeMode === "compact-first") {
-        process = await this.startCompactFirstProviderResume(
-          projectPath,
-          projectId,
-          message,
-          sessionId,
-          resolved.permissionMode,
-          resolved.modelSettings,
-          provider,
-        );
-      } else {
-        process = await this.startProviderSession(
-          projectPath,
-          projectId,
-          message,
-          sessionId,
-          resolved.permissionMode,
-          resolved.modelSettings,
-          provider,
-          false,
-          false,
-          managed,
-        );
-      }
+      const process = await this.startSessionInternal(
+        projectPath,
+        projectId,
+        message,
+        sessionId,
+        permissionMode,
+        modelSettings,
+      );
 
       if (launchOptions?.requireProviderSessionId) {
         await this.settleProviderSessionId(process, sessionId);
@@ -6517,32 +6452,14 @@ export class Supervisor {
     if (process.state.type === "idle") {
       this.emitProcessActivity(process);
       if (!process.isRetainingProviderWork()) {
+        if (process.hasPatientDeferredMessages())
+          this.schedulePatientDeferredCheck(process, 250);
         void this.finalizePendingDone(process);
         process.promoteDeferredAfterCompactionGate();
         void this.maybeCompactAfterIdle(process);
         void this.maybePostCompactAction(process);
       }
     }
-  }
-
-  private processHasActiveWork(process: Process): boolean {
-    if (
-      process.queuedCompactionBlocksInput ||
-      process.state.type === "in-turn" ||
-      process.state.type === "waiting-input"
-    ) {
-      return true;
-    }
-    return (
-      process.getLivenessSnapshot().derivedStatus ===
-      "verified-waiting-provider"
-    );
-  }
-
-  private processHasInterruptibleActiveWork(process: Process): boolean {
-    return (
-      this.processHasActiveWork(process) && !process.canDetachForServerReload()
-    );
   }
 
   /**
@@ -6555,9 +6472,9 @@ export class Supervisor {
     this.requestMaintenanceSweep();
     if (!this.eventBus) return;
 
-    const interruptibleSessionCount = Array.from(
+    const interruptibleSessionCount = countInterruptibleRestartWorkers(
       this.processes.values(),
-    ).filter((p) => this.processHasInterruptibleActiveWork(p)).length;
+    );
     const queuedSessionMessageCount = this.getQueuedSessionMessageCount();
 
     const event: WorkerActivityEvent = {
@@ -6573,7 +6490,7 @@ export class Supervisor {
   }
 
   private getQueuedSessionMessageCount(): number {
-    let count = this.workerQueue.length;
+    let count = this.workerQueue.length + this.pendingCreationStarts;
     for (const process of this.processes.values()) {
       count += process.queueDepth;
       count += process.getDeferredQueueSummary().length;
@@ -6589,7 +6506,7 @@ export class Supervisor {
     const processes = Array.from(this.processes.values()).filter(
       (process) => !process.isTerminated,
     );
-    if (processes.some((process) => this.processHasActiveWork(process))) {
+    if (processes.some(processHasActiveWork)) {
       return 0;
     }
     if (
@@ -6697,9 +6614,6 @@ export class Supervisor {
 
   // ============ Worker Pool Methods ============
 
-  /**
-   * Check if we're at worker capacity.
-   */
   private isAtCapacity(): boolean {
     if (this.maxWorkers <= 0) return false; // 0 = unlimited
     return this.processes.size >= this.maxWorkers;
@@ -6789,7 +6703,6 @@ export class Supervisor {
           process = result;
         }
 
-        // Emit queue removed event
         this.eventBus?.emit({
           type: "queue-request-removed",
           queueId: request.id,
@@ -6830,7 +6743,9 @@ export class Supervisor {
             !request.creationFence
               ? request.onRetryableFailure
               : request.onFailed;
-          await failureCallback?.(reason);
+          if (error instanceof ProviderMemoryCapacityError)
+            await failureCallback?.(reason, error);
+          else await failureCallback?.(reason);
         } catch (callbackError) {
           getLogger().warn(
             {
@@ -6849,10 +6764,7 @@ export class Supervisor {
     }
   }
 
-  /**
-   * Internal session start that always starts immediately.
-   * Used by queue processing.
-   */
+  /** Starts a provider after the caller has checked worker capacity. */
   private async startSessionInternal(
     projectPath: string,
     projectId: UrlProjectId,
@@ -6871,15 +6783,20 @@ export class Supervisor {
           modelSettings,
         )
       : { permissionMode, modelSettings };
+    assertProviderExecutable(resolved.modelSettings?.providerName);
     const provider = this.resolveProvider(resolved.modelSettings);
+    if (!provider) throw new Error("Requested provider is not available");
+
     const managed = resumeSessionId
       ? await this.hostedSavedLaunch(resumeSessionId)
       : undefined;
-    if (managed && provider?.runtimeOwner !== "host")
-      throw new Error("Saved creation cannot replace its hosted owner");
-
-    if (provider) {
-      return this.startProviderSession(
+    if (
+      resumeSessionId &&
+      resolved.modelSettings?.resumeMode === "compact-first"
+    ) {
+      if (managed)
+        throw new Error("Saved hosted creation requires retained-owner resume");
+      return this.startCompactFirstProviderResume(
         projectPath,
         projectId,
         message,
@@ -6887,13 +6804,23 @@ export class Supervisor {
         resolved.permissionMode,
         resolved.modelSettings,
         provider,
-        retryProviderStartupFailure,
-        requireProviderSessionId,
-        managed,
       );
     }
+    if (managed && provider.runtimeOwner !== "host")
+      throw new Error("Saved creation cannot replace its hosted owner");
 
-    throw new Error("Requested provider is not available");
+    return this.startProviderSession(
+      projectPath,
+      projectId,
+      message,
+      resumeSessionId,
+      resolved.permissionMode,
+      resolved.modelSettings,
+      provider,
+      retryProviderStartupFailure,
+      requireProviderSessionId,
+      managed,
+    );
   }
 
   // ============ Public Queue Methods ============
@@ -6958,9 +6885,9 @@ export class Supervisor {
     queuedSessionMessageCount: number;
     hasActiveWork: boolean;
   } {
-    const interruptibleSessionCount = Array.from(
+    const interruptibleSessionCount = countInterruptibleRestartWorkers(
       this.processes.values(),
-    ).filter((p) => this.processHasInterruptibleActiveWork(p)).length;
+    );
     return {
       activeWorkers: this.processes.size,
       interruptibleSessionCount,

@@ -1049,10 +1049,12 @@ export class SessionCreationStore {
   failBeforeEffects(
     fence: CreationAttemptFence,
     failure: NonNullable<CreationAttempt["failure"]>,
+    failureDetail?: string,
   ): CreationAttempt {
     if (
       ![
         "startup-unavailable",
+        "claude-executable-unavailable",
         "launch-refused",
         "cancelled",
         "provider-host-outdated",
@@ -1063,18 +1065,27 @@ export class SessionCreationStore {
       const current = this.assertCurrent(fence);
       if (!["saved", "queued"].includes(current.attempt.state))
         throw new SessionCreationConflict();
-      return this.update(fence, "failed", "not-admitted", failure);
+      return this.update(
+        fence,
+        "failed",
+        "not-admitted",
+        failure,
+        fence.generation,
+        undefined,
+        undefined,
+        failureDetail,
+      );
     });
   }
   /**
-   * The router refused the session's account after dispatch began but before
-   * any provider started. The native claim is still this attempt's, so no
+   * A known refusal arrived after dispatch began but before any provider
+   * started. The native claim is still this attempt's, so no
    * native session was bound and no input sent: release the claim and record
    * a known, retryable failure rather than uncertainty.
    */
   failBeforeProvider(
     fence: CreationAttemptFence,
-    failure: "router-login-required" | "router-refused",
+    failure: "router-login-required" | "router-refused" | "launch-refused",
     failureDetail?: string,
   ): CreationAttempt {
     return this.transaction(() => {

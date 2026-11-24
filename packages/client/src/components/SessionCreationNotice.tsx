@@ -112,23 +112,25 @@ export function SessionCreationNotice({
     return null;
   const state = creation.state;
   const label =
-    state === "failed" && creation.failure === "router-login-required"
-      ? "sessionCreationRouterLoginRequired"
-      : state === "failed" && creation.failure === "router-refused"
-        ? "sessionCreationRouterRefused"
-        : state === "failed" && creation.failure === "provider-host-outdated"
-          ? "sessionCreationProviderHostOutdated"
-          : state === "failed"
-            ? creation.initialInputExpected === false
-              ? "sessionPreparationFailed"
-              : "sessionCreationFailed"
-            : state === "uncertain"
+    state === "failed" && creation.failure === "claude-executable-unavailable"
+      ? "sessionCreationClaudeExecutableUnavailable"
+      : state === "failed" && creation.failure === "router-login-required"
+        ? "sessionCreationRouterLoginRequired"
+        : state === "failed" && creation.failure === "router-refused"
+          ? "sessionCreationRouterRefused"
+          : state === "failed" && creation.failure === "provider-host-outdated"
+            ? "sessionCreationProviderHostOutdated"
+            : state === "failed"
               ? creation.initialInputExpected === false
-                ? "sessionPreparationUncertain"
-                : "sessionCreationUncertain"
-              : state === "queued"
-                ? "sessionCreationQueued"
-                : "sessionCreationStarting";
+                ? "sessionPreparationFailed"
+                : "sessionCreationFailed"
+              : state === "uncertain"
+                ? creation.initialInputExpected === false
+                  ? "sessionPreparationUncertain"
+                  : "sessionCreationUncertain"
+                : state === "queued"
+                  ? "sessionCreationQueued"
+                  : "sessionCreationStarting";
   const tone =
     state === "failed" ? "error" : state === "uncertain" ? "warning" : "info";
   return (
@@ -162,7 +164,8 @@ export function SessionCreationNotice({
       >
         <p role="status">{t(label)}</p>
         {state === "failed" &&
-          creation.failure?.startsWith("router-") &&
+          (creation.failure?.startsWith("router-") ||
+            creation.failure === "startup-unavailable") &&
           creation.failureDetail && <p>{creation.failureDetail}</p>}
         {prompt && (
           <pre role="region" aria-label={t("sessionCreationSavedPrompt")}>

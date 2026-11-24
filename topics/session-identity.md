@@ -69,8 +69,18 @@ before acceptance. Existing Supervisor/WorkerQueue machinery owns later dispatch
 closing the originating browser does not cancel it. A routed request retains its
 chosen account/pool and uses AAR authorization independently of direct login.
 Routing failure never falls back to direct credentials. The selected executable
-is rechecked even when its path was cached before an installation change, so a
-missing CLI can fail before native effects.
+is rechecked even when its path was cached before an installation change.
+If Claude Code is missing or cannot run, the session is saved with failure
+`claude-executable-unavailable` before starting Claude or allocating a router
+account. The startup notice retains the prompt and advises reloading YA after
+a dependency update or checking the path and permissions of a custom executable.
+Older clients show the generic saved failure, and older servers still work
+with the existing generic message. No new capability is required.
+An installed provider that refuses with a stated reason, such as an
+[Antigravity runtime below its floor](antigravity.md#supported-runtime), is
+saved as `startup-unavailable` with that reason as `failureDetail`. The
+creation receipt returns the detail, as it does for router refusals, and the
+startup notice shows it beside the saved prompt.
 
 The form retains a source/account/draft-scoped recovery identity before sending,
 then opens the stable session on acceptance. Draft capture precedes async work.
@@ -441,6 +451,12 @@ fork/clone migration step. The [roadmap](../docs/roadmap/README.md) owns priorit
   and immutable released assets; it makes no live external Codex/model claim.
   This extends the existing non-owned focused-watch qualification. It does not
   qualify other provider launches, new receipt APIs or future draft handling.
+- A request's carried `SessionIdentityLookup` selects the stored identity
+  through one function, `selectStoredIdentity`: a stored lookup yields its
+  identity, a legacy lookup none, and an absent lookup resolves only an
+  explicit YA id. Provider source binding, existing-session resolution and
+  detail loading share it. Their legacy ladders, project routing and
+  provider-specific native proofs remain separate adapters.
 - Retained fork/clone source resolution uses an operation-scoped stored/legacy
   lookup and passes the native id, actual file and original transcript project
   across the provider boundary. Provider fork inputs/results explicitly name

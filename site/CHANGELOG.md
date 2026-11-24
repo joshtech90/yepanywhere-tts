@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [site-v1.17.0] - 2026-11-23
+
+### Added
+- Show model-specific Antigravity quota and offer per-session Agent Auth Router
+  pool selection on servers that advertise support.
+
+### Changed
+- Refresh the Google provider guide for Antigravity and mark saved Gemini CLI
+  conversations read-only when the connected server has retired execution.
+- Keep routine toasts compact and clear of the sidebar.
+
+### Fixed
+- Preserve provider message order in the session timeline.
+- Offer Direct while a saved router pool is being checked.
+
+## [site-v1.16.0] - 2026-11-18
+
+### Changed
+- Publish the current remote client: hosted Agent Auth Router pairing,
+  provider CLI installation selection and Machine Control settings on
+  supporting servers; rate-limit and stopped status on Inbox rows; question
+  ages; pool quota in the session Account pane; and copying selections with
+  public project links.
+- Default Response Streaming to off for browsers that never changed it.
+- Show placeholder rows while settings panes load, and scroll settings columns
+  separately.
+- Describe Antigravity as available by default through `agy acp`.
+- Update the site's Astro dependency.
+
+### Fixed
+- Never erase composer text from a draft notice, and preserve fresh drafts
+  through initial account binding.
+- Never let saved creation recovery state block new sessions.
+- Keep the transcript following through viewport reflow.
+- Let the new-session project list scroll to its last row.
+
 ## [site-v1.15.0] - 2026-11-12
 
 ### Added

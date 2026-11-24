@@ -9,7 +9,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CliInstallationService,
   type CliCandidate,
@@ -17,6 +17,8 @@ import {
 } from "../../src/services/CliInstallationService.js";
 import { fnmCodexPaths } from "../../src/sdk/fnm-codex-discovery.js";
 import { describeAntigravityCandidate } from "../../src/sdk/providers/antigravity-launch.js";
+import { antigravityInstallationAdapter } from "../../src/sdk/cli-installation-adapters.js";
+import { resolveAntigravityRuntime } from "../../src/sdk/providers/antigravity-runtime.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -196,23 +198,68 @@ it.each(["darwin", "linux", "win32"] as const)(
 );
 
 it.skipIf(process.platform === "win32")(
-  "preserves Antigravity's CLI arguments, standalone helper and symlink target",
+  "launches agy's ACP server from its symlink target and flags a version below the floor",
   async () => {
     const f = await fixture();
     const launcher = join(f.root, "agy");
-    await symlink(
-      f.good,
-      launcher,
-      process.platform === "win32" ? "file" : undefined,
-    );
-    expect(describeAntigravityCandidate(launcher).launch).toEqual({
-      command: await realpath(f.good),
-      args: ["acp"],
+    await symlink(f.good, launcher);
+    expect(describeAntigravityCandidate(launcher)).toMatchObject({
+      launch: { command: await realpath(f.good), args: ["acp"] },
+      watchPaths: [],
     });
-    const standalone = describeAntigravityCandidate(f.good);
-    expect(standalone.launch.args).toEqual([]);
-    expect(standalone.watchPaths).toContain(
-      join(await realpath(f.root), "localharness_external"),
-    );
+    const reporting = async (version: string) => {
+      const path = join(f.root, `agy-${version}`);
+      await writeFile(path, `#!/bin/sh\necho ${version}\n`, { mode: 0o755 });
+      return (await antigravityInstallationAdapter.discover(path))[0];
+    };
+    const current = await reporting("1.5.13");
+    expect(current).toMatchObject({ version: "1.5.13" });
+    expect(current?.error).toBeUndefined();
+    expect(await reporting("1.4.12")).toMatchObject({
+      version: "1.4.12",
+      error:
+        "Antigravity requires agy 1.5.13 or later; the installed runtime reports version 1.4.12. Run `agy update`, or install the agy CLI.",
+    });
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "shows the agy that Auto launches, without YA credentials, even below the floor",
+  async () => {
+    const f = await fixture();
+    const agy = async (directory: string, version: string) => {
+      await mkdir(join(f.root, directory));
+      const path = join(f.root, directory, "agy");
+      // A leaked credential would replace the version and change the result.
+      await writeFile(
+        path,
+        `#!/bin/sh\necho "\${AUTH_COOKIE_SECRET:-${version}}"\n`,
+        { mode: 0o755 },
+      );
+      return path;
+    };
+    const old = await agy("first", "1.4.12");
+    const current = await agy("second", "1.5.13");
+    vi.stubEnv("PATH", `${join(f.root, "first")}:${join(f.root, "second")}`);
+    vi.stubEnv("AUTH_COOKIE_SECRET", "leaked");
+    vi.stubEnv("ANTIGRAVITY_ACP_PATH", undefined);
+    try {
+      const service = new CliInstallationService(
+        f.root,
+        [antigravityInstallationAdapter],
+        () => ({}),
+        undefined,
+        coordinator,
+      );
+      const inventory = await service.inventory("antigravity");
+      expect(inventory.candidates).toMatchObject([
+        { path: old, version: "1.4.12", selected: true },
+        { path: current, version: "1.5.13", selected: false },
+      ]);
+      expect(inventory.candidates[0]?.error).toContain("1.5.13 or later");
+      expect(resolveAntigravityRuntime()?.command).toBe(await realpath(old));
+    } finally {
+      vi.unstubAllEnvs();
+    }
   },
 );

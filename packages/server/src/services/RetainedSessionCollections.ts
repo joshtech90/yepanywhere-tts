@@ -8,12 +8,14 @@ import {
   type UrlProjectId,
   type RetainedSessionCollectionState,
 } from "@yep-anywhere/shared";
+import type { ProviderCatalogFamily } from "../sessions/provider-catalog-family.js";
 import type { SessionIdentityStore } from "../sessions/SessionIdentityStore.js";
 import { catalogFileVersion } from "../sessions/catalog-adapters/row.js";
-import type {
-  NativeSessionCatalogAdapter,
-  CatalogFileLookup,
-  SessionCatalogRow,
+import {
+  sessionCatalogRowKey,
+  type NativeSessionCatalogAdapter,
+  type CatalogFileLookup,
+  type SessionCatalogRow,
 } from "../sessions/catalog-types.js";
 import { readCodexAsyncQuestions } from "../sessions/codex-async-questions.js";
 import type { SqliteDatabase } from "../storage/sqlite.js";
@@ -329,6 +331,26 @@ export class RetainedSessionCollections {
     return this.catalog.readRow(key);
   }
 
+  /**
+   * Published rows carrying any of these native session ids, in the order a
+   * complete read yields them, through the native-id index and without
+   * discovery.
+   */
+  async readNativeRows(
+    nativeIds: readonly string[],
+  ): Promise<readonly Readonly<SessionCatalogRow>[]> {
+    await this.initialize();
+    this.controller.signal.throwIfAborted();
+    this.schedule();
+    const rows = new Map<string, Readonly<SessionCatalogRow>>();
+    for (const id of new Set(nativeIds))
+      for (const row of this.catalog.readNativeRows(id))
+        rows.set(sessionCatalogRowKey(row), row);
+    return [...rows.entries()]
+      .sort(([left], [right]) => this.catalog.compareRowOrder(left, right))
+      .map(([, row]) => row);
+  }
+
   compareRowOrder(left: string, right: string): number {
     return this.catalog.compareRowOrder(left, right);
   }
@@ -338,6 +360,17 @@ export class RetainedSessionCollections {
     if (path && this.changedPaths.size < 1024) this.changedPaths.add(path);
     else this.discover = true;
     this.schedule();
+  }
+
+  /**
+   * One scoped reconciliation when a native watcher completes its initial
+   * baseline so commits between first scan and watcher activation converge.
+   */
+  observationReady(family: ProviderCatalogFamily): void {
+    if (family !== "antigravity" || this.controller.signal.aborted) return;
+    for (const store of this.options.projectStores?.() ?? []) {
+      if (store.catalogFamily === family) this.invalidate(store.storeKey);
+    }
   }
 
   private nativeId(sessionId: string): string | undefined {

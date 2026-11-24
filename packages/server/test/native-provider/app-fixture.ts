@@ -20,12 +20,12 @@ import {
 } from "../../../client/e2e/support/process-lifecycle.js";
 import { stopProviderHostRuntime } from "../../../client/e2e/support/provider-host-runtime.js";
 import { modelServer, syntheticKey } from "./model-server.js";
-import { nativeExecutable, expectedVersions } from "./runtimes.js";
+import { expectedNativeVersion, nativeExecutable } from "./runtimes.js";
 
 const repo = fileURLToPath(new URL("../../../../", import.meta.url));
 const exec = promisify(execFile);
 class AppFixtureClosed extends Error {}
-export type AppProvider = "claude" | "codex";
+export type AppProvider = "claude" | "codex" | "antigravity";
 export interface NativeWorker {
   pid: number;
   runtimeId: string;
@@ -73,6 +73,11 @@ export async function nativeAppFixture(
     agentApiManagement?: boolean;
     codexDeveloperInstructions?: string;
     additionalProviders?: readonly AppProvider[];
+    providerMemoryLimitMiB?: number;
+    /** A controlled `agy` replacing the pinned one; its version is not checked. */
+    antigravityExecutable?: string;
+    /** False: providers stay in the backend, as with no host available. */
+    providerHost?: boolean;
     signal?: AbortSignal;
   } = {},
 ) {
@@ -156,9 +161,14 @@ export async function nativeAppFixture(
     const enabledProviders = [
       ...new Set([provider, ...(options.additionalProviders ?? [])]),
     ];
+    const antigravity = enabledProviders.includes("antigravity");
     const model = await modelServer(
       enabledProviders.map((selected) =>
-        selected === "claude" ? "anthropic" : "responses",
+        selected === "claude"
+          ? "anthropic"
+          : selected === "antigravity"
+            ? "gemini"
+            : "responses",
       ),
       {
         blockedHosts: [
@@ -166,8 +176,16 @@ export async function nativeAppFixture(
           "github.com:443",
           "api.github.com:443",
           "ab.chatgpt.com:443",
+          ...(antigravity ? ["play.googleapis.com:443"] : []),
         ],
         auxiliary(body, path) {
+          if (
+            antigravity &&
+            path.endsWith(
+              "/gemini-3.1-flash-lite-preview:streamGenerateContent",
+            )
+          )
+            return "antigravity-title";
           if (
             path === "/v1/messages" &&
             body.max_tokens === 1 &&
@@ -205,7 +223,7 @@ export async function nativeAppFixture(
     const env = standaloneYaEnvironment(
       paths,
       host,
-      true,
+      options.providerHost ?? true,
       {
         ENABLED_PROVIDERS: enabledProviders.join(","),
         ANTHROPIC_API_KEY: syntheticKey,
@@ -228,6 +246,18 @@ export async function nativeAppFixture(
         VITE_DISABLE_ONBOARDING: "true",
         VITE_DISABLE_CLI_UPDATE_NOTIFICATIONS: "true",
         VOICE_INPUT: "false",
+        ...(antigravity
+          ? {
+              ANTIGRAVITY_ACP_PATH:
+                options.antigravityExecutable ??
+                nativeExecutable("antigravity"),
+              GEMINI_API_KEY: syntheticKey,
+              GOOGLE_GEMINI_BASE_URL: model.url,
+              AGY_CLI_DISABLE_AUTO_UPDATE: "1",
+              AGY_ACP_FORCE_FILE_STORAGE: "1",
+              SSH_CONNECTION: "127.0.0.1 0 127.0.0.1 0",
+            }
+          : {}),
       },
       parent,
     );
@@ -245,6 +275,10 @@ export async function nativeAppFixture(
     env.PORT = String(await freePort());
     env.VITE_PORT = String(await freePort());
     env.MAINTENANCE_PORT = "0";
+    if (options.providerMemoryLimitMiB !== undefined)
+      env.YEP_PROVIDER_MEMORY_LIMIT_MIB = String(
+        options.providerMemoryLimitMiB,
+      );
     env.SERVE_FRONTEND = "true";
     env.NODE_ENV = "development";
     env.NODE_OPTIONS = `--import ${pathToFileURL(join(repo, "packages/client/e2e/support/offline-update-check.mjs")).href}`;
@@ -257,6 +291,17 @@ export async function nativeAppFixture(
     await mkdir(project, { recursive: true });
     await mkdir(paths.dataDir, { recursive: true });
     await mkdir(env.CODEX_HOME!, { recursive: true });
+    if (antigravity) {
+      const dir = join(env.GEMINI_HOME!, "antigravity-cli");
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, "settings.json"),
+        JSON.stringify({
+          modelProvider: "gemini",
+          auth: { type: "gemini-api-key" },
+        }),
+      );
+    }
     await writeFile(join(project, "notes.txt"), "OWNED_TOOL_CONTENT\n");
     await exec("git", ["init", "--quiet"], {
       cwd: project,
@@ -284,6 +329,7 @@ export async function nativeAppFixture(
     mark("profile files");
     for (const selected of enabledProviders) {
       assertOpen();
+      if (selected === "antigravity" && options.antigravityExecutable) continue;
       mark(`version ${selected} start`);
       const version = (
         await exec(nativeExecutable(selected), ["--version"], {
@@ -293,8 +339,11 @@ export async function nativeAppFixture(
           signal: options.signal,
         })
       ).stdout.trim();
-      if (!version.split(/\s+/).includes(expectedVersions[selected]))
-        throw Error(`Unexpected native ${selected} version ${version}`);
+      const expected = expectedNativeVersion(selected);
+      if (!version.split(/\s+/).includes(expected))
+        throw Error(
+          `Native ${selected} version mismatch: expected ${expected}; got ${version}`,
+        );
       mark(`version ${selected} complete`);
     }
     assertOpen();
@@ -536,7 +585,12 @@ export async function nativeAppFixture(
           requestId: `app-${provider}-${crypto.randomUUID()}`,
           provider,
           message: text,
-          model: provider === "claude" ? "claude-haiku-5-5" : "gpt-6.1-sol",
+          model:
+            provider === "claude"
+              ? "claude-haiku-5-5"
+              : provider === "antigravity"
+                ? "gemini-3.8-flash-low"
+                : "gpt-6.1-sol",
           mode,
           recapMode: "off",
           promptSuggestionMode: "off",

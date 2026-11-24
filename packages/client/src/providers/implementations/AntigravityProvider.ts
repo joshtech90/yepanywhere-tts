@@ -5,6 +5,8 @@ export class AntigravityProvider implements Provider {
   readonly displayName = "Antigravity";
   readonly capabilities = {
     supportsDag: false,
+    usesDurableOrderAnchors: true,
+    usesDurableReplayIdentity: true,
     supportsCloning: false,
     needsApproxMessageDedup: false,
   };
@@ -13,7 +15,7 @@ export class AntigravityProvider implements Provider {
       "Google's native Antigravity ACP agent using its existing sign-in.",
     limitations: [
       "Experimental local integration",
-      "Requires the agy CLI (or the standalone ACP runtime), signed in",
+      "Requires the agy CLI 1.5.13 or later, signed in",
       "Text and file references only",
     ],
     website: "https://antigravity.google/docs/",

@@ -1061,6 +1061,23 @@ proves:
 - completed output is neither lost nor duplicated; and
 - idle teardown leaves no provider or transport process behind.
 
+Antigravity earned the claim on 2026-11-23 (plan 195 step 9) on macOS arm64,
+with real `agy` 1.5.13 and 1.5.14 against the scripted model, through the real
+wrapper, host, worker and backend
+(`packages/server/test/native-app/app-antigravity-hosted-reload.test.ts`). A
+turn streams with no backend at all (the wrapper held, the backend killed),
+and its output appears once after the replacement attaches. A permission
+request pending across a reload is answered once on the replacement and
+`agy` writes once; a patient message queued before it is delivered once; a
+steer after reattach reaches the same turn. Model and effort, Stop, a queued
+`/compact` with the message behind it, and a second scheduled reload each act
+once, on the same worker and `agy`. A detached wake that starts and ends with
+no backend is shown once and settles. Idle reap leaves no worker or `agy`
+process, and the conversation resumes afterwards. Its window stays in the
+worker; what the backend reads of it, and how a replacement rebuilds that, is
+in [Antigravity in the Provider Host](antigravity.md#in-the-provider-host).
+Linux and hosted CI have not run it.
+
 For remote executor sessions, the local worker owns the SSH transport and its
 provider SDK state. The remote provider PID alone remains insufficient. The
 local worker boundary is complete; its release validation still needs to prove
@@ -1128,18 +1145,29 @@ The banner behavior should remain conservative:
 - **queued work not owned durably by a survivor:** keep it as a blocker; and
 - **continuity state unknown:** hide the seamless action rather than guess.
 
-Both the authenticated API action and wrapper `SIGHUP` enter this same decision
-path. HUP is sent only to the wrapper. Codex app-server interprets HUP as a
-request to drain and exit after active work, so forwarding it would retire the
-very runtime that Hono reload is meant to preserve.
+**Reload When Safe** prepares the development wrapper's replacement before
+committing to shutdown. At the wrapper handoff, the backend temporarily
+fences new writes, joins admitted browser and Agent API writes, and checks
+the current blockers, including native launches that are still binding.
+If work appeared while the wrapper prepared, the backend keeps serving and
+the reload returns to scheduled. A transient handoff failure with no
+remaining work blockers retries with bounded backoff. A successful check
+closes admission and starts graceful reload cleanup. The wrapper replaces
+that generation after it receives the backend's approval.
+
+Immediate reload requests through the authenticated API or wrapper
+`SIGHUP` can interrupt backend-local work. Shutdown logs identify affected
+sessions and their observed liveness. Codex app-server interprets HUP as a
+request to drain and exit after active work, so the wrapper targets its Hono
+generation and preserves detached provider workers.
 
 In the development wrapper, both paths also replace Vite after the old Hono
 generation exits. Expected frontend termination is part of reload, so it does
 not trigger wrapper shutdown. The replacement reads current Vite configuration
 and builds a fresh in-memory module graph; backend and frontend process IDs
 change while the wrapper, provider host, and worker identities remain stable.
-Concurrent reload requests coalesce. The safe-restart blocker decision remains
-unchanged; restarting Vite never bypasses the queue or provider-detach checks.
+Concurrent reload requests coalesce. The backend's final blocker check covers
+both the Vite and backend-only replacement paths.
 
 A frontend exit or launch error keeps Hono and the provider host alive. The
 wrapper reports that Vite needs attention and the next server reload retries

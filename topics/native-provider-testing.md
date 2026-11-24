@@ -137,6 +137,24 @@ The same cases run in the ordinary server suite through `pnpm test`, including
 the existing CI unit-test job. No browser or extra CI service is needed.
 Root `pnpm typecheck` checks the native test helpers as well as production code.
 
+The Antigravity app/v0 case requires the separately installed native CLI.
+The Linux CI unit-test job installs the pinned artifact and runs the case as a
+required step before `pnpm test`. It also runs Claude's real-process memory
+admission case in its own step. In [run 44924492986](https://github.com/kzahel/yepanywhere/actions/runs/44924492986/job/136907479715),
+the concurrent workspace suite's native fixture took 13.38 seconds to start
+the API and 18.06 seconds to attach its first runtime, then reached the
+20-second case guard. The isolated case allows 45 seconds (2.25 times that
+observed lower bound). It checks the stop receipt and waits for the host to
+release the stopped worker's groups before attempting the next launch. The npm
+release workflow also requires the memory admission case. For these focused
+checks on a qualified host, run:
+
+```bash
+pnpm test:providers:install antigravity
+YEP_NATIVE_APP_TESTS=1 pnpm --filter @yep-anywhere/server test test/native-app/app-antigravity-v0.test.ts
+YEP_NATIVE_APP_TESTS=1 pnpm --filter @yep-anywhere/server test test/native-app/app-memory-admission.test.ts
+```
+
 The native suite's boundary is YA `Process` → production provider adapter → actual
 native executable → local model API, plus the native transcript it writes.
 The separate full-app qualification below covers HTTP/WebSocket admission,
@@ -156,14 +174,14 @@ The executable sources are deterministic test dependencies:
   stays off YA's ordinary development PATH. This pin does not upgrade or select
   the user's installed Codex runtime.
 
-- Pi 1.5.0 and OpenCode 1.18.9: exact nested npm
+- Pi 1.6.0 and OpenCode 1.18.9: exact nested npm
   test dependencies, including platform-native optional binaries where needed.
   The executable package is an explicit workspace so the full pnpm audit
   includes its dependency graph. Gemini CLI is no longer installed or tested;
   Antigravity owns the maintained Google CLI path.
-- Antigravity ACP 1.4.5 and Grok 1.0.70: official immutable artifacts in
+- Antigravity CLI 1.5.13 (`agy acp`) and Grok 1.0.92: official immutable artifacts in
   `test/native-provider/executables/artifacts.json`. The explicit installer
-  verifies SHA-256 before extracting into `node_modules/.cache/ya-native-provider-tests`.
+  verifies the published checksum before extracting into `node_modules/.cache/ya-native-provider-tests`.
   Runtime tests still check the executable version. No primary install is changed.
 
 The complete artifact set is currently pinned for macOS arm64 and Linux x64.
@@ -615,7 +633,7 @@ all nine retained Pi scenarios on Linux x64 against the owned model endpoint.
 | --- | --- |
 | Cold resume after a real tool | Nine paths preserve native id, earlier input/reply and actual file bytes in a new process's model request and reopened history. OpenCode additionally runs the same workflow outside Git. Frozen Gemini 0.36 refuses its retained unsupported session/resume method, without a new session or model request. |
 | Cancellation and continuation | Claude variants, Codex, Pi, OpenCode and Antigravity cancel a held real model response and continue on the existing owner. Grok and Codex OSS hard-stop and cold-resume the same native history. Gemini hard-stop joins its real launcher/worker and closes the held model connection; continuation explicitly refuses as above. |
-| Model change and restoration | Claude, Codex and Pi change the actual next model request and reapply the selection on cold launch. Pi invalid-model refusal leaves YA's requested selection unchanged. Antigravity cold-load explicitly reapplies a different selected model instead of accepting the runtime's default reset. Wrapper model-selection matrices and effort/permission changes remain separate work. |
+| Model change and restoration | Claude, Codex, Pi and Antigravity change the actual next model request (and Antigravity also applies live effort changes) and reapply the selection on cold launch. Pi invalid-model refusal leaves YA's requested selection unchanged. Antigravity cold-load explicitly reapplies a different selected model/effort instead of accepting the runtime's default reset. Wrapper model-selection matrices and permission changes remain separate work. |
 | Rate-limit recovery | Every path receives a controlled HTTP 429, retries the original input and produces a persisted final reply. Codex app-server and exec publish an explicitly asserted recoverable Reconnecting event; no unexplained diagnostics are accepted. |
 | Queued compact followed by A/B | Claude, Codex and Pi actually compact through their native model request before delivering A and B separately. Claude/Codex publish a compact boundary; Pi validates its synchronous native RPC completion and persisted summary. All preserve following input/output. |
 | Failed queued compact | Pi's real small-session refusal and model error hold later input until explicit cancellation. Aborting a held native summary closes the model connection and leaves its outcome uncertain; following input never runs on guessed success. |
@@ -670,10 +688,12 @@ conditions and equal path filters have static review, rather than a live PR
 trial.
 
 Earlier Linux Antigravity failures at `d33e616f9` are attributed by actual
-native stderr to SIGABRT in Google initialization: the `nobody` group name was
-absent, before ACP initialization or any model request. The provisioned Ubuntu
-run resolves the existing user's primary GID and passes queue, cancellation
-and retry; cold resume then exhausts ten seconds. Its subsequent fourteen
+native stderr to SIGABRT in the standalone 1.4.5 runtime's Google
+initialization: the `nobody` group name was absent, before ACP initialization
+or any model request. `agy` has no such
+[prerequisite](#linux-antigravity-bootstrap-prerequisite). The provisioned
+Ubuntu run passed queue, cancellation and retry; cold resume then exhausted ten
+seconds. Its subsequent fourteen
 phase marks establish a passing 16.217-second cold case, including 3.287
 seconds for the initial independent reader and 3.017 seconds for the final
 reader. Setup and the first turn take about six seconds; native resume to its
@@ -789,15 +809,15 @@ production adapters and readers in private standalone profiles.
 
 | Family/path | Executable / local model route | Additional retained foundation |
 | --- | --- | --- |
-| Claude | Bundled 2.1.312 / SDK 0.3.312; Messages override. | Gentle and immediate steering; durable input UUIDs. |
+| Claude | Bundled 2.1.330 / SDK 0.3.330; Messages override. | Gentle and immediate steering; durable input UUIDs. |
 | Claude Gateway | Same bundled CLI; real Gateway service/catalog/effort probe. | Gentle and immediate steering; actual launch/routing path, not a real upstream Gateway service. |
 | Claude Ollama | Same bundled CLI; adapter URL setter routes Messages locally. | Gentle and immediate steering; qualifies Claude launch, not an actual Ollama server. |
-| Codex | Pinned 0.167.0 app-server; custom Responses endpoint. | Gentle and immediate steering; durable input UUIDs. |
+| Codex | Pinned 0.171.0 app-server; custom Responses endpoint. | Gentle and immediate steering; durable input UUIDs. |
 | Codex OSS | Same CLI, distinct new/resumed exec JSONL path; owned service catalog. | Separate first-exec tool coverage. |
-| Pi | Pinned 1.5.0 RPC; private models.json, Chat Completions. | Real RPC lifecycle and native JSONL reader. |
+| Pi | Pinned 1.6.0 RPC; private models.json, Chat Completions. | Real RPC lifecycle and native JSONL reader. |
 | OpenCode | Pinned 1.18.9 server; private custom provider, Chat Completions. | Actual server tool execution and production SQLite/export reader. |
-| Grok ACP | Official 1.0.70; private TOML Responses endpoint. | Gentle interject; title, title refresh and dashboard requests explicitly recorded/scripted. Compatibility imports of other apps' rules/config are disabled in the owned fixture. |
-| Antigravity ACP | Official 1.4.5; private API-key settings, GenAI override. | Native view_file and actual ACP history load via production reader. |
+| Grok ACP | Official 1.0.92; private TOML Responses endpoint. | Gentle interject; title, title refresh and dashboard requests explicitly recorded/scripted. Compatibility imports of other apps' rules/config are disabled in the owned fixture. |
+| Antigravity ACP | Official `agy` 1.5.13 as `agy acp`; private API-key settings, GenAI override. | Native view_file and actual ACP history load via production reader. |
 
 These scenarios do not qualify provider discovery/subscription authentication,
 OS sandbox policy or all native controls. No real account is supplied. Native
@@ -808,7 +828,9 @@ asserted, including child logger warnings/errors, rather than globally silenced.
 ## Antigravity endpoint and depth evidence — 2026-11-03
 
 Google [documents the CLI endpoint override](https://antigravity.google/docs/install?tab=cli).
-A separate probe establishes it works for YA's actual **ACP** distribution:
+This probe used the standalone ACP 1.4.5 runtime, which YA no longer runs. The
+current fixture writes the same settings to `antigravity-cli/settings.json`
+and runs `agy acp`. The probe established that the override works over ACP:
 
 - Set `GEMINI_HOME` to an owned `.gemini` directory, use a synthetic
   `GEMINI_API_KEY`, and set `GOOGLE_GEMINI_BASE_URL` to the loopback stub.
@@ -884,37 +906,211 @@ owns current contracts and qualification. The evidence does not change queue
 defaults or justify removing implicit YA concatenation without identity/policy
 qualification.
 
-## Linux Antigravity bootstrap prerequisite
+### Checking an Antigravity upgrade candidate
 
-The native provider qualification runner requires the system group name
-`nobody`. Antigravity ACP 1.4.5's Google native bootstrap resolves it before
-ACP initialization; a missing name aborts with SIGABRT and no model dispatch.
-The Ubuntu job creates only a missing group-name alias using the existing
-`nobody` user's primary GID, preserving that account's numeric permissions. It
-does not change provider flags, fixture credentials or protocol expectations.
-The provisioned source passes all actual Antigravity scenarios at `3fcffd386`
-in [run 42063066589](https://github.com/kzahel/yepanywhere/actions/runs/42063066589);
-see the phase and guard evidence above.
+Run the same local-model cases with the checked-in pin and with the candidate
+binary. The fixtures check the executable's reported version and launch it
+with a private profile and a scripted GenAI server. Both candidate variables
+are required to select a different version. The checksum-pinned CI artifact
+remains the default.
 
-For an owned Debian/Ubuntu testbed with the same missing-name failure, an
-administrator can apply the same guarded alias before running the suite:
-
-```sh
-if ! getent group nobody >/dev/null; then
-  sudo groupadd --non-unique --gid "$(id -g nobody)" nobody
-fi
-getent group nobody
+```bash
+pnpm test:providers:install antigravity
+YEP_NATIVE_TEST_PROVIDERS=antigravity YEP_NATIVE_APP_TESTS=1 \
+  YEP_NATIVE_ANTIGRAVITY_GAP_REPROS=1 pnpm --filter @yep-anywhere/server test \
+  test/native-provider test/native-app/app-antigravity-v0.test.ts \
+  test/native-app/app-antigravity-gap-repros.test.ts \
+  test/native-app/app-antigravity-hosted-reload.test.ts \
+  test/sdk/providers/antigravity.test.ts --maxWorkers=1
 ```
 
-The local installer and test scripts never run `sudo` automatically.
+Rerun the command with `YEP_NATIVE_TEST_ANTIGRAVITY_PATH` set to the candidate
+`agy` executable and `YEP_NATIVE_TEST_ANTIGRAVITY_VERSION` set to its exact
+version. Record the baseline and candidate results separately.
+
+- **Native protocol and behavior.** Actual `agy` runs the production adapter's
+  model, steering, cancellation, tools, compaction, and resume scenarios.
+  The cold-resume case resumes with `session/resume`, sends no
+  `session/load`, and checks the resumed session's view and that the reader
+  returns the persisted output. YA sends no `session/load` at all since plan
+  195 step 8; the projection case still replays its conversation through
+  `agy` as the oracle the log projection is compared with.
+- **YA contract faults.** The opt-in app scenarios check retained wakes,
+  patient delivery and idle reap, and, with the owner in the Provider Host,
+  a turn, a pending permission request, a patient message and a detached
+  wake through a reload or with no backend at all, single-writer control
+  after it, idle teardown and a resume afterwards. A changed outcome is
+  evidence to investigate during an upgrade.
+
+On 2026-11-22, the 29 selected cases passed on macOS arm64 with the 1.5.13 pin
+and the 1.5.14 candidate. The focused rerun with an independent ACP load also
+passed on both versions. Specifying the wrong candidate version was refused
+before native session startup.
+
+The reliability fixes raised the same selection to 30 passing cases on each
+version. The app journey covers a detached wake, a patient send, scheduled
+reload, and the final replies reopened on the replacement backend. On the
+original long saved session, `agy` 1.5.14 projected 820 messages with the
+final report on both the first read and the cached read. There was one native
+load across those reads.
+
+Removing the standalone runtime ([plan 195](../docs/tactical/195-antigravity-native-history.md)
+step 1) replaced its flat-catalog case with three version-floor refusals and
+brought the selection to 32 cases. All 32 passed on 2026-11-22 on macOS arm64
+with the 1.5.13 pin and with the 1.5.14 candidate.
+Its review added cases for the version probe's lifecycle, an ACP peer's own
+initialize error, the first refresh after an update, and app and v0 creation
+against a controlled `agy` below the floor. A second review added null and
+omitted `initialize` results. The selection is now 39 cases; all 39 passed on
+2026-11-22 with the 1.5.13 pin and the 1.5.14 candidate.
+
+Plan 195 step 2 added two controlled-peer cases that assert today's history
+limits, named "today: …" for later steps to flip. It also added the opt-in
+[live retention measurement](antigravity-native-storage.md#live-session-retention),
+which the selection skips unless `YEP_NATIVE_RETENTION_MEASURE=1`. The
+selection passed with 41 cases and 3 skipped on 2026-11-22, with the 1.5.13
+pin and with the 1.5.14 candidate.
+
+Plan 195 step 2b (permission requests with string IDs) added
+`native-antigravity-permissions.test.ts`: five real-`agy` cases for default
+mode (Allow and Deny), Stop while a write waits with input sent right after,
+accept-edits, bypass and the refused Plan mode. The approval case in
+`antigravity.test.ts` now runs with a string and a numeric ID. Sixteen
+controlled-peer cases for request ownership, retention, ID reuse, envelopes,
+response bodies and teardown are in
+`test/sdk/providers/antigravity-permissions.test.ts`, which the ordinary
+server suite runs. They are not part of this selection. The selection passed
+with 47 cases and 3 skipped on 2026-11-22, with the 1.5.13 pin and with the
+1.5.14 candidate, on Node 24.22.1.
+
+Plan 195 step 3 (the brain-log projection) added
+`native-antigravity-log-projection.test.ts`: one real-`agy` conversation
+whose projection must match the reader's ACP replay apart from the
+[listed differences](antigravity-native-storage.md#comparison-with-acp-replay).
+The selection passed with 48 cases and 3 skipped on 2026-11-22, with the
+1.5.13 pin and with the 1.5.14 candidate, on Node 25.8.2.
+
+Plan 195 step 5 (resume without replay) changed what two cases assert
+without adding cases. The cold-resume case now requires `session/resume`
+and no `session/load` on the resume path, and, while the resumed owner
+lives, a complete read that shows the turn before the resume point and the
+resumed prompt and reply once each; the `session/load` frame-order check
+after it still qualifies the fallback. The model-selection case's cold
+launch now resumes with `session/resume` and still reapplies the model and
+effort. The safe-reload app case now also resumes on the replacement
+backend and reloads the resumed session. Three controlled-peer cases were
+added to `antigravity.test.ts` and one "today" case flipped. The selection
+passed with 52 cases and 3 skipped on 2026-11-23, with the 1.5.13 pin and
+with the 1.5.14 candidate, on Node 24.22.1.
+
+Plan 195 step 6 (bounded live memory) added
+`native-antigravity-live-memory.test.ts`, which lowers the window's limits
+through a test option so moves happen within a test. On real `agy`:
+
+- a tool-heavy, a steered, a compacting and a stopped turn, read during a
+  turn, right after it ends, after moves to the log and once the owner
+  stops: the same prose in the same order each time apart from the
+  [stated differences](antigravity.md#live-memory), and the conversation
+  through the boundary equal to the log's own projection;
+- two wake schedules (a prompt sent once a detached wake is logged and
+  streamed, and one sent after the wake's first chunk, observed as the
+  ACP `session/prompt` call rather than Process's echo): the wake shows
+  once before and after moves, live and stopped;
+- Stop while a queued input is still starting (held in its subagent
+  position read): that input is never sent, and the next prompt is
+  answered.
+
+Controlled-peer cases in `antigravity.test.ts` replace the flipped "today"
+live-cap case: a session past 8 MiB keeps running with its window
+bounded, its prompts queued back to back; a log that stops growing or is
+unlinked evicts at the cap; many turns under the budget keep every ID;
+crossing it gives one replacement per client whose last row left memory,
+in three record orders, with a v0 observer; the two wake schedules; and a
+truncated log moves nothing. The retention harness lowers the budget in
+bytes and rows, asserts both after every turn and samples the heap at each
+move. Review round 2 replaced the scanned proof (its held-read schedule
+went with it) and added the Stop case; the selection then passed with 65
+cases and 3 skipped on 2026-11-23, with the 1.5.13 pin and with the 1.5.14
+candidate, on Node 24.22.1. Review round 3 added the clipped-paste case,
+on the controlled peer (which now clips a long prompt as `agy` does) and on
+real `agy`: a short turn, a 256 KiB pasted prompt, one more prompt, and a
+fresh read past the move showing all three turns, complete; and a
+controlled-peer case for a configuration hold that arrives while a staged
+input starts. The selection then had 68 cases and 3 skipped; see the step
+6 report for its runs.
+
+Plan 195 step 7 (warn on an external writer) added
+`native-antigravity-external-writer.test.ts`, which runs the production
+provider-root watcher, a client's focused watch and ExternalSessionTracker
+on the owner's store. On real `agy`: the owner's tool turn, a background
+command's wake four seconds after its turn, a queued compaction, a Stop,
+its close and a `session/resume` turn mark nothing external; a second `agy`
+in another conversation of the same store does not mark this one; that
+`agy`'s turn in this stopped, open conversation does. Beside a YA owner, a
+second `agy`'s turn drops the owner's split candidates at its next prompt
+and leaves it `self`, and after YA stops the second `agy`'s turn and exit
+mark it external. The selection passed with 71 cases and 3 skipped on
+2026-11-23, with the 1.5.13 pin and with the 1.5.14 candidate, on Node
+24.22.1.
+Review round 1 added a case where the owner idles 36 s after a turn (about
+40 s, kept in the selection): `agy`'s own database close about 30 s after
+its last write drops no candidate and logs no warning, and the next prompt
+moves the boundary at the candidate taken before the idle. The selection
+then passed with 72 cases and 3 skipped on 2026-11-23, with the 1.5.13 pin
+and with the 1.5.14 candidate, on Node 24.22.1.
+
+Plan 195 step 8 (removing the ACP replay fallback) dropped the
+`session/load` frame-order check from the cold-resume case, which no longer
+qualifies anything YA sends, and moved the projection case's replay oracle
+into a test utility. It added one real-`agy` case to
+`native-antigravity-live-memory.test.ts`: a conversation whose log was
+deleted, the same with one unknown record, and one never prompted, each
+resumed with `session/resume`, the selected model and effort in the next
+model request, the earlier context kept (none for the never-prompted one),
+the owner's rows bounded, and the row saying earlier history cannot be
+shown where it cannot. In `antigravity.test.ts` the three fallback cases
+became three resume cases. The selection passed with 73 cases and 3
+skipped on 2026-11-23, with the 1.5.13 pin and with the 1.5.14 candidate,
+on Node 24.22.1.
+
+Plan 195 step 9 (the owner in the Provider Host) runs the three app cases
+that assert a backend-local owner (a scheduled reload waiting for
+retained work, the wrapper handoff backing out for late foreground input,
+an immediate restart interrupting the turn) with the host disabled
+(`providerHost: false` in the app fixture), and adds
+`app-antigravity-hosted-reload.test.ts` for the hosted owner. Its first case keeps a turn with a
+pending `write_file` permission and a queued patient message through a
+wrapper reload, answers the request once on the replacement, then changes
+model and effort, Stops a turn, runs a queued `/compact` with a message
+behind it and schedules a second reload, each acting once on the same
+worker and `agy`. Its second holds the wrapper and kills the backend twice:
+a turn streams with no backend and a steer after reattach reaches it; a
+detached wake starts and ends with no backend, is shown once and settles;
+idle reap leaves no worker or `agy`; the conversation resumes. Both pass on
+the 1.5.13 pin and the 1.5.14 candidate; see the step 9 report for the
+selection's runs.
+
+In the server suite, the Antigravity admission test observes the creation
+operation behind the durable receipt and the owner's idle event. Cleanup
+joins the operation and stops any registered owner before deleting fixture
+files. See `antigravity-admission-test-startup-window.md` in gap history.
+
+## Linux Antigravity bootstrap prerequisite
+
+Only the removed standalone ACP 1.4.5 runtime needed one. Its Google native
+bootstrap resolved the system group name `nobody` before ACP initialization
+and aborted with SIGABRT when the name was missing, so Ubuntu CI created an
+alias for it. `agy` does not: on 2026-11-22 the pinned 1.5.13 Linux arm64
+build, on Ubuntu 24.04 with no `nobody` group, answered `initialize` and
+`session/new` and wrote its conversation database. CI no longer creates the
+alias, and an installed host needs no group configuration for Antigravity.
 
 ## Cold resume qualification phases
 
 The shared cold-resume scenario stops its initial owner, opens history through
 an independent production reader, then resumes from native persistence. This
-covers opening a stopped session before sending new input, including the
-Antigravity reader's native `session/load`, which may update continuation
-metadata. The resumed model request must contain the initial prompt, actual
+covers opening a stopped session before sending new input (the Antigravity
+reader reads the brain log and starts no `agy`). The resumed model request must contain the initial prompt, actual
 tool result and prior reply; after stopping the resumed owner, another
 independent reader must recover both old and new turns.
 

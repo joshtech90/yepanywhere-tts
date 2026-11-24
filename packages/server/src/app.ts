@@ -1,6 +1,7 @@
 import { appProviderRuntime } from "./sdk/app-provider-runtime.js";
 import { ownedApiSessions } from "./core-api/owned-sessions.js";
 import type { ProviderObservationCallbacks } from "./watcher/ProviderSessionWatcherRegistry.js";
+import { wireProviderObservations } from "./watcher/provider-observation-wiring.js";
 import { createClaudeTranscriptCache } from "./sessions/claude-transcript-cache.js";
 import { createSessionReaderAdmission } from "./sessions/session-reader-admission.js";
 import {
@@ -19,7 +20,6 @@ import {
   isUrlProjectId,
   parseNativeSessionId,
   nativeSessionFamily,
-  nativeSessionRef,
   parseYaSessionId,
   type NativeSessionRef,
 } from "@yep-anywhere/shared";
@@ -108,7 +108,6 @@ import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type {
   ProviderName,
   SafeRestartPreservedWork,
-  UrlProjectId,
 } from "@yep-anywhere/shared";
 import {
   DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
@@ -133,7 +132,7 @@ import {
 import { Hono } from "hono";
 import { compress } from "hono/compress";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { realpath } from "node:fs/promises";
 import { hashProjectPath } from "./projects/gemini-project-map.js";
 import type { AuthService } from "./auth/AuthService.js";
@@ -216,7 +215,6 @@ import {
   GROK_SESSIONS_DIR,
   PI_SESSIONS_DIR,
   decodeProjectId,
-  readCwdFromSessionFile,
   getProjectName,
   getProjectIdentityKey,
   type ProjectDisplayNameResolver,
@@ -282,8 +280,6 @@ import {
   RetainedSessionCollections,
 } from "./services/RetainedSessionCollections.js";
 import { createCollectionCatalogAdapters } from "./sessions/catalog-adapters/collection-catalog-adapters.js";
-import { readClaudeCatalogHead } from "./sessions/claude-summary.js";
-import { readCodexRolloutMetadata } from "./sessions/codex-discovery.js";
 import {
   metadataForNativeCatalogRow,
   projectCatalogIdentities,
@@ -322,10 +318,8 @@ import { createProvidersRoutes } from "./routes/providers.js";
 import { createCodexUpdateRoutes } from "./routes/codex-updates.js";
 import { mountPublicShareRoutes } from "./routes/public-share-mounting.js";
 import { createRecentsRoutes } from "./routes/recents.js";
-import {
-  createServerAdminRoutes,
-  triggerServerRestart,
-} from "./routes/server-admin.js";
+import { createServerAdminRoutes } from "./routes/server-admin.js";
+import { triggerSafeServerRestart } from "./safe-server-restart.js";
 import { createEnvSettingsRoutes } from "./routes/env-settings.js";
 import { createServerInfoRoutes } from "./routes/server-info.js";
 import { createSessionArchiveRoutes } from "./routes/session-archive.js";
@@ -457,6 +451,11 @@ import type {
 } from "./sessions/types.js";
 import { ClaudePeerStatus } from "./supervisor/claudePeerStatus.js";
 import { ExternalSessionTracker } from "./supervisor/ExternalSessionTracker.js";
+import { createObservedSessionResolver } from "./supervisor/observed-native-session.js";
+import {
+  FOCUSED_NATIVE_FAMILIES,
+  focusedNativeFile,
+} from "./watcher/focused-native-file.js";
 import { Supervisor } from "./supervisor/Supervisor.js";
 import type { Project } from "./supervisor/types.js";
 import {
@@ -1680,24 +1679,11 @@ export function createApp(options: AppOptions): AppResult {
       );
     },
   );
-  const unsubscribeProviderChildChanges = options.eventBus?.subscribe(
-    (event) => {
-      if (event.type === "file-change") {
-        providerChildRelationships.notifyNativeFileChange(event);
-        harnessRelationships.notifyFileChange(event);
-      }
-    },
+  const providerObservations = wireProviderObservations(
+    options,
+    providerChildRelationships,
+    harnessRelationships,
   );
-  const unsubscribeProviderObservationReady =
-    options.subscribeProviderObservationReady?.((family) => {
-      providerChildRelationships.observationReady(family);
-      harnessRelationships.observationReady(family);
-    });
-  const unsubscribeNativeProviderFileChanges =
-    options.subscribeNativeProviderFileChanges?.((event) => {
-      providerChildRelationships.notifyNativeFileChange(event);
-      harnessRelationships.notifyFileChange(event);
-    });
   const projectFileCompletion = new ProjectFileCompletion(effectiveDataDir, {
     eventBus: options.eventBus,
   });
@@ -1715,24 +1701,6 @@ export function createApp(options: AppOptions): AppResult {
       console.warn(`[App] Failed to close session reader ${key}:`, error);
     }
   };
-  const focusedNativeFile = (
-    filePath: string,
-    native: Pick<NativeSessionRef, "family">,
-  ) => ({
-    filePath,
-    provider: native.family,
-    ...(native.family === "opencode" && filePath.endsWith("opencode.db")
-      ? { additionalFilePaths: [`${filePath}-wal`] }
-      : native.family === "grok"
-        ? {
-            additionalFilePaths: [
-              "chat_history.jsonl",
-              "events.jsonl",
-              "updates.jsonl",
-            ].map((name) => join(dirname(filePath), name)),
-          }
-        : {}),
-  });
   const focusedSessionWatchManager = new FocusedSessionWatchManager({
     scanner,
     codexScanner,
@@ -1770,12 +1738,7 @@ export function createApp(options: AppOptions): AppResult {
         return null;
       }
       const native = identity.native;
-      if (
-        !native ||
-        !["claude", "codex", "opencode", "pi", "grok", "gemini"].includes(
-          native.family,
-        )
-      )
+      if (!native || !FOCUSED_NATIVE_FAMILIES.includes(native.family))
         return null;
       const project = await scanner.getOrCreateProject(identity.projectId);
       if (!project || signal.aborted) return null;
@@ -1864,9 +1827,7 @@ export function createApp(options: AppOptions): AppResult {
     sessionReadersDisposal ??= (async () => {
       await autoSessionTitleService?.stop();
       sessionReadLifetime.abort();
-      unsubscribeProviderChildChanges?.();
-      unsubscribeProviderObservationReady?.();
-      unsubscribeNativeProviderFileChanges?.();
+      providerObservations.dispose();
       await providerChildRelationships.close();
       authorizedRelationships.dispose();
       await harnessRelationships.close();
@@ -1925,6 +1886,8 @@ export function createApp(options: AppOptions): AppResult {
     500,
     closeReader,
   );
+  const readCatalogRows = async () =>
+    (await retainedCollections?.read())?.rows ?? [];
   const readerFactory = (
     project: Project,
     native?: NativeSessionRef,
@@ -1999,9 +1962,8 @@ export function createApp(options: AppOptions): AppResult {
             () =>
               new AntigravitySessionReader({
                 projectPath: project.path,
-                sessionsDir: native.storageScope,
-                catalogRows: async () =>
-                  (await retainedCollections?.read())?.rows ?? [],
+                nativeStorageScope: native.storageScope,
+                catalogRows: readCatalogRows,
               }),
           );
         case "grok":
@@ -2161,15 +2123,12 @@ export function createApp(options: AppOptions): AppResult {
             }),
         );
       case "antigravity":
-        return getOrCreateReader(
-          `antigravity::${project.path}`,
-          () =>
-            new AntigravitySessionReader({
-              projectPath: project.path,
-              sessionsDir: options.antigravitySessionsDir,
-              catalogRows: async () =>
-                (await retainedCollections?.read())?.rows ?? [],
-            }),
+        return getOrCreateReader(`antigravity::${project.path}`, () =>
+          AntigravitySessionReader.create({
+            projectPath: project.path,
+            sessionsDir: options.antigravitySessionsDir,
+            catalogRows: readCatalogRows,
+          }),
         );
       case "grok":
         return getOrCreateReader(
@@ -2441,6 +2400,7 @@ export function createApp(options: AppOptions): AppResult {
     void autoSessionTitleService?.stop();
     pushNotifier?.dispose();
     inactivityPushNotifier?.dispose();
+    safeRestartService?.dispose();
     // Fence automation before provider shutdown; reader disposal joins work
     // already admitted before closing its metadata/catalog dependencies.
     void supervisor.stopBackgroundTasks();
@@ -2596,8 +2556,7 @@ export function createApp(options: AppOptions): AppResult {
           : {}),
       };
     },
-    // Durably record a model's real context window the moment a process
-    // observes it (in the result message), independent of any client fetch.
+    // Persist observed context windows independently of client reads.
     onContextWindowObserved: options.modelInfoService
       ? (model, contextWindow, provider) =>
           options.modelInfoService?.recordContextWindow(
@@ -2607,6 +2566,7 @@ export function createApp(options: AppOptions): AppResult {
           )
       : undefined,
     onSessionSummary: getSessionSummary,
+    readSessionSummaryForResume: getSessionListSummary,
     resolveNativeSessionSource: async (sessionId, projectPath, provider) => {
       const deps = {
         signal: sessionReadLifetime.signal,
@@ -2817,110 +2777,14 @@ export function createApp(options: AppOptions): AppResult {
           supervisor,
           scanner,
           projectDisplayName,
-          resolveObservedSession: async (event, signal) => {
-            if (event.provider !== "claude" && event.provider !== "codex")
-              return undefined;
-            if (event.fileType !== "session" || event.changeType === "delete")
-              return null;
-            const file = await realpath(event.path).catch(() => null);
-            if (!file || signal.aborted) return null;
-            const scope =
-              event.provider === "claude"
-                ? dirname(file)
-                : await realpath(
-                    event.nativeStorageScope ?? codexSessionsDir,
-                  ).catch(() => null);
-            if (!scope || signal.aborted) return null;
-            if (event.provider === "codex") {
-              const suffix = relative(scope, file);
-              if (
-                !suffix ||
-                suffix === ".." ||
-                suffix.startsWith(`..${sep}`) ||
-                isAbsolute(suffix)
-              )
-                return null;
-            }
-            const meta =
-              event.provider === "codex"
-                ? await readCodexRolloutMetadata({
-                    sessionsDir: scope,
-                    filePath: file,
-                    discoveryIndex: getCodexDiscoveryIndex(scope),
-                  })
-                : undefined;
-            if (event.provider === "codex" && (!meta || meta.isSubagent))
-              return null;
-            const filename = basename(file);
-            const nativeId =
-              meta?.id ??
-              (filename.endsWith(".jsonl") && !filename.startsWith("agent-")
-                ? filename.slice(0, -6)
-                : undefined);
-            if (!nativeId || !isYaSessionId(nativeId) || signal.aborted)
-              return null;
-            const native = nativeSessionRef(
-              event.provider,
-              scope,
-              parseNativeSessionId(nativeId),
-            );
-            const identities = options.sessionMetadataService?.identities;
-            if (!identities) return undefined;
-            let identity = identities.lookupNative(native);
-            if (!identity && !identities.canDiscoverNative(native)) return null;
-            let discoveredProjectId: UrlProjectId | undefined;
-            if (!identity) {
-              if (identities.resolveYa(parseYaSessionId(nativeId))) return null;
-              // Explicit native discovery, using bounded physical source
-              // evidence before a legacy public id can enter ownership joins.
-              const cwd = meta?.cwd ?? (await readCwdFromSessionFile(file));
-              if (!cwd || !isAbsolute(cwd) || signal.aborted) return null;
-              discoveredProjectId = toUrlProjectId(cwd);
-            }
-            const project = await scanner.getOrCreateProject(
-              identity?.projectId ?? discoveredProjectId!,
-            );
-            if (!project || signal.aborted) return null;
-            const reader = readerFactory(
-              { ...project, provider: identity?.provider ?? event.provider },
-              native,
-            );
-            if (
-              reader.observeNativeSessionFile &&
-              !(await reader.observeNativeSessionFile(native, file, signal))
-            )
-              return null;
-            if (signal.aborted) return null;
-            const selectedFile = await reader.getSessionFilePath?.(native.id);
-            if (signal.aborted || !selectedFile) return null;
-            const selectedPath = await realpath(selectedFile).catch(() => null);
-            if (signal.aborted || selectedPath !== file) return null;
-            if (!identity) {
-              const createdAt =
-                meta?.timestamp ??
-                (await readClaudeCatalogHead(file)).createdAt ??
-                event.timestamp;
-              if (signal.aborted) return null;
-              identity = identities.adoptDiscoveredBatch([
-                {
-                  native,
-                  provider: event.provider,
-                  legacyProvider:
-                    options.sessionMetadataService?.getProvider(nativeId),
-                  projectId: project.id,
-                  createdAt,
-                },
-              ])[0];
-              if (!identity) return null;
-            }
-            return {
-              sessionId: identity.sessionId,
-              provider: identity.provider,
-              projectId:
-                options.sessionMetadataService?.getMetadata(identity.sessionId)
-                  ?.workingProjectId ?? identity.projectId,
-            };
-          },
+          focusedChanges: focusedSessionWatchManager,
+          resolveObservedSession: createObservedSessionResolver({
+            sessionMetadataService: options.sessionMetadataService,
+            scanner,
+            readerFactory,
+            codexSessionsDir,
+            getCodexDiscoveryIndex,
+          }),
           decayMs: 30000, // 30 seconds
           // Keeps a silent external Claude turn (long tool call) visible.
           // Claude keeps its per-process status files next to its config, not
@@ -3122,10 +2986,11 @@ export function createApp(options: AppOptions): AppResult {
           },
           cancelPreservedWork: () =>
             options.queueRestartHandoff?.forgetPreservedPatients(),
-          restart: () =>
-            triggerServerRestart({
-              notificationService: options.notificationService,
-              beforeRestart: disposeSessionReaders,
+          restart: (canCommit) =>
+            triggerSafeServerRestart({
+              canCommit,
+              flush: () => options.notificationService?.flush(),
+              stopBackgroundTasks: () => supervisor.stopBackgroundTasks(),
             }),
           ...safeRestartQueueCallbacks(options),
         })
@@ -3660,6 +3525,7 @@ export function createApp(options: AppOptions): AppResult {
       antigravitySessionsDir: options.antigravitySessionsDir,
     }),
   });
+  providerObservations.attachRetainedCollections(retainedCollections);
   conversationSubscriptions = new ConversationSubscriptions(
     createProviderConversationSource({
       readerFactory,

@@ -23,17 +23,28 @@ const repoPackage = JSON.parse(
 const claudeVersion: string =
   repoPackage.yepAnywhere.claudeCode.compatibleThroughVersion;
 const codexVersion: string = repoPackage.yepAnywhere.codexCli.expectedVersion;
-export const expectedVersions: Record<NativeProvider, string> = {
+const pinnedVersions: Record<NativeProvider, string> = {
   claude: claudeVersion,
   "claude-gateway": claudeVersion,
   "claude-ollama": claudeVersion,
   codex: codexVersion,
   "codex-oss": codexVersion,
-  antigravity: "1.4.5",
-  pi: "1.5.0",
+  antigravity: "1.5.13",
+  pi: "1.6.0",
   opencode: "1.18.9",
-  grok: "1.0.70",
+  grok: "1.0.92",
 };
+
+export function expectedNativeVersion(provider: NativeProvider): string {
+  const candidateVersion = process.env.YEP_NATIVE_TEST_ANTIGRAVITY_VERSION;
+  if (provider !== "antigravity" || candidateVersion === undefined)
+    return pinnedVersions[provider];
+  if (!process.env.YEP_NATIVE_TEST_ANTIGRAVITY_PATH || !candidateVersion.trim())
+    throw Error(
+      "An Antigravity candidate requires both YEP_NATIVE_TEST_ANTIGRAVITY_PATH and YEP_NATIVE_TEST_ANTIGRAVITY_VERSION",
+    );
+  return candidateVersion;
+}
 export const isClaude = (provider: NativeProvider) =>
   provider.startsWith("claude");
 export const isCodex = (provider: NativeProvider) =>
@@ -121,8 +132,8 @@ export function nativeExecutable(provider: NativeProvider): string {
         ),
         `${process.platform}-${process.arch}`,
         provider,
-        expectedVersions[provider],
-        provider === "antigravity" ? "agy_acp_server.par" : "grok",
+        pinnedVersions[provider],
+        provider === "antigravity" ? "agy" : "grok",
       );
     if (!existsSync(path))
       throw Error(

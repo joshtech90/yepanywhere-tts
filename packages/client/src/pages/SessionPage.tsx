@@ -1261,17 +1261,13 @@ function SessionPageContent({
     t,
   ]);
 
-  // Get provider capabilities based on session's provider
-  const { providers } = useProviders();
-  const providerCapabilities = useMemo(
-    () =>
-      resolveSessionProviderCapabilities({
-        providers,
-        providerName: effectiveProvider,
-      }),
-    [effectiveProvider, providers],
-  );
-  const currentProviderInfo = providerCapabilities.providerInfo;
+  const { providers, catalogLoaded } = useProviders();
+  const providerCapabilities = resolveSessionProviderCapabilities({
+    providers,
+    providerName: effectiveProvider,
+    catalogLoaded,
+  });
+  const { providerInfo: currentProviderInfo, readOnly } = providerCapabilities;
   const providerServiceTiers = useMemo(
     () =>
       currentProviderInfo?.models?.flatMap((model) => model.serviceTiers ?? []),
@@ -1635,7 +1631,7 @@ function SessionPageContent({
     correctionDraft,
     setCorrectionDraft,
     handleCancelCorrection,
-    handleCorrectLatestUserMessage,
+    handleCorrectLatestUserMessage: correctLatestMessage,
     handleRecallLastSubmission,
   } = useSessionCorrectionDraft({
     attachmentsRef,
@@ -3296,7 +3292,9 @@ function SessionPageContent({
                           onTransferBtwAsideTurn={
                             transferBtwTurnToMotherComposer
                           }
-                          onQuoteSelection={insertQuotedSelection}
+                          onQuoteSelection={
+                            readOnly ? undefined : insertQuotedSelection
+                          }
                           quoteTextBlockRef={quoteTextBlockRef}
                           onStartNewSessionFromSelection={
                             startNewSessionFromSelection
@@ -3336,7 +3334,7 @@ function SessionPageContent({
                             handleResumeProjectQueueDispatch
                           }
                           onCorrectLatestUserMessage={
-                            handleCorrectLatestUserMessage
+                            readOnly ? undefined : correctLatestMessage
                           }
                           onTrimBeforeUserMessage={trimClientFromUserMessage}
                           onForkBeforeUserMessage={
@@ -3514,6 +3512,7 @@ function SessionPageContent({
             projectQueueNewSessionTarget={projectQueueNewSessionTarget}
             promptSuggestion={promptSuggestion}
             providerRuntimeStatus={providerRuntimeStatus}
+            readOnly={readOnly}
             questionAside={questionAside}
             questionAsidesEnabled={questionAsidesEnabled}
             session={session}

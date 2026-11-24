@@ -14,7 +14,7 @@ Related topics: [provider-session-tree](provider-session-tree.md),
 The [durable relationship contract](session-relationships.md) selects a shared
 SQL model coordinating native children, trusted v0 creator links, forks,
 `/btw` and other relationships. [Plan 176](../docs/tactical/176-durable-session-relationships.md)
-tracks migrated sources and remaining qualification. Claude, Codex, Grok and OpenCode application reads
+tracks migrated sources and remaining qualification. Claude, Codex, Grok, OpenCode and Antigravity application reads
 use this durable model; retained provider paths are described below.
 
 ## Identity contract
@@ -132,6 +132,29 @@ becomes a direct root child nor a top-level session. A refused deeper Task
 allocates no fourth session or structural edge. The default child Task policy
 and production depth selection are unchanged; broader depths/platforms remain
 separate qualification.
+
+Antigravity (`agy` 1.5+) records subagent lineage in its sibling
+`conversation_summaries.db` (`parent_conversation_id`, `agent_name`,
+`nesting_depth`, `title`) while storing child `<uuid>.db` files beside parents
+in `conversations/`. `AntigravitySessionReader.getProviderChildSource` reads
+bounded read-only SQLite snapshots (using indexed wave BFS when SQLite plans an
+index seek, or a source-row-capped fallback otherwise), preserves immediate
+parents for nested descendants, treats a missing summaries index as unknown, marks truncated/older-schema/cyclic observations as
+partial, and derives running-child freshness from local `.db`/`.db-wal` mtimes
+when `last_modified_time` holds the `0001-01-01` sentinel. Companion summaries
+DB/WAL events coalesce across active parents on the reader and update activity
+overlays without SQL commits when structure is unchanged.
+`AntigravityTranscript` normalizes `invoke_subagent` to `spawn_agent` so
+existing clients render inline expand and Open links with no wire change;
+`getAgentSession` authorizes only verified descendants of the parent (revalidating
+before returning) and shows the latest page of the child's brain log, running
+or settled, without starting ACP; a settled child whose log is missing or
+unreadable shows one row saying so
+([history YA cannot show](antigravity.md#history-ya-cannot-show)).
+`getAgentMappings` correlates
+already-loaded calls against bounded `brain/<parentId>/.system_generated/logs/transcript.jsonl`
+tails anchored to the physical native store and cross-checked with
+`conversation_summaries.db`.
 
 ## Presentation contract
 

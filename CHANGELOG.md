@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-23
+
+### Added
+- Choose a Direct login or a supported Agent Auth Router pool for each
+  Antigravity session. YA shows model-specific quota when a pool reports it.
+- Use Antigravity model and thinking controls, see quota from the CLI, and
+  follow links to native subagent conversations.
+- Let v0 session creation explicitly choose Direct, and expose Antigravity
+  background work and session controls to v0 clients.
+
+### Changed
+- Require Antigravity CLI `agy` 1.5.13 or newer. YA reads saved conversations
+  from the native log, keeps a bounded recent window during live sessions,
+  and runs the live session owner in the Provider Host.
+- Retire Gemini CLI execution, including Gemini ACP. Existing Gemini sessions
+  remain readable. Let active Gemini turns finish before upgrading, restart the
+  Provider Host with the server, and use Antigravity for new Google-provider
+  sessions.
+- Refresh compatibility for Codex, Claude Code, Pi, and Grok.
+- Keep routine toasts compact and clear of the sidebar.
+
+### Fixed
+- Preserve Unicode in Codex streams and JSONL history, and preserve provider
+  message order in the session timeline.
+- Offer Direct while a saved router pool is being checked, and explain when
+  the Claude executable is missing at session startup.
+- Retry cleanup when Windows briefly locks files from the Codex startup check.
+- Serve reserved Project App addresses immediately, and allow running app
+  frames to use the microphone and open tabs.
+- Respect compact-first when a resumed session is waiting for a worker, and
+  refuse new provider launches when memory capacity is unavailable.
+
+## [0.13.0] - 2026-11-18
+
+### Added
+- Pair a server with a hosted Agent Auth Router over HTTPS, with durable code
+  pairing, restart recovery and revocation, from Settings.
+- Detect, verify and select provider CLI installations per server, with
+  rescan and test controls.
+- Offer an installed Machine Control app to agents through one default-off
+  setting, linking to its download when missing.
+- Copy selected Markdown with public project links in place of local paths
+  and viewer links.
+- Show rate-limited and stopped sessions on Inbox rows, question ages in the
+  Inbox question menu, and pool quota in the session Account pane.
+- Expose YA's queue to agents through v0 inputs and queued compaction, plus
+  bounded v0 history, native session controls and launching sessions.
+- Let `--setup-auth` read the password from a file, stdin or the environment,
+  and opt out of update checks with `YEP_UPDATE_CHECK=false`.
+
+### Changed
+- Run Antigravity through `agy acp` and list it by default when installed.
+- Default Response Streaming to off for browsers that never changed it.
+- Continue queued work and Project Queue dispatch after orderly server reloads.
+- Let trusted Server Connections pairings cover every current operation, so
+  existing pairings no longer need re-pairing after each release.
+- Treat a project as the real folder its path names rather than a symbolic
+  link's spelling, removing duplicate cards and history misses.
+- Move the Claude transcript index to a rebuildable cache database, and stop
+  repeated whole-file Codex rollout scans and reads.
+- Update Claude Agent SDK compatibility to 0.3.325 / Claude Code 2.1.325 and
+  Codex to 0.169.0.
+
+### Fixed
+- Never erase composer text from a draft notice, and preserve fresh drafts
+  through initial account binding.
+- Never let saved creation recovery state block new sessions; offer Start
+  fresh instead.
+- Start deferred compaction at turn end like a queued prompt.
+- Keep the transcript following through viewport reflow, and keep localhost
+  session lists usable across browser tabs.
+- Skip unparseable API receipts instead of failing server startup.
+- Retire stale question reminders in idle sessions.
+
+### Security
+- Throttle failed password logins at `/api/auth/login`.
+- Disconnect the relay when Remote Access is disabled, and keep the
+  `--setup-remote-access` password off the command line.
+- Update Hono to 4.13.18 for five audit advisories.
+
 ## [0.12.0] - 2026-11-12
 
 ### Added

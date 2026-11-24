@@ -13,6 +13,11 @@ import type {
 import type { ApiPendingInput } from "./input-contracts.js";
 import type { InputReceiptPatch } from "./native-session-inputs.js";
 import type { ApiReceiptStore } from "./receipt-store.js";
+import { ProviderMemoryCapacityError } from "../sdk/providers/provider-memory-budget.mjs";
+import {
+  ClaudeExecutableUnavailable,
+  ProviderStartupUnavailable,
+} from "../supervisor/provider-launch-admission.js";
 import { CoreApiError } from "./errors.js";
 
 export interface SessionCommandOwner {
@@ -57,7 +62,7 @@ export interface SessionCommandOwner {
     request: CreateSessionRequest,
     receipt: ApiReceipt,
     settled: (sessionId: string) => void,
-    failed: () => void,
+    failed: (reason?: unknown) => void,
     consumed?: () => void,
     admitted?: (sessionId: string) => void,
     authorize?: () => Promise<void>,
@@ -139,6 +144,7 @@ export class SessionCommands {
       creator: this.creator(launch, authenticated),
       destinationServerId: this.serverId,
       payload: request,
+      launchProvider: request.provider,
     });
     if (!reserved.created) return reserved.receipt;
     if (this.active.size >= 16) {
@@ -158,8 +164,20 @@ export class SessionCommands {
     };
     const failed = (reason?: unknown) => {
       if (this.disposed) return;
-      this.onLaunchFailure(receipt.id, reason);
       const current = this.store.get(receipt.id);
+      if (
+        (reason instanceof ProviderMemoryCapacityError ||
+          reason instanceof ClaudeExecutableUnavailable ||
+          reason instanceof ProviderStartupUnavailable) &&
+        (current?.state === "dispatching" || current?.state === "queued")
+      ) {
+        this.store.update(receipt.id, {
+          state: "failed",
+          failure: { code: reason.outcome, message: reason.message },
+        });
+        return;
+      }
+      this.onLaunchFailure(receipt.id, reason);
       if (current?.state === "accepted" && current.sessionId) {
         this.ended(receipt.id);
         return;

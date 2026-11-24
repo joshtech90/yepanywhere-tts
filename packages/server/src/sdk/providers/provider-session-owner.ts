@@ -7,13 +7,10 @@ import {
   AGENT_CATALOG_TIMEOUT_MS,
 } from "../../agent-api/controller-protocol.js";
 import { CoreApiError, type ApiReadPort } from "../../core-api/service.js";
+import type { PermissionMode } from "@yep-anywhere/shared";
+import type { AgentMessageQueue, MessageQueue } from "../messageQueue.js";
+import { WorkerNativeOwner } from "./provider-session-native-owner.js";
 import type {
-  PermissionMode,
-  SessionSandboxEnforcement,
-} from "@yep-anywhere/shared";
-import type { MessageQueue } from "../messageQueue.js";
-import type {
-  CanUseTool,
   ProviderActivitySnapshot,
   ProviderRetentionSnapshot,
   SDKMessage,
@@ -44,6 +41,13 @@ import type {
   ProviderSessionOptions,
   ProviderSessionOptionsUpdateResult,
 } from "./types.js";
+import type {
+  ProviderSessionAttachedState,
+  ProviderSessionOwnerOptions,
+  ProviderSessionReadyMetadata,
+  ProviderSessionSandboxMetadata,
+  StartOwnedProviderSession,
+} from "./provider-session-protocol.js";
 import {
   PROVIDER_SESSION_OPTION_KEYS,
   resolveProviderSessionOptions,
@@ -97,104 +101,6 @@ interface AttachedController {
   generation: string;
   write: (message: unknown) => void;
   isActive?: () => boolean;
-}
-
-export interface ProviderSessionSandboxMetadata {
-  enforcement: SessionSandboxEnforcement;
-  stateKey: string;
-  projectPath: string;
-}
-
-export interface ProviderSessionReadyMetadata {
-  steering?: import("@yep-anywhere/shared").ProviderSteeringState;
-  binding?: BoundRuntimeIdentity;
-  creation?: CreationRuntimeEvidence;
-  sessionId?: string;
-  queueDepth: number;
-  providerActivity: ProviderActivitySnapshot;
-  providerRetention: ProviderRetentionSnapshot;
-  capabilities: {
-    agentApi?: boolean;
-    peerAgentApi?: boolean;
-    publishAgentSelfSelection?: boolean;
-    publishAgentSessionViews?: boolean;
-    probeLiveness: boolean;
-    getProviderActivity: boolean;
-    getProviderRetention: boolean;
-    refreshPromptCache: boolean;
-    publishAgentctlSessionId: boolean;
-    steer: boolean;
-    steerUsesMessageQueue?: boolean;
-    appendConversationContext?: boolean;
-    mcpAppRequest?: boolean;
-    instructionRestoration?: boolean;
-    setMaxThinkingTokens: boolean;
-    setEffort: boolean;
-    effortUpdatesActiveTurn?: boolean;
-    setServiceTier?: boolean;
-    setSessionOptions: boolean;
-    interrupt: boolean;
-    supportedModels: boolean;
-    supportedCommands: boolean;
-    getContextBreakdown?: boolean;
-    setModel: boolean;
-    runProviderCommand: boolean;
-  };
-  sandbox?: ProviderSessionSandboxMetadata;
-  diagnostics?: Record<string, unknown>;
-}
-
-export interface ProviderSessionStartHooks {
-  onNativeInputConsumed(nativeSessionId: string, inputId: string): void;
-  onAgentApiRead: ApiReadPort;
-  onToolApproval: CanUseTool;
-  onPermissionModeApplied: (mode: PermissionMode) => void;
-  onProviderRetentionChange: () => void;
-  shouldEmitLiveDeltas: () => boolean;
-  getBrowserDebugEnvironment: () => Record<string, string>;
-}
-
-export interface ProviderSessionStartResult {
-  session: AgentSession;
-  sandbox?: ProviderSessionSandboxMetadata;
-  diagnostics?: Record<string, unknown>;
-  /**
-   * Host-owned Bash bridge so every hosted provider publishes
-   * `AGENTCTL_SESSION_ID`, including adapters that have no session method.
-   */
-  agentctlSessionEnvBridge?: AgentctlSessionEnvBridge;
-}
-
-export type StartOwnedProviderSession = (
-  hooks: ProviderSessionStartHooks,
-) => Promise<ProviderSessionStartResult>;
-
-export interface ProviderSessionOwnerOptions {
-  runtimeId: string;
-  peerGrantId?: string;
-  emitSupervisor?: (message: unknown) => void;
-  onTerminal?: (reason: string, exitCode: number) => void | Promise<void>;
-}
-
-export interface ProviderSessionAttachedState {
-  steering?: import("@yep-anywhere/shared").ProviderSteeringState;
-  type: "attached";
-  protocolVersion: number;
-  runtimeId: string;
-  acknowledgedSequence: number;
-  activeProviderTurn: boolean;
-  queueDepth: number;
-  providerAlive: boolean;
-  providerActivity: ProviderActivitySnapshot;
-  providerRetention: ProviderRetentionSnapshot;
-  appliedPermissionMode?: PermissionMode;
-  /**
-   * Canonical id the provider reported in its init message. A controller
-   * attaching after that event was acknowledged never sees it replayed.
-   */
-  providerSessionId?: string;
-  binding?: BoundRuntimeIdentity;
-  creation?: CreationRuntimeEvidence;
 }
 
 export function providerSessionErrorMessage(error: unknown): string {
@@ -251,6 +157,12 @@ export class ProviderSessionOwner {
   private creationIdentity: CreationRuntimeIdentity | undefined;
   private boundIdentity: BoundRuntimeIdentity | undefined;
   private creationInputConsumed = false;
+
+  private readonly nativeOwner = new WorkerNativeOwner(
+    (message) => this.emitController(message),
+    () => this.sequence,
+    () => this.acknowledgedSequence,
+  );
 
   constructor(private readonly options: ProviderSessionOwnerOptions) {}
 
@@ -353,6 +265,9 @@ export class ProviderSessionOwner {
           this.publishCreationEvidence();
         }
       },
+      nativeOwnerHost: this.nativeOwner.host(),
+      observeNativeStore: (listener) => this.nativeOwner.observeStore(listener),
+      markOutputDelivery: () => this.nativeOwner.markDelivery(),
       onAgentApiRead: (operation, _caller, input = {}) =>
         this.requestAgentApiRead(operation, input),
       onToolApproval: (toolName, input, approvalOptions) =>
@@ -441,12 +356,20 @@ export class ProviderSessionOwner {
         probeLiveness: Boolean(session.probeLiveness),
         getProviderActivity: Boolean(session.getProviderActivity),
         getProviderRetention: Boolean(session.getProviderRetention),
+        retentionReadReconciles: session.retentionReadReconciles === true,
         refreshPromptCache: Boolean(session.refreshPromptCache),
         publishAgentctlSessionId: Boolean(
           session.publishAgentctlSessionId || this.agentctlSessionEnvBridge,
         ),
         steer: Boolean(session.steer),
         steerUsesMessageQueue: session.steerUsesMessageQueue,
+        steerConsumptionReported: session.steerConsumptionReported === true,
+        queueHold: Boolean(
+          (session.queue as AgentMessageQueue).setConfigurationInputHeld,
+        ),
+        consumerIdle: Boolean(
+          (session.queue as AgentMessageQueue).onConsumerIdle,
+        ),
         appendConversationContext: Boolean(session.appendConversationContext),
         mcpAppRequest: Boolean(session.mcpAppRequest),
         instructionRestoration: Boolean(
@@ -549,6 +472,11 @@ export class ProviderSessionOwner {
     if (this.attachedController?.id !== controllerId) return;
     const generation = this.attachedController.generation;
     this.session?.setAgentApiControllerAttached?.(false);
+    // A configuration change the detached Process held input for cannot
+    // finish on its side; the provider's own pending change still holds.
+    (
+      this.session?.queue as AgentMessageQueue | undefined
+    )?.setConfigurationInputHeld?.(false);
     for (const pending of [...this.pendingAgentReads.values()])
       pending.finish(
         new CoreApiError(
@@ -611,6 +539,14 @@ export class ProviderSessionOwner {
       queue.removeByTempId(String(request.tempId));
       return;
     }
+    // Process's configuration hold and idle report, for providers that wait
+    // on them (Antigravity), and the native store changes it observes.
+    const queue = () => this.requireSession().queue as AgentMessageQueue;
+    if (request.type === "queueHold")
+      return queue().setConfigurationInputHeld?.(request.held === true);
+    if (request.type === "consumerIdle") return queue().onConsumerIdle?.();
+    if (request.type === "nativeStoreChanged")
+      return this.nativeOwner.storeChanged();
     if (request.type === "approvalResult") {
       const pending = this.pendingApprovals.get(String(request.requestId));
       if (!pending) return;
@@ -666,6 +602,7 @@ export class ProviderSessionOwner {
       providerActivity: this.providerActivity,
       providerRetention: this.providerRetention,
       appliedPermissionMode: this.appliedPermissionMode,
+      nativeOwner: this.nativeOwner.snapshot(),
       providerSessionId: this.providerSessionId,
       steering: this.steering,
       ...(this.boundIdentity ? { binding: this.boundIdentity } : {}),
@@ -1136,6 +1073,7 @@ export class ProviderSessionOwner {
       );
     }
     this.acknowledgedSequence = sequence;
+    this.nativeOwner.acknowledge(sequence);
     let removeCount = 0;
     let removeBytes = 0;
     for (const event of this.events) {
@@ -1175,6 +1113,12 @@ export class ProviderSessionOwner {
         );
       case "drainQueue":
         return session.queue.drain();
+      case "readProviderRetention":
+        // The read itself may settle native evidence; a change is published.
+        session.getProviderRetention?.();
+        return undefined;
+      case "readNativeOwner":
+        return this.nativeOwner.read(args[0]);
       case "probeLiveness":
         return await session.probeLiveness?.();
       case "refreshPromptCache":

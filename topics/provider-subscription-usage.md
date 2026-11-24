@@ -23,10 +23,10 @@ Related topics: [provider refresh](provider-refresh.md),
 
 ## Observable contract
 
-- A usage read never creates a provider turn or persisted provider session.
-  Claude uses the Agent SDK's read-only control query; Codex uses app-server
-  `account/rateLimits/read`. YA does not scrape provider web pages, invoke a
-  slash command, or infer account capacity from local transcript token totals.
+- A usage read never sends a provider prompt or creates a user conversation.
+  Claude uses the Agent SDK's read-only control query, and Codex uses app-server
+  `account/rateLimits/read`. Antigravity reads the official CLI's status-line
+  quota snapshot. Subscription capacity comes from the provider's quota data.
 - The server returns `ProviderSubscriptionUsage | null`. Each normalized window
   carries percent used, optional duration/reset time, and either provider-wide
   scope or an explicit set of YA model ids. Provider-specific response fields
@@ -47,6 +47,24 @@ Related topics: [provider refresh](provider-refresh.md),
   startup gate, including while the initial acquisition is still waiting; the
   shared cache prevents a later duplicate when Refresh already supplied the
   value.
+
+## Antigravity quota
+
+For the normal direct `agy` login on macOS and Linux, YA reads the
+[status-line quota JSON](https://antigravity.google/docs/cli/statusline#available-json-fields)
+in a short-lived terminal via the host's `script` utility. It supplies a
+session-only callback, uses the existing login, and discards the terminal
+output and temporary files after the read. The probe sends no prompt, enters
+no slash command, and leaves the user's CLI settings untouched. Concurrent
+reads, including explicit refreshes, share one running probe. The standard
+60-second subscription cache applies to the normalized snapshot.
+
+Gemini, separately metered Gemini models, and the shared Claude and GPT quota
+are scoped to their matching catalog models. Known five-hour and weekly
+windows carry the provider's absolute reset timestamp when available. Unknown
+buckets and the generic default model alias have no quota mapping. Missing
+terminal support, a timeout, and explicitly routed or API-key configurations
+return no quota snapshot.
 
 ## Codex local account commands
 
@@ -94,6 +112,34 @@ acts on that control without retriggering the context indicator.
 
 The existing context percentage remains context-window consumption, not
 subscription usage.
+
+## Operator quota watchdog
+
+`scripts/codex-quota-watchdog.py` is a one-shot Python 3.9+ script for an
+operator-owned five-minute schedule. It uses `aar account quotas` to read one
+explicitly selected Codex enrollment and checks the local YA instance record
+against the configured server ID. It requires all-project operator access to
+the ordinary loopback API.
+
+The script acts on a fresh account-wide quota. Explicit permission for
+included usage takes precedence over displayed percentages. Without that
+permission field, either general Codex window at zero triggers the watchdog.
+Failed or missing quota observations leave sessions running. The default
+reports what it would do. With `--apply`, the script requests a verified
+stop of every active session it sees on that local server, across projects
+and providers, and reports the result from each stop receipt. Session history
+remains available. A later run can stop sessions started since the last check.
+
+```sh
+python3 scripts/codex-quota-watchdog.py \
+  --account "$AAR_CODEX_ACCOUNT_ID" --server-id "$YA_SERVER_ID"
+```
+
+Use `--aar-state` and `--ya-instance` for nondefault profiles. When using a
+packaged AAR runtime or source checkout, pass the command after `--`, for
+example `-- node /path/to/agent-auth-router/src/cli.ts`. Add `--apply` to the
+scheduled invocation to enable stops. Credits may still be spent between checks
+or outside that YA server.
 
 ## Compatibility
 

@@ -40,6 +40,13 @@ type CancellableMessageIterator = AsyncIterator<QueuedSDKUserMessage> &
 /** Queue surface consumed by Process; remote runtime proxies implement it too. */
 export interface AgentMessageQueue {
   push(message: UserMessage): number;
+  /** Pause native delivery while a multi-step configuration is unsettled. */
+  setConfigurationInputHeld?(held: boolean): void;
+  /**
+   * Process entered idle, having handled the turn's or command's result:
+   * input requests the provider raises from now on stay visible.
+   */
+  onConsumerIdle?(): void;
   drain(): UserMessage[];
   /** Remote queues use this to return the worker's authoritative drain. */
   drainAsync?(): Promise<UserMessage[]>;
@@ -487,6 +494,10 @@ export class MessageQueue
 
   hasYieldedApiInput(id: string) {
     return this.apiInputs.has(id);
+  }
+  /** Report native consumption for a steer delivered outside the iterator. */
+  acknowledgeNativeSteer(message: UserMessage): void {
+    this.emitYielded([message]);
   }
   private emitYielded(messages: UserMessage[]): void {
     if (messages.length === 0) return;

@@ -1,42 +1,114 @@
 # Antigravity provider
 
-Status: experimental, available by default when a runtime is installed. The
-current target is the ACP server built into Google's `agy` CLI (1.5.8, run as
-`agy acp`); the standalone ACP runtime 1.4.5 remains supported. The live
-qualification used macOS arm64; Linux
-uses the same POSIX process boundary but has not been live-qualified. Windows remains unavailable
-until its native child-tree teardown is qualified. This is a separate provider;
-legacy Gemini histories and execution settings never migrate implicitly.
+Status: **experimental and listed by default when installed.** Basic foreground
+work is usable. Patient delivery and detached work still have reproduced
+correctness gaps. The primary integration
+runs Google's `agy acp` against the user's native login and store. Legacy Gemini
+history retains its original provider and identity.
+
+## Support status — 2026-11-22
+
+Evidence below is from YA `eb520d058`. The
+[scripted native test target](native-provider-testing.md) is `agy` 1.5.13.
+Live Gemini 3.8 Flash Low probes used `agy` 1.5.14 on macOS arm64. Linux has
+scripted native coverage. Windows execution remains unavailable pending native
+child-tree teardown qualification. YA runs `agy` 1.5.13 or later only; see
+[supported runtime](#supported-runtime).
+
+| Surface | Current support and limits |
+| --- | --- |
+| Foreground delivery | Direct text, real tools, ordinary deferred queueing, cancellation, and cold continuation of short test sessions have native coverage. Steer sends a second native prompt for the next model boundary. YA waits for all submitted foreground prompts to return. |
+| Patient delivery | YA saves patient intent durably and waits through retained native work and its root wake. The item's quiet interval starts at verified idle. An ordinary deferred message can deliver at the foreground turn boundary. [YA delivery rules](message-control-steer-queue-btw-later-interrupt.md#delivery-intent-behavior-matrix) · [Overlapping wakes](../gaps/antigravity-overlapping-wake-inbox.md) |
+| Detached work | Known shell tasks, schedules and native subagents appear in live work state. An unsettled root wake retains its owner across the last task ending and the root generating a reply. Metadata and the session stream report its activity. [Provider settlement evidence](provider-wait-and-background-work.md#recorded-work) |
+| Cold history and resume | Cold history comes from `agy`'s brain log a page at a time, starting no `agy` and writing nothing but [SQLite's sidecars for the summaries index](../gaps/antigravity-summaries-read-creates-sqlite-sidecars.md); see [cold history from the log](#cold-history-from-the-log). Resume uses ACP `session/resume`, which replays nothing: the resumed session's view is the log through its resume point plus the owner's own rows ([resume](#resume-and-the-live-view)). A live session keeps a bounded recent window in memory and the log serves the rest, so it runs however long it lasts ([live memory](#live-memory)). YA never replays history through ACP `session/load` (removed in plan 195 step 8): a missing or unreadable log is shown as one row saying the earlier history cannot be shown, and the conversation still resumes with `session/resume`, keeping the context `agy` holds in its database ([history YA cannot show](#history-ya-cannot-show)). |
+| Backend reload | Where the Provider Host is available, the owner runs in a Provider Host worker (plan 195 step 9), so a reload, scheduled or immediate, or a crashed backend leaves the session running: the replacement reattaches and rebuilds its view of the owner from the worker. A turn, a pending permission request, a patient message and a detached wake survive it, each shown and delivered once, and control after it is single-writer; idle reap leaves no `agy`. Real `agy` 1.5.13 and 1.5.14 on macOS arm64 ([app cases](../packages/server/test/native-app/app-antigravity-hosted-reload.test.ts)); Linux and hosted CI not run. Without the host the owner stays in the backend: a scheduled reload waits for its work and an immediate one interrupts it ([cases without the host](../packages/server/test/native-app/app-antigravity-gap-repros.test.ts)). [In the Provider Host](#in-the-provider-host) · [Reload contract](reload-safe-provider-runtimes.md#shared-worker-providers) |
+| Other controls | Model and effort changes and advertised `/compact` are implemented. A verified native checkpoint gates delivery of messages queued after compaction. Permission prompts reach the approval handler in default and accept-edits sessions. Real `agy` cases cover Allow, Deny and Stop for the tested `write_file` and `run_command` calls, and each offered mode. Inline images/documents, rewind and fork remain unavailable. |
+
+The [native lifecycle tests](../packages/server/test/native-app/app-antigravity-gap-repros.test.ts)
+use real `agy` with a scripted model. They cover idle reap during detached replies and patient delivery after
+settlement and, with the Provider Host disabled, scheduled reload waiting
+for a detached wake and a patient turn, late foreground admission at the
+wrapper handoff and an immediate restart interrupting the turn; the [hosted reload cases](../packages/server/test/native-app/app-antigravity-hosted-reload.test.ts)
+follow a turn, a permission request, a patient message and a detached wake
+through a reload and with no backend at all. The
+[upgrade checks](native-provider-testing.md#checking-an-antigravity-upgrade-candidate)
+can run with an explicitly selected `agy` version.
 
 ## Installation selection
 
 The shared [CLI installation selector](provider-cli-installations.md) can persist
 an explicit Antigravity path on the target server/profile. `ANTIGRAVITY_ACP_PATH`
-remains authoritative. `agy acp` and standalone ACP share a launch descriptor;
-removed executables and changed symlink targets are observed on each resolution.
+remains authoritative. Every candidate launches as `agy acp`; removed
+executables and changed symlink targets are observed on each resolution. A
+candidate whose `agy --version` is below the
+[supported floor](#supported-runtime) shows that version beside an error naming
+the floor and the update path. Auto marks the `agy` that a launch actually
+runs, the first runnable one on `PATH`, even when it is below the floor; select
+another installation explicitly to use it.
 Offline execution verification is currently unsupported and is reported as such,
 separately from authentication or an execution failure. No Windows support or new
 provider authentication/update mechanism is introduced by the selector.
 
 ## Native installation and authentication
 
-Install Google's `agy` CLI and sign in with it. `agy` 1.5 and later include
-an ACP server (`agy acp`) that reuses the CLI's saved login and its
-`GEMINI_HOME/antigravity-cli` store; YA prefers it whenever `agy` is on `PATH`.
-Otherwise YA uses the standalone
-[`antigravity-acp` distribution](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json):
-keep `agy_acp_server.par` and its matching `localharness_external` helper
-together and put the executable on `PATH`. `ANTIGRAVITY_ACP_PATH` names either
-executable explicitly; a file named `agy` is launched as `agy acp`. An explicit
-path never falls back to another installation. YA resolves executable symlinks
-before launch so the companion stays beside it. YA does not download, update or
-reconfigure the runtime.
+Install Google's `agy` CLI and sign in with it. Its ACP server (`agy acp`)
+reuses the CLI's saved login and its `antigravity-cli` store. YA finds `agy` on
+`PATH`; `ANTIGRAVITY_ACP_PATH` names an executable explicitly, and YA launches
+whatever it names as `agy acp`. An explicit path never falls back to another
+installation. YA launches the resolved target of an executable symlink. YA does
+not download, update or reconfigure the runtime.
 
-On Linux, the pinned 1.4.5 bootstrap requires a resolvable `nobody` group name,
-even for an unprivileged caller. A missing name aborts before ACP initialization.
-The [native qualification prerequisite](native-provider-testing.md#linux-antigravity-bootstrap-prerequisite)
-records the Ubuntu alias using that user's existing primary GID. An installed
-host needs administrator-provided group configuration; YA never edits it.
+### Supported runtime
+
+YA runs `agy` 1.5.13 or later, the [native test pin](native-provider-testing.md#checking-an-antigravity-upgrade-candidate)
+(`ANTIGRAVITY_MIN_VERSION`). The version comes from the `agentInfo.version`
+that ACP `initialize` reports, so a runtime that answers costs no extra
+process. The whole value must be a valid Semantic Versioning 2.0.0 version:
+no leading zeros, and non-empty dot-separated prerelease and build
+identifiers. A prerelease ranks below its release, so `1.5.13-rc.1` is
+refused. A missing value, a null or absent `initialize` result, a malformed
+version, or one that merely contains a version, is refused rather than
+assumed current.
+
+An `agy` before 1.5 has no `acp` subcommand. When no ACP peer answers
+`initialize` (the process exits, writes something other than the protocol, or
+reaches the 30-second initialize timeout), YA runs `agy --version` once. That
+probe gets YA's provider environment without YA's own credentials, has three
+seconds, and is killed with its process group on its deadline or when the
+owner stops the runtime; YA waits for it to exit either way. YA signals the
+group only while its id is anchored: on deadline or stop while the command is
+still running, and once as the command's exit is handled, so same-group
+helpers die whether or not they hold its output. After that YA sends no
+signal; a deadline or stop then only releases the pipe. A helper that started
+its own session has left the group and is not stopped by YA. A whole version
+below the floor gets the same refusal. Any other answer leaves the native
+failure as the error. A runtime that does answer `initialize`, including with
+an ACP error, is never probed, so its own error is kept.
+
+The refusal names the installed version, the required version and the update
+path, for example: "Antigravity requires agy 1.5.13 or later; the installed
+runtime reports version 1.4.5. Run \`agy update\`, or install the agy CLI."
+
+- **Provider status** reports the runtime unavailable rather than signed out.
+  The refusal is the model catalog's error, Provider Settings shows it under
+  the unavailable runtime, and the CLI installation list shows the
+  candidate's version with the same text. Status and a forced catalog refresh
+  read in the same request describe the same runtime.
+- **A saved creation**, from the app or the v0 API, is refused before its
+  provider starts. The creation records the known failure
+  `startup-unavailable`, delivery `not-admitted`, and the refusal as its
+  `failureDetail`, which the startup notice shows beside the saved prompt.
+  The v0 receipt is `failed` with `failure.code: "startup-unavailable"` and
+  the refusal as its message. Nothing reaches the runtime beyond `initialize`.
+- **A resumed or reactivated session** ends with the refusal as its error,
+  once `initialize` has answered or the version probe has run, and before any
+  session is resumed or prompted.
+- **History reads** start no `agy`, so they are unaffected.
+
+YA dropped the standalone ACP 1.4.x distribution (`agy_acp_server.par`) and
+its `antigravity-acp` store. Conversations that exist only in that store are no
+longer listed or resumable; their native files are left untouched. Both
+decisions are recorded in [plan 195](../docs/tactical/195-antigravity-native-history.md#decisions).
 
 This is one integration interface for Antigravity, not a separate model or
 subscription. Google's `agy` terminal CLI also
@@ -53,11 +125,19 @@ reads tokens, calls `authenticate` or `logout`, forwards an OAuth callback,
 switches accounts, or selects an API-billed method. A missing login fails with
 the native error; it does not start YA-managed sign-in.
 
-The November 3 live probe found that CLI 1.4.12 and the standalone ACP 1.4.5
-required separate initial sign-ins even under the same home; on 2026-11-13,
-`agy acp` 1.5.8 reused the CLI's login with no further sign-in. The ACP runtime saved its own
-`auth.type=oauth-personal` setting; subsequent native creation and replay reused
-that saved login without another auth call. Do not infer ACP readiness from a
+For per-session Agent Auth Router (AAR) routing without server-wide env vars,
+YA starts a session-scoped loopback bridge per routed `agy acp` process using a
+dedicated profile under `<dataDir>/agent-auth-router/antigravity-home` and
+passes `--cloud_code_endpoint` and `--gemini-dir` on that launch only; see
+[Agent Auth Router — Antigravity per-session routing](agent-auth-router.md#antigravity-per-session-routing-2026-11-23).
+For an explicitly configured `CLOUD_CODE_URL`, YA also continues to pass a
+configured `GEMINI_HOME` to `agy acp` as `--gemini-dir` so manual bridge setups
+keep working ([AAR Antigravity docs](https://github.com/kzahel/agent-auth-router/blob/main/docs/antigravity.md)).
+
+On 2026-11-13, `agy acp` 1.5.8 reused the CLI's login with no further
+sign-in. The ACP runtime saved its own `auth.type=oauth-personal` setting;
+subsequent native creation and replay reused that saved login without another
+auth call. Do not infer ACP readiness from a
 successful `agy models` invocation or the old Gemini credential file.
 
 Google's [ACP changelog](https://antigravity.google/docs/changelog) mentions
@@ -69,7 +149,7 @@ Account access remains Google's decision.
 ## Vanilla execution
 
 The provider is listed by default, reports itself not installed without a
-runtime, and is hidden by an `ENABLED_PROVIDERS` allow-list that omits it, like
+runtime or with one below the [supported floor](#supported-runtime), and is hidden by an `ENABLED_PROVIDERS` allow-list that omits it, like
 every other provider. Session lists always include its native source, whose
 retained-catalog project filter decides membership without starting `agy`. Existing
 clients use the normal provider discovery and session routes; older servers
@@ -81,88 +161,824 @@ YA sends ordinary text verbatim, adds no context prefix, advertises no client
 filesystem/terminal tools and performs no model substitution. The native default
 stays selected unless the operator explicitly chooses a model. The dynamic
 catalog is the actual account's `session/new` response, not the CLI's catalog
-or a static list. A coalesced, short-lived blank probe checks readiness without
-sending a model prompt, then removes only its proven scratch session files.
+or a static list. When `agy` returns structured ACP `configOptions` for `model` and
+`thought_level`, YA projects the base models with per-model supported thinking
+levels derived from the paired `availableModels` entries while keeping the
+`default` sentinel as the default selection so untouched launches preserve the
+runtime's own default model. Separate model and effort controls offer `Auto`
+(restoring the level observed before a YA override) and `On` with the model's offered
+levels, omitting thinking controls for fixed-effort models; explicit `off` from
+API or older callers maps to the lowest offered level because `agy` has no
+disabled thinking level. A setup without a `model` config option offers only
+the runtime's default, and a request for any other model fails. The v0.12.0
+and v0.13.0 server catalogs omit
+structured Antigravity effort metadata. Current clients keep those flat
+catalogs usable and omit thinking overrides for them. Both startup, resume,
+and live mid-session
+`setModel` / `setEffort` apply changes in place via `session/set_config_option`,
+without restarting the runtime.
+In-flight replies remain attributed to the model active when the turn started.
+Combined changes hold input and publish the new configuration only after both
+settings apply. If restoration fails, queued input waits until a configuration
+request successfully reapplies the desired pair.
+Legacy effort-suffixed model IDs remain accepted: when no explicit effort is
+supplied, YA syncs the embedded effort into session state and persisted launch
+settings; when an explicit effort is also supplied, the explicit effort takes
+precedence. If catalog discovery is unavailable during launch, the saved ID
+stays intact and the native session applies it using its own catalog.
+Requesting an explicit thinking level on a model that does not offer
+one fails explicitly before mutating active session state. A coalesced, short-lived
+blank probe checks readiness without sending a model prompt, then removes only
+its proven scratch session files.
 
-YA default and accept-edits select the native mode the runtime offers:
-`default` and `accept-edits` in `agy` 1.5+, `default` and `auto_edit` in the
-standalone 1.4.x runtime. Bypass-permissions selects 1.4.x `yolo`; `agy` 1.5+
-offers no such mode, so YA launches that session's server with
-`--dangerously-skip-permissions`. A requested mode the runtime does not offer
-fails the start. YA's Plan permission mode is refused; use native `/plan`.
+YA default, accept-edits and auto select the native `default`, `accept-edits`
+and `auto` modes. A requested mode the runtime does not offer fails the start.
+Over ACP, `agy` 1.5.13 and 1.5.14 offer `default`, `accept-edits` and `plan`
+(observed 2026-11-22), so auto currently fails. `agy` offers no bypass mode, so
+bypass-permissions launches that session's server with
+`--dangerously-skip-permissions` and keeps the native `default` mode. YA's Plan permission mode is refused; use native `/plan`.
 Permission replies use the actual offered option IDs and never promote Allow
 once to Allow always. Native fixed-choice questions require an offered answer.
-Missing handlers and interrupted requests cancel. Stop requests native
-`session/cancel`; hard abort closes the owned process group and waits for exit.
+Missing handlers and interrupted requests cancel.
+
+Permission requests ([owner](../packages/server/src/sdk/providers/antigravity-permission-requests.ts)):
+
+- **IDs and frames.** A request is recognized whatever its JSON-RPC ID
+  type (`agy` 1.5.13 and 1.5.14 send strings), and its answer echoes that ID
+  unchanged. Each request gets exactly one answer.
+  - A response answers a call only if it has no `method`, one of YA's
+    numeric IDs, and exactly one of a `result` or a valid JSON-RPC
+    `error`. The exception is an `initialize` reply with neither, which is
+    refused for its missing version.
+  - These get an error and open no prompt: a frame that is not JSON-RPC
+    2.0, a non-string method, a request YA does not serve (including a
+    `session/update` that carries an ID), and a permission request without
+    a session, a tool call ID or options.
+- **Ownership.** One `agy` connection is one YA session, and a request
+  belongs to its tool call.
+  - Terminal evidence for the call (a `tool_call` or `tool_call_update` that
+    is completed, failed or cancelled) withdraws its request.
+  - Stop (`session/cancel`) answers every waiting request on the connection
+    as cancelled and withdraws its prompt, including one naming a child
+    conversation. It also marks the tool calls then running as cancelled. A
+    later request for one of them, such as a delayed frame from a stopped
+    turn or wake, is answered cancelled without a prompt. A request for a
+    tool call first seen after Stop is new work and asks.
+  - YA's session goes idle when it handles a turn's or a provider command's
+    (such as queued `/compact`) result, so a request raised while a YA
+    prompt ran and still waiting is withdrawn just before that result.
+  - A request arriving after the last prompt has answered, such as a wake
+    in the same write, is held. It is asked once YA reports it is idle, or
+    when YA sends its next prompt, so it is visible. Both the foreground
+    turn and provider commands use that one release point.
+  - The running tool calls that Stop marks cancelled are remembered up to
+    256, the oldest forgotten first. A delayed request for a forgotten call,
+    or for a call already reported terminal, is treated as new work.
+  - A withdrawn prompt's late answer is refused and does not move the
+    session back in-turn.
+  - From Stop until the cancelled prompt returns, nothing is steered in:
+    `agy` refuses a prompt while it cancels one, so input sent then waits
+    in YA's queue and is delivered afterwards.
+  - Native permission requests from a child conversation have not been
+    observed ([gap](../gaps/antigravity-child-permission-routing-unqualified.md)).
+- **Limits.** At most 32 requests wait at once; more are answered
+  cancelled. If two pending requests share an ID, the first is withdrawn and
+  the ID gets one error answer. When the connection ends, intake closes and
+  every waiting prompt is withdrawn, including for a frame flushed during
+  shutdown.
+- **Observed tool calls** (real `agy` with a scripted model):
+  - in default mode, a scripted `write_file` and `run_command` asked;
+  - in accept-edits, a `write_file` ran without asking and a `run_command`
+    asked;
+  - with bypass, neither asked;
+  - after Allow of `write_file`, the file was written and the turn
+    continued;
+  - after Deny, nothing was written, YA showed an error result, and `agy`
+    ended the turn without asking the model again; the next message
+    started a new turn;
+  - Stop while a `write_file` waited withdrew the prompt and wrote nothing.
+    A message sent right after Stop was delivered once the cancelled prompt
+    returned.
+
+Stop requests native `session/cancel`; hard abort closes the owned process
+group and waits for exit.
 
 Initial support covers text and file references. Inline image/document blocks
-fail explicitly rather than being discarded. Native `/plan` and `/usage` text
-is forwarded normally, but no YA command inventory, steering, manual compact,
-rewind, fork, quota dashboard, sandbox or custom instructions are promised.
+fail explicitly rather than being discarded. Steer sends a second native prompt
+to the active session. `agy` applies it at its next model boundary, and YA
+keeps the turn open until all submitted prompts settle. The composer
+lists native commands as the runtime advertises them, including `/plan`.
+
+When the current session advertises `/compact`, YA supports manual and queued
+compaction with optional focus instructions. The queue advances only after
+the native command returns and a new completed checkpoint appears in the
+native transcript. A missing checkpoint fails the command. An unreadable
+outcome stays unconfirmed. Both hold later input under the existing
+[queued compaction rules](../docs/tactical/173-queued-compact-delivery.md).
+The live session shows a compaction boundary for a verified command, and
+cold history shows every checkpoint in the log.
+
+Known active root-session shell commands, schedules, and `invoke_subagent`
+children appear in the shared
+[background-work view](provider-wait-and-background-work.md). Non-daemon
+work that outlives the foreground turn retains the native owner until its
+terminal tool event (or, for subagents, until `conversation_summaries.db`
+reports the child settled as idle/killed — with a bounded provisional grace
+window while `agy` asynchronously flushes a freshly launched child row —
+checked at turn settlement, passive updates, and retention queries with no
+polling timer). Detached output appears
+in the same conversation, including replies to scheduled wakes and subagent
+completions. ACP does not guarantee a result notification for those replies. YA
+displays them as background output, with steering and verified turn completion
+available on submitted prompts.
+
+The v0 API supports direct and AAR-routed model discovery (`selection?provider=antigravity&routing=aar|direct`), creation, conversation following,
+steering, background state, queued compaction and verified Stop using the
+existing authority and receipt contracts. Eligible bypass-permissions CLI
+launches receive their own private v0 connection when Agent API discovery is
+enabled. See [HTTP API v0](http-api-v0.md#local-agent-bootstrap).
+The shared subscription usage surface can show quota buckets from the CLI
+status line on supported hosts. Rewind, fork and general YA instruction
+injection remain outside the current provider scope.
 Native skills, hooks, MCP configuration and provider-created workspace files
 remain Google's behavior; YA creates no project-local cache or Git exclusions.
 Native-only projects now join the shared retained catalog and project list;
-Claude history is not required. External-process detection and focused native
-history observation remain unqualified.
+Claude history is not required. Another program writing a conversation shows
+the external-session banner ([another writer](#another-writer)).
 
 ## Identity and history
 
 The existing YA admission owner retains the public session identity. The
-provider-native UUID is a continuation address under the active runtime's
-canonical store (default `GEMINI_HOME` is `~/.gemini`):
-`antigravity-cli/conversations` for `agy acp`, `antigravity-acp/conversations`
-for the standalone runtime. Sessions in the other store are not resumable
-while `agy` is preferred. Resume
+provider-native UUID is a continuation address under the runtime's canonical
+store, `antigravity-cli/conversations` in the `--gemini-dir` YA passes or else
+`~/.gemini`. Resume
 validates the original store, physical database and project before native
 effects. Rejected native resume never falls back to `session/new` or replays
 queued input into another conversation.
 
-History comes from native file facts and ACP `session/list` and
-`session/load`, with no YA shadow transcript or protobuf decoder. The standalone
-runtime writes a `<uuid>.meta` JSON file holding the project path; `agy` 1.5+
-writes none and instead records each conversation's workspace URIs and title in
-its `conversation_summaries.db` index. YA reads only that table's id,
-workspace and title columns, read-only, cached per index file version. When
-several workspace URIs are listed (`/private/tmp/x`, `/tmp/x`), the last is the
-cwd the client supplied and matches YA's project binding. Reading never
-sends a prompt or auth request. Unknown/foreign project files are not adopted.
-The native replay API may update Google's own continuation metadata; YA does
-not treat it as a byte-preserving database export.
+History comes from native file facts and `agy`'s brain log, with no ACP
+replay, YA shadow transcript or protobuf decoder. Resume uses ACP
+`session/resume`, so a resumed session's earlier history is read from the
+log as well. Session summaries take their title from the summaries index, or
+for an untitled row from the log's first prompt, and start no `agy` (before
+plan 195 step 4 they asked ACP `session/list`).
+[Native storage](antigravity-native-storage.md) describes each file `agy`
+writes and the brain log's record format. `agy` records each conversation's
+workspace URIs, title and subagent lineage (`parent_conversation_id`,
+`agent_name`, `nesting_depth`) in its `conversation_summaries.db` index; a
+conversation without a workspace there is not listed. YA reads only those bounded summary
+columns, read-only, rejecting out-of-store symlinks on the database and its
+SQLite sidecars. Conversations with a non-empty `parent_conversation_id` are
+excluded from top-level catalog scans, `listSessions`, `getSessionSummary` and
+`getSession` before any ACP subprocess starts, keeping provider-managed
+subagents out of top-level session lists even when their `<uuid>.db` files sit
+inside `conversations/`. Durable child relationships flow through the shared
+`ProviderChildRelationshipService` via `AntigravitySessionReader.getProviderChildSource`
+using bounded read-only `conversation_summaries.db` snapshots; a missing
+summaries index stays unknown rather than publishing an authoritative empty set, and running subagents whose
+`last_modified_time` is the `0001-01-01` sentinel fall back to local `.db`/`.db-wal`
+file mtimes and in-memory activity overlays without churning durable SQL edges.
+Authorized descendant transcript reads serve children from their own brain
+log's latest page ([children](#cold-history-from-the-log)); a running
+child's log lacks the step in progress, and its missing log is an empty
+transcript. A settled child whose log is missing or unknown shows the
+[notice row](#history-ya-cannot-show) instead, after revalidating
+project-eligible lineage. When several workspace URIs are listed
+(`/private/tmp/x`, `/tmp/x`), the last is the cwd the client supplied and
+matches YA's project binding. Reading never sends a prompt or auth request.
+Unknown/foreign project files are not adopted. Around a native
+`session/resume` (or `session/load`, which YA no longer sends) of a stopped
+conversation, snapshots found its database content and brain log unchanged,
+but `agy` adds temporary database sidecars and writes store-wide files,
+including the summaries index
+([measured](antigravity-native-storage.md#what-load-and-resume-write)). The `agy` 1.5.13 ACP stream
+reports file-read tool identity, location and status, while the file
+contents stay in native model context.
 
-The preview uses a local in-process owner, even when the shared provider host
-is enabled. Cold resume uses native `session/load` to restore history before
-new input; it first waits for an in-progress cold history read of the same
-conversation to release it, while a second live owner is still refused. While that owner lives, detail reads use its bounded native-event
-projection rather than loading the same native session a second time. This
-in-memory view survives YA's short transport replay window, is discarded on
-owner exit, and is never persisted as a substitute transcript. Concurrent use
-of the same conversation in a separate editor/CLI is not qualified.
+### Cold history from the log
 
-App browsing uses the shared catalog and provider-root watcher described below.
-Explicit native history and title reads own subprocesses; reader disposal closes
-them. Because `session/load` itself rewrites the conversation files, which the
-provider watcher reports and viewers refetch, a cold history read is reused
-until those files differ from their post-load state (at most four per project
-reader). Without this, opening a session could reload it repeatedly. Native title lookups coalesce and cache their ACP list for five seconds,
-cap at 2,000 entries and refuse unsupported pagination.
-At most eight detail reads per cached reader may run concurrently. Replay is
-bounded to 8 MiB/10,000 messages and protocol frames to 16 MiB; excess fails
-explicitly instead of claiming complete history. Larger-corpus/bounded native
-replay support is a prerequisite to removing these preview limits.
-The live projection has the same 8 MiB/10,000-message limit. It is retained only
-for an owned provider session and adds no timers or background history reads.
+Plan 195 step 4. The reader projects `brain/<id>/.system_generated/logs/transcript_full.jsonl`
+([projection](antigravity-native-storage.md#projection--plan-195-step-3),
+[windows](antigravity-native-storage.md#serving-cold-history--plan-195-step-4)).
+It never reads the shortened `transcript.jsonl`.
+
+- **Pages.** The detail route's compact-tail read returns the newest records
+  back to the requested number of checkpoints, or about 4 MiB of records,
+  whichever comes first. An older page ends before its cursor message. A
+  page holds whole records and starts at one that is not a tool result, so
+  a call and its results load together. A page whose records show nothing
+  (only reminders) extends to the page before it. Older pages report
+  `hasOlderMessages` with their first message as the cursor, as other
+  providers' pages do. A catch-up from a durable overlay's ID (a recap,
+  local-command or synthetic-done row) reads the latest page too; an
+  overlay older than that page is a missed anchor, answered like any other
+  with the page as a replacement window and its older-page cursor.
+- **Whole-log reads** happen only when a caller asks for complete history:
+  a detail read with `fullHistory=1` (including the saved full-history
+  preference and opt-in aside polling and hydration),
+  public-share capture, restart and handoff sources, the maintenance
+  comparison and opt-in instruction restoration.
+- **Message IDs** come from step indexes: `<id>:step-<n>` with `:thinking`,
+  `:text`, `:error`, or a call's `:tool-<i>:call` and `:tool-<i>:result`. A
+  page has the same IDs however it was reached. `beforeMessageId` and
+  `afterMessageId` accept each form; a `:result` names the record at step
+  P+1+*i* of planner P's call *i*. An ID from before this change (positional
+  `<id>:<n>`, or an ACP tool call ID) misses cleanly: an older page is empty
+  and reports no older history, and a catch-up gets the latest page as a
+  replacement window. A catch-up further back than one page does the same.
+- **Large records.** A record larger than 16 MiB is never parsed or held:
+  its first 512 bytes must begin with the observed leading keys
+  (`step_index`, `source`, `type`, `status`), or the log is unknown, and it
+  is shown from that head alone; an `error` too long for the head leaves
+  the row without its error text and time. A result becomes a placeholder in its step's slot; a planner
+  response becomes an assistant row "too large to show" whose calls are
+  unknown, so the results after it are covered by it and not shown; any
+  other record becomes a row of its kind with that notice (a checkpoint
+  stays a compaction boundary; a reminder stays hidden). In a tool group
+  whose results together exceed 16 MiB, each result over 64 KiB is a
+  placeholder from its head, and smaller ones, such as a subagent's result
+  with its child link, are read normally. The rules depend only on line
+  sizes, the complete read and every page apply them alike, and
+  everything before and after stays reachable by paging. Size never makes
+  a log unknown.
+- **Clipped prompts.** `agy` logs a prompt whose wrapped request passes
+  192,000 UTF-8 bytes clipped to that length, followed by its own
+  "truncated" notice ([measured](antigravity-native-storage.md#clipped-prompts)).
+  YA shows such a record as the user prompt's beginning followed by
+  "[agy logged only the beginning of this prompt; it left out the last N
+  bytes.]". Only when the last `</USER_REQUEST>` in the kept text is
+  followed by at most 512 characters (the longest trailer measured was
+  387) that read as whole trailer blocks then one partial block is the clip
+  taken to fall after the request, and the prompt shown whole; any other
+  close, such as one a paste quotes, is part of the prompt, so every kept
+  byte after the opening marker is shown with the notice. A clipped record
+  is never unknown for its content; only another length, notice or opening
+  is. An unclipped prompt that quotes the close is read correctly already:
+  its real close is the last one. Pasted text that imitates a close and a
+  trailer within the last 512 characters before the clip is still taken
+  for the real ones, and the text after it is not shown. The live row,
+  while the owner holds it, shows the whole prompt as sent.
+- **Cost.** A page reads its own bytes (about 4 MiB, the first record or
+  trailing tool group excepted), the records after an older page's cursor
+  that resolve its group or error, a search by halves for a cursor, and
+  append-only source checks. A page starts at a record that is not a tool
+  result and reads nothing older than it needs. Lines are found by offsets
+  first and their bodies read only when shown; crossing a record or group
+  too large to hold costs its size in reads, with memory near one page.
+  The detail title reads at most the file's first 256 KiB. A file replaced or
+  truncated while it is opened or read is read again, up to three times,
+  then unknown. Reads are read-only, start no process and take no
+  ownership guard; the summaries index read is the one exception to
+  writing nothing
+  ([SQLite sidecars](../gaps/antigravity-summaries-read-creates-sqlite-sidecars.md)).
+- **A missing or unreadable log.** A missing log, one with no complete
+  record, or an unknown one (malformed content among the records the
+  window read, or a file that kept changing) is shown as one row saying so
+  ([history YA cannot show](#history-ya-cannot-show)); nothing replays the
+  conversation. Validation covers what is read: the records a page shows,
+  the heads of records it only steps past (an oversized record's body, a
+  reminder's text and results under a placeholder are not read), so a
+  malformed record elsewhere does not affect a page that does not read it.
+- **Store binding.** A read is published only for the store the reader is
+  still bound to: if its conversations directory now resolves to another
+  store, or the reader closed, the read returns nothing.
+- **What cold history shows**, unlike ACP replay: tool results, checkpoints,
+  `agy`'s tool names, each step's time and model, interrupted calls, and
+  `ERROR_MESSAGE` records as errors (after a Stop too, where the live view
+  just ends the turn). Inbox deliveries such as a background task's wake are
+  collapsed "System message" rows; reminders `agy` adds to the model's
+  context are not shown, as the live view and other providers' injected
+  instructions are not. A tool result's leading `Created At:` and
+  `Completed At:` lines with `agy`'s timestamps are dropped; other output
+  that starts with those words is kept. A planner response's `error` is an
+  error row unless the very next record (no tool results between) is an
+  `ERROR_MESSAGE` whose text contains it, as on a 1.5.14 cancel ("context
+  canceled by user", then "API error (attempt 1): context canceled by
+  user"), which shows one error. Any other pair shows both.
+- **What it no longer shows.** Steps that exist only in the conversation
+  database, which ACP replay showed: replies cut off when the owner was
+  stopped mid-response (1.5.14) and some quota errors. The step 3 census
+  found six such steps in five of twelve local conversations
+  ([census](antigravity-native-storage.md#comparison-with-acp-replay)). This
+  is the accepted cost of reading the log without decoding the database.
+- **Children.** An `invoke_subagent` result is shown as the `spawn_agent`
+  `{agent_id}` result that makes the row expandable with Open only when the
+  child it names is a direct child of the conversation in the summaries
+  index; calls and results pair by step, so no argument correlation is used.
+  Expanding or opening a child shows its log's latest page (back to two
+  checkpoints or about 4 MiB), with the step in progress missing while it
+  runs. The agent-session response has no field for earlier content not
+  loaded, so a longer child's earlier steps are not shown, as before this
+  change (a 4 MiB tail while running, an 8 MiB replay cap once stopped,
+  before plan 195 step 8 removed the replay).
+- **Title, hover and v0.** The detail title is the first prompt, read from
+  the log's first records. A summary whose index row has no title takes it
+  from the same bounded read of the log's start; listings do not read the
+  log, so an untitled row lists as "Antigravity session", where ACP's list
+  could name it before. The hover excerpt and the v0 conversation source
+  use the latest page; an excerpt not found in it is unknown, never a full
+  read. A v0 window whose page was cut by bytes reports incomplete coverage
+  with earlier history in scope and a byte limit, not compaction scope.
+
+A live YA owner's rows keep their own IDs until they move to the log; how a
+view joins them is in [resume and the live view](#resume-and-the-live-view)
+and [live memory](#live-memory). After the owner exits, a client's catch-up
+from a live ID misses and takes the log's latest page. A v0 observer that
+outlives the owner replaces that owner's rows with what the log holds
+([simple client API](simple-client-api.md)).
+
+A stopped page open in a client refreshes when its log changes: the page's
+focused watch follows `transcript_full.jsonl` (its database and WAL until
+the log exists), as other providers' open pages follow their transcript
+file, so an append by any program reaches it within the watch's poll.
+
+### History YA cannot show
+
+Plan 195 step 8 removed the ACP `session/load` replay that used to stand in
+for a log YA could not read ([decision](../docs/tactical/195-antigravity-native-history.md#8--decide-the-acp-replay-fallback)).
+Reading history never starts `agy`, and YA reads Antigravity history only
+from the brain log. Where that history cannot be shown, one informational
+system row stands in its place, in the message vocabulary every client
+already renders, and the answer carries `transcriptComplete: false` (v0:
+incomplete coverage with earlier history unknown). No route, field or event
+was added.
+
+- **The row.** Its ID is `<id>:history-unavailable`, which names no log
+  step. For a log YA cannot read it says "Earlier history cannot be shown:
+  YA cannot read Antigravity's log for this conversation. Resuming
+  continues the conversation with the context agy kept.", with the reader's
+  reason in its collapsed details. For a log that is gone, or lacks earlier
+  records, it says "Earlier history cannot be shown: this conversation's
+  Antigravity log does not hold it, and YA reads history only from that
+  log." and the same second sentence.
+- **A stopped conversation.**
+  - An unknown log: each page is validated on its own, so pages that do
+    not read the bad record are served normally. The page that reads it
+    is the row alone, with no older-page cursor, so paging back stops
+    there; the readable records on that page, before and after the bad
+    one, are not shown (the window reader has no partial result). When
+    the bad record is inside the latest page, that is all the
+    conversation shows, including turns an owner resumed over it took
+    once that owner stops. The only real `agy` cause, a second `agy`
+    writing the same conversation, puts the bad records near the end
+    ([gap](../gaps/antigravity-unknown-log-hides-readable-prefix.md)).
+  - No log, or no complete record: the row, unless the summaries index's
+    `step_count` for the conversation is 0. `agy` 1.5.13 and 1.5.14 report
+    0 for a conversation created and never prompted, and a positive count
+    for every prompted one, including one whose log lacks its last steps
+    ([measured](antigravity-native-storage.md#the-replay-fallback--plan-195-step-8)).
+    A never-prompted conversation shows an empty, complete transcript with
+    no row. A missing count is taken as prompted. A count stale at 0 for a
+    conversation that has steps would show no row.
+  - A log whose first record is after step 0 (what `agy` writes when it
+    resumes a conversation whose log was lost: it numbers steps from its
+    database) shows the row above its oldest page.
+- **A live owner.** One that resumed without a readable log shows the row
+  above the oldest page it serves (see [resume](#resume-and-the-live-view)).
+  One whose log goes missing, is replaced or becomes unreadable while it
+  lives shows the row and then its own rows.
+- **Children.** A settled child whose log is missing or unknown shows the
+  row (a missing log with a `step_count` of 0 shows nothing). A running
+  child's missing log is an empty transcript; its log is written as its
+  steps end.
+- **Every request** (latest page, older page, catch-up, complete history)
+  answers the same way. A catch-up after the row finds it and adds
+  nothing; "Load older" before it is an empty page.
+- **What this gives up.** The replay showed what `agy` replays from its
+  database: the whole conversation for a log that was gone or unreadable,
+  and steps that exist only in the database (see
+  [what it no longer shows](#cold-history-from-the-log)). Measured before
+  removal, the replay itself refused the unreadable logs real `agy`
+  produced, after a 10-second wait. A later `agy` that changes the record
+  format would show the row for every conversation it writes until YA
+  reads the new shape
+  ([depending on these files](antigravity-native-storage.md#depending-on-these-files)).
+
+### Resume and the live view
+
+Plan 195 step 5. Resuming a stopped conversation (a resume, a reactivation,
+or the reconnect after a scheduled reload) reads the log's latest page
+first, as a viewer's first read would.
+
+- **Known log.** YA calls ACP `session/resume`, which replays no history
+  (qualified on `agy` 1.5.13 and 1.5.14 at 7,261 steps: about 37 ms, the
+  same compacted context as a load,
+  [measured](antigravity-native-storage.md#resume-on-a-large-compacted-conversation)).
+  When it returns, the log's last complete record (its `step_index` and the
+  byte offset after its newline) is the owner's **resume point**. The
+  owner's in-memory projection starts empty there and retains nothing
+  replayed. Model, effort and mode are applied to the resumed session from
+  the configuration `session/resume` returns, as `session/load` returned it.
+- **Missing or unknown log.** YA calls `session/resume` too (plan 195 step
+  8; qualified on `agy` 1.5.13 and 1.5.14). `agy` keeps the conversation's
+  context in its database, so the resumed turn has it, and model, effort
+  and mode are applied as for any resume; YA cannot show the history
+  before the resume point, so the owner records why, and its view starts
+  with the [notice row](#history-ya-cannot-show). An unknown log's resume
+  point is its last complete line when that line's head reads (else an
+  empty log's); a missing log's is an empty log's. A conversation with no
+  log whose summaries index counts 0 steps was never prompted: it resumes
+  at an empty log with nothing to say, as a new session does. With a
+  missing log, `agy` writes a new log from its own step counter (its first
+  record was at step 2 after one prompted turn, on both versions), and the
+  owner's split points are proven in it as for any owner; a log YA cannot
+  read proves none, and the cap bounds the owner ([live memory](#live-memory)).
+
+While a resumed owner lives, every reader joins two sources, each row from
+exactly one, with no row twice and none missing at the resume point
+(apart from the residual and the cap described under
+[live memory](#live-memory)):
+
+- the log **through the resume point**, a page at a time with
+  [step IDs](#cold-history-from-the-log); a window reads the file as if it
+  ended there and reads nothing after it (a record still being written
+  past it costs nothing);
+- then **the owner's rows**, under their live IDs: everything it produced
+  since, including steps the log has also recorded since, until the owner's
+  rows pass a soft budget and the resume point moves to a proven split
+  point ([live memory](#live-memory)).
+
+| Read | Answer |
+| --- | --- |
+| Latest page, overlay catch-up, v0 window | The log's latest page through the resume point, then every live row; the route cuts compaction scope across both. |
+| Older page before a log row | The log's page before it, as when stopped. |
+| Older page before a live row | The latest log page and the live rows; the route cuts before the row. |
+| Catch-up after a log row | The log from that row's page to the resume point, then every live row; a miss (replacement) if the row is before the boundary's step and the owner has moved past where it opened ([live memory](#live-memory)). |
+| Catch-up after a live row the owner holds | The live rows. |
+| Catch-up after any other ID (one that left memory, or never existed) | A miss: the latest page as a replacement. |
+| Older page before a live row that left memory | Empty, as for any unknown ID; the browser takes its tail again. |
+| Complete history | The whole log through the resume point, then every live row. |
+| Hover excerpt | The owner's latest prose, else the joined latest page. |
+| Agent mappings | The joined latest page. |
+
+Every answer's title is the conversation's first prompt from the log (a
+bounded read of the file's start when the log page itself was not read),
+never the resumed owner's own prompt. A new session whose log holds
+nothing yet takes it from its owner's first prompt. A live-row catch-up reads no records
+but still checks the log through the resume point, at fixed offsets
+whatever the size of the record there, and reads the title from at most
+the file's first 256 KiB.
+
+**Unavailable earlier history.** The resume point also pins the log file's
+device and inode. If, while the owner lives, the log is missing, has been
+replaced, is shorter than the resume point, or no longer has that step's
+record there, the history before the resume point is unavailable: every
+answer (latest, older pages, catch-ups, complete) carries the detail
+response's existing `transcriptComplete: false`, still serves the owner's
+rows (a page before a log row is then empty), and starts no `agy`. The v0
+source reports that read as incomplete coverage with
+`earlierOutsideScope: "unknown"`. The browser does not read
+`transcriptComplete` for any provider today; since plan 195 step 8 the
+[notice row](#history-ya-cannot-show) leads such a view. An in-place
+edit of earlier records that keeps the resume point's step and offset is
+not detected ([another writer](#another-writer)).
+
+A read that an owner opened, closed or moved the resume point of is read
+again, so a page never mixes one owner's split with another's. If the owner
+changes during four reads in a row, the last read is the answer: its log
+rows are cut to the current owner's resume point (none, if the read came
+from a file other than the one that owner's resume point pins), the
+current owner's rows follow it where the request includes them, and it is
+marked `transcriptComplete: false`, rather than a missing conversation. A new
+session's owner starts at an empty log, a resume point at offset 0 that
+needs no file, and so does the owner of a resumed conversation with no log.
+Every owner has a resume point.
+
+An owner holds the conversation from before its `agy` starts. Until its
+session is open, readers read the log as for a stopped conversation:
+nothing has been written past it. Where the shared provider host is
+available the owner runs in a Provider Host worker
+([in the Provider Host](#in-the-provider-host)).
+
+### Live memory
+
+Plan 195 step 6. A live owner keeps a bounded recent window of rows; the
+log serves everything through its boundary, as above.
+
+- **Under the soft budget** (2 MiB of JSON or 2,000 rows) nothing moves:
+  the view is the log through the boundary plus every live row, so a row a
+  client streamed keeps its ID, and every catch-up appends. The window can
+  pass the budget by what arrives before a split is usable (below), and
+  indefinitely when no split is usable; then only the cap bounds it.
+- **Over it,** the boundary moves to a proven split point and every row
+  before it leaves memory. Each turn's first prompt P (sent only while the
+  owner is idle: no turn, no compaction) is a candidate: right before
+  sending it, the owner takes one synchronous `statSync` of the log, its
+  size Z and identity, adding no await to the send. The log's path is
+  resolved once per owner, asynchronously, when it opens or, for a new
+  session, on its first turn's output; a prompt sent before that records
+  no candidate. The stat is one call per turn on the server's event loop, so
+  a stalled mount holding the Antigravity store stalls dispatch for every
+  session. The candidate is dated after the stat returns.
+- **The check.** When the window is over the budget and a candidate is old
+  enough, the owner checks it asynchronously, one check at a time. A check
+  can start when a row is recorded or when a candidate is added. It reads
+  the 512-byte head at Z (a `USER_INPUT`), the byte before Z (a newline),
+  and the record ending at Z, found and read once in chunks back from Z,
+  the last chunk clamped to the 16 MiB record limit and its two newlines;
+  it must be within that limit, parse completely and end a turn (a planner
+  with no calls, or an `ERROR_MESSAGE`; a longer record fails, and a later
+  candidate will do).
+  These show the two records around Z, not that the input at Z is P's
+  ([another writer](#another-writer) states what is detected). Then it reads the span it would retire, from the
+  current boundary to Z, through the log window reader, a page back at a
+  time as "Load older" would serve it, stopping at the first unknown page;
+  any unknown page, or an older-page cursor that does not resolve, drops
+  the candidate and the rows stay in memory (the cap still bounds them).
+  What these reads cost is a description, not a cap: the span check reads
+  the span's pages through the window reader, which looks up each cursor
+  by halving and may read the record ending at Z again; a failed
+  candidate's reads are not reused by the next. Once the owner closes, the
+  check opens no further page; a page read already started finishes, with
+  its own retry on a changed file. The new boundary is the record ending
+  at Z. A failed check discards the candidate and caches nothing, so a
+  truncated, replaced or unreadable log moves nothing; a log with nothing
+  past Z yet leaves it pending, checked again once a row arrives after
+  its check started, and an older eligible candidate is tried meanwhile.
+  Eight candidates are kept, thinned by time (the oldest always stays), so
+  a burst of prompts never forgets every usable one. A proven candidate
+  moves the boundary even if the cap already evicted every row before it,
+  which clears the incomplete mark.
+- **No candidate after some turns.** A turn that ends on a model HTTP error
+  leaves its `USER_INPUT` last in the log, and a `/compact` cancelled after
+  its checkpoint leaves the checkpoint last (both versions), so the next
+  prompt's candidate fails; the window is cap-bound until an ordinary turn
+  ends.
+- **Why that splits correctly.** P follows the previous turn's result on
+  the ordered ACP stream, so that turn's output has all arrived, and that
+  turn's `USER_INPUT` is in the log before its result is sent (the
+  [assumption](antigravity-native-storage.md#live-memory--plan-195-step-6)
+  the proof rests on). On `agy` 1.5.13 and 1.5.14 every wake (a background
+  command's, a detached subagent's report, one interrupted by a prompt)
+  logs a non-terminal record (its task-end or inbox `SYSTEM_MESSAGE`, once
+  a tool result) before its first ACP output, so a wake in flight when P is
+  sent fails the terminal check, and one that lands between Z and P's input
+  fails the `USER_INPUT` check ([measured](antigravity-native-storage.md#live-memory--plan-195-step-6)).
+- **The residual.** Output for a record at or before Z that arrives on the
+  ACP pipe after P was sent is not seen by the proof: `agy` sends no echo or
+  other update tied to a prompt to order it by (none on either binary). The
+  adapter already shows such a chunk as part of P's turn
+  ([gap](../gaps/antigravity-late-wake-chunk-joins-next-turn.md)); once a
+  move covers that record, the chunk is shown twice in the live view, once
+  from the log and once as a live row, until the owner stops, when the log
+  alone serves it. It needs a record written whole before P was sent while
+  its last frame was still in transit; it was reproduced only by holding a
+  frame at the transport. Likewise a detached tool's result that arrives
+  after its call was retired has no live call to pair with, and is shown
+  orphaned until the owner stops.
+- **Not too early.** A candidate is used only once Process's replay buckets
+  holding every row before it have expired: 30 seconds after P was sent
+  plus a 5-second margin, measured on the monotonic clock (for an owner in
+  a Provider Host worker, from when the backend acknowledged every row
+  before P; see [in the Provider Host](#in-the-provider-host)). The buckets
+  rotate on a timer, so an event-loop stall longer than the margin can
+  leave a moved row in the buffer for a viewer that joins late, which then
+  receives it under its old ID beside the log's copy until its next
+  replacement.
+
+Nothing is read in the background beyond these checks, no timer drives
+them, and nothing is checked or moved after the owner closes, by natural
+exit or abort.
+
+**What a move changes.** A page read after it shows the rows before the
+split from the log, as a cold view would: `agy`'s tool names and rendered
+results, the records' times and models, checkpoints, a reply a steer
+interrupted as one reply before the steer, a prompt `agy` clipped as its
+beginning with a notice (below), and no rows for steps the log never
+recorded (a reply cut off when the owner was killed, say). A read that a
+move happened under is read again, up to three times; the last is served
+cut to the owner's boundary and marked incomplete.
+
+**Clients at a move.** A connected client whose last fetched row left
+memory gets one replacement window on its next catch-up: the existing
+answer to a missed anchor, which drops the older pages it had loaded and
+its scroll position ([gap](../gaps/client-tail-replacement-drops-loaded-history.md)).
+So does one whose catch-up starts at a log row before the moved boundary's
+step while the owner has moved (it may hold the rows after it under live
+IDs), decided from the steps without reading a page. A client whose last
+row is still live keeps appending and loses nothing. "Load older" from a
+row that left memory gets an empty page, the stale cursor the browser
+recovers from by taking its tail again; then older pages load from the log
+as usual. Apart from the residual and the late joiner above, a client
+never sees a row twice.
+
+**The cap.** What remains is capped at 8 MiB of JSON and 10,000 rows: past
+either, the oldest row other than the one being recorded leaves without the
+log serving it, and every answer carries `transcriptComplete: false` (v0:
+incomplete coverage; frozen sharing refuses it) until a move covers it.
+One row larger than the cap is stored cut, in at most four serializations:
+its longest text field cut once; else every structured tool body replaced
+by a short omission; else only each block's type, IDs and name. It ends in
+a notice that the live view keeps only its beginning and that the log
+shows what `agy` recorded once the row moves there or the session ends
+(which may itself be clipped). While a cut row is held the answer is
+incomplete too, so frozen sharing refuses it. A live text or thinking block
+stops growing at 8 MiB, with the same notice, and is marked the same way;
+the stream then carries that cut text. Nothing throws, and the session
+keeps running. An update for a row that left memory (moved or evicted)
+does not bring it back while its ID is among the last 10,000 to leave (the
+retired-ID ring). An owner whose log YA cannot read proves no split point,
+so only the cap bounds it; a conversation whose log was empty when its
+owner opened (a new session, or a resumed one never prompted) keeps its
+first prompt as its title even after the cap evicts it.
+
+**Stop before a send.** A Stop that arrives while a dequeued input is
+still starting (its subagent position read) cancels it: it is never sent,
+and the turn ends with a result. A configuration hold or a compaction that
+arrives during that read is waited out, under the same Stop, and the
+position read again.
+
+### Another writer
+
+Plan 195 step 7. Another program writing a conversation YA shows but does
+not own (the user's `agy` in a terminal, say) marks it external: session
+reads report `owner: "external"`, the existing amber banner shows, and it
+decays 30 seconds after the last such write, as for Claude and Codex
+([session ownership](session-ownership.md)). A Stop's or idle reap's abort
+grace applies as for them.
+
+- **Evidence.** The conversation's own database changing, or its WAL
+  changing while not empty, as the provider-root watcher reports them; and,
+  while a client has the conversation open, its log changing as that
+  page's focused watch polls it. Before the log exists that watch follows
+  the database and WAL instead, which refreshes the page and adds no
+  evidence of its own (the root watcher reports the same files). Not
+  evidence: the summaries index and its
+  sidecars (every conversation's writer touches them, and YA's own
+  summaries read creates the sidecars), a 0-byte WAL or the shared memory
+  (any SQLite open creates them, `agy`'s own resume and load included), a
+  deletion (a writer closing), a child conversation, and a conversation the
+  summaries index lists without a workspace
+  ([measured](antigravity-native-storage.md#writers--plan-195-step-7)).
+- **YA's own writes** are not evidence: anything written while YA's owner
+  holds the conversation (from before its `agy` starts, so a resume under
+  way is included), and anything written before it let go (remembered 30
+  seconds). An owner in a Provider Host worker holds it in the backend
+  from before its worker launches (from the backend's start, for a worker
+  a reload left running) and lets go at the release time the worker
+  published ([in the Provider Host](#in-the-provider-host)). An owner holds the conversation until its
+  `agy` has exited, so this covers its turns, wakes, compactions, Stop, its
+  close, and the idle close an `agy` makes about 30 seconds after its last
+  write (a checkpoint of the database, no new step). A write after the
+  release is judged by its file's modification time, not by when the
+  watcher reports it, so a report delayed past the owner's exit is still
+  YA's.
+- **A conversation YA owns.** YA's process owns the session, so it stays
+  `owner: "self"` with its controls and no banner, and the watcher's
+  reports for it are taken as the owner's own. The owner checks for
+  another writer itself, from the log alone: one asynchronous stat of the
+  log at each turn's result or command's end, compared with the stat its
+  next turn-first prompt takes. Growth with nothing of its own running
+  (no turn, command or retained detached work, and no work update since)
+  and later than 2 seconds after its last ACP frame drops the owner's split
+  candidates, discards a check under way ([live memory](#live-memory)) and
+  gives that prompt no candidate; a later turn's first prompt gives a new
+  one, and the cap still bounds the rows. It logs a warning. Once YA's owner
+  stops, the other program's next write marks the conversation external.
+  (Review round 1 removed the watcher's part in this: an idle `agy`'s own
+  database close 30 seconds after a turn read as another writer and
+  dropped every candidate after each idle gap.)
+- **When it shows.** On Linux at the other program's write. On macOS the
+  watcher reports another process's writes into a file it holds open only
+  when it closes it, so a conversation open in a client shows it within its
+  focused watch's poll (1.5 seconds), and one not open when the other
+  `agy` closes the database: at its idle close about 30 seconds after its
+  last write, or when it exits. An owned one is found at the owner's next
+  turn-first prompt, on every platform.
+- **What is not detected.** A write by another program to a conversation
+  YA's owner holds is not seen until the owner's next turn-first prompt,
+  and not at all when it lands while the owner's own turn or detached work
+  runs, within 2 seconds of its last frame, or before a wake of its own
+  (which also writes the log). That includes a foreign
+  `USER_INPUT` written at a split candidate's offset, between the owner's
+  stat and `agy` logging the owner's prompt: the candidate's head check
+  takes its type, so a later move can take it for the owner's prompt, and
+  telling them apart would need the record's content. A second `agy`
+  writing the same conversation numbers its steps from its own counter, so
+  the log stops increasing there and is unknown from that record on: no
+  later move reads across it, and the foreign records after the boundary
+  stay out of the owner's view until it stops; then the stopped view shows
+  the [notice row](#history-ya-cannot-show) for a log YA cannot read. An
+  in-place rewrite of earlier log records that
+  keeps the boundary record's offset and first bytes is not detected; a
+  replaced, truncated or shortened log is, at the next read through the
+  boundary ([resume](#resume-and-the-live-view)).
+- **Costs.** Nothing here reads the log's content, opens the conversation
+  database, starts `agy`, or adds a timer. Watcher events go through the
+  tracker's existing bounded batch; an unowned write reads the summaries
+  index (cached per index version) for its project. The focused watch on a
+  log exists once per conversation open in a client, released when its last
+  client leaves, with the poll every open page's watch already has. An
+  owner adds one asynchronous stat per turn.
+
+### In the Provider Host
+
+Plan 195 step 9. Where the [shared Provider Host](reload-safe-provider-runtimes.md#shared-provider-host-architecture)
+is available, an Antigravity session's owner runs in a Provider Host
+worker like every other provider's: its `agy`, the ACP client, the live
+window with its split candidates, checks, cut rows and retired-ID ring,
+the permission requests, the detached-work tracker and the queued input
+all live in the worker, so a backend reload or a backend crash no longer
+ends the session ([backend reload](#support-status--2026-11-22)). Without
+the host (Windows, a disabled host, a host that could not start) the same
+owner code runs in the backend, as before, and a reload interrupts it. Only
+where readers find the owner differs.
+
+- **What the backend keeps.** That a hosted owner holds the conversation,
+  from before its `agy` starts (a resume names its conversation before the
+  worker launches; a new session's owner is known once `agy` created it)
+  until that `agy` has exited, then the release time the worker published;
+  and the IDs the owner retired, as it publishes them. Every attach
+  carries a snapshot of both, so a replacement backend rebuilds them from
+  the worker rather than from the message stream: the owner's state is a
+  current value, not a sequence to replay. The window itself stays in the
+  worker.
+- **Reads.** Every reader (the detail route, the v0 conversation source,
+  agent-session and mapping reads, the hover excerpt and frozen sharing)
+  asks the worker for the owner's view when it reads: its boundary,
+  generation, opened point, incompleteness, title and why earlier history
+  cannot be shown, and, in the same answer, the rows that go with that
+  boundary. A read checks the generation across its log read as for an
+  owner in the backend, so a row is never shown twice or lost between the
+  log and the rows. A catch-up after a live row takes only the rows from
+  that row on; the hover excerpt takes only the owner's newest prose. The
+  answers are the same in both places, as are
+  [another writer](#another-writer)'s rules: a hosted owner's own writes
+  are YA's.
+- **A view the backend cannot read.** Between a replacement backend's
+  start and its worker's reattach (and for 31 seconds after a reattach that
+  failed, until the host reaps the worker), a read shows the log alone,
+  through its end, marked `transcriptComplete: false` (v0: incomplete
+  coverage), and never marks the conversation external. A worker this
+  backend is still launching has written nothing past the log, so a read
+  then is the log, as for a stopped conversation. A read of the owner's
+  view waits at most 3 seconds for the worker (it answers from memory,
+  well under a second); a worker that has not answered is not asked again
+  within that read, which is then the log, marked incomplete, at once.
+- **Known limits.** A steer accepted before a reload and consumed after it
+  leaves its v0 receipt `unknown` (the replacement backend never saw the
+  steer); the input itself is delivered once. A claim of a retained
+  worker outside a backend's start (a resume after a reattach that failed)
+  reads the log as for a stopped conversation until the worker's attach
+  answers.
+- **Split age.** A split candidate is used once Process's replay buffer
+  can no longer hold a row before it. For an owner in the backend that is
+  30 seconds plus a 5-second margin after the prompt was sent. For a hosted
+  owner it is the same interval after the attached backend acknowledged
+  every row before the prompt (its Process had applied them, so its buffer
+  held them from then): rows a replacement backend receives in its replay
+  after a reload are acknowledged, and so dated, when it applied them, and
+  a backend that has gone took its buffer with it. Both on the worker's
+  monotonic clock.
+- **What crosses.** Process's configuration hold and its idle report (the
+  point held permission requests are put to the user) reach the worker as
+  notices; a configuration hold a backend left behind is released when it
+  detaches, and a replacement that starts idle reports idle at once. The
+  summaries-index changes the backend's provider-root watcher observes are
+  forwarded to the worker, with one on every attach for changes made while
+  no backend was attached, so a detached wake that ended meanwhile still
+  settles. A retention read is passed on to the worker, one at a time,
+  because reading retention is where Antigravity checks its native
+  settlement evidence; the retention snapshot keeps its detached-reply
+  state across the process boundary. A steer's native consumption (its
+  prompt returned) reaches the backend's queue, so a v0 steer receipt
+  reports it consumed, without the steer ever being queued there.
+- **Reload.** A hosted owner's active turn, detached work and pending
+  permission request do not block a reload; queued messages still do,
+  as for every provider ([reload UX](reload-safe-provider-runtimes.md#reload-ux-and-compatibility)).
+  Idle reap tears the worker down through the host, leaving no `agy`.
+
+### Live normalization and limits
+
+Owner projections survive YA's short transport replay window, are discarded
+on owner exit, and are never persisted as a substitute transcript. A second
+live owner of the same conversation in one process is refused, and the
+Provider Host runs at most one worker per session. Concurrent
+use of the same conversation in a separate editor/CLI is not qualified
+([another writer](#another-writer)).
+
+App browsing uses the shared catalog and provider-root watcher described
+below. History reads start no process and cache nothing; a refetch rereads
+its page. At most eight detail reads per cached reader may run
+concurrently. Each ACP frame is bounded to 16 MiB. A live session has no
+history limit: its rows are bounded as [live memory](#live-memory)
+describes, retained only for an owned provider session, with no timers;
+its only log reads are the bounded split checks. Plan 195 step 8 removed
+the replay's own 8 MiB / 10,000-message history limit and its error with
+the replay.
 
 Text and generic tool records are normalized from actual native notifications.
 Live text and thinking blocks publish `_isStreaming` snapshots of one message
 id and commit it without the flag when the next block, a tool call or the turn
 end closes it, so viewers with response streaming off see only the commit.
-Live messages carry arrival timestamps; detail reads of a live owner see
-committed content only. `agy` 1.5+ echoes each submitted prompt as
-`user_message_chunk` during the turn; YA already published that turn's user
-message, so the live projection ignores the echo, while `session/load` replay
-keeps native user chunks as history. Detail reads return the complete history
-for anchored (`afterMessageId`) requests, leaving the anchor for the detail
-route to find; a pre-sliced list would read as an anchor miss and the client
+Live messages carry arrival timestamps. A detail read of a live owner
+serves a block still streaming marked `_isStreaming`, as the stream does,
+so a client keeps following it rather than freezing that snapshot; its
+commit replaces it. `agy` 1.5.13 and 1.5.14 send no `user_message_chunk`
+for a live prompt; should one arrive, YA ignores it (it already published
+that turn's user message). Log and joined reads for anchored
+(`afterMessageId`) requests return the anchor's page onward, leaving
+the anchor for the detail route to find; a pre-sliced list would read as an anchor miss and the client
 would replace its window with the tail. Native readers report no owner; a live
 YA owner, not the reader, establishes ownership.
 ACP does not provide YA's durable input UUID, so exact live-to-history user-turn
@@ -173,10 +989,52 @@ unverified, as described in the existing
 [side-effect](../gaps/provider-session-side-effect-controls.md) and
 [display-coverage](../gaps/tool-display-native-provider-coverage.md) gaps.
 
+## T3 Code reference — 2026-11-22
+
+Source review of T3 Code `main` at [`122d3bf853`][t3-agy-revision]. The
+[T3 provider guide][t3-agy-guide] documents `agy` 1.5 or newer and recommends
+1.5.12 or newer. T3 runs `agy acp` with a managed profile and selects the
+`antigravity-acp` app-data directory inside it. YA's usual `agy acp` path uses
+the CLI's existing `antigravity-cli` store. Native file locations and layouts
+need qualification in YA's actual launch mode. This review used T3 source and
+its reported tests. Live and scripted reproduction evidence above is from YA.
+[T3 launch arguments][t3-agy-launch] · [Shared ACP architecture](acp.md#what-t3-shares)
+
+| Boundary | Reference in T3 | Application to YA |
+| --- | --- | --- |
+| Steering and Stop | The Antigravity flavor sends a second prompt for native steering and preserves background work on an ordinary follow-up after the prompt settles. Explicit Stop can cancel the native work. [T3 adapter flavor][t3-agy-flavor] | Keep Steer, ordinary deferred delivery, patient delivery and Stop distinct through the native boundary. Test that ordinary input and steering preserve background work unless the user explicitly stops it. |
+| Prompt return and pending wakes | T3 can keep an application turn open after the prompt responds. Its wake check looks for unread high-priority messages in the native inbox or a trailing waking `SYSTEM_MESSAGE` in a bounded transcript tail. It also looks for child reports or killed children. Tests cover consecutive wakes, batched reports and a stalled wake. [T3 native readers][t3-agy-work] · [T3 wake fix and evidence][t3-agy-wake-fix] | Treat the inbox and tail as candidate positive evidence that work remains when the last tool or child clears. Check them against live ACP events and the root summary in YA's store. Missing or stale reads leave settlement unverified. Keep the ordinary deferred boundary at foreground completion and apply confirmed root settlement plus the quiet interval to patient delivery. |
+| Detached reply completion | T3 uses `usage_update` to close an observed detached reply and checks for another pending wake before finalizing. It bounds how long it waits for quiet. [T3 wake fix and evidence][t3-agy-wake-fix] · [T3 ACP finalization][t3-agy-finalize] | Qualify `usage_update` on the pinned and live runtimes as one input to root settlement. Exercise a quiet end, delayed native publication and a second wake. Use the shared provider observation owner for exact-session reads. |
+| Replay and live updates | T3's shared ACP adapter sends `_meta.isReplay: true` updates to history snapshots and skips prompt progress and wake tracking. The reported regression used a scripted ACP peer through the Grok adapter. [T3 replay fix and evidence][t3-acp-replay-fix] · [T3 replay classification][t3-acp-replay-classification] | Not applicable since plan 195 step 8: YA sends no `session/load`, so no replayed frame reaches it; `session/resume` streams no history. Cold history comes from the brain log. |
+
+The applicable design is a provider-owned report of foreground completion,
+detached work and verified root settlement, with YA retaining its delivery
+policy. Use the existing scheduler and reload owners to consume that evidence.
+The final scheduled-reload admission check still belongs at the YA wrapper
+handoff. Shared ACP transport and provider-host continuity remain separately
+scoped in their owning contracts. [YA session liveness](session-liveness.md) ·
+[Reload ownership](reload-safe-provider-runtimes.md) · [ACP composition](acp.md#proposed-ya-boundary)
+
+The [upgrade checks](native-provider-testing.md#checking-an-antigravity-upgrade-candidate)
+keep lifecycle and delivery on real `agy` against a scripted model. The
+replay completion signal YA once needed for late history frames went with
+the replay in plan 195 step 8.
+
+[t3-agy-revision]: https://github.com/pingdotgg/t3code/commit/122d3bf853da716652d5066b54d05d7654c46e36
+[t3-agy-guide]: https://github.com/pingdotgg/t3code/blob/122d3bf853da716652d5066b54d05d7654c46e36/docs/user/providers-antigravity.md
+[t3-agy-launch]: https://github.com/pingdotgg/t3code/blob/122d3bf853da716652d5066b54d05d7654c46e36/apps/server/src/provider/antigravityAuthSupport.ts#L558-L564
+[t3-agy-flavor]: https://github.com/pingdotgg/t3code/blob/122d3bf853da716652d5066b54d05d7654c46e36/apps/server/src/orchestration-v2/Adapters/AntigravityAdapterV2.ts#L236-L251
+[t3-agy-work]: https://github.com/pingdotgg/t3code/blob/122d3bf853da716652d5066b54d05d7654c46e36/apps/server/src/provider/acp/AntigravityChildWork.ts#L751-L815
+[t3-agy-wake-fix]: https://github.com/pingdotgg/t3code/pull/39989
+[t3-agy-finalize]: https://github.com/pingdotgg/t3code/blob/122d3bf853da716652d5066b54d05d7654c46e36/packages/provider-acp/src/server/adapter.ts#L8753-L8783
+[t3-acp-replay-fix]: https://github.com/pingdotgg/t3code/pull/40328
+[t3-acp-replay-classification]: https://github.com/pingdotgg/t3code/blob/122d3bf853da716652d5066b54d05d7654c46e36/packages/provider-acp/src/server/runtimeModel.ts#L1319-L1322
+
 ## Qualification on 2026-11-03
 
-The official macOS arm64 ACP 1.4.5 distribution and CLI 1.4.12 were installed
-and signed in through Google's native flows. The account's existing storage
+This qualified the standalone ACP 1.4.5 runtime, which YA no longer runs; it
+is kept as history. The official macOS arm64 ACP 1.4.5 distribution and CLI
+1.4.12 were installed and signed in through Google's native flows. The account's existing storage
 plan was sufficient for ACP Gemini 3.8 Flash; no AI-plan upgrade was purchased.
 Live native probes covered text and a scratch-file tool action. Production YA
 probes covered admission, streaming, distinct public/native IDs, app restart,
@@ -204,11 +1062,11 @@ Existing project permissions, hidden directories, ownership metadata and public
 session adoption still apply.
 
 Antigravity discovery enumerates at most 2,000 `<uuid>.db` conversations, in
-batches of eight, with a 16 KiB `.meta` limit where that file exists. Native
-database and WAL file facts version rows; conversation databases are never
-decoded. Standalone-runtime rows have identity fidelity and no inferred title;
-`agy` rows take the native title from the summaries index at head fidelity. Browsing starts no native agent, login or model prompt. Explicit
-history reads still use Google's loader and preserve the active-owner guard.
+batches of eight, and takes each one's project from the summaries index.
+Native database and WAL file facts version rows; conversation databases are
+never decoded. A row with a native title has head fidelity; one without has
+identity fidelity and no inferred title. Browsing starts no native agent, login or model prompt. Explicit
+history reads come from the brain log and start no `agy` either.
 App-owned Antigravity session listings consume accepted catalog rows instead
 of repeating native inventories per project. Public catalog projection honors
 existing Antigravity bindings, so a discovered native UUID cannot replace an
@@ -218,10 +1076,12 @@ Retained project reads return accepted state while finite discovery runs.
 Completeness requires accepted coverage of each eligible native store, including
 empty stores; failed acquisition retains the previous generation. Only historically
 used families are eligible. Antigravity joins the existing provider-root watcher
-owner, watching native metadata, database and WAL changes. Changes under a
-registered native store refresh that store without rescanning file-provider
-projects. Project notifications follow changed project facts, rather than title
-changes alone. There is no new polling loop or watcher per project.
+owner, watching native conversation database and WAL changes as well
+as the sibling `conversation_summaries.db` and its `-wal` sidecar so
+lineage-only WAL commits invalidate the retained catalog without rescanning
+file-provider projects. Project notifications follow changed project facts,
+rather than title changes alone. There is no new polling loop or watcher per
+project.
 
 The next cleanup slice shares exact reader selection for child sessions and
 vocabulary, and Project Queue title lookups read accepted catalog facts without
@@ -230,8 +1090,12 @@ watches or process-to-session correlation. Grok and OpenCode do not gain
 a new root watcher here; their existing invalidation and explicit catalog refresh
 behavior remains. Legacy Gemini execution and historical readers remain intact.
 Focused Antigravity observation remains unavailable. Database/WAL notifications
-alone do not authorize automatic `session/load`, which can update native
-continuation metadata. The next slice needs owner-aware history acquisition,
+alone did not authorize automatic `session/load`: it starts `agy`, which writes
+store-wide files and the summaries index
+([native storage](antigravity-native-storage.md#what-load-and-resume-write)).
+Since plan 195 step 8 no history read loads; an open page's focused watch
+follows the brain log.
+The next slice needs owner-aware history acquisition,
 a process budget shared across readers, and WAL-aware source versions before
 turning those notifications into automatic history refresh. The local owner
 map and per-reader limits do not establish those install-wide guarantees.
@@ -309,12 +1173,14 @@ Before the first discovery pass, the concrete splits were:
    Use catalog locations and provider-supplied observation facts for file,
    database and protocol-backed sources. Reuse current coalescing, cancellation,
    source-version and disposal owners. Bound native subprocess allocation
-   across readers, not just inside each reader. Antigravity's `session/load`
-   may mutate continuation state: consult the incumbent provider owner before
-   replay, keeping that native constraint explicit. Reusing the existing
-   provider-session owner is preferable to expanding the preview's isolated
-   in-process ownership map into a second lifecycle system. Shared-host support
-   needs its own qualification; a local memory guard is not a cross-process lock.
+   across readers, not just inside each reader. Antigravity history reads
+   start no native process since plan 195 step 8 (they read the brain log),
+   so its reads need no subprocess budget. Since plan 195 step 9 its live
+   owner runs in the existing provider-session owner of a Provider Host
+   worker where the host is available, and the backend registry holds only
+   a copy of what that owner publishes
+   ([in the Provider Host](#in-the-provider-host)); that copy is not a
+   cross-process lock.
 
 This pass should remove Antigravity's parallel project-inventory path and
 reduce generic provider switches where the common registration is actually
@@ -340,11 +1206,17 @@ The [ACP topic](acp.md) compares current YA and T3 sharing and recommends a
 bounded transport/session composition. It refines this discussion without
 authorizing implementation or changing the retirement/qualification sequence.
 
-Once Antigravity discovery and normal session use meet the selected platform
-qualification, remove legacy Gemini execution and its installer/authentication
-surface. Retain historical readers, recorded IDs, scoped source resolution and
-useful regressions. A request to execute a retired provider fails explicitly;
-it never selects another provider or allocates a replacement conversation.
+Yep Anywhere retired execution for `gemini` and `gemini-acp` on 2026-11-21.
+Both IDs remain valid in historical records, URLs, and collection filters.
+Gemini transcripts can be opened without the Gemini CLI. The session page
+shows a read-only notice when its server omits the provider from discovery.
+Launch, resume, and saved dispatch refuse retired providers explicitly. A
+Gemini transcript retains its original provider and identity. Users can
+start a separate Antigravity session in the same project.
+
+Retired IDs in `ENABLED_PROVIDERS` match no live provider. Replace the
+entries with `antigravity` if desired. Let active Gemini turns finish before
+upgrading and fully restart the provider host along with the server.
 
 Then assess a separate, bounded consolidation of Grok and Antigravity's ACP
 transport: request correlation, framing limits, pending-request failure,

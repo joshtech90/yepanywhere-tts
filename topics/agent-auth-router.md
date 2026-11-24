@@ -1,6 +1,6 @@
 # Agent Auth Router
 
-YA supports an optional local or hosted HTTPS Agent Auth Router (AAR) connection for pinned native Claude and Codex sessions on macOS and Linux.
+YA supports an optional local or hosted HTTPS Agent Auth Router (AAR) connection for pinned native Claude, Codex and Antigravity sessions on macOS and Linux.
 Router-owned pools offer every selection policy the connected AAR lists
 (currently Manual, Round robin, Most remaining and Weekly pace) for new sessions.
 A pool's policy is its default; New Session can choose another router policy or
@@ -414,10 +414,12 @@ an isolation boundary against that user's own local files.
   session) gets a fresh policy pick from the source binding's pool with its
   policy (a Manual pool pin names its account), or the source's explicit
   account through a new pin; it never shares the source's allocation or
-  token. Such a derived session on another provider is refused for the
-  Agent API and Source Review; the composer starts it Direct only when the
-  user explicitly picks another provider. Older servers that would drop the
-  selection are refused client-side.
+  token. When switching providers, the Agent API requires an explicit pool,
+  account, or `routing: "direct"` (see [v0 launch selection](http-api-v0.md#launch-selection-and-effective-configuration--2026-11-12)).
+  Direct is also available explicitly for same-provider Agent API launches.
+  Source Review refuses a provider switch. The composer starts it Direct when
+  the user explicitly picks another provider. Older servers that would drop
+  the selection are refused client-side.
 - Restart/handoff, fork with summary and YA recap/title helper sessions
   are refused for routed sessions in this slice,
   because they start a fresh session, or call the provider directly as the
@@ -686,8 +688,11 @@ across its clients. They do not change existing session pins or API-created
 sessions, and no credential is stored in these defaults.
 
 Later visits and provider switches restore the choice after discovery. Initial
-discovery holds immediate Start while a saved pool is being checked; background
-refresh with existing data does not block it. Restoration requires an available
+discovery holds immediate Start while a saved pool is being checked. During
+that wait, the Pool picker shows **Checking router…** and offers **Direct
+provider login**. Choosing Direct lets an otherwise ready session start
+without waiting for discovery. Background refresh with existing data does
+not block Start. Restoration requires an available
 router control, a granted pool for this provider, a compatible enabled account
 for the selected model/thinking, a compatible explicit account when saved, and
 a supported policy override. A Manual default with several fitting accounts
@@ -805,3 +810,37 @@ fields fit, instructions wrap, and dashboard/Cancel controls remain clear. These
 the hosted control/launch boundary on macOS, not a new live-provider or public
 reverse-proxy qualification. Linux/Windows native qualification remains pending;
 Windows router UI remains unavailable in this slice.
+
+## Antigravity per-session routing (2026-11-23)
+
+Optional capability 163 (`agent-auth-router-antigravity`) enables per-session
+AAR pool discovery, selection and launch routing for Antigravity without
+server-wide `CLOUD_CODE_URL` or `GEMINI_HOME` environment variables
+([plan 196](../docs/tactical/196-antigravity-agent-auth-router.md)).
+
+- **AAR control plane.** AAR advertises `antigravity-control-v1` when it
+  supports Antigravity grants, pools, catalog reads
+  (`v1internal:fetchAvailableModels`) and quota reads
+  (`v1internal:retrieveUserQuotaSummary`). Older routers without
+  `antigravity-control-v1` return no Antigravity pools on discovery and fail
+  closed on routed Antigravity launches with an upgrade message.
+- **Session-scoped loopback bridge.** `agy acp` cannot send a custom auth header
+  and sends its own bearer token to Cloud Code and Google UserInfo. For each
+  routed Antigravity session, YA prepares a private profile under
+  `<dataDir>/agent-auth-router/antigravity-home` (`0700` dir, `0600` placeholder
+  `aar_local_*` marker — refusing any real Google OAuth credential), starts a
+  session-scoped loopback HTTP bridge on `127.0.0.1:0` holding only that
+  session's AAR gateway token in memory, and launches `agy acp` with
+  `--cloud_code_endpoint http://127.0.0.1:<port>` and `--gemini-dir <profileDir>`.
+  The bridge enforces `Host`, constant-time marker verification, the 7-RPC
+  `/v1internal:*` POST allowlist, and request/response header filtering, and
+  closes when `agy acp` exits or aborts.
+- **Dual-store native history (Plan 195).** Direct sessions keep `~/.gemini` and
+  routed sessions use `<dataDir>/agent-auth-router/antigravity-home`. YA's
+  catalog, watcher and merged reader observe both stores independently so direct
+  and routed Antigravity sessions coexist cleanly.
+- **v1 scope.** New routed launches, continuation/resume on the pinned account,
+  and v0 API `selection?provider=antigravity&routing=aar` + session creation are
+  supported. Mid-session account switching (`POST /api/agent-auth-router/sessions/:id/switch`)
+  remains refused with `409` for Antigravity; the session header shows the pin
+  read-only.

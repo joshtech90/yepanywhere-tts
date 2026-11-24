@@ -66,8 +66,9 @@ Its isolated execution policy is `danger-full-access` with approvals `never`.
 Each execution attempt has a 20-second abort bound plus joined shutdown and
 temporary-file cleanup. Auto also stops admitting candidates after a 60-second
 selection window. Timeout/failure paths reap owned processes; Windows temporary
-file deletion has bounded retries for delayed handle release. Cleanup failures
-remain failures, rather than publishing a healthy installation.
+file deletion uses explicit bounded retries for delayed handle release,
+including under Desktop's bundled Bun. Persistent cleanup failures still
+reject verification.
 
 ## Verification cache
 
@@ -111,9 +112,13 @@ inspected 2026-11-15. Internal `.codex/.sandbox-bin` fallbacks rank below other
 installations; app-bundled prereleases rank below deliberate versioned installs.
 Version preferences apply after execution usability at launch.
 
-Antigravity reuses a single descriptor for both `agy acp` and standalone ACP,
-resolving symlinks while preserving the companion `localharness_external` path.
-Selection changes, removed files and changed symlink targets are observed on
+Antigravity candidates are `agy` executables launched as `agy acp` from their
+resolved symlink target. A candidate whose `agy --version` is below the
+[supported floor](antigravity.md#supported-runtime) carries an error naming
+that version, the floor and the update path. The version query runs without
+YA's own credentials and is killed after three seconds. Antigravity launches
+do not pass the execution gate, so Auto marks the candidate a launch uses: the
+first runnable `agy` on `PATH`, whatever its version. Selection changes, removed files and changed symlink targets are observed on
 resolution. Its offline execution recipe is currently **unsupported**, displayed
 separately from an execution failure. The selector does not expand Windows
 support or claim new Linux/native-model qualification for Antigravity.

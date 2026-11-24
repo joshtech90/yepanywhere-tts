@@ -70,6 +70,7 @@ import type {
   SessionQueuePersistenceService,
 } from "../services/SessionQueuePersistenceService.js";
 import { composeSeenNeedle, composeTimeAnchors } from "./composeTimeAnchor.js";
+import { applyModelAndEffort, ConfigurationHold } from "./configurationHold.js";
 import {
   type DeferredDeliverySettings,
   resolveDeferredDeliverySettings,
@@ -107,7 +108,13 @@ import {
   type LivenessProcessState,
 } from "./liveness.js";
 import { type LocalNotice, buildLocalNoticeMessage } from "./local-notice.js";
+import {
+  buildAskUserQuestionPrompt,
+  getModeBasedToolApproval,
+  isAskUserQuestionTool,
+} from "./modeToolApproval.js";
 import { isResumeDropsTurnRefusalText } from "./resume-truncation.js";
+import { PROCESS_REPLAY_BUCKET_MS } from "./replay-window.js";
 import type {
   AgentActivity,
   InputRequest,
@@ -251,19 +258,15 @@ function hasPatientQueueIntent(entry: DeferredQueueEntry): boolean {
   return entry.message.metadata?.deliveryIntent === "patient";
 }
 
-/**
- * Whether a queued entry should ride the verified-idle patient delivery path
- * instead of the plain turn-end deferred path. Patient timing only differs
- * from deferred on Claude — the only provider that reports background-work
- * retention (session crons, background/live tasks), which is what lets YA wait
- * for genuine completion. Other providers still preserve patient intent across
- * restart, but promote it at the ordinary turn-end boundary.
- */
+/** Providers with native background retention use the verified-idle gate. */
 function usesPatientDeliveryPath(
   entry: DeferredQueueEntry,
   provider: ProviderName,
 ): boolean {
-  return hasPatientQueueIntent(entry) && isClaudeSdkProvider(provider);
+  return (
+    hasPatientQueueIntent(entry) &&
+    (isClaudeSdkProvider(provider) || provider === "antigravity")
+  );
 }
 
 function compactionGateFor(
@@ -308,85 +311,8 @@ function patientPatienceMsForEntry(entry: DeferredQueueEntry): number {
   return patienceSeconds * 1000;
 }
 
-const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
-const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
-const READ_ONLY_TOOLS = new Set([
-  "Read",
-  "Glob",
-  "Grep",
-  "LSP",
-  "WebFetch",
-  "WebSearch",
-  "Task", // Subagent exploration (legacy)
-  "Agent", // Subagent exploration (SDK 0.2.76+)
-  "TaskOutput", // Reading subagent results
-]);
 const PROMPT_CACHE_KEEPALIVE_RECHECK_MS = 30_000;
 const PROMPT_CACHE_KEEPALIVE_MIN_DELAY_MS = 1_000;
-
-function isAskUserQuestionTool(toolName: string): boolean {
-  return toolName === ASK_USER_QUESTION_TOOL_NAME;
-}
-
-function getModeBasedToolApproval(
-  mode: PermissionMode,
-  toolName: string,
-  input: unknown,
-  requiresUserResponse: boolean,
-): ToolApprovalResult | undefined {
-  if (requiresUserResponse) {
-    return undefined;
-  }
-
-  switch (mode) {
-    case "bypassPermissions":
-      return { behavior: "allow" };
-    case "plan": {
-      if (READ_ONLY_TOOLS.has(toolName)) {
-        return { behavior: "allow" };
-      }
-      if (toolName === "Write") {
-        const filePath = (input as { file_path?: string })?.file_path ?? "";
-        if (filePath.includes(".claude/plans/")) {
-          return { behavior: "allow" };
-        }
-      }
-      return undefined;
-    }
-    case "acceptEdits":
-      return EDIT_TOOLS.has(toolName) || READ_ONLY_TOOLS.has(toolName)
-        ? { behavior: "allow" }
-        : undefined;
-    default:
-      return READ_ONLY_TOOLS.has(toolName) ? { behavior: "allow" } : undefined;
-  }
-}
-
-function buildAskUserQuestionPrompt(input: unknown): string {
-  const questions =
-    input && typeof input === "object"
-      ? (input as { questions?: unknown }).questions
-      : undefined;
-  if (!Array.isArray(questions) || questions.length === 0) {
-    return "Answer Claude's question";
-  }
-
-  const firstQuestion = questions[0];
-  const firstQuestionText =
-    firstQuestion && typeof firstQuestion === "object"
-      ? (firstQuestion as { question?: unknown }).question
-      : undefined;
-  if (typeof firstQuestionText !== "string" || !firstQuestionText.trim()) {
-    return questions.length === 1
-      ? "Answer Claude's question"
-      : `Answer Claude's ${questions.length} questions`;
-  }
-
-  const trimmed = firstQuestionText.trim();
-  return questions.length === 1
-    ? trimmed
-    : `${trimmed} (+${questions.length - 1} more)`;
-}
 
 function parseIsoMs(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -875,10 +801,9 @@ const WAKE_WORK_SYSTEM_SUBTYPES = new Set<string>([
  * (verified-waiting-provider) regardless of this flip.
  */
 function isProviderWorkWakeMessage(message: SDKMessage): boolean {
-  // session_state_changed drives the state machine directly; it is not a wake.
-  if (getClaudeSessionStateChange(message) !== null) {
-    return false;
-  }
+  // Replayed history and native state notifications do not start a turn.
+  if (message.isReplay || message._passiveProviderUpdate) return false;
+  if (getClaudeSessionStateChange(message)) return false;
   if (message.type === "system") {
     const subtype = getSdkMessageSubtype(message);
     return subtype !== undefined && WAKE_WORK_SYSTEM_SUBTYPES.has(subtype);
@@ -1122,14 +1047,13 @@ export class Process {
   private transportFailed = false;
 
   /**
-   * Two-bucket message buffer for SSE replay to late-joining clients.
-   * Buckets swap every 15 seconds, giving 15-30s of history.
-   * This bounds memory while covering the JSONL persistence gap.
+   * Two-bucket message buffer for SSE replay to late-joining clients: 15-30s
+   * of history (replay-window.ts), covering the JSONL persistence gap.
    */
   private currentBucket: SDKMessage[] = [];
   private previousBucket: SDKMessage[] = [];
   private bucketSwapTimer: ReturnType<typeof setInterval> | null = null;
-  private static readonly BUCKET_SWAP_INTERVAL_MS = 15_000;
+  private static readonly BUCKET_SWAP_INTERVAL_MS = PROCESS_REPLAY_BUCKET_MS;
 
   /**
    * Replay position of each buffered message. Tool-result state updates get a
@@ -1214,8 +1138,8 @@ export class Process {
     null;
   /** Serializes provider effort controls so slower writes cannot win late. */
   private effortApplyTail: Promise<void> = Promise.resolve();
-  /** A failed turn-boundary effort write keeps the process non-idle. */
   private effortBoundaryBlocked = false;
+  private readonly configurationHold = new ConfigurationHold();
   private effortBoundaryTransition: Promise<void> | null = null;
 
   /** Function to change max thinking tokens at runtime (SDK 0.2.7+) */
@@ -1577,9 +1501,6 @@ export class Process {
     }, Process.BUCKET_SWAP_INTERVAL_MS);
   }
 
-  /**
-   * Stop the bucket swap timer.
-   */
   private stopBucketSwapTimer(): void {
     if (this.bucketSwapTimer) {
       clearInterval(this.bucketSwapTimer);
@@ -2464,17 +2385,57 @@ export class Process {
     return true;
   }
 
-  /**
-   * Select a new effort without interrupting provider work. Providers with an
-   * active-turn settings control apply it immediately; other active or waiting
-   * processes hold the latest choice until the provider reports the boundary.
-   */
-  async setEffort(effort?: EffortLevel): Promise<boolean> {
-    if (!this.setEffortFn) {
-      return false;
-    }
+  get configurationHeld(): boolean {
+    return this.configurationHold.active;
+  }
 
-    this.pendingEffortUpdate = { effort };
+  async setModelAndEffort(settings: {
+    model?: string;
+    requestedModel: string | null;
+    thinking?: ThinkingConfig;
+    effort?: EffortLevel;
+  }): Promise<boolean> {
+    const setModel = this.setModelFn;
+    const setEffort = this.setEffortFn;
+    if (!setModel || !setEffort) return false;
+    this.messageQueue.setConfigurationInputHeld?.(true);
+    const pending = this.pendingEffortUpdate;
+    const applying = this.configurationHold.run(
+      async (keepHeld) => {
+        await this.effortApplyTail;
+        await applyModelAndEffort(
+          setModel,
+          setEffort,
+          settings,
+          {
+            model: this.resolvedModel ?? this.model,
+            effort: this._effort,
+          },
+          keepHeld,
+        );
+        this._thinking = settings.thinking;
+        this._effort = settings.effort;
+        this.recordModelSelection(settings.model, settings.requestedModel);
+        if (pending) await this.clearPendingEffort(pending);
+        return true;
+      },
+      () => {
+        this.messageQueue.setConfigurationInputHeld?.(false);
+        if (this._state.type === "idle" && !this.effortBoundaryBlocked)
+          this.continueAfterTurnBoundary(false);
+      },
+    );
+    this.effortApplyTail = applying.then(
+      () => undefined,
+      () => undefined,
+    );
+    return applying;
+  }
+
+  async setEffort(effort?: EffortLevel): Promise<boolean> {
+    if (!this.setEffortFn) return false;
+    const pending = { effort };
+    this.pendingEffortUpdate = pending;
     await this.publishAgentSelfSelectionFn?.({
       effort: effort ?? null,
       pendingEffort: true,
@@ -2496,14 +2457,20 @@ export class Process {
       );
       return true;
     }
-
     if (this.effortBoundaryBlocked) {
       await this.completeEffortBoundaryTransition();
     } else {
       try {
         await this.enqueuePendingEffortApplication();
       } catch (error) {
-        if (!canDeferUntilBoundary || this.isTerminated) throw error;
+        if (
+          !canDeferUntilBoundary ||
+          this.configurationHold.active ||
+          this.isTerminated
+        ) {
+          void this.clearPendingEffort(pending);
+          throw error;
+        }
         getLogger().info(
           {
             event: "effort_change_deferred_after_live_failure",
@@ -2552,14 +2519,19 @@ export class Process {
           cause: error,
         });
       }
-      if (this.pendingEffortUpdate === pending) {
-        this.pendingEffortUpdate = null;
-        await this.publishAgentSelfSelectionFn?.({
-          effort: pending.effort ?? null,
-          pendingEffort: false,
-        });
-      }
+      await this.clearPendingEffort(pending);
     }
+  }
+
+  private async clearPendingEffort(
+    pending: NonNullable<Process["pendingEffortUpdate"]>,
+  ): Promise<void> {
+    if (this.pendingEffortUpdate !== pending) return;
+    this.pendingEffortUpdate = null;
+    await this.publishAgentSelfSelectionFn?.({
+      effort: this._effort ?? null,
+      pendingEffort: false,
+    });
   }
 
   private enqueuePendingEffortApplication(): Promise<void> {
@@ -2834,14 +2806,7 @@ export class Process {
     await this.primeSupportedCommands();
   }
 
-  /**
-   * Change the model mid-session without restarting.
-   * Only supported by Claude SDK 0.2.7+.
-   *
-   * @param model - New model to use, or undefined to use default
-   * @param requestedModel - Exact YA selection token retained for restoration
-   * @returns true if the change was applied, false if not supported
-   */
+  /** Apply a model selection without restarting the provider. */
   async setModel(
     model?: string,
     requestedModel: string | null = model ?? null,
@@ -2889,6 +2854,14 @@ export class Process {
       await setModel(model);
     }
 
+    this.recordModelSelection(model, requestedModel);
+    return true;
+  }
+
+  private recordModelSelection(
+    model: string | undefined,
+    requestedModel: string | null,
+  ) {
     // Follow switches, including an explicit return to provider default.
     // The readonly `model` remains the original launch value. An alias the
     // catalog cannot resolve stands only until the next reply names the model.
@@ -2896,7 +2869,6 @@ export class Process {
       model === undefined ? null : (this.resolveModel?.(model) ?? model);
     this._requestedModel = requestedModel;
     this.emit({ type: "configuration-applied", setting: "model" });
-    return true;
   }
 
   /**
@@ -3203,20 +3175,20 @@ export class Process {
     return [...expiredSteerEchoes, ...buffered];
   }
 
-  /** Tool-result snapshots replace older states; every update gets a fresh cursor. */
+  /** Growing snapshots replace older states and get a fresh replay cursor. */
   private bufferForReplay(message: SDKMessage): void {
-    const toolResult = Boolean(message.uuid) && isProviderToolResult(message);
-    if (toolResult) {
-      // Keep the latest full state, including during bucket handover. Retaining
-      // each growing output snapshot would multiply replay memory by chunk count.
+    const replaceable = (entry: SDKMessage) =>
+      isProviderToolResult(entry) || entry._passiveProviderUpdate === true;
+    const replace = Boolean(message.uuid) && replaceable(message);
+    if (replace) {
       for (const bucket of [this.previousBucket, this.currentBucket]) {
         const index = bucket.findIndex(
-          (old) => old.uuid === message.uuid && isProviderToolResult(old),
+          (old) => old.uuid === message.uuid && replaceable(old),
         );
         if (index !== -1) bucket.splice(index, 1);
       }
     }
-    if (toolResult || !this.replaySeqs.has(message)) {
+    if (replace || !this.replaySeqs.has(message)) {
       this.lastReplaySeq += 1;
       this.replaySeqs.set(message, this.lastReplaySeq);
     }
@@ -3990,6 +3962,9 @@ export class Process {
     if (inputError) {
       return { success: false, error: inputError };
     }
+    if (this.configurationHold.reason) {
+      return { success: false, error: this.configurationHold.reason };
+    }
 
     // Create user message with UUID - this UUID will be used by both SSE and SDK
     const uuid = providerMessage.uuid ?? randomUUID();
@@ -4141,7 +4116,11 @@ export class Process {
     position?: number;
     error?: string;
   } {
-    if (message.queuedCompact || this.queuedCompactionBlocksInput) {
+    if (
+      message.queuedCompact ||
+      this.queuedCompactionBlocksInput ||
+      this.configurationHold.active
+    ) {
       return this.deferMessage(message);
     }
     if (message.metadata?.turnEffort && this._state.type !== "idle") {
@@ -4358,9 +4337,7 @@ export class Process {
       acceptedMessage.tempId ??= `compact-${randomUUID()}`;
     const canPromoteIfReady = !!(
       options?.promoteIfReady &&
-      // Only Claude waits for the verified-idle patient delivery path;
-      // elsewhere durable patient intent uses ordinary deferred timing and
-      // promotes immediately like any other deferred turn.
+      // Verified-idle patient delivery checks each item's quiet interval.
       !usesPatientDeliveryPath(
         { message: acceptedMessage, timestamp: new Date().toISOString() },
         this.provider,
@@ -4369,6 +4346,13 @@ export class Process {
       // queue so the Supervisor can evaluate usage before it is sent.
       !acceptedMessage.queuedCompact &&
       !this.queuedCompactionBlocksInput &&
+      !this.configurationHold.active &&
+      // Deferred input never overtakes a deferred compaction that has not
+      // started yet; patient compactions keep their own, later boundary.
+      !this.deferredQueue.some(
+        (entry) =>
+          entry.compact && !usesPatientDeliveryPath(entry, this.provider),
+      ) &&
       !compactionGateFor(acceptedMessage) &&
       this._state.type === "idle"
     );
@@ -5058,7 +5042,6 @@ export class Process {
       this.setPermissionMode("default");
     }
 
-    // Resolve the promise and remove from tracking
     pending.resolve(result);
     this.pendingToolApprovals.delete(requestId);
     this.pendingToolApprovalQueue = this.pendingToolApprovalQueue.filter(
@@ -5394,8 +5377,8 @@ export class Process {
           )
             break;
           if (this.managedIdentity) {
-            // Do not publish idle/promote deferred turns into an ended stream.
-            // Fire-and-observe: verification may await this loop's finally.
+            if (this.abortInFlight || this.completionEmitted) break;
+            // Verify without awaiting this loop or promoting deferred input.
             void this.terminateAndWait("provider stream completed").catch(
               () => undefined,
             );
@@ -5539,21 +5522,23 @@ export class Process {
 
         // The served model, as each main-thread reply names it. A subagent's
         // reply may run another model and says nothing about this session's.
+        const observedModel =
+          message._selectedProviderModel ?? message.message?.model;
         if (
           message.type === "assistant" &&
+          !this.configurationHold.active &&
           !message.parent_tool_use_id &&
-          message.message?.model &&
-          message.message.model !== "<synthetic>" &&
-          message.message.model !== this._resolvedModel
+          observedModel &&
+          observedModel !== "<synthetic>" &&
+          observedModel !== this._resolvedModel
         ) {
-          this._resolvedModel = message.message.model;
-          this.emit({ type: "model-resolved", model: this._resolvedModel });
+          this._resolvedModel = observedModel;
+          this.emit({ type: "model-resolved", model: observedModel });
         }
 
         this.observeQueuedCompaction(message);
         this.promoteIdleForProviderWork(message, receivedAt);
 
-        // Emit to SSE subscribers
         // See shouldEmitMessage() for why we never filter provider-stream
         // messages by content. Skip only a same-uuid user re-yield: sending
         // that copy again lets the client replace the optimistic echo and
@@ -5584,7 +5569,6 @@ export class Process {
           return;
         }
 
-        // Handle special message types
         const claudeSessionState = getClaudeSessionStateChange(message);
         if (claudeSessionState) {
           const effortUpdate =
@@ -6021,7 +6005,11 @@ export class Process {
    * consecutively-composed turns into one `--------`-separated provider turn.
    */
   private promoteEligibleDeferredAfterTurn(): boolean {
-    if (this.queuedCompactionBlocksInput || this.deferredQueue.length === 0) {
+    if (
+      this.queuedCompactionBlocksInput ||
+      this.configurationHold.active ||
+      this.deferredQueue.length === 0
+    ) {
       return false;
     }
 
@@ -6074,7 +6062,6 @@ export class Process {
   private startQueuedCompaction(entry: DeferredQueueEntry): boolean {
     if (
       this.queueDepth > 0 ||
-      this.getProviderRetentionSnapshot().retained ||
       this.queuedCompactionBlocksInput ||
       this.inputRejectionError()
     )
@@ -6320,6 +6307,7 @@ export class Process {
   }): { promoted: boolean; nextPatienceMsRemaining: number | null } {
     if (
       this.queuedCompactionBlocksInput ||
+      this.configurationHold.active ||
       this.deferredQueue.length === 0 ||
       this._state.type !== "idle"
     ) {
@@ -6584,6 +6572,7 @@ export class Process {
     this.viewerLifecycle.observeProcessState(state);
     this.emit({ type: "state-change", state });
     this.schedulePromptCacheKeepalive();
+    if (state.type === "idle") this.messageQueue.onConsumerIdle?.();
   }
 
   private emit(event: ProcessEvent): void {

@@ -1,9 +1,11 @@
 import { describeAntigravityCandidate } from "./providers/antigravity-launch.js";
-import { execFile } from "node:child_process";
+import {
+  antigravityCliVersionRefusal,
+  readAgyVersion,
+} from "./providers/antigravity-version.js";
 import { existsSync, realpathSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, delimiter, join } from "node:path";
-import { promisify } from "node:util";
+import { dirname, delimiter, join } from "node:path";
 import type {
   CliCandidate,
   CliInstallationAdapter,
@@ -14,8 +16,6 @@ import {
   probeCodexCliVersion,
 } from "./cli-detection.js";
 import { probeCodexExecution } from "./codex-execution-probe.js";
-
-const execFileAsync = promisify(execFile);
 
 /** npm launchers depend on Node and optional platform packages; keep those facts. */
 export function describeCodexCandidate(
@@ -169,33 +169,28 @@ export const antigravityInstallationAdapter: CliInstallationAdapter = {
     if (process.platform === "win32") return [];
     const paths = explicit
       ? [explicit]
-      : ["agy", "agy_acp_server.par", "antigravity-acp"]
-          .flatMap((name) =>
-            (process.env.PATH ?? "")
-              .split(delimiter)
-              .filter(Boolean)
-              .map((dir) => join(dir, name)),
-          )
+      : (process.env.PATH ?? "")
+          .split(delimiter)
+          .filter(Boolean)
+          .map((dir) => join(dir, "agy"))
           .filter(existsSync);
     const candidates = [...new Set(paths)]
       .slice(0, 64)
       .map(describeAntigravityCandidate);
     await Promise.all(
       candidates.map(async (candidate) => {
-        // Standalone ACP does not promise a version flag; don't start its server here.
-        if (basename(candidate.path) !== "agy" || candidate.error) return;
-        try {
-          candidate.version = (
-            await execFileAsync(candidate.launch.command, ["--version"], {
-              timeout: 3000,
-              maxBuffer: 4096,
-            })
-          ).stdout.trim();
-        } catch {
-          /* Executability and offline execution qualification stay separate. */
-        }
+        if (candidate.error) return;
+        // Executability and offline execution qualification stay separate.
+        candidate.version = await readAgyVersion(candidate.launch.command);
+        if (candidate.version)
+          candidate.error = antigravityCliVersionRefusal(candidate.version);
       }),
     );
     return candidates;
   },
+  // Launch takes the first runnable `agy` in discovery order, like PATH.
+  autoSelect: (candidates) =>
+    candidates.find(
+      (candidate) => !describeAntigravityCandidate(candidate.path).error,
+    ),
 };

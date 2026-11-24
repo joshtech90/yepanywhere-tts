@@ -478,6 +478,7 @@
 - managed-viewer-publication - Separate viewer content from lifecycle updates.
 
 - antigravity-discovery — native ACP provider and shared catalog/project discovery.
+- antigravity-everyday-control — qualify native CLI turns, steering, background work and queued compaction.
 
 - native-provider-integration — actual provider executables with scripted local model APIs.
 
@@ -513,3 +514,8 @@
 - client-test-diagnostics - Client unit suite gate that fails tests emitting unasserted React or jsdom diagnostics, its shrink-only allowlist, and the fixture fixes that shrink it.
 
 - creation-recovery-never-blocks - Saved creation recovery state (New Session, Session-page Start, template creation) always offers Start fresh; the November 2026 stale-request lock investigation and repair.
+
+- v0-catalog-read-cost - v0 session operations that read the whole session catalog on the main event loop; single-session lookups moved to the native-id index first, lists and misses remain.
+- antigravity-subagents - Native Antigravity (agy) invoke_subagent child exclusion, durable SQL child relationships, child transcript reading, and background retention.
+- antigravity-acp-reliability - Native upgrade qualification, transcript replay, detached work, patient delivery, and safe reload.
+- antigravity-native-history - Plan 195: Antigravity history from the native brain log, removal of the history size limit and the standalone 1.4.x runtime, bounded live memory, and the Provider Host move.

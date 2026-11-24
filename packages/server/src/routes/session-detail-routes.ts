@@ -49,6 +49,7 @@ import {
   sliceAtCompactAndUserTurnBoundaries,
   sliceAtCompactBoundaries,
   sliceAtUserTurnBoundary,
+  withLogPageCursor,
 } from "../sessions/pagination.js";
 import {
   type PersistedAugmentDiagnostics,
@@ -78,9 +79,10 @@ import {
   savedCreationView,
 } from "../sessions/session-creation-view.js";
 import { sessionOwnershipFromProcess } from "../sessions/session-runtime-overlay.js";
-import type {
-  SessionIdentity,
-  SessionIdentityLookup,
+import {
+  selectStoredIdentity,
+  type SessionIdentity,
+  type SessionIdentityLookup,
 } from "../sessions/SessionIdentityStore.js";
 import type {
   GetSessionOptions,
@@ -200,6 +202,16 @@ function completedPublicShareMessageCount(options: {
   hasDurableHistory: boolean;
 }): number {
   const { messages, process } = options;
+  // A row still streaming leaves its turn incomplete, even if the process
+  // went idle after the read that returned it.
+  const streaming = messages.findIndex(
+    (message) => (message as { _isStreaming?: unknown })._isStreaming === true,
+  );
+  if (streaming >= 0) {
+    for (let index = streaming; index >= 0; index -= 1)
+      if (isRealUserTurn(messages[index]!)) return index;
+    return 0;
+  }
   const sourceIsBusy =
     options.sourceIsExternal ||
     process?.state.type === "in-turn" ||
@@ -351,12 +363,7 @@ export function registerSessionDetailRoute(
     };
   }> => {
     if (deps.signal?.aborted) return { session: null };
-    const identity =
-      lookup?.kind === "stored"
-        ? lookup.identity
-        : lookup?.kind === "legacy"
-          ? undefined
-          : storedIdentityFor(sessionId);
+    const identity = selectStoredIdentity(sessionId, lookup, storedIdentityFor);
     if (identity) {
       const resolved = await resolveExistingSessionIdentity({
         sessionId,
@@ -595,6 +602,15 @@ export function registerSessionDetailRoute(
       process?.state.type === "waiting-input"
         ? { ownedTurnInProgress: true }
         : {}),
+      // A catch-up from a durable overlay's ID: a provider that pages its
+      // own log reads its newest window; others read as before.
+      ...(!fullHistory && overlayCursor
+        ? {
+            boundedCatchUp:
+              effectiveTailCompactions ??
+              DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS,
+          }
+        : {}),
       ...(!fullHistory &&
       ((!afterMessageId && effectiveTailCompactions !== undefined) ||
         providerAfterMessageId)
@@ -711,7 +727,9 @@ export function registerSessionDetailRoute(
       };
     }
     let incrementalAnchorFound = false;
-    if (session && providerAfterMessageId) {
+    // A provider's deliberate miss replaces the window even where it holds
+    // the cursor.
+    if (session && providerAfterMessageId && !loadedSession?.afterAnchor) {
       const sliced = sliceAfterMessageIdWithMatch(
         session.messages,
         providerAfterMessageId,
@@ -960,9 +978,19 @@ export function registerSessionDetailRoute(
     // scope but cannot broaden it unless fullHistory=1 removed the default.
     // Skip initial-window slicing for incremental forward fetches. A provider-
     // bounded older page already ends before its requested cursor.
+    // A durable overlay anchors a catch-up only when the window the provider
+    // read reaches back to it.
+    const windowStart = loadedSession.readWindow?.omittedPrefix
+      ? Date.parse(String(session.messages[0]?.timestamp ?? ""))
+      : Number.NEGATIVE_INFINITY;
+    const overlayAnchor =
+      overlayCursor && Date.parse(overlayCursor.timestamp) >= windowStart
+        ? overlayCursor
+        : undefined;
     const providerBoundedOlderPage =
       loadedSession.readWindow?.kind === "compact-page" ||
-      (loadedSession.readWindow?.kind === "indexed-selection" &&
+      ((loadedSession.readWindow?.kind === "indexed-selection" ||
+        loadedSession.readWindow?.kind === "log-page") &&
         loadedSession.readWindow.before);
     let paginationInfo: PaginationInfo | undefined;
     if (
@@ -1000,6 +1028,17 @@ export function registerSessionDetailRoute(
       session = { ...session, messages: sliced.messages };
       paginationInfo = sliced.pagination;
     }
+    // A durable overlay older than the provider's window is a missed anchor:
+    // the window is the answer, as a replacement, with the provider's own
+    // older cursor set below before its boundary is checked.
+    if (overlayCursor && !overlayAnchor) {
+      const sliced = sliceAtCompactBoundaries(
+        session.messages,
+        effectiveTailCompactions ?? DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS,
+      );
+      session = { ...session, messages: sliced.messages };
+      paginationInfo = sliced.pagination;
+    }
     if (
       loadedSession.readWindow &&
       paginationInfo?.hasOlderMessages &&
@@ -1025,6 +1064,8 @@ export function registerSessionDetailRoute(
     // complete provider read and report older messages it trimmed itself.
     if (
       loadedSession.readWindow?.omittedPrefix &&
+      loadedSession.readWindow.kind !== "log-page" &&
+      !overlayAnchor &&
       !incrementalAnchorFound &&
       (!paginationInfo?.hasOlderMessages ||
         paginationInfo.truncatedBeforeMessageId === undefined)
@@ -1045,6 +1086,16 @@ export function registerSessionDetailRoute(
       session = { ...session, messages: sliced.messages };
       paginationInfo = sliced.pagination;
     }
+    if (
+      loadedSession.readWindow?.kind === "log-page" &&
+      !incrementalAnchorFound &&
+      !overlayAnchor
+    )
+      paginationInfo = withLogPageCursor(
+        session.messages,
+        loadedSession.readWindow.omittedPrefix,
+        paginationInfo,
+      );
     if (paginationInfo && loadedSession.projectionTotals) {
       const totals = loadedSession.projectionTotals;
       paginationInfo = {
@@ -1149,10 +1200,10 @@ export function registerSessionDetailRoute(
         recapMessages,
         syntheticDoneMessages,
       );
-      if (overlayCursor && afterMessageId) {
+      if (overlayAnchor && afterMessageId) {
         const sliced = sliceAfterDurableOverlayCursor({
           messages: session.messages,
-          overlay: overlayCursor,
+          overlay: overlayAnchor,
           cursorId: afterMessageId,
         });
         session = { ...session, messages: sliced.messages };
@@ -1360,6 +1411,9 @@ export function registerSessionDetailRoute(
         ...(providerChildren ? { providerChildren } : {}),
       },
       messages: session.messages,
+      ...(loadedSession.transcriptComplete === false
+        ? { transcriptComplete: false }
+        : {}),
       transcriptSnapshotUpdatedAt: loadedSession.transcriptSnapshotUpdatedAt,
       ownership,
       providerRuntimeStatus,
