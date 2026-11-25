@@ -6,10 +6,16 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
+import type { Page } from "@playwright/test";
 import { InstallService } from "../../server/src/services/InstallService.js";
 import { writeAntigravityScaleConversation } from "../../server/test/utils/antigravity-scale-log.js";
 import { toUrlProjectId } from "../../shared/src/index.js";
 import { expect, test } from "./fixtures.js";
+import {
+  startTypingDiagnostics,
+  typingAckLimitMs,
+  typingAckTargetMs,
+} from "./support/typing-diagnostics.js";
 import { presentUiCaptures, recordUiCapture } from "./support/ui-capture.js";
 import {
   disposeYaServerProcess,
@@ -31,6 +37,34 @@ test.afterEach(async () => {
   if (active) await disposeYaServerProcess(active);
   active = undefined;
 });
+
+async function loadNextHistoryPage(page: Page, sessionId: string) {
+  const boundary = page.locator("[data-load-older-messages]");
+  const button = boundary.getByRole("button");
+  await expect(button).toBeEnabled();
+  // Scrolling to the button kicks off the intersection observer's own load.
+  await button.evaluate((element: HTMLButtonElement) =>
+    element.focus({ preventScroll: true }),
+  );
+  await expect(button).toBeFocused();
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname.endsWith(`/sessions/${sessionId}`) &&
+          url.searchParams.has("beforeMessageId")
+        );
+      },
+      { timeout: 20_000 },
+    ),
+    page.keyboard.press("Enter"),
+  ]);
+  expect(response.ok()).toBe(true);
+  await expect(boundary.locator('[aria-busy="true"]')).toHaveCount(0, {
+    timeout: 20_000,
+  });
+}
 
 /**
  * A stand-in `agy acp` for resuming (plan 195 step 5): it records each ACP
@@ -159,7 +193,7 @@ for (const viewport of [
 ]) {
   test(`pages a long Antigravity log and keeps typing responsive on ${viewport.name}`, async ({
     browser,
-  }) => {
+  }, testInfo) => {
     const { server, projectId, started, store, nextStep } =
       await serve(nativeId);
     const context = await browser.newContext({
@@ -192,11 +226,18 @@ for (const viewport of [
     await expect(main.getByText(/TURN_\d+_REPLY/).first()).toBeAttached({
       timeout: 20_000,
     });
+    // Settle the initial render before measuring the separate append.
+    await expect(main.locator("[data-message-list]")).not.toHaveAttribute(
+      "aria-busy",
+      "true",
+      { timeout: 20_000 },
+    );
 
     // Sequential typing while the log grows and the client catches up.
     const composer = page.locator("[data-composer-input]");
     await composer.focus();
     await expect(composer).toBeFocused();
+    const recordTyping = await startTypingDiagnostics(composer);
     await composer.evaluate((element) => {
       const field = element as HTMLTextAreaElement & {
         acks: { value: string; latency: number }[];
@@ -266,7 +307,13 @@ for (const viewport of [
     console.log(
       `Antigravity log typing (${viewport.name}): ${acks.length} keys during a log append and catch-up, browser maximum ${slowest.toFixed(1)} ms; controller wall maximum ${Math.max(...delays).toFixed(1)} ms`,
     );
-    expect(slowest).toBeLessThan(100);
+    await recordTyping(
+      testInfo,
+      `antigravity-log-${viewport.name}`,
+      acks,
+      slowest,
+    );
+    expect(slowest).toBeLessThan(typingAckLimitMs);
     await expect(composer).toHaveValue(draft);
     // The append reached the client through a refresh of the transcript.
     await expect
@@ -281,12 +328,7 @@ for (const viewport of [
     const loadOlder = page.locator("[data-load-older-messages]");
     for (let attempt = 0; attempt < 12; attempt++) {
       if ((await loadOlder.count()) === 0) break;
-      const older = loadOlder.getByRole("button");
-      await older.scrollIntoViewIfNeeded();
-      await older.click();
-      await expect(loadOlder.locator('[aria-busy="true"]')).toHaveCount(0, {
-        timeout: 20_000,
-      });
+      await loadNextHistoryPage(page, nativeId);
     }
     await expect(loadOlder).toHaveCount(0);
     const earliest = olderPages.at(-1);
@@ -461,7 +503,7 @@ for (const hosted of [false, true]) {
   const where = hosted ? " (owner in the Provider Host)" : "";
   test(`resumes a long Antigravity conversation from the browser without replaying it${where}`, async ({
     browser,
-  }) => {
+  }, testInfo) => {
     const viewport = { name: "desktop" as const, width: 1000, height: 600 };
     const resumedId = "a9a90000-0000-4000-8000-000000000196";
     const { server, projectId, started } = await serve(resumedId, {
@@ -511,6 +553,9 @@ for (const hosted of [false, true]) {
 
     // Sequential typing while the resumed turn streams.
     await composer.focus();
+    const recordTyping = await startTypingDiagnostics(composer, {
+      limitMs: typingAckTargetMs,
+    });
     await composer.evaluate((element) => {
       const field = element as HTMLTextAreaElement & {
         acks: { value: string; latency: number }[];
@@ -560,7 +605,8 @@ for (const hosted of [false, true]) {
     console.log(
       `Antigravity resumed-turn typing (${viewport.name}): ${acks.length} keys while streaming, browser maximum ${slowest.toFixed(1)} ms`,
     );
-    expect(slowest).toBeLessThan(100);
+    await recordTyping(testInfo, "antigravity-resume", acks, slowest);
+    expect(slowest).toBeLessThan(typingAckTargetMs);
 
     // The turn ends; its prompt and reply show once, after the history.
     await expect(main.getByText(/RESUMED_REPLY_DONE/)).toHaveCount(1, {
@@ -575,12 +621,7 @@ for (const hosted of [false, true]) {
     const loadOlder = page.locator("[data-load-older-messages]");
     for (let attempt = 0; attempt < 12; attempt++) {
       if ((await loadOlder.count()) === 0) break;
-      const older = loadOlder.getByRole("button");
-      await older.scrollIntoViewIfNeeded();
-      await older.click();
-      await expect(loadOlder.locator('[aria-busy="true"]')).toHaveCount(0, {
-        timeout: 20_000,
-      });
+      await loadNextHistoryPage(page, resumedId);
     }
     await expect(loadOlder).toHaveCount(0);
     expect(olderPages.length).toBeGreaterThanOrEqual(2);
@@ -611,7 +652,7 @@ for (const hosted of [false, true]) {
 
   test(`keeps a long live Antigravity session whole across a move of its live rows to the log${where}`, async ({
     browser,
-  }) => {
+  }, testInfo) => {
     // Plan 195 step 6: past its 2 MiB soft budget, once a split point is
     // older than Process's replay window, the owner moves the rows before it
     // to the log. A move is one replacement window for a connected client.
@@ -701,11 +742,7 @@ for (const hosted of [false, true]) {
     expect(firstReply).not.toContain(":step-");
     // An older page loaded before the move.
     const loadOlder = page.locator("[data-load-older-messages]");
-    await loadOlder.getByRole("button").scrollIntoViewIfNeeded();
-    await loadOlder.getByRole("button").click();
-    await expect(loadOlder.locator('[aria-busy="true"]')).toHaveCount(0, {
-      timeout: 20_000,
-    });
+    await loadNextHistoryPage(page, liveId);
     await send("BIG_TURN_2");
     await finished("BIG_TURN_2_DONE");
     expect(catchUps.filter((entry) => entry.replaced)).toEqual([]);
@@ -720,6 +757,11 @@ for (const hosted of [false, true]) {
       })
       .toBe(1);
     await composer.focus();
+    await expect(composer).toBeFocused();
+    const maxTypingKeys = 400;
+    const recordTyping = await startTypingDiagnostics(composer, {
+      maxKeys: maxTypingKeys,
+    });
     await composer.evaluate((element) => {
       const field = element as HTMLTextAreaElement & {
         acks: { value: string; latency: number }[];
@@ -743,7 +785,7 @@ for (const hosted of [false, true]) {
     const prefixes: string[] = [];
     let draft = "";
     const sentence = "Typing while live rows move to the log. ";
-    for (let index = 0; index < 400; index++) {
+    for (let index = 0; index < maxTypingKeys; index++) {
       const character = sentence[index % sentence.length]!;
       draft += character;
       await page.keyboard.type(character);
@@ -775,7 +817,8 @@ for (const hosted of [false, true]) {
     console.log(
       `Antigravity live-memory typing (${viewport.name}): ${acks.length} keys while a turn streamed across a move, browser maximum ${slowest.toFixed(1)} ms`,
     );
-    expect(slowest).toBeLessThan(100);
+    await recordTyping(testInfo, "antigravity-live-move", acks, slowest);
+    expect(slowest).toBeLessThan(typingAckLimitMs);
     await finished("SLOW_TURN_3_DONE");
     await expect(composer).toHaveValue(draft);
 
@@ -853,11 +896,7 @@ for (const hosted of [false, true]) {
     });
     for (let attempt = 0; attempt < 12; attempt++) {
       if ((await loadOlder.count()) === 0) break;
-      await loadOlder.getByRole("button").scrollIntoViewIfNeeded();
-      await loadOlder.getByRole("button").click();
-      await expect(loadOlder.locator('[aria-busy="true"]')).toHaveCount(0, {
-        timeout: 20_000,
-      });
+      await loadNextHistoryPage(page, liveId);
     }
     await expect(loadOlder).toHaveCount(0);
     expect(olderAfter.at(-1)?.messages[0]?.uuid).toBe(`${liveId}:step-0`);

@@ -2331,7 +2331,7 @@ function SessionPageContent({
     flushPendingMotherComposerTransfer();
   }, [flushPendingMotherComposerTransfer]);
 
-  const handleDraftControlsReady = useCallback(
+  const initializeDraftControls = useCallback(
     (controls: DraftControls) => {
       draftControlsRef.current = controls;
       flushEarlyComposerTyping(controls);
@@ -2653,21 +2653,21 @@ function SessionPageContent({
       t,
     ],
   );
-
-  const { uploadAttachedFiles, handleAttach } = useSessionAttachmentUploads({
-    projectId,
-    sessionId,
-    session,
-    project,
-    attachmentQuality,
-    currentProviderInfo,
-    effectiveModel,
-    effectiveModelConfig,
-    historyScope,
-    isDomLingerParked,
-    uploadFiles,
-  });
-  // Check if pending request is an AskUserQuestion
+  const { uploadAttachedFiles, handleAttach, handleDraftControlsReady } =
+    useSessionAttachmentUploads({
+      projectId,
+      sessionId,
+      session,
+      project,
+      attachmentQuality,
+      currentProviderInfo,
+      effectiveModel,
+      effectiveModelConfig,
+      historyScope,
+      isDomLingerParked,
+      onDraftControlsReady: initializeDraftControls,
+      uploadFiles,
+    });
   const isAskUserQuestion = pendingInputRequest?.toolName === "AskUserQuestion";
 
   // Suppress current-turn orphan markers while owned process state says the
@@ -3163,7 +3163,7 @@ function SessionPageContent({
           versionInfo={versionInfo}
         />
 
-        <ExternalSessionWarning active={status.owner === "external"} />
+        <ExternalSessionWarning status={status} readOnly={readOnly} />
 
         {hasPendingToolCalls &&
           pendingToolCall &&

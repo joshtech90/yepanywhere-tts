@@ -438,11 +438,20 @@ test("unchanged Session-page files are acknowledged once and stay cleared after 
 
 test("lost creation reply and recovery read reload into conditional read-only draft settlement", async ({
   browser,
-}) => {
+}, testInfo) => {
   const f = await originComposer(browser);
   let lost = true,
     posts = 0;
-  let sessionId: string;
+  let sessionId: string | undefined;
+  const navigation: string[] = [f.page.url()];
+  const reads: number[] = [];
+  f.page.on("framenavigated", (frame) => {
+    if (frame === f.page.mainFrame()) navigation.push(frame.url());
+  });
+  f.page.on("response", (response) => {
+    if (new URL(response.url()).pathname.includes("/api/session-creations/"))
+      reads.push(response.status());
+  });
   try {
     await f.page.route("**/api/session-creations/*", async (route) => {
       if (lost) return route.abort("failed");
@@ -461,6 +470,7 @@ test("lost creation reply and recovery read reload into conditional read-only dr
     await expect(
       f.page.getByRole("button", { name: "Open saved session", exact: true }),
     ).toBeVisible();
+    expect(sessionId).toBeTruthy();
     await expect(f.input).toHaveValue("OWNED_PAGE_REQUEST");
     await expect(
       f.page.getByRole("button", { name: "Remove request.txt", exact: true }),
@@ -474,7 +484,7 @@ test("lost creation reply and recovery read reload into conditional read-only dr
     await f.page
       .getByRole("button", { name: "Open saved session", exact: true })
       .click();
-    await expect.poll(() => viewedSessionId(f.page)).toBe(sessionId!);
+    await expect.poll(() => viewedSessionId(f.page)).toBe(sessionId);
     await f.page.goto(f.path);
     await expect(f.input).toBeEditable();
     await expect(f.input).toHaveValue("");
@@ -489,6 +499,12 @@ test("lost creation reply and recovery read reload into conditional read-only dr
             .length,
       )
       .toBe(2);
+  } catch (error) {
+    await testInfo.attach("saved-session-recovery", {
+      body: JSON.stringify({ sessionId, navigation, reads, posts }, null, 2),
+      contentType: "application/json",
+    });
+    throw error;
   } finally {
     await f.dispose();
   }
@@ -1028,12 +1044,13 @@ test("never-arrived Session-page Start offers Start fresh and sends corrected in
 async function queueDraftFixture(browser: Browser) {
   const f = await fixture(browser);
   try {
-    await f.context.addInitScript(() =>
+    await f.context.addInitScript(() => {
+      if (location.origin === "null") return;
       localStorage.setItem(
         "yep-anywhere-session-toolbar-presence",
         JSON.stringify({ projectQueue: "pin" }),
-      ),
-    );
+      );
+    });
     const blocker = await (
       await f.owned.request(`/projects/${f.projectId}/session-creations`, {
         requestId: "queue_draft_blocker",
@@ -1273,21 +1290,11 @@ test("Project Queue acceptance preserves a sibling attachment-only edit across r
     await expect(
       sibling.getByRole("button", { name: "Remove sibling.txt", exact: true }),
     ).toBeVisible();
-    // A visible chip can still be uploading. Establish the sibling's durable
-    // edit before releasing the acknowledgement that conditionally clears it.
-    await expect
-      .poll(async () => {
-        const { snapshot } = await (
-          await f.owned.request("/drafts/read", {
-            slot: { kind: "new-session" },
-          })
-        ).json();
-        return snapshot.payload.attachments.some(
-          (file: { originalName: string }) =>
-            file.originalName === "sibling.txt",
-        );
-      })
-      .toBe(true);
+    // The sender only sees the sibling's completed upload through the shared
+    // draft. Observe it while the acknowledgement is still held.
+    await expect(
+      f.page.getByText("sibling.txt", { exact: true }),
+    ).toBeVisible();
     release();
     await expect(
       f.page.getByText("Queued new session for Project Queue.", {

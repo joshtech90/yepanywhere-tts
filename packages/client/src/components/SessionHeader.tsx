@@ -1,5 +1,6 @@
 import launcherStyles from "./SidebarLauncher.module.css";
 import { useI18n } from "../i18n";
+import { SessionCapabilityRestrictionBadge } from "./CapabilityRestrictionBadge";
 import { ClearloopRemainingBadge } from "./ClearloopRemainingBadge";
 import { ClientLogRecordingBadge } from "./ClientLogRecordingBadge";
 import { GoalFlag } from "./GoalNotice";
@@ -899,6 +900,14 @@ export function SessionHeader({
               sessionId={actualSessionId}
               projectId={projectId}
               messageCount={messages.length}
+            />
+          )}
+          {!loading && (
+            <SessionCapabilityRestrictionBadge
+              summary={session?.capabilityRestriction}
+              messages={messages}
+              sessionHref={`${basePath}/projects/${projectId}/sessions/${sessionId}`}
+              compact={condensedHeader || hideHeaderSecondary}
             />
           )}
           {!loading && effectiveProvider && (

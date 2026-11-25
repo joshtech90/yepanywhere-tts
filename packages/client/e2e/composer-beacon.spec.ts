@@ -120,14 +120,14 @@ test("composer beacon acknowledges real sends and leaves typing and title option
       "Transcript turn 159. Keep the composer responsive while this history is mounted.",
       { exact: true },
     );
-    // CI 45015493030 spent at least 5 s in progressive rendering after the
-    // last row attached. Wait for the visible transcript before clicking.
     await expect(transcriptText).toBeVisible({ timeout: 15_000 });
-    await transcript.evaluate((element) => {
-      element.scrollTop = element.scrollHeight;
-    });
-    await composer.focus();
-    await composer.fill("mid draft");
+    await expect(transcript.locator("[data-message-list]")).not.toHaveAttribute(
+      "aria-busy",
+      "true",
+      { timeout: 15_000 },
+    );
+    // Run 45484393274 reached the 5 s action limit after transcript hydration.
+    await composer.fill("mid draft", { timeout: 15_000 });
     await composer.evaluate((element) =>
       (element as HTMLTextAreaElement).setSelectionRange(3, 3),
     );

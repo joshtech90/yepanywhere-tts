@@ -432,6 +432,7 @@ import { GrokSessionReader } from "./sessions/grok-reader.js";
 import { MergedSessionReader } from "./sessions/merged-reader.js";
 import { OpenCodeSessionReader } from "./sessions/opencode-reader.js";
 import { PiSessionReader } from "./sessions/pi-reader.js";
+import { CopilotSessionReader } from "./sessions/copilot-reader.js";
 import {
   boundSessionSource,
   resolveLegacySessionSource,
@@ -1984,10 +1985,8 @@ export function createApp(options: AppOptions): AppResult {
                 projectPath: project.path,
               }),
           );
-        default:
-          throw new Error(
-            "Native identity reader is not qualified for this provider",
-          );
+        case "copilot":
+          return new CopilotSessionReader(project.path, native.storageScope);
       }
     }
     const mergedKey =
@@ -2114,6 +2113,8 @@ export function createApp(options: AppOptions): AppResult {
             }),
         );
       }
+      case "copilot":
+        return new CopilotSessionReader(project.path);
       case "opencode":
         return getOrCreateReader(
           `opencode::${project.path}`,
