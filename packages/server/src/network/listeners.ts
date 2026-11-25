@@ -12,7 +12,7 @@
  * describing the change reach its client. See
  * topics/connection-safe-settings.md.
  */
-import type { Socket } from "node:net";
+import { Server as NetServer, type Socket } from "node:net";
 import type { ServerType } from "@hono/node-server";
 
 export interface ListenerAddress {
@@ -103,6 +103,20 @@ function sameAddress(left: ListenerAddress, right: ListenerAddress): boolean {
     left.port === right.port &&
     normalizeAddress(left.host) === normalizeAddress(right.host)
   );
+}
+
+/**
+ * Stop accepting new connections without closing already-accepted sockets.
+ * Node's http.Server.close() calls closeIdleConnections() before delegating to
+ * net.Server.close(), which destroys newly accepted sockets whose first HTTP
+ * request has not yet been parsed.
+ */
+function stopAccepting(server: ServerType): void {
+  if (server instanceof NetServer) {
+    NetServer.prototype.close.call(server);
+    return;
+  }
+  server.close();
 }
 
 /** Resolves once the server is listening; rejects with its bind error. */
@@ -236,7 +250,7 @@ export class NetworkListeners implements NetworkListenerControl {
     const releasedFirst = retiring.filter((listener) =>
       adding.some((address) => address.port === listener.address.port),
     );
-    for (const listener of releasedFirst) listener.server.close();
+    for (const listener of releasedFirst) stopAccepting(listener.server);
 
     const created = adding.map((address) =>
       this.adopt(address, { fatalOnError: false }),
@@ -314,12 +328,16 @@ export class NetworkListeners implements NetworkListenerControl {
     managed: ManagedListener,
     graceMs = this.options.retireGraceMs ?? RETIRED_LISTENER_GRACE_MS,
   ): void {
-    managed.server.close();
     const closeConnections = () => {
+      managed.server.close();
       for (const socket of managed.sockets) socket.destroy();
       managed.sockets.clear();
     };
-    if (graceMs <= 0) closeConnections();
-    else setTimeout(closeConnections, graceMs).unref();
+    if (graceMs <= 0) {
+      closeConnections();
+    } else {
+      stopAccepting(managed.server);
+      setTimeout(closeConnections, graceMs).unref();
+    }
   }
 }
