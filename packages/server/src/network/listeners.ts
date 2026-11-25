@@ -116,7 +116,7 @@ function stopAccepting(server: ServerType): void {
     NetServer.prototype.close.call(server);
     return;
   }
-  server.close();
+  (server as { close(): unknown }).close();
 }
 
 /** Resolves once the server is listening; rejects with its bind error. */
